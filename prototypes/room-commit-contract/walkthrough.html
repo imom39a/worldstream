@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE — Counter Room commit seam</title>
+<style>
+  :root {
+    --ink: #17212b;
+    --muted: #607080;
+    --paper: #f5f7f8;
+    --panel: #fff;
+    --accent: #126e82;
+    --edge: #dce3e7;
+    --warning: #a43d32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  main { max-width: 1120px; margin: auto; padding: 32px 20px 72px; }
+  h1 { margin: 8px 0 0; font-size: 30px; }
+  h2 { margin: 0 0 10px; font-size: 18px; }
+  .tag {
+    display: inline-block;
+    padding: 3px 7px;
+    border-radius: 4px;
+    background: var(--warning);
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .intro, .muted { color: var(--muted); }
+  .intro { max-width: 900px; }
+  .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; }
+  .panel {
+    margin: 0 0 18px;
+    padding: 18px;
+    border: 1px solid var(--edge);
+    border-radius: 9px;
+    background: var(--panel);
+  }
+  button {
+    margin: 3px;
+    padding: 8px 10px;
+    border: 1px solid #99bfc7;
+    border-radius: 6px;
+    background: #f8fcfc;
+    color: #075664;
+    cursor: pointer;
+    font: inherit;
+  }
+  button:hover, button.active { background: var(--accent); color: white; }
+  button:disabled { cursor: default; opacity: .45; }
+  button.step { display: block; width: 100%; margin: 7px 0; text-align: left; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+  .state { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .field { padding: 8px; border-radius: 5px; background: #f7fafb; overflow-wrap: anywhere; }
+  .field.wide { grid-column: 1 / -1; }
+  .field b { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  pre {
+    max-height: 300px;
+    margin: 0;
+    padding: 12px;
+    overflow: auto;
+    border-radius: 6px;
+    background: #16212a;
+    color: #d7e7ea;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: 12px/1.35 ui-monospace, SFMono-Regular, monospace;
+  }
+  #last { font-weight: 700; color: #075664; }
+  @media (max-width: 760px) {
+    .grid, .state { grid-template-columns: 1fr; }
+  }
+</style>
+<main>
+  <span class="tag">PROTOTYPE / THROWAWAY</span>
+  <h1>Counter Room commit seam</h1>
+  <p class="intro">Question: can one immutable, fully prepared Room bundle be resolved, fenced by a full Head and operational generations, and installed atomically without database rules becoming domain rules?</p>
+
+  <section class="panel">
+    <h2>Current model</h2>
+    <p id="last"></p>
+    <div id="state" class="state"></div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Free play</h2>
+      <p class="muted">The Host Clock is injected. Caller request identity excludes host time. Timer meaning comes from its immutable <code>scheduled_for</code>.</p>
+      <div id="free"></div>
+      <p class="muted">Host Clock:
+        <button data-clock="9">D−1 (9)</button>
+        <button data-clock="10">D (10)</button>
+        <button data-clock="20">20</button>
+      </p>
+      <h2>Canonical transition history</h2>
+      <pre id="history"></pre>
+    </section>
+
+    <section class="panel">
+      <h2>Guided awkward cases</h2>
+      <div id="tabs" class="tabs"></div>
+      <div id="scenario"></div>
+    </section>
+  </div>
+</main>
+<script>
+/* Pure state module: it has no DOM, browser clock, or event-handler dependency. */
+const RoomLogic = (() => {
+  const canonical = value => {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  };
+
+  const hash = value => {
+    let result = 2166136261;
+    for (const character of canonical(value)) {
+      result = Math.imul(result ^ character.charCodeAt(0), 16777619);
+    }
+    return (result >>> 0).toString(16).padStart(8, "0");
+  };
+
+  const headFor = (sequence, priorTransition, stimulus, core, activity, timerChanges, attention) => {
+    const coreHash = hash({ domain: "core/v1", state: core });
+    const activityHash = hash({ domain: "activity/v1", pack_digest: "CounterRoom/v1", state: activity });
+    const authoritativeHash = hash({ domain: "authoritative/v1", core: coreHash, activity: activityHash });
+    const transition = sequence === 0
+      ? hash({ domain: "genesis/v1", room: "counter", core: coreHash, activity: activityHash, authoritative: authoritativeHash })
+      : hash({
+          domain: "transition/v1",
+          room: "counter",
+          seq: sequence,
+          prior_transition: priorTransition,
+          stimulus,
+          timer_changes: timerChanges,
+          attention,
+          core: coreHash,
+          activity: activityHash,
+          authoritative: authoritativeHash,
+        });
+    return { seq: sequence, transition, core: coreHash, activity: activityHash, authoritative: authoritativeHash };
+  };
+
+  const initial = () => {
+    const core = { room_status: "active" };
+    const activity = { counter: 0, deadline: 10 };
+    return {
+      head: headFor(0, null, null, core, activity, [], "genesis"),
+      core,
+      activity,
+      operational: { healthy: 1, integrity_gen: 1, authority_gen: 1, policy_rev: 1, catching_up: 0 },
+      clock: 0,
+      timers: {},
+      operations: {},
+      prepared: {},
+      transitions: [],
+      activations: [],
+      note: "Genesis: Core status is active; Activity owns Counter and deadline D=10.",
+    };
+  };
+
+  const timerKey = request => `${request.timer_id}:${request.generation}`;
+  const same = (left, right) => canonical(left) === canonical(right);
+
+  const prepare = (state, operationId, request, admittedAt = state.clock) => {
+    const callerHash = hash(request);
+    const existing = state.operations[operationId];
+    if (existing) {
+      return existing.callerHash === callerHash
+        ? { ...state, note: `Existing: resolver answered before domain preparation for ${operationId}.` }
+        : { ...state, note: `Conflict: ${operationId} already belongs to a different caller request hash.` };
+    }
+    if (!state.operational.healthy) return { ...state, note: "Fault: Room is not healthy." };
+    if (state.operational.catching_up) return { ...state, note: "Reprepare: Room is CatchingUp." };
+
+    const stimulus = request.kind === "fire"
+      ? { timer_fired: { room: "counter", timer_id: request.timer_id, generation: request.generation, scheduled_for: request.scheduled_for }, semantic_at: request.scheduled_for }
+      : { request, participant_admitted_at: admittedAt };
+    const base = { ...state.head };
+    const witnesses = {
+      healthy: state.operational.healthy,
+      integrity_gen: state.operational.integrity_gen,
+      authority_gen: state.operational.authority_gen,
+      policy_rev: state.operational.policy_rev,
+      catching_up: state.operational.catching_up,
+    };
+    let bundle;
+
+    if (request.kind === "receipt") {
+      bundle = { type: "disposition", result: { kind: "NoChange" } };
+    } else if (state.core.room_status === "archived" && request.kind === "advance") {
+      bundle = { type: "disposition", result: { kind: "Rejection", reason: "room-archived" } };
+    } else if (state.core.room_status === "archived" && request.kind === "fire") {
+      return { ...state, note: "NotApplicable: archive cancelled the exact timer witness." };
+    } else if (state.core.room_status === "archived") {
+      return { ...state, note: "Fenced: archived Core state permits no ordinary mutation." };
+    } else if (request.kind === "advance" && admittedAt >= state.activity.deadline) {
+      bundle = { type: "disposition", result: { kind: "Rejection", reason: "deadline" } };
+    } else if (request.kind === "fire" && admittedAt < request.scheduled_for) {
+      return { ...state, note: "NotSubmitted: a D−1 timer candidate never enters the persistence lane." };
+    } else {
+      const timers = { ...state.timers };
+      let timerChanges = [];
+      let core = { ...state.core };
+      let activity = { ...state.activity };
+      let fenceRoom = false;
+
+      if (request.kind === "advance") {
+        activity.counter += request.delta;
+      } else if (request.kind === "schedule") {
+        const key = timerKey(request);
+        const generations = Object.keys(timers)
+          .filter(candidate => candidate.startsWith(`${request.timer_id}:`))
+          .map(candidate => Number(candidate.split(":")[1]));
+        const expectedGeneration = Math.max(0, ...generations) + 1;
+        if (request.generation !== expectedGeneration) return { ...state, note: "Fault: timer generation must start at 1 and increase exactly." };
+        if (request.scheduled_for <= admittedAt) return { ...state, note: "Fault: a pack timer must be scheduled strictly after its causing Stimulus." };
+        timerChanges = [{ op: "insert", timer_id: request.timer_id, generation: request.generation, scheduled_for: request.scheduled_for, state: "scheduled" }];
+      } else if (request.kind === "fire") {
+        const timer = timers[timerKey(request)];
+        if (!timer || timer.state !== "scheduled" || timer.scheduled_for !== request.scheduled_for) {
+          return { ...state, note: "NotApplicable: the exact timer witness is stale, cancelled, or already fired." };
+        }
+        activity.counter += request.delta ?? 1;
+        timerChanges = [{ op: "state", timer_id: request.timer_id, generation: request.generation, expected_state: "scheduled", expected_scheduled_for: request.scheduled_for, state: "fired", on_miss: "NotApplicable", miss_precedence: "before_head" }];
+      } else if (request.kind === "archive") {
+        core.room_status = "archived";
+        fenceRoom = true;
+        timerChanges = Object.entries(timers)
+          .filter(([, timer]) => timer.state === "scheduled")
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, timer]) => {
+            const [timerId, generation] = key.split(":");
+            return { op: "state", timer_id: timerId, generation: Number(generation), expected_state: "scheduled", expected_scheduled_for: timer.scheduled_for, state: "cancelled", on_miss: "Fault" };
+          });
+      } else {
+        return { ...state, note: "Fault: impossible Stimulus." };
+      }
+
+      const attention = fenceRoom ? "room-wide-archive-fence" : "counter-attention";
+      const nextHead = headFor(state.head.seq + 1, state.head.transition, stimulus, core, activity, timerChanges, attention);
+      bundle = {
+        type: "advance",
+        head: nextHead,
+        core,
+        activity,
+        timerChanges,
+        attention,
+        fenceRoom,
+        transition: { parent: base, head: nextHead, stimulus, timerChanges, attention, core, activity },
+      };
+    }
+
+    const prepared = { operationId, callerHash, base, witnesses, stimulus, bundle };
+    return {
+      ...state,
+      prepared: { ...state.prepared, [operationId]: prepared },
+      note: `Prepared ${operationId}: immutable domain work is complete before persistence.`,
+    };
+  };
+
+  const commit = (state, operationId) => {
+    const prepared = state.prepared[operationId];
+    if (!prepared) return { ...state, note: `No prepared work named ${operationId}.` };
+    const existing = state.operations[operationId];
+    if (existing) {
+      return existing.callerHash === prepared.callerHash
+        ? { ...state, note: `Existing: ${operationId} resolved to its stored ${existing.kind}.` }
+        : { ...state, note: `Conflict: ${operationId} already belongs to a different caller request hash.` };
+    }
+    for (const mutation of prepared.bundle.timerChanges ?? []) {
+      if (mutation.miss_precedence !== "before_head") continue;
+      const timer = state.timers[`${mutation.timer_id}:${mutation.generation}`];
+      if (!timer || timer.state !== mutation.expected_state || timer.scheduled_for !== mutation.expected_scheduled_for) {
+        return { ...state, note: `${mutation.on_miss}: the exact timer witness is no longer current.` };
+      }
+    }
+    if (!same(prepared.base, state.head)) {
+      return { ...state, note: prepared.base.seq === state.head.seq ? "Fault: same sequence, different hashes." : "Reprepare: Room Head advanced." };
+    }
+    const currentWitnesses = {
+      healthy: state.operational.healthy,
+      integrity_gen: state.operational.integrity_gen,
+      authority_gen: state.operational.authority_gen,
+      policy_rev: state.operational.policy_rev,
+      catching_up: state.operational.catching_up,
+    };
+    if (!same(prepared.witnesses, currentWitnesses)) {
+      return { ...state, note: "Fenced: integrity, authority, policy, health, or catch-up witness changed." };
+    }
+    if (state.core.room_status === "archived" && prepared.bundle.type !== "disposition") {
+      return { ...state, note: "Fenced: archive committed before this prepared mutation." };
+    }
+    if (prepared.bundle.type === "disposition") {
+      return {
+        ...state,
+        operations: { ...state.operations, [operationId]: { codec_version: 2, basis_head: prepared.base, callerHash: prepared.callerHash, ...prepared.bundle.result } },
+        note: `New durable ${prepared.bundle.result.kind}; Head remains exact.`,
+      };
+    }
+
+    const timers = { ...state.timers };
+    for (const mutation of prepared.bundle.timerChanges) {
+      if (mutation.op === "insert") continue;
+      const timer = timers[`${mutation.timer_id}:${mutation.generation}`];
+      if (!timer || timer.state !== mutation.expected_state || timer.scheduled_for !== mutation.expected_scheduled_for) {
+        return { ...state, note: `${mutation.on_miss}: timer witness was not consumed; the whole bundle rolled back.` };
+      }
+    }
+    for (const mutation of prepared.bundle.timerChanges) {
+      const key = `${mutation.timer_id}:${mutation.generation}`;
+      timers[key] = mutation.op === "insert"
+        ? { scheduled_for: mutation.scheduled_for, state: mutation.state }
+        : { ...timers[key], state: mutation.state };
+    }
+    const activations = prepared.bundle.fenceRoom
+      ? [...state.activations.map(activation => ({ ...activation, decision: "fenced" })), { operationId, decision: "fence-room" }]
+      : [...state.activations, { operationId, decision: "accepted" }];
+    return {
+      ...state,
+      head: prepared.bundle.head,
+      core: prepared.bundle.core,
+      activity: prepared.bundle.activity,
+      timers,
+      activations,
+      transitions: [...state.transitions, prepared.bundle.transition],
+      operations: { ...state.operations, [operationId]: { codec_version: 2, basis_head: prepared.base, callerHash: prepared.callerHash, kind: "Advance" } },
+      note: `New Advance: the opaque bundle linearizes at DB COMMIT.`,
+    };
+  };
+
+  const setClock = (state, now) => ({ ...state, clock: now, note: `Host Clock set to ${now}; canonical state did not change.` });
+  return { initial, prepare, commit, setClock };
+})();
+
+let state = RoomLogic.initial();
+let freeId = 1;
+let activeScenario = "retry";
+let progress = 0;
+
+const scenarios = {
+  retry: {
+    title: "Idempotency",
+    why: "Resolver-first submission returns Existing before preparation. Reusing the identity for a changed caller hash returns Conflict.",
+    steps: [
+      ["prepare", "same", { kind: "advance", delta: 1 }],
+      ["commit", "same"],
+      ["prepare", "same", { kind: "advance", delta: 1 }],
+      ["prepare", "same", { kind: "advance", delta: 9 }],
+    ],
+  },
+  race: {
+    title: "Full-Head race",
+    why: "Two Advances prepared from one full Head: the first commits; the second must Reprepare. A receipt still uses the same Room fence.",
+    steps: [
+      ["prepare", "a", { kind: "advance", delta: 1 }],
+      ["prepare", "b", { kind: "advance", delta: 2 }],
+      ["commit", "a"],
+      ["commit", "b"],
+      ["prepare", "receipt", { kind: "receipt" }],
+      ["commit", "receipt"],
+    ],
+  },
+  timer: {
+    title: "Timer witness",
+    why: "D−1 never enters the timer lane. At D, the exact (Room, timer, generation, scheduled_for) witness fires once; retry is Existing.",
+    steps: [
+      ["prepare", "schedule", { kind: "schedule", timer_id: "wake", generation: 1, scheduled_for: 10 }],
+      ["commit", "schedule"],
+      ["clock", 9],
+      ["prepare", "timer:counter:wake:1-before-D", { kind: "fire", timer_id: "wake", generation: 1, scheduled_for: 10 }],
+      ["clock", 10],
+      ["prepare", "timer:counter:wake:1", { kind: "fire", timer_id: "wake", generation: 1, scheduled_for: 10 }],
+      ["commit", "timer:counter:wake:1"],
+      ["prepare", "timer:counter:wake:1", { kind: "fire", timer_id: "wake", generation: 1, scheduled_for: 10 }],
+    ],
+  },
+  deadline: {
+    title: "Half-open deadline",
+    why: "A participant Action admitted at D−1 may commit after the clock reaches D if its Head and witnesses remain valid. Admission at D is a durable Rejection.",
+    steps: [
+      ["clock", 9],
+      ["prepare", "admitted-before-D", { kind: "advance", delta: 2 }],
+      ["clock", 10],
+      ["commit", "admitted-before-D"],
+      ["prepare", "admitted-at-D", { kind: "advance", delta: 2 }],
+      ["commit", "admitted-at-D"],
+    ],
+  },
+  archive: {
+    title: "Archive fence",
+    why: "Archive cancels timers and fences activations atomically. A stale Action reprepares into a durable room-archived Rejection; its cancelled Timer is NotApplicable.",
+    steps: [
+      ["prepare", "schedule", { kind: "schedule", timer_id: "wake", generation: 1, scheduled_for: 20 }],
+      ["commit", "schedule"],
+      ["prepare", "archive", { kind: "archive" }],
+      ["prepare", "stale-action", { kind: "advance", delta: 1 }],
+      ["prepare", "stale-timer", { kind: "fire", timer_id: "wake", generation: 1, scheduled_for: 20 }, 20],
+      ["commit", "archive"],
+      ["commit", "stale-action"],
+      ["commit", "stale-timer"],
+      ["prepare", "stale-action", { kind: "advance", delta: 1 }],
+      ["commit", "stale-action"],
+    ],
+  },
+};
+
+const apply = action => {
+  const [kind, ...args] = action;
+  if (kind === "prepare") state = RoomLogic.prepare(state, ...args);
+  if (kind === "commit") state = RoomLogic.commit(state, ...args);
+  if (kind === "clock") state = RoomLogic.setClock(state, ...args);
+  render();
+};
+
+const label = action => {
+  if (action[0] === "prepare") return `Prepare ${action[1]}`;
+  if (action[0] === "commit") return `Commit ${action[1]}`;
+  return `Set Host Clock = ${action[1]}`;
+};
+
+function reset() {
+  state = RoomLogic.initial();
+  progress = 0;
+  render();
+}
+
+function chooseScenario(id) {
+  activeScenario = id;
+  progress = 0;
+  render();
+}
+
+function startScenario() {
+  state = RoomLogic.initial();
+  progress = 0;
+  render();
+}
+
+function nextStep() {
+  apply(scenarios[activeScenario].steps[progress]);
+  progress += 1;
+  render();
+}
+
+function freePlay(kind) {
+  const operationId = `free-${freeId++}`;
+  const request = kind === "advance" ? { kind, delta: 1 }
+    : kind === "receipt" ? { kind }
+    : kind === "schedule" ? { kind, timer_id: "wake", generation: 1, scheduled_for: 10 }
+    : kind === "fire" ? { kind, timer_id: "wake", generation: 1, scheduled_for: 10 }
+    : { kind: "archive" };
+  state = RoomLogic.prepare(state, operationId, request);
+  state = RoomLogic.commit(state, operationId);
+  render();
+}
+
+function render() {
+  const fields = {
+    "Full Head token": state.head,
+    "Canonical Core state": state.core,
+    "Canonical Activity state": state.activity,
+    "Operational witnesses (not hashed)": state.operational,
+    "Injected Host Clock (not DB time)": state.clock,
+    "Retained timer generations": state.timers,
+    "Durable operation resolutions": state.operations,
+    "Activation decisions": state.activations,
+  };
+  document.querySelector("#last").textContent = state.note;
+  document.querySelector("#state").innerHTML = Object.entries(fields).map(([name, value]) =>
+    `<div class="field ${name.length > 22 ? "wide" : ""}"><b>${name}</b>${typeof value === "object" ? canonicalForView(value) : value}</div>`
+  ).join("");
+  document.querySelector("#history").textContent = JSON.stringify(state.transitions, null, 2);
+
+  document.querySelector("#tabs").innerHTML = Object.entries(scenarios).map(([id, scenario]) =>
+    `<button class="${id === activeScenario ? "active" : ""}" onclick="chooseScenario('${id}')">${scenario.title}</button>`
+  ).join("");
+  const scenario = scenarios[activeScenario];
+  document.querySelector("#scenario").innerHTML = `
+    <h2>${scenario.title}</h2>
+    <p class="muted">${scenario.why}</p>
+    <button onclick="startScenario()">Start this walkthrough (reset)</button>
+    ${scenario.steps.map((action, index) =>
+      `<button class="step" ${index !== progress ? "disabled" : ""} onclick="nextStep()">${index + 1}. ${label(action)}</button>`
+    ).join("")}
+  `;
+}
+
+function canonicalForView(value) {
+  return JSON.stringify(value);
+}
+
+document.querySelector("#free").innerHTML = `
+  <button onclick="freePlay('advance')">Advance +1</button>
+  <button onclick="freePlay('receipt')">Durable NoChange</button>
+  <button onclick="freePlay('schedule')">Schedule wake g1 at D=10</button>
+  <button onclick="freePlay('fire')">Fire wake g1</button>
+  <button onclick="freePlay('archive')">Archive Room</button>
+  <button onclick="reset()">Reset Room</button>
+`;
+document.querySelectorAll("[data-clock]").forEach(button => {
+  button.onclick = () => apply(["clock", Number(button.dataset.clock)]);
+});
+render();
+</script>
+</html>
