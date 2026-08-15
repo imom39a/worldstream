@@ -651,6 +651,109 @@ fn core_and_complete_head_shapes_are_exact_and_commands_deny_unknown_fields() {
 }
 
 #[test]
+fn timer_request_v1_has_one_strict_canonical_wire_form_per_variant() {
+    let timer_id: TimerId = parsed(TIMER);
+    let generation = TimerGenerationV1::new(7)
+        .unwrap_or_else(|error| unreachable!("generation failed: {error}"));
+    let cases = [
+        (
+            TimerRequestV1::ScheduleNext {
+                timer_id: timer_id.clone(),
+                due: parsed("2026-08-15T12:00:30Z"),
+                canonical_payload: json(r#"{"kind":"schedule"}"#),
+            },
+            br#"{"canonical_payload":{"kind":"schedule"},"due":"2026-08-15T12:00:30Z","timer_id":"01ARZ3NDEKTSV4RRFFQ69G5FC0","timer_request_type":"schedule_next"}"#
+                .as_slice(),
+        ),
+        (
+            TimerRequestV1::CancelCurrent {
+                timer_id: timer_id.clone(),
+                expected_generation: generation,
+            },
+            br#"{"expected_generation":7,"timer_id":"01ARZ3NDEKTSV4RRFFQ69G5FC0","timer_request_type":"cancel_current"}"#.as_slice(),
+        ),
+        (
+            TimerRequestV1::RescheduleCurrent {
+                timer_id,
+                expected_generation: generation,
+                new_due: parsed("2026-08-15T12:01:00Z"),
+                new_canonical_payload: json(r#"{"kind":"reschedule"}"#),
+            },
+            br#"{"expected_generation":7,"new_canonical_payload":{"kind":"reschedule"},"new_due":"2026-08-15T12:01:00Z","timer_id":"01ARZ3NDEKTSV4RRFFQ69G5FC0","timer_request_type":"reschedule_current"}"#
+                .as_slice(),
+        ),
+    ];
+
+    for (value, expected_bytes) in cases {
+        let encoded = encode(&value)
+            .unwrap_or_else(|error| unreachable!("Timer request encode failed: {error}"));
+        assert_eq!(encoded, expected_bytes);
+        let decoded = CanonicalJsonV1::decode_canonical::<TimerRequestV1>(expected_bytes)
+            .unwrap_or_else(|error| unreachable!("Timer request decode failed: {error}"));
+        assert_eq!(decoded, value);
+        assert_eq!(
+            encode(&decoded)
+                .unwrap_or_else(|error| unreachable!("Timer request re-encode failed: {error}")),
+            expected_bytes
+        );
+    }
+
+    assert!(CanonicalJsonV1::decode_canonical::<TimerRequestV1>(
+        br#"{"expected_generation":7,"extra":true,"timer_id":"01ARZ3NDEKTSV4RRFFQ69G5FC0","timer_request_type":"cancel_current"}"#
+    )
+    .is_err());
+}
+
+#[test]
+fn activity_disposition_v1_has_strict_canonical_apply_and_reject_wires() {
+    let apply = ActivityDispositionV1::Apply(ActivityApplyV1 {
+        next_activity_state: json(r#"{"count":2}"#),
+        ordered_domain_events: vec![json(r#"{"event":"increment"}"#)],
+        timer_requests: vec![TimerRequestV1::ScheduleNext {
+            timer_id: parsed(TIMER),
+            due: parsed("2026-08-15T12:00:30Z"),
+            canonical_payload: json(r#"{"kind":"schedule"}"#),
+        }],
+        ordered_attention_signals: vec![json(r#"{"kind":"alert"}"#)],
+    });
+    let reject = ActivityDispositionV1::Reject(ActivityRejectionV1 {
+        declared_code: "counter_rejected".to_owned(),
+        bounded_safe_details: json(r#"{"reason":"closed"}"#),
+    });
+    let cases = [
+        (
+            apply,
+            br#"{"activity_disposition_type":"apply","next_activity_state":{"count":2},"ordered_attention_signals":[{"kind":"alert"}],"ordered_domain_events":[{"event":"increment"}],"timer_requests":[{"canonical_payload":{"kind":"schedule"},"due":"2026-08-15T12:00:30Z","timer_id":"01ARZ3NDEKTSV4RRFFQ69G5FC0","timer_request_type":"schedule_next"}]}"#
+                .as_slice(),
+        ),
+        (
+            reject,
+            br#"{"activity_disposition_type":"reject","bounded_safe_details":{"reason":"closed"},"declared_code":"counter_rejected"}"#.as_slice(),
+        ),
+    ];
+
+    for (value, expected_bytes) in cases {
+        let encoded = encode(&value)
+            .unwrap_or_else(|error| unreachable!("Activity disposition encode failed: {error}"));
+        assert_eq!(encoded, expected_bytes);
+        let decoded = CanonicalJsonV1::decode_canonical::<ActivityDispositionV1>(expected_bytes)
+            .unwrap_or_else(|error| unreachable!("Activity disposition decode failed: {error}"));
+        assert_eq!(decoded, value);
+        assert_eq!(
+            encode(&decoded).unwrap_or_else(|error| unreachable!(
+                "Activity disposition re-encode failed: {error}"
+            )),
+            expected_bytes
+        );
+    }
+
+    assert!(CanonicalJsonV1::decode_canonical::<ActivityDispositionV1>(
+        br#"{"activity_disposition_type":"reject","bounded_safe_details":{"reason":"closed"},"declared_code":"counter_rejected","extra":true}"#
+    )
+    .is_err());
+}
+
+#[test]
 fn genesis_requires_active_core_for_creation_and_replay() {
     let mut input = genesis_input();
     input.initial_core_state.room_status = RoomStatusV1::Archived;
