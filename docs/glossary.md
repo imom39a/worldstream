@@ -154,17 +154,22 @@ flowchart TD
 | **Operator projection** | A current administrative/diagnostic view explicitly produced for an authorized operator membership. | It is still a projection and must not bypass pack/privacy boundaries casually. |
 | **Final-reveal projection** | A pack-defined historical/completed view that may disclose information after an activity terminates. | Replay by itself does not grant reveal access. |
 | **Observation** | Information a membership is allowed to learn because the room changed. | Projection is current full view; observation is change-oriented delivery. |
-| **Observation frame** | A durable, bounded, Membership-addressed change or notice caused by one accepted Transition. | It is never a full Projection Reset; a hidden Transition may create no frame for a viewer. |
+| **Observation frame** | A durable, bounded, Membership-addressed unit coalescing the authorized consequences of one accepted Transition. | Genesis emits none; a later Transition emits zero or one per viewer. It is not a Projection Reset. |
 | **Observation stream** | One membership's monotonically sequenced observation frames. | It is not a global raw event stream, room state dump, or LLM token stream. |
 | **Frame sequence (`frame_seq`)** | A monotonic position inside one membership's observation stream. | It is independent from `room_seq` and may skip transitions irrelevant to that member. |
+| **Frame head** | The greatest frame sequence ever allocated in one Membership's Observation Stream. | It never decreases or reuses a value, even after pruning. |
+| **Retained floor** | The earliest frame sequence still physically available for incremental catch-up. | Pruning may raise it without advancing the Cursor. |
 | **Cause room sequence (`cause_room_seq`)** | The committed transition that caused an observation frame or activation intent. | It provides causality but does not replace that object's own frame or activation identity. |
 | **Cursor** | The highest frame sequence a membership has durably processed and acknowledged. | A cursor belongs to one membership stream, not the entire room. |
 | **Catch-up** | Delivery of retained authorized frames after a membership cursor during attach/reconnect. | Catch-up is transport continuity; it is not deterministic room replay or cognitive resumption. |
-| **Projection reset** | An authorized current Projection sent when retained frames cannot cover the requested Cursor. | It is a delivery baseline outside canonical history, not an Observation Frame or Transition; the server never silently skips a gap. |
+| **Projection reset** | An authorized current Projection sent when first attachment, visibility loss, or an unavailable retained range requires a new baseline. | It is explicit operational delivery state outside canonical history, not an Observation Frame or Transition; the server never silently skips a gap. |
+| **Session sync token** | A single-use opaque value binding one Session to its captured attach barrier. | Only that Session's token acknowledgement makes it Live; a shared Cursor acknowledgement is insufficient. |
+| **Room recovery state** | Loading, CatchingUp, or Active, with Faulted and Quarantined failure surfaces. | It is independent from a Session's delivery state and from canonical Room Status. |
+| **Session delivery state** | Attaching, CatchingUp, Live, or Closed for one attached transport Session. | It is operational and never consumes `room_seq`. |
 | **Legal action** | A typed action currently available to a participant, including relevant schema and deadline information. | “Affordance” is an informal UX synonym. The server still revalidates every submitted action. |
 | **Realtime** | Commit-first push of relevant observations to connected clients, with bounded latency targets and durable cursor recovery. | It does not mean every database event is broadcast or every agent responds instantly. |
 | **Stream** | In product language, one Membership's ordered progression of meaningful Room Observations. | Do not use it to imply token streaming, video streaming, or a generic message broker. |
-| **Invocation context** | A temporary authorized input bundle for one agent invocation: activation cause, current projection, retained relevant frames or reset, legal actions, deadline/budget metadata, and artifact references. | It is assembled for a run and is not a new authoritative database or persistent agent mind. |
+| **Invocation context** | The exact payload committed with one granted claim: cause, complete Head/witnesses, current authorized Projection and Action Offers, limits/Artifact references, and one retained-frame or Reset branch. | It is bounded input for one Invocation, not a new authoritative database or persistent agent mind. |
 | **Agent-private memory** | Prompts, model history, private checkpoints, summaries, or other state owned by the external runner/agent implementation. | WorldStream does not own, inspect, or promise this memory. |
 
 ## Activation and ephemeral agent execution
@@ -173,7 +178,7 @@ flowchart TD
 |---|---|---|
 | **Attention signal** | Deterministic Activity Pack output saying a particular enabled Agent Participant may need to act for a typed reason. | It cannot target spectator/operator Memberships, does not execute a model, and is not an arbitrary semantic polling query. |
 | **Activation policy** | Host-enforced per-membership rules deciding whether an attention signal may create an activation intent. | It limits activations; it is not the agent's private planning policy. |
-| **Activation intent** | A durable, unique, at-least-once request offered to an authorized external runner. | It means work may be relevant; it does not prove a model ran. |
+| **Activation intent** | A durable, unique, at-least-once request in pending, leased, completed, expired, or cancelled state. | It means work may be relevant; it does not prove a model ran. Operation attempts/receipts are not states. |
 | **Activation ID** | The server-generated durable identity of one activation intent. | It is distinct from the pack's logical deduplication key and from a runner claim ID. |
 | **Activation offer** | A possibly duplicated, privacy-minimal notification that an activation may be claimed. | Private projection/context is returned only after an authorized claim succeeds. |
 | **Activation claim** | A runner's idempotent request to obtain the current bounded lease for an activation. | A claim ID and request hash make lost replies safe. |
@@ -181,6 +186,7 @@ flowchart TD
 | **Activation deduplication key** | A stable pack-produced key combined with room, cause sequence, and target membership to prevent duplicate logical activation creation. | It is not a network message ID or claim ID. |
 | **Lease** | A time-bounded exclusive right for one authenticated runner to handle the current activation generation. | It is operational ownership, not room-state authority. |
 | **Lease generation** | A monotonically increasing fence that prevents an expired claimant from renewing, releasing, or completing a newer lease. | Runner identity alone is insufficient to fence stale operations. |
+| **Activation operation receipt** | The durable request hash and exact result for one claim, renew, release, or complete operation ID. | It resolves lost replies and conflicts without creating more intent states. |
 | **Activation completion** | A runner's operational report that it handled, declined, or failed the activation. | Only separately accepted room actions create authoritative room consequences. |
 | **Logical agent persistence** | Persistence of principal, membership, role, permissions, cursor, activation state, room facts, and explicit references across invocations. | It does not mean continuous computation, consciousness, model context, or an idle container. |
 

@@ -154,7 +154,7 @@ The supervisor maps room IDs to active room actors.
 
 The active-room map is in memory. It is not a distributed registry.
 
-The supervisor uses an explicit per-room lifecycle:
+The supervisor uses an explicit recovery lifecycle before ordinary service:
 
     Loading → CatchingUp → Active → Passivating → Inactive
              ↘ Faulted or Quarantined ↙
@@ -283,6 +283,7 @@ After a pack computes the next state, WorldStream asks it for affected audience 
 - Authoritative Room State is never serialized directly to a client.
 - Public, operator-membership, and participant viewers are distinct Rust types.
 - Every Observation Frame is persisted under an explicit Membership ID.
+- Genesis emits no frame. Each later Transition produces zero or one coalesced frame for each viewer, so a hidden Transition may advance the Room Head without advancing that Membership's frame head.
 - A public payload uses an explicitly public type, then is materialized into each authorized enabled membership's single frame stream.
 - Projection construction happens before the transition transaction commits.
 - Invalid, oversized, or failed projection output aborts the transition rather than committing undisclosable state.
@@ -296,20 +297,22 @@ Committed observation frames are durable. Live WebSocket delivery is an accelera
 - after storage commit, a room actor enqueues frame references to connected sessions;
 - each session fetches or receives only authorized payloads;
 - client acknowledgements monotonically advance a membership frame cursor;
+- each Membership separately persists a never-reused frame head and a retained floor; pruning changes neither the Cursor nor frame allocation;
 - duplicate delivery is allowed;
 - queue overflow closes the connection with a resumable slow-consumer error.
 
 The durable inbox, not an in-memory broadcast channel, is the continuity guarantee.
+The gap-free Session barrier, reset contract, retention ceilings, and failure surfaces are frozen in [Observation Delivery and Activation](observation-and-activation.md) and [ADR 0008](adr/0008-membership-observation-streams-and-reset-barriers.md).
 
 ### Activation dispatcher
 
-An attention signal is deterministic Activity Pack output. The host applies an exact, typed per-membership activation policy and persists an activation intent in the same transaction as the causing transition.
+An Attention Signal is deterministic, canonical Activity Pack output. The host applies an exact, versioned per-Membership Activation Policy and persists its revision plus allow/deny/intent decision in the same transaction as the causing Transition; policy and decision evidence are operational and excluded from canonical hashes.
 
 The dispatcher:
 
 - offers pending intents on a runner control WebSocket or HTTP long poll;
 - atomically grants a bounded claim lease;
-- exposes activation context after claim;
+- persists and exposes the exact authorized Invocation Context only after claim;
 - renews, completes, expires, or cancels a lease;
 - retries delivery without creating another logical activation;
 - records operational attempts without changing room history.
@@ -317,6 +320,7 @@ The dispatcher:
 It never invokes a model. If a runner is absent, nothing runs.
 
 Activation-control authority is separate from participant Action authority. A successful claim returns authorized Invocation Context but neither grants room:act nor advances the Membership Cursor. Runner SDKs expose separate activation-control and room-member clients, following [ADR 0003](adr/0003-separate-activation-and-action-authority.md).
+The full intent states, operation receipts, eligibility witnesses, context union, cancellation rules, and retention contract are frozen in [Observation Delivery and Activation](observation-and-activation.md) and [ADR 0009](adr/0009-activation-intents-context-and-lease-fencing.md).
 
 ### Timer scheduler
 
@@ -611,6 +615,7 @@ Room sequence zero names genesis. The first later accepted stimulus is sequence 
     standing TEXT CHECK standing IN ('enabled', 'suspended', 'departed')
     joined_seq INTEGER
     frame_head INTEGER
+    retained_frame_floor INTEGER
     last_ack_frame_seq INTEGER
     activation_policy_json BLOB
     created_at TEXT
@@ -729,6 +734,8 @@ An operator request may enqueue verification, never write `healthy` directly. On
 
 Every durable stream belongs to one Membership. Public consequences are materialized into every enabled Membership stream allowed to see them. Spectator and operator Memberships are read-only and have separate Cursors; Principal kind remains independent of Access Mode. This deliberately duplicates small frames to keep privacy and Catch-up semantics unambiguous.
 
+`frame_head` never decreases or reuses a value. `retained_frame_floor` may advance during pruning without moving `last_ack_frame_seq`. Genesis has no frame; a later Transition has at most one row per recipient Membership.
+
 ### timers
 
     room_id TEXT
@@ -752,9 +759,10 @@ One `(room_id, timer_id)` has at most one scheduled generation. `scheduled_for`,
     member_id TEXT
     cause_room_seq INTEGER
     reason_code TEXT
-    relevant_from_frame_seq INTEGER
-    relevant_to_frame_seq INTEGER
-    allowed_actions_json BLOB
+    policy_revision INTEGER
+    authority_generation INTEGER
+    membership_generation INTEGER
+    integrity_generation INTEGER
     priority INTEGER
     deadline TEXT NULL
     deduplication_key TEXT
@@ -771,26 +779,26 @@ Require a unique logical activation key on room_id, cause_room_seq, member_id, a
 
 The frozen host permits at most one live leased Activation per Membership, so WorldStream-controlled activation starts are serialized. Additional intents may remain pending until the current lease is completed, released, expired, or cancelled. WorldStream cannot prevent a Runner from starting an independent Invocation outside this mechanism; if multiple Invocations submit Actions for one Membership, exact-head admission and Action idempotency resolve the race normally.
 
-### activation_claims
+### activation_operation_receipts
 
 Durable claim receipts and stale-lease protection:
 
     activation_id TEXT
-    claim_id TEXT
+    operation_kind TEXT CHECK operation_kind IN ('claim', 'renew', 'release', 'complete')
+    operation_id TEXT
     runner_id TEXT
-    claim_request_hash BLOB
+    request_hash BLOB
+    claim_id TEXT NULL
     lease_generation INTEGER
-    claim_result TEXT CHECK claim_result IN ('granted', 'not_available', 'expired')
+    result_code TEXT CHECK result_code IN ('granted', 'not_available', 'expired', 'cancelled', 'fenced', 'completed', 'released', 'renewed')
     lease_until TEXT NULL
-    claim_response_json BLOB
-    completion_request_hash BLOB NULL
-    completion_disposition TEXT NULL
-    completion_response_json BLOB NULL
+    result_json BLOB
+    invocation_context_hash BLOB NULL
+    invocation_context_blob BLOB NULL
     created_at TEXT
-    completed_at TEXT NULL
-    PRIMARY KEY (activation_id, claim_id)
+    PRIMARY KEY (activation_id, operation_kind, operation_id)
 
-A repeated claim ID from the same authenticated runner and identical canonical request returns its stored claim result. Reusing it with a changed request or runner is an idempotency conflict. Renew, release, and complete must match the current claim ID, runner ID, generation, and unexpired lease. Repeating an identical terminal completion returns its stored result; changing the completion body is an idempotency conflict.
+For claim, `operation_id` and `claim_id` are the same value; later control operations have a new `operation_id` and name the active `claim_id`. The server derives `request_hash` from the complete authenticated request. A repeated operation ID from the same authenticated Runner and identical canonical request returns its exact stored result. Reusing it with a changed request or Runner is an idempotency conflict. Renew, release, and complete match the current claim ID, Runner ID, generation, and unexpired lease. Exact granted Invocation Context is retained according to its privacy window, then replaced by a tombstone; later retry returns `result_retired` rather than regenerated bytes.
 
 ### artifacts and room_artifacts
 
@@ -1009,16 +1017,16 @@ Within one live WebSocket, the server emits frames in that membership's frame-se
 Attachment uses an actor barrier so catch-up cannot lose the transition between a database query and live subscription:
 
 1. the client supplies its last durably processed frame cursor;
-2. the room actor verifies membership/cursor, registers the session as catching_up, and captures member frame head H;
+2. the room actor verifies Membership/Cursor, registers the Session as Attaching, and captures the complete Room Head, frame head H, retained floor, Cursor, and a Session-specific sync token;
 3. storage reads and sends frames in (cursor, H] using short bounded pages;
 4. newly committed frame references above H enter the session's bounded buffer;
-5. if the old range was pruned, the server sends resync-required plus an authorized current projection at H;
-6. after the through-H frame/reset is installed, the actor atomically switches the session to live and flushes buffered frames in order;
+5. if this is the first attach or the old range was pruned, the server sends a full authorized Projection Reset at the captured Room/frame baseline;
+6. only after the client installs the through-H range/reset and ACKs H with that Session's sync token does the actor atomically switch it to Live and flush buffered frames in order;
 7. buffer overflow closes the connection and requires another attach.
 
 The client deduplicates by room, member, and frame sequence. An action retry uses its independent action ID.
 
-Multiple Sessions attached to one Membership share that Membership's Observation Stream and Cursor. An acknowledgement from any authorized Session advances the shared Cursor, so independent delivery consumers require separate Memberships.
+Multiple Sessions attached to one Membership share that Membership's Observation Stream and Cursor. An ordinary acknowledgement from any authorized Session advances the shared Cursor, but cannot satisfy another Session's synchronization token. Independent delivery consumers require separate Memberships.
 
 ### Default resource limits
 
@@ -1067,11 +1075,12 @@ A runner claim response contains:
 - reason code and deadline;
 - allowed action kinds;
 - current authorized projection;
-- frames after the membership cursor, or a projection reset;
+- the complete exact Room Head, Projection hash, current Action Offers, and Membership/integrity/policy/authority/delivery witnesses;
+- exactly one of retained frames after the Membership Cursor or a Projection Reset baseline;
 - explicit artifact references authorized for that membership;
 - lease expiry.
 
-Claim grant/reclaim is one conditional database transaction. Retrying the same claim ID returns the stored original result. Renew, release, and complete conditionally match the authenticated runner, current claim ID, current generation, and unexpired lease. An expired older claim can never complete a later lease.
+Claim grant/reclaim is one conditional database transaction. Claim, renew, release, and complete each use an independent operation ID/request hash and return a durable exact result. Retrying an identical operation returns that result. Renew, release, and complete conditionally match the authenticated Runner, current claim ID, current generation, and unexpired lease. An expired older claim can never complete a later lease. Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents; capability revocation applies immediately.
 
 v0.1 supports a runner control WebSocket and HTTP long poll. It does not call arbitrary user URLs. A webhook is not a committed v0.2 feature.
 
@@ -1084,7 +1093,7 @@ Defaults:
 - create one paired Core-and-Activity snapshot every 250 accepted Transitions or five active minutes, whichever occurs first, in an idempotent postcommit job;
 - retain immutable Genesis independently and the latest three automatic pairs; an optional sequence-zero pair is only a cache;
 - keep canonical transitions and action receipts for the room lifetime in frozen releases;
-- prune acknowledged observation frames only after a seven-day safety window or a configurable per-member high-water mark;
+- retain acknowledged observation frames for a seven-day safety window, subject to a hard per-Membership ceiling of 10,000 frames or 64 MiB that forces an explicit Projection Reset without moving the Cursor;
 - never use snapshot deletion to change canonical history.
 
 ### Room load
@@ -1301,7 +1310,7 @@ The benchmark report MUST disclose hardware, filesystem, SQLite version and prag
 ### Single-node optimizations allowed
 
 1. Passivate idle room actors.
-2. Prune acknowledged observation frames after the retention window.
+2. Prune Observation Frames under the seven-day acknowledged safety window and hard per-Membership 10,000-frame/64-MiB ceiling, always forcing an explicit Reset when the required range is unavailable.
 3. Keep immutable artifacts outside SQLite.
 4. Add dedicated read workers if profiling shows room load or replay blocks writes.
 5. Tune indexes, snapshot cadence, and WAL checkpointing from metrics.
@@ -1356,12 +1365,12 @@ Do not add NATS, Redis, Kafka, Kubernetes, Raft, or multi-process ownership beca
 14. A pack cannot observe ambient nondeterminism.
 15. Authoritative Room State never crosses the client boundary directly.
 16. Authorization precedes observation persistence and artifact access.
-17. Every durable viewer is a Membership with exactly one addressed Observation Stream and one Cursor.
+17. Every durable viewer is a Membership with exactly one addressed Observation Stream, never-reused frame head, retained floor, and shared Cursor; Genesis emits no frame and a later Transition emits at most one frame per viewer.
 18. Membership outlives Sessions and Invocations.
 19. Activation is at-least-once intent delivery, not proof of model execution.
-20. An expired or superseded Activation claim cannot renew, release, or complete a later lease generation.
+20. An expired or superseded Activation claim cannot renew, release, or complete a later lease generation; every Activation control operation has a durable idempotent receipt.
 21. Observation delivery is at least once; clients deduplicate and acknowledge.
-22. The Observation Catch-up/live actor barrier returns the complete retained authorized range or an explicit Projection Reset without a handoff gap.
+22. The Observation Catch-up/live actor barrier returns the complete retained authorized range or an explicit Projection Reset; only the matching Session sync-token acknowledgement enters Live without a handoff gap.
 23. Paired Core+Activity snapshots are idempotent postcommit caches; snapshots, current materializations, indexes, and projection caches are replaceable derivations.
 24. Every canonical commit fences on `healthy` plus an unchanged integrity generation; canonical disagreement quarantines, while an intact Head that cannot safely advance faults.
 25. Replay has no external effects, applies present-plus-historical authorization, and holds no unbounded database read transaction.

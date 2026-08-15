@@ -84,12 +84,13 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [Product vision](docs/vision.md) — audience, value, and boundaries
 - [System architecture](docs/architecture.md) — stack, storage, filesystem, failure semantics, and scaling
 - [Wire protocol](docs/protocol.md) — sessions, actions, observations, cursors, and activations
+- [Observation and Activation](docs/observation-and-activation.md) — frozen attach/reset, delivery, intent, lease, and Invocation Context contracts
 - [Activity Packs](docs/activity-packs.md) — host contract and both reference activities
 - [Context model](docs/context-and-memory.md) — Authoritative Room State versus Invocation Context
 - [UI architecture](docs/ui-architecture.md) — deliberately small first-party presentation layer
 - [Security model](docs/security.md) — trust boundary and required tests
 - [Delivery roadmap](docs/roadmap.md) — Agent Heist MVP followed by Investigation Room
-- [Architecture decisions](docs/adr/) — product boundary, Room sequencing, Activation authority, and canonical state/integrity lineage
+- [Architecture decisions](docs/adr/) — product boundary, Room sequencing, canonical state/integrity lineage, observation barriers, and Activation authority/fencing
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
 
 ## Status

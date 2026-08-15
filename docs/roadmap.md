@@ -129,7 +129,7 @@ Build:
 - healthy/faulted/quarantined Room Integrity State, monotonic generation fence, incident audit, restricted serving, and verifier-only repair;
 - durable timers and idempotent TimerFired stimulus;
 - conditional timer-generation update inside the transition transaction;
-- supervisor Loading/Active/Passivating lifecycle and generation-fenced room passivation;
+- supervisor Loading/CatchingUp/Active/Passivating lifecycle and generation-fenced Room passivation;
 - generic HTTP mutation receipts for idempotent room/membership administration;
 - failure-injection points before/after commit and before reply.
 
@@ -164,7 +164,8 @@ Build:
 - public/participant/operator-membership Viewer types;
 - durable observation frames and one frame sequence per membership;
 - observation acknowledgement cursor;
-- actor-barrier catch-up/live handoff and explicit projection.reset;
+- actor-barrier attach with complete Room/frame capture, Session sync-token acknowledgement, and explicit Projection Reset;
+- zero-or-one coalesced frame per Transition/viewer, no Genesis frame, and independent frame-head/retained-floor/Cursor tracking;
 - bounded WebSocket input/output;
 - slow-consumer disconnect;
 - Python SDK connection, reconnect, ack, and safe action retry loop;
@@ -174,10 +175,10 @@ Exit tests:
 
 1. Human and agent clients use the same action path.
 2. Disconnect after frame receipt but before acknowledgement causes safe redelivery.
-3. A pruned cursor produces an explicit authorized reset, never a silent gap.
+3. A first/pruned Cursor produces an explicit authorized Reset; pruning never advances Cursor or reuses a frame sequence.
 4. A slow consumer cannot block another participant or grow process memory without bound.
 5. Hidden Counter fixture fields never enter the unauthorized frame serializer.
-6. A transition committed between catch-up query and live switch is buffered and delivered without a gap.
+6. A Transition committed during catch-up is buffered; only the matching Session sync-token acknowledgement enters Live and releases it without a gap.
 7. Suspended/departed Memberships cannot attach, act, receive new frames, or be activated; a rejoin receives a new empty private stream.
 8. Historical Replay uses the reconstructed Membership/Access/Role at N rather than current Role assignment.
 
@@ -196,8 +197,8 @@ Build:
 - activation_intents persistence in transition transaction;
 - runner control WebSocket and HTTP long-poll fallback;
 - activation offer, claim, renew, complete, release, expiry, and cancellation;
-- bounded lease, durable claim receipt, lease generation, and atomic claim;
-- post-claim authorized context payload;
+- five-state intents, one live lease per Membership, independent operation receipts, lease generation, and atomic claim;
+- post-claim exact authorized context with complete Head/witnesses and retained-frames-or-reset union;
 - Python runner abstraction that starts a fresh callback/invocation;
 - replay suppression of activation delivery.
 
@@ -207,10 +208,11 @@ Exit tests:
 2. Two authorized runners race; one receives the live lease.
 3. Lease expiration permits another claim.
 4. An offer contains no private room projection.
-5. A successful claim returns only the target Agent Participant Membership's Projection and Observation Frames.
-6. Replay reconstructs the reason but starts no runner.
-7. A lost claim reply returns the original lease on same-claim retry.
+5. A successful claim returns only the target Agent Participant Membership's exact authorized context and one delivery branch.
+6. Replay verifies Attention/decision evidence but creates no intent or Runner effect.
+7. A lost claim/control reply returns the exact original result on same-operation retry; a changed hash conflicts.
 8. An expired prior lease generation cannot complete a newer claim.
+9. Archive, eligibility change, capability revocation, and backward-clock anomaly fence stale leases.
 
 Terminology gate:
 
@@ -326,13 +328,14 @@ v0.1 exit:
 - [ ] Membership survives session disconnect and invocation termination.
 - [ ] Membership binding/kind, lifecycle, Access/Role shape, atomic Role swaps, and new-ID rejoin invariants pass.
 - [ ] Private projection tests cover live, catch-up, reset, replay, logs, and public UI.
-- [ ] Actor-barrier cursor reconnect returns no silent gaps, including a commit during handoff.
+- [ ] The Session-token actor barrier returns no silent gaps, including a commit during handoff and an acknowledgement from another Session.
 - [ ] Slow consumer memory is bounded.
 
 ### Activation
 
-- [ ] Attention signal and activation intent commit atomically with the causing transition.
-- [ ] Offers are at least once; claims have durable receipts, lease generations, and idempotent retry.
+- [ ] Canonical Attention and noncanonical policy/intent evidence commit atomically with the causing Transition.
+- [ ] Offers are at least once; every Activation control operation has a durable receipt, lease generation witnesses, and idempotent retry.
+- [ ] One live lease per Membership and exact retained-or-reset Invocation Context are enforced.
 - [ ] No runner means no model execution claim.
 - [ ] One fresh invocation catches up and acts in the Heist demo.
 - [ ] Replay never offers or claims an activation.

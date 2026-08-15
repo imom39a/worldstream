@@ -40,7 +40,7 @@ The current subset of Authoritative Room State that one Membership is authorized
 
 ### Observation stream
 
-The bounded Membership-specific changes after a Cursor.
+The bounded Membership-specific changes after a Cursor. Its frame head, retained floor, and Cursor are distinct; Genesis emits no frame and each later Transition emits at most one coalesced frame per Membership.
 
 ### Artifact
 
@@ -48,7 +48,7 @@ An immutable external blob, introduced for Investigation Room, referenced by con
 
 ### Invocation context
 
-A temporary SDK payload assembled for one fresh agent run from current projection, relevant frames, legal actions, deadline, activation cause, and authorized artifact references.
+The exact temporary payload committed with one granted claim: complete Head and witnesses, current authorized Projection and Action Offers, cause/deadline/limits/Artifact references, and exactly one retained-frames or Projection-Reset branch.
 
 ### Agent-private memory
 
@@ -138,7 +138,7 @@ Purpose:
 - exact reconnect from a membership cursor;
 - activation-relevant change range.
 
-Frames are materialized by explicit audience. They may be pruned after acknowledgement plus a retention window because an authorized current projection can reset an old cursor.
+Frames are materialized by explicit audience, zero or one per Transition and Membership. They may be pruned after acknowledgement plus a retention window because an authorized current Projection can reset an old Cursor. Pruning changes the retained floor, never the Cursor or frame head.
 
 Pruning a frame does not delete canonical history or current state.
 
@@ -180,16 +180,18 @@ Connection presence, heartbeat timing, in-memory send queues, temporary upload p
 
 Runner availability is also operational. A durable activation remains pending even if no runner connection exists.
 
-## Invocation-context assembly
+## Synchronization and Invocation-context assembly
 
-WorldStream does not let an LLM invent a context query. It assembles a small contractually defined payload after an activation claim or room attachment.
+A Room attach returns only its Session synchronization contract: the captured Room/frame barrier, retained frames or a Projection Reset, and the Session-specific token. It does not create an Invocation Context or grant Runner authority.
+
+WorldStream does not let an LLM invent a context query. Only after a successful Activation claim does it return the exact bounded Invocation Context committed with that grant.
 
 Order of precedence:
 
 1. Identity and cause
    - Room, Membership, Role, and Principal kind;
    - activation ID and typed reason;
-   - cause room sequence and relevant frame range.
+   - cause room sequence and complete exact Room Head.
 2. Current truth
    - pack-authorized current projection;
    - current phase and state version;
@@ -199,8 +201,8 @@ Order of precedence:
    - activation lease expiry;
    - action based-on sequence.
 4. Relevant changes
-   - retained observation frames after the membership cursor;
-   - or an explicit projection reset if that range was pruned.
+   - exactly one retained Observation Frame range after the Membership Cursor;
+   - or an explicit Projection Reset baseline if that range is unavailable.
 5. Evidence
    - exact authorized artifact references selected by pack state;
    - digest, label, version, size, media type, and provenance metadata;
@@ -354,7 +356,7 @@ Create one paired Core-and-Activity snapshot every 250 accepted Transitions or f
 
 ### Observation frames
 
-Retain unacknowledged frames. After acknowledgement, retain a seven-day safety window or a configured maximum per audience. Old cursors receive a projection reset.
+Retain acknowledged frames for a seven-day safety window, subject to a hard per-Membership ceiling of 10,000 frames or 64 MiB. A hard prune can include unacknowledged frames but forces an explicit Projection Reset; it never advances the Cursor or reuses a frame sequence.
 
 ### Artifacts
 
@@ -406,11 +408,11 @@ The server may generate deterministic structural summaries such as counts, legal
 5. Every artifact reference names an immutable digest and exact visibility.
 6. Superseding evidence creates a new version and explicit dependency invalidation.
 7. Paired snapshots, current materializations, derived indexes, and caches cannot change Room truth or Replay.
-8. A cursor reset sends an authorized current projection, not raw state.
+8. A Projection Reset sends an authorized current Projection, not raw state, and only the matching Session token acknowledgement enters Live.
 9. WorldStream never stores chain-of-thought or provider credentials.
 10. Agent-private memory remains runner-owned.
 11. Context assembly is bounded and deterministic in the frozen releases.
-12. Missing runner availability does not delete room data or activation intent.
+12. Missing Runner availability does not delete Room data or an Activation Intent; Replay creates no Activation effect.
 13. All three state hashes and the lineage hash reproduce from Genesis and Transitions after every cache is deleted.
 14. Only a generation-fenced verifier restores healthy integrity, without rewriting canonical history.
 15. Present-plus-historical authorization governs every Replay view.

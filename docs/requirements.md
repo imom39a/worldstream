@@ -183,28 +183,35 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - WebSocket is the native bidirectional live transport.
 - HTTP MAY be used for room administration, current projection reads, runner polling, and artifact transfer.
 - Observation delivery MUST be at-least-once.
-- Each membership MUST have a monotonic observation cursor independent of the room sequence.
-- An observation acknowledgement MUST only advance that membership's cursor.
-- Reconnect MUST return every retained authorized frame after the cursor or explicitly return resync-required with an authorized current projection.
+- Genesis MUST emit no Observation Frame. Each later accepted Transition MUST emit zero or one coalesced frame per authorized Membership.
+- Each Membership MUST have an independent, monotonic frame head, retained floor, and Cursor; pruning MUST NOT advance the Cursor or permit frame-sequence reuse.
+- An observation acknowledgement MUST only monotonically advance that Membership's Cursor and MUST NOT exceed its current frame head.
+- Attach MUST capture a complete Room Head and frame barrier. It MUST return every retained authorized frame after the Cursor through the captured head or a full authorized Projection Reset at that baseline.
+- Only an acknowledgement carrying that Session's captured synchronization token MAY make that Session Live. Another Session's acknowledgement MAY advance the shared Cursor but MUST NOT satisfy this barrier.
 - It MUST NOT silently skip an unavailable range.
+- A stored stale Action result MUST remain tied to its original Action ID and basis Head. Retrying after synchronization MUST use a new Action ID; the server MUST NOT rebase the old request.
+- Loading and Room-CatchingUp MUST deny normal attachment and current Projection service. Faulted MAY serve last-verified authorized data with integrity metadata; Quarantined MUST expose only host-operator diagnostics/export/restore/verification surfaces.
 - Each connection MUST have bounded input size, output bytes, frame count, and send time.
 - A slow consumer MUST be disconnected without blocking the room actor or growing memory without bound.
+- Acknowledged frames MUST retain a seven-day safety window while the stream is under its hard ceiling. A ceiling of 10,000 frames or 64 MiB per Membership MAY force an earlier explicit Reset but MUST NOT change canonical history or Cursor.
 
 ### FR-7: Explicit agent activation
 
 - An Activity Pack MAY emit an Attention Signal for an Agent Participant's Membership as deterministic Transition output.
-- The host MUST convert an allowed attention signal into a durable activation intent in the same transaction as the transition.
+- The host MUST bind the Attention Signal into the Transition. It MUST atomically persist the policy revision and allow/deny/intent decision beside that Transition while excluding the decision from canonical hashes.
 - The host MUST reject an Attention Signal unless its target Membership is enabled, has participant Access Mode, belongs to an agent Principal, and has a pack-permitted Role.
-- An activation MUST identify cause sequence, reason code, target membership, relevant cursor range, allowed action types, priority, and optional deadline.
+- An Activation Intent MUST be pending, leased, completed, expired, or cancelled. Claim/control receipts MUST NOT be represented as additional states.
+- An activation MUST identify cause sequence, reason code, target Membership, deduplication key, priority, and optional semantic deadline.
 - A runner MUST claim an activation with a bounded lease before reporting work on it.
 - An Activation claim MUST NOT grant participant Action authority or advance the Membership Cursor. Actions and Observation acknowledgements require separate participant authority, as decided in [ADR 0003](adr/0003-separate-activation-and-action-authority.md).
 - Activation delivery MUST be at-least-once and creation MUST be unique by room, cause sequence, target membership, and pack deduplication key.
 - A pack MUST emit at most one Attention Signal per target Membership per Transition, and the host MUST allow at most one live Activation lease per Membership in the frozen releases.
-- Claim retries MUST be idempotent by activation ID and claim ID. Every lease MUST have a generation or opaque token so an expired prior claimant cannot renew, release, or complete a newer lease.
+- Claim, renew, release, and complete MUST each use an operation ID, canonical request hash, durable result receipt, and exact generation witnesses. An expired prior claimant MUST NOT alter a newer lease.
 - If no runner is available, the intent MUST remain pending until expiry or host-operator cancellation; WorldStream MUST NOT pretend that an agent ran.
-- A fresh invocation MUST receive the cause, authorized current projection, retained observation frames after its cursor, budget/deadline metadata, and explicit artifact references.
+- A granted claim MUST persist and return the exact complete Head, authorized current Projection and hash, Action Offers, Membership/integrity/policy/authority/delivery witnesses, budget/deadline metadata, explicit Artifact references, and exactly one of retained frames after the Cursor or a Projection Reset.
+- Archive and affected Membership/Access/Role changes MUST cancel and generation-fence pending/leased intents. Capability revocation MUST take effect immediately. Recovery and unhealthy states MUST make pending intents unclaimable without deleting them.
 - v0.1 MUST support a connected runner control channel or HTTP long poll. Arbitrary outbound webhooks are not required.
-- Replay MUST reproduce deterministic Attention Signals but MUST NOT reevaluate Activation policy, reconstruct an operational allow/deny decision, create an intent, contact a Runner, or start an Invocation.
+- Replay MUST reproduce and verify deterministic Attention Signals and recorded policy-decision evidence but MUST NOT evaluate current policy, reconstruct a new operational allow/deny decision, create or offer an intent, grant a lease, contact a Runner, or start an Invocation.
 
 ### FR-8: Recovery, Replay, integrity, and repair
 

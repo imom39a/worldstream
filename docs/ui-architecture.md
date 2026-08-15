@@ -210,12 +210,13 @@ The client SHOULD avoid optimistic domain mutation. It may show an action as sub
 
 ## Reconnect behavior
 
-1. Store the last durably rendered frame cursor.
-2. Reconnect and attach with that cursor.
-3. Render redelivered frames idempotently.
-4. If projection reset is required, replace the authorized projection atomically.
-5. Clearly label disconnected, catching-up, live, and replay modes.
-6. Never show stale controls as currently legal while catch-up is incomplete.
+1. Store the last durably rendered frame Cursor.
+2. Reconnect and attach with that Cursor.
+3. Atomically install the complete retained range through the captured frame head, or replace the Projection from a full Reset.
+4. Acknowledge the captured baseline with this Session's sync token before entering Live.
+5. Render later/redelivered frames idempotently; another Session's shared-Cursor acknowledgement never satisfies this Session's barrier.
+6. Clearly label disconnected, attaching, catching-up, live, faulted, quarantined, and replay modes.
+7. Never show stale controls as currently legal while catch-up is incomplete. A stable stale Action requires synchronization and a new Action ID if it remains legal.
 
 An Agent Participant's separately authorized Room Member client uses the same Cursor semantics through the SDK even if it has no visual UI. The Runner activation-control client does not own or acknowledge that Cursor.
 

@@ -159,7 +159,7 @@ A Projection for one acting Participant, including that Participant's current kn
 _Avoid_: Member projection when access mode matters, authoritative state
 
 **Observation Frame**:
-One Membership-addressed unit of authorized change or notice caused by an accepted Transition.
+One durable Membership-addressed unit coalescing the authorized consequences of one accepted Transition. Genesis and a Transition hidden from that Membership produce no frame.
 _Avoid_: Event, message, projection, state dump
 
 **Projection Reset**:
@@ -173,6 +173,10 @@ _Avoid_: Public stream, room event stream, model-token stream
 **Cursor**:
 One Membership's acknowledged position in its Observation Stream.
 _Avoid_: Room version, model progress, replay position
+
+**Projection Reset**:
+A complete authorized Projection that atomically establishes a new Observation Stream baseline when incremental catch-up is unavailable or inappropriate.
+_Avoid_: Observation Frame, silent skip, Replay
 
 **Catch-up**:
 Delivery of retained authorized Observation Frames after a Membership's Cursor.
@@ -197,7 +201,7 @@ An Activity Pack determination that an Agent Participant may need to act for a s
 _Avoid_: Activation intent, model call, wake-up
 
 **Activation Intent**:
-A durable WorldStream request for an authorized Runner to consider starting a fresh Invocation for an Agent Participant.
+A durable five-state WorldStream request for an authorized Runner to consider starting a fresh Invocation for an Agent Participant.
 _Avoid_: Invocation, task, proof of execution, wake-up job
 
 **Invocation Context**:
