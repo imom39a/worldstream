@@ -216,6 +216,11 @@ impl CompatibilityManifest {
                     "selectable pack executor must be runnable for retained Rooms",
                 ));
             }
+            if entry.pack_id == COUNTER_PACK_ID && entry.selectable_for_new_rooms {
+                return Err(ManifestError::Inconsistent(
+                    "Counter pack revisions must not be selectable for new Rooms",
+                ));
+            }
 
             let digests = [
                 &entry.revision_digest,
@@ -255,7 +260,7 @@ impl CompatibilityManifest {
                     if entry.required_for_release
                         && entry.selectable_for_new_rooms
                         && entry.runnable_for_retained_rooms
-                        && entry.pack_id != COUNTER_PACK_ID
+                        && entry.pack_id == AGENT_HEIST_PACK_ID
                     {
                         selectable_release_activity = true;
                     }
@@ -279,7 +284,7 @@ impl CompatibilityManifest {
         }
         if self.release_ready && !selectable_release_activity {
             return Err(ManifestError::Inconsistent(
-                "release-ready manifest requires a selectable runnable non-Counter Activity Pack",
+                "release-ready manifest requires a selectable runnable Agent Heist Activity Pack",
             ));
         }
         Ok(())
@@ -488,6 +493,13 @@ mod tests {
     }
 
     #[test]
+    fn counter_revisions_are_never_selectable_for_new_rooms() {
+        let mut invalid = manifest();
+        invalid.pack_executors[0].selectable_for_new_rooms = true;
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
     fn release_ready_manifest_rejects_unresolved_or_no_selectable_release_activity() {
         let mut unresolved = manifest();
         unresolved.release_ready = true;
@@ -499,5 +511,22 @@ mod tests {
         resolve(&mut no_selectable_release_activity.pack_executors[1], 'b');
         no_selectable_release_activity.pack_executors[1].selectable_for_new_rooms = false;
         assert!(no_selectable_release_activity.validate().is_err());
+    }
+
+    #[test]
+    fn release_ready_manifest_requires_selectable_agent_heist_not_an_arbitrary_pack() {
+        let mut invalid = manifest();
+        invalid.release_ready = true;
+        resolve(&mut invalid.pack_executors[0], 'a');
+        resolve(&mut invalid.pack_executors[1], 'b');
+        invalid.pack_executors[1].selectable_for_new_rooms = false;
+
+        let mut substitute = invalid.pack_executors[0].clone();
+        substitute.pack_id = "worldstream.other".to_owned();
+        substitute.selectable_for_new_rooms = true;
+        resolve(&mut substitute, 'c');
+        invalid.pack_executors.push(substitute);
+
+        assert!(invalid.validate().is_err());
     }
 }
