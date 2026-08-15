@@ -1,15 +1,772 @@
-<!doctype html><meta charset="utf-8"><title>PROTOTYPE — Agent Heist recovery</title><style>body{max-width:1120px;margin:28px auto;padding:0 18px;background:#f5f7f8;color:#17212b;font:15px system-ui}section{background:white;border:1px solid #d9e2e6;border-radius:8px;padding:15px;margin:15px 0}.tag{background:#a43b32;color:white;padding:3px 7px;border-radius:4px;font-size:12px}button{margin:3px;padding:7px;border:1px solid #086d7c;border-radius:5px;background:white;color:#075b68}button.active{background:#086d7c;color:white}button:disabled{opacity:.45}pre{background:#17232c;color:#d7e8ea;padding:11px;white-space:pre-wrap;max-height:330px;overflow:auto}.grid{display:grid;grid-template-columns:1.2fr .8fr;gap:15px}.state{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.f{background:#f6fafb;padding:7px;overflow-wrap:anywhere}.f b{display:block;font-size:11px;color:#60717c}@media(max-width:700px){.grid,.state{grid-template-columns:1fr}}</style>
-<main><span class=tag>PROTOTYPE / THROWAWAY</span><h1>Agent Heist: sealed commitments, phases, and recovery</h1><p>Design question: can the retained Heist’s strict-majority plan rule remain deterministic while exact-head retries, phase timers, activation, delivery loss, and replay interact?</p><section><h2>Full state</h2><p id=last></p><div class=state id=state></div></section><div class=grid><section><h2>Free play</h2><div id=free></div><h2>Events, frames, receipts</h2><pre id=raw></pre><h2>Assertions / verdict</h2><pre id=checks></pre></section><section><h2>Guided cases</h2><div id=tabs></div><p id=why></p><div id=steps></div></section></div></main>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE — Agent Heist recovery</title>
+<style>
+  :root { --ink:#17212b; --muted:#60717c; --bg:#f5f7f8; --accent:#086d7c; --edge:#d9e2e6; --warn:#a43b32; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,sans-serif; }
+  main { max-width:1180px; margin:auto; padding:30px 18px 70px; }
+  h1 { margin:8px 0; }
+  h2 { margin:12px 0 8px; font-size:17px; }
+  .tag { display:inline-block; background:var(--warn); color:#fff; padding:3px 7px; border-radius:4px; font-size:12px; font-weight:700; }
+  .muted { color:var(--muted); }
+  section { margin:15px 0; padding:16px; background:#fff; border:1px solid var(--edge); border-radius:9px; }
+  .grid { display:grid; grid-template-columns:1.15fr .85fr; gap:16px; }
+  .state { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
+  .field { padding:8px; overflow-wrap:anywhere; background:#f6fafb; border-radius:5px; }
+  .field b { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; }
+  button { margin:3px; padding:7px 9px; border:1px solid #9dbfc5; border-radius:5px; background:#fff; color:#075b68; font:inherit; cursor:pointer; }
+  button.active, button:hover { background:var(--accent); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  .step { display:block; width:100%; margin:7px 0; text-align:left; }
+  pre { margin:0; max-height:390px; overflow:auto; white-space:pre-wrap; background:#17232c; color:#d7e8ea; padding:11px; border-radius:6px; font:12px/1.35 ui-monospace,monospace; }
+  @media(max-width:760px) { .grid,.state { grid-template-columns:1fr; } }
+</style>
+<main>
+  <span class="tag">PROTOTYPE / THROWAWAY</span>
+  <h1>Agent Heist: sealed plans, deadlines, and recovery</h1>
+  <p class="muted">Design question: does the retained three-role, six-phase Heist stay deterministic and live when sealed commitments race an exact timer, one Invocation is absent, delivery is lost, and restart must catch up before admitting new work?</p>
+  <section>
+    <h2>Full relevant state</h2>
+    <p id="last" class="muted"></p>
+    <div id="state" class="state"></div>
+  </section>
+  <div class="grid">
+    <section>
+      <h2>Free play</h2>
+      <div id="free"></div>
+      <h2>Canonical events, delivery, receipts, and leases</h2>
+      <pre id="raw"></pre>
+      <h2>Executable assertions and verdict</h2>
+      <pre id="checks"></pre>
+    </section>
+    <section>
+      <h2>Guided awkward cases</h2>
+      <div id="tabs"></div>
+      <p id="why" class="muted"></p>
+      <div id="steps"></div>
+    </section>
+  </div>
+</main>
 <script>
-/* Pure deterministic module — page code never reaches into it. */
-const Heist=(()=>{const R=['Navigator','Insider','Broker'],P={correct:{quality:4,resource:'key'},risky:{quality:3,resource:'key'},wrong:{quality:2,resource:'map'}},canon=x=>JSON.stringify(x,Object.keys(x).sort()),H=x=>{let n=2166136261;for(const c of canon(x))n=Math.imul(n^c.charCodeAt(0),16777619);return(n>>>0).toString(16)},I=()=>({phase:'Briefing',head:0,now:0,commitments:{},receipts:{},timers:{brief:{g:1,due:1,state:'scheduled'}},frames:[],frameHead:{Navigator:0,Insider:0,Broker:0},cursor:{Navigator:0,Insider:0,Broker:0},events:[],activations:{},loading:false,queue:0,last:'Genesis: no frame'});
- const emit=(s,kind,data,visible=true)=>{let n=JSON.parse(JSON.stringify(s));n.head++;let e={seq:n.head,kind,data,hash:H({prior:s.events.at(-1)?.hash||'genesis',kind,data})};n.events.push(e);if(visible)for(const r of R){n.frameHead[r]++;n.frames.push({role:r,seq:n.frameHead[r],cause:n.head,data})}n.last=`${kind} at Head ${n.head}${visible?' with frames':' with zero frames'}`;return n};
- const schedule=(s,name,due)=>{s.timers[name]={g:1,due,state:'scheduled'};return s};const phase=(s,next)=>{s.phase=next;if(next==='Negotiation')schedule(s,'negotiation',3);if(next==='Commitment'){schedule(s,'commitment',6);s.activations.broker={status:'pending',gen:0,role:'Broker'}}if(next==='Resolution')schedule(s,'resolution',s.now+1);if(next==='Result')schedule(s,'result',s.now+1);return s};
- const outcome=c=>{let groups={};for(const [r,x] of Object.entries(c))(groups[x.selected_plan_id]??=[]).push(r);let plan=Object.keys(groups).find(k=>groups[k].length>=2),all=Object.keys(c).length===3;if(!plan)return {kind:'failure',why:'zero, one, or all-three-split commitments: no majority'};let q=P[plan],have=groups[plan].filter(r=>c[r].contribute_required_resource===q.resource).length;if(q.quality===4&&have>=2&&all)return {kind:'success',why:'correct majority, required resource, all three committed'};if(q.quality===4)return {kind:'partial_failure',why:'correct majority but missing commitment/resource gap'};if(q.quality===3)return {kind:'partial_failure',why:'risky-plan majority'};return {kind:'failure',why:'wrong-plan majority'};};
- const reduce=(s,a)=>{let n=JSON.parse(JSON.stringify(s));if(a.type==='reset')return I();if(a.type==='time'){n.now=a.now;n.last=`Clock ${a.now}`;return n}if(a.type==='hidden')return emit(n,'HiddenAdmin',{},false);if(a.type==='queue'){if(n.queue)return {...n,last:'Queue full: pre-disposition crash has no receipt/entitlement'};n.queue=1;n.last='Queued, not admitted';return n}if(a.type==='crash'){n.loading=true;n.last=`Crash: fixed cutoff ${n.head}; CatchingUp drains overdue timers first`;return n}if(a.type==='recover'){for(const [k,t] of Object.entries(n.timers))if(t.state==='scheduled'&&t.due<=n.now)n=reduce(n,{type:'timer',name:k,g:t.g,due:t.due});n.loading=false;n.last='CatchingUp drained overdue phase timers before Actions';return n}if(a.type==='move'){let body={plan:a.plan,res:a.res,based:a.based},h=H(body),old=n.receipts[a.id];if(old)return {...n,last:old.h===h?`Existing ${old.o}`:'Conflict changed hash'};if(n.loading)return {...n,last:'Loading/CatchingUp blocks Action'};if(n.phase!=='Commitment'){n.receipts[a.id]={h,o:'NotApplicable'};return {...n,last:'commit_move legal only in Commitment'};}if(a.based!==n.head){n.receipts[a.id]={h,o:'Stale'};return {...n,last:'Durable stale: resync/new ID'};}if(n.now>=n.timers.commitment.due){n.receipts[a.id]={h,o:'RejectedDeadline'};return {...n,last:'D equality rejected'};}n.commitments[a.role]={selected_plan_id:a.plan,contribute_required_resource:a.res};n.receipts[a.id]={h,o:'Accepted'};n=emit(n,'Commitment',{role:a.role,plan:a.plan});if(Object.keys(n.commitments).length===3)phase(n,'Resolution');return n}if(a.type==='timer'){let t=n.timers[a.name];if(!t||t.g!==a.g||t.due!==a.due||t.state!=='scheduled')return {...n,last:'Duplicate/unknown/reprepared timer discarded'};t.state='fired';if(a.name==='brief')phase(n,'Negotiation');else if(a.name==='negotiation')phase(n,'Commitment');else if(a.name==='commitment')phase(n,'Resolution');else if(a.name==='resolution'){n.outcome=outcome(n.commitments);phase(n,'Result')}else if(a.name==='result')phase(n,'Complete');return emit(n,'TimerFired',{name:a.name,due:a.due})}if(a.type==='claim'){let x=n.activations.broker;if(!x)return {...n,last:'No activation'};if(x.status==='leased'&&a.gen!==x.gen)return {...n,last:'Stale generation'};if(x.status==='leased')return {...n,last:'Existing claim after lost reply'};x.status='leased';x.gen++;x.claim=a.id;n.last='Claim context has frames after Cursor; it grants no Action authority/cursor advance';return n}if(a.type==='expire'){let x=n.activations.broker;if(x)x.status='pending';n.last='Lease expiry allows reclaim';return n}return n};
- const replay=s=>{let h='genesis',phase='Briefing',commitments={};for(const e of s.events){h=H({prior:h,kind:e.kind,data:e.data});if(e.kind==='Commitment')commitments[e.data.role]={selected_plan_id:e.data.plan,contribute_required_resource:s.commitments[e.data.role]?.contribute_required_resource}}return {head:s.events.length,hash:h,phase:s.phase,commitments,outcome:outcome(commitments)}};
- const checks=s=>{let r=replay(s),f=s.frames.every(x=>x.seq<=s.frameHead[x.role])&&R.every(x=>s.cursor[x]===0),hash=s.events.every((e,i)=>e.hash===H({prior:s.events[i-1]?.hash||'genesis',kind:e.kind,data:e.data}));return [{ok:R.length===3,t:'three retained roles'},{ok:hash,t:'canonical events/hash replay'},{ok:f,t:'frames advance frameHead, never Cursor'},{ok:r.head===s.head,t:'replay Head equals live Head'},{ok:JSON.stringify(r.outcome)===JSON.stringify(outcome(r.commitments)),t:'replay folds Outcome, not copies it'}]};return {I,reduce,outcome,replay,checks,P};})();
-let s=Heist.I(),n=1,tab='rule',at=0;const timer=x=>({type:'timer',name:x,g:s.timers[x].g,due:s.timers[x].due}),move=(r,p,res,id)=>({type:'move',role:r,plan:p,res,based:s.head,id:id||`m${n++}`});
-const C={rule:{why:'Representative fixtures: zero/one/split fail; correct majority needs resource + all three; risky majority is partial; unanimous correct succeeds.',a:[()=>({type:'time',now:1}),()=>timer('brief'),()=>({type:'time',now:3}),()=>timer('negotiation'),()=>move('Navigator','correct','key'),()=>move('Insider','correct','key'),()=>move('Broker','correct','key'),()=>timer('resolution'),()=>timer('result')]},stale:{why:'Same-basis serialization: first accepted; second stale and stable; same ID replays; changed body conflicts; resync/new ID is accepted before D.',a:[()=>({type:'time',now:1}),()=>timer('brief'),()=>({type:'time',now:3}),()=>timer('negotiation'),()=>move('Navigator','correct','key','first'),()=>({type:'move',role:'Insider',plan:'correct',res:'key',based:2,id:'stale'}),()=>({type:'move',role:'Insider',plan:'correct',res:'key',based:2,id:'stale'}),()=>({type:'move',role:'Insider',plan:'risky',res:'key',based:2,id:'stale'}),()=>move('Insider','correct','key','fresh')]},timers:{why:'D−1 Action wins before exact commitment timer; D Action rejects. Timer-first closes commitment; duplicate/unknown witnesses do nothing.',a:[()=>({type:'time',now:1}),()=>timer('brief'),()=>({type:'time',now:3}),()=>timer('negotiation'),()=>({type:'time',now:5}),()=>move('Navigator','correct','key'),()=>({type:'time',now:6}),()=>move('Insider','correct','key'),()=>timer('commitment'),()=>timer('commitment'),()=>({type:'timer',name:'commitment',g:99,due:6})]},activation:{why:'Absent Broker gets durable activation. Claim has context but no Action authority/Cursor; lost reply is Existing, expiry/reclaim increments generation, stale generation fails.',a:[()=>({type:'time',now:1}),()=>timer('brief'),()=>({type:'time',now:3}),()=>timer('negotiation'),()=>({type:'claim',id:'c1',gen:0}),()=>({type:'claim',id:'c1',gen:1}),()=>({type:'expire'}),()=>({type:'claim',id:'c2',gen:1}),()=>({type:'claim',id:'old',gen:1})]},recovery:{why:'Queue-full work is pre-disposition. Committed receipt/frame survive delivery loss; restart drains each overdue phase timer at fixed cutoff before new Action.',a:[()=>({type:'queue'}),()=>({type:'queue'}),()=>({type:'time',now:9}),()=>({type:'crash'}),()=>({type:'recover'}),()=>({type:'hidden'})]}};
-function d(a){s=Heist.reduce(s,a);render()}function start(){s=Heist.I();at=0;render()}function choose(x){tab=x;at=0;render()}function next(){d(C[tab].a[at++]())}function render(){let f={Phase:s.phase,'Head / clock':`${s.head} / ${s.now}`,Commitments:JSON.stringify(s.commitments),Outcome:JSON.stringify(Heist.outcome(s.commitments)),Timers:JSON.stringify(s.timers),'Frames heads / cursors':JSON.stringify({frameHead:s.frameHead,cursor:s.cursor}),Activation:JSON.stringify(s.activations),Replay:JSON.stringify(Heist.replay(s))};last.textContent=s.last;state.innerHTML=Object.entries(f).map(([k,v])=>`<div class=f><b>${k}</b>${v}</div>`).join('');raw.textContent=JSON.stringify({events:s.events,frames:s.frames,receipts:s.receipts,activations:s.activations},null,2);checks.textContent=Heist.checks(s).map(x=>`${x.ok?'PASS':'FAIL'} — ${x.t}`).join('\n')+'\nVERDICT — adopt strict majority of a selected plan; quality/resource/all-role rule gives deterministic success, partial_failure, or failure.';free.innerHTML=`<button onclick="d({type:'time',now:1})">D1</button><button onclick="d(timer('brief'))">Brief timer</button><button onclick="d({type:'time',now:3})">D3</button><button onclick="d(timer('negotiation'))">Negotiation timer</button><button onclick="d(move('Navigator','correct','key'))">Navigator correct</button><button onclick="d(move('Insider','risky','key'))">Insider risky</button><button onclick="d({type:'hidden'})">Hidden zero-frame</button><button onclick="d({type:'crash'})">Crash</button><button onclick="start()">Reset</button>`;tabs.innerHTML=Object.keys(C).map(x=>`<button class="${x===tab?'active':''}" onclick="choose('${x}')">${x}</button>`).join('');why.textContent=C[tab].why;steps.innerHTML=`<button onclick="start()">Start walkthrough</button>`+C[tab].a.map((_,i)=>`<button ${i!==at?'disabled':''} onclick="next()">${i+1}. ${i===at?'Run':'done/waiting'}</button>`).join('')};render();
+/* Pure deterministic logic module. It has no DOM, storage, network, or ambient clock access. */
+const Heist = (() => {
+  "use strict";
+
+  const ROLES = ["Navigator", "Insider", "Broker"];
+  const FIXTURE = {
+    route: "service",
+    entry_window: "early",
+    required_tool: "thermal_key",
+    extraction: "boat"
+  };
+  const PLANS = {
+    correct: { route:"service", entry_window:"early", required_tool:"thermal_key", extraction:"boat" },
+    risky:   { route:"service", entry_window:"middle", required_tool:"thermal_key", extraction:"boat" },
+    wrong:   { route:"roof", entry_window:"late", required_tool:"disguise", extraction:"van" }
+  };
+  const DURATIONS = { Briefing:10, Negotiation:10, Commitment:10, Resolution:1, Result:5 };
+
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const deepSort = value => {
+    if (Array.isArray(value)) return value.map(deepSort);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([,v]) => v !== undefined)
+          .sort(([a],[b]) => a.localeCompare(b))
+          .map(([k,v]) => [k, deepSort(v)])
+      );
+    }
+    return value;
+  };
+  const canonical = value => JSON.stringify(deepSort(value));
+  const hash = value => {
+    let h = 2166136261;
+    for (const c of canonical(value)) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+    return `toy-fnv32:${(h >>> 0).toString(16).padStart(8,"0")}`;
+  };
+  const orderedRoleMap = map => Object.fromEntries(ROLES.filter(role => map[role] !== undefined).map(role => [role, map[role]]));
+
+  const initial = () => ({
+    fixture_id: "service_window",
+    phase: "Briefing",
+    phaseGeneration: 1,
+    phaseDeadline: 10,
+    head: 0,
+    now: 0,
+    commitments: {},
+    acknowledgements: {},
+    outcome: null,
+    timers: {
+      phase: { id:"phase", generation:1, due:10, purpose:"briefing_deadline", state:"scheduled" }
+    },
+    timerCounters: { phase:1, reminder:0 },
+    streams: Object.fromEntries(ROLES.map(role => [role, { frameHead:0, cursor:0, retainedFloor:0 }])),
+    frames: [],
+    deliveryQueue: [],
+    receipts: {},
+    events: [],
+    activations: {},
+    recovery: { phase:"Active", cutoff:null },
+    queueDepth: 0,
+    prepared: {},
+    facts: [],
+    last: "Genesis entered Briefing and scheduled its first timer; Genesis emitted no Observation Frame."
+  });
+
+  const activityValue = source => ({
+    fixture_id: source.fixture_id,
+    phase: source.phase,
+    phase_generation: source.phaseGeneration,
+    phase_deadline: source.phaseDeadline,
+    commitments: orderedRoleMap(source.commitments),
+    result_acknowledgements: orderedRoleMap(source.acknowledgements),
+    outcome: source.outcome
+  });
+
+  const planChecks = planId => {
+    const plan = PLANS[planId];
+    if (!plan) return null;
+    return {
+      route: plan.route === FIXTURE.route,
+      entry_window: plan.entry_window === FIXTURE.entry_window,
+      required_tool: plan.required_tool === FIXTURE.required_tool,
+      extraction: plan.extraction === FIXTURE.extraction
+    };
+  };
+
+  const resolveOutcome = commitments => {
+    const voteCounts = {};
+    for (const commitment of Object.values(commitments)) {
+      voteCounts[commitment.selected_plan_id] = (voteCounts[commitment.selected_plan_id] || 0) + 1;
+    }
+    const majority = Object.entries(voteCounts).filter(([,count]) => count >= 2);
+    const missing_roles = ROLES.filter(role => commitments[role] === undefined);
+    if (majority.length === 0) {
+      return { kind:"failure", reason:"no_strict_majority", selected_plan_id:null, vote_counts:deepSort(voteCounts), missing_roles, checks:null, score:0 };
+    }
+    if (majority.length !== 1) throw new Error("Impossible strict-majority ambiguity for exactly three seats");
+    const selected_plan_id = majority[0][0];
+    const fieldChecks = planChecks(selected_plan_id);
+    if (!fieldChecks) throw new Error("Unknown plan reached resolution");
+    const resource_contributed = Object.values(commitments).some(c => c.selected_plan_id === selected_plan_id && c.contribute_required_resource === true);
+    const checks = { ...fieldChecks, resource_contributed };
+    const score = Object.values(checks).filter(Boolean).length;
+    const kind = score === 5 ? "success" : score >= 3 ? "partial_failure" : "failure";
+    return { kind, reason:"scored_selected_plan", selected_plan_id, vote_counts:deepSort(voteCounts), missing_roles, checks, score };
+  };
+
+  const matrixCommitment = (selected_plan_id, contribute_required_resource=false) => ({ selected_plan_id, contribute_required_resource });
+  const outcomeMatrix = () => [
+    { name:"zero", commitments:{}, expected:"failure" },
+    { name:"one", commitments:{ Navigator:matrixCommitment("correct",true) }, expected:"failure" },
+    { name:"two split", commitments:{ Navigator:matrixCommitment("correct",true), Insider:matrixCommitment("risky",true) }, expected:"failure" },
+    { name:"three split", commitments:{ Navigator:matrixCommitment("correct",true), Insider:matrixCommitment("risky",true), Broker:matrixCommitment("wrong",true) }, expected:"failure" },
+    { name:"correct majority + one missing", commitments:{ Navigator:matrixCommitment("correct",true), Insider:matrixCommitment("correct",false) }, expected:"success" },
+    { name:"correct majority, resource missing", commitments:{ Navigator:matrixCommitment("correct",false), Insider:matrixCommitment("correct",false), Broker:matrixCommitment("wrong",true) }, expected:"partial_failure" },
+    { name:"risky majority", commitments:{ Navigator:matrixCommitment("risky",true), Insider:matrixCommitment("risky",false), Broker:matrixCommitment("correct",true) }, expected:"partial_failure" },
+    { name:"wrong majority", commitments:{ Navigator:matrixCommitment("wrong",true), Insider:matrixCommitment("wrong",false), Broker:matrixCommitment("correct",true) }, expected:"failure" },
+    { name:"unanimous correct", commitments:{ Navigator:matrixCommitment("correct",true), Insider:matrixCommitment("correct",false), Broker:matrixCommitment("correct",false) }, expected:"success" }
+  ].map(item => ({ ...item, actual:resolveOutcome(item.commitments) }));
+
+  const cancelTimer = (state, id, reason, changes) => {
+    const timer = state.timers[id];
+    if (timer && timer.state === "scheduled") {
+      timer.state = "cancelled";
+      changes.push({ kind:"cancel", id, generation:timer.generation, reason });
+    }
+  };
+
+  const scheduleTimer = (state, id, due, purpose, changes) => {
+    const generation = (state.timerCounters[id] || 0) + 1;
+    state.timerCounters[id] = generation;
+    state.timers[id] = { id, generation, due, purpose, state:"scheduled" };
+    changes.push({ kind:"schedule", id, generation, due, purpose });
+    return state.timers[id];
+  };
+
+  const enterPhase = (state, next, effectiveTime, timerChanges) => {
+    const previous = state.phase;
+    state.phase = next;
+    state.phaseGeneration += 1;
+    let attention = [];
+    if (next === "Negotiation") {
+      const timer = scheduleTimer(state, "phase", effectiveTime + DURATIONS.Negotiation, "negotiation_deadline", timerChanges);
+      state.phaseDeadline = timer.due;
+    } else if (next === "Commitment") {
+      const timer = scheduleTimer(state, "phase", effectiveTime + DURATIONS.Commitment, "commitment_deadline", timerChanges);
+      scheduleTimer(state, "reminder", timer.due - 3, "commitment_reminder", timerChanges);
+      state.phaseDeadline = timer.due;
+      attention = ROLES.map(role => ({ member_role:role, reason:"commitment_opened" }));
+      state.activations.broker = {
+        activation_id:"activation-broker-commitment",
+        role:"Broker",
+        status:"pending",
+        leaseGeneration:0,
+        currentClaim:null,
+        claimReceipts:{},
+        context:null
+      };
+    } else if (next === "Resolution") {
+      const timer = scheduleTimer(state, "phase", effectiveTime + DURATIONS.Resolution, "resolve_now", timerChanges);
+      state.phaseDeadline = timer.due;
+    } else if (next === "Result") {
+      const timer = scheduleTimer(state, "phase", effectiveTime + DURATIONS.Result, "result_deadline", timerChanges);
+      state.phaseDeadline = timer.due;
+    } else if (next === "Complete") {
+      cancelTimer(state, "phase", "all_acknowledged_or_deadline", timerChanges);
+      cancelTimer(state, "reminder", "activity_complete", timerChanges);
+      state.phaseDeadline = null;
+    }
+    return { previous, next, attention };
+  };
+
+  const safeFrame = (kind, state, extra={}) => ({ kind, phase:state.phase, phase_generation:state.phaseGeneration, phase_deadline:state.phaseDeadline, ...extra });
+
+  const recordTransition = (source, kind, mutate, frameForRole) => {
+    const state = clone(source);
+    const data = mutate(state) || {};
+    state.head += 1;
+    const activity_hash = hash({ domain:"heist-activity-v1", value:activityValue(state) });
+    const prior_transition_hash = state.events.at(-1)?.transition_hash || "heist-genesis";
+    const transition_hash = hash({ domain:"heist-transition-v1", room_seq:state.head, prior_transition_hash, kind, data, activity_hash });
+    const event = { seq:state.head, kind, data, activity_hash, prior_transition_hash, transition_hash };
+    state.events.push(event);
+    let emitted = 0;
+    for (const role of ROLES) {
+      const payload = frameForRole ? frameForRole(role, state, data) : safeFrame(kind, state);
+      if (payload === null) continue;
+      const stream = state.streams[role];
+      stream.frameHead += 1;
+      const frame = { role, frame_seq:stream.frameHead, cause_room_seq:state.head, payload };
+      state.frames.push(frame);
+      state.deliveryQueue.push(frame);
+      emitted += 1;
+    }
+    state.facts.push({ kind:"transition", seq:state.head, event_kind:kind, emitted_frames:emitted });
+    state.last = `${kind} committed at Head ${state.head}; ${emitted} addressed frame(s) persisted.`;
+    return state;
+  };
+
+  const phaseAfterData = (state, timerChanges, extra={}) => ({
+    ...extra,
+    phase_after:state.phase,
+    phase_generation_after:state.phaseGeneration,
+    phase_deadline_after:state.phaseDeadline,
+    timer_changes:timerChanges
+  });
+
+  const timerCandidate = (state, id="phase") => {
+    const timer = state.timers[id];
+    if (!timer) return null;
+    return { type:"timer", id, generation:timer.generation, due:timer.due, purpose:timer.purpose, expectedHead:state.head };
+  };
+
+  const fireTimer = (source, action) => {
+    const timer = source.timers[action.id];
+    if (!timer || timer.state !== "scheduled" || timer.generation !== action.generation || timer.due !== action.due || timer.purpose !== action.purpose) {
+      const state = clone(source);
+      state.last = "Duplicate, cancelled, unknown, or superseded timer candidate was discarded before pack logic.";
+      return state;
+    }
+    if (source.now < timer.due) {
+      const state = clone(source);
+      state.last = `Timer is not due: now ${source.now}, scheduled_for ${timer.due}.`;
+      return state;
+    }
+    if (action.expectedHead !== source.head) {
+      const state = clone(source);
+      state.last = `Timer prepared at Head ${action.expectedHead} must reprepare at Head ${source.head}; its generation remains scheduled.`;
+      return state;
+    }
+    if (timer.purpose === "commitment_reminder") {
+      return recordTransition(source, "CommitmentReminder", state => {
+        state.timers.reminder.state = "fired";
+        const missing_roles = ROLES.filter(role => state.commitments[role] === undefined);
+        return {
+          timer:{ id:action.id, generation:action.generation, scheduled_for:action.due },
+          missing_roles,
+          attention:missing_roles.map(role => ({ member_role:role, reason:"required_action_deadline" })),
+          timer_changes:[{ kind:"fired", id:action.id, generation:action.generation }],
+          phase_after:state.phase,
+          phase_generation_after:state.phaseGeneration,
+          phase_deadline_after:state.phaseDeadline
+        };
+      }, role => source.commitments[role] === undefined ? safeFrame("CommitmentReminder", source, { missing_for_self:true }) : null);
+    }
+    return recordTransition(source, "PhaseTimerFired", state => {
+      const fired = clone(state.timers.phase);
+      state.timers.phase.state = "fired";
+      const timerChanges = [{ kind:"fired", id:"phase", generation:fired.generation, scheduled_for:fired.due, purpose:fired.purpose }];
+      let transition;
+      let resolved = null;
+      if (fired.purpose === "briefing_deadline") {
+        transition = enterPhase(state, "Negotiation", fired.due, timerChanges);
+      } else if (fired.purpose === "negotiation_deadline") {
+        transition = enterPhase(state, "Commitment", fired.due, timerChanges);
+      } else if (fired.purpose === "commitment_deadline") {
+        cancelTimer(state, "reminder", "commitment_closed", timerChanges);
+        transition = enterPhase(state, "Resolution", fired.due, timerChanges);
+      } else if (fired.purpose === "resolve_now") {
+        resolved = resolveOutcome(state.commitments);
+        state.outcome = resolved;
+        transition = enterPhase(state, "Result", fired.due, timerChanges);
+      } else if (fired.purpose === "result_deadline") {
+        transition = enterPhase(state, "Complete", fired.due, timerChanges);
+      } else {
+        throw new Error(`Unknown phase timer purpose ${fired.purpose}`);
+      }
+      return phaseAfterData(state, timerChanges, {
+        timer:{ id:"phase", generation:fired.generation, scheduled_for:fired.due, purpose:fired.purpose },
+        phase_before:transition.previous,
+        attention:transition.attention,
+        outcome:resolved
+      });
+    }, (role,state,data) => safeFrame("PhaseChanged", state, {
+      phase_before:data.phase_before,
+      outcome:data.outcome,
+      own_commitment:state.commitments[role] || null
+    }));
+  };
+
+  const stableExisting = (source, id, requestHash) => {
+    const old = source.receipts[id];
+    if (!old) return null;
+    const state = clone(source);
+    state.last = old.request_hash === requestHash
+      ? `Existing durable ${old.outcome} result for ${id}.`
+      : `Idempotency conflict: ${id} is bound to a different request hash.`;
+    return state;
+  };
+
+  const commitMove = (source, action) => {
+    const request = {
+      role:action.role,
+      selected_plan_id:action.selected_plan_id,
+      contribute_required_resource:action.contribute_required_resource,
+      based_on_head:action.based
+    };
+    const requestHash = hash({ domain:"heist-commit-request-v1", request });
+    const existing = stableExisting(source, action.id, requestHash);
+    if (existing) return existing;
+    const reject = (outcome,message) => {
+      const state = clone(source);
+      state.receipts[action.id] = { request_hash:requestHash, request, outcome };
+      state.last = message;
+      return state;
+    };
+    if (source.recovery.phase !== "Active") {
+      const state = clone(source);
+      state.last = `${source.recovery.phase}: no ordinary Action was admitted and no receipt/deadline entitlement was created.`;
+      return state;
+    }
+    if (!ROLES.includes(action.role) || !PLANS[action.selected_plan_id] || typeof action.contribute_required_resource !== "boolean") {
+      return reject("RejectedSchema", "Strict typed commitment schema rejected the request.");
+    }
+    if (source.phase !== "Commitment") return reject("NotApplicable", "commit_move is legal only during Commitment.");
+    if (action.based !== source.head) return reject("Stale", `Exact Head ${action.based} is stale; resynchronize and use a new Action ID.`);
+    if (source.now >= source.phaseDeadline) return reject("RejectedDeadline", "The half-open window excludes admitted_at equal to the deadline.");
+    if (source.commitments[action.role] !== undefined) return reject("AlreadyCommitted", "A sealed role commitment is immutable and may occur only once.");
+
+    let state = recordTransition(source, "CommitmentAccepted", next => {
+      const commitment = { selected_plan_id:action.selected_plan_id, contribute_required_resource:action.contribute_required_resource };
+      next.commitments[action.role] = commitment;
+      const timerChanges = [];
+      let phaseBefore = next.phase;
+      if (Object.keys(next.commitments).length === ROLES.length) {
+        cancelTimer(next, "phase", "all_roles_committed", timerChanges);
+        cancelTimer(next, "reminder", "all_roles_committed", timerChanges);
+        enterPhase(next, "Resolution", next.now, timerChanges);
+      }
+      return phaseAfterData(next, timerChanges, {
+        role:action.role,
+        commitment,
+        admitted_at:next.now,
+        phase_before:phaseBefore
+      });
+    }, (role,next,data) => role === data.role
+      ? safeFrame("OwnCommitmentAccepted", next, { own_commitment:data.commitment, commitment_count:Object.keys(next.commitments).length })
+      : safeFrame("CommitmentCountChanged", next, { commitment_count:Object.keys(next.commitments).length })
+    );
+    state.receipts[action.id] = { request_hash:requestHash, request, outcome:"Accepted", committed_head:state.head };
+    state.prepared.lastAcceptedRequest = { ...action };
+    return state;
+  };
+
+  const acknowledgeResult = (source, action) => {
+    const request = { role:action.role, based_on_head:action.based };
+    const requestHash = hash({ domain:"heist-ack-request-v1", request });
+    const existing = stableExisting(source, action.id, requestHash);
+    if (existing) return existing;
+    const reject = (outcome,message) => {
+      const state = clone(source);
+      state.receipts[action.id] = { request_hash:requestHash, request, outcome };
+      state.last = message;
+      return state;
+    };
+    if (source.phase !== "Result") return reject("NotApplicable", "acknowledge_result is legal only during Result.");
+    if (action.based !== source.head) return reject("Stale", "Result acknowledgement used a stale exact Head.");
+    if (!ROLES.includes(action.role) || source.acknowledgements[action.role]) return reject("AlreadyAcknowledged", "Role is invalid or already acknowledged.");
+    let state = recordTransition(source, "ResultAcknowledged", next => {
+      next.acknowledgements[action.role] = true;
+      const timerChanges = [];
+      const phaseBefore = next.phase;
+      if (Object.keys(next.acknowledgements).length === ROLES.length) enterPhase(next, "Complete", next.now, timerChanges);
+      return phaseAfterData(next, timerChanges, { role:action.role, phase_before:phaseBefore });
+    }, (role,next) => safeFrame("ResultAcknowledged", next, {
+      acknowledged_role:action.role,
+      acknowledgement_count:Object.keys(next.acknowledgements).length
+    }));
+    state.receipts[action.id] = { request_hash:requestHash, request, outcome:"Accepted", committed_head:state.head };
+    return state;
+  };
+
+  const projectionForBroker = state => ({
+    phase:state.phase,
+    phase_deadline:state.phaseDeadline,
+    own_commitment:state.commitments.Broker || null,
+    legal_actions:state.phase === "Commitment" && !state.commitments.Broker ? ["commit_move"] : []
+  });
+
+  const activationContext = state => {
+    const stream = state.streams.Broker;
+    const needsReset = stream.cursor === 0 || stream.cursor < stream.retainedFloor;
+    return {
+      action_basis_head:state.head,
+      current_projection:projectionForBroker(state),
+      sync:needsReset
+        ? { kind:"ProjectionReset", baseline_frame_head:stream.frameHead, reason:stream.cursor < stream.retainedFloor ? "cursor_pruned" : "initial_invocation" }
+        : { kind:"RetainedFrames", cursor_exclusive:stream.cursor, through_frame_head:stream.frameHead, frames:state.frames.filter(f => f.role === "Broker" && f.frame_seq > stream.cursor) },
+      cursor_advanced:false,
+      participant_authority_included:false
+    };
+  };
+
+  const claimActivation = (source, action) => {
+    const activation = source.activations.broker;
+    if (!activation) {
+      const state = clone(source); state.last = "No Broker Activation exists."; return state;
+    }
+    const request = { claim_id:action.claim_id, runner_id:action.runner_id || "runner-1", expected_generation:action.expected_generation };
+    const requestHash = hash({ domain:"heist-claim-request-v1", request });
+    const old = activation.claimReceipts[action.claim_id];
+    if (old) {
+      const state = clone(source);
+      state.last = old.request_hash === requestHash ? `Existing exact ${old.outcome} claim response.` : "Claim idempotency conflict.";
+      return state;
+    }
+    const state = clone(source);
+    const next = state.activations.broker;
+    if (action.expected_generation !== next.leaseGeneration) {
+      next.claimReceipts[action.claim_id] = { request_hash:requestHash, outcome:"Fenced" };
+      state.last = "Claim expected a stale lease generation and was fenced.";
+      return state;
+    }
+    if (next.status === "leased") {
+      next.claimReceipts[action.claim_id] = { request_hash:requestHash, outcome:"NotAvailable" };
+      state.last = "Another live claim owns the lease.";
+      return state;
+    }
+    if (next.status !== "pending") {
+      next.claimReceipts[action.claim_id] = { request_hash:requestHash, outcome:"Terminal" };
+      state.last = "Activation is terminal.";
+      return state;
+    }
+    next.status = "leased";
+    next.leaseGeneration += 1;
+    next.currentClaim = action.claim_id;
+    next.context = activationContext(state);
+    next.claimReceipts[action.claim_id] = { request_hash:requestHash, outcome:"Granted", generation:next.leaseGeneration, context:clone(next.context) };
+    state.facts.push({ kind:"activation_claim", generation:next.leaseGeneration, cursor_before:source.streams.Broker.cursor, cursor_after:state.streams.Broker.cursor });
+    state.last = `Activation lease generation ${next.leaseGeneration} granted; context has no participant credential and Cursor stayed ${state.streams.Broker.cursor}.`;
+    return state;
+  };
+
+  const applyTimerChanges = (replay, changes) => {
+    for (const change of changes || []) {
+      if (change.kind === "schedule") {
+        replay.timerCounters[change.id] = Math.max(replay.timerCounters[change.id] || 0, change.generation);
+        replay.timers[change.id] = { id:change.id, generation:change.generation, due:change.due, purpose:change.purpose, state:"scheduled" };
+      } else if (change.kind === "fired" && replay.timers[change.id]?.generation === change.generation) {
+        replay.timers[change.id].state = "fired";
+      } else if (change.kind === "cancel" && replay.timers[change.id]?.generation === change.generation) {
+        replay.timers[change.id].state = "cancelled";
+      }
+    }
+  };
+
+  const replay = source => {
+    const seed = initial();
+    const state = {
+      fixture_id:seed.fixture_id,
+      phase:seed.phase,
+      phaseGeneration:seed.phaseGeneration,
+      phaseDeadline:seed.phaseDeadline,
+      commitments:{},
+      acknowledgements:{},
+      outcome:null,
+      timers:clone(seed.timers),
+      timerCounters:clone(seed.timerCounters)
+    };
+    let prior = "heist-genesis";
+    const errors = [];
+    for (const event of source.events) {
+      const data = event.data;
+      if (event.kind === "CommitmentAccepted") state.commitments[data.role] = clone(data.commitment);
+      if (event.kind === "ResultAcknowledged") state.acknowledgements[data.role] = true;
+      if (["CommitmentAccepted","ResultAcknowledged","PhaseTimerFired","CommitmentReminder"].includes(event.kind)) {
+        state.phase = data.phase_after;
+        state.phaseGeneration = data.phase_generation_after;
+        state.phaseDeadline = data.phase_deadline_after;
+      }
+      if (data.outcome) state.outcome = clone(data.outcome);
+      applyTimerChanges(state, data.timer_changes);
+      const activity_hash = hash({ domain:"heist-activity-v1", value:activityValue(state) });
+      const transition_hash = hash({ domain:"heist-transition-v1", room_seq:event.seq, prior_transition_hash:prior, kind:event.kind, data:event.data, activity_hash });
+      if (activity_hash !== event.activity_hash) errors.push(`activity hash mismatch at ${event.seq}`);
+      if (transition_hash !== event.transition_hash) errors.push(`transition hash mismatch at ${event.seq}`);
+      prior = transition_hash;
+    }
+    return { valid:errors.length===0, errors, head:source.events.length, transition_hash:prior, activity:state, timers:state.timers };
+  };
+
+  const reduce = (source, action) => {
+    if (action.type === "reset") return initial();
+    if (action.type === "set_time") { const state=clone(source); state.now=action.now; state.last=`Injected HostClock is now ${action.now}.`; return state; }
+    if (action.type === "timer") return fireTimer(source, action);
+    if (action.type === "commit_move") return commitMove(source, action);
+    if (action.type === "ack_result") return acknowledgeResult(source, action);
+    if (action.type === "hidden") return recordTransition(source, "HiddenAdministrativeTransition", () => ({ reason:"operator_only_core_change" }), () => null);
+    if (action.type === "prepare_timer") { const state=clone(source); state.prepared.timer=timerCandidate(source, action.id || "phase"); state.last=`Prepared exact timer candidate at Head ${source.head}.`; return state; }
+    if (action.type === "fire_prepared_timer") return source.prepared.timer ? fireTimer(source, source.prepared.timer) : { ...clone(source), last:"No prepared timer candidate." };
+    if (action.type === "prepare_pair") {
+      const state=clone(source);
+      state.prepared.moves = [
+        { type:"commit_move", id:"pair-first", role:"Navigator", selected_plan_id:"correct", contribute_required_resource:true, based:source.head },
+        { type:"commit_move", id:"pair-second", role:"Insider", selected_plan_id:"correct", contribute_required_resource:false, based:source.head }
+      ];
+      state.last=`Two requests prepared from exact Head ${source.head}.`;
+      return state;
+    }
+    if (action.type === "submit_pair") return source.prepared.moves?.[action.index] ? commitMove(source, source.prepared.moves[action.index]) : { ...clone(source), last:"No prepared pair." };
+    if (action.type === "retry_receipt") {
+      const receipt = source.receipts[action.id];
+      return receipt?.request ? commitMove(source, { type:"commit_move", id:action.id, role:receipt.request.role, selected_plan_id:receipt.request.selected_plan_id, contribute_required_resource:receipt.request.contribute_required_resource, based:receipt.request.based_on_head }) : { ...clone(source), last:"No stored request to retry." };
+    }
+    if (action.type === "enqueue") {
+      const state=clone(source);
+      if (state.queueDepth >= 1) state.last="Queue full before admission: no receipt or deadline entitlement was created.";
+      else { state.queueDepth += 1; state.last="Work is queued but not admitted and owns no deadline entitlement."; }
+      return state;
+    }
+    if (action.type === "discard_pre_disposition") { const state=clone(source); state.queueDepth=0; state.last="Pre-disposition work was discarded with no receipt or entitlement."; return state; }
+    if (action.type === "drop_delivery") { const state=clone(source); state.deliveryQueue=[]; state.last="Live publication was lost; durable frames and receipts remain."; return state; }
+    if (action.type === "crash") {
+      const state=clone(source);
+      state.recovery={ phase:"Loading", cutoff:state.now };
+      state.queueDepth=0;
+      state.deliveryQueue=[];
+      state.last=`Process restarted in Loading with one HostClock cutoff ${state.now}.`;
+      return state;
+    }
+    if (action.type === "recover") {
+      let state=clone(source);
+      state.recovery.phase="CatchingUp";
+      const cutoff=state.recovery.cutoff;
+      let guard=0;
+      while (true) {
+        const due=Object.values(state.timers)
+          .filter(timer => timer.state==="scheduled" && timer.due<=cutoff)
+          .sort((a,b) => a.due-b.due || a.id.localeCompare(b.id) || a.generation-b.generation)[0];
+        if (!due) break;
+        if (++guard>32) throw new Error("Recovery timer cascade exceeded prototype bound");
+        state=fireTimer(state,{ type:"timer", id:due.id, generation:due.generation, due:due.due, purpose:due.purpose, expectedHead:state.head });
+      }
+      state.recovery={ phase:"Active", cutoff:null };
+      state.queueDepth=0;
+      state.last=`CatchingUp drained ${guard} due timer obligation(s) at the fixed cutoff before Actions resumed.`;
+      return state;
+    }
+    if (action.type === "claim_activation") return claimActivation(source, action);
+    if (action.type === "expire_activation") {
+      const state=clone(source); const activation=state.activations.broker;
+      if (activation?.status==="leased") { activation.status="pending"; activation.currentClaim=null; activation.context=null; }
+      state.last="Lease expired; the same intent may be reclaimed with the next generation.";
+      return state;
+    }
+    if (action.type === "complete_activation") {
+      const state=clone(source); const activation=state.activations.broker;
+      if (!activation || activation.status!=="leased" || action.generation!==activation.leaseGeneration) state.last="stale_activation_lease: old generation cannot complete newer work.";
+      else { activation.status="completed"; state.last="Activation handling completed; no Room state or Cursor changed."; }
+      return state;
+    }
+    return { ...clone(source), last:`Unknown prototype action ${action.type}.` };
+  };
+
+  const checks = source => {
+    const replayed = replay(source);
+    const matrix = outcomeMatrix();
+    const maxOne = source.frames.every(frame => source.frames.filter(other => other.role===frame.role && other.cause_room_seq===frame.cause_room_seq).length===1);
+    const contiguous = ROLES.every(role => source.frames.filter(frame=>frame.role===role).sort((a,b)=>a.frame_seq-b.frame_seq).every((frame,index)=>frame.frame_seq===index+1));
+    const hiddenSafe = source.events.filter(event=>event.kind==="HiddenAdministrativeTransition").every(event=>!source.frames.some(frame=>frame.cause_room_seq===event.seq));
+    const sealedSafe = source.frames.every(frame => frame.payload.kind!=="CommitmentCountChanged" || (frame.payload.own_commitment===undefined && frame.payload.selected_plan_id===undefined));
+    const scheduledById = {};
+    let generations=true;
+    for (const event of source.events) for (const change of event.data.timer_changes||[]) if (change.kind==="schedule") {
+      if ((scheduledById[change.id]||0)>=change.generation) generations=false;
+      scheduledById[change.id]=change.generation;
+    }
+    return [
+      { ok:matrix.every(row=>row.actual.kind===row.expected), label:"zero/one/split/missing/majority/unanimous outcome matrix" },
+      { ok:replayed.valid, label:"recursive nested event and transition hashes replay exactly" },
+      { ok:canonical(activityValue(replayed.activity))===canonical(activityValue(source)), label:"Replay folds live phase, commitments, acknowledgements, and Outcome" },
+      { ok:canonical(replayed.timers)===canonical(source.timers), label:"Replay folds exact normalized timer effects" },
+      { ok:replayed.head===source.head, label:"Replay Head equals committed live Head" },
+      { ok:maxOne&&contiguous, label:"each Transition emits max one contiguous frame per role stream" },
+      { ok:ROLES.every(role=>source.streams[role].cursor===0), label:"frames, Activation, and recovery never ACK Cursor" },
+      { ok:hiddenSafe, label:"hidden Head advances emit zero unauthorized frames" },
+      { ok:sealedSafe, label:"non-owner commitment frames contain count, not sealed choice" },
+      { ok:generations, label:"host timer generations are nonreused and increasing per logical timer" },
+      { ok:!source.frames.some(frame=>frame.cause_room_seq===0), label:"Genesis emits no Observation Frame" },
+      { ok:source.facts.filter(f=>f.kind==="activation_claim").every(f=>f.cursor_before===f.cursor_after), label:"Activation claim context never advances Membership Cursor" }
+    ];
+  };
+
+  return { ROLES, FIXTURE, PLANS, initial, reduce, resolveOutcome, outcomeMatrix, timerCandidate, replay, checks, canonical, activityValue };
+})();
+
+/* Thin prototype UI: all behavior above stays in the pure module. */
+let stateModel = Heist.initial();
+let nextId = 1;
+let activeCase = "six phases";
+let stepIndex = 0;
+const setTime = now => ({ type:"set_time", now });
+const fireCurrent = id => Heist.timerCandidate(stateModel,id||"phase") || ({type:"unknown"});
+const move = (role,plan="correct",contribute=false,id,based) => ({ type:"commit_move", id:id||`move-${nextId++}`, role, selected_plan_id:plan, contribute_required_resource:contribute, based:based===undefined?stateModel.head:based });
+const ack = role => ({ type:"ack_result", id:`ack-${nextId++}`, role, based:stateModel.head });
+const toCommitment = [() => setTime(10), () => fireCurrent("phase"), () => setTime(20), () => fireCurrent("phase")];
+
+const cases = {
+  "six phases": {
+    why:"Briefing and Negotiation timers open Commitment. Three immutable plan commitments close early into Resolution; a strictly later timer produces Result; three acknowledgements reach Complete.",
+    actions:[...toCommitment,
+      () => move("Navigator","correct",true),
+      () => move("Insider","correct",false),
+      () => move("Broker","correct",false),
+      () => setTime(21),
+      () => fireCurrent("phase"),
+      () => ack("Navigator"),
+      () => ack("Insider"),
+      () => ack("Broker")]
+  },
+  "missing majority": {
+    why:"Two matching commitments are a strict majority even with one missing seat. The deadline enters Resolution, and the five named checks—not arrival order or a missing-participant penalty—determine Outcome.",
+    actions:[...toCommitment,
+      () => move("Navigator","correct",true),
+      () => move("Insider","correct",false),
+      () => setTime(30),
+      () => fireCurrent("phase"),
+      () => setTime(31),
+      () => fireCurrent("phase"),
+      () => setTime(36),
+      () => fireCurrent("phase")]
+  },
+  "stale + hidden": {
+    why:"A hidden administrative Transition advances global Head with zero frames. Two commitments prepared from one Head serialize: first wins, second is durably stale, same-ID retry is Existing, changed body conflicts, and a fresh ID may retry.",
+    actions:[...toCommitment,
+      () => ({type:"hidden"}),
+      () => ({type:"prepare_pair"}),
+      () => ({type:"submit_pair",index:0}),
+      () => ({type:"submit_pair",index:1}),
+      () => ({type:"submit_pair",index:1}),
+      () => ({type:"commit_move",id:"pair-second",role:"Insider",selected_plan_id:"risky",contribute_required_resource:false,based:stateModel.prepared.moves[1].based}),
+      () => move("Insider","correct",false,"pair-second-fresh")]
+  },
+  "Action first": {
+    why:"At D−1 the final commitment can close early. Its transaction cancels the old Commitment timer and fences the previously prepared candidate; Resolution runs on a strictly later generation.",
+    actions:[...toCommitment,
+      () => move("Navigator","correct",true),
+      () => move("Insider","correct",false),
+      () => setTime(29),
+      () => ({type:"prepare_timer",id:"phase"}),
+      () => move("Broker","correct",false),
+      () => ({type:"fire_prepared_timer"}),
+      () => setTime(30),
+      () => fireCurrent("phase")]
+  },
+  "timer first": {
+    why:"At D equality the exact phase timer may win first and enter Resolution. A later commitment is NotApplicable; duplicate and superseded timer candidates do nothing.",
+    actions:[...toCommitment,
+      () => move("Navigator","correct",true),
+      () => move("Insider","correct",false),
+      () => setTime(30),
+      () => ({type:"prepare_timer",id:"phase"}),
+      () => ({type:"fire_prepared_timer"}),
+      () => move("Broker","correct",false,"late-broker"),
+      () => ({type:"fire_prepared_timer"})]
+  },
+  "Activation": {
+    why:"The absent Broker receives a durable intent at Commitment. Claim context is current and retained-or-reset, but contains no participant credential and does not ACK Cursor. Lost reply, expiry/reclaim, and stale generation are explicit.",
+    actions:[...toCommitment,
+      () => ({type:"claim_activation",claim_id:"claim-1",runner_id:"runner-1",expected_generation:0}),
+      () => ({type:"claim_activation",claim_id:"claim-1",runner_id:"runner-1",expected_generation:0}),
+      () => ({type:"expire_activation"}),
+      () => ({type:"claim_activation",claim_id:"claim-2",runner_id:"runner-1",expected_generation:1}),
+      () => ({type:"complete_activation",generation:1}),
+      () => move("Broker","correct",true,"broker-participant-action")]
+  },
+  "crash + catch-up": {
+    why:"Queue-full/pre-disposition work owns no entitlement. An accepted Action survives lost delivery and retry. A later fixed-cutoff restart drains reminder, Commitment, Resolution, and Result timers before a same-Room Action can enter.",
+    actions:[
+      () => ({type:"enqueue"}),
+      () => ({type:"enqueue"}),
+      () => ({type:"discard_pre_disposition"}),
+      ...toCommitment,
+      () => move("Navigator","correct",true,"lost-delivery"),
+      () => ({type:"drop_delivery"}),
+      () => ({type:"crash"}),
+      () => ({type:"recover"}),
+      () => ({type:"retry_receipt",id:"lost-delivery"}),
+      () => setTime(40),
+      () => ({type:"crash"}),
+      () => move("Insider","correct",false,"blocked-during-loading"),
+      () => ({type:"recover"})]
+  }
+};
+
+function dispatch(action) { stateModel = Heist.reduce(stateModel,action); render(); }
+function resetCase() { stateModel=Heist.initial(); nextId=1; stepIndex=0; render(); }
+function selectCase(name) { activeCase=name; resetCase(); }
+function runNext() { dispatch(cases[activeCase].actions[stepIndex++]()); }
+
+function render() {
+  const replayed=Heist.replay(stateModel);
+  const fields={
+    "Phase / generation / deadline":`${stateModel.phase} / ${stateModel.phaseGeneration} / ${stateModel.phaseDeadline}`,
+    "Exact Head / injected HostClock":`${stateModel.head} / ${stateModel.now}`,
+    "Recovery / fixed cutoff":JSON.stringify(stateModel.recovery),
+    "Sealed commitments":JSON.stringify(stateModel.commitments),
+    "Outcome":JSON.stringify(stateModel.outcome),
+    "Timers":JSON.stringify(stateModel.timers),
+    "Frame heads / Cursors":JSON.stringify(stateModel.streams),
+    "Broker Activation":JSON.stringify(stateModel.activations.broker||null),
+    "Replay":JSON.stringify({valid:replayed.valid,head:replayed.head,activity:replayed.activity}),
+    "Outcome matrix":JSON.stringify(Heist.outcomeMatrix().map(row=>({case:row.name,expected:row.expected,actual:row.actual.kind,reason:row.actual.reason})))
+  };
+  document.querySelector("#last").textContent=stateModel.last;
+  document.querySelector("#state").innerHTML=Object.entries(fields).map(([key,value])=>`<div class="field"><b>${key}</b>${value}</div>`).join("");
+  document.querySelector("#raw").textContent=JSON.stringify({events:stateModel.events,frames:stateModel.frames,delivery_queue:stateModel.deliveryQueue,receipts:stateModel.receipts,activations:stateModel.activations,prepared:stateModel.prepared,facts:stateModel.facts},null,2);
+  const assertions=Heist.checks(stateModel);
+  document.querySelector("#checks").textContent=assertions.map(item=>`${item.ok?"PASS":"FAIL"} — ${item.label}`).join("\n")+"\nVERDICT — keep the six phases; select only a strict-majority plan; score its four fixture fields plus resource contribution; absence never changes the denominator; all coordination remains exact-Head/timer/lease recovery, not consensus.";
+  document.querySelector("#free").innerHTML=`<button onclick="dispatch({type:'set_time',now:10})">Time 10</button><button onclick="dispatch(Heist.timerCandidate(stateModel,'phase'))">Fire phase timer</button><button onclick="dispatch({type:'hidden'})">Hidden zero-frame</button><button onclick="dispatch({type:'crash'})">Crash</button><button onclick="dispatch({type:'recover'})">Recover</button><button onclick="resetCase()">Reset</button>`;
+  document.querySelector("#tabs").innerHTML=Object.keys(cases).map(name=>`<button class="${name===activeCase?"active":""}" onclick="selectCase('${name}')">${name}</button>`).join("");
+  const selected=cases[activeCase];
+  document.querySelector("#why").textContent=selected.why;
+  document.querySelector("#steps").innerHTML=`<button onclick="resetCase()">Start walkthrough (reset)</button>`+selected.actions.map((_,index)=>`<button class="step" ${index!==stepIndex?"disabled":""} onclick="runNext()">${index+1}. ${index===stepIndex?"Run this step":"completed / waiting"}</button>`).join("");
+}
+render();
 </script>
+</html>
