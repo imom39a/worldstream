@@ -199,7 +199,8 @@ Backpressure is explicit. The server rejects room_busy or rate_limited and disco
 - room/member/action forms the action deduplication boundary;
 - action receipt stores canonical payload hash;
 - activation/claim IDs are separately scoped;
-- cursor cannot move backward through acknowledgement or beyond the audience head;
+- Cursor cannot move backward through acknowledgement or beyond the Membership frame head; pruning cannot move it;
+- a Session synchronization token is opaque, single-use, bound to its Session/barrier, and never satisfied by another Session's acknowledgement;
 - a bearer token for one member cannot attach as another;
 - server-generated transition and frame sequences are never accepted from client assertions.
 
@@ -259,18 +260,22 @@ It MUST NOT contain:
 - other participants' state;
 - prompts or chain-of-thought.
 
-After an atomic successful claim, the server returns only the target Agent Participant Membership's authorized Projection, Observation Frames, and Artifact references.
+After an atomic successful claim, the server returns only the target Agent Participant Membership's exact committed Invocation Context: authorized Projection/hash, complete Head and witnesses, Action Offers, Artifact references, and exactly one retained-frame range or Projection Reset baseline.
 
 Lease defenses:
 
-- one live lease per activation;
-- idempotent claim ID;
+- one live lease per Membership across all intents;
+- independent idempotent operation IDs/request hashes for claim, renew, release, and complete;
 - monotonically increasing lease generation;
 - bounded maximum lease;
 - server time controls expiry;
 - renewal, release, and completion require the authenticated runner, current claim ID, current generation, and unexpired lease;
 - stale claim completion is rejected;
 - repeated delivery does not create another logical activation.
+
+Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents. Capability revocation takes effect immediately. Loading, CatchingUp, Faulted, and Quarantined make pending intents unclaimable. A backward-clock anomaly fences current leases before work can resume.
+
+Replay verifies canonical Attention and recorded decision evidence only; it never evaluates policy, returns live Invocation Context, creates/offers an intent, grants a lease, or contacts a Runner.
 
 A runner-reported handled status is operational. Only accepted room actions have authoritative effect.
 
@@ -449,10 +454,15 @@ Before Heist v0.1:
 - stale-action race;
 - randomized private-projection noninterference;
 - public/replay/catch-up leakage;
+- no-Genesis/zero-frame hidden Transition and zero-or-one coalescing checks;
+- first/pruned attach Reset plus Session-token barrier isolation across two Sessions;
 - bounded mailbox and slow-consumer soak;
 - activation offer/claim authorization and lease races;
-- same claim ID with altered request or runner identity is rejected;
+- same Activation operation ID with altered request or Runner identity is rejected;
 - expired claim generation attempting to complete a newer lease;
+- archive/Membership/authority/policy/backward-clock generation fencing;
+- exact Invocation Context contains one retained-or-reset branch and does not advance Cursor;
+- Replay creates no intent, context, lease, offer, or Runner contact;
 - catch-up/live handoff transition with no missing frame;
 - mutating HTTP lost-response idempotency;
 - log/token redaction;

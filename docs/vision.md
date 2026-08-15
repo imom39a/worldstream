@@ -122,7 +122,7 @@ An AI agent is normally ephemeral:
 3. WorldStream persists an activation intent.
 4. An external runner claims the intent with a lease.
 5. The runner starts a bounded invocation.
-6. The invocation receives an authorized current projection, relevant frames after its cursor, legal actions, deadlines, and explicit artifact references.
+6. The Invocation receives its exact committed authorized Projection and complete Head, legal actions/deadlines, Artifact references, and exactly one retained-frame range or Projection Reset baseline.
 7. It submits actions and exits.
 8. The room and membership remain; the model process does not.
 

@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document specifies the native v0.1 protocol shape. Message names and fields are provisional until the first conformance fixtures are implemented, but their semantics must remain consistent with [Frozen Requirements](requirements.md).
+This document specifies the native v0.1 protocol shape. The observation attach/reset/ACK and Activation operation/context contracts are frozen by [Observation Delivery and Activation](observation-and-activation.md); unrelated message names and fields may still evolve before their conformance fixtures, but no change may weaken the Frozen Requirements.
 
 The protocol serves:
 
@@ -195,7 +195,7 @@ The capability must authorize the principal, room, and membership. A session can
 
 ### room.attached
 
-If retained frames cover the cursor:
+The response captures one complete barrier and selects exactly one synchronization branch:
 
 ~~~json
 {
@@ -213,8 +213,16 @@ If retained frames cover the cursor:
     "room_status": "active",
     "room_health": "healthy",
     "room_head_seq": 91,
-    "last_ack_frame_seq": 184,
-    "catch_up_through_frame_seq": 191,
+    "integrity_generation": 7,
+    "cursor": 184,
+    "frame_head": 191,
+    "retained_floor": 150,
+    "sync_token": "opaque-session-bound-token",
+    "sync": {
+      "kind": "retained_frames",
+      "cursor_exclusive": 184,
+      "through_frame_head": 191
+    },
     "pack": {
       "id": "worldstream.agent-heist",
       "version": "0.1.0",
@@ -224,11 +232,11 @@ If retained frames cover the cursor:
 }
 ~~~
 
-The server then delivers frames 185 through 191. `role` is present only for participant-access Memberships; spectator and operator Memberships have no pack-defined Role.
+The server then delivers the complete retained range 185 through 191. `role` is present only for participant-access Memberships; spectator and operator Memberships have no pack-defined Role.
 
-If the cursor is too old, room.attached contains resync_required: true, followed by projection.reset. It never silently starts at the newest frame.
+On first attach, visibility loss, or an unavailable range, `sync.kind` is `projection_reset` and carries the reset baseline instead. It never silently starts at the newest frame.
 
-Attachment is serialized through the room actor. The actor captures membership frame head H and marks the session catching_up before storage reads begin. The server pages retained frames through H with short read transactions while buffering newly committed frames above H in the bounded session queue. It switches to live only after the client path has installed the through-H range or reset. Buffer overflow closes the socket and requires another resumable attachment.
+Attachment is serialized through the Room lane. The server captures the complete Room Head, Membership frame head/floor/Cursor, and a single-use Session-bound sync token, then marks the Session CatchingUp. It pages retained frames through the captured head while buffering later frames. Only `room.sync_ack` carrying that token after atomic client installation switches this Session to Live. Buffer overflow closes the socket and requires another resumable attachment.
 
 ### projection.reset
 
@@ -242,7 +250,8 @@ Attachment is serialized through the room actor. The actor captures membership f
     "member_id": "01K...",
     "room_head_seq": 91,
     "room_health": "healthy",
-    "frame_seq": 191,
+    "baseline_frame_head": 191,
+    "reset_reason": "retained_range_unavailable",
     "projection_schema": "worldstream.projection.v1",
     "projection": {
       "core": {
@@ -267,9 +276,30 @@ Attachment is serialized through the room actor. The actor captures membership f
 }
 ~~~
 
-The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A client processes the reset atomically, stores `frame_seq` as its new baseline, and acknowledges it.
+The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A Projection Reset is not an Observation Frame. A client processes it atomically, stores `baseline_frame_head`, and then sends the Session's synchronization acknowledgement.
 
 `projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Health, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
+
+### room.sync_ack
+
+~~~json
+{
+  "protocol": "0.1",
+  "type": "room.sync_ack",
+  "message_id": "01K...",
+  "request_id": "01K...",
+  "body": {
+    "room_id": "01K...",
+    "member_id": "01K...",
+    "through_frame_head": 191,
+    "sync_token": "opaque-session-bound-token"
+  }
+}
+~~~
+
+The token is valid only for the Session and barrier that issued it. This acknowledgement may monotonically advance the shared Membership Cursor, but an acknowledgement from another Session can never make this Session Live.
+
+`through_frame_head` MUST equal the captured frame head/reset baseline bound into the token. A lower, higher, expired, or otherwise mismatched acknowledgement returns a typed synchronization error and neither changes this Session's state nor switches it to Live.
 
 ## Action submission
 
@@ -392,14 +422,13 @@ Malformed/invalid payload, unauthenticated, forbidden, idempotency_conflict, roo
 }
 ~~~
 
-One transition may produce:
+For one Membership, one accepted Transition may produce:
 
 - no frame for an unaffected membership;
-- one or more member-private frames;
-- public consequences copied into every authorized enabled membership stream;
-- operator-membership-only consequences copied only into operator memberships.
+- one coalesced frame containing every authorized public and private consequence;
+- no frame when the Transition is hidden, even though the global Room Head advances.
 
-A frame MUST name exactly one recipient Membership and MUST NOT contain hidden Authoritative Room State or another Membership's private payload. frame_seq is monotonic within that Membership's Observation Stream and may skip Room Transitions that were irrelevant or unauthorized.
+A frame MUST name exactly one recipient Membership and MUST NOT contain hidden Authoritative Room State or another Membership's private payload. `frame_seq` is monotonic and never reused within that Membership's Observation Stream and may skip Room Transitions that were irrelevant or unauthorized. Genesis creates no frame. Public consequences are copied into each authorized enabled Membership's own coalesced frame; operator-only consequences go only to operator Memberships.
 
 ### observation.ack
 
@@ -420,6 +449,8 @@ A frame MUST name exactly one recipient Membership and MUST NOT contain hidden A
 The client sends this only after it has durably processed all frames through that sequence. The server may batch cursor persistence. A crash before persistence can cause duplicate delivery but not a missing frame.
 
 If multiple Sessions attach to the same Membership, they share this Cursor. An acknowledgement by one advances it for all; clients that need independent processing positions require separate Memberships.
+
+Pruning never advances the Cursor or permits frame-sequence reuse. Acknowledged frames have a seven-day safety window, subject to a hard ceiling of 10,000 frames or 64 MiB per Membership. When the required range is unavailable, attach returns a Projection Reset rather than pretending catch-up was complete.
 
 The server replies observation.acked with the durably stored cursor when a reply is requested.
 
@@ -494,7 +525,9 @@ Offers may be duplicated and may race another authorized runner.
 }
 ~~~
 
-claim_id is idempotent for this activation and authenticated runner. The database atomically grants at most one current lease and persists a canonical claim-request hash plus the result. Same claim ID and same request returns that original result after a lost reply; a changed request or different authenticated runner is an idempotency conflict. A runner uses a new claim ID if it wants to try again after a stored not-available result.
+`claim_id` is both the lease-attempt identity and the claim operation ID for this Activation and authenticated Runner. The server derives its canonical request hash from the complete authenticated request; clients do not submit a trusted hash field. The database atomically grants at most one current lease and persists that hash plus the result. Same claim ID and same request returns that original result after a lost reply; a changed request or different authenticated Runner is an idempotency conflict. A Runner uses a new claim ID if it wants to try again after a stored not-available result.
+
+Claim is one of four independent idempotent Activation operations; renew, release, and complete each carries its own operation ID, from which the server derives and stores a canonical request hash. After authentication, an existing identical receipt is returned before current availability is considered. Database COMMIT linearizes every newly recorded disposition.
 
 ### activation.claimed
 
@@ -513,13 +546,16 @@ Only after claim authorization does the server return private invocation context
     "lease_until": "2026-08-13T18:29:45Z",
     "cause_room_seq": 93,
     "reason_code": "commitment_opened",
-    "relevant_frame_range": {
-      "from": 185,
-      "through": 192
-    },
     "deadline": "2026-08-13T18:30:00Z",
-    "allowed_action_types": ["commit_move"],
     "room_head_seq": 93,
+    "room_head_transition_hash": "blake3:...",
+    "integrity_generation": 7,
+    "policy_revision": 12,
+    "authority_generation": 4,
+    "membership_generation": 3,
+    "frame_head": 192,
+    "retained_floor": 150,
+    "cursor": 192,
     "projection": {
       "core": {
         "room_status": "active",
@@ -537,19 +573,50 @@ Only after claim authorization does the server return private invocation context
         }
       }
     },
-    "observation_frames": [],
+    "projection_hash": "blake3:...",
+    "action_offers": [
+      {
+        "action_type": "commit_move",
+        "basis_room_seq": 93,
+        "deadline": "2026-08-13T18:30:00Z"
+      }
+    ],
+    "delivery": {
+      "kind": "retained_frames",
+      "cursor_exclusive": 192,
+      "through_frame_head": 192,
+      "frames": []
+    },
     "artifact_references": []
   }
 }
 ~~~
 
-The runner uses this payload to start a new invocation or route work to a bounded runner-owned execution runtime. WorldStream does not know which model is called.
+The runner uses this exact committed payload to start a new Invocation or route work to a bounded Runner-owned execution runtime. `delivery` is exactly one of `retained_frames` or `projection_reset { baseline_frame_head, reason }`. The complete Head and all displayed witnesses belong to the grant. WorldStream does not know which model is called.
 
 The claim capability authorizes Activation handling only. To submit a domain Action, the Runner or Invocation uses separate participant authority bound to the target Principal and Membership. Receiving context, claiming, renewing, releasing, or completing the Activation does not advance the Membership Cursor; an authorized room client acknowledges Observation Frames explicitly after durable processing. See [ADR 0003](adr/0003-separate-activation-and-action-authority.md).
 
 ### activation.renew
 
-A runner may extend a lease within the server's maximum. The request MUST include activation_id, claim_id, and lease_generation. Renewal conditionally matches the authenticated runner and current unexpired lease. It is operational and does not change canonical room sequence.
+A Runner may extend a lease within the server's maximum:
+
+~~~json
+{
+  "protocol": "0.1",
+  "type": "activation.renew",
+  "message_id": "01K...",
+  "request_id": "01K...",
+  "body": {
+    "activation_id": "01K...",
+    "claim_id": "01K...",
+    "renew_operation_id": "01K...",
+    "lease_generation": 3,
+    "requested_lease_ms": 30000
+  }
+}
+~~~
+
+The server derives the canonical request hash. Renewal conditionally matches the authenticated Runner and current unexpired lease. It is operational and does not change canonical Room sequence.
 
 ### activation.complete
 
@@ -562,6 +629,7 @@ A runner may extend a lease within the server's maximum. The request MUST includ
   "body": {
     "activation_id": "01K...",
     "claim_id": "01K...",
+    "complete_operation_id": "01K...",
     "lease_generation": 3,
     "disposition": "handled",
     "opaque_run_id": "optional-runner-owned-id",
@@ -572,13 +640,32 @@ A runner may extend a lease within the server's maximum. The request MUST includ
 
 disposition is handled, declined, or failed. Room consequences exist only in separately accepted Actions. Marking an Activation handled does not certify task quality or create an Activity Outcome.
 
-The server stores a canonical completion-request hash and result. Repeating the identical completion is safe and returns the original result; changing its body under the same claim is an idempotency conflict.
+The server derives and stores the complete operation's canonical request hash with the operation ID and result. Repeating the identical completion is safe and returns the original result; changing its body under the same operation ID is an idempotency conflict.
 
 ### activation.release
 
-A runner may relinquish a lease so another authorized runner can claim it. Release MUST include the current claim ID and lease generation. Expired leases return to pending until the activation deadline or retry policy expires.
+A Runner may relinquish a lease so another authorized Runner can claim it:
+
+~~~json
+{
+  "protocol": "0.1",
+  "type": "activation.release",
+  "message_id": "01K...",
+  "request_id": "01K...",
+  "body": {
+    "activation_id": "01K...",
+    "claim_id": "01K...",
+    "release_operation_id": "01K...",
+    "lease_generation": 3
+  }
+}
+~~~
+
+The server derives the canonical request hash. Expired leases return to pending until the Activation deadline or policy expiry.
 
 An operation from an expired or superseded claim returns stale_activation_lease and cannot alter the current lease. A new grant increments lease_generation.
+
+Archive cancels every pending/leased intent and advances a Room-wide Activation fence in the same Room transaction. Suspend, departure, identity, Access Mode, and Role changes cancel/fence affected Memberships. Capability revocation is immediate. Loading, CatchingUp, Faulted, and Quarantined make pending intents unclaimable without deleting them. A backward clock anomaly fences live leases and returns still-eligible intents to pending under a new generation.
 
 ### HTTP long poll
 
@@ -656,7 +743,7 @@ The authenticated viewer determines which projection the server returns. Supplyi
 
     GET /v1/rooms/{room_id}/replay?at_room_seq=91
 
-Replay authorization is separate from live-room authorization. During an active room, a participant cannot use replay to reveal state it was not allowed to observe. A completed pack may expose a final-reveal projection explicitly.
+Present authorization admits Replay, while the historical Membership, Access Mode, and Role at the requested sequence determine participant content. A Principal absent then receives no participant-private view, and a later Role never inherits another Membership's history. Spectator/operator views use explicit policies. A completed pack may expose a separately currently authorized final-reveal projection; Replay itself grants no reveal.
 
 Replay responses name:
 
@@ -667,6 +754,8 @@ Replay responses name:
 - verification status.
 
 There is no fork or branch-creation API in v0.1 or v0.2.
+
+Replay emits no live Observation Frame, Projection Reset, synchronization token, Activation Intent, offer, claim, lease, Invocation Context, or external effect.
 
 ## v0.2 artifact protocol
 
@@ -726,13 +815,18 @@ Core error codes:
 | room_faulted | Integrity or deterministic activity failure |
 | room_quarantined | Hash/genesis integrity failure; read-only diagnostics only |
 | room_archived | Ordinary mutation is disabled |
+| room_loading | Verified Room state is not yet available for normal service |
+| room_catching_up | Recovery is draining ordered overdue work before normal service |
 | room_busy | Bounded actor mailbox full |
 | cursor_ahead | Client claims an impossible future frame |
 | cursor_out_of_range | Retained delta range unavailable; reset required |
+| sync_barrier_mismatch | Session token or acknowledged baseline does not match the captured attach barrier |
 | idempotency_conflict | Same key with different canonical payload |
 | activation_not_available | Another runner owns a live lease or intent is terminal |
+| activation_fenced | Authority, policy, integrity, Membership, Room, or lease witness changed |
 | lease_expired | Operation used an expired claim |
 | stale_activation_lease | Claim ID/generation is no longer current |
+| result_retired | Exact private Invocation Context exceeded its retention window; receipt/tombstone remains |
 | invalid_payload | Input failed strict schema before admission |
 | activity_fault | Pack/runtime failed before durable action result |
 | rate_limited | Caller exceeded a documented limit |
@@ -805,30 +899,46 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 
 ### Disconnect and catch-up
 
-1. A participant receives frame N but disconnects before acknowledging it.
-2. It attaches with cursor N minus 1.
-3. A transition commits between the through-H query and live switch.
-4. The server redelivers N through H, then the buffered later frame, without a gap.
-5. Acknowledging N is monotonic and safe.
+1. Genesis creates no frame; a hidden Transition advances Room Head but emits zero frames; a visible Transition emits one coalesced frame for the Membership.
+2. A participant receives frame N but disconnects before acknowledging it and attaches with Cursor N minus 1.
+3. The server captures complete Room/frame barrier H and a Session sync token; another Transition commits during catch-up.
+4. The server redelivers N through H, but the Session does not become Live until its own token is acknowledged; then it receives the buffered later frame without a gap.
+5. Another Session's acknowledgement may advance the shared Cursor but cannot satisfy this token.
 
 ### Projection reset
 
-1. A client attaches with a pruned cursor.
-2. The server explicitly reports resync required.
-3. It sends an authorized current projection and baseline frame sequence.
-4. Later deltas continue from that baseline.
+1. A first attach and a client with a pruned Cursor each receive a full authorized Projection Reset at a captured Room/frame baseline.
+2. Pruning changed retained floor only: it did not advance Cursor or reuse a frame sequence.
+3. Visibility removal uses a complete Reset or closes the Session, leaving no unauthorized installed data.
+4. Only the matching Session token ACK enters Live; later frames continue after the baseline.
+
+### Stable stale Action and Room service surfaces
+
+1. Action ID A is durably rejected as stale against complete basis Head H. Retrying A with the identical hash after the Room advances returns that exact stored rejection.
+2. The client completes retained catch-up or Projection Reset, recomputes Action Offers, and—if the intent is still legal—submits new Action ID B. The server never rebases A.
+3. A Loading or Room-CatchingUp fixture rejects normal attach/current Projection/reset and participant mutation with the corresponding typed busy surface.
+4. A Faulted fixture returns only its last verified authorized Projection/retained frames/Replay plus integrity metadata and cannot advance the Head.
+5. A Quarantined fixture rejects normal Projection/catch-up/current Replay and exposes only host-operator diagnostics, raw export, restore, and verification.
+
+### Visibility loss
+
+1. Viewer A has private field X installed at frame N.
+2. Transition N+1 removes A's authority for X.
+3. A receives a full Projection Reset at the last permissible baseline or its Session closes; no partial delta leaves X installed.
+4. No later frame addressed to A contains X, while another viewer's private payload never enters A's stream.
 
 ### Fresh invocation activation
 
 1. An agent invocation submits an action and terminates.
 2. A later typed transition emits an attention signal.
 3. One durable activation ID is offered at least once.
-4. A runner claims it with a claim ID and lease generation.
-5. It starts a fresh invocation with authorized projection and catch-up.
+4. A Runner claims it with an operation ID and lease generation while a second Runner proves the one-live-lease-per-Membership rule.
+5. It starts a fresh Invocation with the exact committed Projection/Head/witnesses and exactly one retained-frames-or-reset branch.
 6. The invocation submits an ordinary idempotent action.
-7. Replaying the room reconstructs the activation decision but contacts no runner.
-8. A lost claim reply is retried with the same claim ID and returns the original lease result.
-9. After lease expiry/reclaim, the old generation cannot complete the new lease.
+7. Replay verifies Attention and recorded policy-decision evidence but creates/offers/claims nothing and contacts no Runner.
+8. A lost operation reply retried with the same ID/hash returns the exact result; changed hash conflicts.
+9. After lease expiry/reclaim, the old generation cannot renew, release, or complete the new lease.
+10. Archive and affected Membership changes cancel/fence pending and leased intents; authority revocation and a backward-clock anomaly fence stale claims.
 
 ### Privacy
 
@@ -856,7 +966,7 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 1. Host operator creates principals, room, memberships, and scoped capabilities.
 2. Each runner connects its control channel.
 3. Each participant client attaches with cursor zero.
-4. Initial private projection frames arrive and are acknowledged.
+4. Each first attach installs a private Projection Reset and acknowledges its Session synchronization token; Genesis emitted no Observation Frame.
 5. Agents submit typed clue, offer, and plan actions.
 6. A timer opens the commitment window.
 7. One absent Agent Participant's Membership produces an activation offer for an authorized Runner.
