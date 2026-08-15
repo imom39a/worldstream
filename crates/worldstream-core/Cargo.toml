@@ -1,0 +1,21 @@
+[package]
+name = "worldstream-core"
+description = "Pure canonical WorldStream Core state, lineage, and replay tracer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+worldstream-protocol = { version = "=0.1.0", path = "../worldstream-protocol" }
+
+[dev-dependencies]
+anyhow.workspace = true
+
+[lints]
+workspace = true

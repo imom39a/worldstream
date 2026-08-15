@@ -15,6 +15,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "blake3==1.0.9",
   "pytest==9.1.1",
   "ruff==0.16.3",
 ]
