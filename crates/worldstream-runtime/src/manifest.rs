@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -25,6 +27,48 @@ pub struct CompatibilityManifest {
     pub toolchains: CompatibilityToolchains,
     /// Supported storage selector values.
     pub storage: CompatibilityStorage,
+    /// Exact compiled pack revisions retained by this build.
+    pub pack_executors: Vec<PackExecutorManifestEntry>,
+}
+
+/// One exact Activity Pack revision compiled into the release candidate.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PackExecutorManifestEntry {
+    pack_id: String,
+    explanatory_version: String,
+    host_contract_id: String,
+    revision_lock_id: String,
+    revision_digest_algorithm: String,
+    revision_digest: String,
+    descriptor_digest: String,
+    executor_artifact_digest: String,
+    schema_bundle_digest: String,
+    codec_bundle_digest: String,
+    golden_corpus_digest: String,
+    selectable_for_new_rooms: bool,
+    runnable_for_retained_rooms: bool,
+    status: String,
+    required_for_release: bool,
+}
+
+/// Bounded operator-facing identity and retention status for one pack revision.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PackExecutorSummary {
+    /// Stable logical pack identity.
+    pub pack_id: String,
+    /// Human-facing version label; the digest selects behavior.
+    pub explanatory_version: String,
+    /// Exact semantic revision digest, or empty only for an unresolved specification entry.
+    pub revision_digest: String,
+    /// Whether this revision may create new Rooms.
+    pub selectable_for_new_rooms: bool,
+    /// Whether this revision may execute retained Room lineage.
+    pub runnable_for_retained_rooms: bool,
+    /// `unresolved` for a specification placeholder, otherwise `resolved`.
+    pub status: String,
+    /// Whether release evidence must cover this entry.
+    pub required_for_release: bool,
 }
 
 /// Contract versions reported by `/version`.
@@ -94,6 +138,8 @@ pub struct CompatibilitySummary {
     pub postgresql_major: u32,
     /// Minimum supported `PostgreSQL` patch.
     pub postgresql_minimum_patch: String,
+    /// Every embedded Activity Pack revision and its retention status.
+    pub pack_executors: Vec<PackExecutorSummary>,
 }
 
 impl CompatibilityManifest {
@@ -136,6 +182,70 @@ impl CompatibilityManifest {
                 "storage profile identifiers do not match the frozen selectors",
             ));
         }
+        self.validate_pack_executors()?;
+        Ok(())
+    }
+
+    fn validate_pack_executors(&self) -> Result<(), ManifestError> {
+        let mut revision_digests = BTreeSet::new();
+        for entry in &self.pack_executors {
+            if entry.pack_id.is_empty() || entry.explanatory_version.is_empty() {
+                return Err(ManifestError::Inconsistent(
+                    "pack executor identity fields must be nonempty",
+                ));
+            }
+            if entry.host_contract_id != "worldstream/activity-pack/v1"
+                || entry.revision_lock_id != "worldstream/pack-revision-lock/v1"
+                || entry.revision_digest_algorithm != "blake3"
+            {
+                return Err(ManifestError::Inconsistent(
+                    "pack executor declares an unsupported contract, revision lock, or digest algorithm",
+                ));
+            }
+            if entry.selectable_for_new_rooms && !entry.runnable_for_retained_rooms {
+                return Err(ManifestError::Inconsistent(
+                    "selectable pack executor must be runnable for retained Rooms",
+                ));
+            }
+
+            let digests = [
+                &entry.revision_digest,
+                &entry.descriptor_digest,
+                &entry.executor_artifact_digest,
+                &entry.schema_bundle_digest,
+                &entry.codec_bundle_digest,
+                &entry.golden_corpus_digest,
+            ];
+            match entry.status.as_str() {
+                "unresolved" => {
+                    if self.release_ready || digests.iter().any(|digest| !digest.is_empty()) {
+                        return Err(ManifestError::Inconsistent(
+                            "unresolved pack executor is allowed only in a non-release manifest with empty digest fields",
+                        ));
+                    }
+                }
+                "resolved" => {
+                    if digests
+                        .iter()
+                        .any(|digest| !is_canonical_blake3_digest(digest))
+                    {
+                        return Err(ManifestError::Inconsistent(
+                            "resolved pack executor digest is missing or noncanonical",
+                        ));
+                    }
+                    if !revision_digests.insert(&entry.revision_digest) {
+                        return Err(ManifestError::Inconsistent(
+                            "pack executor revision digest collision",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(ManifestError::Inconsistent(
+                        "pack executor status must be unresolved or resolved",
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -159,8 +269,31 @@ impl CompatibilityManifest {
             sqlite_version: self.storage.sqlite.version.clone(),
             postgresql_major: self.storage.postgresql.major,
             postgresql_minimum_patch: self.storage.postgresql.minimum_patch.clone(),
+            pack_executors: self
+                .pack_executors
+                .iter()
+                .map(|entry| PackExecutorSummary {
+                    pack_id: entry.pack_id.clone(),
+                    explanatory_version: entry.explanatory_version.clone(),
+                    revision_digest: entry.revision_digest.clone(),
+                    selectable_for_new_rooms: entry.selectable_for_new_rooms,
+                    runnable_for_retained_rooms: entry.runnable_for_retained_rooms,
+                    status: entry.status.clone(),
+                    required_for_release: entry.required_for_release,
+                })
+                .collect(),
         }
     }
+}
+
+fn is_canonical_blake3_digest(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("blake3:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Returns the exact embedded canonical JSON bytes as UTF-8 text.
@@ -202,7 +335,12 @@ pub enum ManifestError {
 
 #[cfg(test)]
 mod tests {
-    use super::{embedded_manifest, embedded_manifest_json};
+    use super::{CompatibilityManifest, embedded_manifest, embedded_manifest_json};
+
+    fn manifest() -> CompatibilityManifest {
+        embedded_manifest()
+            .unwrap_or_else(|error| unreachable!("embedded manifest is valid: {error}"))
+    }
 
     #[test]
     fn embedded_manifest_is_valid_and_fail_closed() {
@@ -218,5 +356,68 @@ mod tests {
         let bytes = embedded_manifest_json().as_bytes();
         assert!(bytes.ends_with(b"\n"));
         assert!(!bytes.ends_with(b"\n\n"));
+    }
+
+    #[test]
+    fn unresolved_specification_pack_entries_are_exposed() {
+        let summary = manifest().summary();
+        assert_eq!(summary.pack_executors.len(), 2);
+        assert!(
+            summary
+                .pack_executors
+                .iter()
+                .all(|entry| entry.status == "unresolved" && entry.revision_digest.is_empty())
+        );
+    }
+
+    #[test]
+    fn pack_executor_validation_rejects_selectable_nonrunnable_and_invalid_status() {
+        let mut invalid = manifest();
+        invalid.pack_executors[0].selectable_for_new_rooms = true;
+        invalid.pack_executors[0].runnable_for_retained_rooms = false;
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = manifest();
+        invalid.pack_executors[0].status = "pending".to_owned();
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn resolved_pack_executors_require_canonical_unique_digests() {
+        let mut resolved = manifest();
+        let entry = &mut resolved.pack_executors[0];
+        entry.status = "resolved".to_owned();
+        for digest in [
+            &mut entry.revision_digest,
+            &mut entry.descriptor_digest,
+            &mut entry.executor_artifact_digest,
+            &mut entry.schema_bundle_digest,
+            &mut entry.codec_bundle_digest,
+            &mut entry.golden_corpus_digest,
+        ] {
+            *digest = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned();
+        }
+        assert!(resolved.validate().is_ok());
+
+        let mut collision = resolved.clone();
+        let duplicate = collision.pack_executors[0].clone();
+        collision.pack_executors.push(duplicate);
+        assert!(collision.validate().is_err());
+
+        resolved.pack_executors[0].descriptor_digest = "not-a-digest".to_owned();
+        assert!(resolved.validate().is_err());
+    }
+
+    #[test]
+    fn unresolved_entries_reject_release_manifests_or_partial_digests() {
+        let mut release = manifest();
+        release.release_ready = true;
+        assert!(release.validate().is_err());
+
+        let mut partial = manifest();
+        partial.pack_executors[0].revision_digest =
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
+        assert!(partial.validate().is_err());
     }
 }
