@@ -81,6 +81,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 
 - [WorldStream domain context](CONTEXT.md) — canonical whole-product language and concept boundaries
 - [Frozen requirements](docs/requirements.md) — normative release scope and change control
+- [Compatibility manifest specification](compatibility.toml) and [canonical JSON mirror](compatibility.json) — fail-closed authored profile; not release evidence while `release_ready = false`
 - [Extended terminology](docs/glossary.md) — protocol, runtime, storage, UI, and lifecycle reference
 - [Product vision](docs/vision.md) — audience, value, and boundaries
 - [System architecture](docs/architecture.md) — stack, storage, filesystem, failure semantics, and scaling

@@ -69,7 +69,7 @@ Library versions are pinned in Cargo.lock and the frontend/Python lockfiles when
 | Web UI | React, TypeScript, Vite, native browser WebSocket | Small first-party reference UI; no realtime framework dependency |
 | Packaging | Native Linux x86-64, native Windows x64, Linux/amd64 OCI, macOS source quickstart | Explicitly tested release and development profiles |
 
-The v0.1.0 compatibility manifest pins Rust 1.97.1 edition 2024, Node 24.19.0 LTS for builds only, Python SDK 3.11–3.14, and Python 3.14.7 for the quickstart. It bundles SQLite 3.53.4, recognizes 3.51.3 as the frozen corrective floor, and denies 3.52.0; WorldStream never loads host SQLite. It accepts PostgreSQL major 17 from 17.11, distinguishes release-verified patch versions from newer supported-but-unverified 17.x patches, and fails closed on every other major.
+The authored v0.1.0 compatibility specification pins Rust 1.97.1 edition 2024, Node 24.18.1 LTS for builds only, Python SDK 3.11–3.14, and Python 3.14.7 for the quickstart. It selects SQLite 3.53.4, recognizes 3.51.3 as the frozen corrective floor, and denies 3.52.0; WorldStream never loads host SQLite. It accepts PostgreSQL major 17 from 17.11 and defines newer-17.x versus other-major policy. It is not a release-valid manifest until exact bundled-build identity, verified PostgreSQL patches, and every required evidence field are populated.
 
 Not selected for v0.1 or v0.2: an ORM, Redis, NATS, Kafka, Temporal, Wasmtime, Kubernetes, a provider database API as a correctness dependency, an embedded model SDK, or a frontend realtime platform.
 
@@ -1074,7 +1074,9 @@ Telemetry happens after authoritative commit through bounded nonblocking queues 
 
 This section implements [ADR 0004](adr/0004-supported-storage-profiles-and-offline-portability.md) and [ADR 0011](adr/0011-release-compatibility-recovery-and-supply-chain-gate.md).
 
-The canonical `compatibility.json` is generated from reviewed `compatibility.toml`, embedded in every binary, and published with the release. Startup, `doctor`, `/version`, backups, transfer bundles, release notes, and CI consume the same manifest. For v0.1.0 it identifies product `0.1.0`, wire `0.1`, config `1`, storage schema `1`, Core semantics `1`, and hash suite `blake3-canonical-json-v1` in addition to the engine/toolchain versions frozen above.
+Reviewed [`compatibility.toml`](../compatibility.toml) is the authored source and canonical [`compatibility.json`](../compatibility.json) is its semantically identical, sorted-key mirror. The checked-in pair deliberately describes a specification with `release_ready = false`: migration/schema checksums, exact pack-executor and build/artifact digests, and all execution evidence remain unresolved because no implementation or release exists. Validation fails closed on any unresolved required field.
+
+A real release must generate and review a populated pair, prove semantic parity, set `release_ready = true` only after every hard gate passes, embed the JSON in every binary, and publish it with the release. Startup, `doctor`, `/version`, backups, transfer bundles, release notes, and CI consume that release-valid manifest. The v0.1.0 specification identifies product `0.1.0`, wire `0.1`, config `1`, storage schema `1`, Core semantics `1`, and hash suite `blake3-canonical-json-v1` in addition to the engine/toolchain versions frozen above.
 
 | Profile | Supported/release contract | Mandatory evidence |
 |---|---|---|

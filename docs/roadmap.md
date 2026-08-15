@@ -88,11 +88,11 @@ Build:
 - pin Rust toolchain and dependencies;
 - add format, Clippy, unit-test, dependency-audit, and secret-scan CI;
 - define one checksummed forward-only logical migration history with SQLite and PostgreSQL 17 execution harnesses;
-- add reviewed `compatibility.toml`, generated canonical `compatibility.json`, and exact retained codec/pack-executor declarations;
+- maintain the reviewed specification-only `compatibility.toml` and semantically identical canonical `compatibility.json`; populate exact migration, codec/executor, artifact, and evidence digests and set `release_ready = true` only in a genuinely gated release;
 - define canonical JSON, ID, room sequence, frame cursor, hash, error, and message envelope types;
 - define the provisional Activity Pack trait;
 - implement worldstreamd health, readiness, version, and one WebSocket handshake;
-- implement a tiny test-only Counter activity solely as a walking skeleton; it is not registered in the release binary;
+- implement a tiny test-only Counter activity solely as a walking skeleton; it is not registered as a release Activity, but its exact `worldstream.counter` executor digest remains a required compatibility-manifest entry beside `worldstream.agent-heist`;
 - create Python SDK package skeleton and protocol golden fixtures.
 
 Exit tests:

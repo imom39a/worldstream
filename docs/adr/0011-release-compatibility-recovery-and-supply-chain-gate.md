@@ -12,6 +12,8 @@ Engine support, migrations, backup, transfer, native platforms, containers, and 
 
 Every release publishes and embeds its canonical Storage Compatibility Manifest. Release evidence covers the exact bundled SQLite build, supported PostgreSQL 17 patch policy, schema and migration checksums, retained canonical/receipt codec readers, exact Activity Pack executors, transfer and recovery formats, supported connection modes, and the platform matrix.
 
+The repository may author a specification pair before implementation, but it remains fail-closed with `release_ready = false` and unresolved evidence-derived fields. Only a fully populated, semantically identical TOML/JSON pair whose hard gates have executed is a release-valid manifest.
+
 Backup remains backend-native: WorldStream owns SQLite backup/restore orchestration, while PostgreSQL uses operator/provider-native snapshot, PITR, dump, or restore facilities. Every restored deployment must then pass the read-only WorldStream semantic verifier. Global lineage or manifest failures block readiness; a byte-preserved Room already recorded as faulted or quarantined may remain isolated without blocking verified healthy Rooms.
 
 The release matrix is native Linux x86-64, native Windows x64, Linux/amd64 OCI, and a macOS source-build quickstart. Releases include checksums, Sigstore signatures, SPDX SBOM, SLSA provenance, configuration and secret-handling checks, health/readiness/version contracts, vendor-neutral telemetry evidence, migrations, transfer, restore, failure injection, and backend conformance. Performance results are reference measurements, not universal SLAs.

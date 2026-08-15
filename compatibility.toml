@@ -1,0 +1,459 @@
+schema = "worldstream/storage-compatibility-manifest/v1"
+manifest_revision = 1
+manifest_kind = "specification"
+authored_date = "2026-08-15"
+release_candidate = "0.1.0"
+release_ready = false
+release_status = "specification_only_no_implementation_or_evidence"
+validation_policy = "fail_closed"
+reviewed_source = "compatibility.toml"
+canonical_mirror = "compatibility.json"
+unresolved_required_fields = [
+  "storage.sqlite.bundle_build_digest",
+  "storage.postgresql.release_verified_patches",
+  "migrations.schema_contract_fingerprint",
+  "migrations.entries[*].sqlite_checksum",
+  "migrations.entries[*].postgresql_checksum",
+  "pack_executors[*].digest",
+  "release_artifacts[*].digest",
+  "evidence[*].artifact_digest",
+]
+
+[contracts]
+product = "0.1.0"
+wire = "0.1"
+config = 1
+storage_schema = 1
+core_semantics = 1
+hash_suite = "blake3-canonical-json-v1"
+
+[toolchains]
+rust = "1.97.1"
+rust_edition = "2024"
+node = "24.18.1"
+node_usage = "build_only"
+python_sdk_min = "3.11"
+python_sdk_max = "3.14"
+python_quickstart = "3.14.7"
+
+[codecs.canonical]
+codec_id = "worldstream/canonical-json/v1"
+writer_version = 1
+retained_reader_versions = [1]
+byte_preserving_storage = true
+
+[codecs.receipt]
+codec_id = "worldstream/operation-receipt/v1"
+writer_version = 1
+retained_reader_versions = [1]
+byte_preserving_storage = true
+
+[storage]
+profiles = ["sqlite-bundled", "postgres-primary"]
+default_profile = "sqlite-bundled"
+selection = "startup_fixed"
+worldstream_processes = 1
+semantics = "backend_neutral"
+authoritative_primary_count = 1
+
+[storage.sqlite]
+profile_id = "sqlite-bundled"
+supported = true
+default = true
+version = "3.53.4"
+source_id = "sqlite-amalgamation-3530400"
+corrective_floor = "3.51.3"
+denied_versions = ["3.52.0"]
+host_library_allowed = false
+bundle_build_digest = ""
+bundle_build_digest_status = "unresolved"
+writer_model = "one_controlled_writer"
+reader_model = "bounded_query_only"
+filesystem_scope = "local_only"
+supported_linux_filesystems = ["ext4", "xfs"]
+supported_windows_filesystems = ["ntfs", "refs"]
+supported_macos_development_filesystems = ["apfs"]
+unsupported_filesystems = ["nfs", "smb", "object", "fuse", "network_home", "unc", "fat", "exfat", "shared_volume", "container_overlay"]
+
+[storage.sqlite.pragmas]
+journal_mode = "WAL"
+synchronous = "FULL"
+foreign_keys = "ON"
+busy_timeout_ms = 5000
+reader_query_only = "ON"
+
+[storage.postgresql]
+profile_id = "postgres-primary"
+supported = true
+default = false
+major = 17
+minimum_patch = "17.11"
+newer_17x_policy = "supported_but_unverified_until_gated"
+other_majors = "fail_closed"
+primary = "one_writable_primary"
+hosting = ["hosted", "self_managed"]
+same_host_required = false
+isolation = "read_committed"
+synchronous_commit = "on"
+remote_tls_required = true
+runtime_role = "least_privilege_dml"
+runtime_connection_modes = ["direct", "session_pool", "transaction_pool"]
+maintenance_connection_mode = "direct_admin_offline"
+transaction_pooler_safe = true
+provider_neutral = true
+correctness_dependencies_forbidden = ["extensions", "session_state", "named_prepared_statements", "connection_affinity", "replica_reads", "provider_api", "provider_failover"]
+release_verified_patches = []
+release_verified_patches_status = "unresolved"
+
+[migrations]
+logical_history_id = "worldstream-storage-v1"
+schema_contract_fingerprint = ""
+schema_contract_fingerprint_status = "unresolved"
+direction = "forward_only"
+backend_specific_execution = true
+atomic_or_restart_safe = true
+mixed_versions_supported = false
+old_binary_after_migration_supported = false
+rollback = "restore_preupgrade_backend_and_previous_binary"
+sqlite_production_mode = "exclusive_startup_after_verified_backup"
+postgresql_production_mode = "explicit_offline_direct_admin"
+
+[[migrations.entries]]
+id = "0001-initial-storage-schema"
+sqlite_checksum = ""
+postgresql_checksum = ""
+status = "unresolved"
+
+[transfer]
+format_id = "worldstream/sqlite-postgresql-transfer/v1"
+direction = "sqlite_to_postgresql"
+scope = "whole_deployment"
+mode = "offline_resumable_two_phase"
+source_state = "transfer_pending"
+target_state = "empty_non_serving"
+finalization = "explicit_storage_epoch_advance"
+canonical_bytes = "copy_verbatim_no_decode_reencode"
+abort_before_source_retirement = true
+post_first_postgresql_write_rollback = false
+retired_sqlite = "read_only_recovery_artifact"
+preserve = ["lineage", "genesis", "transitions", "heads_and_hashes", "core_and_activity_materializations", "memberships_and_authority", "timer_ids_generations_due", "frames_and_cursors", "operation_identities_hashes_dispositions_receipts", "activation_intents_claims_audit_fences", "principals_capabilities_revocations", "integrity_incidents", "artifact_metadata_and_bytes"]
+rebuild_or_invalidate = ["snapshots", "indexes", "caches", "telemetry", "sessions", "runner_presence", "in_memory_mailboxes", "delivery_attempts", "temporary_state"]
+overdue_timer_startup = "fixed_cutoff_catching_up_no_invented_fire_or_generation"
+activation_nonterminal_leases = "fence_before_readiness_preserve_intent_reclaim"
+
+[recovery]
+backup_manifest_format = "worldstream/backup-manifest/v1"
+sqlite_mechanism = "worldstream_owned_online_backup_empty_restore"
+postgresql_mechanisms = ["operator_or_provider_snapshot", "pitr", "dump", "isolated_restore"]
+postgresql_admin_path = "direct_offline"
+semantic_verifier_required = true
+
+[recovery.verifier]
+mode = "read_only_full_not_sampled"
+healthy_room_scope = "every_healthy_room_genesis_through_head"
+preexisting_unhealthy_room_policy = "byte_preserve_and_isolate"
+new_mismatch_policy = "abort_and_block_readiness"
+checks = ["backup_or_export_id", "storage_epoch_and_lineage", "engine_identity", "manifest", "schema_and_migrations", "artifact_digests_and_bytes", "operation_receipts", "timers", "frames_and_cursors", "activation_fencing", "exact_pack_executors", "every_transition_state_and_head_hash"]
+
+[configuration]
+precedence = ["compiled_defaults", "explicit_versioned_toml", "WORLDSTREAM__SECTION__KEY", "documented_cli"]
+config_flag_overrides_env = true
+implicit_cwd_or_home_search = false
+invalid_value_policy = "fatal"
+invalid_value_classes = ["unknown", "duplicate", "wrong_type", "out_of_range", "inactive_backend", "unsupported"]
+commands = ["config_validate", "config_effective_redacted", "doctor"]
+secret_inputs = ["owner_readable_secret_file", "inherited_handle"]
+plaintext_secret_locations_forbidden = ["toml", "cli", "logs", "traces", "metrics"]
+admin_dsn_daemon_allowed = false
+
+[probes.healthz]
+contract = "process_event_loop_liveness_only"
+storage_query = false
+
+[probes.readyz]
+requires = ["current_schema", "global_storage_integrity", "authoritative_store_writable_with_capacity", "writer_running", "scheduler_running"]
+isolated_preexisting_unhealthy_room_fails = false
+telemetry_failure_fails = false
+
+[probes.metrics]
+format = "prometheus_text"
+cardinality = "low"
+
+[probes.version]
+reports = ["product_build", "wire", "config", "storage_schema", "core_semantics", "hash_suite", "manifest", "exact_engine_identity"]
+
+[observability]
+logs = "structured_json"
+metrics = "prometheus"
+trace_correlation = "w3c"
+optional_export = "opentelemetry_otlp"
+vendor_neutral = true
+correctness_path_dependency = false
+post_commit = true
+queue = "bounded_nonblocking"
+holds_room_or_database_lock = false
+overflow = "drop_metric_and_rate_limited_warning"
+shutdown_flush_seconds = 3
+forbidden_payloads = ["bodies", "capabilities", "private_observations", "prompts", "model_output", "artifact_bytes", "dsns", "credentials"]
+entity_ids_as_metric_labels = false
+
+[release_contents]
+native_archives = ["worldstreamd", "worldstreamctl", "embedded_ui", "examples", "heist_clients", "licenses", "compatibility.json"]
+supply_chain = ["source", "checksums", "sigstore", "spdx_sbom", "slsa_provenance"]
+
+[security]
+remote_postgresql_tls_required = true
+sqlite_posix_mode = "owner_only_umask_077"
+windows_acl = "owner_or_service_system_administrators_only"
+reject_broad_write_acl = true
+reject_sqlite_symlink_or_reparse = true
+stop_mutation_without_durable_capacity = true
+application_layer_at_rest_encryption = false
+
+[quickstart]
+default_storage = "sqlite-bundled"
+postgresql_opt_in = true
+cloud_account_required = false
+paid_model_required = false
+fresh_checkout_minutes = 10
+certified_reference = "ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd"
+certified_heist_minutes = 5
+postgresql_harness = "postgresql-17.11-image-by-digest-plus-pgbouncer-transaction-pool"
+
+[evidence_tiers.fast]
+warm_p95_seconds = 20
+hard_seconds = 60
+network_allowed = false
+container_allowed = false
+scope = ["changed_format", "config", "schema", "golden", "secret"]
+
+[evidence_tiers.pre_push]
+warm_target_seconds = 360
+cold_target_seconds = 900
+scope = ["lint", "unit", "sqlite", "sdk", "ui", "protocol", "hash", "local_postgresql_smoke"]
+local_postgresql_skip = "visible_incomplete"
+remote_ci_skip_allowed = false
+
+[evidence_tiers.minimal_ci]
+target_seconds = 900
+hard_seconds = 1500
+scope = ["parallel_linux", "native_windows_build_package_acl_filesystem_sqlite_postgresql_connect_recovery"]
+
+[evidence_tiers.release]
+target_seconds = 10800
+hard_seconds = 14400
+scope = ["all_artifacts_and_platforms", "signature_sbom_provenance", "full_backend_conformance", "all_prior_migrations", "transfer", "isolated_restore", "semantic_verifier", "failure", "fuzz", "benchmark", "one_hour_sqlite_soak"]
+
+[provider_verification]
+required_for_release = false
+provider_neutral = true
+cloud_account_required = false
+scope = "dated_migration_backup_isolated_restore_full_replay_exact_combination"
+asserts_ha_sla_durability_plan_or_region = false
+status = "unresolved"
+evidence_digest = ""
+
+[[platforms]]
+id = "native-linux-x86_64"
+support = "release"
+target = "x86_64-unknown-linux-musl"
+minimum_os = "linux-kernel-5.15"
+reference = "ubuntu-24.04-x86_64-ext4"
+storage_profiles = ["sqlite-bundled", "postgres-primary"]
+
+[[platforms]]
+id = "native-windows-x64"
+support = "release"
+target = "x86_64-pc-windows-msvc"
+minimum_os = "windows-11-25h2-or-server-2022"
+also_supported = ["windows-server-2025"]
+filesystems = ["ntfs", "refs"]
+storage_profiles = ["sqlite-bundled", "postgres-primary"]
+
+[[platforms]]
+id = "oci-linux-amd64"
+support = "release"
+target = "linux/amd64"
+linkage = "static"
+image_base = "minimal"
+runtime_user = "65532"
+read_only_root_compatible = true
+persistent_data_path = "/var/lib/worldstream"
+sqlite_overlay_allowed = false
+storage_profiles = ["sqlite-bundled", "postgres-primary"]
+
+[[platforms]]
+id = "macos-source-quickstart"
+support = "source_only_development"
+target = "intel-and-apple-silicon"
+minimum_os = "macos-15"
+filesystem = "apfs"
+binary_distribution = false
+storage_profiles = ["sqlite-bundled", "postgres-primary"]
+
+[[pack_executors]]
+pack_id = "worldstream.counter"
+pack_release = "0.1.0"
+digest_algorithm = "blake3"
+digest = ""
+status = "unresolved"
+required_for_release = true
+
+[[pack_executors]]
+pack_id = "worldstream.agent-heist"
+pack_release = "0.1.0"
+digest_algorithm = "blake3"
+digest = ""
+status = "unresolved"
+required_for_release = true
+
+[[release_artifacts]]
+id = "source-archive"
+profile = "source"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[release_artifacts]]
+id = "native-linux-x86_64-archive"
+profile = "native-linux-x86_64"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[release_artifacts]]
+id = "native-windows-x64-archive"
+profile = "native-windows-x64"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[release_artifacts]]
+id = "oci-linux-amd64-image"
+profile = "oci-linux-amd64"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[release_artifacts]]
+id = "checksums"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[release_artifacts]]
+id = "sigstore-bundle"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[release_artifacts]]
+id = "spdx-sbom"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[release_artifacts]]
+id = "slsa-provenance"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "unresolved"
+
+[[evidence]]
+id = "manifest-syntax-parity"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "sqlite-conformance-migration-backup-restore-crash"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "postgresql-direct-and-transaction-pooler-conformance"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "all-prior-forward-migrations-both-backends"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "sqlite-postgresql-transfer-byte-parity-and-epoch-fencing"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "backend-native-isolated-restore-and-full-semantic-verifier"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "native-linux-release-profile"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "native-windows-release-profile"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "oci-linux-amd64-release-profile"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "macos-source-quickstart"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "config-secrets-probes-observability-security"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "checksums-signature-sbom-provenance"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "failure-fuzz-resource-and-one-hour-sqlite-soak"
+release_gate = true
+status = "unresolved"
+artifact_digest = ""
+
+[[evidence]]
+id = "reference-performance-per-backend"
+release_gate = false
+status = "unresolved"
+artifact_digest = ""
+
+[evidence_policy]
+correctness = "hard_gate"
+durability = "hard_gate"
+resource_bounds = "hard_gate"
+crash_replay_hash_parity = "hard_gate"
+performance = "reference_only_not_sla"
+cross_compilation_only = "insufficient"
+
+[exclusions]
+items = ["arm64_release_artifact", "macos_binary_distribution", "windows_container", "msi_msix", "windows_service_integration", "package_repository", "kubernetes_helm", "reverse_transfer", "room_at_a_time_transfer", "live_backend_switch", "dual_writes", "automatic_fallback", "multiple_live_worldstream_processes", "authoritative_replica_reads", "automatic_failover", "ha_or_provider_services", "provider_correctness_dependency", "cloud_resources", "release_pipeline_implementation", "rolling_mixed_versions", "down_migrations"]
