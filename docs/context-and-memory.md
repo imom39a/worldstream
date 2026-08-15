@@ -16,7 +16,7 @@ These concepts must not be collapsed:
 
 ### Core Room State
 
-WorldStream-owned current facts about the Room lifecycle and Memberships, including Room Status, Access Modes, and current Role assignments. The Room Head is causal/history metadata, not part of this state value.
+The versioned WorldStream-owned value containing exactly Room Status and the canonically sorted semantic Membership map. Each Membership carries immutable Member/Principal identity and Principal kind plus standing, Access Mode, and current Role; the Room Head and every operational field are outside this value.
 
 ### Activity State
 
@@ -26,9 +26,13 @@ Activity Pack-owned current domain facts such as phase, clues, evidence versions
 
 The accepted current truth of the Room: Core Room State together with Activity State. Clients receive authorized Projections, never this aggregate directly.
 
+### Room Integrity State
+
+Durable operational `healthy | faulted | quarantined` state with a monotonic generation and separate incident/repair audit. It is outside Authoritative Room State, Room order, Replay state, and canonical hashes.
+
 ### Canonical history
 
-The immutable Genesis followed by ordered Transitions, including each accepted Stimulus and deterministic result, from which state can be reconstructed and verified.
+The immutable Genesis followed by ordered Transitions, including each accepted Stimulus, deterministic outputs, and Core/Activity/aggregate hashes, from which both state components and lineage can be reconstructed and verified.
 
 ### Projection
 
@@ -68,8 +72,9 @@ An embedding index can retrieve semantically similar text, but similarity is not
 
 ~~~mermaid
 flowchart TD
-    H["Canonical History: Genesis plus Transitions"] --> S["Current Authoritative Room State"]
-    H --> SN["Snapshots for recovery"]
+    H["Canonical History: Genesis plus Transitions"] --> S["Verified current Core plus Activity materialization"]
+    H --> SN["Paired postcommit Core plus Activity snapshots"]
+    I["Operational Room Integrity State plus generation"] -. "fences serving and commits" .-> S
     S --> P["Pack-authorized projections"]
     H --> O["Membership observation frames"]
     P --> C["Invocation context"]
@@ -93,7 +98,7 @@ Properties:
 
 - append-only per room;
 - compact typed canonical JSON;
-- exact Activity Pack revision and Activity State hashes;
+- exact Core schema and Activity Pack revision plus Core, Activity, aggregate, and lineage hashes;
 - no token fragments, connection heartbeats, debug traces, or chain-of-thought;
 - retained for the room lifetime in frozen releases.
 
@@ -108,7 +113,7 @@ Purpose:
 - timer and dependency rules;
 - source for authorized projections.
 
-The active Room actor keeps canonical Activity State together with a current view of Core Room State. Immutable genesis plus Transitions reconstruct the aggregate; snapshots accelerate reloading Activity State while durable core records are verified against the same Room head.
+The active Room actor keeps verified canonical Core and Activity State plus the complete Room Head. Current Room/Membership/Activity rows and actor memory are materializations, not a second authority. Immutable Genesis plus Transitions reconstruct the aggregate; a verified paired snapshot may accelerate both components at one sequence.
 
 Canonical Activity State is pack-defined and bounded to two MiB by default. Large evidence bytes do not belong in it; Activity State holds digests and metadata.
 
@@ -159,11 +164,17 @@ Any future full-text index, host-operator filter, cached projection, or metrics 
 - authorization-filtered before access;
 - rebuildable from canonical data;
 - never used to decide truth;
-- never included in an Activity State hash.
+- never included in Core, Activity, aggregate, or Transition hashes.
 
 FTS5 may be evaluated after the structured Investigation fixture works. It is not a release requirement. Vector indexes and semantic summary stores are explicitly out of scope.
 
-### 7. Ephemeral operational data
+### 7. Durable operational integrity
+
+Room Integrity State and its monotonic generation survive restart but are not canonical Room truth. Healthy permits advance. Faulted means the last Head verifies but the runtime cannot advance safely and may serve only last-verified authorized data with an integrity envelope. Quarantined means canonical integrity cannot be established and permits only authenticated host-operator diagnostics, raw export, restore, and verification.
+
+Every canonical commit matches healthy plus an unchanged generation. An operator may request repair; only a generation-fenced verifier may restore healthy after rebuilding materializations/caches, reinstalling the exact pack, or restoring exact canonical bytes. Repair never edits, skips, or replaces Genesis/Transitions.
+
+### 8. Ephemeral operational data
 
 Connection presence, heartbeat timing, in-memory send queues, temporary upload progress, and metrics samples are operational. They do not consume canonical room sequence.
 
@@ -339,7 +350,7 @@ Host operators may archive/export Rooms whose Activities reached a Terminal Phas
 
 ### Snapshots
 
-Create snapshots every 250 accepted transitions or five active minutes. Retain immutable canonical genesis independently and the latest three automatic snapshots. Every snapshot is replaceable and can be recomputed.
+Create one paired Core-and-Activity snapshot every 250 accepted Transitions or five active minutes in an idempotent postcommit job. Each pair binds one complete Room Head, both canonical values and component hashes, and the aggregate hash. Retain immutable Genesis independently and the latest three pairs. Every pair is replaceable; deleting all pairs and current materializations still permits Genesis-plus-Transition recovery.
 
 ### Observation frames
 
@@ -368,6 +379,8 @@ Authorization is evaluated before retrieval:
 5. only then apply sorting, filtering, or optional text search;
 6. log identifiers and counts, not private content.
 
+Replay adds a historical gate after present authorization: reconstructed Membership existence, Standing, Access Mode, and Role at sequence N determine the viewer at N. A later Role or replacement Member ID inherits no earlier private content; spectator/operator and final-reveal history require explicit current policy.
+
 Searching all evidence and filtering afterward is unsafe because result counts, snippets, timing, and errors can leak hidden data.
 
 ## Summary and compaction policy
@@ -386,18 +399,21 @@ The server may generate deterministic structural summaries such as counts, legal
 
 ## Required invariants
 
-1. Canonical history, current state, projection, observation, artifact, and invocation context are distinct.
+1. Canonical history, current materialization, operational integrity, Projection, Observation, Artifact, and Invocation Context are distinct.
 2. Canonical transition history is never injected wholesale into a model by the server.
 3. Authoritative current truth precedes historical similarity.
 4. Authorization precedes persistence audience selection, retrieval, indexing, and rendering.
 5. Every artifact reference names an immutable digest and exact visibility.
 6. Superseding evidence creates a new version and explicit dependency invalidation.
-7. Derived indexes and caches cannot change room truth or replay.
+7. Paired snapshots, current materializations, derived indexes, and caches cannot change Room truth or Replay.
 8. A cursor reset sends an authorized current projection, not raw state.
 9. WorldStream never stores chain-of-thought or provider credentials.
 10. Agent-private memory remains runner-owned.
 11. Context assembly is bounded and deterministic in the frozen releases.
 12. Missing runner availability does not delete room data or activation intent.
+13. All three state hashes and the lineage hash reproduce from Genesis and Transitions after every cache is deleted.
+14. Only a generation-fenced verifier restores healthy integrity, without rewriting canonical history.
+15. Present-plus-historical authorization governs every Replay view.
 
 ## The simple explanation
 

@@ -66,7 +66,8 @@ Delivery resume means observation catch-up. The word resume MUST NOT imply cogni
 - one total order of committed transitions per room;
 - typed action routing, idempotency, and stable action results;
 - durable timers and host-recorded nondeterministic inputs;
-- state snapshots, recovery, current projection, and deterministic replay;
+- immutable Genesis/Transition lineage, paired Core-and-Activity snapshots, verified current materializations, recovery, current projection, and deterministic Replay;
+- durable Room Integrity State, its monotonic generation, and append-only incident/repair audit outside Authoritative Room State;
 - Membership-addressed Observation Frames, acknowledgements, and Cursor Catch-up;
 - durable activation intents, claim leases, retries, and status;
 - bounded network queues, rate limits, and slow-consumer handling;
@@ -97,9 +98,10 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - The server MUST host multiple independent rooms in one process.
 - Each room MUST pin exactly one Activity Pack identifier and immutable revision digest at creation.
 - A room MUST NOT silently switch pack versions.
-- Core Room Status MUST be active or archived; Room Health MUST be healthy, faulted, or quarantined; Activity Phase and Outcome MUST remain separate pack-defined values and separate from both core axes.
-- Archiving a Room MUST be recorded as an administrative Stimulus and Transition in that Room's order, as decided in [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md).
-- Archived, faulted, and quarantined rooms MUST reject ordinary participant mutation while retaining authorized inspect, export, recovery, and replay operations.
+- `CoreRoomState v1` MUST contain exactly Room Status plus the canonically sorted semantic Membership map. Room Head, hashes, Room Integrity State, Sessions, delivery, receipts, Activation, policy, diagnostics, telemetry, and commit time MUST NOT be Core fields.
+- Room Status MUST be active or archived. Archive MUST be an irreversible administrative Stimulus and Core Transition in the Room order, as decided in [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md); reaching a Terminal Phase or Outcome MUST NOT archive automatically.
+- In the winning Room order, archive MUST atomically cancel scheduled timers and generation-fence pending and leased Activation work. A healthy archived Room MAY serve authorized reads, export, and Replay and accept ordered suspend/depart changes, but MUST reject joins, resumes, participant work, and Access/Role elevation.
+- `RoomIntegrityState` MUST be `healthy`, `faulted`, or `quarantined` and MUST remain durable operational state outside Core, Authoritative Room State, `room_seq`, Replay state, and every canonical hash. Activity Phase and Outcome MUST remain separate pack-defined values.
 - v0.1 packs MUST be trusted, compiled into the server, and selected from an allowlist.
 - The public plugin ABI, untrusted code execution, and pack registry are deferred until after v0.2.
 
@@ -108,8 +110,15 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - Principal kind MUST be human or agent; Principal kind and pack-defined Role are separate.
 - Human and agent participants MUST use the same typed action path.
 - Membership MUST survive session disconnects and agent invocation termination.
-- Membership status MUST be separate from connection, runner availability, and activation status.
-- A domain-relevant Membership, Access Mode, or Role change MUST be recorded as a Membership-change Stimulus and Transition; session presence and Runner availability MUST NOT.
+- The semantic Membership map MUST record immutable Member ID, Principal ID, and room-local Principal kind plus Membership Standing, Access Mode, and current Role. Member/Principal binding and Principal kind MUST never change.
+- Membership Standing MUST be `enabled`, `suspended`, or `departed`. Enabled and suspended MAY transition in either direction; departed MUST be terminal. Rejoining MUST create a new Member ID that inherits neither Cursor nor private Observation Stream.
+- A Room MUST NOT contain more than one non-departed Membership for one Principal. Suspended or departed Memberships MUST NOT attach, act, receive new frames, or be activated.
+- Participant Access Mode MUST carry exactly one pack-valid Role; spectator and operator Access Modes MUST carry no Role. An Access Mode/Role change MUST be atomic.
+- Membership Standing MUST be separate from Session connection, Runner availability, and Activation status.
+- The versioned pure Core reducer MUST exclusively construct Room Status and the Membership map from a typed Core Stimulus containing attributable authority, an idempotency identity, exact expected Room sequence, reason code, and an unambiguous canonical Core before/after result.
+- One Core Stimulus MAY carry a canonically sorted atomic multi-Membership final-state changeset, with at most one before/after pair per Member ID. The host MUST validate the complete final state and pack Role cardinality without persisting, hashing, or exposing an invalid intermediate state.
+- Packs MUST receive immutable Core-before/proposed-after views and MUST NOT mutate Core. They MAY return an expected stable veto for join, resume, Access Mode, or Role proposals; they MUST NOT veto archive, suspend, or depart. A vetoable administrative rejection MUST create an idempotent durable no-Transition result and MUST NOT be classified as an Activity Fault; a mandatory-change veto is a Pack Fault.
+- A pre-existing desired final state MAY return a durable NoChange disposition. Every other accepted state-affecting Core Stimulus MUST produce one Transition; Session presence and Runner availability MUST NOT.
 - A human MAY join through a participant, spectator, or operator Membership if the pack and room policy allow it. Only the first is an acting Participant.
 
 ### FR-3: Typed actions and ordering
@@ -128,12 +137,17 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 
 ### FR-4: Deterministic state and timers
 
-- Authoritative Room State at sequence N MUST be a pure function of Room Genesis, the exact Activity Pack revision, and recorded Stimuli through N.
+- Authoritative Room State at sequence N MUST be a pure function of Room Genesis, the exact Core and Activity Pack revisions, and recorded Stimuli through N.
 - A pack MUST NOT read ambient wall time, operating-system randomness, files, network resources, environment variables, provider APIs, or secrets.
 - Host time and randomness that affect state MUST enter as recorded stimuli or recorded stimulus fields.
 - Timer creation, cancellation, and logical firing MUST be durable.
 - A timer retry MUST NOT cause two logical firings.
-- Canonical Activity State and Transition hashes MUST be reproducible.
+- The canonical hash contract MUST use separate domain-separated Core State, Activity State, and aggregate Authoritative State hashes. Core hashing MUST bind the Core schema version and canonical Core bytes; Activity hashing MUST bind the exact pack digest and canonical Activity bytes; the aggregate MUST bind both component hashes and their version identities.
+- Genesis, every accepted Transition, every paired snapshot, and the complete Room Head MUST bind all three applicable state hashes. The complete Head MUST also identify the Room sequence, Genesis-or-Transition lineage hash, Core schema version, and exact pack digest.
+- The Genesis hash MUST bind Room/version identities, exact pack digest, configuration, initial Core and Activity hashes, normalized initial timers, Room seed, and logical creation time.
+- Each Transition hash MUST bind the Room/sequence/version identities, prior Genesis-or-Transition hash, normalized recorded Stimulus, ordered Domain Events, normalized ordered timer changes, deterministic ordered Attention Signals, and all three resulting state hashes.
+- Room Integrity State/generation/incidents, operational authorization and commit witnesses, receipts, snapshots and materializations, projections/frames/cursors/resets/Sessions, Activation policy/decisions/intents/leases/delivery, diagnostics, telemetry, and commit wall time MUST NOT enter canonical state or Transition hashes. Canonical attribution and idempotency fields inside the normalized Stimulus remain included.
+- These state, lineage, integrity, repair, and Replay boundaries are decided in [ADR 0005](adr/0005-canonical-core-state-integrity-and-hash-lineage.md).
 - Core Room State and Activity State in the frozen releases MUST avoid floating-point values.
 
 ### FR-5: Scoped projections
@@ -172,18 +186,25 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - If no runner is available, the intent MUST remain pending until expiry or host-operator cancellation; WorldStream MUST NOT pretend that an agent ran.
 - A fresh invocation MUST receive the cause, authorized current projection, retained observation frames after its cursor, budget/deadline metadata, and explicit artifact references.
 - v0.1 MUST support a connected runner control channel or HTTP long poll. Arbitrary outbound webhooks are not required.
-- Replay MUST reconstruct activation decisions but MUST NOT contact runners or start invocations.
+- Replay MUST reproduce deterministic Attention Signals but MUST NOT reevaluate Activation policy, reconstruct an operational allow/deny decision, create an intent, contact a Runner, or start an Invocation.
 
-### FR-8: Recovery and replay
+### FR-8: Recovery, Replay, integrity, and repair
 
-- Canonical transitions MUST be append-only.
-- Every room MUST store an immutable canonical genesis record containing pack digest, configuration, ordered initial memberships/roles, seed, and recorded creation time.
-- Snapshots MUST be replaceable performance caches, never the only source of truth.
-- Startup MUST reconstruct each accessed room from genesis when no valid snapshot exists, or from its latest compatible verified snapshot and transition tail.
+- Immutable Genesis plus ordered accepted Transitions MUST be the sole canonical lineage. Neither may be edited, skipped, reordered, or silently replaced.
+- Every Room MUST store an immutable canonical Genesis record containing the exact reconstructible initial inputs and outputs required by FR-4, including initial Core and Activity values, normalized initial timers, and all three state hashes.
+- A snapshot MUST pair Core and Activity State at one sequence and bind Core schema version, exact pack digest, both canonical state values and component hashes, aggregate hash, and the applicable lineage hash. Snapshots MUST be disposable, idempotent postcommit caches and MUST NOT be written inside or determine success of the causing canonical commit.
+- Current Room/Core/Membership/Activity rows and actor memory MUST be verified serving materializations, not an independent source of truth.
+- Startup MUST reconstruct each accessed Room from Genesis when no valid paired snapshot exists, or from its newest compatible verified pair plus Transition tail. Deleting every snapshot and current materialization MUST still permit reconstruction from Genesis and Transitions.
 - A committed action that was acknowledged before process termination MUST not be lost.
 - A commit that occurred before a lost acknowledgement MUST return the stored original result when retried.
-- Replay MUST be read-only, use the exact pack revision, and verify recorded Activity State hashes plus the ordered Core Room State changes.
-- A hash mismatch or missing pack revision MUST fault replay instead of continuing with uncertain state.
+- Replay MUST be read-only, run the same versioned Core and exact pack reducers, reconstruct Core and Activity State, and verify the Genesis/Transition chain plus all three state hashes.
+- Present authentication and authorization MUST first admit a Replay request. At sequence N, reconstructed historical Membership Standing, Access Mode, and Role MUST determine the participant/private view; a Membership absent at N receives no participant/private view at N, and a later Role or replacement Membership MUST NOT inherit earlier private data. Spectator/operator history and a final-reveal view require explicit current projection policy and MUST NOT bypass pack privacy.
+- A hash mismatch, missing exact Core/pack revision, or unverifiable canonical byte MUST fail closed instead of continuing with uncertain state.
+- Room Integrity State MUST carry a monotonic integrity generation and a separate append-only incident/repair audit. Every canonical commit MUST atomically recheck `healthy` plus the unchanged generation; a failed fence MUST commit no Transition, sequence, or receipt.
+- `faulted` means the last canonical Head verifies but the runtime cannot safely advance it. A faulted Room MUST reject every canonical mutation but MAY serve only its last verified authorized Projection, retained Frame Catch-up, and verified Replay with an explicit integrity envelope.
+- `quarantined` means canonical integrity cannot be established. A quarantined Room MUST serve no normal Projection, Catch-up, or claimed-current Replay; only authenticated host-operator diagnostics, raw export, restore, and verification remain available.
+- Capability revocation, diagnostics, raw export, restore, and verifier repair MUST remain operational while canonical mutation is fenced. An operator MAY request repair, but only a successful generation-fenced verifier MAY restore `healthy`.
+- Repair MAY rebuild caches/materializations, reinstall the exact pack, or restore exact canonical bytes from a verified backup. It MUST NOT edit, omit, reorder, synthesize, or silently replace Genesis/Transitions. Restore MUST verify healthy before archive or Membership mutation.
 - Timeline branching, promotion, or merge is not part of v0.1 or v0.2.
 
 ### FR-9: Reference user interface
@@ -227,7 +248,7 @@ Required behavior:
 - one runner claiming the activation and starting a fresh invocation;
 - cursor catch-up without receiving another role's private data;
 - server termination after a committed action and successful restart recovery;
-- deterministic read-only Replay to the same final Activity State hash and Core Room State.
+- deterministic read-only Replay to the same final Core, Activity, and aggregate Authoritative State hashes.
 
 Required Heist acceptance gates:
 
@@ -238,7 +259,7 @@ Required Heist acceptance gates:
 5. Private clues, offers, and sealed choices never reach unauthorized participants or the public UI.
 6. Retrying an accepted action after a lost acknowledgement does not apply it twice.
 7. Killing the server during the scripted failure point loses no acknowledged state.
-8. Replay produces the same checkpoint hashes, outcome, and public history.
+8. Replay produces the same three checkpoint hashes, lineage hash, outcome, and public history.
 9. The deterministic demo requires no network service, model key, wallet, or paid API.
 
 ## Reference release B: Investigation Room v0.2
@@ -275,7 +296,7 @@ Required Investigation acceptance gates:
 4. A recorded correction supersedes evidence, marks dependent claims stale, notifies the human Lead, and creates Activation Intents for affected Agent Participants.
 5. A fresh invocation reconstructs only authorized current context and source references.
 6. The lead submits a source-linked structured brief and receives a deterministic score.
-7. Restart and replay reproduce the final case board, activation decisions, brief, and score.
+7. Restart and Replay reproduce the final case board, deterministic Attention Signals, brief, and score without reevaluating Activation policy.
 8. There are no live web requests, business-system writes, or LLM judging inside the activity.
 
 The generality gate fails if Investigation needs a new core room lifecycle, an Investigation-specific protocol message, special-case persistence tables beyond generic artifact metadata, or server-side model logic.
@@ -286,8 +307,8 @@ The generality gate fails if Investigation needs a new core room lifecycle, an I
 
 - SQLite durability settings and benchmark settings MUST be published.
 - Database writes that form one transition MUST be atomic.
-- Startup MUST run migrations, verify supported SQLite capabilities, check data-directory permissions, and validate room head/snapshot consistency.
-- Storage-full, corrupt snapshot, pack failure, and slow-client paths MUST fail closed and produce actionable host-operator diagnostics.
+- Startup MUST run migrations, verify supported SQLite capabilities, check data-directory permissions, and validate complete Room Head, canonical lineage, paired-snapshot, and current-materialization consistency.
+- Storage-full, corrupt snapshot, pack failure, hash disagreement, and slow-client paths MUST fail closed and produce actionable host-operator diagnostics without rewriting canonical history.
 
 ### Moderate single-node performance envelope
 

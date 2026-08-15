@@ -37,6 +37,10 @@ If these two stories work without hiding domain special cases in core, the proje
 - Atomic transition/action-receipt/timer/frame/activation commit.
 - JSON HTTP/WebSocket protocol.
 - Human and agent principals/memberships.
+- Versioned Core reducer with immutable identity, full Membership lifecycle, atomic multi-Membership administration, and irreversible archive.
+- Separate Core, Activity, and aggregate Authoritative State hashes under one Genesis/Transition lineage hash.
+- Paired disposable Core-and-Activity postcommit snapshots plus verified current materializations.
+- Generation-fenced Room Integrity State and verifier-only repair without history rewrite.
 - Typed action validation and idempotency.
 - Public and participant-specific projections.
 - Durable observation frames, cursors, reconnect, and explicit projection reset.
@@ -112,12 +116,17 @@ Build:
 - one bounded actor per active room;
 - SQLite schema, foreign keys, WAL, FULL synchronous durability, and supported-version check;
 - dedicated database writer thread;
-- immutable canonical room genesis and pinned pack digest;
-- Transition/Activity State hash chain;
+- immutable canonical Room Genesis, pinned Core schema/pack digest, and complete Head;
+- Core, Activity, aggregate Authoritative State, and Genesis/Transition hash lineage;
+- versioned Core reducer and typed Core Stimulus with authority/idempotency/expected-sequence/reason fields;
+- immutable Membership identity/kind, enabled ↔ suspended/terminal-departed lifecycle, atomic Access/Role shape, and final-state multi-Membership changesets;
+- stable vetoable-administration rejection versus mandatory archive/suspend/depart semantics;
+- irreversible archive with timer cancellation and Activation fencing;
 - action receipts and same-ID/different-payload detection;
 - atomic accepted-transition commit;
 - stable receipts only for deterministic admitted domain rejections; transient errors do not consume action IDs;
-- periodic snapshots and load from snapshot plus tail, with genesis fallback when all snapshots are absent;
+- paired Core-and-Activity snapshots written postcommit and load from a verified pair plus tail, with Genesis fallback after every cache/materialization is absent;
+- healthy/faulted/quarantined Room Integrity State, monotonic generation fence, incident audit, restricted serving, and verifier-only repair;
 - durable timers and idempotent TimerFired stimulus;
 - conditional timer-generation update inside the transition transaction;
 - supervisor Loading/Active/Passivating lifecycle and generation-fenced room passivation;
@@ -130,10 +139,12 @@ Exit tests:
 2. Retrying one action one hundred times creates one accepted transition.
 3. A reused action ID with changed payload is rejected.
 4. Termination after commit and before reply returns the original result on retry.
-5. Removing every snapshot still reconstructs the same Core Room State and Activity State hash from immutable genesis and Transitions.
+5. Removing every paired snapshot and current materialization still reconstructs the complete Head and all three state hashes from immutable Genesis and Transitions.
 6. A timer due during shutdown fires once logically after restart.
 7. A duplicated TimerFired candidate conditionally commits at most once.
 8. A lost room-creation HTTP reply returns the original room on idempotent retry.
+9. One atomic two-Membership Role swap passes final cardinality without exposing an invalid intermediate.
+10. Faulted versus quarantined serving, integrity-generation commit races, and verifier-only cache repair pass without changing Genesis/Transition bytes.
 
 Gate A:
 
@@ -147,7 +158,8 @@ Build:
 
 - development principal and scoped bearer-capability creation;
 - separate human/agent Principal kind and pack-defined Role;
-- membership lifecycle independent of session state;
+- immutable Membership binding/kind; enabled ↔ suspended, terminal departed/new-ID rejoin lifecycle independent of Session state;
+- atomic participant-Role versus roleless spectator/operator Access shape and one non-departed Membership per Principal;
 - participant room.attach;
 - public/participant/operator-membership Viewer types;
 - durable observation frames and one frame sequence per membership;
@@ -166,6 +178,8 @@ Exit tests:
 4. A slow consumer cannot block another participant or grow process memory without bound.
 5. Hidden Counter fixture fields never enter the unauthorized frame serializer.
 6. A transition committed between catch-up query and live switch is buffered and delivered without a gap.
+7. Suspended/departed Memberships cannot attach, act, receive new frames, or be activated; a rejoin receives a new empty private stream.
+8. Historical Replay uses the reconstructed Membership/Access/Role at N rather than current Role assignment.
 
 Gate B:
 
@@ -243,8 +257,8 @@ Build:
 - public Heist board and small SVG map;
 - phase/deadline, participant, session, runner, and activation status;
 - public plans/clues and outcome timeline;
-- operator-membership room/cursor/timer/activation inspector;
-- read-only replay slider and hash status;
+- operator-membership complete-Head/integrity/cursor/timer/activation inspector;
+- present-plus-historical-authorized read-only Replay slider and all four hash statuses;
 - completed final-reveal projection;
 - controlled termination after commit and automatic recovery;
 - optional LLM-backed one-role example behind a user-owned API key;
@@ -276,8 +290,8 @@ Build:
 - protocol fuzzing and payload-limit tests;
 - one-hour soak and reproducible load profile;
 - metrics and JSON structured logs;
-- database/WAL/version/integrity startup diagnostics;
-- safe backup and replay verification command;
+- database/WAL/version/integrity startup diagnostics and append-only incident audit;
+- safe backup, full Replay verification, and generation-fenced verifier repair command;
 - non-root Docker image and persistent-volume example;
 - native quickstart;
 - SECURITY.md, CONTRIBUTING.md, code of conduct, issue templates, and limitations;
@@ -300,14 +314,17 @@ v0.1 exit:
 - [ ] Retrying an action never mutates twice.
 - [ ] Same action ID with different payload is rejected.
 - [ ] Timer fires once logically across restart/retry.
-- [ ] Snapshot plus tail reproduces room head hash.
-- [ ] Genesis plus full transition history reproduces room head after every snapshot is removed.
-- [ ] Full read-only replay reproduces final hash.
+- [ ] Paired snapshot plus tail reproduces the complete Room Head and all three state hashes.
+- [ ] Genesis plus full Transition history reproduces that Head after every snapshot and current materialization is removed.
+- [ ] Full read-only Replay reproduces Core, Activity, aggregate, and lineage hashes.
+- [ ] Integrity-generation races commit either the canonical mutation or integrity change, never both, and consume no losing sequence/receipt.
+- [ ] Verifier repair rebuilds caches/materializations and restores healthy without changing Genesis/Transition bytes.
 
 ### Participation
 
 - [ ] Human and agent Principals can occupy participant Memberships and use the same Action path.
 - [ ] Membership survives session disconnect and invocation termination.
+- [ ] Membership binding/kind, lifecycle, Access/Role shape, atomic Role swaps, and new-ID rejoin invariants pass.
 - [ ] Private projection tests cover live, catch-up, reset, replay, logs, and public UI.
 - [ ] Actor-barrier cursor reconnect returns no silent gaps, including a commit during handoff.
 - [ ] Slow consumer memory is bounded.
@@ -485,15 +502,16 @@ Failure means revise the Activity boundary and repeat the gate. It does not auto
 
 | Layer | Required tests |
 |---|---|
-| Canonical data | Cross-language golden JSON/hash vectors, duplicate keys, prohibited floats |
-| Pack | Golden replay, property tests, invalid actions, size limits, projection noninterference |
+| Canonical data | Cross-language Core/Activity/aggregate/Genesis/Transition golden vectors, duplicate keys, prohibited floats |
+| Core reducer | Lifecycle, one-live-seat uniqueness, Access/Role shape, atomic multi-Membership final state, archive, veto/mandatory administration |
+| Pack | Golden Replay, Core-before/proposed-after, property tests, invalid Actions/admin vetoes, size limits, projection noninterference |
 | Room actor | Ordering, stale action, mailbox bound, passivation/reload, pack fault |
-| SQLite | Genesis recovery, atomic commit, idempotency/FK constraints, WAL recovery, disk-full path, migration |
+| SQLite | Genesis-only and paired-snapshot recovery, current-materialization rebuild, integrity-generation fencing, idempotency/FK constraints, WAL recovery, disk-full path, migration |
 | Timer | Schedule/cancel/firing retry, overdue restart storm |
 | Observation | audience isolation, duplicate delivery, actor-barrier handoff, cursor ack, reset, slow consumer |
 | Activation | duplicate offer, claim receipt, claim race, lease generation/expiry, authorization, replay suppression |
 | SDK | reconnect state machine, retry, cancellation, runner callback failure |
-| UI | public/private DOM isolation, XSS, replay read-only, stale-action disable |
+| UI | public/private DOM isolation, XSS, present-plus-historical Replay, fault/quarantine surfaces, stale-Action disable |
 | Artifact | path, size, MIME, digest, quota, authorization, backup consistency |
 | System | forced termination matrix, deterministic demo, soak, quickstart |
 
@@ -568,14 +586,14 @@ Recognition should come from a small, demonstrably correct system:
 The first ten issues should be:
 
 1. Scaffold Cargo workspace and pinned toolchain.
-2. Define canonical JSON profile and Rust/Python hash vectors.
+2. Define canonical JSON plus Core/Activity/aggregate/lineage Rust/Python hash vectors.
 3. Add SQLite bundled-version assertion and initial migration.
-4. Implement Counter Activity Pack.
-5. Implement single-writer room actor and atomic accepted transition.
-6. Implement action receipts and idempotency conflict.
-7. Implement snapshots and recovery hash verification.
+4. Implement `CoreRoomState v1`, Core reducer, Membership lifecycle, and atomic administrative changesets.
+5. Implement Counter Activity Pack against immutable Core-before/proposed-after views.
+6. Implement the single-writer Room actor, atomic accepted Transition, Action receipts, and idempotency conflict.
+7. Implement complete Head, paired postcommit snapshots, current-materialization rebuild, and recovery hash verification.
 8. Implement WebSocket hello/attach/action/observation path.
 9. Implement membership cursor acknowledgement and projection reset.
-10. Add forced termination test after commit and before reply.
+10. Add forced termination plus integrity-generation/verifier-repair tests without history rewrite.
 
 Heist work begins only after these establish the Room Kernel.

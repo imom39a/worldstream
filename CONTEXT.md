@@ -25,20 +25,24 @@ The Activity Pack-defined final result of a Room's activity. It may be establish
 _Avoid_: Room closure, room status, activation completion
 
 **Room Status**:
-Whether a Room is active or archived, independent of its Activity Phase and Outcome.
-_Avoid_: Activity phase, outcome, room health
+The canonical lifecycle value of a Room: active or archived; archived is terminal and independent of Activity Phase and Outcome.
+_Avoid_: Activity phase, outcome, room integrity
 
 **Core Room State**:
-The WorldStream-owned current facts about a Room's lifecycle and Memberships.
-_Avoid_: Activity state, room health, deployment state
+The WorldStream-owned canonical value containing exactly Room Status and the semantic Membership map.
+_Avoid_: Activity state, Room Integrity State, Room Head, delivery state
 
 **Activity State**:
 The Activity Pack-owned current domain facts for the activity unfolding in a Room.
 _Avoid_: Core room state, Projection, agent-private memory
 
 **Authoritative Room State**:
-The accepted current truth of a Room, comprising its Core Room State and Activity State.
+The accepted current truth of a Room, comprising exactly its Core Room State and Activity State.
 _Avoid_: Projection, observation, context, transcript
+
+**Room Integrity State**:
+The durable operational assessment of whether a Room's canonical lineage is healthy, faulted, or quarantined. It is outside Authoritative Room State and canonical hashes.
+_Avoid_: Room status, Activity phase, canonical health state
 
 **Canonical History**:
 The immutable lineage of a Room's creation facts and ordered Transitions.
@@ -51,8 +55,12 @@ A durable identity recognized by WorldStream, representing either a human or an 
 _Avoid_: Participant, membership, session, runner
 
 **Membership**:
-One Principal's durable room-local seat, carrying its Access Mode, standing, and any pack-defined Role.
+One Principal's durable room-local seat, carrying an immutable Principal binding and kind, its Membership Standing, Access Mode, and any pack-defined Role.
 _Avoid_: Account, session, connection, invocation
+
+**Membership Standing**:
+The canonical lifecycle value of a Membership: enabled, suspended, or departed; enabled and suspended are reversible, while departed is terminal.
+_Avoid_: Session status, connection status, runner availability
 
 **Room Member**:
 A Principal considered in one Room through a Membership, whether acting, spectating, or operating.
@@ -104,6 +112,10 @@ _Avoid_: Affordance as a formal term, guaranteed action, command
 A fully recorded candidate for advancing a Room, derived from an Action, timer firing, membership change, or host input. Only an accepted Stimulus produces a Transition.
 _Avoid_: Event, protocol message, accepted transition
 
+**Genesis**:
+The immutable sequence-zero creation record from which a Room's initial Core and Activity State are reconstructed.
+_Avoid_: Initial snapshot, first transition
+
 **Host Stimulus Source**:
 A non-participant source of recorded Room input, such as a timer facility or controlled evidence feed.
 _Avoid_: System actor, participant, agent, runner
@@ -131,8 +143,12 @@ A Projection for one acting Participant, including that Participant's current kn
 _Avoid_: Member projection when access mode matters, authoritative state
 
 **Observation Frame**:
-One Membership-addressed unit of authorized change, notice, or resynchronization information.
+One Membership-addressed unit of authorized change or notice caused by an accepted Transition.
 _Avoid_: Event, message, projection, state dump
+
+**Projection Reset**:
+A full authorized Projection that establishes a new delivery baseline when retained Observation Frames cannot cover a Membership's Cursor.
+_Avoid_: Observation frame, replay, silent cursor advance
 
 **Observation Stream**:
 The ordered progression of Observation Frames belonging to one Membership.

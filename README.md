@@ -2,7 +2,7 @@
 
 > A self-hosted realtime room runtime for multi-agent applications, with humans as first-class participants.
 
-WorldStream lets external humans and AI agents participate in the same durable Room. An Activity Pack defines the Activity State, Roles, Legal Actions, visibility rules, timers, and Outcomes. WorldStream owns Core Room State and supplies the difficult reusable parts: ordering, persistence, scoped realtime observations, cursor-based catch-up, targeted activation, recovery, and deterministic Replay.
+WorldStream lets external humans and AI agents participate in the same durable Room. An Activity Pack defines Activity State, Roles, Legal Actions, visibility rules, timers, and Outcomes. WorldStream owns Core Room State—exactly Room Status plus the semantic Membership map—and supplies ordering, integrity, persistence, scoped realtime observations, cursor-based catch-up, targeted activation, recovery, and deterministic Replay.
 
 The simplest architectural analogy is a multiplayer game server whose players may be humans or AI agents. The product is not game-specific: the server owns the shared reality, an Activity Pack supplies the domain rules, and Heist is only the first reference activity. Participants see only their authorized view and submit typed actions. An AI model does not remain alive inside WorldStream; a developer-owned runner invokes it when work is available.
 
@@ -45,7 +45,8 @@ WorldStream owns:
 - rooms, Membership lifecycle, Access Mode, current Role assignment, and scoped authorization;
 - one total order of accepted transitions per room;
 - idempotent action submission and commit-before-acknowledgement;
-- current state reconstruction, snapshots, recovery, and replay;
+- three-hash canonical lineage, paired disposable snapshots, verified state reconstruction, recovery, and Replay;
+- generation-fenced operational Room Integrity State and verifier-only repair without history rewrite;
 - Membership-addressed observations and participant Legal Actions;
 - durable activation intents for external agent runners;
 - bounded WebSocket delivery and cursor-based reconnect;
@@ -88,7 +89,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [UI architecture](docs/ui-architecture.md) — deliberately small first-party presentation layer
 - [Security model](docs/security.md) — trust boundary and required tests
 - [Delivery roadmap](docs/roadmap.md) — Agent Heist MVP followed by Investigation Room
-- [Architecture decisions](docs/adr/) — product boundary, Room sequencing, and Activation authority
+- [Architecture decisions](docs/adr/) — product boundary, Room sequencing, Activation authority, and canonical state/integrity lineage
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
 
 ## Status

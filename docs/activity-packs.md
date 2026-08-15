@@ -114,9 +114,17 @@ Logical manifest:
 
 Principal kind and Role are separate. A human or agent Principal may hold a Role through a participant Membership if the manifest permits it.
 
-The Activity Pack defines Role names, cardinality, permissions, and Legal Actions. WorldStream records the current Role assignment on the Membership. If pack Activity State carries a role-to-membership index for deterministic reduction, it is a reflection updated only from recorded Membership-change Stimuli and must never diverge from Membership metadata.
+The Activity Pack defines Role names, cardinality, permissions, and Legal Actions. The WorldStream Core reducer exclusively records current assignment in the semantic Membership map. Pack Activity State MUST NOT persist a second role-to-Membership ownership index; reduction derives any needed lookup from the supplied immutable Core view.
 
 The revision digest pins the exact compiled behavior and schemas. A semantic version is explanatory; replay trusts the digest.
+
+## Core boundary seen by packs
+
+`CoreRoomState v1` is host-owned and contains exactly Room Status plus a canonically sorted Membership map. For each Membership it exposes immutable Member ID, Principal ID, and room-local Principal kind; enabled/suspended/departed standing; participant/spectator/operator Access Mode; and a Role exactly for participant access. Room Head, hashes, integrity, Sessions, Cursors/Frames, receipts, policy/Activation, diagnostics, telemetry, and commit time are not Core.
+
+For every reduction, the host supplies immutable Core-before and proposed-Core-after values. They are equal for a non-Core Stimulus. A versioned Core Stimulus carries authority attribution, idempotency identity, exact expected sequence, reason code, semantic time when applicable, and a canonical before/after changeset. One Stimulus may change several Memberships atomically, sorted by Member ID with at most one pair per ID; the pack observes only the complete proposed final state.
+
+The pack may declare a stable veto for join, resume, Access Mode, or Role proposals. It may not veto archive, suspend, or depart; attempting to do so is a Pack Fault. A veto produces an idempotent administrative rejection with no Transition, not an Activity Fault. Packs may change Activity State or emit deterministic outputs in response to an accepted Core change, but cannot mutate Core itself.
 
 ## Logical Rust interface
 
@@ -133,6 +141,8 @@ pub trait ActivityPack: Send + Sync + 'static {
     fn apply(
         &self,
         state: &CanonicalValue,
+        core_before: &CoreRoomStateV1,
+        proposed_core_after: &CoreRoomStateV1,
         stimulus: &RecordedStimulus,
         context: &DeterministicContext,
     ) -> Result<AppliedTransition, ApplyError>;
@@ -153,7 +163,7 @@ pub trait ActivityPack: Send + Sync + 'static {
 }
 
 pub enum ApplyError {
-    ActionRejected(ActionRejection),
+    Rejected(DeclaredRejection),
     ActivityFault(ActivityFault),
 }
 ~~~
@@ -166,7 +176,7 @@ Contains only recorded input:
 
 - room ID;
 - room configuration;
-- exact ordered initial memberships and roles;
+- exact initial `CoreRoomState v1` constructed and validated by the host;
 - room seed;
 - recorded logical creation time;
 - pack revision digest.
@@ -194,20 +204,14 @@ pub enum RecordedStimulus {
         fired_at: RecordedTime,
         payload: CanonicalValue,
     },
-    MembershipChanged {
-        member_id: MemberId,
-        change: MembershipChange,
-        recorded_at: RecordedTime,
+    CoreChanged {
+        core_stimulus: CoreStimulusV1,
     },
     ExternalInput {
         source_id: String,
         input_id: String,
         input_type: String,
         payload: CanonicalValue,
-        recorded_at: RecordedTime,
-    },
-    Administrative {
-        operation: AdministrativeOperation,
         recorded_at: RecordedTime,
     },
 }
@@ -317,7 +321,7 @@ pub enum Viewer {
 }
 ~~~
 
-The pack produces an ActivityProjection containing only pack-owned domain information. WorldStream constructs the client-facing Projection by wrapping it with authorized Core Room facts such as Room Status and the authenticated Membership's metadata. A separate protocol Projection Envelope carries causal, operational, and delivery metadata such as current sequence, Room Health, schema, and hash. Neither layer may overwrite fields owned by another.
+The pack produces an ActivityProjection containing only pack-owned domain information. WorldStream constructs the client-facing Projection by wrapping it with authorized Core Room facts such as Room Status and the authenticated Membership's metadata. A separate protocol Projection Envelope carries causal, operational, and delivery metadata such as complete Room Head, Room Integrity State/generation, schema, and hash. Neither layer may overwrite fields owned by another.
 
 ActivityObservation is the pack-produced authorized delta and legal-action update caused by a Transition. WorldStream wraps it with the recipient Membership and causal delivery metadata.
 
@@ -346,9 +350,10 @@ For the same:
 
 - Activity Pack revision digest;
 - genesis input and seed;
+- immutable Core-before/proposed-after values;
 - ordered recorded stimuli;
 
-the pack MUST produce byte-identical Canonical Activity State hashes and logically identical transition output.
+the pack MUST produce byte-identical Canonical Activity State hashes and logically identical ordered Transition output. The host's Core reducer independently reproduces the Core State hash; the host then binds Core, Activity, and aggregate hashes into Genesis/Transition lineage.
 
 Forbidden inside initialize, apply, project, and observe:
 
@@ -374,7 +379,7 @@ Maps are canonicalized by key. Unknown input fields are rejected. Golden replay 
 
 ## Rejections and faults
 
-ApplyError has two variants: ActionRejected and ActivityFault. ActionRejected is expected only for ParticipantAction:
+ApplyError has two variants: Rejected and ActivityFault. Rejected is expected for a ParticipantAction:
 
 - domain constraint violated after strict schema admission;
 - wrong role;
@@ -386,7 +391,9 @@ ApplyError has two variants: ActionRejected and ActivityFault. ActionRejected is
 
 It produces no canonical Transition.
 
-A duplicate or stale timer candidate is discarded by host admission before pack application. An invalid timer, Membership, external, or administrative Stimulus reaching deterministic pack logic is an ActivityFault; it is never disguised as a participant Action rejection.
+Rejected is also valid for a vetoable Core proposal—join, resume, Access Mode, or Role change—when the proposed complete final Core state violates pack domain/cardinality rules. It produces a stable idempotent administrative rejection with no Transition and is not an ActivityFault. Returning Rejected for archive, suspend, or depart is an ActivityFault because those Core operations are mandatory.
+
+A duplicate or stale timer candidate is discarded by host admission before pack application. Invalid timer/external input or an internally inconsistent mandatory Core Stimulus reaching deterministic pack logic is an ActivityFault; it is never disguised as a participant Action rejection.
 
 The Room Kernel rejects based_on_room_seq mismatch before pack application in the frozen releases.
 
@@ -414,11 +421,12 @@ v0.1 and v0.2 packs are compiled into worldstreamd and registered in a static al
 Room creation:
 
 1. resolves an exact compiled revision digest;
-2. validates configuration and memberships;
-3. records an immutable canonical genesis object with pack digest, configuration, ordered Memberships/Roles, seed, creation time, genesis hash, and initial Activity State hash;
-4. calls initialize;
-5. constructs initial authorized projections and timers;
-6. commits all room metadata atomically.
+2. validates configuration and constructs initial `CoreRoomState v1` with the Core reducer;
+3. calls initialize with immutable initial Core and receives canonical Activity State plus normalized initial timer requests;
+4. computes separate Core, Activity, and aggregate hashes and a Genesis hash binding the exact creation inputs and normalized timers;
+5. records immutable Genesis and complete Head zero;
+6. constructs initial authorized Projections without creating an Observation Frame, Attention Signal, or Activation;
+7. commits Genesis, Head, verified current materializations, timers, resource, and creation receipt atomically.
 
 ### Upgrade
 
@@ -509,7 +517,6 @@ State contains:
 - phase and phase generation;
 - recorded deadlines;
 - facility configuration;
-- a deterministic role-to-membership index reflecting authoritative Membership metadata;
 - private clue ownership and disclosure state;
 - structured offers and accepted exchanges;
 - public plan proposals and endorsements;
@@ -612,7 +619,7 @@ Only commitment_opened and required_action_deadline are release-critical. Public
 6. A fresh invocation catches up and commits before deadline.
 7. Kill/restart loses no acknowledged move.
 8. Same action retry never mutates twice.
-9. Replay reproduces every selected Activity State hash and final Outcome.
+9. Replay reproduces every selected Core, Activity, aggregate, and lineage hash plus the final Outcome.
 10. The public UI never receives private clues, offers, or commitments.
 
 ## Reference Activity B: Investigation Room
@@ -832,17 +839,20 @@ Every built-in pack MUST pass:
 
 - manifest/schema consistency;
 - initialization determinism;
-- golden Transition and final Activity State hashes;
+- golden Genesis/Transition lineage plus Core, Activity, and aggregate hashes;
 - repeated apply output equality;
-- invalid domain action rejection plus kernel stale-action conformance;
+- invalid domain Action rejection plus kernel stale-Action conformance;
+- join/resume/Access/Role declared vetoes and mandatory archive/suspend/depart handling;
+- atomic multi-Membership final-state Role/cardinality changes with no reflected pack ownership;
 - timer retry idempotency;
 - maximum-state and output bounds;
 - projection schema validation;
 - randomized cross-participant privacy/noninterference;
 - completed-reveal authorization;
 - activation-reason declaration and deduplication;
-- crash recovery from an older snapshot;
+- crash recovery from an older paired Core-and-Activity snapshot and from Genesis alone;
 - replay without external I/O;
+- present-plus-historical Replay authorization across suspend/depart/rejoin and Role changes;
 - absence of floating-point authoritative values;
 - no core changes specific to the pack.
 

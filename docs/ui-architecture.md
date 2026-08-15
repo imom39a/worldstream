@@ -34,11 +34,11 @@ The same room can expose different projection schemas:
 ### Operator membership
 
 - local administrative and diagnostic view;
-- shows room health, sequences, membership/session state, runner availability, activation status, timers, and replay verification;
+- shows Room Integrity State/generation, complete Head and three state hashes, Membership/Session state, Runner availability, Activation status, timers, incidents/repairs, and Replay verification;
 - may show pack-defined debug fields only under explicit operator-membership scope;
 - never displays provider credentials or chain-of-thought.
 
-Completed replay may use a pack-defined final-reveal projection. Replay itself does not bypass visibility.
+Replay first requires present authorization, then uses the reconstructed Membership/Access/Role at the selected sequence for historical visibility. A later Role or replacement Member ID inherits no earlier private view. Completed Replay may use a separately authorized pack-defined final-reveal Projection; Replay itself does not bypass visibility.
 
 ## Runtime data flow
 
@@ -63,14 +63,14 @@ Both reference views reuse:
 - server and room connection status;
 - live versus replay mode;
 - room sequence and Membership cursor;
-- Core Room Status, Room Health, pack-defined Activity Phase, Outcome, and pinned Activity Pack revision;
+- Core Room Status, operational Room Integrity State/generation, pack-defined Activity Phase, Outcome, and pinned Activity Pack revision;
 - Room Member list with Principal kind, Access Mode, Role when acting, Membership status, and temporary session state;
 - agent runner availability and activation status shown separately;
 - current phase and deadline;
 - legal-action form generated from first-party typed definitions;
 - public/authorized event timeline;
 - activation-reason markers;
-- replay sequence slider and hash-verification status;
+- replay sequence slider and Core/Activity/aggregate/lineage hash-verification status;
 - error, resync, and slow-consumer status;
 - host-operator-only restart/recovery diagnostics.
 
@@ -116,7 +116,7 @@ These controls send ordinary action.submit messages.
 - public historical projection;
 - each participant historical view only when authorized;
 - completed final-reveal view;
-- state and transition hash status;
+- Core, Activity, aggregate Authoritative State, and Transition-lineage hash status;
 - exact rule explanation for outcome.
 
 ## Investigation Room view
@@ -187,6 +187,8 @@ Client state is divided into:
 - replay response;
 - accepted/rejected action receipts.
 
+The client may retain Room Integrity State/generation and complete Head only as server-backed operational/causal metadata. Neither is rendered as Activity State or editable client truth.
+
 ### Temporary transport state
 
 - socket connecting/connected/disconnected;
@@ -216,6 +218,14 @@ The client SHOULD avoid optimistic domain mutation. It may show an action as sub
 6. Never show stale controls as currently legal while catch-up is incomplete.
 
 An Agent Participant's separately authorized Room Member client uses the same Cursor semantics through the SDK even if it has no visual UI. The Runner activation-control client does not own or acknowledge that Cursor.
+
+## Integrity and recovery behavior
+
+- Loading/CatchingUp does not render stale data as current or enable normal Action controls.
+- Faulted renders a persistent banner with state, generation, last verified complete Head, and safe reason code; disables all canonical mutation; and may show only the last verified authorized Projection, retained Catch-up, or verified Replay.
+- Quarantined removes normal Projection, Catch-up, Action, and claimed-current Replay surfaces. An authenticated host-operator view may expose bounded diagnostics, raw-export/restore requests, verification progress, and incident history without raw pack-private state.
+- The UI may request repair but cannot clear integrity or edit canonical history. Only a successful generation-fenced verifier result changes the displayed state to healthy.
+- Archived is distinct from unhealthy: a healthy archived Room remains readable/replayable and permits only authorized suspend/depart administration.
 
 ## Component choices
 
@@ -293,3 +303,6 @@ Runtime LLM generation of executable UI is not a target. It would make permissio
 8. Replay is read-only and visibility-aware.
 9. Activity data cannot execute code or choose arbitrary rendering behavior.
 10. Investigation adds first-party components, not a generic UI platform.
+11. Faulted and quarantined serving surfaces remain visibly and behaviorally distinct.
+12. No UI control can mark a Room healthy or rewrite Genesis/Transitions.
+13. Complete Head and all three state hashes are displayed as metadata, never Core or Activity State.

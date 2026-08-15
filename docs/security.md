@@ -29,13 +29,14 @@ Rust packs run in the WorldStream process and are not sandboxed. A malicious or 
 
 ## Protected assets
 
-- Authoritative Room State and Transition integrity;
+- immutable Genesis/Transition lineage, Authoritative Room State, and all Core/Activity/aggregate hashes;
+- Room Integrity State/generation and append-only incident/repair audit;
 - participant-private projections and observation frames;
 - private clues, offers, commitments, evidence assignments, and draft work;
 - capability tokens and token hashes;
 - activation context and lease ownership;
 - action idempotency and stable results;
-- SQLite database, WAL, snapshots, and backups;
+- SQLite database, WAL, paired snapshots, and backups;
 - v0.2 content-addressed evidence artifacts;
 - operator controls and replay authorization;
 - availability of bounded room and session resources.
@@ -123,14 +124,16 @@ Activity Packs must classify every projection field. The absence of a label does
 10. All queues and payloads are bounded.
 11. Activation offer metadata contains no private projection.
 12. Private activation context is returned only after an authorized lease claim.
-13. Replay cannot bypass current or pack-defined reveal authorization.
+13. Replay requires present authorization and reconstructed historical Membership/Access/Role authorization; it cannot bypass pack-defined reveal policy.
 14. Logs and metrics exclude secrets and private payloads by default.
 15. Artifact paths derive only from verified digests, never user filenames.
 16. Pack code receives no host I/O capability through its interface.
-17. Hash or deterministic replay disagreement faults the room.
+17. Canonical hash or deterministic Replay disagreement quarantines the Room; an intact Head that cannot safely advance faults it.
 18. Transient admission/runtime errors do not consume an action ID.
 19. An expired activation claim cannot operate on a later lease generation.
-20. A durable room genesis remains sufficient after all snapshots are removed.
+20. Immutable Genesis plus Transitions remains sufficient after all paired snapshots and current materializations are removed.
+21. Every canonical commit fences on healthy Room Integrity State plus an unchanged generation.
+22. Only a successful generation-fenced verifier may restore healthy, and repair never rewrites canonical lineage.
 
 ## Authentication and capabilities
 
@@ -222,7 +225,9 @@ Required design:
 - another member ID in a URL/body never changes authenticated viewer identity;
 - frame caches include audience in every key;
 - projection reset uses the same authorization path as live projection;
-- replay requires a viewer and pack reveal policy.
+- Replay first authenticates/authorizes the present requester, then reconstructs Membership existence, Standing, Access Mode, and Role at sequence N to select the historical viewer;
+- a Membership absent at N receives no participant/private view, and a later Role or replacement Member ID inherits no earlier private data;
+- spectator/operator history and final reveal require explicit present projection policy.
 
 Required tests:
 
@@ -238,6 +243,20 @@ Required tests:
 Noninterference test principle:
 
 > Changing a hidden field for participant B must not change participant A's serialized projection unless the pack explicitly publishes a consequence visible to A.
+
+## Room integrity, serving, and repair
+
+`RoomIntegrityState` is durable operational security state outside Core Room State, Authoritative Room State, Room sequence, Replay state, and canonical hashes:
+
+- healthy permits canonical advance;
+- faulted means the last canonical Head verifies but the runtime cannot safely advance it;
+- quarantined means canonical integrity cannot be established.
+
+Every integrity change increments a monotonic generation and appends an incident/repair record. Every canonical commit conditionally matches both healthy and the generation captured during preparation. A lost fence writes no Transition, sequence, or receipt. No canonical participant or administrative mutation is allowed while faulted or quarantined; operational capability revocation remains immediate.
+
+A faulted Room may expose only its last verified authorized Projection, retained Frame Catch-up, and verified Replay with explicit integrity metadata. A quarantined Room exposes no normal Projection, Catch-up, or claimed-current Replay. Authenticated host-operator diagnostics, raw export, restore, and verification remain available, with safe bounded details that do not disclose private state to a Room Member.
+
+An operator can request repair but cannot mark a Room healthy. Only a successful verifier conditioned on the current generation may do so. The verifier may rebuild materializations/caches, reinstall the exact retained pack, or restore exact canonical bytes from a verified backup; it cannot edit, skip, reorder, synthesize, or replace Genesis/Transitions.
 
 ## Agent runner and activation security
 
@@ -405,11 +424,12 @@ None of that is promised in v0.1 or v0.2.
 - SQLite, WAL, and shared-memory files remain on local storage together;
 - data directory is owner-only;
 - startup validates path type, permissions, free space, SQLite version, migrations, and integrity;
-- immutable canonical genesis is verified before recovery;
-- snapshots are hashed and can fall back to an older verified snapshot or genesis;
-- deleting all snapshots still permits recovery from genesis plus transitions;
+- immutable canonical Genesis and its three initial state hashes are verified before recovery;
+- snapshots are paired Core-and-Activity postcommit caches that verify both canonical values, both component hashes, aggregate hash, and applicable lineage hash before use;
+- current Room/Membership/Activity rows are verified serving materializations, not an independent authority;
+- deleting all paired snapshots and current materializations still permits recovery from Genesis plus Transitions;
 - every SQLite connection enables foreign-key enforcement; startup/restore runs integrity_check and foreign_key_check;
-- missing transitions or hash mismatch quarantine a room;
+- missing Transitions or canonical hash mismatch quarantine a Room;
 - no acknowledged action depends on an unflushed in-memory state;
 - disk-full and I/O errors make readiness fail and mutations stop;
 - logs go to stdout and never into artifact paths;
@@ -458,8 +478,13 @@ Before Heist v0.1:
 - log/token redaction;
 - stored text XSS;
 - forced process termination and SQLite recovery;
-- recovery with every snapshot deleted;
-- corrupt snapshot fallback, genesis verification, foreign-key check, and transition-hash failure.
+- recovery with every paired snapshot and current materialization deleted;
+- corrupt paired-snapshot fallback, Genesis verification, foreign-key check, three-state-hash and Transition-hash failure;
+- atomic multi-Membership Role swap and terminal departed/new-ID rejoin privacy;
+- present-plus-historical Replay authorization across Role/Access/lifecycle changes;
+- faulted versus quarantined serving matrix;
+- integrity-generation commit/repair races and verifier-only healthy restoration;
+- cache/materialization repair proving byte-identical Genesis/Transitions before and after.
 
 Before Investigation v0.2:
 
