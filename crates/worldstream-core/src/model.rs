@@ -810,7 +810,12 @@ pub enum TimerChangeV1 {
 /// Generation-free Timer intent emitted by the pure Activity reducer. Core
 /// owns generation allocation and converts requests to hashed
 /// [`TimerChangeV1`] values.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "timer_request_type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum TimerRequestV1 {
     /// Schedule the next generation when no generation is currently pending.
     ScheduleNext {
@@ -852,7 +857,8 @@ impl TimerRequestV1 {
 }
 
 /// Pure Activity output before host normalization of Timer requests.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActivityApplyV1 {
     /// Complete next canonical Activity State.
     pub next_activity_state: CanonicalJsonV1,
@@ -876,7 +882,12 @@ pub struct ActivityRejectionV1 {
 }
 
 /// The only two semantic reduction dispositions.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "activity_disposition_type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ActivityDispositionV1 {
     /// Apply complete output and commit one Transition.
     Apply(ActivityApplyV1),

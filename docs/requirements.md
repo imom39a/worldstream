@@ -6,7 +6,7 @@ Status: **FROZEN for Agent Heist v0.1 and Investigation Room v0.2**
 
 Freeze date: 2026-08-15
 
-Reconciliation status: **implementation-ready specification with a bootstrap-only workspace**. The repository has pinned build/config/probe scaffolding but no Room, storage, pack, public protocol, or release implementation. The [Canonical Decision Index](decision-index.md) locates each invariant's normative source, accepted decision, conformance evidence, and implementation owner without redefining this document.
+Reconciliation status: **implementation underway against the frozen specification**. The repository has pinned build/config/probe scaffolding, a pure in-memory Core/lineage implementation, and an executable retained Activity Pack host with test-only Counter revisions. It has no durable Room/storage, Agent Heist, public protocol, or release implementation. The [Canonical Decision Index](decision-index.md) locates each invariant's normative source, accepted decision, conformance evidence, and implementation owner without redefining this document.
 
 This is the normative product-behavior and release-scope document. If an architecture, protocol, roadmap, or example conflicts on behavior or scope, this document wins. The root [WorldStream Domain Context](../CONTEXT.md) is authoritative for domain term names and meanings; a conflict between terminology and requirements is a documentation defect that must be reconciled rather than silently redefined.
 

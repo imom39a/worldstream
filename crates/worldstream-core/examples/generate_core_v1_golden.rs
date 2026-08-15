@@ -171,7 +171,8 @@ fn genesis_input() -> Result<GenesisInputV1> {
 }
 
 fn new_trace() -> Result<CoreTraceV1> {
-    CoreTraceV1::create(genesis_input()?, validate_roles, reduce).map_err(Into::into)
+    CoreTraceV1::create_for_conformance(genesis_input()?, validate_roles, reduce)
+        .map_err(Into::into)
 }
 
 fn core_stimulus(

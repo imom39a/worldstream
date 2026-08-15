@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+conformance-tracer = []
+
 [dependencies]
 blake3.workspace = true
 serde.workspace = true
@@ -16,6 +20,10 @@ worldstream-protocol = { version = "=0.1.0", path = "../worldstream-protocol" }
 
 [dev-dependencies]
 anyhow.workspace = true
+
+[[example]]
+name = "generate_core_v1_golden"
+required-features = ["conformance-tracer"]
 
 [lints]
 workspace = true

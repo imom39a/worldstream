@@ -2,7 +2,7 @@
 
 Status: **Reconciled and implementation-ready, 2026-08-15**
 
-This is a normative locator, not a competing specification. The repository has only the pinned bootstrap workspace; the Room/storage/product runtime remains unimplemented and [`compatibility.toml`](../compatibility.toml) remains a specification with `release_ready = false` until implementation and evidence exist. When wording conflicts, use this authority order:
+This is a normative locator, not a competing specification. The repository has the pinned workspace, pure in-memory Core/lineage implementation, and executable retained Activity Pack host with test-only Counter revisions; the durable Room/storage/product runtime remains unimplemented and [`compatibility.toml`](../compatibility.toml) remains `release_ready = false` until release implementation and evidence exist. When wording conflicts, use this authority order:
 
 1. [`CONTEXT.md`](../CONTEXT.md) for whole-product domain language;
 2. [Frozen Requirements](requirements.md) for normative behavior and scope;

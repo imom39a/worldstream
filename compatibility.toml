@@ -4,7 +4,7 @@ manifest_kind = "specification"
 authored_date = "2026-08-15"
 release_candidate = "0.1.0"
 release_ready = false
-release_status = "specification_only_no_implementation_or_evidence"
+release_status = "implementation_in_progress_release_evidence_incomplete"
 validation_policy = "fail_closed"
 reviewed_source = "compatibility.toml"
 canonical_mirror = "compatibility.json"
@@ -299,19 +299,36 @@ storage_profiles = ["sqlite-bundled", "postgres-primary"]
 
 [[pack_executors]]
 pack_id = "worldstream.counter"
-explanatory_version = "0.1.0"
+explanatory_version = "1.0.0"
 host_contract_id = "worldstream/activity-pack/v1"
 revision_lock_id = "worldstream/pack-revision-lock/v1"
 revision_digest_algorithm = "blake3"
-revision_digest = ""
-descriptor_digest = ""
-executor_artifact_digest = ""
-schema_bundle_digest = ""
-codec_bundle_digest = ""
-golden_corpus_digest = ""
+revision_digest = "blake3:c837e9b4da0232353d59b1562fb6aeb3210e85efd2b486a815b4ca415b4d3250"
+descriptor_digest = "blake3:cce296277dea3b2a1d6fad1a182a81c678c11ba476b1fb2e163bc13665438473"
+executor_artifact_digest = "blake3:fa628088291fe1927cca73361583dc15b9189a962c005c08807aa8a657f65818"
+schema_bundle_digest = "blake3:0d4f81253a26d5a4ac85ae461e37426df905c555ea2071b9834a631d4b2e99ee"
+codec_bundle_digest = "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30"
+golden_corpus_digest = "blake3:47502aeb4505494cc39d8bffb920ca869c45717a78f68412ba3b96b2ab337a74"
 selectable_for_new_rooms = false
 runnable_for_retained_rooms = true
-status = "unresolved"
+status = "resolved"
+required_for_release = true
+
+[[pack_executors]]
+pack_id = "worldstream.counter"
+explanatory_version = "2.0.0"
+host_contract_id = "worldstream/activity-pack/v1"
+revision_lock_id = "worldstream/pack-revision-lock/v1"
+revision_digest_algorithm = "blake3"
+revision_digest = "blake3:3ce9babaa282aa32b85bfe358083f8471f49eab2435eb63fed04bd2031ad9ac8"
+descriptor_digest = "blake3:5d4313c7aca3e8b98c9b14276049c335714cba4d7ed15ec209beccc4245c4f97"
+executor_artifact_digest = "blake3:7ce8447ee3829ac9e314456f923367b6bcc2b1052be9a861204c16bc8094ed5a"
+schema_bundle_digest = "blake3:0d4f81253a26d5a4ac85ae461e37426df905c555ea2071b9834a631d4b2e99ee"
+codec_bundle_digest = "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30"
+golden_corpus_digest = "blake3:116aa5083a90ad93cf1d9bf1af46fdb0972c3ef240329131d4d15941763e0a34"
+selectable_for_new_rooms = false
+runnable_for_retained_rooms = true
+status = "resolved"
 required_for_release = true
 
 [[pack_executors]]

@@ -2,6 +2,7 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+use worldstream_core::{PackDigestV1, builtin_counter_registry};
 
 const EXPECTED_MANIFEST_SCHEMA: &str = "worldstream/storage-compatibility-manifest/v1";
 
@@ -31,6 +32,93 @@ pub fn verify(repository_root: &Path) -> Result<()> {
         .with_context(|| format!("invalid JSON in {}", json_path.display()))?;
     verify_required_identity(&manifest)?;
     verify_workspace_toolchain(repository_root, &manifest)?;
+    verify_embedded_counter_registry(&manifest)?;
+    Ok(())
+}
+
+fn verify_embedded_counter_registry(manifest: &Value) -> Result<()> {
+    let rows = manifest["pack_executors"]
+        .as_array()
+        .context("manifest has no pack_executors array")?;
+    let counter_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row["pack_id"] == "worldstream.counter")
+        .collect();
+    if counter_rows.len() != 2 {
+        bail!("manifest must contain exactly Counter v1 and v2 executor rows");
+    }
+
+    let registry = builtin_counter_registry().context("embedded Counter registry is invalid")?;
+    for expected_version in ["1.0.0", "2.0.0"] {
+        let row = counter_rows
+            .iter()
+            .copied()
+            .find(|row| row["explanatory_version"] == expected_version)
+            .with_context(|| format!("manifest is missing Counter {expected_version}"))?;
+        let digest_text = row["revision_digest"]
+            .as_str()
+            .context("Counter manifest row has no revision_digest")?;
+        let digest: PackDigestV1 = digest_text
+            .parse()
+            .context("Counter manifest row has a malformed revision_digest")?;
+        let retained = registry.load_retained(&digest).with_context(|| {
+            format!("manifest Counter {expected_version} is not the embedded retained executor")
+        })?;
+        let descriptor = retained.descriptor();
+        let revision_lock = retained.revision_lock();
+        let revision_digest = descriptor.revision_digest.to_string();
+
+        let exact = [
+            ("pack_id", descriptor.pack_id.as_str()),
+            (
+                "explanatory_version",
+                descriptor.explanatory_version.as_str(),
+            ),
+            ("host_contract_id", descriptor.host_contract.as_str()),
+            ("revision_lock_id", revision_lock.revision_lock_id.as_str()),
+            ("revision_digest", revision_digest.as_str()),
+        ];
+        for (field, embedded) in exact {
+            if row[field].as_str() != Some(embedded) {
+                bail!("manifest Counter {expected_version} {field} differs from embedded executor");
+            }
+        }
+        let digests = [
+            (
+                "descriptor_digest",
+                revision_lock.descriptor_digest.to_string(),
+            ),
+            (
+                "executor_artifact_digest",
+                retained.executor_artifact_digest().to_string(),
+            ),
+            (
+                "schema_bundle_digest",
+                revision_lock.schema_bundle_digest.to_string(),
+            ),
+            (
+                "codec_bundle_digest",
+                revision_lock.codec_bundle_digest.to_string(),
+            ),
+            (
+                "golden_corpus_digest",
+                retained.golden_corpus_digest().to_string(),
+            ),
+        ];
+        for (field, embedded) in digests {
+            if row[field].as_str() != Some(embedded.as_str()) {
+                bail!("manifest Counter {expected_version} {field} differs from embedded executor");
+            }
+        }
+        if row["revision_digest_algorithm"] != "blake3"
+            || row["status"] != "resolved"
+            || row["runnable_for_retained_rooms"] != true
+            || row["selectable_for_new_rooms"] != false
+            || row["required_for_release"] != true
+        {
+            bail!("manifest Counter {expected_version} status contract is invalid");
+        }
+    }
     Ok(())
 }
 

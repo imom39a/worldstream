@@ -1175,6 +1175,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "worldstream-core",
 ]
 
 [[package]]

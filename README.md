@@ -99,12 +99,14 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [Architecture decisions](docs/adr/) — accepted product, Room sequencing, Core/integrity lineage, observation, Activation, retained pack, storage, portability, recovery, and release decisions
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
 
-## Bootstrap workspace
+## Implementation workspace
 
-The first implementation frontier provides a pinned, deliberately narrow workspace:
+The implemented frontiers currently provide a pinned, deliberately narrow workspace:
 
 - Rust `1.97.1` (edition 2024), Node `24.18.1` with pnpm `11.19.0`, Python `3.14.7`, and uv `0.12.5`;
 - `worldstreamd` and `worldstreamctl` operator-shell binaries, protocol/runtime support crates, and a deterministic `xtask` manifest verifier;
+- a pure in-memory canonical Core reducer, lineage tracer, and strict Replay verifier;
+- the retained exact-revision `ActivityPackV1` host and registry, with executable test-only Counter v1 and v2 conformance revisions;
 - locked Python SDK and web-console package skeletons that expose no Room or public protocol API yet;
 - native Linux and Windows bootstrap checks plus opt-in repository hooks.
 
@@ -127,4 +129,4 @@ or public client API, and the bootstrap does not claim release readiness.
 
 ## Status
 
-The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the bootstrap workspace and operator shell described above, but no Room Kernel, storage adapter, executable Activity Pack, public SDK/UI behavior, release artifact, or release conformance evidence. The compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.
+The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the pinned workspace and operator shell, pure in-memory Core/lineage implementation, retained Activity Pack host, and executable Counter conformance revisions described above. It still has no durable Room Kernel, storage adapter, Agent Heist executor, public SDK/UI behavior, release artifact, or release conformance evidence. Counter is not a release Activity, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.
