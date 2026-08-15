@@ -20,7 +20,7 @@ flowchart LR
     R["External agent runner"] --> G
     G --> W["WorldStream room runtime"]
     W --> P["One trusted Activity Pack"]
-    W --> D["SQLite transition log and snapshots"]
+    W --> D["Bundled SQLite or PostgreSQL 17 primary"]
     P --> O["Authorized Membership projections"]
     O --> G
     W --> A["Durable activation intents"]
@@ -37,6 +37,8 @@ One accepted action follows this path:
       → acknowledge and stream the committed result
 
 This is why the name includes Stream. WorldStream does not primarily stream LLM tokens. It streams meaningful, ordered changes in a shared situation and lets a disconnected participant catch up from a durable cursor.
+
+The frozen releases run exactly one WorldStream process and support exactly two startup-selected durable profiles under the same Room semantics: release-bundled SQLite by default, or one hosted/self-managed PostgreSQL 17 primary. Linux x86-64 and Windows x64 are native release profiles, Linux/amd64 is the only OCI profile, and macOS is a source-build quickstart only. See [ADR 0004](docs/adr/0004-supported-storage-profiles-and-offline-portability.md) and [ADR 0011](docs/adr/0011-release-compatibility-recovery-and-supply-chain-gate.md).
 
 ## The frozen boundary
 
@@ -76,12 +78,13 @@ There is exactly one Activity Pack per room in both reference releases.
 
 ## What this project is not
 
-WorldStream is not n8n, Temporal, a general project manager, a message broker, a context database, a model host, a coding harness, or an agent marketplace. Version 0.1 and 0.2 deliberately exclude workflow canvases, connector catalogs, cross-room projects, payments, crypto, cloud agent execution, vector memory, arbitrary plugins, generated UI, clustering, and multi-region operation.
+WorldStream is not n8n, Temporal, a general project manager, a message broker, a context database, a model host, a coding harness, or an agent marketplace. Version 0.1 and 0.2 deliberately exclude workflow canvases, connector catalogs, cross-room projects, payments, crypto, cloud agent execution, vector memory, arbitrary plugins, generated UI, clustering, multiple live WorldStream processes, live/dual-write/reverse storage transfer, provider HA services, cloud resources, and multi-region operation.
 
 ## Documentation
 
 - [WorldStream domain context](CONTEXT.md) — canonical whole-product language and concept boundaries
 - [Frozen requirements](docs/requirements.md) — normative release scope and change control
+- [Compatibility manifest specification](compatibility.toml) and [canonical JSON mirror](compatibility.json) — fail-closed authored profile; not release evidence while `release_ready = false`
 - [Extended terminology](docs/glossary.md) — protocol, runtime, storage, UI, and lifecycle reference
 - [Product vision](docs/vision.md) — audience, value, and boundaries
 - [System architecture](docs/architecture.md) — stack, storage, filesystem, failure semantics, and scaling
@@ -92,9 +95,9 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [UI architecture](docs/ui-architecture.md) — deliberately small first-party presentation layer
 - [Security model](docs/security.md) — trust boundary and required tests
 - [Delivery roadmap](docs/roadmap.md) — Agent Heist MVP followed by Investigation Room
-- [Architecture decisions](docs/adr/) — product boundary, Room sequencing, canonical state/integrity lineage, observation barriers, Activation authority/fencing, and retained Activity Pack execution
+- [Architecture decisions](docs/adr/) — accepted product, Room sequencing, Core/integrity lineage, observation, Activation, retained pack, storage, portability, recovery, and release decisions
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
 
 ## Status
 
-The project is in the design and repository-scaffolding phase. The requirements and trusted Activity Pack v1/Agent Heist contracts are frozen as of 2026-08-15. Performance figures in the documentation are targets until a reproducible benchmark report exists.
+The project is in the design and repository-scaffolding phase. The requirements, trusted Activity Pack v1/Agent Heist contract, and storage/recovery/deployment/release profiles are frozen as of 2026-08-15. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.

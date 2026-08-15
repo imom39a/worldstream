@@ -1,0 +1,694 @@
+{
+  "authored_date": "2026-08-15",
+  "canonical_mirror": "compatibility.json",
+  "codecs": {
+    "canonical": {
+      "byte_preserving_storage": true,
+      "codec_id": "worldstream/canonical-json/v1",
+      "retained_reader_versions": [
+        1
+      ],
+      "writer_version": 1
+    },
+    "receipt": {
+      "byte_preserving_storage": true,
+      "codec_id": "worldstream/operation-receipt/v1",
+      "retained_reader_versions": [
+        1
+      ],
+      "writer_version": 1
+    }
+  },
+  "configuration": {
+    "admin_dsn_daemon_allowed": false,
+    "commands": [
+      "config_validate",
+      "config_effective_redacted",
+      "doctor"
+    ],
+    "config_flag_overrides_env": true,
+    "implicit_cwd_or_home_search": false,
+    "invalid_value_classes": [
+      "unknown",
+      "duplicate",
+      "wrong_type",
+      "out_of_range",
+      "inactive_backend",
+      "unsupported"
+    ],
+    "invalid_value_policy": "fatal",
+    "plaintext_secret_locations_forbidden": [
+      "toml",
+      "cli",
+      "logs",
+      "traces",
+      "metrics"
+    ],
+    "precedence": [
+      "compiled_defaults",
+      "explicit_versioned_toml",
+      "WORLDSTREAM__SECTION__KEY",
+      "documented_cli"
+    ],
+    "secret_inputs": [
+      "owner_readable_secret_file",
+      "inherited_handle"
+    ]
+  },
+  "contracts": {
+    "config": 1,
+    "core_semantics": 1,
+    "hash_suite": "blake3-canonical-json-v1",
+    "product": "0.1.0",
+    "storage_schema": 1,
+    "wire": "0.1"
+  },
+  "evidence": [
+    {
+      "artifact_digest": "",
+      "id": "manifest-syntax-parity",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "sqlite-conformance-migration-backup-restore-crash",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "postgresql-direct-and-transaction-pooler-conformance",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "all-prior-forward-migrations-both-backends",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "sqlite-postgresql-transfer-byte-parity-and-epoch-fencing",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "backend-native-isolated-restore-and-full-semantic-verifier",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "native-linux-release-profile",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "native-windows-release-profile",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "oci-linux-amd64-release-profile",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "macos-source-quickstart",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "config-secrets-probes-observability-security",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "checksums-signature-sbom-provenance",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "failure-fuzz-resource-and-one-hour-sqlite-soak",
+      "release_gate": true,
+      "status": "unresolved"
+    },
+    {
+      "artifact_digest": "",
+      "id": "reference-performance-per-backend",
+      "release_gate": false,
+      "status": "unresolved"
+    }
+  ],
+  "evidence_policy": {
+    "correctness": "hard_gate",
+    "crash_replay_hash_parity": "hard_gate",
+    "cross_compilation_only": "insufficient",
+    "durability": "hard_gate",
+    "performance": "reference_only_not_sla",
+    "resource_bounds": "hard_gate"
+  },
+  "evidence_tiers": {
+    "fast": {
+      "container_allowed": false,
+      "hard_seconds": 60,
+      "network_allowed": false,
+      "scope": [
+        "changed_format",
+        "config",
+        "schema",
+        "golden",
+        "secret"
+      ],
+      "warm_p95_seconds": 20
+    },
+    "minimal_ci": {
+      "hard_seconds": 1500,
+      "scope": [
+        "parallel_linux",
+        "native_windows_build_package_acl_filesystem_sqlite_postgresql_connect_recovery"
+      ],
+      "target_seconds": 900
+    },
+    "pre_push": {
+      "cold_target_seconds": 900,
+      "local_postgresql_skip": "visible_incomplete",
+      "remote_ci_skip_allowed": false,
+      "scope": [
+        "lint",
+        "unit",
+        "sqlite",
+        "sdk",
+        "ui",
+        "protocol",
+        "hash",
+        "local_postgresql_smoke"
+      ],
+      "warm_target_seconds": 360
+    },
+    "release": {
+      "hard_seconds": 14400,
+      "scope": [
+        "all_artifacts_and_platforms",
+        "signature_sbom_provenance",
+        "full_backend_conformance",
+        "all_prior_migrations",
+        "transfer",
+        "isolated_restore",
+        "semantic_verifier",
+        "failure",
+        "fuzz",
+        "benchmark",
+        "one_hour_sqlite_soak"
+      ],
+      "target_seconds": 10800
+    }
+  },
+  "exclusions": {
+    "items": [
+      "arm64_release_artifact",
+      "macos_binary_distribution",
+      "windows_container",
+      "msi_msix",
+      "windows_service_integration",
+      "package_repository",
+      "kubernetes_helm",
+      "reverse_transfer",
+      "room_at_a_time_transfer",
+      "live_backend_switch",
+      "dual_writes",
+      "automatic_fallback",
+      "multiple_live_worldstream_processes",
+      "authoritative_replica_reads",
+      "automatic_failover",
+      "ha_or_provider_services",
+      "provider_correctness_dependency",
+      "cloud_resources",
+      "release_pipeline_implementation",
+      "rolling_mixed_versions",
+      "down_migrations"
+    ]
+  },
+  "manifest_kind": "specification",
+  "manifest_revision": 1,
+  "migrations": {
+    "atomic_or_restart_safe": true,
+    "backend_specific_execution": true,
+    "direction": "forward_only",
+    "entries": [
+      {
+        "id": "0001-initial-storage-schema",
+        "postgresql_checksum": "",
+        "sqlite_checksum": "",
+        "status": "unresolved"
+      }
+    ],
+    "logical_history_id": "worldstream-storage-v1",
+    "mixed_versions_supported": false,
+    "old_binary_after_migration_supported": false,
+    "postgresql_production_mode": "explicit_offline_direct_admin",
+    "rollback": "restore_preupgrade_backend_and_previous_binary",
+    "schema_contract_fingerprint": "",
+    "schema_contract_fingerprint_status": "unresolved",
+    "sqlite_production_mode": "exclusive_startup_after_verified_backup"
+  },
+  "observability": {
+    "correctness_path_dependency": false,
+    "entity_ids_as_metric_labels": false,
+    "forbidden_payloads": [
+      "bodies",
+      "capabilities",
+      "private_observations",
+      "prompts",
+      "model_output",
+      "artifact_bytes",
+      "dsns",
+      "credentials"
+    ],
+    "holds_room_or_database_lock": false,
+    "logs": "structured_json",
+    "metrics": "prometheus",
+    "optional_export": "opentelemetry_otlp",
+    "overflow": "drop_metric_and_rate_limited_warning",
+    "post_commit": true,
+    "queue": "bounded_nonblocking",
+    "shutdown_flush_seconds": 3,
+    "trace_correlation": "w3c",
+    "vendor_neutral": true
+  },
+  "pack_executors": [
+    {
+      "digest": "",
+      "digest_algorithm": "blake3",
+      "pack_id": "worldstream.counter",
+      "pack_release": "0.1.0",
+      "required_for_release": true,
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "blake3",
+      "pack_id": "worldstream.agent-heist",
+      "pack_release": "0.1.0",
+      "required_for_release": true,
+      "status": "unresolved"
+    }
+  ],
+  "platforms": [
+    {
+      "id": "native-linux-x86_64",
+      "minimum_os": "linux-kernel-5.15",
+      "reference": "ubuntu-24.04-x86_64-ext4",
+      "storage_profiles": [
+        "sqlite-bundled",
+        "postgres-primary"
+      ],
+      "support": "release",
+      "target": "x86_64-unknown-linux-musl"
+    },
+    {
+      "also_supported": [
+        "windows-server-2025"
+      ],
+      "filesystems": [
+        "ntfs",
+        "refs"
+      ],
+      "id": "native-windows-x64",
+      "minimum_os": "windows-11-25h2-or-server-2022",
+      "storage_profiles": [
+        "sqlite-bundled",
+        "postgres-primary"
+      ],
+      "support": "release",
+      "target": "x86_64-pc-windows-msvc"
+    },
+    {
+      "id": "oci-linux-amd64",
+      "image_base": "minimal",
+      "linkage": "static",
+      "persistent_data_path": "/var/lib/worldstream",
+      "read_only_root_compatible": true,
+      "runtime_user": "65532",
+      "sqlite_overlay_allowed": false,
+      "storage_profiles": [
+        "sqlite-bundled",
+        "postgres-primary"
+      ],
+      "support": "release",
+      "target": "linux/amd64"
+    },
+    {
+      "binary_distribution": false,
+      "filesystem": "apfs",
+      "id": "macos-source-quickstart",
+      "minimum_os": "macos-15",
+      "storage_profiles": [
+        "sqlite-bundled",
+        "postgres-primary"
+      ],
+      "support": "source_only_development",
+      "target": "intel-and-apple-silicon"
+    }
+  ],
+  "probes": {
+    "healthz": {
+      "contract": "process_event_loop_liveness_only",
+      "storage_query": false
+    },
+    "metrics": {
+      "cardinality": "low",
+      "format": "prometheus_text"
+    },
+    "readyz": {
+      "isolated_preexisting_unhealthy_room_fails": false,
+      "requires": [
+        "current_schema",
+        "global_storage_integrity",
+        "authoritative_store_writable_with_capacity",
+        "writer_running",
+        "scheduler_running"
+      ],
+      "telemetry_failure_fails": false
+    },
+    "version": {
+      "reports": [
+        "product_build",
+        "wire",
+        "config",
+        "storage_schema",
+        "core_semantics",
+        "hash_suite",
+        "manifest",
+        "exact_engine_identity"
+      ]
+    }
+  },
+  "provider_verification": {
+    "asserts_ha_sla_durability_plan_or_region": false,
+    "cloud_account_required": false,
+    "evidence_digest": "",
+    "provider_neutral": true,
+    "required_for_release": false,
+    "scope": "dated_migration_backup_isolated_restore_full_replay_exact_combination",
+    "status": "unresolved"
+  },
+  "quickstart": {
+    "certified_heist_minutes": 5,
+    "certified_reference": "ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd",
+    "cloud_account_required": false,
+    "default_storage": "sqlite-bundled",
+    "fresh_checkout_minutes": 10,
+    "paid_model_required": false,
+    "postgresql_harness": "postgresql-17.11-image-by-digest-plus-pgbouncer-transaction-pool",
+    "postgresql_opt_in": true
+  },
+  "recovery": {
+    "backup_manifest_format": "worldstream/backup-manifest/v1",
+    "postgresql_admin_path": "direct_offline",
+    "postgresql_mechanisms": [
+      "operator_or_provider_snapshot",
+      "pitr",
+      "dump",
+      "isolated_restore"
+    ],
+    "semantic_verifier_required": true,
+    "sqlite_mechanism": "worldstream_owned_online_backup_empty_restore",
+    "verifier": {
+      "checks": [
+        "backup_or_export_id",
+        "storage_epoch_and_lineage",
+        "engine_identity",
+        "manifest",
+        "schema_and_migrations",
+        "artifact_digests_and_bytes",
+        "operation_receipts",
+        "timers",
+        "frames_and_cursors",
+        "activation_fencing",
+        "exact_pack_executors",
+        "every_transition_state_and_head_hash"
+      ],
+      "healthy_room_scope": "every_healthy_room_genesis_through_head",
+      "mode": "read_only_full_not_sampled",
+      "new_mismatch_policy": "abort_and_block_readiness",
+      "preexisting_unhealthy_room_policy": "byte_preserve_and_isolate"
+    }
+  },
+  "release_artifacts": [
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "source-archive",
+      "profile": "source",
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "native-linux-x86_64-archive",
+      "profile": "native-linux-x86_64",
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "native-windows-x64-archive",
+      "profile": "native-windows-x64",
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "oci-linux-amd64-image",
+      "profile": "oci-linux-amd64",
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "checksums",
+      "profile": "all",
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "sigstore-bundle",
+      "profile": "all",
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "spdx-sbom",
+      "profile": "all",
+      "status": "unresolved"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "id": "slsa-provenance",
+      "profile": "all",
+      "status": "unresolved"
+    }
+  ],
+  "release_candidate": "0.1.0",
+  "release_contents": {
+    "native_archives": [
+      "worldstreamd",
+      "worldstreamctl",
+      "embedded_ui",
+      "examples",
+      "heist_clients",
+      "licenses",
+      "compatibility.json"
+    ],
+    "supply_chain": [
+      "source",
+      "checksums",
+      "sigstore",
+      "spdx_sbom",
+      "slsa_provenance"
+    ]
+  },
+  "release_ready": false,
+  "release_status": "specification_only_no_implementation_or_evidence",
+  "reviewed_source": "compatibility.toml",
+  "schema": "worldstream/storage-compatibility-manifest/v1",
+  "security": {
+    "application_layer_at_rest_encryption": false,
+    "reject_broad_write_acl": true,
+    "reject_sqlite_symlink_or_reparse": true,
+    "remote_postgresql_tls_required": true,
+    "sqlite_posix_mode": "owner_only_umask_077",
+    "stop_mutation_without_durable_capacity": true,
+    "windows_acl": "owner_or_service_system_administrators_only"
+  },
+  "storage": {
+    "authoritative_primary_count": 1,
+    "default_profile": "sqlite-bundled",
+    "postgresql": {
+      "correctness_dependencies_forbidden": [
+        "extensions",
+        "session_state",
+        "named_prepared_statements",
+        "connection_affinity",
+        "replica_reads",
+        "provider_api",
+        "provider_failover"
+      ],
+      "default": false,
+      "hosting": [
+        "hosted",
+        "self_managed"
+      ],
+      "isolation": "read_committed",
+      "maintenance_connection_mode": "direct_admin_offline",
+      "major": 17,
+      "minimum_patch": "17.11",
+      "newer_17x_policy": "supported_but_unverified_until_gated",
+      "other_majors": "fail_closed",
+      "primary": "one_writable_primary",
+      "profile_id": "postgres-primary",
+      "provider_neutral": true,
+      "release_verified_patches": [],
+      "release_verified_patches_status": "unresolved",
+      "remote_tls_required": true,
+      "runtime_connection_modes": [
+        "direct",
+        "session_pool",
+        "transaction_pool"
+      ],
+      "runtime_role": "least_privilege_dml",
+      "same_host_required": false,
+      "supported": true,
+      "synchronous_commit": "on",
+      "transaction_pooler_safe": true
+    },
+    "profiles": [
+      "sqlite-bundled",
+      "postgres-primary"
+    ],
+    "selection": "startup_fixed",
+    "semantics": "backend_neutral",
+    "sqlite": {
+      "bundle_build_digest": "",
+      "bundle_build_digest_status": "unresolved",
+      "corrective_floor": "3.51.3",
+      "default": true,
+      "denied_versions": [
+        "3.52.0"
+      ],
+      "filesystem_scope": "local_only",
+      "host_library_allowed": false,
+      "pragmas": {
+        "busy_timeout_ms": 5000,
+        "foreign_keys": "ON",
+        "journal_mode": "WAL",
+        "reader_query_only": "ON",
+        "synchronous": "FULL"
+      },
+      "profile_id": "sqlite-bundled",
+      "reader_model": "bounded_query_only",
+      "source_id": "sqlite-amalgamation-3530400",
+      "supported": true,
+      "supported_linux_filesystems": [
+        "ext4",
+        "xfs"
+      ],
+      "supported_macos_development_filesystems": [
+        "apfs"
+      ],
+      "supported_windows_filesystems": [
+        "ntfs",
+        "refs"
+      ],
+      "unsupported_filesystems": [
+        "nfs",
+        "smb",
+        "object",
+        "fuse",
+        "network_home",
+        "unc",
+        "fat",
+        "exfat",
+        "shared_volume",
+        "container_overlay"
+      ],
+      "version": "3.53.4",
+      "writer_model": "one_controlled_writer"
+    },
+    "worldstream_processes": 1
+  },
+  "toolchains": {
+    "node": "24.18.1",
+    "node_usage": "build_only",
+    "python_quickstart": "3.14.7",
+    "python_sdk_max": "3.14",
+    "python_sdk_min": "3.11",
+    "rust": "1.97.1",
+    "rust_edition": "2024"
+  },
+  "transfer": {
+    "abort_before_source_retirement": true,
+    "activation_nonterminal_leases": "fence_before_readiness_preserve_intent_reclaim",
+    "canonical_bytes": "copy_verbatim_no_decode_reencode",
+    "direction": "sqlite_to_postgresql",
+    "finalization": "explicit_storage_epoch_advance",
+    "format_id": "worldstream/sqlite-postgresql-transfer/v1",
+    "mode": "offline_resumable_two_phase",
+    "overdue_timer_startup": "fixed_cutoff_catching_up_no_invented_fire_or_generation",
+    "post_first_postgresql_write_rollback": false,
+    "preserve": [
+      "lineage",
+      "genesis",
+      "transitions",
+      "heads_and_hashes",
+      "core_and_activity_materializations",
+      "memberships_and_authority",
+      "timer_ids_generations_due",
+      "frames_and_cursors",
+      "operation_identities_hashes_dispositions_receipts",
+      "activation_intents_claims_audit_fences",
+      "principals_capabilities_revocations",
+      "integrity_incidents",
+      "artifact_metadata_and_bytes"
+    ],
+    "rebuild_or_invalidate": [
+      "snapshots",
+      "indexes",
+      "caches",
+      "telemetry",
+      "sessions",
+      "runner_presence",
+      "in_memory_mailboxes",
+      "delivery_attempts",
+      "temporary_state"
+    ],
+    "retired_sqlite": "read_only_recovery_artifact",
+    "scope": "whole_deployment",
+    "source_state": "transfer_pending",
+    "target_state": "empty_non_serving"
+  },
+  "unresolved_required_fields": [
+    "storage.sqlite.bundle_build_digest",
+    "storage.postgresql.release_verified_patches",
+    "migrations.schema_contract_fingerprint",
+    "migrations.entries[*].sqlite_checksum",
+    "migrations.entries[*].postgresql_checksum",
+    "pack_executors[*].digest",
+    "release_artifacts[*].digest",
+    "evidence[*].artifact_digest"
+  ],
+  "validation_policy": "fail_closed"
+}
