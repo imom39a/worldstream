@@ -2,7 +2,7 @@
 
 > A self-hosted realtime room runtime for multi-agent applications, with humans as first-class participants.
 
-WorldStream lets external humans and AI agents participate in the same durable Room. An Activity Pack defines Activity State, Roles, Legal Actions, visibility rules, timers, and Outcomes. WorldStream owns Core Room State—exactly Room Status plus the semantic Membership map—and supplies ordering, integrity, persistence, scoped realtime observations, cursor-based catch-up, targeted activation, recovery, and deterministic Replay.
+WorldStream lets external humans and AI agents participate in the same durable Room. An Activity Pack defines Activity State, Roles, exact Action Offers, visibility rules, timers, and Outcomes. WorldStream owns Core Room State—exactly Room Status plus the semantic Membership map—and supplies ordering, integrity, persistence, scoped realtime observations, cursor-based catch-up, targeted activation, recovery, and deterministic Replay.
 
 The simplest architectural analogy is a multiplayer game server whose players may be humans or AI agents. The product is not game-specific: the server owns the shared reality, an Activity Pack supplies the domain rules, and Heist is only the first reference activity. Participants see only their authorized view and submit typed actions. An AI model does not remain alive inside WorldStream; a developer-owned runner invokes it when work is available.
 
@@ -47,7 +47,7 @@ WorldStream owns:
 - idempotent action submission and commit-before-acknowledgement;
 - three-hash canonical lineage, paired disposable snapshots, verified state reconstruction, recovery, and Replay;
 - generation-fenced operational Room Integrity State and verifier-only repair without history rewrite;
-- Membership-addressed observations and participant Legal Actions;
+- Membership-addressed observations and exact participant Action Offers;
 - durable activation intents for external agent runners;
 - bounded WebSocket delivery and cursor-based reconnect;
 - a small first-party inspector and reference-activity UI.
@@ -59,6 +59,8 @@ Activity Packs own:
 - public and private projection rules;
 - timers, activation reasons, and terminal outcomes.
 
+The trusted v0.1 seam is frozen as `ActivityPackV1`: descriptor, initialize, reduce, view, and observe. Each Room pins a build-computed semantic revision lock; retained exact executors/codecs remain runnable, and Rooms never upgrade in place. This is not a dynamic or sandboxed public plugin ABI.
+
 Agent runners own:
 
 - models, prompts, private memory, tools, credentials, and execution;
@@ -67,7 +69,7 @@ Agent runners own:
 
 ## Two reference activities
 
-1. Agent Heist proves concurrent participation, private information, deadlines, conflict resolution, disconnect/catch-up, activation, restart recovery, and replay.
+1. Agent Heist freezes three immutable seats and six phases, two-of-three sealed plan selection, five-check scoring, scoped reveal, deadlines, activation separation, restart recovery, and replay.
 2. Investigation Room proves the same Room Kernel works for serious non-game work: evidence arrives over time, agents publish source-linked claims, a correction invalidates dependent claims, affected agents are activated, and a human lead submits a deterministic structured brief.
 
 There is exactly one Activity Pack per room in both reference releases.
@@ -90,9 +92,9 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [UI architecture](docs/ui-architecture.md) — deliberately small first-party presentation layer
 - [Security model](docs/security.md) — trust boundary and required tests
 - [Delivery roadmap](docs/roadmap.md) — Agent Heist MVP followed by Investigation Room
-- [Architecture decisions](docs/adr/) — product boundary, Room sequencing, canonical state/integrity lineage, observation barriers, and Activation authority/fencing
+- [Architecture decisions](docs/adr/) — product boundary, Room sequencing, canonical state/integrity lineage, observation barriers, Activation authority/fencing, and retained Activity Pack execution
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
 
 ## Status
 
-The project is in the design and repository-scaffolding phase. The requirements are frozen for the first two reference releases as of 2026-08-13. Performance figures in the documentation are targets until a reproducible benchmark report exists.
+The project is in the design and repository-scaffolding phase. The requirements and trusted Activity Pack v1/Agent Heist contracts are frozen as of 2026-08-15. Performance figures in the documentation are targets until a reproducible benchmark report exists.

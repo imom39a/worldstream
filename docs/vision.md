@@ -22,7 +22,7 @@ AI application developers repeatedly have to assemble the same coordination laye
 - one authoritative current state;
 - deterministic handling of racing or conflicting actions;
 - public and private information;
-- role-based legal actions;
+- role- and viewer-scoped Action Offers;
 - live updates without constant polling;
 - safe retry when a client or server fails;
 - a compact catch-up after an agent invocation has ended;
@@ -79,6 +79,8 @@ The activity developer writes a trusted Activity Pack. In the first releases thi
 - public and private projections;
 - attention reasons and completion criteria.
 
+The frozen trusted ActivityPackV1 seam is descriptor, initialize, reduce, view, and observe. Each semantic revision is pinned by a build-computed lock and retained with its exact executor/codecs for Room-lifetime Replay; this does not create a portable or untrusted plugin ABI.
+
 The pack is headless. It must remain useful through the protocol even if the reference UI is absent.
 
 ### Human participant
@@ -124,7 +126,7 @@ An AI agent is normally ephemeral:
 3. WorldStream persists an activation intent.
 4. An external runner claims the intent with a lease.
 5. The runner starts a bounded invocation.
-6. The Invocation receives its exact committed authorized Projection and complete Head, legal actions/deadlines, Artifact references, and exactly one retained-frame range or Projection Reset baseline.
+6. The Invocation receives its exact committed authorized Projection and complete Head, exact Action Offers/deadlines, Artifact references, and exactly one retained-frame range or Projection Reset baseline.
 7. It submits actions and exits.
 8. The room and membership remain; the model process does not.
 
@@ -151,7 +153,7 @@ It does not own:
 - arbitrary documents converted into embeddings;
 - automatic semantic summaries in the frozen releases.
 
-Context for an invocation is a temporary, authorized projection of the room. Current truth and legal actions come first; recent relevant frames and explicit evidence references follow. Raw room internals are never injected wholesale.
+Context for an invocation is a temporary, authorized projection of the room. Current truth and exact Action Offers come first; recent relevant frames and explicit evidence references follow. Raw room internals are never injected wholesale.
 
 ## When to choose WorldStream
 
@@ -159,8 +161,8 @@ Choose it when:
 
 - several humans or agents share one changing situation;
 - views differ by participant;
-- participant policies choose among legal actions;
-- actions can conflict or change other participants' legal actions;
+- participant policies choose among Action Offers;
+- actions can conflict or change other participants' Action Offers;
 - live updates plus later catch-up are both needed;
 - exact recovery and replay are useful.
 
@@ -176,13 +178,13 @@ Do not choose it when:
 
 ### Not n8n or Temporal
 
-n8n and Temporal coordinate a process whose control flow is substantially designed in advance. WorldStream coordinates participants inside shared state. The pack defines legal actions and consequences, but a participant policy decides what to do next.
+n8n and Temporal coordinate a process whose control flow is substantially designed in advance. WorldStream coordinates participants inside shared state. The pack defines Action Offers and consequences, but a participant policy decides what to do next.
 
 If the desired UI is primarily nodes and connectors, WorldStream is the wrong tool.
 
 ### Not NATS, Kafka, or Lightstreamer
 
-Those systems are transport or messaging infrastructure. WorldStream may eventually use or integrate with such systems, but its contribution is above transport: Roles, Authoritative Room State, typed Actions, visibility, Legal Actions, Activation, Recovery, and Replay.
+Those systems are transport or messaging infrastructure. WorldStream may eventually use or integrate with such systems, but its contribution is above transport: Roles, Authoritative Room State, typed Actions, visibility, Action Offers, Activation, Recovery, and Replay.
 
 ### Not a coding harness
 
@@ -199,8 +201,8 @@ Agent Heist proves the difficult multiplayer properties in a visually understand
 - three external agents in different roles;
 - private clues and structured private offers;
 - public plans;
-- a simultaneous sealed decision window;
-- timers and deterministic conflict resolution;
+- a six-phase timer machine and simultaneous sealed decision window;
+- strict two-of-three plan selection and five-check deterministic scoring;
 - one terminated invocation followed by targeted activation and fresh catch-up;
 - one forced server restart;
 - public and participant-specific replay.

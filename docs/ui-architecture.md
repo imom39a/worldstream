@@ -27,7 +27,7 @@ The same room can expose different projection schemas:
 ### Participant
 
 - bound to an authenticated participant Membership whose Principal is human or agent;
-- contains that role's authorized current state, legal actions, and deadlines;
+- contains that role's authorized current state, exact Action Offers, and deadlines;
 - may submit the same typed actions as another SDK client;
 - never relies on browser code for authorization.
 
@@ -35,7 +35,7 @@ The same room can expose different projection schemas:
 
 - local administrative and diagnostic view;
 - shows Room Integrity State/generation, complete Head and three state hashes, Membership/Session state, Runner availability, Activation status, timers, incidents/repairs, and Replay verification;
-- may show pack-defined debug fields only under explicit operator-membership scope;
+- may show only the pack's explicit bounded operator projection under operator-membership scope, never raw Activity State;
 - never displays provider credentials or chain-of-thought.
 
 Replay first requires present authorization, then uses the reconstructed Membership/Access/Role at the selected sequence for historical visibility. A later Role or replacement Member ID inherits no earlier private view. Completed Replay may use a separately authorized pack-defined final-reveal Projection; Replay itself does not bypass visibility.
@@ -67,7 +67,7 @@ Both reference views reuse:
 - Room Member list with Principal kind, Access Mode, Role when acting, Membership status, and temporary session state;
 - agent runner availability and activation status shown separately;
 - current phase and deadline;
-- legal-action form generated from first-party typed definitions;
+- Action Offer form generated from first-party typed definitions and exact payload-schema digests;
 - public/authorized event timeline;
 - activation-reason markers;
 - replay sequence slider and Core/Activity/aggregate/lineage hash-verification status;
@@ -99,7 +99,7 @@ When a human occupies a player role:
 - structured clue exchange inbox;
 - plan proposal and endorsement controls;
 - sealed commitment form;
-- personal deadline and legal actions.
+- personal deadline and exact Action Offers.
 
 These controls send ordinary action.submit messages.
 
@@ -108,7 +108,7 @@ These controls send ordinary action.submit messages.
 - all membership, session, runner, timer, frame-cursor, and activation state;
 - scripted failure-injection controls in development builds;
 - room fault and storage diagnostics;
-- no model private memory or chain-of-thought.
+- aggregate Heist counts only—no fixture truth, clues, offers, individual commitments, raw Activity State, model private memory, or chain-of-thought.
 
 ### Replay screen
 
@@ -118,6 +118,8 @@ These controls send ordinary action.submit messages.
 - completed final-reveal view;
 - Core, Activity, aggregate Authoritative State, and Transition-lineage hash status;
 - exact rule explanation for outcome.
+
+Result view exposes the selected plan, aggregate votes, five checks, score, and Outcome while individual commitments remain sealed. The completed final-reveal view is separately labeled and available only after Complete to a currently authorized Membership.
 
 ## Investigation Room view
 
@@ -307,3 +309,4 @@ Runtime LLM generation of executable UI is not a target. It would make permissio
 11. Faulted and quarantined serving surfaces remain visibly and behaviorally distinct.
 12. No UI control can mark a Room healthy or rewrite Genesis/Transitions.
 13. Complete Head and all three state hashes are displayed as metadata, never Core or Activity State.
+14. Controls are rendered only from the exact Action Offer bytes carried by the installed Projection/Frame; the UI invents no second legality model.

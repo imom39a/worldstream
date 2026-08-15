@@ -12,6 +12,10 @@ _Avoid_: World, project, workspace, channel, activity instance
 The reusable rule set that defines a class of Rooms, including Roles, Actions, visibility, phases, and Outcomes.
 _Avoid_: Plugin, workflow, prompt pack, room
 
+**Activity Pack Revision**:
+One immutable semantic version of an Activity Pack's rules and schemas, pinned by each Room for its whole lineage.
+_Avoid_: Mutable pack version, installed plugin, build label
+
 **Activity Phase**:
 A domain stage defined by an Activity Pack for the activity unfolding in a Room.
 _Avoid_: Room status, activation status, workflow node
@@ -104,9 +108,9 @@ _Avoid_: Operator membership, participant, activity role
 A typed proposal from a Participant to affect a Room.
 _Avoid_: Command, event, direct state update
 
-**Legal Action**:
-An Action currently permitted for a Participant by its Role and the Room's current state.
-_Avoid_: Affordance as a formal term, guaranteed action, command
+**Action Offer**:
+The Activity Pack's canonical typed representation of an Action a Participant may submit from one exact authorized Room view.
+_Avoid_: Duplicate legality list, affordance as a formal term, guaranteed action, command
 
 **Stimulus**:
 A fully recorded candidate for advancing a Room, derived from an Action, timer firing, membership change, or host input. Only an accepted Stimulus produces a Transition.
@@ -155,7 +159,7 @@ A Projection safe for Spectator Memberships and other authorized public viewers.
 _Avoid_: Public stream, raw room state
 
 **Participant Projection**:
-A Projection for one acting Participant, including that Participant's current knowledge and Legal Actions.
+A Projection for one acting Participant, including that Participant's current knowledge and Action Offers.
 _Avoid_: Member projection when access mode matters, authoritative state
 
 **Observation Frame**:

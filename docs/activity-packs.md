@@ -2,9 +2,11 @@
 
 ## Status
 
-This is the provisional trusted Rust Activity Pack contract for Agent Heist v0.1 and Investigation Room v0.2.
+This is the frozen trusted `ActivityPackV1` host contract and the normative Agent Heist v0.1 pack specification. Investigation Room remains the v0.2 boundary probe.
 
-It is intentionally not a stable public plugin ABI. The interface may be corrected while Heist is built, then is frozen for the Investigation generality test. Only after both activities pass should the project consider a portable or sandboxed ABI.
+`ActivityPackV1` is a stable semantic contract for retained v0.1 Rooms, not a portable or sandboxed public plugin ABI. Trusted implementations are compiled into the release; dynamic loading, third-party upload, and a generic effect interface remain out of scope.
+
+The host seam and executable-retention decision are accepted in [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 
 ## Purpose
 
@@ -12,7 +14,7 @@ An Activity Pack defines what one room means:
 
 - configuration and Canonical Activity State;
 - participant roles;
-- typed actions and legal-action rules;
+- typed actions and Action Offer rules;
 - deterministic state transitions;
 - public, participant, and operator projections;
 - timers and attention signals;
@@ -29,7 +31,7 @@ An activity is a good fit when:
 - two or more independent participants affect shared state;
 - roles or visibility differ;
 - participants select actions rather than following a fixed server-authored workflow;
-- actions can conflict or change legal actions;
+- actions can conflict or change Action Offers;
 - timers, reconnect, recovery, or replay matter.
 
 An activity is a poor fit when it is merely:
@@ -48,12 +50,14 @@ Each trusted built-in pack contains:
 
     activity/
     ├── manifest data
+    ├── PackRevisionLockV1 and semantic digest
     ├── canonical Rust state and input types
     ├── initialization
-    ├── action/stimulus application
-    ├── projection and observation construction
+    ├── reduction
+    ├── view, Action Offer, and observation construction
     ├── timer and attention reason definitions
     ├── deterministic fixture data
+    ├── state, stimulus, and output codecs
     ├── conformance and privacy tests
     └── first-party UI projection schemas
 
@@ -67,54 +71,43 @@ It does not contain:
 - another Activity Pack;
 - cross-room references.
 
-## Manifest
+## Descriptor and revision identity
 
-Logical manifest:
+The descriptor declares pack identity, schemas, ordered Role and Action definitions, Attention reasons, projection variants, and hard output bounds. Principal kind and Role remain separate; WorldStream Core owns current Membership standing, Access Mode, and Role assignment.
 
 ~~~json
 {
   "pack_id": "worldstream.agent-heist",
   "name": "Agent Heist",
-  "version": "0.1.0",
+  "explanatory_version": "0.1.0",
   "revision_digest": "blake3:...",
-  "host_api": "0.1",
-  "configuration_schema": "agent-heist.config.v1",
-  "state_schema": "agent-heist.state.v1",
-  "roles": [
-    {
-      "id": "navigator",
-      "minimum": 1,
-      "maximum": 1,
-      "allowed_principal_kinds": ["agent", "human"]
-    }
-  ],
-  "maximum_participants": 8,
-  "actions": [
-    {
-      "type": "publish_clue",
-      "schema": "agent-heist.publish-clue.v1"
-    }
-  ],
-  "attention_reasons": [
-    "offer_received",
-    "commitment_opened",
-    "required_action_deadline"
-  ],
-  "projection_schemas": {
-    "public": "agent-heist.public.v1",
-    "participant": "agent-heist.participant.v1",
-    "operator": "agent-heist.operator.v1"
-  },
+  "host_contract": "worldstream/activity-pack/v1",
+  "canonical_codec": "worldstream/canonical-json/v1",
+  "configuration_schema": "agent-heist/config/v1",
+  "state_schema": "agent-heist/state/v1",
+  "stimulus_schemas": [],
+  "output_schemas": [],
+  "roles": [],
+  "actions": [],
+  "attention_reasons": [],
+  "projection_schemas": {},
   "limits": {
     "maximum_state_bytes": 2097152,
-    "maximum_transition_output_bytes": 262144
+    "maximum_events": 128,
+    "maximum_timer_requests": 32,
+    "maximum_attention_signals": 32,
+    "maximum_projection_bytes": 262144,
+    "maximum_observation_bytes": 262144,
+    "maximum_nesting": 32,
+    "maximum_collection_items": 4096,
+    "maximum_text_bytes": 65536
   }
 }
 ~~~
 
-Principal kind and Role are separate. A human or agent Principal may hold a Role through a participant Membership if the manifest permits it.
+The explanatory version is for people. Only the semantic revision digest selects executable rules. A pack may retain immutable Genesis seat identities in Activity State, but MUST NOT persist a second mutable index of current Role ownership; reduction reads current assignments from the supplied Core view.
 
-The Activity Pack defines Role names, cardinality, permissions, and Legal Actions. The WorldStream Core reducer exclusively records current assignment in the semantic Membership map. Pack Activity State MUST NOT persist a second role-to-Membership ownership index; reduction derives any needed lookup from the supplied immutable Core view.
+The Activity Pack defines Role names, cardinality, permissions, and Action Offers. The WorldStream Core reducer exclusively records current assignment in the semantic Membership map. Pack Activity State MUST NOT persist a second role-to-Membership ownership index; reduction derives any needed lookup from the supplied immutable Core view.
 
 The revision digest pins the exact compiled behavior and schemas. A semantic version is explanatory; replay trusts the digest.
 
@@ -126,323 +119,283 @@ For every reduction, the host supplies immutable Core-before and proposed-Core-a
 
 The pack may declare a stable veto for join, resume, Access Mode, or Role proposals. It may not veto archive, suspend, or depart; attempting to do so is a Pack Fault. A veto produces an idempotent administrative rejection with no Transition, not an Activity Fault. Packs may change Activity State or emit deterministic outputs in response to an accepted Core change, but cannot mutate Core itself.
 
-## Logical Rust interface
+## ActivityPackV1
+
+The complete trusted host seam is:
 
 ~~~rust
-pub trait ActivityPack: Send + Sync + 'static {
-    fn manifest(&self) -> ActivityManifest;
+pub trait ActivityPackV1: Send + Sync + 'static {
+    fn descriptor(&self) -> &'static PackRevisionDescriptorV1;
 
     fn initialize(
         &self,
-        input: RoomInitialization,
-        context: &DeterministicContext,
-    ) -> Result<CanonicalValue, ActivityFault>;
+        input: &GenesisInputV1,
+        cx: &DeterministicContextV1,
+    ) -> Result<InitialOutputV1, PackFault>;
 
-    fn apply(
+    fn reduce(
         &self,
-        state: &CanonicalValue,
-        core_before: &CoreRoomStateV1,
-        proposed_core_after: &CoreRoomStateV1,
-        stimulus: &RecordedStimulus,
-        context: &DeterministicContext,
-    ) -> Result<AppliedTransition, ApplyError>;
+        input: &ReduceInputV1,
+        cx: &DeterministicContextV1,
+    ) -> Result<ReduceDispositionV1, PackFault>;
 
-    fn project(
-        &self,
-        state: &CanonicalValue,
-        viewer: &Viewer,
-    ) -> Result<ActivityProjection, ActivityFault>;
+    fn view(&self, input: &ViewInputV1)
+        -> Result<PackViewV1, PackFault>;
 
-    fn observe(
-        &self,
-        before: &CanonicalValue,
-        after: &CanonicalValue,
-        events: &[DomainEvent],
-        viewer: &Viewer,
-    ) -> Result<Option<ActivityObservation>, ActivityFault>;
-}
-
-pub enum ApplyError {
-    Rejected(DeclaredRejection),
-    ActivityFault(ActivityFault),
+    fn observe(&self, input: &ObserveInputV1)
+        -> Result<Option<PackObservationV1>, PackFault>;
 }
 ~~~
 
-Typed helper traits may let a pack implement strongly typed state and action enums. The host boundary canonicalizes them before hashing or persistence.
+There are exactly five operations: descriptor, initialize, reduce, view, and observe. Typed implementation helpers may exist behind this boundary, but no sixth semantic callback or pack-name branch is part of v1.
 
-### RoomInitialization
+Every callback is pure, synchronous, bounded, and complete before persistence handoff. The pack receives no storage, network, filesystem, environment, scheduler, HostClock, database clock, Session, delivery, telemetry, Activation, Runner, model, wallet, secret, or artifact-byte capability. Same-process Rust remains trusted and is not a sandbox.
 
-Contains only recorded input:
+### DeterministicContextV1
 
-- room ID;
-- room configuration;
-- exact initial `CoreRoomState v1` constructed and validated by the host;
-- room seed;
-- typed recorded creation time;
-- pack revision digest.
+The context exposes only canonical-value utilities and domain-separated labeled randomness derived from Room seed, exact pack digest, next Room sequence, label, and index. It exposes no ambient entropy or time. Integer and fixed-point operations are permitted; floating-point canonical state is forbidden.
 
-### RecordedStimulus
+For the same revision lock, Genesis input, Core inputs, timer view, and ordered normalized Stimuli, every operation MUST return byte-identical canonical outputs on every supported platform and storage profile.
 
-RecordedStimulus is a fully recorded candidate for deterministic application. It becomes the committed Stimulus of a Transition only when apply succeeds and the complete transition commits. The host may present:
+## Initialization
 
-~~~rust
-pub enum RecordedStimulus {
-    ParticipantAction {
-        member_id: MemberId,
-        principal_kind: PrincipalKind,
-        role: String,
-        action_id: ActionId,
-        based_on_room_seq: u64,
-        action_type: String,
-        payload: CanonicalValue,
-        admitted_at: RecordedTime,
-    },
-    TimerFired {
-        timer_id: TimerId,
-        generation: TimerGeneration,
-        scheduled_for: RecordedTime,
-        payload: CanonicalValue,
-    },
-    CoreChanged {
-        core_stimulus: CoreStimulusV1,
-    },
-    ExternalInput {
-        source_id: String,
-        input_id: String,
-        input_type: String,
-        payload: CanonicalValue,
-        recorded_at: RecordedTime,
-    },
+GenesisInputV1 contains exactly the recorded creation inputs visible to the pack:
+
+- Room ID and exact revision digest;
+- canonical pack configuration;
+- immutable initial Core view, including the initial Membership identities and Roles;
+- Room seed;
+- recorded logical creation time.
+
+InitialOutputV1 contains:
+
+- one canonical initial Activity State value;
+- one ordered list of TimerRequestV1 values.
+
+The host schema-validates and canonicalizes the result, assigns and verifies timer generations, and records the normalized initial timer set. Genesis binds the initial state and timers. Initialization emits no Domain Event, Attention Signal, Activation, Observation Frame, or delivery side effect.
+
+## Reduction input and normalized Stimulus
+
+ReduceInputV1 contains:
+
+- prior canonical Activity State;
+- exact immutable Core before;
+- exact immutable proposed Core after;
+- the current scheduled timer view sorted by logical timer ID;
+- next Room sequence;
+- one normalized typed StimulusV1.
+
+The pack cannot mutate either Core view. WorldStream produces proposed Core after by applying its own versioned Core reducer before pack reduction.
+
+Normalized StimulusV1 has exactly four variants:
+
+~~~text
+ParticipantAction {
+  member_id,
+  action_id,
+  action_type,
+  payload_schema_digest,
+  canonical_payload,
+  exact_basis_head,
+  admitted_at
+}
+
+TimerFired {
+  timer_id,
+  generation,
+  scheduled_for,
+  canonical_payload
+}
+
+CoreProposed {
+  proposal_kind,
+  requester_evidence,
+  recorded_at
+}
+
+ExternalInput {
+  source_id,
+  input_id,
+  input_type,
+  recorded_at,
+  canonical_payload,
+  immutable_resource_references
 }
 ~~~
 
-ExternalInput is host-operator-authenticated and idempotent. In frozen reference demos, fixture evidence is released through recorded timers or deterministic local fixture input. It is not a generic connector mechanism.
+CoreProposed kinds are Join, Resume, AccessModeChange, RoleChange, Archive, Suspend, and Depart. Their exact state delta is represented only by Core before/proposed after. Host-normalized NoChange never enters the pack.
 
-### AppliedTransition
+TimerFired contains only the exact timer identity, immutable scheduled_for, and canonical payload; detection, lag, retry, database, and commit times are excluded. ParticipantAction carries host-recorded admitted_at. CoreProposed and ExternalInput carry canonical recorded_at. These typed fields supply semantic time; there is no universal Transition timestamp.
 
-~~~rust
-pub struct AppliedTransition {
-    pub next_state: CanonicalValue,
-    pub domain_events: Vec<DomainEvent>,
-    pub timer_changes: Vec<TimerChange>,
-    pub attention_signals: Vec<AttentionSignal>,
+ExternalInput is narrow, authenticated, idempotent, and predefined by the release. In v0.1 it is not a connector, arbitrary artifact reader, callback, or general effect mechanism. Any future immutable resource reference is already authorized and resolved before pack entry.
+
+## Reduction dispositions and Core veto
+
+ReduceDispositionV1 is exactly:
+
+~~~text
+Apply {
+  next_state,
+  ordered_domain_events,
+  timer_requests,
+  attention_signals
+}
+
+Reject {
+  declared_code,
+  bounded_safe_details
 }
 ~~~
 
-There is no arbitrary effect intent in the frozen interface. WorldStream does not execute emails, trades, deployments, shell commands, or external APIs.
+PackFault is the operation error channel, not a domain disposition.
 
-### DomainEvent
+Apply returns the complete next canonical Activity State and ordered canonical outputs. It produces one Transition even when the resulting Activity State bytes equal the prior bytes. Domain Events are ordered within that Transition and receive no independent Room sequence. Private historical audiences use immutable Membership IDs, never a mutable Role lookup.
 
-A domain event is an inspectable consequence for audit, observation construction, and the reference UI:
+Clean Reject is permitted only for:
 
-~~~rust
-pub struct DomainEvent {
-    pub event_type: String,
-    pub payload: CanonicalValue,
-    pub visibility: EventVisibility,
+- ParticipantAction after strict host schema and Action Offer admission;
+- Join;
+- Resume;
+- AccessModeChange;
+- RoleChange.
+
+Archive, Suspend, and Depart are mandatory Core proposals. The pack must Apply them; attempting to Reject one is PackFault. A required admitted TimerFired or ExternalInput also cannot be cleanly rejected. Exact-Head, authority, integrity, policy, idempotency, and storage outcomes remain WorldStream concerns.
+
+Declared rejection codes belong to the exact revision descriptor. An undeclared code, malformed safe detail, panic, invalid output, mandatory-Core veto, or contract-bound violation is PackFault and commits neither Transition nor new receipt.
+
+## Host-owned timer generations
+
+TimerRequestV1 is exactly:
+
+~~~text
+ScheduleNext {
+  timer_id,
+  due,
+  canonical_payload
 }
 
-pub enum EventVisibility {
-    Public,
-    Members(Vec<MemberId>),
-    Operator,
+CancelCurrent {
+  timer_id,
+  expected_generation
 }
-~~~
 
-Exact member IDs are preferred for private historical facts. A role-based audience can accidentally expose an earlier event to someone assigned that role later.
-
-Domain events are ordered inside one transition. They do not receive independent room sequences.
-
-### TimerChange
-
-~~~rust
-pub enum TimerChange {
-    ScheduleNext {
-        timer_id: TimerId,
-        scheduled_for: RecordedTime,
-        payload: CanonicalValue,
-    },
-    CancelCurrent {
-        timer_id: TimerId,
-        expected_generation: TimerGeneration,
-    },
-    RescheduleCurrent {
-        timer_id: TimerId,
-        expected_generation: TimerGeneration,
-        new_scheduled_for: RecordedTime,
-        new_payload: CanonicalValue,
-    },
+RescheduleCurrent {
+  timer_id,
+  expected_generation,
+  new_due,
+  new_canonical_payload
 }
 ~~~
 
-The pack chooses a Scheduled Time from typed recorded input but never chooses a generation. WorldStream owns a monotonic generation fence for each `(room_id, timer_id)`, starting at one and never reused or wrapped. It normalizes output to at most one mutation per logical Timer ID per Transition and deterministically assigns the next generation; retry/replay of the same causing Transition resolves the existing generation.
+The pack never assigns or predicts a timer generation. WorldStream validates the expected current witness, assigns the next monotonically nonreused generation, and records the normalized host-assigned change. One Transition may request at most one mutation per logical timer ID.
 
-Every new `scheduled_for` MUST be strictly later than the causing Stimulus's effective Semantic Time: Action `admitted_at`, TimerFired `scheduled_for`, or the declared `recorded_at` of another Stimulus. An initial Genesis timer MUST be strictly later than the typed recorded creation time. Equal/backward scheduling, implicit replacement, conflicting duplicates, stale expected generation, cancel of missing/fired/cancelled state, invalid payload, overflow, and unrepresentable time are Activity Faults with no commit.
+Every new due value MUST be strictly later than the causing Stimulus's semantic effective time: admitted_at for ParticipantAction, scheduled_for for TimerFired, and recorded_at for CoreProposed or ExternalInput. Equal or backward time, wrong generation, implicit replacement, conflicting requests, invalid payload/time, or overflow is PackFault. Replay repeats the same normalization from reconstructed timers without a clock or scheduler.
 
-TimerFired contains the immutable Scheduled Time, not a scan/detection `fired_at`. The host reconstructs the exact `(room_id, timer_id, generation, scheduled_for, payload)` candidate, and consumes that scheduled-generation witness in the same Advance as its Transition. Packs cannot observe scheduler lag, HostClock, queue timing, transaction time, or commit time.
+## View, Action Offers, and observation
 
-### AttentionSignal
+ViewInputV1 contains exact Core, Activity State, complete Head, and one typed viewer:
 
-~~~rust
-pub struct AttentionSignal {
-    pub member_id: MemberId,
-    pub reason_code: String,
-    pub priority: u8,
-    pub allowed_action_types: Vec<String>,
-    pub deadline: Option<RecordedTime>,
-    pub deduplication_key: String,
+- public/spectator Membership;
+- participant Membership;
+- operator Membership;
+- historical Replay Membership at a reconstructed sequence;
+- separately authorized post-Complete final reveal.
+
+PackViewV1 contains one versioned canonical Activity Projection plus one canonically ordered list of ActionOfferV1 values. An Action Offer is exactly:
+
+~~~json
+{
+  "domain": "worldstream/action-offer/v1",
+  "action_type": "commit_move",
+  "payload_schema_digest": "blake3:...",
+  "eligibility_window": {
+    "opens_at": "2026-08-15T12:00:00.000000Z",
+    "deadline": "2026-08-15T12:00:30.000000Z"
+  }
 }
 ~~~
 
-An Attention Signal says an Agent Participant may need to act. It is not a transport instruction and does not start an agent.
+eligibility_window is null when no recorded window applies. Offers sort by the descriptor's action order; no alternative legality representation exists. The canonical Action Offer bytes computed for an exact Head and viewer are reused without reinterpretation in Projection Reset, Observation Frames, Invocation Context, and host Action pre-admission. An absent action type cannot reach reduce. Presence is necessary but does not guarantee acceptance of a payload-specific proposal.
 
-In the frozen releases, one AppliedTransition may emit at most one AttentionSignal for a given target Membership. Multiple affected IDs are coalesced into that Membership's authorized Observation and Invocation Context.
+ObserveInputV1 contains:
 
-The host:
+- Core and Activity before and after;
+- normalized Stimulus;
+- ordered Domain Events;
+- exact Membership viewer;
+- the exact after-view Projection and Action Offer bytes.
 
-1. validates the reason against the manifest;
-2. validates that the target is an enabled participant Membership for an agent Principal with a pack-permitted Role, and checks Room policy;
-3. deduplicates by transition and key;
-4. persists an ActivationIntent if allowed;
-5. offers it to an external runner separately.
+PackObservationV1 is one bounded canonical, viewer-authorized change value and carries the supplied after-view Action Offer bytes when the viewer's offers changed. observe returns zero or one result. If the complete authorized before/after view changes, None is PackFault; if it is unchanged, one bounded authorized notice is still allowed. A hidden Transition returns None for that viewer.
 
-A human participant can receive an ordinary observation/notification for the same domain change without an agent activation.
+A Projection Reset calls view. Genesis creates no Observation Frame. Visibility removal, Session closure, frame sequencing and retention, Cursor movement, attach/reset barriers, and delivery remain host responsibilities.
 
-## Projection contract
+WorldStream wraps the Activity Projection with authorized Core facts. The pack never exposes raw Activity State to any viewer, including operator Memberships. Replay and final reveal are explicit typed viewers, never an authorization bypass.
 
-Viewer variants:
+## Attention
 
-~~~rust
-pub enum Viewer {
-    Public,
-    Participant {
-        member_id: MemberId,
-        principal_kind: PrincipalKind,
-        role: String,
-    },
-    Operator {
-        scopes: Vec<String>,
-    },
-    ReplayReveal {
-        policy: String,
-    },
-}
-~~~
+AttentionSignalV1 names a target Membership, declared reason, priority, optional deadline, deduplication key, and the applicable exact Action Offer types. One Apply may emit at most one Attention Signal per target Membership.
+
+The pack determines Attention canonically. The host separately checks current agent-participant eligibility, authority, policy, and integrity before creating operational Activation work. Replay reproduces Attention but performs no policy evaluation and creates no intent, offer, lease, Invocation, or Action authority.
+
+## Bounds, faults, and containment
+
+The descriptor's maxima cover canonical state, Domain Events, timer requests, Attention Signals, projections, observations, nesting, collections, and text bytes. The host schema-validates and canonicalizes every output before commit.
 
 The pack produces an ActivityProjection containing only pack-owned domain information. WorldStream constructs the client-facing Projection by wrapping it with authorized Core Room facts such as Room Status and the authenticated Membership's metadata. A separate protocol Projection Envelope carries causal, operational, and delivery metadata such as complete Room Head, Room Integrity State/generation, schema, and hash. Neither layer may overwrite fields owned by another.
 
-ActivityObservation is the pack-produced authorized delta and legal-action update caused by a Transition. WorldStream wraps it with the recipient Membership and causal delivery metadata.
+PackFault includes:
 
-Every participant ActivityProjection should contain:
+- callback panic where unwinding can be caught;
+- malformed, noncanonical, undeclared, or oversized output;
+- invalid next state, event, timer request, Attention, Projection, Action Offer, or observation;
+- a mandatory Core veto;
+- view/observation privacy-contract failure;
+- deterministic disagreement during Recovery or Replay.
 
-- current pack-defined phase;
-- current authorized facts;
-- current legal actions;
-- personal and shared deadlines;
-- explicit artifact references rather than blob contents;
-- a projection schema identifier.
+A PackFault before commit creates no Transition, timer change, Frame, Activation, or new receipt. Repeated deterministic failure on required input faults the Room; canonical hash disagreement quarantines it. OOM, aborting panic, and a permanently blocked trusted in-process callback cannot be preempted safely, so an external process supervisor is the v0.1 recovery boundary.
 
-It should not contain:
+## PackRevisionLock and embedded registry
 
-- another participant's private fields;
-- internal reducer-only values;
-- chain-of-thought;
-- raw unbounded history;
-- provider credentials or runner configuration.
+revision_digest is a build-computed semantic identity, not a pack-declared label and not a digest of platform-specific machine bytes. It is the digest of canonical PackRevisionLockV1:
 
-The host enforces maximum bytes but cannot determine semantic privacy. Packs require adversarial noninterference tests.
+- pack ID and explanatory version;
+- host-contract version and canonical-codec version;
+- descriptor/manifest bytes excluding the digest field;
+- every schema ID and exact schema-content digest;
+- deterministic static-data digests;
+- pack-owned rule-source digest;
+- deterministic dependency-lock digest.
 
-## Determinism contract
+Every behavior, legality, rejection, event, timer, Attention, projection, observation, or visibility change requires a new digest.
 
-For the same:
+Each release embeds PackRegistryV1 mapping an exact digest to:
 
-- Activity Pack revision digest;
-- genesis input and seed;
-- immutable Core-before/proposed-after values;
-- ordered recorded stimuli;
+- the compiled executor;
+- PackRevisionLockV1 and descriptor/schema bundle;
+- state, configuration, Stimulus, disposition, event, timer, Attention, view, and observation codecs;
+- golden-corpus digest;
+- selectable_for_new_rooms;
+- runnable_for_retained_rooms.
 
-the pack MUST produce byte-identical Canonical Activity State hashes and logically identical ordered Transition output. The host's Core reducer independently reproduces the Core State hash; the host then binds Core, Activity, and aggregate hashes into Genesis/Transition lineage.
+selectable_for_new_rooms implies runnable_for_retained_rooms. A digest may become non-selectable while remaining runnable, but every digest referenced by retained Room lineage MUST remain runnable for load, advance, view, observe, Recovery, and Replay. Retaining only decoders is insufficient.
 
-Forbidden inside initialize, apply, project, and observe:
+Startup rejects digest/lock/descriptor collisions. Recovery never downloads or dynamically loads code. A referenced digest with a missing executor or codec makes the affected Room unavailable and prevents a verified restore or transfer from becoming ready.
 
-- wall-clock reads;
-- OS randomness;
-- network calls;
-- filesystem or environment access;
-- database queries;
-- process-global mutable state;
-- thread races;
-- LLM or tool calls;
-- floating-point Activity State.
+There is no in-place Room upgrade. A Room's digest and canonical Activity bytes never change except through ordinary Transitions under that same digest. A new semantic revision creates a new Room. Removing retained execution support is a future explicit compatibility break with a defined export/purge policy, never a silent migration.
 
-Allowed:
+Retain for the Room lineage lifetime:
 
-- deterministic helpers supplied in DeterministicContext;
-- integer and fixed-point arithmetic;
-- labeled randomness derived from room seed and next sequence;
-- recorded timestamps and payloads from the stimulus;
-- pure schema and projection code.
+- exact revision digest, revision lock, descriptor/schema bytes, codecs, executor, and golden evidence;
+- Genesis, ordered Transitions, normalized Stimuli, events, timer changes, Attention, and canonical hashes;
+- semantic receipt identities/tombstones and immutable referenced-resource identities needed by retained lineage.
 
-Maps are canonicalized by key. Unknown input fields are rejected. Golden replay fixtures run on every supported platform in CI.
+Snapshots, current materializations, indexes, caches, telemetry, pruned delivery payloads, and retired Invocation Context bytes are replaceable or bounded. Removing every snapshot must still permit initialization and exact full Replay.
 
-## Rejections and faults
+The release compatibility manifest enumerates every bundled executor/codec and its golden evidence. Release upgrade, verified restore, and storage transfer gates fully Replay every retained digest rather than merely decoding old state.
 
-ApplyError has two variants: Rejected and ActivityFault. Rejected is expected for a ParticipantAction:
+## Public plugins
 
-- domain constraint violated after strict schema admission;
-- wrong role;
-- action not legal in current phase;
-- missing resource or evidence;
-- deadline passed;
-- duplicate domain commitment;
-- activity in a pack-defined terminal phase.
-
-It produces no canonical Transition.
-
-Rejected is also valid for a vetoable Core proposal—join, resume, Access Mode, or Role change—when the proposed complete final Core state violates pack domain/cardinality rules. It produces a stable idempotent administrative rejection with no Transition and is not an ActivityFault. Returning Rejected for archive, suspend, or depart is an ActivityFault because those Core operations are mandatory.
-
-A duplicate or stale timer candidate is discarded by host admission before pack application. Invalid timer/external input or an internally inconsistent mandatory Core Stimulus reaching deterministic pack logic is an ActivityFault; it is never disguised as a participant Action rejection.
-
-The Room Kernel rejects based_on_room_seq mismatch before pack application in the frozen releases.
-
-ActivityFault is an implementation or integrity failure:
-
-- panic;
-- invalid next state;
-- oversized state/output;
-- unknown attention reason;
-- invalid timer operation;
-- projection failure;
-- noncanonical value;
-- replay hash mismatch.
-
-For a client action, the server returns activity_fault and reloads or quarantines the room. For a required timer/system stimulus that deterministically faults again, the room becomes faulted. The host never silently skips it.
-
-## Pack lifecycle
-
-### Installation
-
-v0.1 and v0.2 packs are compiled into worldstreamd and registered in a static allowlist.
-
-### Room creation
-
-Room creation:
-
-1. resolves an exact compiled revision digest;
-2. validates configuration and constructs initial `CoreRoomState v1` with the Core reducer;
-3. calls initialize with immutable initial Core and receives canonical Activity State plus normalized initial timer requests;
-4. computes separate Core, Activity, and aggregate hashes and a Genesis hash binding the exact creation inputs and normalized timers;
-5. records immutable Genesis and complete Head zero;
-6. constructs initial authorized Projections without creating an Observation Frame, Attention Signal, or Activation;
-7. commits Genesis, Head, verified current materializations, timers, resource, and creation receipt atomically.
-
-### Upgrade
-
-There is no in-place pack upgrade in the frozen releases. A new pack revision creates a new room. Export/import state migration is future research.
-
-### Public plugins
-
-Not supported. Rust code in the process is trusted. Wasmtime, Component Model ABI, signing, registry, sandbox limits, and third-party renderer isolation may be designed only after both built-ins reveal the real contract.
+Not supported. ActivityPackV1 freezes the trusted semantic seam required by retained v0.1 Rooms; it does not promise Wasmtime, a Component Model ABI, signing, dynamic registry service, third-party renderer isolation, untrusted resource metering, or a marketplace. Those require a separate post-v0.2 decision.
 
 ## Presentation boundary
 
@@ -463,7 +416,7 @@ The project deliberately does not freeze:
 
 ### Purpose
 
-Heist is a compact deterministic multiplayer game used to prove:
+Agent Heist is the v0.1 reference Activity and uses pack schema v1. It is one ordinary ActivityPackV1 implementation with no Heist-specific Kernel primitive. It proves:
 
 - private participant views;
 - structured negotiation;
@@ -477,158 +430,244 @@ Heist is a compact deterministic multiplayer game used to prove:
 
 It is not intended to be a rich game platform.
 
-### Participants, access, and input
+### Frozen configuration and seats
 
-| Acting role | Default kind | Private knowledge |
-|---|---|---|
-| Navigator | Agent | Route hazards and access geometry |
-| Insider | Agent | Guard schedule and identity clue |
-| Broker | Agent | Tool cost, availability, and extraction constraint |
+The canonical v0.1 configuration is:
 
-Additional room access and input sources are not Heist roles:
+~~~json
+{
+  "pack_id": "worldstream.agent-heist",
+  "pack_schema": 1,
+  "roles": ["navigator", "insider", "broker"],
+  "briefing_duration_seconds": 30,
+  "negotiation_duration_seconds": 90,
+  "commitment_duration_seconds": 30,
+  "commitment_reminder_seconds_before_deadline": 10,
+  "result_duration_seconds": 20,
+  "maximum_plans": 12,
+  "maximum_open_offers_per_role": 4
+}
+~~~
 
-| Item | Kind | Purpose |
-|---|---|---|
-| Spectator or operator membership | Human access mode | Public state or authorized local administration |
-| Facility | Host stimulus source | Timers and deterministic resolution |
+There are exactly three participant seats, in canonical order: Navigator, Insider, Broker. Genesis binds each seat to one immutable Membership ID. A human or agent Principal may occupy a seat at creation, but the reference fixture uses three Agent Principals.
 
-Role cardinality is exactly one for the three active roles in v0.1. A human is technically allowed to occupy a player role for manual testing.
+Current standing and Role still come from Core. Suspension or departure makes that Genesis seat missing. A missing seat never changes the majority denominator, transfers its private knowledge, accepts a replacement Membership, or permits Role reassignment. Heist rejects participant joins and Role transfers that would replace a fixed seat; spectator/operator Memberships remain ordinary Core access.
 
-### Hidden fixture
+Navigator initially owns the route clue. Insider owns the entry-window clue. Broker owns the required-tool and extraction clues. No seat initially knows the full solution.
 
-Room seed selects one small immutable facility configuration:
+### Deterministic fixture selection
 
-- correct route: canal, service, or roof;
-- correct entry window: early, middle, or late;
-- required tool: jammer, disguise, or thermal key;
-- one extraction constraint.
+The Genesis DeterministicContextV1 helper uniform_index selects one fixture from the following table in row order using the label agent-heist/fixture/v1 and bound 3:
 
-No participant initially sees all four values. The three role clues are sufficient together.
+| Index | Fixture ID | Route | Entry window | Required tool | Extraction |
+|---:|---|---|---|---|---|
+| 0 | canal_shift | canal | late | disguise | van |
+| 1 | service_window | service | early | thermal_key | boat |
+| 2 | roof_signal | roof | middle | jammer | motorbike |
 
-### Phases
-
-| Phase | Default duration | Meaning |
-|---|---:|---|
-| Briefing | 30 seconds | Private clues become inspectable |
-| Negotiation | 90 seconds | Publish clues, make exchanges, propose plans |
-| Commitment | 30 seconds | Each role submits one sealed commitment |
-| Resolution | Immediate | Pack resolves recorded commitments |
-| Result | 20 seconds | Participants acknowledge or a timer advances the Activity to Complete |
-| Complete | Terminal | Final public/reveal projections available |
-
-Durations are fixture configuration, not a general workflow engine.
+The selected fixture ID and hidden truth enter canonical Activity State. The deterministic fixture data also defines the finite clue IDs and allowed claim codes; Actions never carry arbitrary clue text.
 
 ### Canonical Activity State
 
-State contains:
+Agent Heist canonical state contains exactly:
 
-- phase and phase generation;
-- recorded deadlines;
-- facility configuration;
-- private clue ownership and disclosure state;
-- structured offers and accepted exchanges;
-- public plan proposals and endorsements;
-- each member's sealed commitment;
-- resources and contribution decisions;
-- outcome and deterministic explanation.
+- phase, phase generation, phase start, and phase deadline;
+- fixture identity and hidden fixture truth;
+- the three immutable Genesis seat-to-Membership identities;
+- clues plus inspection, disclosure, and public claim-code facts;
+- bounded exchange offers and their statuses;
+- plans, per-seat endorsements, and challenges;
+- at most one immutable sealed commitment per seat;
+- result acknowledgements;
+- final Outcome and canonical explanation.
 
-### Typed actions
+Maps and sets encode in role order navigator, insider, broker. Created entities encode by creation Room sequence and then ID. Plan IDs are Action IDs. Host timer rows/generations, Frames, Cursors, Sessions, Runners, Activation, policy, integrity, wall time, detection time, and commit time are not Activity State.
 
-#### inspect_clue
+A plan is the canonical tuple:
 
-Marks a role-owned clue as inspected and returns it only in that member's observation.
+~~~text
+{
+  plan_id,
+  proposer_role,
+  created_room_seq,
+  route,
+  entry_window,
+  required_tool,
+  extraction
+}
+~~~
 
-#### publish_clue
+plan_id is the proposing Action ID. Identical plan field tuples cannot be proposed twice; the first accepted tuple in Room order is canonical.
 
-Publishes a selected pre-authored claim code derived from a clue. It does not accept arbitrary hidden reasoning.
+### Action schemas and predicates
 
-#### offer_exchange
+Every Action requires a healthy active Room, an enabled participant occupying its immutable seat, the exact current Head, a matching exact Action Offer, strict payload schema, and ordinary durable idempotency.
 
-Offers one owned clue reference to a named member in exchange for an endorsement or another clue reference.
+Action Offers sort in this exact order:
 
-#### accept_exchange
+1. inspect_clue;
+2. publish_clue;
+3. offer_exchange;
+4. accept_exchange;
+5. propose_plan;
+6. endorse_plan;
+7. challenge_plan;
+8. commit_move;
+9. acknowledge_result.
 
-Accepts a still-valid offer. The reducer updates disclosure audiences atomically.
+| Action | Canonical payload | Pack predicate |
+|---|---|---|
+| inspect_clue | {clue_id} | Briefing, Negotiation, or Commitment; caller owns the uninspected clue. |
+| publish_clue | {clue_id, claim_code} | Negotiation; caller knows the clue; claim_code is one predefined code for it; clue is not already published. |
+| offer_exchange | {recipient_role, offered_clue_id, consideration} | Negotiation; recipient is a distinct enabled seat; sender knows the offered clue; consideration is either {kind: clue_disclosure, clue_id} for a recipient-owned clue or {kind: plan_endorsement, plan_id}; sender has fewer than four open offers. |
+| accept_exchange | {offer_id} | Negotiation; caller is the addressed recipient; offer is open; both disclosure/endorsement terms remain valid. All effects apply atomically. |
+| propose_plan | {route, entry_window, required_tool, extraction} | Negotiation; fewer than twelve plans exist; tuple is new. |
+| endorse_plan | {plan_id} | Negotiation; plan exists. It replaces the caller's prior public endorsement. |
+| challenge_plan | {plan_id, reason} | Negotiation; plan exists; reason is route_conflict, timing_conflict, tool_conflict, or extraction_conflict; caller's disclosed knowledge proves it; the role/plan/reason tuple is new. |
+| commit_move | {selected_plan_id, contribute_required_resource} | Commitment; plan exists; caller has no commitment; admitted_at is in the half-open phase window. The result is immutable and sealed. |
+| acknowledge_result | {} | Result; caller has not acknowledged. It is presentation acknowledgement only. |
 
-#### propose_plan
+There is no fallback commitment field, arbitrary chat, hidden free text, binary yes/no vote, or pack-side participant credential.
 
-Creates a public structured plan:
+The exact revision declares stable pack rejection codes for wrong phase, unavailable seat, clue ownership/knowledge, invalid claim code, invalid or bounded offer, missing/duplicate plan, unsupported challenge, prior commitment, and prior acknowledgement. Stale Head, current authority, integrity, schema, idempotency, and exact deadline admission remain Kernel dispositions rather than pack rejection codes.
 
-    route
-    entry_window
-    required_tool
-    extraction_choice
+### Six-phase timer machine
 
-#### endorse_plan
+The only phase order is:
 
-Publicly endorses one current plan during Negotiation.
+    Briefing → Negotiation → Commitment → Resolution → Result → Complete
 
-#### challenge_plan
+Every phase entry is an accepted Transition and increments canonical phase generation. Phase generation is carried in timer payloads to fence obsolete phase work; it is distinct from the host-owned timer generation.
 
-Adds a bounded public reason code such as route_conflict, timing_conflict, tool_conflict, or extraction_conflict.
+The pack uses logical timers phase_deadline, commitment_reminder, and resolve_now. The host assigns all timer generations.
 
-#### commit_move
+1. Genesis enters Briefing at created_at with phase generation 1 and requests phase_deadline at D1 = created_at + 30 seconds.
+2. Firing the exact D1 witness enters Negotiation and requests the next phase_deadline at D2 = D1 + 90 seconds.
+3. Firing D2 enters Commitment, requests commitment_reminder at D3 - 10 seconds, and requests phase_deadline at D3 = D2 + 30 seconds.
+4. The reminder emits required_action_deadline only to still-missing enabled Agent seats. It does not extend D3.
+5. The third distinct commitment enters Resolution immediately, cancels the current commitment_reminder and phase_deadline witnesses, and requests resolve_now at successor(admitted_at), the minimum representable semantic tick strictly after the Action's admitted_at.
+6. Otherwise firing the exact D3 witness enters Resolution with missing seats explicit, cancels the still-current reminder if necessary, and requests resolve_now at successor(D3).
+7. Firing resolve_now freezes commitments, computes the Outcome, enters Result, and requests phase_deadline at D4 = resolve_now.scheduled_for + 20 seconds.
+8. The third distinct result acknowledgement enters Complete early and cancels D4; otherwise firing D4 enters Complete.
+9. Complete is terminal Activity State. Core Room Status remains active until authorized archive.
 
-During Commitment, submits:
+Every new schedule is strictly later than the causing semantic time. Early and deadline closure use the same reducer path and generation checks. A deadline race is ordered only by the bounded Room lane and durable commit: Action first cancels/fences the old timer; timer first closes the phase and the Action is no longer applicable. There is no reservation, rebasing, vote consensus, or timing tie-break.
 
-    selected_plan_id
-    contribute_required_resource
-    private_fallback_choice
+### Strict-majority selection and five-check outcome
 
-The payload is visible only to the submitting member and an authorized operator membership until resolution.
+The denominator is always the three immutable Genesis seats:
 
-#### acknowledge_result
+| Commitments | Selection |
+|---|---|
+| zero or one | no strict majority |
+| two for one plan | that plan |
+| two split | no strict majority |
+| three, 3-0 | unanimous plan |
+| three, 2-1 | majority plan |
+| three, 1-1-1 | no strict majority |
 
-Records that the Participant handled the result. A timer can advance the Activity to Complete if an Invocation is absent.
+Two plans cannot each hold two of three commitments. No arrival-order, earliest-plan, plan-ID, or other majority tie-break exists. Missing seats never improve the denominator or synthesize a commitment.
 
-### Resolution
+No majority yields:
 
-Resolution is deterministic:
+~~~json
+{
+  "outcome": "failure",
+  "score": 0,
+  "reason": "no_strict_majority"
+}
+~~~
 
-1. Choose the plan with at least two commitments; ties use the earliest valid plan ID.
-2. Check route, entry window, tool, and extraction constraint against the hidden fixture.
-3. Check required resource contribution.
-4. Emit success, partial_failure, or failure with named rule outcomes.
-5. Reveal the configured post-game fields.
+The canonical explanation also includes aggregate vote counts and missing roles in canonical Role order.
 
-There is no LLM judge.
+A selected plan earns one point for each named Boolean check:
 
-### Privacy matrix
+1. route matches;
+2. entry_window matches;
+3. required_tool matches;
+4. extraction matches;
+5. at least one commitment selecting that plan has contribute_required_resource = true.
 
-| Data | Owner | Addressed member | Other players | Public spectator | Terminal reveal |
-|---|---|---|---|---|---|
-| Undisclosed role clue | Yes | No | No | No | Yes |
-| Accepted clue exchange | Yes | Yes | No | No | Yes |
-| Public clue claim | Yes | Yes | Yes | Yes | Yes |
-| Structured offer | Yes | Yes | No | No | Yes |
-| Proposed plan | Yes | Yes | Yes | Yes | Yes |
-| Sealed commitment | Yes | No | No | No | Yes |
-| Outcome explanation | Yes | Yes | Yes | Yes | Yes |
+Score 5 is success. Score 3 or 4 is partial_failure. Score 0, 1, or 2 is failure. The canonical explanation contains the selected plan, aggregate counts, ordered missing roles, all five named checks, score, reason, and Outcome. There is no LLM judge.
 
-Terminal reveal is a pack-defined Projection after the Terminal Phase, not authorization bypass through Replay.
+### Viewer-scoped privacy and reveal
 
-### Attention reasons
+| Viewer | Visible pack data |
+|---|---|
+| Spectator/public Membership | Phase/deadline, seat presence, public claim codes, plans, endorsements, challenges, commitment count, and aggregate Result once available. |
+| Participant Membership | Public view plus that seat's authorized clues, addressed offers, own sealed commitment, and exact current Action Offers. |
+| Operator Membership | Explicit operational diagnostics and aggregate counts only; never raw Activity State, fixture truth, clues, offers, or individual commitments. |
+| Result | Selected plan, aggregate votes, five checks, score, reason, and Outcome are public; individual commitments and contributor identities remain sealed. |
+| Complete final reveal | A currently authorized Room Membership may receive fixture truth, clues/exchanges, and individual commitments through the separately typed final-reveal view. |
 
-- offer_received;
-- endorsement_requested;
-- commitment_opened;
-- required_action_deadline;
-- round_result_available.
+Live and historical Replay views remain Membership-scoped. Historical Replay reconstructs the viewer at the requested sequence. Final-reveal Replay is separately labeled, exists only after Complete, and still requires current final-reveal authorization. Hidden-only changes yield no unauthorized observation. Genesis yields no Frame.
 
-Only commitment_opened and required_action_deadline are release-critical. Public chatter does not create an activation.
+### Attention
 
-### Heist release gates
+The only declared Agent Heist reasons are:
 
-1. Three distinct Agent Participants, served by deterministic external Runners, drive the Heist Activity to its Terminal Phase and Outcome through public SDK/protocol calls.
-2. Each role receives different private projections.
-3. Concurrent sealed submissions are serialized in Room order; stale submissions catch up and retry within the shared deadline.
-4. One model invocation is absent when Commitment opens.
-5. The pack emits attention for that member; one durable activation is claimed.
-6. A fresh invocation catches up and commits before deadline.
-7. Kill/restart loses no acknowledged move.
-8. Same action retry never mutates twice.
-9. Replay reproduces every selected Core, Activity, aggregate, and lineage hash plus the final Outcome.
-10. The public UI never receives private clues, offers, or commitments.
+- offer_received: a new offer is addressed to the target seat;
+- endorsement_requested: a new plan is proposed to another enabled seat;
+- commitment_opened: Commitment opens and the target seat has not committed;
+- required_action_deadline: the reminder fires and the enabled target seat is still missing;
+- round_result_available: Result opens for the target seat.
+
+If one Transition would produce more than one reason for one target, retain exactly the first in this precedence:
+
+    required_action_deadline
+    commitment_opened
+    offer_received
+    endorsement_requested
+    round_result_available
+
+Human participants receive ordinary observations instead of Activation. Host policy enables the deliberately absent Broker demo path. Policy, intent creation, lease, Invocation, participant capability, and Cursor remain noncanonical host concerns; Replay reproduces Attention only.
+
+### Deterministic fixture actors
+
+The release fixture provides cooperative Navigator, cautious Insider, and withholding Broker actors. Candidate-plan ranking is identical and deterministic:
+
+1. more fields matching the actor's currently known clues;
+2. more current endorsements;
+3. lower creation Room sequence;
+4. lexicographically lower plan ID.
+
+This ranking selects only an actor's proposed or committed plan; it never resolves the Room's majority.
+
+The Navigator inspects/publishes its route clue and proposes the highest-ranked complete candidate. The Insider inspects its clue, challenges disclosed conflicts, and endorses/commits the highest-ranked consistent plan. The Broker's first Invocation exits before Commitment; after a fresh commitment_opened or required_action_deadline Activation, it ranks current plans, submits its separately authorized commitment, and contributes the required resource to the best known plan.
+
+The canonical successful golden ends with a fully correct two-of-three or three-of-three majority and at least one supporting resource contribution.
+
+### Golden corpus and checkpoints
+
+Every PackRevisionLockV1 for Agent Heist binds a golden-corpus digest covering canonical configuration, Genesis output, state, events, normalized host-assigned timer changes, Attention, views/observations, Action Offers, and hashes at these checkpoints:
+
+| Checkpoint | Required assertion |
+|---|---|
+| Genesis | Briefing generation 1, exact selected fixture, D1 request, no event/Attention/Frame/Activation. |
+| D1 | Negotiation at D1 and D2 requested from D1. |
+| D2 | Commitment at D2; reminder and D3 requested; commitment_opened targets exact missing enabled Agent seats. |
+| Reminder | D3 unchanged; required_action_deadline targets only still-missing enabled Agent seats. |
+| Third commitment | Both old Commitment timers cancel; Resolution enters; resolve_now is strictly later than admitted_at. |
+| D3 without all seats | Missing seats remain explicit; Resolution enters; resolve_now is strictly later than D3. |
+| resolve_now | Majority/scoring matrix produces exact Result explanation and D4. |
+| Third acknowledgement or D4 | Complete enters exactly once and final reveal becomes eligible. |
+
+The acceptance matrix MUST cover:
+
+1. all six phases and generation-fenced early/deadline closure;
+2. zero, one, 2-0, 1-1, 3-0, 2-1, and 1-1-1 commitment cases;
+3. success 5/5, partial failure 3/5 and 4/5, failure 0-2/5, and no-majority failure;
+4. exact deadline equality, stale Head, concurrent commitments, duplicate Actions/timers, and lost replies;
+5. crash after commit/before Frame publication and crash after early close/before resolution;
+6. fixed-cutoff restart catch-up and Replay from Genesis after deleting every snapshot;
+7. durable Activation restart, claim retry, lease expiry/reclaim, and separation from participant Action/Cursor authority;
+8. paired privacy fixtures for live view, Frame, catch-up, reset, UI/log, operator, historical Replay, and final reveal;
+9. rejection of final reveal before Complete;
+10. byte-identical canonical state, events, timer effects, Action Offers, explanations, and hashes on every supported platform and storage profile.
+
+Replay folds Genesis through the exact typed Stimuli with the retained executor. It does not copy terminal state, shallow-hash selected fields, contact a Runner, or reconstruct Activation work.
+
+The corrected executable prototype on branch prototype/agent-heist-recovery at commit 932c06c supports these semantics. It is logic evidence only; it does not prove production database/transport concurrency, authorization enforcement, power-loss recovery, browser behavior, queue bounds, performance, or cryptography.
 
 ## Reference Activity B: Investigation Room
 
@@ -806,7 +845,7 @@ Analyst projection:
 - assigned evidence and authorized artifact references;
 - own drafts;
 - published case board;
-- own stale dependencies and legal actions.
+- own stale dependencies and Action Offers.
 
 Challenger projection:
 
@@ -822,8 +861,8 @@ Public/spectator projection:
 
 Operator-membership projection:
 
-- operational state and all fixture data for local debugging;
-- never model chain-of-thought or provider credentials.
+- explicit operational diagnostics and authorized aggregate fixture status;
+- never raw Activity State, private drafts/evidence, model chain-of-thought, or provider credentials.
 
 ### Investigation generality gate
 
@@ -845,28 +884,30 @@ If these fail, the team must revise and retest the abstraction rather than hidin
 
 Every built-in pack MUST pass:
 
-- manifest/schema consistency;
-- initialization determinism;
-- golden Genesis/Transition lineage plus Core, Activity, and aggregate hashes;
-- repeated apply output equality;
-- invalid domain Action rejection plus kernel stale-Action conformance;
-- join/resume/Access/Role declared vetoes and mandatory archive/suspend/depart handling;
+- PackRevisionLock, descriptor, schema, codec, executor, and golden-corpus consistency;
+- initialization determinism and no Genesis event, Attention, or Frame;
+- golden Genesis/Transition lineage plus Core, Activity, aggregate, and final Activity State hashes;
+- repeated reduce output equality;
+- exact Core veto matrix plus participant rejection and Kernel stale-action conformance;
 - atomic multi-Membership final-state Role/cardinality changes with no reflected pack ownership;
-- timer retry idempotency;
-- maximum-state and output bounds;
-- projection schema validation;
+- wrong-generation, non-forward, duplicate/conflicting timer-request faults;
+- maximum-state, collection, nesting, text, and output bounds;
+- Action Offer byte parity across view, observation, reset, Invocation Context, and host pre-admission;
+- projection/observation schema validation and zero-or-one viewer output;
 - randomized cross-participant privacy/noninterference;
 - completed-reveal authorization;
 - activation-reason declaration and deduplication;
-- crash recovery from an older paired Core-and-Activity snapshot and from Genesis alone;
-- replay without external I/O;
+- callback panic and malformed-output containment before commit;
+- crash recovery from an older paired Core-and-Activity snapshot and from Genesis with every snapshot deleted;
+- Replay without external I/O, policy evaluation, scheduler, or Activation creation;
 - present-plus-historical Replay authorization across suspend/depart/rejoin and Role changes;
+- retained non-selectable digest remains fully runnable through load, advance, view, and Replay;
 - absence of floating-point authoritative values;
 - no core changes specific to the pack.
 
-## Future ABI decision
+## Future portable ABI decision
 
-After v0.2, use the two real implementations to decide:
+ActivityPackV1 is frozen for trusted retained Rooms. After v0.2, use the two real implementations to decide whether a separate portable/untrusted ABI is justified:
 
 - whether the interface should remain a Rust crate API;
 - whether a WebAssembly Component Model boundary is justified;

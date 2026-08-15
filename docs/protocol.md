@@ -290,7 +290,17 @@ Attachment is serialized through the Room lane. The server captures the complete
         "value": {
           "phase": "commitment",
           "deadline": "2026-08-13T18:30:00Z",
-          "legal_actions": ["commit_move"]
+          "action_offers": [
+            {
+              "domain": "worldstream/action-offer/v1",
+              "action_type": "commit_move",
+              "payload_schema_digest": "blake3:...",
+              "eligibility_window": {
+                "opens_at": "2026-08-13T18:29:30Z",
+                "deadline": "2026-08-13T18:30:00Z"
+              }
+            }
+          ]
         }
       }
     },
@@ -300,6 +310,7 @@ Attachment is serialized through the Room lane. The server captures the complete
 ~~~
 
 The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A Projection Reset is not an Observation Frame. A client processes it atomically, stores `baseline_frame_head`, and then sends the Session's synchronization acknowledgement.
+The canonical Action Offer bytes are supplied by the exact pack view and reused unchanged by Observations, Invocation Context, and host pre-admission.
 
 `projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Integrity State/generation, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
 
@@ -343,8 +354,8 @@ Humans and agents use the same message.
     "based_on_room_seq": 91,
     "action_type": "commit_move",
     "payload": {
-      "plan_id": "01K...",
-      "sealed_choice": "..."
+      "selected_plan_id": "01K...",
+      "contribute_required_resource": true
     }
   }
 }
@@ -408,7 +419,17 @@ If a retry finds the stored result, duplicate is true and every other authoritat
     "code": "stale_room_state",
     "message": "The commitment window is now active.",
     "current_room_seq": 93,
-    "legal_actions": ["commit_move"],
+    "action_offers": [
+      {
+        "domain": "worldstream/action-offer/v1",
+        "action_type": "commit_move",
+        "payload_schema_digest": "blake3:...",
+        "eligibility_window": {
+          "opens_at": "2026-08-13T18:29:30Z",
+          "deadline": "2026-08-13T18:30:00Z"
+        }
+      }
+    ],
     "retryable_with_same_action_id": false,
     "may_submit_revised_action": true,
     "duplicate": false,
@@ -465,8 +486,17 @@ If database COMMIT may or may not have occurred, the server MUST keep the attemp
     "observation": {
       "reason": "commitment_opened",
       "changes": [],
-      "legal_actions": ["commit_move"],
-      "deadline": "2026-08-13T18:30:00Z"
+      "action_offers": [
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "commit_move",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": {
+            "opens_at": "2026-08-13T18:29:30Z",
+            "deadline": "2026-08-13T18:30:00Z"
+          }
+        }
+      ]
     },
     "payload_hash": "blake3:..."
   }
@@ -476,7 +506,9 @@ If database COMMIT may or may not have occurred, the server MUST keep the attemp
 For one Membership, one accepted Transition may produce:
 
 - no frame for an unaffected membership;
-- one coalesced frame containing every authorized public and private consequence;
+- exactly one coalesced frame containing every authorized public and private consequence for an affected Membership;
+- public consequences coalesced into each eligible Membership's one frame;
+- operator-only consequences coalesced only into eligible operator Membership frames;
 - no frame when the Transition is hidden, even though the global Room Head advances.
 
 A frame MUST name exactly one recipient Membership and MUST NOT contain hidden Authoritative Room State or another Membership's private payload. `frame_seq` is monotonic and never reused within that Membership's Observation Stream and may skip Room Transitions that were irrelevant or unauthorized. Genesis creates no frame. Public consequences are copied into each authorized enabled Membership's own coalesced frame; operator-only consequences go only to operator Memberships.
@@ -598,7 +630,6 @@ Only after claim authorization does the server return private invocation context
     "cause_room_seq": 93,
     "reason_code": "commitment_opened",
     "deadline": "2026-08-13T18:30:00Z",
-    "allowed_action_types": ["commit_move"],
     "room_head": {
       "room_seq": 93,
       "lineage_hash": "blake3:...",
@@ -628,16 +659,30 @@ Only after claim authorization does the server return private invocation context
         "schema": "worldstream.agent-heist.navigator.v1",
         "value": {
           "phase": "commitment",
-          "legal_actions": ["commit_move"]
+          "action_offers": [
+            {
+              "domain": "worldstream/action-offer/v1",
+              "action_type": "commit_move",
+              "payload_schema_digest": "blake3:...",
+              "eligibility_window": {
+                "opens_at": "2026-08-13T18:29:30Z",
+                "deadline": "2026-08-13T18:30:00Z"
+              }
+            }
+          ]
         }
       }
     },
     "projection_hash": "blake3:...",
     "action_offers": [
       {
+        "domain": "worldstream/action-offer/v1",
         "action_type": "commit_move",
-        "basis_room_seq": 93,
-        "deadline": "2026-08-13T18:30:00Z"
+        "payload_schema_digest": "blake3:...",
+        "eligibility_window": {
+          "opens_at": "2026-08-13T18:29:30Z",
+          "deadline": "2026-08-13T18:30:00Z"
+        }
       }
     ],
     "delivery": {
@@ -782,11 +827,31 @@ Session presence, Runner availability, and other operational changes do not cons
     "version": "0.1.0",
     "digest": "blake3:..."
   },
-  "configuration": {},
+  "configuration": {
+    "pack_schema": 1,
+    "roles": ["navigator", "insider", "broker"],
+    "briefing_duration_seconds": 30,
+    "negotiation_duration_seconds": 90,
+    "commitment_duration_seconds": 30,
+    "commitment_reminder_seconds_before_deadline": 10,
+    "result_duration_seconds": 20,
+    "maximum_plans": 12,
+    "maximum_open_offers_per_role": 4
+  },
   "members": [
     {
-      "principal_id": "01K...",
+      "principal_id": "01K...NAV",
       "role": "navigator",
+      "access_mode": "participant"
+    },
+    {
+      "principal_id": "01K...INS",
+      "role": "insider",
+      "access_mode": "participant"
+    },
+    {
+      "principal_id": "01K...BRO",
+      "role": "broker",
       "access_mode": "participant"
     }
   ],
@@ -794,7 +859,7 @@ Session presence, Runner availability, and other operational changes do not cons
 }
 ~~~
 
-The server accepts only a compiled-in allowlisted pack digest. Creation constructs initial `CoreRoomState v1`, initializes canonical Activity State and normalized initial timers with the exact pack, and records one immutable sequence-zero Genesis containing the exact version identities, configuration, both initial state values, timer list, Room seed, and logical creation time. Genesis hash plus initial Core, Activity, and aggregate hashes, complete Head zero, verified current materializations, timers, resource, and mutation receipt commit atomically. Genesis creates no Transition, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
+The server accepts only a selectable compiled-in semantic digest whose `PackRevisionLockV1`, executor, schemas, codecs, and goldens agree in the embedded registry. Creation constructs initial `CoreRoomState v1`, calls `initialize`, and records one immutable sequence-zero Genesis containing exact version identities, configuration, both initial state values, normalized timer list, Room seed, and logical creation time. Genesis hash plus initial Core, Activity, and aggregate hashes, complete Head zero, verified current materializations, timers, resource, and mutation receipt commit atomically. Genesis creates no Transition, Domain Event, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
 
 ### Current projection
 
@@ -813,6 +878,7 @@ Replay applies two authorization gates. Present authentication/authorization fir
 Replay responses name:
 
 - exact pack digest;
+- exact retained executor/codec support status;
 - requested and reconstructed room sequence;
 - complete Room Head with Core, Activity, aggregate, and lineage hashes;
 - authorized historical projection;
@@ -980,13 +1046,25 @@ BLAKE3 hashes canonical JSON bytes for these typed objects. Golden vectors MUST 
 - Minor versions add optional fields or new message types.
 - Pack action and projection schemas are versioned independently and pinned by pack digest.
 - Clients advertise supported protocol versions and capabilities.
-- The server never silently rewrites an existing Room to a new Activity Pack revision.
+- The server never changes an existing Room's digest or rewrites its Activity State in place.
+- Pack revisions may be selectable-and-runnable or retained-runnable. Every retained Room digest remains runnable; a newer executor never substitutes for it.
 - Unknown required capability yields an explicit failure.
 - Both v0.1 and v0.2 remain pre-stable developer-preview protocols.
 
-The public Activity Pack ABI is reviewed only after both reference activities pass.
+The trusted five-operation `ActivityPackV1` semantic seam is frozen. Any portable, dynamically loaded, or untrusted public plugin ABI is a separate post-v0.2 decision.
+
+See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 
 ## Required conformance scenarios
+
+### Activity Pack revision and Action Offers
+
+1. One exact Action Offer byte sequence appears in Projection, reset, observation, Invocation Context, and host pre-admission.
+2. An absent action type cannot reach reduce; payload-specific declared rejection remains possible.
+3. Join/resume/Access/Role may be pack-rejected; archive/suspend/depart cannot.
+4. TimerFired exposes only its exact timer identity, scheduled_for, and payload; packs never assign timer generations.
+5. A retained non-selectable digest still initializes, advances, views, observes, and Replays through its exact executor/codecs.
+6. A missing executor/codec, digest collision, bound violation, callback panic, or malformed output fails closed with no partial commit.
 
 ### Ordering and idempotency
 
@@ -1090,14 +1168,15 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 
 1. Host operator creates principals, room, memberships, and scoped capabilities.
 2. Each runner connects its control channel.
-3. Each participant client attaches with cursor zero.
-4. Each first attach installs a private Projection Reset and acknowledges its Session synchronization token; Genesis emitted no Observation Frame.
-5. Agents submit typed clue, offer, and plan actions.
-6. A timer opens the commitment window.
-7. One absent Agent Participant's Membership produces an activation offer for an authorized Runner.
-8. The runner claims it and starts a fresh invocation.
-9. The new invocation receives authorized current projection and relevant frames.
-10. All three submit sealed commitments.
-11. The pack resolves one deterministic Outcome.
-12. Public and private result frames arrive.
-13. The host operator replays the room and verifies its final hash.
+3. Genesis enters Briefing, schedules its deadline, and creates no Frame or Activation.
+4. Each participant attaches through an authorized current Projection Reset and acknowledges the matching Session sync token and baseline.
+5. Agents inspect/publish clues, exchange bounded offers, and propose/endorse/challenge structured plans.
+6. Exact phase timers enter Negotiation and then Commitment.
+7. Commitment opening emits Attention for the deliberately absent Broker; host policy creates one eligible Activation.
+8. A Runner claims it and starts a fresh Invocation with exact Action Offers but no participant credential or Cursor side effect.
+9. Separately authorized participant clients submit sealed {selected_plan_id, contribute_required_resource} commitments.
+10. The third commitment closes early, fences both old Commitment timers, and schedules strictly later Resolution.
+11. Resolution selects only a two-of-three plan, runs the five named checks, and enters Result.
+12. Result reveals aggregates while individual commitments remain sealed; acknowledgements or the deadline enter Complete.
+13. A separately authorized post-Complete final-reveal view may expose the frozen private fields.
+14. Replay folds Genesis and typed Stimuli with the exact retained executor, verifies the golden checkpoints, and creates no Activation.

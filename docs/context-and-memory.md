@@ -20,7 +20,7 @@ The versioned WorldStream-owned value containing exactly Room Status and the can
 
 ### Activity State
 
-Activity Pack-owned current domain facts such as phase, clues, evidence versions, claims, deadlines, and Outcome. Legal Actions are derived from these facts, the current Membership, and pack rules.
+Activity Pack-owned current domain facts such as phase, clues, evidence versions, claims, deadlines, and Outcome. Exact Action Offers are derived by the pack view from these facts and the current Membership.
 
 ### Authoritative Room State
 
@@ -62,7 +62,7 @@ Canonical transition history is good for truth and recovery but poor model input
 - transitions and their domain events include superseded facts and operational detail;
 - another participant may not be authorized to see them;
 - many changes are irrelevant to the next action;
-- a raw transcript obscures current legal actions and deadlines.
+- a raw transcript obscures current Action Offers and deadlines.
 
 A Markdown file is useful as an Artifact or human-readable export, but it is not an Authoritative Room State format. Unstructured text makes deterministic invalidation, precise authorization, and Replay harder.
 
@@ -98,7 +98,7 @@ Properties:
 
 - append-only per room;
 - compact typed canonical JSON;
-- exact Core schema and Activity Pack revision plus Core, Activity, aggregate, and lineage hashes;
+- exact Core schema and Activity Pack revision lock/executor identity plus Core, Activity, aggregate, and lineage hashes;
 - no token fragments, connection heartbeats, debug traces, or chain-of-thought;
 - retained for the room lifetime in frozen releases.
 
@@ -122,7 +122,7 @@ Canonical Activity State is pack-defined and bounded to two MiB by default. Larg
 Purpose:
 
 - current authorized situation;
-- current legal actions;
+- current Action Offers;
 - deadlines and obligations;
 - bounded model- and UI-ready structure.
 
@@ -195,7 +195,7 @@ Order of precedence:
 2. Current truth
    - pack-authorized current projection;
    - current phase and state version;
-   - current legal actions.
+   - current Action Offers, byte-identical to the pack view used for admission.
 3. Time constraints
    - personal and room deadlines;
    - activation lease expiry;
@@ -221,7 +221,7 @@ Frozen releases use deterministic relevance, not semantic classification.
 A frame is relevant when the Activity Pack explicitly emits it to that membership because:
 
 - a field in its authorized projection changed;
-- a legal action opened or closed;
+- an Action Offer opened or closed;
 - a personal deadline changed;
 - another participant addressed it;
 - evidence it owns or cited changed;
@@ -257,7 +257,17 @@ Navigator invocation context during Commitment:
       "public_plans": ["plan-7"],
       "private_offers": [],
       "own_commitment": null,
-      "legal_actions": ["commit_move"]
+      "action_offers": [
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "commit_move",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": {
+            "opens_at": "2026-08-13T18:29:30Z",
+            "deadline": "2026-08-13T18:30:00Z"
+          }
+        }
+      ]
     }
   },
   "changes_after_cursor": [
@@ -301,10 +311,25 @@ After a clock correction, the Timeline analyst receives:
       ],
       "own_facts_marked_stale": ["fact-12", "fact-14"],
       "dependent_claims": ["claim-4"],
-      "legal_actions": [
-        "publish_fact",
-        "revise_claim",
-        "request_verification"
+      "action_offers": [
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "publish_fact",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": null
+        },
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "revise_claim",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": null
+        },
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "request_verification",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": null
+        }
       ]
     }
   },
@@ -397,7 +422,7 @@ If an external agent publishes a summary:
 - the original evidence remains available under authorization;
 - replay records that it was participant output, not server truth.
 
-The server may generate deterministic structural summaries such as counts, legal actions, deadlines, and changed IDs. It does not ask an LLM to compress the room.
+The server may generate deterministic structural summaries such as counts, Action Offers, deadlines, and changed IDs. It does not ask an LLM to compress the room.
 
 ## Required invariants
 
