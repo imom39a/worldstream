@@ -77,7 +77,7 @@ Room Integrity State is durable operational state with a monotonically increasin
 - `faulted`: the last canonical Head verifies, but the runtime cannot safely advance it;
 - `quarantined`: canonical integrity cannot be established.
 
-Every canonical commit atomically rechecks both `healthy` and the unchanged integrity generation. A lost race commits no Transition, Room sequence, or receipt. Faulted and quarantined Rooms accept no canonical participant or administrative mutation. Capability revocation, diagnostics, raw export, restore, and verifier repair remain operational.
+Every new Existing Advance or durable disposition atomically rechecks both `healthy` and the unchanged integrity generation. A lost race commits no Transition, Room sequence, or receipt. Create has no pre-existing Room Integrity witness: its all-or-none bundle initializes operational state exactly `healthy` at generation `1`. Faulted and quarantined Rooms accept no canonical participant or administrative mutation. Capability revocation, diagnostics, raw export, restore, and verifier repair remain operational.
 
 A faulted Room may serve only its last verified authorized Projection, retained Frame Catch-up, and verified Replay, always with an explicit integrity envelope. A quarantined Room serves no normal Projection, Catch-up, or claimed-current Replay; only authenticated host-operator diagnostics, raw export, restore, and verification remain available.
 

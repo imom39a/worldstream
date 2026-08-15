@@ -74,7 +74,7 @@ An embedding index can retrieve semantically similar text, but similarity is not
 flowchart TD
     H["Canonical History: Genesis plus Transitions"] --> S["Verified current Core plus Activity materialization"]
     H --> SN["Paired postcommit Core plus Activity snapshots"]
-    I["Operational Room Integrity State plus generation"] -. "fences serving and commits" .-> S
+    I["Operational Room Integrity State plus generation"] -. "fences serving and Existing writes" .-> S
     S --> P["Pack-authorized projections"]
     H --> O["Membership observation frames"]
     P --> C["Invocation context"]
@@ -172,7 +172,7 @@ FTS5 may be evaluated after the structured Investigation fixture works. It is no
 
 Room Integrity State and its monotonic generation survive restart but are not canonical Room truth. Healthy permits advance. Faulted means the last Head verifies but the runtime cannot advance safely and may serve only last-verified authorized data with an integrity envelope. Quarantined means canonical integrity cannot be established and permits only authenticated host-operator diagnostics, raw export, restore, and verification.
 
-Every canonical commit matches healthy plus an unchanged generation. An operator may request repair; only a generation-fenced verifier may restore healthy after rebuilding materializations/caches, reinstalling the exact pack, or restoring exact canonical bytes. Repair never edits, skips, or replaces Genesis/Transitions.
+Every new Existing Advance or durable disposition matches healthy plus an unchanged generation. Create initializes operational Room Integrity State to `healthy` at generation `1` without a pre-existing integrity witness. An operator may request repair; only a generation-fenced verifier may restore healthy after rebuilding materializations/caches, reinstalling the exact pack, or restoring exact canonical bytes. Repair never edits, skips, or replaces Genesis/Transitions.
 
 ### 8. Ephemeral operational data
 

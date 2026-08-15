@@ -188,7 +188,7 @@ Core Room Status, operational Room Integrity State, and pack phase are separate:
 
 An archived Room is canonical and irreversible. If healthy, it permits authorized reads/export/Replay and ordered suspend/depart only. A faulted Room rejects every canonical mutation but may serve its last verified authorized Projection, retained Frame Catch-up, and verified Replay with explicit integrity metadata. A quarantined Room serves none of those normal surfaces; only authenticated host-operator diagnostics, raw export, restore, and verification remain. A terminal pack phase normally rejects ordinary domain Actions while the Core Room may remain active until explicitly archived.
 
-The actor MUST expose one bounded Room Admission Lane for Participant Actions, canonical administration, and newly due timer candidates. A successful reservation and the applicable host time sample are one admission operation. Reserved host-stimulus capacity prevents participant saturation from starving timers; an earlier reservation cannot be overtaken, and once a timer reserves a position later participant traffic cannot pass it. Backpressure reaches the gateway as `room_busy` without Semantic Time, receipt, or deadline entitlement; it does not create more actor tasks for the same Room.
+The actor MUST expose one bounded Room Admission Lane for Participant Actions, existing-Room canonical administration, and newly due timer candidates. Room creation has no existing actor or lane. A successful reservation and the applicable host time sample are one admission operation. Reserved host-stimulus capacity prevents participant saturation from starving timers; an earlier reservation cannot be overtaken, and once a timer reserves a position later participant traffic cannot pass it. Backpressure reaches the gateway as `room_busy` without Semantic Time, receipt, or deadline entitlement; it does not create more actor tasks for the same Room.
 
 ### Versioned Core reducer
 
@@ -251,11 +251,11 @@ Same-process Rust is trusted, not sandboxed. Dynamic/public pack loading and a p
 
 ### Storage service
 
-Callers submit immutable `PreparedRoomWriteV1` values through one bounded backend-neutral port. Its Create branch installs a new Room without an existing Room root or Head fence; its Existing branch uses the Room actor and transaction-scoped Room fence. SQLite uses its dedicated writer and a transaction-start write reservation; PostgreSQL uses an identity fence for creation and a transaction-scoped Room-root row lock or an equivalent guarded write for existing Rooms under Read Committed. Those physical mechanisms are adapter details and MUST expose the same Room Commit resolutions, canonical bytes, hashes, and crash semantics.
+Callers submit immutable `PreparedRoomWriteV1` values through one bounded backend-neutral port. Its Create branch installs a new Room without an existing Room root or Head fence; its Existing branch uses the Room actor and transaction-scoped Room fence. Both `commit` branches and `resolve` first take the same transaction-scoped Operation Identity serialization guard. SQLite uses its dedicated writer and a transaction-start write reservation; PostgreSQL uses transaction-scoped identity exclusion followed, for Existing only, by a Room-root row lock or an equivalent guarded write under Read Committed. Those physical mechanisms are adapter details and MUST expose the same Room Commit resolutions, canonical bytes, hashes, and crash semantics.
 
-The SQLite profile funnels prepared commits through one controlled global writer thread and connection. The PostgreSQL profile may execute different Rooms concurrently through direct, session-pooled, or bounded transaction-scoped connections; a transaction-scoped per-Room root lock or conditional compare-and-set preserves the same one-logical-writer semantics under Read Committed with `synchronous_commit=on`. PostgreSQL has no global commit serialization requirement.
+The SQLite profile funnels prepared commits and authoritative resolution through one controlled global writer thread and connection. The PostgreSQL profile may execute different identities and Rooms concurrently through direct, session-pooled, or bounded transaction-scoped connections. It uses an xact-scoped advisory guard derived from the canonical Operation Identity or an equivalent unique-key exclusion that is safe when a transaction pooler changes the connection after each transaction; Existing then takes its per-Room root lock or conditional compare-and-set. PostgreSQL has no global commit serialization requirement.
 
-Storage adapters MAY use separate bounded read connections for Room loading, Catch-up, Replay, receipt resolution, and host-operator queries. A read made during preparation is only a witness; every fact that authorizes a new write is repeated under the Room transaction fence. Returning an already stored result is read-only and does not reacquire the fence. No correctness path depends on connection affinity, session state, named prepared statements, extensions, replica reads, or a provider API.
+Storage adapters MAY use separate bounded read connections for Room loading, Catch-up, Replay, nonauthoritative receipt preflight, and host-operator queries. A preflight snapshot miss never proves absence. Every authoritative `resolve` runs on the writable primary inside the Operation Identity guard, waits out any earlier same-identity writer, and rereads before returning `StoredResolution`, `Conflict`, or `KnownAbsent`; inability to acquire or complete that barrier is `ResolutionUnavailable`. Returning an already stored result does not acquire a Room fence. A read made during preparation is only a witness, and every fact that authorizes a new write is repeated under the guarded Room transaction. No correctness path depends on connection affinity, session state, named prepared statements, extensions, replica reads, or a provider API.
 
 The storage service owns:
 
@@ -468,7 +468,7 @@ sequenceDiagram
     else Same identity, changed hash
         S-->>R: Conflict
         R-->>C: idempotency_conflict
-    else Known absent
+    else Synchronized KnownAbsent
         R->>R: rate/size admission, reserve lane + sample admitted_at
         alt Lane unavailable
             R-->>C: room_busy, no admitted_at or receipt
@@ -476,7 +476,7 @@ sequenceDiagram
             R->>P: reduce and construct projections/frames outside locks
             R->>R: seal PreparedRoomWriteV1::Existing(PreparedRoomCommitV1)
             R->>S: commit(prepared)
-            S->>D: fence Room, recheck identity and all witnesses, write bundle
+            S->>D: guard identity, fence Room, recheck witnesses, write bundle
             alt Database COMMIT confirmed
                 D-->>S: committed
                 S-->>R: Resolved(New)
@@ -580,7 +580,7 @@ Runner availability is temporary and remains in memory/metrics. A runner capabil
     created_at TEXT
     updated_at TEXT
 
-`status` and the three state hashes are verified current materializations. `integrity_state` and `integrity_generation` are durable operational fencing state. Neither this row nor the current Membership rows supersede canonical Genesis/Transitions.
+`status` and the three state hashes are verified current materializations. `integrity_state` and `integrity_generation` are durable operational fencing state. Create initializes them exactly to `healthy` and `1` in the same transaction as Genesis and its receipt; they are not a pre-existing creation witness and do not enter Genesis or canonical hashes. Neither this row nor the current Membership rows supersede canonical Genesis/Transitions.
 
 ### room_genesis
 
@@ -665,7 +665,7 @@ Member ID, Principal ID/kind, standing, Access Mode, and Role are the current Co
     committed_at TEXT
     PRIMARY KEY (operation_kind, operation_identity_json)
 
-Every committed Action, administration, TimerFired, or external-input Operation Identity binds exactly one Canonical Request Hash and StoredResolution. Action and administration indexes may project their typed identity fields, but they do not define a parallel receipt contract. Existing-Room operations retain their exact eight-field basis Complete Head, typed semantic input such as Action `admitted_at` or TimerFired `scheduled_for`/payload, and original result. Room creation is the sole no-basis case: its administration identity row has `basis_complete_head_json = NULL`, `transition_seq = NULL`, `resolution_kind = genesis_created`, the generated Room ID in `room_id`, and a StoredResolution containing the generated Room and initial Member IDs plus exact complete Head zero. The row commits in the same transaction as `rooms`, `room_genesis`, initial `room_members`/timer rows, and current Core/Activity materializations. Its Room/Genesis foreign keys are transaction-deferred so the sealed receipt's unique identity key can be conditionally staged as the creation fence before the generated Room row; the constraints must hold before COMMIT and the staged row is never externally visible. All other stored Room resolutions have a non-null basis, and `transition_seq` is non-null exactly for `transition_committed`. Same identity and hash returns the StoredResolution; a changed hash is Conflict. `NotApplicable` binds no identity, hash, or receipt. Transient admission/runtime errors never enter this record and do not consume an identity.
+Every committed Action, administration, TimerFired, or external-input Operation Identity binds exactly one Canonical Request Hash and StoredResolution. Action and administration indexes may project their typed identity fields, but they do not define a parallel receipt contract. Existing-Room operations retain their exact eight-field basis Complete Head, typed semantic input such as Action `admitted_at` or TimerFired `scheduled_for`/payload, and original result. Room creation is the sole no-basis case: its administration identity row has `basis_complete_head_json = NULL`, `transition_seq = NULL`, `resolution_kind = genesis_created`, the generated Room ID in `room_id`, and a StoredResolution containing the generated Room and initial Member IDs plus exact complete Head zero. The row commits in the same transaction as `rooms`, `room_genesis`, initial `room_members`/timer rows, initial `healthy`/generation-`1` operational integrity, and current Core/Activity materializations. Its Room/Genesis foreign keys are transaction-deferred so the sealed receipt may be staged after the Operation Identity guard but before the generated Room row; the constraints must hold before COMMIT and the staged row is never externally visible. All other stored Room resolutions have a non-null basis, and `transition_seq` is non-null exactly for `transition_committed`. Same identity and hash returns the StoredResolution; a changed hash is Conflict. `NotApplicable` binds no identity, hash, or receipt. Transient admission/runtime errors never enter this record and do not consume an identity.
 
 `codec_id = "worldstream/operation-receipt/v1"` is the serialization umbrella for these Semantic Receipts and for the Activation operation receipts below. It identifies a byte envelope, not one shared domain state or resolution algebra.
 
@@ -843,7 +843,7 @@ The exact release-bundled SQLite source identity/build and all pragmas are recor
 
 ### Required PostgreSQL 17 behavior
 
-`postgres-primary` connects to one ordinary writable PostgreSQL 17 primary, hosted or self-managed. Runtime transactions use Read Committed, set `synchronous_commit=on`, lock or compare-and-set the Room root and every operation-specific fence, and decide all authoritative preconditions before COMMIT. The runtime role has only required DML/sequence permissions. Remote connections require TLS.
+`postgres-primary` connects to one ordinary writable PostgreSQL 17 primary, hosted or self-managed. Runtime Create, Existing, and `resolve` transactions use Read Committed, set `synchronous_commit=on`, and first take the transaction-scoped Operation Identity exclusion; Existing then locks or compare-and-sets the Room root and every operation-specific fence. All authoritative preconditions are decided before COMMIT. The runtime role has only required DML/sequence permissions. Remote connections require TLS.
 
 Direct, session-pooled, and bounded transaction-scoped runtime connections are supported. A transaction pooler may select a different connection for every transaction. Named prepared statements, persistent temporary objects, session variables, advisory locks whose meaning outlives one transaction, extensions, replicas, provider APIs, and provider-specific error or failover behavior are not correctness dependencies. Migration, transfer, native dump/restore, and full verification use a direct admin connection outside the daemon.
 
@@ -871,19 +871,21 @@ Startup and restore diagnostics run integrity_check and foreign_key_check before
 
 ### Contract surface
 
-A prepared Room creation or accepted existing-Room Stimulus uses the contract below. SQLite maps its guarded transaction to `BEGIN IMMEDIATE`; PostgreSQL maps it to one Read Committed transaction with the operation identity fenced and, for the Existing branch only, the Room root locked or conditionally updated.
+A prepared Room creation or accepted existing-Room Stimulus uses the contract below. SQLite maps every `commit` and `resolve` guard to its controlled writer and transaction-start `BEGIN IMMEDIATE` reservation. PostgreSQL maps the shared guard to transaction-scoped Operation Identity exclusion under Read Committed; `commit(Existing(...))` then locks or conditionally updates the Room root. Every path acquires at most one identity guard first, followed only by its Room or generated-ID locks, so no path reverses the order.
 
 The storage port exposes exactly two semantic operations for a prepared Room write:
 
     commit(PreparedRoomWriteV1) -> RoomCommitResolution
     resolve(OperationIdentity, CanonicalRequestHash) -> ResolveOutcome
 
-`PreparedRoomWriteV1` is exactly `Create(PreparedRoomCreationV1) | Existing(PreparedRoomCommitV1)`. `commit` accepts one already-admitted, fully computed branch for exactly one new or existing Room. `resolve` performs no domain work and returns exactly one of:
+`PreparedRoomWriteV1` is exactly `Create(PreparedRoomCreationV1) | Existing(PreparedRoomCommitV1)`. `commit` accepts one already-admitted, fully computed branch for exactly one new or existing Room. Both operations acquire the same transaction-scoped Operation Identity guard before inspecting or staging a receipt. `resolve` performs no domain work, waits out any earlier/in-flight writer for that identity, rereads the writable authoritative primary while still guarded, and returns exactly one of:
 
 - `StoredResolution`, containing the original Semantic Receipt for the same identity and hash;
 - `Conflict`, when that identity is durably bound to another hash;
-- `KnownAbsent`, when an authoritative-primary read proves no resolution exists; or
-- `ResolutionUnavailable`, when storage cannot yet prove stored versus absent.
+- `KnownAbsent`, when the guarded authoritative-primary reread proves no resolution exists and therefore maps to `RetryableKnownAbsent`; or
+- `ResolutionUnavailable`, when storage cannot acquire/complete the guard or otherwise prove stored versus absent.
+
+A plain Read Committed snapshot miss is never `KnownAbsent`. This serialization rule ensures a resolve racing an uncommitted same-identity receipt waits until that writer commits or rolls back instead of returning a false absence. It is an internal transaction discipline of the two existing port operations, not a third semantic operation or a durable no-result receipt.
 
 Room archive and accepted Membership Standing, Access Mode, or Role changes are Core Stimuli and consume the next Room sequence. Their receipt, Core and Activity results, Domain Events, hashes, timers, addressed Frames, and allowed Activation decisions commit atomically with that Transition. Archive also cancels scheduled timers and fences pending/leased Activation work. Session presence, Runner availability, Activation lease operations, integrity incidents/repair, diagnostics, and telemetry remain operational and never consume Room sequence, following [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md) and [ADR 0005](adr/0005-canonical-core-state-integrity-and-hash-lineage.md).
 
@@ -904,9 +906,9 @@ Room creation uses only the Create branch of this port and never an existing-Roo
 | Canonical Request Hash | Versioned hash of the selected exact pack digest, configuration, and ordered initial Membership proposal; excludes generated Room/Member IDs, Room seed, logical creation time, commit time, transport IDs, and retry-attempt data |
 | Authority witness | Exact authenticated Principal, creation-capability generation/scope and revocation facts, and authority to create and read this result |
 | Pack and generated inputs | Selected exact `PackRevisionLockV1`/digest, generated Room and initial Member IDs, Room seed, and logical creation time |
-| Prepared creation bundle | Genesis; initial Core and Activity State; normalized initial timers; Core, Activity, and aggregate Authoritative State hashes; exact Complete Head zero; current Room/Core/Activity/Membership/timer materializations; and the `genesis_created` Semantic Receipt returning the generated IDs and Head zero |
+| Prepared creation bundle | Genesis; initial Core and Activity State; normalized initial timers; Core, Activity, and aggregate Authoritative State hashes; exact Complete Head zero; current Room/Core/Activity/Membership/timer materializations with operational Room Integrity State exactly `healthy` at generation `1`; and the `genesis_created` Semantic Receipt returning the generated IDs and Head zero |
 
-The Create branch has no basis Complete Head, integrity witness, existing-Room admission-lane position, or Room fence. Pack selection, Core initialization, the pack's `initialize` call, canonicalization, timer normalization, all three hashes, Genesis/hash construction, Head-zero construction, materializations, and receipt bytes finish before the transaction opens.
+The Create branch has no basis Complete Head, pre-existing integrity witness, existing-Room admission-lane position, or Room fence. Its initial `healthy`/generation-`1` integrity value is newly installed operational state, not a witness or canonical input. Pack selection, Core initialization, the pack's `initialize` call, canonicalization, timer normalization, all three hashes, Genesis/hash construction, Head-zero construction, materializations, and receipt bytes finish before the transaction opens.
 
 `PreparedRoomCommitV1` is the Existing branch. Preparation seals all bytes that its transaction may persist. The value contains:
 
@@ -944,20 +946,22 @@ No Activity Pack initialization or reduction, canonicalization, hash computation
 
 Every Create follows this exact guarded order inside one transaction:
 
-1. Resolve and transactionally fence the administration Operation Identity by conditionally staging the sealed receipt under the unique Semantic Receipt key. Same identity/hash returns the stored `GenesisCreated { Existing }` receipt without writing; same identity/different hash returns `Conflict` without writing. A newly staged row remains transaction-private and rolls back with any later guard or bundle failure.
-2. Revalidate the complete creation authority/capability witness and revocation state.
-3. Prove the generated Room ID is absent. A collision proves this write absent and returns `Reprepare`; only generated values may be resealed under the unchanged identity/hash and caller-semantic input.
-4. Persist the Room root, Genesis, initial Core/Activity/Membership/timer materializations, all three hashes and exact Complete Head zero, and `genesis_created` Semantic Receipt as one bundle.
-5. Issue durable database `COMMIT`.
+1. Acquire the transaction-scoped Operation Identity serialization guard.
+2. Reread the Semantic Receipt key while guarded. Same identity/hash returns the stored `GenesisCreated { Existing }` receipt without writing; same identity/different hash returns `Conflict` without writing. Otherwise conditionally stage the sealed receipt; it remains transaction-private and rolls back with any later guard or bundle failure.
+3. Revalidate the complete creation authority/capability witness and revocation state.
+4. Prove the generated Room ID is absent. A collision proves this write absent and returns `Reprepare`; only generated values may be resealed under the unchanged identity/hash and caller-semantic input.
+5. Persist the Room root, Genesis, initial Core/Activity/Membership/timer materializations, initial operational integrity `healthy`/generation `1`, all three hashes and exact Complete Head zero, and `genesis_created` Semantic Receipt as one bundle.
+6. Issue durable database `COMMIT`.
 
-Creation does not acquire or synthesize a basis Head, Room Integrity fence, or existing-Room lane. Every new Existing Advance or durable disposition follows this exact guarded order inside one transaction:
+Creation does not acquire or synthesize a basis Head, pre-existing Room Integrity fence, or existing-Room lane. Every new Existing Advance or durable disposition follows this exact guarded order inside one transaction:
 
-1. Acquire the transaction-scoped Room write fence.
-2. Recheck Operation Identity. Same identity/hash returns the stored resolution without writing; same identity/different hash returns `Conflict` without writing.
-3. Compare every Complete Head field and verify healthy plus unchanged integrity generation.
-4. Revalidate the full authority/capability witness and revocation state.
-5. Revalidate the policy revision when present and the complete operation-specific input/timer witness.
-6. For an `Advance`, persist, in logical dependency order:
+1. Acquire the transaction-scoped Operation Identity serialization guard.
+2. Acquire the transaction-scoped Room write fence.
+3. Recheck Operation Identity. Same identity/hash returns the stored resolution without writing; same identity/different hash returns `Conflict` without writing.
+4. Compare every Complete Head field and verify healthy plus unchanged integrity generation.
+5. Revalidate the full authority/capability witness and revocation state.
+6. Revalidate the policy revision when present and the complete operation-specific input/timer witness.
+7. For an `Advance`, persist, in logical dependency order:
    1. the Transition, prior/Transition hash chain, and resulting Core, Activity, and aggregate Authoritative hashes;
    2. the new Complete Head and verified current Core/Activity serving materializations;
    3. the final Membership materialization for the complete atomic changeset, with no visible invalid intermediate;
@@ -965,12 +969,12 @@ Creation does not acquire or synthesize a basis Head, Room Integrity fence, or e
    5. addressed Observation Frames and each affected stream's frame head;
    6. activation-policy revision/decision, permitted Activation Intents, and required Membership/archive eligibility and lease-generation fences; and
    7. the Semantic Receipt for the applicable Action, administration, TimerFired, or external input.
-7. For a `DurableDisposition`, persist only its Semantic Receipt after all applicable guards pass; do not mutate Head, state, timers, Frames, or Activation.
-8. Issue durable database `COMMIT`.
+8. For a `DurableDisposition`, persist only its Semantic Receipt after all applicable guards pass; do not mutate Head, state, timers, Frames, or Activation.
+9. Issue durable database `COMMIT`.
 
-Archive and any final Membership state that is no longer an enabled Agent Participant with participant Access Mode and a current Role cancel and generation-fence that target's pending/leased Activation work inside step 6. This includes suspension, departure, Role removal, and participant-to-spectator/operator changes; the transaction never leaves newly ineligible work claimable.
+Archive and any final Membership state that is no longer an enabled Agent Participant with participant Access Mode and a current Role cancel and generation-fence that target's pending/leased Activation work inside Advance step 7. This includes suspension, departure, Role removal, and participant-to-spectator/operator changes; the transaction never leaves newly ineligible work claimable.
 
-Adapters may arrange bounded physical statements around backend constraint mechanics only when failure injection proves the same guard precedence, all-or-none bundle, and externally invisible intermediate state. SQLite maps either branch to its dedicated writer and transaction-start write reservation. PostgreSQL maps Create to the identity fence plus generated Room-ID absence check, and Existing to a Room-root row lock or equivalent guarded write, under Read Committed. Neither adapter may weaken or add a Room Commit resolution class.
+Adapters may arrange bounded physical statements around backend constraint mechanics only when failure injection proves the same guard precedence, all-or-none bundle, and externally invisible intermediate state. SQLite maps Create, Existing, and resolve to its dedicated writer and transaction-start write reservation. PostgreSQL maps all three to xact-scoped Operation Identity exclusion safe under transaction pooling; Create then checks generated Room-ID absence, Existing then takes a Room-root lock or equivalent guarded write, and resolve waits and rereads without a Room lock. No path acquires a Room/ID lock before its identity guard, and neither adapter may weaken or add a Room Commit resolution class.
 
 Database COMMIT is the sole linearization point. A conditional row change, lock acquisition, driver return, actor-memory installation, acknowledgement, or live publication is not public success and does not order the Room. Authority revocation, archive, Action, and TimerFired races are ordered by their durable commits.
 
@@ -988,7 +992,7 @@ Database COMMIT is the sole linearization point. A conditional row change, lock 
 | `Reprepare` | An Existing Head/policy witness changed, or a Create generated Room ID collided, and this plan is proven absent. | Discard the plan and follow the operation-specific reprepare rule below. |
 | `Fenced` | Room Integrity State/generation or operational authority no longer permits the write. | Stop with no Transition or receipt; require recovery or fresh authority as applicable. |
 | `Conflict` | The identity exists with another Canonical Request Hash. | Return stable conflict; never retry under that identity. |
-| `RetryableKnownAbsent` | Busy, deadlock, serialization, rollback, or equivalent failure proves no creation/Advance/disposition committed. | A bounded retry may resubmit only the identical sealed plan. |
+| `RetryableKnownAbsent` | A commit failure proves absence, or synchronized resolve `KnownAbsent` maps to this proof after waiting out same-identity writers. | A bounded retry may resubmit the identical sealed plan; only the creation-specific lost-plan rule below permits fresh generated values. |
 | `Indeterminate` | COMMIT may or may not have happened. | Resolve the same identity/hash on the authoritative primary before anything else. |
 | `Fault` | The sealed plan is malformed or a structural/hash invariant is verified false. The write is known absent. | Do not retry; enter the defined fault/integrity path. |
 
@@ -1002,7 +1006,7 @@ Authentication, strict parsing/schema failure, rate/capacity admission, and pre-
 - a same-Head policy-revision change recomputes only the noncanonical policy decision/Activation portion before resealing; and
 - a creation Room-ID collision may regenerate only the Room/Member IDs, seed, logical creation time, and their derived sealed bundle under the same identity/hash and unchanged caller-semantic input.
 
-Only `RetryableKnownAbsent` permits retry of an identical sealed plan. If a retry encounters changed witnesses, it returns the corresponding `Reprepare`, `Fenced`, or `NotApplicable`; the adapter never edits the plan.
+Only `RetryableKnownAbsent`, including synchronized resolve `KnownAbsent` mapped to it, permits retry of an identical sealed plan. For creation only, if restart discarded that proven-absent sealed plan, fresh preparation may generate only Room/Member IDs, seed, logical creation time, and their derived bundle under the unchanged identity/hash, caller-semantic input, exact pack, and current authority. This exception never permits an Action or other operation to resample or change Semantic Time under the same identity/hash. If a retry encounters changed witnesses, it returns the corresponding `Reprepare`, `Fenced`, or `NotApplicable`; the adapter never edits a retained plan.
 
 ### Semantic Receipts and durable dispositions
 
@@ -1027,10 +1031,10 @@ After persistence handoff, cancellation is advisory: the attempt must reach `Res
 
 1. `StoredResolution` returns the exact original branch result, including generated Room/Member IDs and Head zero for creation;
 2. `Conflict` exposes identity misuse and stops;
-3. `ResolutionUnavailable` preserves `Indeterminate` and retries resolution later without pack execution, scanning, creation-value regeneration, repreparation, acknowledgement, or publication;
-4. only `KnownAbsent` proves the atomic creation, Advance, or disposition transaction did not commit, after which the identical sealed `PreparedRoomWriteV1` may be retried within its bound or discarded/reprepared if an allowed witness changed.
+3. `ResolutionUnavailable`—including a snapshot miss without the identity guard—preserves `Indeterminate` and retries resolution later without pack execution, scanning, creation-value regeneration, repreparation, acknowledgement, or publication;
+4. only synchronized `KnownAbsent`, obtained after the identity guard waits out any earlier writer and the primary is reread, proves the atomic creation, Advance, or disposition transaction did not commit and maps to `RetryableKnownAbsent`.
 
-While a creation remains `Indeterminate`, it is resolution-only: the caller cannot regenerate IDs/seed/time, reseal, initialize again, or enter `Reprepare`. Only authoritative `KnownAbsent` permits retry of the identical sealed creation. Separately, a commit-time generated Room-ID collision is a proven-absent `Reprepare` and may reseal generated values under the unchanged caller identity/hash. For a newly committed creation, the returned generated IDs and Head zero are served only from the committed receipt/bundle; a lost reply is resolved by identity/hash and never regenerates them. For a newly committed Advance, only the current actor generation installs the returned Complete Head and prepared in-memory state. A stale/dead actor acknowledges and publishes nothing; the supervisor reloads and callers resolve their identities. Failed Frame publication is recovered by Observation Catch-up, and failed Activation notification by scanning pending intents. Neither failure recommits.
+While a creation remains `Indeterminate`, it is resolution-only: the caller cannot regenerate IDs/seed/time, reseal, initialize again, or enter `Reprepare`. After synchronized `KnownAbsent`, a retained sealed creation may be retried identically; if restart lost it, the caller may freshly generate only the excluded Room/Member IDs, seed, logical creation time, and their derived bundle under the unchanged identity/hash, unchanged caller-semantic input and exact pack, and current authority. No prior result exists in that case. Separately, a commit-time generated Room-ID collision is a proven-absent `Reprepare` and may reseal the same generated fields. For a newly committed creation, the returned generated IDs and Head zero are served only from the committed receipt/bundle; a lost reply is resolved by identity/hash and never regenerates them. For a newly committed Advance, only the current actor generation installs the returned Complete Head and prepared in-memory state. A stale/dead actor acknowledges and publishes nothing; the supervisor reloads and callers resolve their identities. Failed Frame publication is recovered by Observation Catch-up, and failed Activation notification by scanning pending intents. Neither failure recommits.
 
 A paired Core+Activity snapshot at the committed sequence is an idempotent postcommit cache. Snapshot failure never rolls back or faults a valid Transition. Cursor acknowledgements, Activation control operations, delivery attempts, telemetry, and derived indexes likewise remain outside the Room Commit.
 
@@ -1169,7 +1173,7 @@ Room Integrity State is operational and never folded into Replay:
 - faulted means the last canonical Head verifies but the runtime cannot safely advance it;
 - quarantined means canonical integrity cannot be established.
 
-Every state change increments the integrity generation and appends an incident/repair record. Every canonical commit conditionally matches healthy plus the generation captured during preparation. Faulted/quarantined Rooms append no canonical participant or administrative Transition. Operational capability revocation, diagnostics, raw export, restore, and verification remain available.
+Every state change increments the integrity generation and appends an incident/repair record. Every new Existing Advance or durable disposition conditionally matches healthy plus the generation captured during preparation. Create instead installs `healthy` at generation `1` without a pre-existing integrity witness. Faulted/quarantined Rooms append no canonical participant or administrative Transition. Operational capability revocation, diagnostics, raw export, restore, and verification remain available.
 
 An authenticated host operator may request repair but cannot clear integrity. The verifier may rebuild materializations/caches, reinstall the exact executor, or restore exact canonical bytes from a verified backup. Only a successful result conditioned on the current generation sets healthy, and it never edits, skips, reorders, synthesizes, or replaces Genesis/Transitions. A restored Room verifies healthy before archive or Membership mutation.
 
@@ -1441,11 +1445,11 @@ PostgreSQL support changes the storage location and concurrency implementation, 
 1. One room has one pinned pack revision and one total committed order.
 2. A committed sequence is never reused or decreased.
 3. Immutable Genesis plus the exact Core/pack revisions and Transitions is sufficient after every paired snapshot and current materialization is deleted.
-4. Durable database COMMIT is the only Room-write linearization point; no accepted Action or stable disposition is acknowledged or published before it.
+4. Durable database COMMIT is the only Room-write linearization point; no Create, accepted Action, or stable disposition is acknowledged or published before it.
 5. Every Operation Identity maps to at most one Canonical Request Hash and Semantic Receipt; same identity with changed semantic input is Conflict.
-6. Unknown COMMIT is resolved through the original identity/hash before retry, reprepare, scan, acknowledgement, or publication.
+6. Every commit branch and resolve takes the same Operation Identity guard first; unknown COMMIT is resolved through that synchronized original identity/hash before retry, reprepare, scan, acknowledgement, or publication, and an unguarded snapshot miss never proves absence.
 7. Only a stable fenced Rejection or administrative NoChange consumes an identity without changing canonical Room history; transient admission, authority, capacity, integrity, storage, and runtime faults do not.
-8. Every new Existing Room write fences the Complete Head plus integrity, authority/capability, policy, and operation-specific input witnesses. A Participant Action is never rebased. Creation instead fences its administration identity, creation authority, and generated Room-ID absence; it has no basis Head or Room Integrity fence and installs Genesis, Head zero, materializations, and receipt atomically.
+8. Every new Existing Room write fences the Complete Head plus integrity, authority/capability, policy, and operation-specific input witnesses. A Participant Action is never rebased. Creation instead fences its administration identity, creation authority, and generated Room-ID absence; it has no basis Head or pre-existing Room Integrity fence and atomically installs Genesis, Head zero, materializations, operational integrity `healthy`/generation `1`, and receipt.
 9. A timer identity is exactly `(room_id, timer_id, generation)`; `scheduled_for` and payload are immutable request-hash and witness inputs, not identity fields.
 10. The bounded Room Admission Lane is provisional and fair to due host stimuli; database COMMIT alone determines canonical order.
 11. Loading with overdue timers uses one fixed HostClock cutoff and becomes Active only after all applicable obligations through it drain in deterministic order.
@@ -1461,7 +1465,7 @@ PostgreSQL support changes the storage location and concurrency implementation, 
 21. Observation delivery is at least once; clients deduplicate and acknowledge.
 22. The Observation Catch-up/live actor barrier returns the complete retained authorized range or an explicit Projection Reset; only matching `room.sync_ack` enters Live without a handoff gap and never advances Cursor, while only separate `observation.ack` may advance Cursor.
 23. Paired Core+Activity snapshots are idempotent postcommit caches; snapshots, current materializations, indexes, and projection caches are replaceable derivations.
-24. Every canonical commit fences on `healthy` plus an unchanged integrity generation; canonical disagreement quarantines, while an intact Head that cannot safely advance faults.
+24. Every new Existing Advance or durable disposition fences on `healthy` plus an unchanged integrity generation; Create initializes `healthy` at generation `1`. Canonical disagreement quarantines, while an intact Head that cannot safely advance faults.
 25. Replay has no external effects, applies present-plus-historical authorization, and holds no unbounded database read transaction.
 26. Mutating HTTP resources and their Semantic Receipts commit atomically.
 27. A committed artifact reference points only to bytes made durable before the linking transaction.

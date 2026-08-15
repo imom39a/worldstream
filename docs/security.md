@@ -133,7 +133,7 @@ Activity Packs must classify every projection field. The absence of a label does
 18. Transient admission/runtime errors do not consume an action ID.
 19. An expired activation claim cannot operate on a later lease generation.
 20. Immutable Genesis plus Transitions remains sufficient after all paired snapshots and current materializations are removed.
-21. Every canonical commit fences on healthy Room Integrity State plus an unchanged generation.
+21. Every new Existing Advance or durable disposition fences on healthy Room Integrity State plus an unchanged generation; Create instead initializes healthy generation 1 without a pre-existing integrity witness.
 22. Only a successful generation-fenced verifier may restore healthy, and repair never rewrites canonical lineage.
 23. Operator Membership never receives raw Activity State; every operator result is an explicit bounded pack view.
 24. Every retained digest resolves to its exact executor/codecs; a newer revision never interprets old lineage.
@@ -256,7 +256,7 @@ Room Integrity State is durable operational security state outside Core Room Sta
 - faulted means the last canonical Head verifies but the runtime cannot safely advance it;
 - quarantined means canonical integrity cannot be established.
 
-Every integrity change increments a monotonic generation and appends an incident/repair record. Every canonical commit conditionally matches both healthy and the generation captured during preparation. A lost fence writes no Transition, sequence, or receipt. No canonical participant or administrative mutation is allowed while faulted or quarantined; operational capability revocation remains immediate.
+Every integrity change increments a monotonic generation and appends an incident/repair record. Every new Existing Advance or durable disposition conditionally matches both healthy and the generation captured during preparation. Create atomically initializes `healthy` at generation `1` but has no pre-existing integrity witness. A lost Existing fence writes no Transition, sequence, or receipt. No canonical participant or administrative mutation is allowed while faulted or quarantined; operational capability revocation remains immediate.
 
 A faulted Room may expose only its last verified authorized Projection, retained Frame Catch-up, and verified Replay with explicit integrity metadata. A quarantined Room exposes no normal Projection, Catch-up, or claimed-current Replay. Authenticated host-operator diagnostics, raw export, restore, and verification remain available, with safe bounded details that do not disclose private state to a Room Member.
 

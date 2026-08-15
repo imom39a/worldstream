@@ -127,7 +127,8 @@ Build:
 - stable vetoable-administration rejection versus mandatory archive/suspend/depart semantics;
 - irreversible archive with timer cancellation and Activation fencing;
 - action receipts and same-ID/different-payload detection;
-- atomic accepted-transition commit;
+- atomic Room Create, accepted Advance, and stable-disposition commit;
+- one transaction-scoped Operation Identity serialization guard shared by every Create/Existing commit branch and `resolve`, with identity-first lock ordering, authoritative-primary reread, SQLite controlled-writer/reservation implementation, and transaction-pool-safe PostgreSQL exclusion;
 - stable receipts only for deterministic admitted domain rejections; transient errors do not consume action IDs;
 - paired Core-and-Activity snapshots written postcommit and load from a verified pair plus tail, with Genesis fallback after every cache/materialization is absent;
 - healthy/faulted/quarantined Room Integrity State, monotonic generation fence, incident audit, restricted serving, and verifier-only repair;
@@ -147,9 +148,12 @@ Exit tests:
 6. A timer due during shutdown fires once logically after restart.
 7. A duplicated TimerFired candidate conditionally commits at most once.
 8. A lost room-creation HTTP reply returns the original room on idempotent retry.
-9. One atomic two-Membership Role swap passes final cardinality without exposing an invalid intermediate.
-10. Faulted versus quarantined serving, integrity-generation commit races, and verifier-only cache repair pass without changing Genesis/Transition bytes.
-11. The same conformance fixtures produce identical canonical bytes, receipts, timers, Frames/Cursors, Activation fences, failure classes, and Replay hashes on SQLite and PostgreSQL.
+9. A normalized Membership changeset whose desired state is already true bypasses pack admission, writes a durable `NoChange` receipt without advancing sequence, and returns that original receipt on identical retry.
+10. On both backends, `resolve` racing an in-flight same-identity commit never reports false `KnownAbsent`; an ambiguous commit later resolved as synchronized `KnownAbsent` maps to `RetryableKnownAbsent`.
+11. After synchronized `KnownAbsent`, a retained prepared creation retries identically, while process loss permits fresh preparation only of generated Room/Member IDs, seed, logical creation time, and their derived bundle under the unchanged caller identity/hash and current authority; an actual generated Room-ID collision remains `Reprepare`.
+12. One atomic two-Membership Role swap passes final cardinality without exposing an invalid intermediate.
+13. Faulted versus quarantined serving, Existing integrity-generation commit races, Create initialization at exactly healthy generation 1, and verifier-only cache repair pass without changing Genesis/Transition bytes.
+14. The same conformance fixtures produce identical canonical bytes, receipts, timers, Frames/Cursors, Activation fences, failure classes, resolution outcomes, and Replay hashes on SQLite and PostgreSQL.
 
 Gate A:
 
@@ -527,7 +531,7 @@ Failure means revise the Activity boundary and repeat the gate. It does not auto
 | Core reducer | Lifecycle, one-live-seat uniqueness, Access/Role shape, atomic multi-Membership final state, archive, veto/mandatory administration |
 | Pack | Revision-lock/codec registry, five-op contract, Core veto, Action Offer parity, Heist state/timer/outcome goldens, bounds/panic, projection noninterference, retained executability |
 | Room actor | Ordering, stale action, mailbox bound, passivation/reload, pack fault |
-| Storage profiles | Shared semantic conformance; SQLite Genesis/WAL/disk-full/backup; PostgreSQL direct/transaction-pooler/TLS/least-privilege/COMMIT-failure; every prior migration |
+| Storage profiles | Shared semantic conformance, including the Operation Identity guard, resolve-versus-in-flight-commit races, synchronized `KnownAbsent`, lost-plan creation recovery, Room-ID collision, and Create integrity initialization; SQLite Genesis/WAL/disk-full/backup; PostgreSQL direct/transaction-pooler/TLS/least-privilege/COMMIT-failure; every prior migration |
 | Portability | Resumable SQLite-to-PostgreSQL export/import/finalize/abort, Storage Epoch fencing, byte parity, exact timers/Activations/artifacts, no reverse/live/dual-write path |
 | Recovery | Backend-native isolated restore plus full all-healthy-Room semantic verification and preserved unhealthy-Room isolation |
 | Release profiles | Native Linux and Windows, Linux/amd64 OCI persistence, macOS source quickstart, config/secrets/probes/telemetry, checksums/signature/SBOM/provenance |
