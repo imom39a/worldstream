@@ -168,7 +168,7 @@ Contains only recorded input:
 - room configuration;
 - exact ordered initial memberships and roles;
 - room seed;
-- recorded logical creation time;
+- typed recorded creation time;
 - pack revision digest.
 
 ### RecordedStimulus
@@ -189,9 +189,8 @@ pub enum RecordedStimulus {
     },
     TimerFired {
         timer_id: TimerId,
-        generation: u32,
+        generation: TimerGeneration,
         scheduled_for: RecordedTime,
-        fired_at: RecordedTime,
         payload: CanonicalValue,
     },
     MembershipChanged {
@@ -254,20 +253,29 @@ Domain events are ordered inside one transition. They do not receive independent
 
 ~~~rust
 pub enum TimerChange {
-    Schedule {
+    ScheduleNext {
         timer_id: TimerId,
-        generation: u32,
-        due_at: RecordedTime,
+        scheduled_for: RecordedTime,
         payload: CanonicalValue,
     },
-    Cancel {
+    CancelCurrent {
         timer_id: TimerId,
-        generation: u32,
+        expected_generation: TimerGeneration,
+    },
+    RescheduleCurrent {
+        timer_id: TimerId,
+        expected_generation: TimerGeneration,
+        new_scheduled_for: RecordedTime,
+        new_payload: CanonicalValue,
     },
 }
 ~~~
 
-The pack chooses the logical due time based on recorded input. The host performs scheduling and later records TimerFired.
+The pack chooses a Scheduled Time from typed recorded input but never chooses a generation. WorldStream owns a monotonic generation fence for each `(room_id, timer_id)`, starting at one and never reused or wrapped. It normalizes output to at most one mutation per logical Timer ID per Transition and deterministically assigns the next generation; retry/replay of the same causing Transition resolves the existing generation.
+
+Every new `scheduled_for` MUST be strictly later than the causing Stimulus's effective Semantic Time: Action `admitted_at`, TimerFired `scheduled_for`, or the declared `recorded_at` of another Stimulus. An initial Genesis timer MUST be strictly later than the typed recorded creation time. Equal/backward scheduling, implicit replacement, conflicting duplicates, stale expected generation, cancel of missing/fired/cancelled state, invalid payload, overflow, and unrepresentable time are Activity Faults with no commit.
+
+TimerFired contains the immutable Scheduled Time, not a scan/detection `fired_at`. The host reconstructs the exact `(room_id, timer_id, generation, scheduled_for, payload)` candidate, and consumes that scheduled-generation witness in the same Advance as its Transition. Packs cannot observe scheduler lag, HostClock, queue timing, transaction time, or commit time.
 
 ### AttentionSignal
 
@@ -317,7 +325,7 @@ pub enum Viewer {
 }
 ~~~
 
-The pack produces an ActivityProjection containing only pack-owned domain information. WorldStream constructs the client-facing Projection by wrapping it with authorized Core Room facts such as Room Status and the authenticated Membership's metadata. A separate protocol Projection Envelope carries causal, operational, and delivery metadata such as current sequence, Room Health, schema, and hash. Neither layer may overwrite fields owned by another.
+The pack produces an ActivityProjection containing only pack-owned domain information. WorldStream constructs the client-facing Projection by wrapping it with authorized Core Room facts such as Room Status and the authenticated Membership's metadata. A separate protocol Projection Envelope carries causal, operational, and delivery metadata such as current sequence, Room Integrity State, schema, and hash. Neither layer may overwrite fields owned by another.
 
 ActivityObservation is the pack-produced authorized delta and legal-action update caused by a Transition. WorldStream wraps it with the recipient Membership and causal delivery metadata.
 

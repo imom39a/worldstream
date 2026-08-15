@@ -26,11 +26,11 @@ _Avoid_: Room closure, room status, activation completion
 
 **Room Status**:
 Whether a Room is active or archived, independent of its Activity Phase and Outcome.
-_Avoid_: Activity phase, outcome, room health
+_Avoid_: Activity phase, outcome, Room Integrity State
 
 **Core Room State**:
 The WorldStream-owned current facts about a Room's lifecycle and Memberships.
-_Avoid_: Activity state, room health, deployment state
+_Avoid_: Activity state, Room Integrity State, deployment state
 
 **Activity State**:
 The Activity Pack-owned current domain facts for the activity unfolding in a Room.
@@ -103,6 +103,22 @@ _Avoid_: Affordance as a formal term, guaranteed action, command
 **Stimulus**:
 A fully recorded candidate for advancing a Room, derived from an Action, timer firing, membership change, or host input. Only an accepted Stimulus produces a Transition.
 _Avoid_: Event, protocol message, accepted transition
+
+**Semantic Time**:
+A recorded, stimulus-specific time value whose meaning is part of Room rules and Replay. Actions use Admitted Time, timer firings use Scheduled Time, and other stimuli use their declared Recorded Time; there is no universal Transition timestamp.
+_Avoid_: Logical time when it implies one clock for every Transition, database time, commit time
+
+**Admitted Time**:
+The host-recorded Semantic Time at which a validated Action acquires a place in the bounded Room Admission Lane. It determines deadline eligibility but does not guarantee that the Action will commit.
+_Avoid_: Client time, request arrival time, dequeue time, commit time
+
+**Scheduled Time**:
+The immutable Semantic Time assigned to one Timer Generation and reused as that timer firing's effective time.
+_Avoid_: Fired time, scan time, dequeue time
+
+**Timer Generation**:
+A host-owned monotonic fence identifying one immutable schedule of a Room timer.
+_Avoid_: Pack-assigned generation, retry count, scheduler claim
 
 **Host Stimulus Source**:
 A non-participant source of recorded Room input, such as a timer facility or controlled evidence feed.

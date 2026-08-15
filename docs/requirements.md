@@ -64,9 +64,9 @@ Delivery resume means observation catch-up. The word resume MUST NOT imply cogni
 - room identity, lifecycle, and one pinned Activity Pack revision;
 - Membership identity, lifecycle, Access Mode, and current pack-defined Role assignment, plus development-grade authentication;
 - one total order of committed transitions per room;
-- typed action routing, idempotency, and stable action results;
-- durable timers and host-recorded nondeterministic inputs;
-- state snapshots, recovery, current projection, and deterministic replay;
+- typed action routing, Operation Identities, Semantic Receipts, and stable results;
+- typed Semantic Time, the bounded Room Admission Lane, and host-owned Timer Generations;
+- paired Core+Activity snapshots, recovery, current projection, and deterministic replay;
 - Membership-addressed Observation Frames, acknowledgements, and Cursor Catch-up;
 - durable activation intents, claim leases, retries, and status;
 - bounded network queues, rate limits, and slow-consumer handling;
@@ -78,7 +78,7 @@ Delivery resume means observation catch-up. The word resume MUST NOT imply cogni
 - Role definitions, cardinality, permissions, and Legal Actions;
 - action validation and deterministic reduction;
 - public, participant, and operator projection rules;
-- timers, attention reasons, completion rules, and result scoring;
+- semantic timer mutation requests, attention reasons, completion rules, and result scoring;
 - activity-specific UI projection schemas.
 
 ### External clients and runners MUST own
@@ -97,7 +97,7 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - The server MUST host multiple independent rooms in one process.
 - Each room MUST pin exactly one Activity Pack identifier and immutable revision digest at creation.
 - A room MUST NOT silently switch pack versions.
-- Core Room Status MUST be active or archived; Room Health MUST be healthy, faulted, or quarantined; Activity Phase and Outcome MUST remain separate pack-defined values and separate from both core axes.
+- Core Room Status MUST be active or archived; operational Room Integrity State MUST be healthy, faulted, or quarantined; Activity Phase and Outcome MUST remain separate pack-defined values and separate from both axes.
 - Archiving a Room MUST be recorded as an administrative Stimulus and Transition in that Room's order, as decided in [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md).
 - Archived, faulted, and quarantined rooms MUST reject ordinary participant mutation while retaining authorized inspect, export, recovery, and replay operations.
 - v0.1 packs MUST be trusted, compiled into the server, and selected from an allowlist.
@@ -112,29 +112,43 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - A domain-relevant Membership, Access Mode, or Role change MUST be recorded as a Membership-change Stimulus and Transition; session presence and Runner availability MUST NOT.
 - A human MAY join through a participant, spectator, or operator Membership if the pack and room policy allow it. Only the first is an acting Participant.
 
-### FR-3: Typed actions and ordering
+### FR-3: Prepared Room Commit, identity, and ordering
 
-- Every action MUST include room ID, membership ID, client-generated action ID, expected room sequence, action type, and typed payload.
-- Each active room MUST have one logical writer and one monotonically increasing committed sequence.
-- The kernel MUST reject a participant action when based_on_room_seq does not exactly equal the current room head in v0.1 and v0.2.
-- The pack MUST validate an action against the current state and membership before mutation.
-- Rejected actions MUST NOT consume a canonical room sequence.
-- Only deterministic admitted rejections MAY consume the action ID through a durable action receipt.
-- Authentication, authorization, malformed input, rate limit, room busy, storage unavailable, and activity/runtime faults MUST use the error path, MUST NOT consume the action ID, and MAY be retried with the same ID.
-- An accepted action MUST be durably committed before the server acknowledges or publishes it.
-- The key of room, membership, and action ID MUST map to at most one result.
-- Reusing an action ID with different canonical payload bytes MUST be rejected.
-- Stale actions MUST receive a typed rejection with the current sequence and current legal-action summary when safe.
+- Every Action MUST include Room ID, Membership ID, client-generated Action ID, expected Room sequence, Action type, and typed payload. Each active Room MUST have one logical writer and one monotonically increasing committed sequence.
+- Deterministic preparation MUST finish before a storage transaction opens and MUST produce one immutable, versioned `PreparedRoomCommit`. It MUST contain its Operation Identity, Canonical Request Hash, complete observed Head, integrity, authority/capability, policy, and operation-specific input witnesses, and exactly one prepared intent: `Advance` or `DurableDisposition { Rejection | NoChange }`.
+- Operation Identities MUST be exactly: `(room_id, member_id, action_id)` for an Action; `(authenticated_principal, versioned_operation_kind, idempotency_key)` for Room administration; `(room_id, timer_id, generation, scheduled_for)` for a timer firing; and `(room_id, source_id, input_id)` for host/external input.
+- A versioned Canonical Request Hash MUST bind all caller-semantic input, including the target Room, expected basis, operation kind, and complete ordered payload/changeset. It MUST NOT include Action `admitted_at`, a generated Transition ID, commit time, transport-envelope identity, or retry-attempt data.
+- The same Operation Identity and Canonical Request Hash MUST resolve the original Semantic Receipt before later Room lifecycle, integrity, or Membership checks, subject to current authentication and permission to read it. The same identity with a different hash MUST resolve `Conflict`; an implementation MUST NOT reinterpret it as a new operation.
+- Every new Advance or durable disposition MUST take the transaction-scoped Room write fence and recheck identity absence plus the complete Head: exact `room_seq`, prior Transition hash, Core hash, Activity hash, and aggregate Authoritative hash. Equal sequence with any different hash MUST be an integrity fault, not contention.
+- The same guarded transaction MUST revalidate healthy and unchanged integrity generation; exact authority/capability generation and revocation state; current policy revision when noncanonical policy decisions are included; and the exact timer, Action, administration, or external-input witness. Participant Actions MUST never be silently rebased onto another Head.
+- Durable database `COMMIT` MUST be the sole linearization point. Lane reservation, row locks/updates, driver return, actor-memory installation, acknowledgement, and publication MUST NOT be treated as public success or Room order.
+- The semantic outcome algebra MUST be `Resolved(TransitionCommitted { New | Existing })`, `Resolved(RejectionRecorded { New | Existing })`, `Resolved(NoChangeRecorded { New | Existing })`, `NotApplicable`, `Reprepare`, `Fenced`, `Conflict`, `RetryableKnownAbsent`, `Indeterminate`, or `Fault`. SQLite and PostgreSQL MUST expose the same classifications.
+- `Indeterminate` MUST mean COMMIT may or may not have occurred. The server MUST query the authoritative primary with the same Operation Identity and Canonical Request Hash until it finds the stored resolution or proves absence; it MUST NOT blindly retry, invent an identity, re-run the pack, or publish an assumed result.
+- Only `RetryableKnownAbsent` MAY cause a bounded retry of the identical sealed plan. `Fault` is known absent, nonretryable, and reserved for malformed sealed plans or verified invariant/hash failure. `Reprepare` MUST discard the plan: Actions/administration resolve a stable stale basis where applicable, a still-scheduled timer reuses its exact identity and recorded fields against the new Head, and a policy-only change recomputes only the affected noncanonical decision. `Fenced`, `Conflict`, and `NotApplicable` MUST NOT create a new Semantic Receipt.
+- A durable Rejection MUST be limited to an authenticated, well-formed stable result at an exact fenced Head. An administrative NoChange MUST mean the normalized desired state was already true before pack application. Malformed input, authentication or authority failure, rate/capacity refusal, unhealthy integrity, Activity Fault, storage failure, and obsolete timer candidates MUST NOT become durable dispositions.
+- Every accepted Stimulus, including one whose resulting Core/Activity bytes are equal, MUST create one Transition. Only administrative NoChange and a stable rejection consume no `room_seq`.
+- One Advance transaction MUST atomically persist the Transition and complete hash chain; new Head and Core/Activity serving materializations; final Membership changeset; timer consumption/schedules/cancellations; addressed Observation Frames and frame heads; activation-policy decision/revision, allowed Activation Intents, and eligibility/archive fences; and the applicable Semantic Receipt.
+- Pack execution, deterministic reduction, canonicalization, bound checks, three-hash computation, projection/frame computation, and Attention derivation MUST finish before locks. Network publication, telemetry export, derived indexing, and paired Core+Activity snapshot writes MUST happen after COMMIT and MUST never extend the Room transaction.
+- Every Semantic Receipt and equivalent compact tombstone MUST remain resolvable for the retained Room lineage, including after archive. A whole-Room purge MAY remove history and its receipts together; silent receipt expiry or identity reuse is forbidden.
 
-### FR-4: Deterministic state and timers
+### FR-4: Deterministic state, Semantic Time, and timers
 
-- Authoritative Room State at sequence N MUST be a pure function of Room Genesis, the exact Activity Pack revision, and recorded Stimuli through N.
-- A pack MUST NOT read ambient wall time, operating-system randomness, files, network resources, environment variables, provider APIs, or secrets.
-- Host time and randomness that affect state MUST enter as recorded stimuli or recorded stimulus fields.
-- Timer creation, cancellation, and logical firing MUST be durable.
-- A timer retry MUST NOT cause two logical firings.
-- Canonical Activity State and Transition hashes MUST be reproducible.
-- Core Room State and Activity State in the frozen releases MUST avoid floating-point values.
+- Authoritative Room State at sequence N MUST be a pure function of Room Genesis, the exact Activity Pack revision, and recorded Stimuli through N. A pack MUST NOT read ambient wall time, operating-system randomness, files, network resources, environment variables, provider APIs, or secrets.
+- There MUST be no universal Transition timestamp. Participant Actions MUST carry host-recorded `admitted_at`; one Timer Generation MUST carry immutable `scheduled_for`, which is its TimerFired semantic time; and Membership, administration, and external inputs MUST carry their versioned stimulus-specific `recorded_at`. Scan, enqueue, retry, lag, dequeue, transaction, receipt, and commit times MUST remain operational and invisible to pack reduction.
+- One application-owned, injectable, normalized-UTC HostClock MUST supply semantic host samples and due eligibility. Client clocks and database clock functions MUST NOT define domain semantics. Issued trusted samples MUST not decrease; an untrustworthy rollback or configured large discontinuity MUST fail time-bearing canonical work closed without reopening deadlines or rewriting committed time.
+- For a new Action, the server MUST sample `admitted_at` atomically with successful reservation of a bounded Room Admission Lane position, and only after the complete request is strictly parsed/schema-valid, initially authenticated, rate-admitted, and within size limits. A full/unavailable lane MUST return `room_busy` with no `admitted_at`, receipt, or deadline entitlement.
+- Action windows MUST be half-open: `open_at <= admitted_at < deadline`. An Action admitted exactly at or after the deadline MUST receive durable `deadline_passed` even if the closing timer is delayed. A timely Action MAY commit after wall time passes the deadline only if every witness still passes and neither its closing timer nor archive has committed first.
+- Participant Actions, canonical administration, and newly due timer candidates MUST reserve positions in one bounded per-Room lane. A due timer MUST NOT overtake earlier reservations; once reserved, later participant work MUST NOT overtake it. Capacity reserved for host stimuli MUST prevent participant saturation from starving due timers. Lane positions are provisional and disappear on crash; database COMMIT remains the only canonical order.
+- WorldStream MUST own a monotonic generation for each `(room_id, timer_id)`, starting at one and never reused, wrapped, or chosen by a pack. At most one generation may be scheduled; its `scheduled_for`, payload, and creation cause MUST be immutable.
+- Packs MAY request only `ScheduleNext`, `CancelCurrent(expected_generation)`, or `RescheduleCurrent(expected_generation, new_scheduled_for, new_payload)`, normalized to at most one mutation per logical timer ID per Transition. The host MUST deterministically allocate the next generation and replay/retry of the causing Transition MUST resolve that existing generation.
+- Every newly scheduled generation MUST be strictly later than the causing Stimulus's typed Semantic Time; an initial Genesis timer MUST be strictly later than the typed recorded creation time. Equal/backward time, implicit replacement, conflicting duplicate mutations, wrong expected generation, cancelling missing/fired/cancelled state, invalid payload, overflow, or unrepresentable time MUST be an Activity Fault with no commit.
+- A generation becomes due when `HostClock >= scheduled_for`. TimerFired MUST be reconstructed from the immutable `(room_id, timer_id, generation, scheduled_for, payload)` row and MUST have no pack-visible `fired_at` or separate durable claim. Its exact scheduled-generation witness MUST be consumed by the same Advance that commits its Transition.
+- A matching already-fired generation MUST resolve `Existing`; missing/cancelled/obsolete/archive-cancelled MUST resolve `NotApplicable`; a Head change with the generation still scheduled MUST reprepare the same identity and recorded fields. An unknown timer COMMIT MUST be resolved before the candidate is scanned or prepared again.
+- Every scheduled due generation MUST remain a durable obligation until it fires, is canonically cancelled/rescheduled, archive cancels it, or integrity/storage temporarily fences progress. Lag, restart, rate limits, or resource budgets MUST NOT expire, merge, coalesce, reorder, skip, or falsely mark it fired.
+- Within one Room, due generations MUST be considered one at a time in `(scheduled_for, timer_id, generation)` order and reread after each result. No semantic ordering exists between Rooms.
+- Loading a Room with overdue timers MUST enter `CatchingUp`: capture one HostClock cutoff, recursively drain every still-applicable generation with `scheduled_for <= cutoff` in deterministic order, then become Active. Bounded slices MAY yield to other Rooms and runtime/storage duties, but ordinary same-Room canonical commands MUST NOT interleave before the fixed cutoff is drained. Timers becoming due after the cutoff enter the normal Room Admission Lane.
+- Capability revocation, integrity fault/quarantine, and diagnostics MUST remain available during CatchingUp. Valid overdue cascades remain obligations; an expensive Room MAY be throttled or operationally faulted without discarding them. Invalid/non-progressing output and time/generation overflow follow the Activity Fault path.
+- Canonical Activity State, Core State, and Transition/hash outputs MUST be reproducible without a clock or scheduler during Replay. Core Room State and Activity State MUST avoid floating-point values.
 
 ### FR-5: Scoped projections
 

@@ -20,7 +20,7 @@ It does not carry model token streams, hidden reasoning, arbitrary workflow node
 2. WebSocket carries live room observations, participant actions, and runner activation offers.
 3. One room-client WebSocket attaches to one Membership in v0.1; spectator and operator Memberships are read-only, not special cursorless streams.
 4. One runner control connection may claim Activations for several Agent Participant Memberships authorized by its capability.
-5. The server commits accepted actions before replying or streaming consequences.
+5. The server reaches durable database COMMIT before replying to or streaming any newly accepted Action or stable disposition.
 6. Network delivery is at least once; IDs and cursors make duplicates safe.
 7. Delivery catch-up never implies resuming a model's mind or process.
 8. Clients never receive raw authoritative room state.
@@ -35,7 +35,7 @@ It does not carry model token streams, hidden reasoning, arbitrary workflow node
 | Runner registration/capability | Yes until expiry/revocation | Host operator and WorldStream |
 | Runner connection | No | Gateway connection |
 | Model invocation | No; opaque optional run ID only | External runner |
-| Action result | Yes | Room transition store |
+| Room operation result | Yes when accepted/stably disposed | Semantic Receipt store |
 | Observation cursor | Yes | Membership inbox |
 | Activation intent | Yes | Activation queue |
 
@@ -93,7 +93,7 @@ HTTP is used for:
 - v0.2 artifact upload and download;
 - host-operator backup and diagnostics through local tooling.
 
-All mutating HTTP operations use a durable idempotency key scoped by authenticated principal and operation. The resource change and mutation receipt commit together. Same key/request hash returns the original response; same key/different request returns idempotency_conflict.
+All canonical Room-administration operations use the Operation Identity `(authenticated_principal, versioned_operation_kind, idempotency_key)`. Their versioned Canonical Request Hash binds target Room, expected basis, reason, and the complete ordered changeset. An Advance, stable Rejection, or administrative NoChange and its Semantic Receipt reach one database COMMIT. Same identity/hash returns the original result; same identity/different hash returns `idempotency_conflict`.
 
 ## Common envelope
 
@@ -269,7 +269,7 @@ Attachment is serialized through the room actor. The actor captures membership f
 
 The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A client processes the reset atomically, stores `frame_seq` as its new baseline, and acknowledges it.
 
-`projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Health, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
+`projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Integrity State, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
 
 ## Action submission
 
@@ -301,10 +301,13 @@ Semantics:
 
 - action_id is the durable idempotency key;
 - based_on_room_seq expresses the state on which the participant decided;
-- the server authenticates identity and membership before pack validation;
+- after strict parsing/hash construction and current authentication/permission to read the result, the server resolves an existing same-identity receipt or Conflict before later Room lifecycle, integrity, Membership, rate, or lane checks;
+- only for a new identity, the server applies schema, rate, and size admission and then attempts a bounded Room Admission Lane reservation;
+- the host samples `admitted_at` atomically with successful lane insertion; a full/unavailable lane returns `room_busy` with no Semantic Time, receipt, or deadline entitlement;
 - the Room Kernel rejects the action unless based_on_room_seq exactly equals the current room head in v0.1 and v0.2;
-- admitted_at logical time is chosen by the host and recorded in the Stimulus candidate;
-- an accepted action is not acknowledged until the complete transition transaction commits.
+- the Action window is half-open, `open_at <= admitted_at < deadline`, so equality is late even if a closing timer is delayed;
+- `admitted_at` is excluded from the caller-semantic request hash but preserved in the prepared Stimulus and any Semantic Receipt;
+- an accepted Action or stable rejection is not acknowledged until its complete Room transaction reaches database COMMIT.
 
 ### action.accepted
 
@@ -320,7 +323,14 @@ Semantics:
     "action_id": "01K...",
     "room_seq": 92,
     "transition_id": "01K...",
-    "state_hash": "blake3:...",
+    "admitted_at": "2026-08-13T18:29:59.999Z",
+    "complete_head": {
+      "room_seq": 92,
+      "transition_hash": "blake3:...",
+      "core_hash": "blake3:...",
+      "activity_hash": "blake3:...",
+      "authoritative_hash": "blake3:..."
+    },
     "duplicate": false
   }
 }
@@ -340,18 +350,20 @@ If a retry finds the stored result, duplicate is true and every other authoritat
     "room_id": "01K...",
     "member_id": "01K...",
     "action_id": "01K...",
+    "admitted_at": "2026-08-13T18:30:00Z",
     "code": "stale_room_state",
     "message": "The commitment window is now active.",
     "current_room_seq": 93,
     "legal_actions": ["commit_move"],
     "retryable_with_same_action_id": false,
     "may_submit_revised_action": true,
+    "duplicate": false,
     "details": {}
   }
 }
 ~~~
 
-A deterministic admitted rejection consumes no canonical room sequence but does consume the action ID through a durable domain_rejected receipt. The same ID returns the same rejection. A revised decision uses a new action ID.
+A deterministic admitted rejection consumes no canonical Room sequence but does consume the Action Operation Identity through a Semantic Receipt. The same identity/hash returns the same rejection, original `admitted_at`, and semantic fields with `duplicate: true`. A revised decision uses a new Action ID.
 
 Durable action.rejected codes include:
 
@@ -363,7 +375,22 @@ Durable action.rejected codes include:
 - activity_terminal;
 - activity_domain_rejection.
 
-Malformed/invalid payload, unauthenticated, forbidden, idempotency_conflict, room_busy, rate_limited, storage_unavailable, and activity/runtime faults use the generic error envelope. They do not create an action receipt or consume a previously unseen action ID. A transient retry MUST reuse the same action ID and identical canonical action body.
+Malformed/invalid payload, unauthenticated, forbidden, `idempotency_conflict`, `room_busy`, `rate_limited`, `storage_unavailable`, and activity/runtime faults use the generic error envelope. They do not create an Action receipt or consume a previously unseen Action ID. A known-absent transient retry MUST reuse the same Action ID and identical canonical Action body. An indeterminate persistence attempt is resolution-only until the server proves stored versus absent.
+
+### Durable operation resolution
+
+The same internal contract covers all Room operation classes:
+
+| Class | Operation Identity | Same-hash replay |
+|---|---|---|
+| Participant Action | `(room_id, member_id, action_id)` | Original accepted or stable rejected Semantic Receipt |
+| Room administration | `(authenticated_principal, versioned_operation_kind, idempotency_key)` | Original Transition, Rejection, or NoChange receipt |
+| Timer firing | `(room_id, timer_id, generation, scheduled_for)` | Original matching Transition; obsolete generation is `NotApplicable` |
+| Host/external input | `(room_id, source_id, input_id)` | Original accepted or stable rejected result where defined |
+
+The server resolves a same-identity retry before later Room lifecycle, integrity, or Membership checks, after current authentication and authorization to read that result. Same identity with changed Canonical Request Hash is `idempotency_conflict` and never executes domain work.
+
+If database COMMIT may or may not have occurred, the server MUST keep the attempt `Indeterminate` and query the authoritative primary with the original identity/hash. It MUST NOT resubmit under a new identity, re-run pack logic, scan that timer again, acknowledge, or publish an assumed result. If resolution cannot finish within the request budget, the server returns `commit_indeterminate`; a client retries only the identical identity/body to continue resolution. Only authoritative `KnownAbsent` permits the server to retry the identical sealed plan or apply the operation-specific reprepare rule.
 
 ## Observation frames
 
@@ -621,7 +648,7 @@ Public network exposure of these endpoints is not a production-ready control pla
 
 worldstreamctl generates bearer capability secrets locally, sends only the protocol-defined token hash to POST /v1/capabilities, and prints the plaintext locally. The server never stores or must replay a plaintext token to satisfy HTTP idempotency.
 
-Room archival and domain-relevant Membership, Access Mode, or Role changes are routed through the Room and commit as ordered Transitions. Their HTTP mutation receipt commits with the same change. Session presence, Runner availability, and other operational changes do not consume Room sequence. See [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md).
+Room archival and domain-relevant Membership, Access Mode, or Role changes are routed through the Room and commit as ordered Transitions. Their Semantic Receipt commits with that Advance, a stable Rejection, or administrative NoChange. Session presence, Runner availability, and other operational changes do not consume Room sequence. See [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md).
 
 ### Room creation
 
@@ -644,7 +671,7 @@ Room archival and domain-relevant Membership, Access Mode, or Role changes are r
 }
 ~~~
 
-The server accepts only a compiled-in allowlisted pack digest. Creation records an immutable canonical sequence-zero genesis object containing pack digest, configuration, ordered Memberships/Roles, Room seed, and logical creation time. Genesis hash, initial Activity State hash, Memberships, initial Projections, timers, resource, and mutation receipt commit atomically. Recovery remains possible after every snapshot is deleted.
+The server accepts only a compiled-in allowlisted pack digest. Creation records an immutable canonical sequence-zero Genesis object containing pack digest, configuration, ordered Memberships/Roles, Room seed, and typed recorded creation time. Genesis hash, initial Activity State hash, Memberships, initial Projections, timers, resource, and mutation receipt commit atomically. Recovery remains possible after every snapshot is deleted.
 
 ### Current projection
 
@@ -726,20 +753,21 @@ Core error codes:
 | room_faulted | Integrity or deterministic activity failure |
 | room_quarantined | Hash/genesis integrity failure; read-only diagnostics only |
 | room_archived | Ordinary mutation is disabled |
-| room_busy | Bounded actor mailbox full |
+| room_busy | Bounded Room Admission Lane unavailable/full; no Semantic Time or deadline entitlement |
 | cursor_ahead | Client claims an impossible future frame |
 | cursor_out_of_range | Retained delta range unavailable; reset required |
 | idempotency_conflict | Same key with different canonical payload |
+| commit_indeterminate | Database COMMIT may or may not have occurred; only identical-operation resolution is permitted |
 | activation_not_available | Another runner owns a live lease or intent is terminal |
 | lease_expired | Operation used an expired claim |
 | stale_activation_lease | Claim ID/generation is no longer current |
 | invalid_payload | Input failed strict schema before admission |
 | activity_fault | Pack/runtime failed before durable action result |
 | rate_limited | Caller exceeded a documented limit |
-| storage_unavailable | Mutation cannot be durably committed |
+| storage_unavailable | Persistence is unavailable before handoff or the write is proven absent; no semantic receipt was created |
 | slow_consumer | Connection closed; reconnect from cursor |
 
-Messages should be helpful, but clients must branch on code rather than English text. For an action submission, retryable transient errors do not consume the action ID; retry the identical canonical action with that same ID.
+Messages should be helpful, but clients must branch on code rather than English text. For an Action submission, known-absent transient errors do not consume the Action ID; retry the identical canonical Action with that same ID. `commit_indeterminate` is not permission to submit the domain operation again: the identical request continues identity resolution until the server returns the stored result or proves absence.
 
 Some codes can appear in different envelopes because the operation has different idempotency semantics. After `action.submit` has passed authentication, strict parsing, and Membership lookup, stable `membership_not_enabled` and `room_archived` results use `action.rejected` and a durable receipt. The same codes use the generic error envelope for attach/read/administrative operations, or when no receiptable participant Action was admitted. Clients must branch on both envelope type and code.
 
@@ -761,6 +789,8 @@ For action idempotency:
 }
 ~~~
 
+`admitted_at`, generated Transition ID, commit time, message/request IDs, and retry-attempt metadata are deliberately absent from this caller-semantic object.
+
 For transition integrity:
 
 ~~~json
@@ -772,11 +802,15 @@ For transition integrity:
   "previous_transition_or_genesis_hash": "blake3:...",
   "recorded_stimulus": {},
   "ordered_domain_events": [],
-  "resulting_state_hash": "blake3:..."
+  "normalized_timer_changes": [],
+  "attention_signals": [],
+  "resulting_core_hash": "blake3:...",
+  "resulting_activity_hash": "blake3:...",
+  "resulting_authoritative_hash": "blake3:..."
 }
 ~~~
 
-Genesis uses a third domain, worldstream/genesis/v1, and covers exact pack digest, configuration, ordered initial memberships/roles, seed, and logical creation time.
+Genesis uses a third domain, `worldstream/genesis/v1`, and covers exact pack digest, configuration, ordered initial Memberships/Roles, seed, and typed recorded creation time.
 
 BLAKE3 hashes canonical JSON bytes for these typed objects. Golden vectors MUST be shared by Rust and Python and define integer, digest, string, and byte representation. Canonical JSON forbids floating point and duplicate keys and sorts object keys.
 
@@ -802,6 +836,8 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 4. Same action ID with different payload returns idempotency_conflict.
 5. A rate-limit or room-busy error consumes no receipt; retrying the identical action with the same ID can later be admitted.
 6. A deterministic stale-state rejection is durable; retrying that ID returns the same rejection.
+7. A lost COMMIT reply resolves through the same identity/hash; no pack call or second mutation occurs.
+8. An injected ambiguous COMMIT that cannot yet be resolved returns commit_indeterminate, never a generic retry permission.
 
 ### Disconnect and catch-up
 
@@ -843,6 +879,18 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 3. Pending frames and activation intents remain available.
 4. Delete every snapshot; Recovery from immutable genesis plus Transitions reaches the recorded Room head, Core Room State, and Activity State hash.
 5. Duplicate a due TimerFired candidate; one conditional timer row and one canonical transition win.
+6. Resolve unknown TimerFired COMMIT before scanning or preparing that generation again.
+
+### Semantic time and timer races
+
+1. Admit Actions at `D-1`, exactly `D`, and `D+1`; equality and later are durable `deadline_passed` even when the closing timer is delayed.
+2. Permit a `D-1` Action to commit after D only when its complete witnesses still pass and no closing timer/archive committed first.
+3. Fill participant capacity while reserved host-stimulus capacity still admits the due timer; prove neither earlier reservations nor a reserved timer can be overtaken.
+4. Crash before persistence handoff and prove the lane position/sample disappear; retry samples anew. Prove a known-absent retry after handoff preserves the sealed sample.
+5. Exercise ScheduleNext, CancelCurrent, and RescheduleCurrent plus every invalid generation, duplicate, non-forward, overflow, and missing-current case.
+6. Race Action/timer, archive/timer, cancel/timer, authority/timer, and integrity/timer on SQLite and PostgreSQL and require the same semantic class.
+7. Restart with equal-time and overdue generations; drain a fixed cutoff in `(scheduled_for, timer_id, generation)` order, rereading after each, without ordinary same-Room interleaving.
+8. Replay the transcript byte-identically with no HostClock or scheduler.
 
 ### HTTP mutation idempotency
 
