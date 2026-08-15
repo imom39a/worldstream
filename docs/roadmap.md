@@ -215,9 +215,10 @@ Exit tests:
 4. An offer contains no private room projection.
 5. A successful claim returns only the target Agent Participant Membership's exact authorized context and one delivery branch.
 6. Replay verifies Attention/decision evidence but creates no intent or Runner effect.
-7. A lost claim/control reply returns the exact original result on same-operation retry; a changed hash conflicts.
-8. An expired prior lease generation cannot complete a newer claim.
-9. Archive, eligibility change, capability revocation, and backward-clock anomaly fence stale leases.
+7. A lost control/non-grant reply returns its exact original result; a granted-claim retry returns exact original context/result bytes only while context is retained; a changed hash conflicts.
+8. After granted context is tombstoned, an identical retry returns deterministic `result_retired` while original result/context hashes remain unchanged.
+9. An expired prior lease generation cannot complete a newer claim.
+10. Archive, eligibility change, capability revocation, and backward-clock anomaly fence stale leases.
 
 Terminology gate:
 

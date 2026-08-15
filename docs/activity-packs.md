@@ -115,9 +115,9 @@ The revision digest pins the exact compiled behavior and schemas. A semantic ver
 
 `CoreRoomState v1` is host-owned and contains exactly Room Status plus a canonically sorted Membership map. For each Membership it exposes immutable Member ID, Principal ID, and room-local Principal kind; enabled/suspended/departed standing; participant/spectator/operator Access Mode; and a Role exactly for participant access. Room Head, hashes, integrity, Sessions, Cursors/Frames, receipts, policy/Activation, diagnostics, telemetry, and commit time are not Core.
 
-For every reduction, the host supplies immutable Core-before and proposed-Core-after values. They are equal for a non-Core Stimulus. A versioned Core Stimulus carries authority attribution, idempotency identity, exact expected sequence, reason code, semantic time when applicable, and a canonical before/after changeset. One Stimulus may change several Memberships atomically, sorted by Member ID with at most one pair per ID; the pack observes only the complete proposed final state.
+For every reduction, the host supplies immutable Core-before and proposed-Core-after values. They are equal for a non-Core Stimulus. A versioned Core Stimulus carries authority attribution, idempotency identity, exact expected sequence, reason code, semantic time when applicable, and a canonical before/after changeset. One Stimulus may change several Memberships atomically, sorted by Member ID with at most one typed component per ID; the pack observes only the complete proposed final state.
 
-The pack may declare a stable veto for join, resume, Access Mode, or Role proposals. It may not veto archive, suspend, or depart; attempting to do so is a Pack Fault. A veto produces an idempotent administrative rejection with no Transition, not an Activity Fault. Packs may change Activity State or emit deterministic outputs in response to an accepted Core change, but cannot mutate Core itself.
+The pack may declare a stable veto for join, resume, Access Mode, or Role proposals. It may not veto archive, suspend, or depart; attempting to do so is a Pack Fault. A homogeneous multi-Membership changeset inherits the veto class of its typed components. The host rejects a changeset that mixes vetoable and mandatory component kinds before pack entry, with no pack call, Transition, or receipt. A veto produces an idempotent administrative rejection with no Transition, not an Activity Fault. Packs may change Activity State or emit deterministic outputs in response to an accepted Core change, but cannot mutate Core itself.
 
 ## ActivityPackV1
 
@@ -227,7 +227,28 @@ ExternalInput {
 }
 ~~~
 
-CoreProposed kinds are Join, Resume, AccessModeChange, RoleChange, MembershipChangeSet, Archive, Suspend, and Depart. `MembershipChangeSet` is the atomic multi-Membership form. `canonical_changeset` carries an optional Room Status before/after pair plus Member-ID-sorted Membership before/after pairs, with at most one pair per Member ID. It MUST exactly match the delta between the complete immutable Core-before and proposed-Core-after values in ReduceInput; the host fails closed before pack entry on any mismatch. Host-normalized NoChange remains a pre-pack disposition and never enters the pack.
+CoreProposed kinds are Join, Resume, AccessModeChange, RoleChange, MembershipChangeSet, Archive, Suspend, and Depart. `canonical_changeset` has this exact shape:
+
+~~~text
+CoreChangeSet {
+  room_status_change: null | {
+    before,
+    after
+  },
+  membership_changes: [
+    {
+      kind,
+      member_id,
+      before,
+      after
+    }
+  ]
+}
+~~~
+
+Each Membership component kind is exactly Join, Resume, AccessModeChange, RoleChange, Suspend, or Depart. `Archive` is only its own top-level CoreProposed kind: it carries the active-to-archived Room Status pair and no Membership component, and it cannot appear inside MembershipChangeSet. An individual Membership CoreProposed kind carries exactly one matching typed component and no Room Status change. `MembershipChangeSet` is the atomic multi-Membership form: it carries no Room Status change, sorts components by Member ID, and contains at most one component per Member ID. The complete changeset MUST exactly match the delta between the immutable Core-before and proposed-Core-after values in ReduceInput; the host fails closed before pack entry on any mismatch. Host-normalized NoChange remains a pre-pack disposition and never enters the pack.
+
+Join, Resume, AccessModeChange, and RoleChange are vetoable component kinds. Suspend and Depart are mandatory component kinds. The host rejects a MembershipChangeSet containing both classes before pack entry, with no pack call, Transition, or receipt. A homogeneous changeset inherits its components' class: an all-vetoable set may be cleanly rejected only as one whole atomic proposal, while an all-mandatory set must be applied as one whole atomic proposal and a Reject is PackFault.
 
 TimerFired contains only the exact timer identity, immutable scheduled_for, and canonical payload; detection, lag, retry, database, and commit times are excluded. ParticipantAction carries host-recorded admitted_at. CoreProposed and ExternalInput carry canonical recorded_at. These typed fields supply semantic time; there is no universal Transition timestamp.
 
@@ -261,9 +282,10 @@ Clean Reject is permitted only for:
 - Join;
 - Resume;
 - AccessModeChange;
-- RoleChange.
+- RoleChange; and
+- MembershipChangeSet when every typed component is Join, Resume, AccessModeChange, or RoleChange.
 
-Archive, Suspend, and Depart are mandatory Core proposals. The pack must Apply them; attempting to Reject one is PackFault. A required admitted TimerFired or ExternalInput also cannot be cleanly rejected. Exact-Head, authority, integrity, policy, idempotency, and Room Commit resolution classes remain WorldStream concerns.
+Archive, Suspend, and Depart are mandatory Core proposals. MembershipChangeSet is also mandatory when every typed component is Suspend or Depart. The pack must Apply a mandatory proposal; attempting to Reject one is PackFault. Mixed-class MembershipChangeSet never reaches the pack. A required admitted TimerFired or ExternalInput also cannot be cleanly rejected. Exact-Head, authority, integrity, policy, idempotency, and Room Commit resolution classes remain WorldStream concerns.
 
 Declared rejection codes belong to the exact revision descriptor. An undeclared code, malformed safe detail, panic, invalid output, mandatory-Core veto, or contract-bound violation is PackFault and commits neither Transition nor new receipt.
 
@@ -893,7 +915,7 @@ Every built-in pack MUST pass:
 - golden Genesis/Transition lineage plus Core, Activity, aggregate, and final Activity State hashes;
 - repeated reduce output equality;
 - exact Core veto matrix plus participant rejection and Kernel stale-action conformance;
-- atomic multi-Membership final-state Role/cardinality changes with no reflected pack ownership;
+- all-vetoable and all-mandatory MembershipChangeSet classification, mixed-class pre-pack rejection with no receipt, and atomic final-state Role/cardinality swaps with no reflected pack ownership;
 - wrong-generation, non-forward, duplicate/conflicting timer-request faults;
 - maximum-state, collection, nesting, text, and output bounds;
 - Action Offer byte parity across view, observation, reset, Invocation Context, and host pre-admission;

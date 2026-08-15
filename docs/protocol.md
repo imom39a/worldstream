@@ -97,7 +97,7 @@ HTTP is used for:
 - v0.2 artifact upload and download;
 - host-operator backup and diagnostics through local tooling.
 
-All canonical Room-administration operations use the Operation Identity `(authenticated_principal, versioned_operation_kind, idempotency_key)`. For existing-Room administration, the versioned Canonical Request Hash binds target Room, expected basis, reason, and the complete ordered changeset. Room creation instead binds its exact pack digest, configuration, and ordered initial Membership proposal while excluding generated Room/Member IDs, Room seed, and recorded creation time. Genesis creation, an Advance, stable Rejection, or administrative NoChange and its Semantic Receipt reach one database COMMIT. Same identity/hash returns the original result; same identity/different hash returns `idempotency_conflict`.
+All canonical Room-administration operations use the Operation Identity `(authenticated_principal, versioned_operation_kind, idempotency_key)`. For existing-Room administration, the versioned Canonical Request Hash binds target Room, expected basis, reason, and the complete ordered changeset. Room creation instead binds its exact pack digest, configuration, and ordered initial Membership proposal while excluding generated Room/Member IDs, Room seed, and recorded creation time. The server prepares exactly `Create(PreparedRoomCreationV1)` or `Existing(PreparedRoomCommitV1)` and submits it through `commit(PreparedRoomWriteV1)`; the only other storage-port operation is `resolve(identity, hash)`. Genesis creation, an Advance, stable Rejection, or administrative NoChange and its Semantic Receipt reach one database COMMIT. Same identity/hash returns the original result; same identity/different hash returns `idempotency_conflict`.
 
 ## Common envelope
 
@@ -462,13 +462,13 @@ The same internal contract covers all Room operation classes:
 | Class | Operation Identity | Same-hash replay |
 |---|---|---|
 | Participant Action | `(room_id, member_id, action_id)` | Original accepted or stable rejected Semantic Receipt |
-| Room administration | `(authenticated_principal, versioned_operation_kind, idempotency_key)` | Original Genesis-created, Transition, Rejection, or NoChange receipt |
+| Room administration | `(authenticated_principal, versioned_operation_kind, idempotency_key)` | Original Genesis-created receipt with generated Room/Member IDs and Head zero, or original Transition, Rejection, or NoChange receipt |
 | Timer firing | `(room_id, timer_id, generation)` | Original Semantic Receipt and matching Transition; Canonical Request Hash binds immutable `scheduled_for`/payload, while an obsolete `NotApplicable` candidate binds no receipt |
 | Host/external input | `(room_id, source_id, input_id)` | Original Semantic Receipt and matching Transition; an independently obsolete `NotApplicable` candidate binds no receipt |
 
 The server resolves a same-identity retry before later Room lifecycle, integrity, or Membership checks, after current authentication and authorization to read that result. Same identity with changed Canonical Request Hash is `idempotency_conflict` and never executes domain work.
 
-If database COMMIT may or may not have occurred, the server MUST keep the attempt `Indeterminate` and query the authoritative primary with the original identity/hash. It MUST NOT resubmit under a new identity, re-run pack logic, scan that timer again, acknowledge, or publish an assumed result. If resolution cannot finish within the request budget, the server returns `commit_indeterminate`; a client retries only the identical identity/body to continue resolution. Only authoritative `KnownAbsent` permits the server to retry the identical sealed plan or apply the operation-specific reprepare rule.
+If database COMMIT may or may not have occurred, the server MUST keep the attempt `Indeterminate` and query the authoritative primary with the original identity/hash. It MUST NOT resubmit under a new identity, re-run pack logic, scan that timer again, regenerate or reseal creation values, acknowledge, or publish an assumed result. If resolution cannot finish within the request budget, the server returns `commit_indeterminate`; a client retries only the identical identity/body to continue resolution. A stored creation resolution returns its original generated Room/Member IDs and exact Head zero. Only authoritative `KnownAbsent` proves no Create, Advance, or disposition committed and permits the server to retry the identical sealed `PreparedRoomWriteV1` or apply its operation-specific reprepare rule. A generated Room-ID collision is a separately proven-absent `Reprepare` that preserves caller identity/hash while resealing generated values.
 
 ## Observation frames
 
@@ -819,9 +819,9 @@ Public network exposure of these endpoints is not a production-ready control pla
 
 worldstreamctl generates bearer capability secrets locally, sends only the protocol-defined token hash to POST /v1/capabilities, and prints the plaintext locally. The server never stores or must replay a plaintext token to satisfy HTTP idempotency.
 
-Room archive and Membership Standing, Access Mode, or Role changes are normalized as versioned Core Stimuli with canonical authority attribution, idempotency identity, exact expected Room sequence, stable reason code, and Core before/after values. A single request may carry a Member-ID-sorted atomic final-state changeset with at most one pair per Membership. The server validates the complete state and Role cardinality without returning or persisting an intermediate assignment.
+Room archive and Membership Standing, Access Mode, or Role changes are normalized as versioned Core Stimuli with canonical authority attribution, idempotency identity, exact expected Room sequence, stable reason code, and Core before/after values. A single request may carry a Member-ID-sorted atomic final-state changeset with at most one typed component per Membership. Component kinds are Join, Resume, AccessModeChange, RoleChange, Suspend, or Depart. Archive remains its own CoreProposed kind and cannot occur inside MembershipChangeSet. The server validates the complete state and Role cardinality without returning or persisting an intermediate assignment.
 
-Join, resume, Access Mode, and Role proposals may receive a stable pack-declared administrative rejection with an idempotent receipt and no Transition. Archive, suspend, and depart are mandatory and cannot be vetoed; a pack attempt is a fault. A pre-existing desired state may return durable NoChange. Every other accepted Core change commits its receipt and one ordered Transition. Archive is irreversible and atomically cancels timers and fences Activation work. See [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md) and [ADR 0005](adr/0005-canonical-core-state-integrity-and-hash-lineage.md).
+Join, Resume, AccessModeChange, and RoleChange components are vetoable; Suspend and Depart components are mandatory. A mixed-class MembershipChangeSet is rejected before pack entry with no pack call, Transition, or receipt. An all-vetoable set may receive one stable pack-declared administrative rejection for the whole atomic proposal with an idempotent receipt and no Transition. An all-mandatory set must Apply as a whole and a pack Reject is a fault. Archive is independently mandatory and cannot be vetoed. A pre-existing desired state may return durable NoChange. Every other accepted Core change commits its receipt and one ordered Transition. Archive is irreversible and atomically cancels timers and fences Activation work. See [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md) and [ADR 0005](adr/0005-canonical-core-state-integrity-and-hash-lineage.md).
 
 Session presence, Runner availability, and other operational changes do not consume Room sequence.
 
@@ -866,7 +866,7 @@ Session presence, Runner availability, and other operational changes do not cons
 }
 ~~~
 
-The server accepts only a selectable compiled-in semantic digest whose `PackRevisionLockV1`, executor, schemas, codecs, and goldens agree in the embedded registry. Creation constructs initial `CoreRoomState v1`, calls `initialize`, and records one immutable sequence-zero Genesis containing exact version identities, configuration, both initial state values, normalized timer list, Room seed, and logical creation time. Genesis hash plus initial Core, Activity, and aggregate hashes, complete Head zero, verified current Room/Core/Membership/Activity materializations, normalized timer rows, and the room-creation Semantic Receipt commit atomically. Genesis creates no Transition, Domain Event, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
+The server accepts only a selectable compiled-in semantic digest whose `PackRevisionLockV1`, executor, schemas, codecs, and goldens agree in the embedded registry. Before opening storage locks, it generates Room/Member IDs, Room seed, and logical creation time, constructs initial `CoreRoomState v1`, calls `initialize`, computes all three initial hashes and Head zero, and seals them with the administration identity/hash, creation-authority witness, selected exact revision, Genesis, materializations, timers, and `genesis_created` receipt in `PreparedRoomCreationV1`. The Create transaction resolves/fences that identity, rechecks creation authority and generated Room-ID absence, then atomically installs the Room root, immutable sequence-zero Genesis, initial Core/Activity/Membership/timer materializations, hashes/Head zero, and receipt. It has no basis Head, Room Integrity fence, or existing-Room lane. Genesis creates no Transition, Domain Event, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
 
 ### Current projection
 
@@ -1087,12 +1087,13 @@ See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 ### Core, hashes, and integrity
 
 1. Replay a Genesis-only Room and verify complete Head zero plus Core, Activity, aggregate, and Genesis hashes.
-2. Atomically swap two Membership Roles whose sequential intermediate would violate pack cardinality; one Core Transition commits and no intermediate Projection or hash exists.
+2. Atomically swap two Membership Roles as one all-vetoable MembershipChangeSet whose sequential intermediate would violate pack cardinality; one whole-set Apply commits one Core Transition and no intermediate Projection or hash exists, while one whole-set declared Reject records only the stable rejection.
 3. Exercise enabled ↔ suspended, terminal depart/new-ID rejoin, participant Role requirement, and one-non-departed-Membership-per-Principal constraints.
-4. Verify join/resume/Access/Role vetoes are stable no-Transition administrative results while archive/suspend/depart cannot be declared vetoed.
-5. Race an accepted mutation with an integrity-generation change; one wins and the loser consumes no sequence or receipt.
-6. A faulted Room serves only last-verified authorized data with an integrity envelope; a quarantined Room serves only the host-operator diagnostic surfaces.
-7. Rebuild materializations and snapshots through verifier repair, then prove Genesis/Transition bytes and hashes did not change.
+4. Verify individual and homogeneous all-vetoable join/resume/Access/Role proposals may produce stable no-Transition administrative results, while individual and homogeneous all-mandatory suspend/depart proposals and Archive cannot be declared vetoed; a mandatory Reject is PackFault.
+5. Submit a mixed vetoable-plus-mandatory MembershipChangeSet and prove pre-pack rejection with no pack call, Transition, or receipt; submit Archive inside MembershipChangeSet and prove the same pre-pack failure.
+6. Race an accepted mutation with an integrity-generation change; one wins and the loser consumes no sequence or receipt.
+7. A faulted Room serves only last-verified authorized data with an integrity envelope; a quarantined Room serves only the host-operator diagnostic surfaces.
+8. Rebuild materializations and snapshots through verifier repair, then prove Genesis/Transition bytes and hashes did not change.
 
 ### Disconnect and catch-up
 
@@ -1133,9 +1134,10 @@ See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 5. It starts a fresh Invocation with the exact committed Projection/Head/witnesses and exactly one retained-frames-or-reset branch.
 6. The invocation submits an ordinary idempotent action.
 7. Replay verifies Attention and recorded policy-decision evidence but creates/offers/claims nothing and contacts no Runner.
-8. A lost operation reply retried with the same ID/hash returns the exact result; changed hash conflicts.
-9. After lease expiry/reclaim, the old generation cannot renew, release, or complete the new lease.
-10. Archive and affected Membership changes cancel/fence pending and leased intents; authority revocation and a backward-clock anomaly fence stale claims.
+8. While a granted claim's context is retained, a lost reply retried with the same ID/hash returns the exact original context/result bytes; changed hash conflicts.
+9. After that granted context is tombstoned, the identical retry returns deterministic `result_retired` while the original result code/hash and context hash remain unchanged and no context is regenerated.
+10. After lease expiry/reclaim, the old generation cannot renew, release, or complete the new lease.
+11. Archive and affected Membership changes cancel/fence pending and leased intents; authority revocation and a backward-clock anomaly fence stale claims.
 
 ### Privacy
 
@@ -1168,8 +1170,9 @@ See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 
 1. Create a room and lose the HTTP response after commit.
 2. Retry the same principal/operation/key/request hash.
-3. The server returns the original room ID and does not create another room.
-4. Changed request content under that key returns idempotency_conflict.
+3. The server resolves `GenesisCreated { Existing }`, returns the original generated Room and Member IDs and exact Head zero, and does not create another room.
+4. Prove the creation row had no basis Head, the transaction used no existing-Room lane or integrity/Head fence, and Genesis, initial state/timers/materializations/hashes/Head zero, and the `genesis_created` receipt were all-or-none across every failpoint.
+5. Changed request content under that key returns idempotency_conflict.
 
 ## Minimal Heist interaction
 

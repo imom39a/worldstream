@@ -164,8 +164,9 @@ The frozen suite must prove:
 6. Loading and Room-CatchingUp deny normal service; Faulted exposes only last-verified allowed surfaces; Quarantined exposes host-operator-only verification surfaces.
 7. Attention is hash-bound while policy evidence is noncanonical; Replay creates, offers, claims, and invokes nothing.
 8. Intent state, unique logical key, single-live-lease rule, claim lost-reply recovery, changed-hash conflict, expiry/reclaim, generation fences, archive cancellation, authority revocation, and backward-clock fencing are exercised.
-9. Granted context contains the exact Projection and complete Head plus exactly one retained/reset branch, and the bytes returned by an exact retry match the committed result.
-10. Runner control, participant Action submission, Session synchronization, Cursor acknowledgement, Replay, export, and operator access fail independently when only another capability is held.
+9. Granted context contains the exact Projection and complete Head plus exactly one retained/reset branch; while context is retained, an identical retry returns the exact committed context/result bytes.
+10. After that granted context is replaced by its versioned tombstone, an identical retry returns deterministic `result_retired`, preserves the original result code/hash and context hash, and regenerates no context.
+11. Runner control, participant Action submission, Session synchronization, Cursor acknowledgement, Replay, export, and operator access fail independently when only another capability is held.
 
 ## Non-goals
 
