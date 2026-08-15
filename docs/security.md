@@ -113,7 +113,7 @@ Activity Packs must classify every projection field. The absence of a label does
 
 1. Authenticate a principal and capability before room attachment.
 2. Authorize every room, membership, action, replay, activation, and artifact operation.
-3. Do not trust a client-supplied Principal kind, Role, Room sequence, Legal Action list, or audience.
+3. Do not trust a client-supplied Principal kind, Role, Room sequence, Action Offer, or audience; Action Offers come only from the exact pack view.
 4. Never expose Canonical Activity State or Core Room State directly.
 5. Construct public, participant, and operator Activity Projections through separate typed paths, then wrap them in the authorized core Projection envelope.
 6. Authorization occurs before observation persistence, artifact lookup, indexing, filtering, or rendering.
@@ -131,6 +131,8 @@ Activity Packs must classify every projection field. The absence of a label does
 18. Transient admission/runtime errors do not consume an action ID.
 19. An expired activation claim cannot operate on a later lease generation.
 20. A durable room genesis remains sufficient after all snapshots are removed.
+21. Operator Membership never receives raw Activity State; every operator result is an explicit bounded pack view.
+22. Every retained digest resolves to its exact executor/codecs; a newer revision never interprets old lineage.
 
 ## Authentication and capabilities
 
@@ -205,7 +207,7 @@ Backpressure is explicit. The server rejects room_busy or rate_limited and disco
 
 ### Stale and transient actions
 
-Each action includes based_on_room_seq. The Room Kernel requires exact equality with the current room head before pack application in the frozen releases. A deterministic stale rejection can safely reveal only a current sequence and safe legal-action summary.
+Each action includes based_on_room_seq. The Room Kernel requires exact equality with the current room head before pack reduction in the frozen releases. A deterministic stale rejection can safely reveal only a current sequence and exact current Action Offers.
 
 Unauthenticated, forbidden, malformed, room_busy, rate_limited, storage_unavailable, and activity/runtime-fault responses create no action receipt. A caller may retry the identical canonical action with the same action ID. Deterministic admitted domain rejections are durably receipted and consume that ID.
 
@@ -300,11 +302,14 @@ WorldStream does not store private chain-of-thought as a debugging or reputation
 ### Frozen trusted Rust model
 
 - packs are compiled into the binary;
-- pack revision is allowlisted and pinned per room;
-- Activity Pack host interface exposes no I/O handles;
-- Canonical Activity State/output limits apply;
+- PackRevisionLock semantic digest is pinned per Room;
+- the embedded registry maps the digest to exact executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status;
+- every retained digest remains runnable even when no longer selectable;
+- ActivityPackV1 exposes exactly descriptor, initialize, reduce, view, and observe and no I/O, clock, scheduler, Activation, Session, delivery, telemetry, or artifact-byte handle;
+- Canonical Activity State, events, timer requests, Attention, Projection, Action Offer, observation, nesting, collection, and text limits apply;
 - panics are caught at the host boundary where possible;
-- repeated deterministic fault quarantines the room;
+- malformed output, mandatory-Core veto, privacy/view failure, or bound violation commits nothing;
+- repeated deterministic required-input fault faults the Room; hash/Replay disagreement quarantines it;
 - replay tests detect nondeterminism;
 - supply-chain review covers pack dependencies.
 
@@ -441,6 +446,11 @@ Metrics use counts and sizes, not high-cardinality raw participant text.
 
 Before Heist v0.1:
 
+- PackRevisionLock/digest collision and exact-executor/codec retention tests;
+- Action Offer byte parity across Projection, reset, Frame, Invocation Context, and admission;
+- Core veto matrix plus TimerFired-field and pack-assigned-generation rejection;
+- callback panic, malformed output, privacy/view failure, and every declared bound with no partial commit;
+- full three-seat/six-phase majority/scoring/timer/Attention golden corpus;
 - protocol fuzzing and duplicate-key cases;
 - oversized/nested payload rejection;
 - authentication/scope matrix;

@@ -4,7 +4,7 @@
 
 Status: **FROZEN for Agent Heist v0.1 and Investigation Room v0.2**
 
-Freeze date: 2026-08-13
+Freeze date: 2026-08-15
 
 This is the normative product-behavior and release-scope document. If an architecture, protocol, roadmap, or example conflicts on behavior or scope, this document wins. The root [WorldStream Domain Context](../CONTEXT.md) is authoritative for domain term names and meanings; a conflict between terminology and requirements is a documentation defect that must be reconciled rather than silently redefined.
 
@@ -13,7 +13,7 @@ Change control:
 1. A requirement addition needs a short ADR describing the demonstrated need.
 2. Before v0.2, new scope must replace scope of comparable cost unless it fixes correctness, security, or the ability to deliver either reference activity.
 3. Ideas that do not block a release gate go into the non-normative research backlog.
-4. Public protocol and Activity Pack ABI stability are not promised until both reference activities pass.
+4. The trusted semantic `ActivityPackV1` seam is frozen for v0.1 retained Rooms. Public protocol stability and any portable, dynamically loaded, or untrusted pack ABI remain unpromised until a separate post-v0.2 decision.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative in this document.
 
@@ -65,7 +65,7 @@ Delivery resume means observation catch-up. The word resume MUST NOT imply cogni
 - Membership identity, lifecycle, Access Mode, and current pack-defined Role assignment, plus development-grade authentication;
 - one total order of committed transitions per room;
 - typed action routing, idempotency, and stable action results;
-- durable timers and host-recorded nondeterministic inputs;
+- durable timers, monotonically nonreused host-owned timer generations, and host-recorded nondeterministic inputs;
 - state snapshots, recovery, current projection, and deterministic replay;
 - Membership-addressed Observation Frames, acknowledgements, and Cursor Catch-up;
 - durable activation intents, claim leases, retries, and status;
@@ -75,8 +75,8 @@ Delivery resume means observation catch-up. The word resume MUST NOT imply cogni
 ### Activity Packs MUST own
 
 - room configuration and domain state;
-- Role definitions, cardinality, permissions, and Legal Actions;
-- action validation and deterministic reduction;
+- Role definitions, cardinality, permissions, and exact Action Offers;
+- deterministic initialization, reduction, views, and observations through `ActivityPackV1`;
 - public, participant, and operator projection rules;
 - timers, attention reasons, completion rules, and result scoring;
 - activity-specific UI projection schemas.
@@ -96,12 +96,16 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 
 - The server MUST host multiple independent rooms in one process.
 - Each room MUST pin exactly one Activity Pack identifier and immutable revision digest at creation.
-- A room MUST NOT silently switch pack versions.
+- A Room MUST NOT change its pinned digest or rewrite canonical Activity State in place. A semantic pack revision creates a new Room.
+- Every revision digest MUST be the build-computed digest of a canonical `PackRevisionLockV1` covering the host contract and codec versions, manifest, exact schema-content digests, deterministic static data, pack rule source, and deterministic dependency lock.
+- The embedded registry MUST map each digest to its exact executor, descriptor/schema bundle, state/stimulus/output codecs, golden-corpus digest, and separate selectable-for-new-Rooms and runnable-for-retained-Rooms status. Selectable MUST imply runnable.
+- Every digest referenced by retained lineage MUST remain runnable for load, advance, view, observe, Recovery, and Replay even after it becomes non-selectable.
 - Core Room Status MUST be active or archived; Room Health MUST be healthy, faulted, or quarantined; Activity Phase and Outcome MUST remain separate pack-defined values and separate from both core axes.
 - Archiving a Room MUST be recorded as an administrative Stimulus and Transition in that Room's order, as decided in [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md).
 - Archived, faulted, and quarantined rooms MUST reject ordinary participant mutation while retaining authorized inspect, export, recovery, and replay operations.
 - v0.1 packs MUST be trusted, compiled into the server, and selected from an allowlist.
-- The public plugin ABI, untrusted code execution, and pack registry are deferred until after v0.2.
+- Dynamic pack download, public plugin upload/registry service, untrusted code execution, and a portable plugin ABI are deferred until after v0.2. The required embedded exact-revision registry is not a plugin marketplace.
+- These pack-seam and executable-retention boundaries are decided in [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 
 ### FR-2: Human and agent participation
 
@@ -117,24 +121,35 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - Every action MUST include room ID, membership ID, client-generated action ID, expected room sequence, action type, and typed payload.
 - Each active room MUST have one logical writer and one monotonically increasing committed sequence.
 - The kernel MUST reject a participant action when based_on_room_seq does not exactly equal the current room head in v0.1 and v0.2.
-- The pack MUST validate an action against the current state and membership before mutation.
+- The host MUST pre-admit an action type only when it appears in the exact current viewer's canonical Action Offer bytes. The pack MAY still declare a payload-specific domain rejection during reduction.
+- The same Action Offer bytes MUST appear in current Projection, Projection Reset, Observation Frame updates, Invocation Context, and host pre-admission; no second legality list MAY exist.
 - Rejected actions MUST NOT consume a canonical room sequence.
 - Only deterministic admitted rejections MAY consume the action ID through a durable action receipt.
 - Authentication, authorization, malformed input, rate limit, room busy, storage unavailable, and activity/runtime faults MUST use the error path, MUST NOT consume the action ID, and MAY be retried with the same ID.
 - An accepted action MUST be durably committed before the server acknowledges or publishes it.
 - The key of room, membership, and action ID MUST map to at most one result.
 - Reusing an action ID with different canonical payload bytes MUST be rejected.
-- Stale actions MUST receive a typed rejection with the current sequence and current legal-action summary when safe.
+- Stale actions MUST receive a typed rejection with the current sequence and exact current Action Offers when safe.
 
 ### FR-4: Deterministic state and timers
 
 - Authoritative Room State at sequence N MUST be a pure function of Room Genesis, the exact Activity Pack revision, and recorded Stimuli through N.
-- A pack MUST NOT read ambient wall time, operating-system randomness, files, network resources, environment variables, provider APIs, or secrets.
+- The trusted pack seam MUST expose exactly five synchronous operations: descriptor, initialize, reduce, view, and observe. Each MUST finish before persistence handoff and MUST be pure and bounded.
+- A pack MUST NOT receive or access ambient wall time, operating-system randomness, files, network resources, environment variables, storage, scheduler, Activation, Session/delivery state, telemetry, artifact bytes, provider APIs, or secrets.
+- Initialization MUST receive exact creation inputs and return only canonical initial Activity State plus ordered timer requests. Genesis MUST create no Domain Event, Attention Signal, Activation, or Observation Frame.
+- Reduction MUST receive prior Activity State, exact Core before/proposed after, the canonically sorted current timer view, next Room sequence, and one normalized typed Stimulus.
+- Normalized participant Actions MUST record exact basis Head and `admitted_at`; TimerFired MUST contain only exact logical timer ID, host generation, immutable `scheduled_for`, and payload; Core proposals and narrow External Inputs MUST carry canonical `recorded_at`.
+- Reduction MUST return exactly Apply with complete next state, ordered Domain Events, timer requests, and Attention Signals, or a declared Reject. `PackFault` MUST remain a distinct contract-failure channel.
+- Clean Reject MAY apply only to participant Actions and join, resume, Access Mode, or Role proposals. Archive, suspend, depart, required TimerFired, and accepted External Input MUST NOT be vetoed; attempting to do so is `PackFault`.
+- Host-normalized administrative NoChange MUST resolve before pack entry. Every Apply MUST create one Transition even when Activity State bytes do not change.
 - Host time and randomness that affect state MUST enter as recorded stimuli or recorded stimulus fields.
-- Timer creation, cancellation, and logical firing MUST be durable.
+- Packs MAY request only ScheduleNext, CancelCurrent with expected generation, or RescheduleCurrent with expected generation/new due/new payload. The host MUST assign and verify monotonically nonreused generations.
+- A Transition MUST request at most one mutation per logical timer ID. Every new due MUST be strictly later than the causing Stimulus's semantic time; wrong generation, equal/backward time, implicit replacement, conflicting request, invalid payload/time, or overflow MUST be `PackFault` with no commit.
+- Timer creation, cancellation, rescheduling, and logical firing MUST be durable.
 - A timer retry MUST NOT cause two logical firings.
 - Canonical Activity State and Transition hashes MUST be reproducible.
 - Core Room State and Activity State in the frozen releases MUST avoid floating-point values.
+- Panic where catchable, malformed/undeclared output, bound violation, privacy/view failure, or deterministic disagreement MUST fail closed before commit. Required-input repeat failure faults the Room; Replay/hash disagreement quarantines it.
 
 ### FR-5: Scoped projections
 
@@ -143,7 +158,9 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - Every persisted observation frame MUST have an explicit membership audience.
 - Every durably streamed spectator or operator MUST therefore have a read-only room membership and its own cursor.
 - Authorization MUST happen before persistence, indexing, ranking, or rendering.
-- A participant MUST be able to obtain current legal actions and deadlines without reading the raw transition history.
+- A participant MUST obtain exact current Action Offers and deadlines from its authorized Projection without reading raw transition history.
+- `view` MUST return one authorized Activity Projection plus ordered Action Offers. `observe` MUST receive before/after Core and Activity, normalized Stimulus, ordered events, exact Membership viewer, and the exact after-view bytes and MUST return zero or one bounded authorized observation.
+- If an authorized before/after view changes, `observe = None` MUST be `PackFault`; a hidden Transition MAY produce None. Operator Membership MUST receive only an explicit bounded projection, never raw Activity State.
 - Private chain-of-thought MUST NOT be requested or stored.
 
 ### FR-6: Realtime delivery and reconnect
@@ -172,7 +189,7 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - If no runner is available, the intent MUST remain pending until expiry or host-operator cancellation; WorldStream MUST NOT pretend that an agent ran.
 - A fresh invocation MUST receive the cause, authorized current projection, retained observation frames after its cursor, budget/deadline metadata, and explicit artifact references.
 - v0.1 MUST support a connected runner control channel or HTTP long poll. Arbitrary outbound webhooks are not required.
-- Replay MUST reconstruct activation decisions but MUST NOT contact runners or start invocations.
+- Replay MUST reproduce deterministic Attention Signals but MUST NOT evaluate Activation policy or create an intent, offer, lease, Invocation, or participant Action authority.
 
 ### FR-8: Recovery and replay
 
@@ -183,7 +200,8 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - A committed action that was acknowledged before process termination MUST not be lost.
 - A commit that occurred before a lost acknowledgement MUST return the stored original result when retried.
 - Replay MUST be read-only, use the exact pack revision, and verify recorded Activity State hashes plus the ordered Core Room State changes.
-- A hash mismatch or missing pack revision MUST fault replay instead of continuing with uncertain state.
+- Replay MUST use the exact retained executor and codecs. Retaining decoders alone or silently dispatching an old digest to newer rules is forbidden.
+- A hash mismatch or missing exact executor/codec MUST fault Replay instead of continuing with uncertain state. A restore or storage transfer MUST NOT become ready until every retained digest loads and fully replays.
 - Timeline branching, promotion, or merge is not part of v0.1 or v0.2.
 
 ### FR-9: Reference user interface
@@ -206,39 +224,38 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 
 ## Reference release A: Agent Heist v0.1
 
-Agent Heist is a deliberately small game used to prove the Room Kernel, not an MMO or social network.
+Agent Heist is a deliberately small deterministic game and one ordinary ActivityPackV1 implementation. Its exact schema and golden corpus are normative in [Activity Pack Design](activity-packs.md); no Heist-specific Kernel primitive is permitted.
 
-Required Room Members and input:
+The frozen configuration contains exactly three immutable Genesis seats (Navigator, Insider, Broker); Briefing 30 seconds; Negotiation 90 seconds; Commitment 30 seconds; a reminder 10 seconds before its deadline; Result 20 seconds; at most twelve plans; and at most four open offers per seat. The Room seed selects canal_shift, service_window, or roof_signal with deterministic label agent-heist/fixture/v1.
 
-- three distinct Agent Principals with participant Memberships in the Navigator, Insider, and Broker Roles;
-- three deterministic external Runners serving those Agent Participants in the reference demo;
-- one human with an operator or spectator membership;
-- one deterministic facility host-stimulus source represented by recorded timers.
+Navigator initially owns the route clue, Insider the entry-window clue, and Broker the required-tool and extraction clues. Suspension/departure makes a seat missing but MUST NOT change the denominator, transfer private knowledge, or permit replacement/reassignment.
 
-Required behavior:
+Canonical Actions MUST cover clue inspection/publication, bounded exchange offer/acceptance, structured plan proposal/endorsement/challenge, one immutable sealed {selected_plan_id, contribute_required_resource} commitment per seat, and Result acknowledgement. No fallback commitment field, arbitrary clue/chat text, binary voting, or Activity-State mirror of current Role ownership may exist.
 
-- role-specific private clues;
-- public clue publication and structured private offers;
-- plan proposal and endorsement;
-- one shared sealed-decision window in which concurrent submissions are serialized and stale submissions retry before the deadline;
-- deterministic conflict and outcome resolution;
-- at least one timed phase change;
-- at least one targeted activation while an agent invocation is absent;
-- one runner claiming the activation and starting a fresh invocation;
-- cursor catch-up without receiving another role's private data;
-- server termination after a committed action and successful restart recovery;
-- deterministic read-only Replay to the same final Activity State hash and Core Room State.
+The only phase path is:
+
+    Briefing → Negotiation → Commitment → Resolution → Result → Complete
+
+Every phase change MUST be ordered and generation-fenced. The third commitment enters Resolution early, cancels both Commitment timer witnesses, and schedules resolution at the minimum semantic tick strictly after admitted_at. Deadline closure preserves missing seats and schedules resolution strictly after its scheduled_for. Resolution computes Result and its deadline; the third acknowledgement completes early by cancelling that deadline, otherwise the deadline enters Complete. Complete is terminal Activity State while Core Room Status remains active until archive.
+
+Plan selection requires at least two of the fixed three seats. Zero, one, two split, or three all-different commitments produce failure, score zero, and reason no_strict_majority. Two matching, 3-0, and 2-1 select the majority plan. No arrival-order, earliest-plan, plan-ID, or other tie-break MAY exist.
+
+A selected plan scores exactly five Boolean checks: route, entry window, required tool, extraction, and at least one supporting resource contribution. Five yields success, three or four partial failure, and zero through two failure.
+
+Public, participant, operator, historical-Replay, Result, and post-Complete final-reveal views MUST remain distinct. Participants additionally see only their authorized clues, addressed offers, own commitment, and exact Action Offers. Operator Membership sees bounded diagnostics/aggregates, never raw state, fixture truth, clues, offers, or commitments. Result reveals aggregates/checks/Outcome while individual commitments remain sealed. Final reveal is separately labeled, available only after Complete, and currently authorized.
+
+The only Attention reasons are offer_received, endorsement_requested, commitment_opened, required_action_deadline, and round_result_available. Per-target precedence MUST be required_action_deadline, commitment_opened, offer_received, endorsement_requested, then round_result_available. Replay reproduces Attention only.
 
 Required Heist acceptance gates:
 
-1. Three deterministic agents drive the Heist Activity to its Terminal Phase and Outcome solely through public protocol and SDK calls; the Room remains active until explicitly archived.
-2. One invocation terminates before the commitment phase.
-3. Commitment opening creates a durable targeted activation.
-4. A fresh invocation claims it, catches up, and submits a valid commitment.
-5. Private clues, offers, and sealed choices never reach unauthorized participants or the public UI.
-6. Retrying an accepted action after a lost acknowledgement does not apply it twice.
-7. Killing the server during the scripted failure point loses no acknowledged state.
-8. Replay produces the same checkpoint hashes, outcome, and public history.
+1. Canonical goldens cover Genesis, all six phases, exact timer effects, events, Attention, Action Offers, state, explanations, and hashes.
+2. The full commitment matrix covers zero, one, 2-0, 1-1, 3-0, 2-1, and 1-1-1; scoring covers 5/5, 4/5, 3/5, 0-2/5, and no majority.
+3. Deadline equality, concurrent exact-Head commitments, stale retry/new identity, duplicate Actions/timers, lost replies, and early/deadline closure pass.
+4. Crash after commit/before publication, crash after early close, fixed-cutoff restart, and Replay from Genesis with every snapshot deleted reproduce the exact Head.
+5. Paired privacy fixtures cover live view, Frame, catch-up, reset, UI/log, operator, historical Replay, Result, and final reveal.
+6. The absent-Broker Activation path remains separate from participant Action and Cursor authority.
+7. Cooperative Navigator, cautious Insider, and withholding Broker use deterministic ranking by known-field matches, endorsements, creation sequence, then plan ID—never as a majority tie-break.
+8. Byte-identical corpus results pass through the exact retained executor/codecs on every supported platform and storage profile.
 9. The deterministic demo requires no network service, model key, wallet, or paid API.
 
 ## Reference release B: Investigation Room v0.2
@@ -327,7 +344,7 @@ The following are frozen out:
 - coding harnesses, repository worktrees, tool sandboxes, branch promotion, or cloud agent execution;
 - model hosting, prompt management, provider routing, consumer-subscription pooling, or raw model resale;
 - generic RAG, vector database, embedding pipeline, semantic wake classifier, or automatic summarization;
-- Activity Pack marketplace, public pack upload, public agent marketplace, reputation, payments, token, wallet, escrow, or blockchain integration;
+- Activity Pack marketplace, dynamic/public pack registry or upload, public agent marketplace, reputation, payments, token, wallet, escrow, or blockchain integration;
 - arbitrary process snapshots, hidden-model-state capture, or claims of continuous agent life;
 - timeline forks, branch merge, or counterfactual promotion;
 - runtime-generated UI, general dashboard builder, arbitrary third-party JavaScript, or renderer marketplace;
@@ -345,6 +362,8 @@ These ideas are not rejected forever. They require evidence after both reference
 - [x] Membership, session, runner, invocation, cursor, and activation are distinct.
 - [x] No normative document calls an agent process alive, asleep, awakened, or mentally resumed.
 - [x] Action ordering, idempotency, commit-before-ack, projection privacy, cursor catch-up, activation, recovery, and replay have testable invariants.
+- [x] ActivityPackV1, exact Action Offer parity, host-owned timers, PackRevisionLock, retained executability, and no in-place upgrade are frozen.
+- [x] Agent Heist has exact three-seat/six-phase, majority, scoring, privacy, Attention, and golden-corpus contracts.
 - [x] Agent Heist is the only v0.1 activity.
 - [x] Investigation Room is the only v0.2 application goal.
 - [x] Investigation adds no Investigation-specific Room Kernel concept beyond the preplanned generic artifact subsystem.

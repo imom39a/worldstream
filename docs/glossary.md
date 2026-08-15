@@ -94,7 +94,7 @@ flowchart TD
 | **Terminal phase** | A pack-defined phase after which ordinary domain Actions are no longer permitted. | It is separate from Activity Outcome and core Room archival. |
 | **Outcome** | A pack-defined final result and optional deterministic score, possibly established before the Terminal Phase. | Reaching an Outcome does not automatically archive the core Room. |
 | **Core room state** | WorldStream-owned current facts about Room lifecycle and Memberships. | It is distinct from pack-owned Activity State and from operational Room health. |
-| **Activity state** | Activity Pack-owned current domain facts for one Room. | It contains phases, domain entities, deadlines, and Outcome—not Sessions, Runner state, host diagnostics, or a duplicated cache of derived Legal Actions. |
+| **Activity state** | Activity Pack-owned current domain facts for one Room. | It contains phases, domain entities, deadlines, and Outcome—not Sessions, Runner state, host diagnostics, or a duplicated cache of Action Offers or current Core Role ownership. |
 | **Authoritative room state** | The accepted current shared truth comprising Core Room State and Activity State, changed only by committed Transitions. | Clients never mutate or receive this aggregate directly. |
 | **Canonical activity state** | The deterministic, schema-valid representation of Activity State used for hashing and replay. | It is not a second domain state and does not by itself include Core Room State. |
 | **Canonical history** | The immutable room genesis followed by the append-only ordered transitions. | Snapshots, indexes, projections, frames, and telemetry are derived or delivery records rather than substitutes for canonical history. |
@@ -146,10 +146,10 @@ flowchart TD
 | **Cursor** | The highest frame sequence a membership has durably processed and acknowledged. | A cursor belongs to one membership stream, not the entire room. |
 | **Catch-up** | Delivery of retained authorized frames after a membership cursor during attach/reconnect. | Catch-up is transport continuity; it is not deterministic room replay or cognitive resumption. |
 | **Projection reset** | An authorized current projection sent when the required historical frame range has been pruned. | The reset is explicit and atomically establishes a new frame baseline; the server never silently skips a gap. |
-| **Legal action** | A typed action currently available to a participant, including relevant schema and deadline information. | “Affordance” is an informal UX synonym. The server still revalidates every submitted action. |
+| **Action Offer** | The pack view's canonical typed representation of an action type, exact payload-schema digest, and optional recorded eligibility window for one viewer at one Head. | The same bytes feed Projection, reset, Frame, Invocation Context, and admission. Presence is necessary, not a guarantee that every payload will be accepted. |
 | **Realtime** | Commit-first push of relevant observations to connected clients, with bounded latency targets and durable cursor recovery. | It does not mean every database event is broadcast or every agent responds instantly. |
 | **Stream** | In product language, one Membership's ordered progression of meaningful Room Observations. | Do not use it to imply token streaming, video streaming, or a generic message broker. |
-| **Invocation context** | A temporary authorized input bundle for one agent invocation: activation cause, current projection, retained relevant frames or reset, legal actions, deadline/budget metadata, and artifact references. | It is assembled for a run and is not a new authoritative database or persistent agent mind. |
+| **Invocation context** | A temporary authorized input bundle for one agent invocation: activation cause, current projection, retained relevant frames or reset, exact Action Offers, deadline/budget metadata, and artifact references. | It is assembled for a run and is not a new authoritative database or persistent agent mind. |
 | **Agent-private memory** | Prompts, model history, private checkpoints, summaries, or other state owned by the external runner/agent implementation. | WorldStream does not own, inspect, or promise this memory. |
 
 ## Activation and ephemeral agent execution
@@ -174,13 +174,17 @@ flowchart TD
 | Term | Summary or technical elaboration | Important distinction |
 |---|---|---|
 | **Activity Pack** | Trusted, versioned domain rules and schemas compiled into the server for v0.1/v0.2. It defines configuration, Activity State, roles, actions, deterministic reduction, projections, timers, attention reasons, phases, and outcomes. | It is not a workflow graph, model prompt bundle, arbitrary connector, or public plugin in the frozen releases. |
-| **Activity Pack host interface** | The internal Rust contract through which the WorldStream Server initializes, applies, projects, observes, and validates a trusted compiled-in Activity Pack. | It is provisional through v0.2 and is not a stable public plugin ABI. |
-| **Manifest** | Pack identity and declared schemas, limits, roles, actions, projection versions, and compatibility metadata. | The manifest describes a pack; the pinned digest identifies its exact executable revision. |
+| **ActivityPackV1** | The frozen trusted synchronous five-operation seam: descriptor, initialize, reduce, view, and observe. | It is a retained-Room semantic contract, not a dynamically loaded, sandboxed, or portable public plugin ABI. |
+| **Pack revision descriptor** | Pack identity plus declared schemas, limits, roles, actions, rejection codes, Attention reasons, and Projection versions. | It describes one revision; the semantic digest selects its exact executable rules. |
+| **PackRevisionLock** | Canonical build input binding host/codec versions, descriptor, schema/static-data digests, rule source, and deterministic dependency lock. | Its build-computed digest is semantic identity, not a pack label or machine-binary hash. |
+| **Embedded pack registry** | Release mapping from exact semantic digest to executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status. | It is required compatibility data, not a public plugin registry or marketplace. |
+| **Selectable pack revision** | A runnable exact revision permitted for new Room creation. | Selectable implies runnable. |
+| **Retained-runnable pack revision** | An exact revision no longer selectable for new Rooms but still able to load, advance, view, observe, recover, and Replay retained Rooms. | Retaining only a decoder is insufficient. |
 | **Pack identifier** | A stable namespaced logical name such as `worldstream.agent-heist`. | It groups revisions but does not uniquely select executable rules. |
 | **Pack version** | A human-facing declared release version for a pack. | It aids compatibility and documentation; the digest remains authoritative. |
 | **Room configuration** | Immutable creation input validated by the pack and committed into genesis. | Later domain changes belong in canonical pack state; server deployment configuration is separate. |
-| **Reducer / `apply`** | The deterministic pack operation that validates an admitted stimulus against current state and returns the complete next state plus typed outputs. | It performs no host I/O or model execution. |
-| **Projection function / `project`** | The deterministic pack operation that creates a current authorized view for one viewer. | It constructs allowed data rather than serializing and redacting raw state. |
+| **Reducer / `reduce`** | The deterministic pack operation that consumes Activity before, Core before/proposed after, timer view, next sequence, and one normalized Stimulus and returns Apply or declared Reject. | PackFault is separate; the reducer performs no host I/O or model execution. |
+| **View function / `view`** | The deterministic pack operation that creates one current authorized Activity Projection plus ordered Action Offers. | It constructs allowed data rather than serializing and redacting raw state. |
 | **Observation function / `observe`** | The deterministic pack operation that creates one viewer's bounded change-oriented observation after a transition. | It is persisted/delivered only after authorization and successful commit. |
 | **Attention reason** | A pack-declared stable code explaining why an Agent Participant may need Activation. | It is typed application semantics, not free-form LLM judgment. |
 | **Pack conformance** | Tests proving determinism, schema validity, privacy noninterference, bounded outputs, recovery, and replay for an exact pack revision. | Passing conformance does not make untrusted third-party pack execution safe. |
@@ -215,7 +219,7 @@ flowchart TD
 |---|---|---|
 | **Reference UI** | The small first-party web client used to demonstrate, inspect, and test Agent Heist and Investigation Room. | It is not a general dashboard builder or required to operate the server. |
 | **Public view** | A UI rendering of a public/spectator projection for an authorized read-only membership. | Public does not imply anonymous access or a raw global feed. |
-| **Participant view** | A UI rendering of one acting membership's authorized projection, legal actions, and observation state. | It must never contain another membership's private fields. |
+| **Participant view** | A UI rendering of one acting membership's authorized projection, Action Offers, and observation state. | It must never contain another membership's private fields. |
 | **Operator-membership view** | A UI rendering of room-scoped diagnostics, controls, and operator projection authorized for an operator membership. | It is distinct from the host operator trust role. UI visibility is not authorization; the server rechecks every operation. |
 | **Inspector** | A diagnostic view of authorized room metadata, connections, cursors, activation status, timers, and hashes. | It is not direct database access or unrestricted canonical-state exposure. |
 | **Timeline** | An authorized presentation of Domain Events and Transition/Observation metadata in Room order. | It is not necessarily the complete Canonical Activity State, Core Room State, or another Participant's private history. |
@@ -228,7 +232,7 @@ flowchart TD
 
 | Term | Meaning |
 |---|---|
-| **Agent Heist** | The v0.1 reference activity proving private views, concurrent decisions, timers, disconnect/catch-up, activation, restart recovery, and replay. It is a test vehicle, not the product category. |
+| **Agent Heist** | The v0.1 ActivityPackV1 reference: three immutable Genesis seats, six phases, sealed two-of-three plan selection, five-check scoring, scoped reveal, timers, Activation separation, recovery, and Replay. It is a test vehicle, not the product category. |
 | **Investigation Room** | The v0.2 serious-work reference activity proving that the same room semantics support a human Lead, multiple agents, evidence correction, dependency invalidation, activation, verification, and a deterministic structured outcome. |
 | **Cold Chain Incident** | The fictional deterministic Investigation fixture. It uses local immutable evidence and no live enterprise systems. |
 | **Evidence version** | An Investigation Pack identity for one immutable source revision. It is not a generic artifact-store column. |

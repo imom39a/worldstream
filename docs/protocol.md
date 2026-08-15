@@ -258,7 +258,17 @@ Attachment is serialized through the room actor. The actor captures membership f
         "value": {
           "phase": "commitment",
           "deadline": "2026-08-13T18:30:00Z",
-          "legal_actions": ["commit_move"]
+          "action_offers": [
+            {
+              "domain": "worldstream/action-offer/v1",
+              "action_type": "commit_move",
+              "payload_schema_digest": "blake3:...",
+              "eligibility_window": {
+                "opens_at": "2026-08-13T18:29:30Z",
+                "deadline": "2026-08-13T18:30:00Z"
+              }
+            }
+          ]
         }
       }
     },
@@ -267,7 +277,7 @@ Attachment is serialized through the room actor. The actor captures membership f
 }
 ~~~
 
-The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A client processes the reset atomically, stores `frame_seq` as its new baseline, and acknowledges it.
+The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A client processes the reset atomically, stores `frame_seq` as its new baseline, and acknowledges it. The canonical Action Offer bytes are supplied by the exact pack view and are reused unchanged by observations, Invocation Context, and host pre-admission.
 
 `projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Health, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
 
@@ -290,8 +300,8 @@ Humans and agents use the same message.
     "based_on_room_seq": 91,
     "action_type": "commit_move",
     "payload": {
-      "plan_id": "01K...",
-      "sealed_choice": "..."
+      "selected_plan_id": "01K...",
+      "contribute_required_resource": true
     }
   }
 }
@@ -343,7 +353,17 @@ If a retry finds the stored result, duplicate is true and every other authoritat
     "code": "stale_room_state",
     "message": "The commitment window is now active.",
     "current_room_seq": 93,
-    "legal_actions": ["commit_move"],
+    "action_offers": [
+      {
+        "domain": "worldstream/action-offer/v1",
+        "action_type": "commit_move",
+        "payload_schema_digest": "blake3:...",
+        "eligibility_window": {
+          "opens_at": "2026-08-13T18:29:30Z",
+          "deadline": "2026-08-13T18:30:00Z"
+        }
+      }
+    ],
     "retryable_with_same_action_id": false,
     "may_submit_revised_action": true,
     "details": {}
@@ -384,8 +404,17 @@ Malformed/invalid payload, unauthenticated, forbidden, idempotency_conflict, roo
     "observation": {
       "reason": "commitment_opened",
       "changes": [],
-      "legal_actions": ["commit_move"],
-      "deadline": "2026-08-13T18:30:00Z"
+      "action_offers": [
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "commit_move",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": {
+            "opens_at": "2026-08-13T18:29:30Z",
+            "deadline": "2026-08-13T18:30:00Z"
+          }
+        }
+      ]
     },
     "payload_hash": "blake3:..."
   }
@@ -395,9 +424,9 @@ Malformed/invalid payload, unauthenticated, forbidden, idempotency_conflict, roo
 One transition may produce:
 
 - no frame for an unaffected membership;
-- one or more member-private frames;
-- public consequences copied into every authorized enabled membership stream;
-- operator-membership-only consequences copied only into operator memberships.
+- exactly one coalesced frame for an affected authorized Membership;
+- public consequences coalesced into each eligible Membership's one frame;
+- operator-only consequences coalesced only into eligible operator Membership frames.
 
 A frame MUST name exactly one recipient Membership and MUST NOT contain hidden Authoritative Room State or another Membership's private payload. frame_seq is monotonic within that Membership's Observation Stream and may skip Room Transitions that were irrelevant or unauthorized.
 
@@ -518,7 +547,6 @@ Only after claim authorization does the server return private invocation context
       "through": 192
     },
     "deadline": "2026-08-13T18:30:00Z",
-    "allowed_action_types": ["commit_move"],
     "room_head_seq": 93,
     "projection": {
       "core": {
@@ -533,7 +561,17 @@ Only after claim authorization does the server return private invocation context
         "schema": "worldstream.agent-heist.navigator.v1",
         "value": {
           "phase": "commitment",
-          "legal_actions": ["commit_move"]
+          "action_offers": [
+            {
+              "domain": "worldstream/action-offer/v1",
+              "action_type": "commit_move",
+              "payload_schema_digest": "blake3:...",
+              "eligibility_window": {
+                "opens_at": "2026-08-13T18:29:30Z",
+                "deadline": "2026-08-13T18:30:00Z"
+              }
+            }
+          ]
         }
       }
     },
@@ -632,11 +670,31 @@ Room archival and domain-relevant Membership, Access Mode, or Role changes are r
     "version": "0.1.0",
     "digest": "blake3:..."
   },
-  "configuration": {},
+  "configuration": {
+    "pack_schema": 1,
+    "roles": ["navigator", "insider", "broker"],
+    "briefing_duration_seconds": 30,
+    "negotiation_duration_seconds": 90,
+    "commitment_duration_seconds": 30,
+    "commitment_reminder_seconds_before_deadline": 10,
+    "result_duration_seconds": 20,
+    "maximum_plans": 12,
+    "maximum_open_offers_per_role": 4
+  },
   "members": [
     {
-      "principal_id": "01K...",
+      "principal_id": "01K...NAV",
       "role": "navigator",
+      "access_mode": "participant"
+    },
+    {
+      "principal_id": "01K...INS",
+      "role": "insider",
+      "access_mode": "participant"
+    },
+    {
+      "principal_id": "01K...BRO",
+      "role": "broker",
       "access_mode": "participant"
     }
   ],
@@ -644,7 +702,7 @@ Room archival and domain-relevant Membership, Access Mode, or Role changes are r
 }
 ~~~
 
-The server accepts only a compiled-in allowlisted pack digest. Creation records an immutable canonical sequence-zero genesis object containing pack digest, configuration, ordered Memberships/Roles, Room seed, and logical creation time. Genesis hash, initial Activity State hash, Memberships, initial Projections, timers, resource, and mutation receipt commit atomically. Recovery remains possible after every snapshot is deleted.
+The server accepts only a selectable compiled-in semantic digest whose `PackRevisionLockV1`, executor, schemas, codecs, and goldens agree in the embedded registry. Creation calls `initialize` and records an immutable canonical sequence-zero Genesis containing the digest, configuration, initial Core view, Room seed, creation time, initial Activity State, and host-normalized initial timers. Genesis creates no Domain Event, Attention Signal, Activation, or Observation Frame. Recovery remains possible after every snapshot is deleted.
 
 ### Current projection
 
@@ -661,6 +719,7 @@ Replay authorization is separate from live-room authorization. During an active 
 Replay responses name:
 
 - exact pack digest;
+- exact retained executor/codec support status;
 - requested and reconstructed room sequence;
 - state and transition hashes;
 - authorized historical projection;
@@ -786,13 +845,25 @@ BLAKE3 hashes canonical JSON bytes for these typed objects. Golden vectors MUST 
 - Minor versions add optional fields or new message types.
 - Pack action and projection schemas are versioned independently and pinned by pack digest.
 - Clients advertise supported protocol versions and capabilities.
-- The server never silently rewrites an existing Room to a new Activity Pack revision.
+- The server never changes an existing Room's digest or rewrites its Activity State in place.
+- Pack revisions may be selectable-and-runnable or retained-runnable. Every retained Room digest remains runnable; a newer executor never substitutes for it.
 - Unknown required capability yields an explicit failure.
 - Both v0.1 and v0.2 remain pre-stable developer-preview protocols.
 
-The public Activity Pack ABI is reviewed only after both reference activities pass.
+The trusted five-operation `ActivityPackV1` semantic seam is frozen. Any portable, dynamically loaded, or untrusted public plugin ABI is a separate post-v0.2 decision.
+
+See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 
 ## Required conformance scenarios
+
+### Activity Pack revision and Action Offers
+
+1. One exact Action Offer byte sequence appears in Projection, reset, observation, Invocation Context, and host pre-admission.
+2. An absent action type cannot reach reduce; payload-specific declared rejection remains possible.
+3. Join/resume/Access/Role may be pack-rejected; archive/suspend/depart cannot.
+4. TimerFired exposes only its exact timer identity, scheduled_for, and payload; packs never assign timer generations.
+5. A retained non-selectable digest still initializes, advances, views, observes, and Replays through its exact executor/codecs.
+6. A missing executor/codec, digest collision, bound violation, callback panic, or malformed output fails closed with no partial commit.
 
 ### Ordering and idempotency
 
@@ -855,14 +926,15 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 
 1. Host operator creates principals, room, memberships, and scoped capabilities.
 2. Each runner connects its control channel.
-3. Each participant client attaches with cursor zero.
-4. Initial private projection frames arrive and are acknowledged.
-5. Agents submit typed clue, offer, and plan actions.
-6. A timer opens the commitment window.
-7. One absent Agent Participant's Membership produces an activation offer for an authorized Runner.
-8. The runner claims it and starts a fresh invocation.
-9. The new invocation receives authorized current projection and relevant frames.
-10. All three submit sealed commitments.
-11. The pack resolves one deterministic Outcome.
-12. Public and private result frames arrive.
-13. The host operator replays the room and verifies its final hash.
+3. Genesis enters Briefing, schedules its deadline, and creates no Frame or Activation.
+4. Each participant attaches through an authorized current Projection Reset and acknowledges the Session baseline.
+5. Agents inspect/publish clues, exchange bounded offers, and propose/endorse/challenge structured plans.
+6. Exact phase timers enter Negotiation and then Commitment.
+7. Commitment opening emits Attention for the deliberately absent Broker; host policy creates one eligible Activation.
+8. A Runner claims it and starts a fresh Invocation with exact Action Offers but no participant credential or Cursor side effect.
+9. Separately authorized participant clients submit sealed {selected_plan_id, contribute_required_resource} commitments.
+10. The third commitment closes early, fences both old Commitment timers, and schedules strictly later Resolution.
+11. Resolution selects only a two-of-three plan, runs the five named checks, and enters Result.
+12. Result reveals aggregates while individual commitments remain sealed; acknowledgements or the deadline enter Complete.
+13. A separately authorized post-Complete final-reveal view may expose the frozen private fields.
+14. Replay folds Genesis and typed Stimuli with the exact retained executor, verifies the golden checkpoints, and creates no Activation.

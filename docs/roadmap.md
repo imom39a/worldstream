@@ -30,7 +30,7 @@ If these two stories work without hiding domain special cases in core, the proje
 ### v0.1 required
 
 - Rust/Tokio/Axum server.
-- Trusted compiled-in Rust Activity Pack host interface.
+- Frozen trusted five-operation ActivityPackV1 seam plus embedded exact-revision registry.
 - One Activity Pack: Agent Heist.
 - One logical writer actor per active room.
 - Rusqlite with bundled SQLite WAL and forward-only migrations.
@@ -66,7 +66,7 @@ If these two stories work without hiding domain special cases in core, the proje
 - Project/Workspace entities and cross-room exchange;
 - workflow/node canvas and connector catalog;
 - coding harness, shell/container execution, or model hosting;
-- public plugin upload, WASM, or pack registry;
+- public/dynamic plugin upload or registry service, WASM, or portable plugin ABI;
 - dynamic or LLM-generated UI;
 - A2A/MCP platform integrations;
 - vector search and automatic summaries;
@@ -87,7 +87,7 @@ Build:
 - add format, Clippy, unit-test, dependency-audit, and secret-scan CI;
 - add embedded forward-only migration harness;
 - define canonical JSON, ID, room sequence, frame cursor, hash, error, and message envelope types;
-- define the provisional Activity Pack trait;
+- define ActivityPackV1 (`descriptor`, `initialize`, `reduce`, `view`, `observe`), PackRevisionLockV1, exact codecs, Action Offers, and embedded selectable/runnable registry;
 - implement worldstreamd health, readiness, version, and one WebSocket handshake;
 - implement a tiny test-only Counter activity solely as a walking skeleton; it is not registered in the release binary;
 - create Python SDK package skeleton and protocol golden fixtures.
@@ -209,12 +209,15 @@ Target: weeks 8–9, 22–32 hours
 Build:
 
 - frozen small facility fixture and seed-derived hidden configuration;
-- Navigator, Insider, and Broker roles;
+- exactly three immutable Genesis seats: Navigator, Insider, and Broker;
 - Briefing, Negotiation, Commitment, Resolution, Result, and Complete phases;
 - private clues and structured exchanges;
 - public clue claims, plans, endorsements, and challenges;
-- sealed commitment action;
-- deterministic resolution and result explanation;
+- sealed structured `{selected_plan_id, contribute_required_resource}` commitment action;
+- strict two-of-three plan selection with no fallback or tie-break;
+- five-check scoring: route, entry window, required tool, extraction, and supporting resource contribution;
+- generation-fenced reminder/deadline, early-close, resolve-now, and Result timers;
+- exact public/participant/operator/Result/final-reveal privacy rules;
 - pack projections and observation deltas;
 - typed attention reasons;
 - three deterministic strategies: cooperative, cautious, and withholding;
@@ -222,11 +225,12 @@ Build:
 
 Exit tests:
 
-1. Three deterministic runners complete success and failure fixtures through the public SDK.
-2. Private clues, exchanges, and commitments remain isolated.
-3. Concurrent sealed submissions serialize deterministically; stale submissions catch up and retry before the deadline.
-4. Pack code performs no I/O and uses no floating-point state.
-5. The same stimuli produce byte-identical selected and final hashes.
+1. Three deterministic runners cover success, partial failure, ordinary failure, and no-strict-majority fixtures through the public SDK.
+2. The zero/one/2-0/1-1/3-0/2-1/1-1-1 matrix and 0–5 score matrix pass.
+3. Private clues, exchanges, commitments, operator view, Result, Replay, and final reveal pass paired isolation fixtures.
+4. Early third-commitment and deadline closure produce the exact strictly-forward timer effects; concurrent/stale/duplicate cases remain deterministic.
+5. Pack code performs no I/O, assigns no timer generation, receives only immutable scheduled timer time, and uses no floating-point state.
+6. The same stimuli produce byte-identical state, events, timers, Attention, Action Offers, explanations, and hashes.
 
 Scope guard:
 
@@ -303,6 +307,8 @@ v0.1 exit:
 - [ ] Snapshot plus tail reproduces room head hash.
 - [ ] Genesis plus full transition history reproduces room head after every snapshot is removed.
 - [ ] Full read-only replay reproduces final hash.
+- [ ] Every retained non-selectable pack digest remains fully runnable through its exact executor/codecs.
+- [ ] Projection, reset, Frame, Invocation Context, and admission use byte-identical Action Offers.
 
 ### Participation
 
@@ -486,7 +492,7 @@ Failure means revise the Activity boundary and repeat the gate. It does not auto
 | Layer | Required tests |
 |---|---|
 | Canonical data | Cross-language golden JSON/hash vectors, duplicate keys, prohibited floats |
-| Pack | Golden replay, property tests, invalid actions, size limits, projection noninterference |
+| Pack | Revision-lock/codec registry, five-op contract, Core veto, Action Offer parity, Heist state/timer/outcome goldens, bounds/panic, projection noninterference, retained executability |
 | Room actor | Ordering, stale action, mailbox bound, passivation/reload, pack fault |
 | SQLite | Genesis recovery, atomic commit, idempotency/FK constraints, WAL recovery, disk-full path, migration |
 | Timer | Schedule/cancel/firing retry, overdue restart storm |
@@ -501,7 +507,7 @@ Failure means revise the Activity boundary and repeat the gate. It does not auto
 
 | Risk | Early warning | Response |
 |---|---|---|
-| The product still feels like a WebSocket wrapper | Demo shows frames but no scoped legal actions, activation, or recovery | Preserve projection, activation, cursor, and deterministic replay before integrations |
+| The product still feels like a WebSocket wrapper | Demo shows frames but no scoped Action Offers, activation, or recovery | Preserve projection, activation, cursor, and deterministic replay before integrations |
 | Activity Pack tax is too high | Most application code rebuilds infrastructure or edits core | Measure both packs; stop broadening if the reusable share is small |
 | Scope turns into a game platform | Time goes to art, profiles, chat, or content | Keep Heist fixture and SVG map fixed |
 | Scope turns into n8n | Generic nodes, connectors, jobs, or workflow canvas appear | Keep participant-selected typed actions inside one state machine |
@@ -570,7 +576,7 @@ The first ten issues should be:
 1. Scaffold Cargo workspace and pinned toolchain.
 2. Define canonical JSON profile and Rust/Python hash vectors.
 3. Add SQLite bundled-version assertion and initial migration.
-4. Implement Counter Activity Pack.
+4. Implement Counter through ActivityPackV1 and the embedded exact-revision registry.
 5. Implement single-writer room actor and atomic accepted transition.
 6. Implement action receipts and idempotency conflict.
 7. Implement snapshots and recovery hash verification.

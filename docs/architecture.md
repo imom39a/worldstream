@@ -188,58 +188,44 @@ The actor MUST use a bounded mailbox. Backpressure reaches the gateway as a type
 
 ### Activity host
 
-The Activity host invokes one trusted, compiled-in pack revision.
-
-The logical interface is:
+The Activity host invokes one exact trusted compiled-in revision through the frozen five-operation seam:
 
 ~~~rust
-pub trait ActivityPack: Send + Sync + 'static {
-    fn manifest(&self) -> ActivityManifest;
-
+pub trait ActivityPackV1: Send + Sync + 'static {
+    fn descriptor(&self) -> &'static PackRevisionDescriptorV1;
     fn initialize(
         &self,
-        input: RoomInitialization,
-        context: &DeterministicContext,
-    ) -> Result<CanonicalValue, ActivityFault>;
-
-    fn apply(
+        input: &GenesisInputV1,
+        cx: &DeterministicContextV1,
+    ) -> Result<InitialOutputV1, PackFault>;
+    fn reduce(
         &self,
-        state: &CanonicalValue,
-        stimulus: &RecordedStimulus,
-        context: &DeterministicContext,
-    ) -> Result<AppliedTransition, ApplyError>;
-
-    fn project(
-        &self,
-        state: &CanonicalValue,
-        viewer: &Viewer,
-    ) -> Result<ActivityProjection, ActivityFault>;
-
+        input: &ReduceInputV1,
+        cx: &DeterministicContextV1,
+    ) -> Result<ReduceDispositionV1, PackFault>;
+    fn view(&self, input: &ViewInputV1) -> Result<PackViewV1, PackFault>;
     fn observe(
         &self,
-        before: &CanonicalValue,
-        after: &CanonicalValue,
-        events: &[DomainEvent],
-        viewer: &Viewer,
-    ) -> Result<Option<ActivityObservation>, ActivityFault>;
-}
-
-pub enum ApplyError {
-    ActionRejected(ActionRejection),
-    ActivityFault(ActivityFault),
+        input: &ObserveInputV1,
+    ) -> Result<Option<PackObservationV1>, PackFault>;
 }
 ~~~
 
-AppliedTransition contains:
+All calls are synchronous, pure, bounded, and finish before persistence. The pack receives no clock, storage, network, filesystem, scheduler, Activation, Session, delivery, telemetry, or artifact-byte capability.
 
-- the complete next Canonical Activity State;
-- ordered domain events for audit and UI;
-- timer schedule/cancel operations;
-- deterministic attention signals.
+Initialization receives exact Genesis input and returns canonical initial Activity State plus ordered timer requests only. Reduction receives prior Activity State, exact Core before/proposed after, canonically sorted scheduled timers, next sequence, and one normalized typed Stimulus. It returns Apply with complete next state/events/timer requests/Attention, or a declared Reject; PackFault is separate.
 
-Validation and reduction occur in one apply call so they cannot disagree after state changes. ActionRejected applies only to ParticipantAction; an invalid host-originated Stimulus is an ActivityFault. Project returns the pack-owned Activity Projection, and Observe returns a bounded pack-owned Activity Observation for one viewer. WorldStream wraps Activity Projection with authorized Core Room and Membership facts to form a Projection; protocol envelopes add causal sequence, Room Health, schema, and delivery metadata.
+Participant Actions and join/resume/Access/Role proposals may be declared Reject. Archive/suspend/depart and required timers/external inputs cannot be vetoed. WorldStream resolves Core NoChange before pack entry.
 
-The host supplies no database, network, filesystem, environment, model, wallet, or wall-clock handle. Same-process Rust is not a sandbox: compiled-in packs are fully trusted by the host operator. Public or untrusted pack loading is explicitly unsupported.
+Packs request ScheduleNext, CancelCurrent(expected_generation), or RescheduleCurrent(expected_generation, new due/payload). WorldStream owns, assigns, and verifies monotonic timer generations and strict-forward semantic time.
+
+view returns one authorized Activity Projection and ordered canonical Action Offers. Those same bytes are used by reset, observation, Invocation Context, and host pre-admission. observe receives before/after Core and Activity, normalized Stimulus, ordered events, exact viewer, and exact after-view bytes; it returns zero or one viewer result. A changed authorized view with no observation is PackFault.
+
+WorldStream wraps the pack projection with authorized Core facts. Operator Membership never receives raw Activity State. Callback panic where catchable, malformed output, bound violation, mandatory-Core veto, privacy/view failure, or deterministic disagreement fails closed before commit.
+
+PackRegistryV1 maps each PackRevisionLockV1 semantic digest to the exact executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status. Selectable implies runnable; every retained digest remains runnable even when non-selectable. A Room never changes digest or rewrites Activity State in place. Missing retained executor/codec is an explicit compatibility failure.
+
+Same-process Rust is trusted, not sandboxed. Dynamic/public pack loading and a portable plugin ABI remain unsupported. See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 
 ### Storage service
 
@@ -260,7 +246,7 @@ The storage service owns:
 
 ### Projection and observation engine
 
-After a pack computes the next state, WorldStream asks it for affected audience projections and deltas.
+After a pack computes the next state, WorldStream calls `view` and `observe` for affected Membership viewers.
 
 - Authoritative Room State is never serialized directly to a client.
 - Public, operator-membership, and participant viewers are distinct Rust types.
@@ -268,6 +254,7 @@ After a pack computes the next state, WorldStream asks it for affected audience 
 - A public payload uses an explicitly public type, then is materialized into each authorized enabled membership's single frame stream.
 - Projection construction happens before the transition transaction commits.
 - Invalid, oversized, or failed projection output aborts the transition rather than committing undisclosable state.
+- The exact ordered Action Offer bytes from `view` are copied unchanged into resets, observations, Invocation Context, and host pre-admission.
 
 For the frozen room sizes, evaluating at most 32 viewer projections is an acceptable clarity-over-optimization tradeoff.
 
@@ -826,7 +813,7 @@ Defaults:
 
 ### Room load
 
-1. Read and verify the immutable canonical genesis record, genesis hash, pinned Activity Pack revision, and room head.
+1. Read and verify the immutable canonical genesis record, genesis hash, pinned Activity Pack revision lock, exact runnable executor/codecs, and room head.
 2. Find the newest compatible snapshot at or before head.
 3. If a valid snapshot exists, verify its Canonical Activity State bytes and state hash; otherwise call initialize from the recorded genesis input.
 4. Replay every later transition through the exact pack revision.
@@ -835,7 +822,7 @@ Defaults:
 7. Compare the resulting Activity State hash with the Room head and verify reconstructed Core Room State against the ordered transitions.
 8. Mark the room active, or quarantine it read-only on mismatch.
 
-A corrupt newest snapshot can be skipped in favor of an older verified snapshot or genesis. Deleting every snapshot must still permit full recovery. Missing canonical transitions, corrupt genesis, or an unavailable exact pack revision are fatal.
+A corrupt newest snapshot can be skipped in favor of an older verified snapshot or genesis. Deleting every snapshot must still permit full recovery. Missing canonical transitions, corrupt genesis, or an unavailable exact pack executor/codec are fatal; a newer revision may not substitute.
 
 Room load, replay, and catch-up MUST NOT hold a long SQLite read transaction that pins the WAL. Each operation captures an immutable upper bound H, then pages append-only rows with short read transactions using sequence greater than the prior page and less than or equal to H. Page size, total duration, and concurrent replay count are bounded. Oldest-reader age and checkpoint blockage are metrics; expensive replay is throttled before it threatens mutation durability.
 
@@ -1089,3 +1076,6 @@ Do not add Postgres, NATS, Redis, Kafka, Kubernetes, or Raft because they look s
 26. Slow clients and full queues cannot create unbounded memory growth.
 27. Investigation-specific semantics stay outside the Room Kernel; only the preplanned generic artifact subsystem is added.
 28. v0.1 and v0.2 remain single-node developer-preview deployments.
+29. ActivityPackV1 has exactly descriptor, initialize, reduce, view, and observe; no pack callback runs during persistence.
+30. Every retained pack digest remains executable and codec-complete; no Room digest changes in place.
+31. One exact Action Offer representation supplies projections, resets, observations, Invocation Context, and admission.
