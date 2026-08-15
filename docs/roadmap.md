@@ -3,7 +3,7 @@
 ## Planning assumptions
 
 - One primary developer working 8–12 focused hours per week.
-- Design and implementation begin from the current documentation-only repository.
+- Design began from a documentation-only repository; IMO-39 adds only the pinned bootstrap workspace before the Room and storage implementation frontiers.
 - The project favors correctness evidence and a memorable demo over feature count.
 - Agent Heist v0.1 is the first usable milestone.
 - Investigation Room v0.2 is the only committed application beyond Heist.

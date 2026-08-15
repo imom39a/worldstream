@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace_dir="$(git rev-parse --show-toplevel)"
+cd "$workspace_dir"
+
+export WORLDSTREAM_VERIFY_OFFLINE=1
+if [[ "${OS:-}" == "Windows_NT" ]]; then
+  if ! command -v pwsh >/dev/null 2>&1; then
+    printf '%s\n' 'PowerShell 7.4 or newer is required for the Windows pre-push verifier.' >&2
+    exit 1
+  fi
+  pwsh -NoProfile -File scripts/verify-local.ps1
+else
+  scripts/verify-local.sh
+fi
+
+printf '%s\n' 'Release, PostgreSQL, migration, recovery, and performance gates remain outside IMO-39.'

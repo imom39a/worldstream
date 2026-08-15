@@ -1,0 +1,13 @@
+/target/
+/node_modules/
+/web/console/node_modules/
+/web/console/dist/
+/sdk/python/.venv/
+
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.env
+.env.*
+!.env.example

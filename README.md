@@ -99,6 +99,32 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [Architecture decisions](docs/adr/) — accepted product, Room sequencing, Core/integrity lineage, observation, Activation, retained pack, storage, portability, recovery, and release decisions
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
 
+## Bootstrap workspace
+
+The first implementation frontier provides a pinned, deliberately narrow workspace:
+
+- Rust `1.97.1` (edition 2024), Node `24.18.1` with pnpm `11.19.0`, Python `3.14.7`, and uv `0.12.5`;
+- `worldstreamd` and `worldstreamctl` operator-shell binaries, protocol/runtime support crates, and a deterministic `xtask` manifest verifier;
+- locked Python SDK and web-console package skeletons that expose no Room or public protocol API yet;
+- native Linux and Windows bootstrap checks plus opt-in repository hooks.
+
+Install the exact tools named above. The POSIX verifier also requires Python 3.11+ as `python3`
+and `curl`; the native Windows verifier requires PowerShell 7.4+. Then run:
+
+```sh
+scripts/verify-local.sh
+scripts/install-hooks.sh
+```
+
+The PowerShell 7.4+ equivalents are `scripts/verify-local.ps1` and `scripts/install-hooks.ps1`.
+`cargo run --locked -p xtask -- compat verify` independently proves that the authored
+[`compatibility.toml`](compatibility.toml) and its deterministic JSON mirror agree.
+
+The operator shell binds to loopback by default. `GET /healthz` reports process liveness,
+`GET /readyz` returns `503 storage_not_initialized` until the storage frontier is implemented,
+and `GET /version` reports only embedded manifest/build facts. None of these endpoints is a Room
+or public client API, and the bootstrap does not claim release readiness.
+
 ## Status
 
-The reconciled canonical documentation set is implementation-ready as of 2026-08-15. This repository is still documentation-only: it contains no production runtime, storage adapter, Activity Pack, SDK, UI, release artifact, or conformance evidence, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.
+The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the bootstrap workspace and operator shell described above, but no Room Kernel, storage adapter, executable Activity Pack, public SDK/UI behavior, release artifact, or release conformance evidence. The compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.

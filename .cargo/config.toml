@@ -1,0 +1,7 @@
+[alias]
+check-all = "check --workspace --all-targets"
+test-all = "test --workspace --all-targets"
+xtask = "run --package xtask --"
+
+[resolver]
+incompatible-rust-versions = "fallback"

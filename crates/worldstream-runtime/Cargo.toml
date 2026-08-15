@@ -1,0 +1,37 @@
+[package]
+name = "worldstream-runtime"
+description = "Configuration, filesystem, and embedded compatibility support for WorldStream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+directories.workspace = true
+filedescriptor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+worldstream-protocol = { path = "../worldstream-protocol", version = "=0.1.0" }
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tempfile.workspace = true
+windows-permissions.workspace = true
+windows-sys.workspace = true
+winsafe.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

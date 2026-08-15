@@ -1,0 +1,14 @@
+{
+  "name": "worldstream-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": "24.18.1"
+  },
+  "scripts": {
+    "ui:build": "pnpm --dir web/console build",
+    "ui:lint": "pnpm --dir web/console lint",
+    "ui:test": "pnpm --dir web/console test"
+  }
+}
