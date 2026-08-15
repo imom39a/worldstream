@@ -259,7 +259,7 @@ Clean Reject is permitted only for:
 - AccessModeChange;
 - RoleChange.
 
-Archive, Suspend, and Depart are mandatory Core proposals. The pack must Apply them; attempting to Reject one is PackFault. A required admitted TimerFired or ExternalInput also cannot be cleanly rejected. Exact-Head, authority, integrity, policy, idempotency, and storage outcomes remain WorldStream concerns.
+Archive, Suspend, and Depart are mandatory Core proposals. The pack must Apply them; attempting to Reject one is PackFault. A required admitted TimerFired or ExternalInput also cannot be cleanly rejected. Exact-Head, authority, integrity, policy, idempotency, and Room Commit resolution classes remain WorldStream concerns.
 
 Declared rejection codes belong to the exact revision descriptor. An undeclared code, malformed safe detail, panic, invalid output, mandatory-Core veto, or contract-bound violation is PackFault and commits neither Transition nor new receipt.
 

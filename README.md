@@ -84,6 +84,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 
 - [WorldStream domain context](CONTEXT.md) — canonical whole-product language and concept boundaries
 - [Frozen requirements](docs/requirements.md) — normative release scope and change control
+- [Canonical decision index](docs/decision-index.md) — frozen invariant, normative source, ADR, conformance evidence, and implementation ownership map
 - [Compatibility manifest specification](compatibility.toml) and [canonical JSON mirror](compatibility.json) — fail-closed authored profile; not release evidence while `release_ready = false`
 - [Extended terminology](docs/glossary.md) — protocol, runtime, storage, UI, and lifecycle reference
 - [Product vision](docs/vision.md) — audience, value, and boundaries
@@ -100,4 +101,4 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 
 ## Status
 
-The project is in the design and repository-scaffolding phase. The requirements, trusted Activity Pack v1/Agent Heist contract, and storage/recovery/deployment/release profiles are frozen as of 2026-08-15. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.
+The reconciled canonical documentation set is implementation-ready as of 2026-08-15. This repository is still documentation-only: it contains no production runtime, storage adapter, Activity Pack, SDK, UI, release artifact, or conformance evidence, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.

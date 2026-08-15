@@ -15,7 +15,7 @@ The frozen releases support exactly two startup-selected durable storage profile
 - the default release-bundled SQLite profile, with the exact linked build and required pragmas pinned by the Storage Compatibility Manifest; and
 - `postgres-primary`, using one writable hosted or self-managed PostgreSQL 17 primary through direct or bounded transaction-scoped connections.
 
-Both profiles run one WorldStream process and preserve identical canonical bytes, hashes, receipts, timers, frames/cursors, Activation fencing, transaction outcomes, failure classes, recovery, and replay. PostgreSQL provider APIs, extensions, session state, named prepared statements, replicas, or HA services are never correctness dependencies.
+Both profiles run one WorldStream process and preserve identical canonical bytes, hashes, receipts, timers, frames/cursors, Activation fencing, Room Commit resolution classes, failure classes, recovery, and replay. PostgreSQL provider APIs, extensions, session state, named prepared statements, replicas, or HA services are never correctness dependencies.
 
 Migrations follow one logical, checksummed, forward-only history with backend-specific execution. Production SQLite migration is an exclusive startup operation after a verified recoverable backup. Production PostgreSQL migration is an explicit offline direct-admin operation; the daemon verifies schema and uses a least-privilege runtime role.
 

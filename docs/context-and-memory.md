@@ -433,7 +433,7 @@ The server may generate deterministic structural summaries such as counts, Actio
 5. Every artifact reference names an immutable digest and exact visibility.
 6. Superseding evidence creates a new version and explicit dependency invalidation.
 7. Paired snapshots, current materializations, derived indexes, and caches cannot change Room truth or Replay.
-8. A Projection Reset sends an authorized current Projection, not raw state, and only the matching Session token acknowledgement enters Live.
+8. A Projection Reset sends an authorized current Projection, not raw state; only matching `room.sync_ack` enters Live and never advances Cursor, while only separate `observation.ack` may advance Cursor.
 9. WorldStream never stores chain-of-thought or provider credentials.
 10. Agent-private memory remains runner-owned.
 11. Context assembly is bounded and deterministic in the frozen releases.

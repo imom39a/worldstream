@@ -14,7 +14,12 @@ unresolved_required_fields = [
   "migrations.schema_contract_fingerprint",
   "migrations.entries[*].sqlite_checksum",
   "migrations.entries[*].postgresql_checksum",
-  "pack_executors[*].digest",
+  "pack_executors[*].revision_digest",
+  "pack_executors[*].executor_artifact_digest",
+  "pack_executors[*].descriptor_digest",
+  "pack_executors[*].schema_bundle_digest",
+  "pack_executors[*].codec_bundle_digest",
+  "pack_executors[*].golden_corpus_digest",
   "release_artifacts[*].digest",
   "evidence[*].artifact_digest",
 ]
@@ -24,7 +29,7 @@ product = "0.1.0"
 wire = "0.1"
 config = 1
 storage_schema = 1
-core_semantics = 1
+core_schema_version = "worldstream.core-room-state.v1"
 hash_suite = "blake3-canonical-json-v1"
 
 [toolchains]
@@ -47,6 +52,7 @@ codec_id = "worldstream/operation-receipt/v1"
 writer_version = 1
 retained_reader_versions = [1]
 byte_preserving_storage = true
+serialization_umbrella_for = ["semantic_receipt", "activation_operation_receipt"]
 
 [storage]
 profiles = ["sqlite-bundled", "postgres-primary"]
@@ -136,7 +142,7 @@ canonical_bytes = "copy_verbatim_no_decode_reencode"
 abort_before_source_retirement = true
 post_first_postgresql_write_rollback = false
 retired_sqlite = "read_only_recovery_artifact"
-preserve = ["lineage", "genesis", "transitions", "heads_and_hashes", "core_and_activity_materializations", "memberships_and_authority", "timer_ids_generations_due", "frames_and_cursors", "operation_identities_hashes_dispositions_receipts", "activation_intents_claims_audit_fences", "principals_capabilities_revocations", "integrity_incidents", "artifact_metadata_and_bytes"]
+preserve = ["lineage", "genesis", "transitions", "heads_and_hashes", "core_and_activity_materializations", "memberships_and_authority", "timer_ids_generations_scheduled_for", "frames_and_cursors", "operation_identities_canonical_request_hashes_dispositions_semantic_receipts", "activation_intents_claims_audit_fences", "activation_operation_receipts", "activation_context_bytes_or_tombstones", "activation_request_result_context_hashes", "activation_lease_and_witness_generations", "principals_capabilities_revocations", "integrity_incidents", "artifact_metadata_and_bytes"]
 rebuild_or_invalidate = ["snapshots", "indexes", "caches", "telemetry", "sessions", "runner_presence", "in_memory_mailboxes", "delivery_attempts", "temporary_state"]
 overdue_timer_startup = "fixed_cutoff_catching_up_no_invented_fire_or_generation"
 activation_nonterminal_leases = "fence_before_readiness_preserve_intent_reclaim"
@@ -153,7 +159,7 @@ mode = "read_only_full_not_sampled"
 healthy_room_scope = "every_healthy_room_genesis_through_head"
 preexisting_unhealthy_room_policy = "byte_preserve_and_isolate"
 new_mismatch_policy = "abort_and_block_readiness"
-checks = ["backup_or_export_id", "storage_epoch_and_lineage", "engine_identity", "manifest", "schema_and_migrations", "artifact_digests_and_bytes", "operation_receipts", "timers", "frames_and_cursors", "activation_fencing", "exact_pack_executors", "every_transition_state_and_head_hash"]
+checks = ["backup_or_export_id", "storage_epoch_and_lineage", "engine_identity", "manifest", "schema_and_migrations", "artifact_digests_and_bytes", "operation_identities_canonical_request_hashes_and_receipts", "timers", "frames_and_cursors", "activation_operation_receipts_context_hashes_and_witness_generations", "activation_fencing", "exact_pack_executors", "every_transition_state_and_head_hash"]
 
 [configuration]
 precedence = ["compiled_defaults", "explicit_versioned_toml", "WORLDSTREAM__SECTION__KEY", "documented_cli"]
@@ -180,7 +186,7 @@ format = "prometheus_text"
 cardinality = "low"
 
 [probes.version]
-reports = ["product_build", "wire", "config", "storage_schema", "core_semantics", "hash_suite", "manifest", "exact_engine_identity"]
+reports = ["product_build", "wire", "config", "storage_schema", "core_schema_version", "hash_suite", "manifest", "exact_engine_identity"]
 
 [observability]
 logs = "structured_json"
@@ -293,17 +299,35 @@ storage_profiles = ["sqlite-bundled", "postgres-primary"]
 
 [[pack_executors]]
 pack_id = "worldstream.counter"
-pack_release = "0.1.0"
-digest_algorithm = "blake3"
-digest = ""
+explanatory_version = "0.1.0"
+host_contract_id = "worldstream/activity-pack/v1"
+revision_lock_id = "worldstream/pack-revision-lock/v1"
+revision_digest_algorithm = "blake3"
+revision_digest = ""
+descriptor_digest = ""
+executor_artifact_digest = ""
+schema_bundle_digest = ""
+codec_bundle_digest = ""
+golden_corpus_digest = ""
+selectable_for_new_rooms = true
+runnable_for_retained_rooms = true
 status = "unresolved"
 required_for_release = true
 
 [[pack_executors]]
 pack_id = "worldstream.agent-heist"
-pack_release = "0.1.0"
-digest_algorithm = "blake3"
-digest = ""
+explanatory_version = "0.1.0"
+host_contract_id = "worldstream/activity-pack/v1"
+revision_lock_id = "worldstream/pack-revision-lock/v1"
+revision_digest_algorithm = "blake3"
+revision_digest = ""
+descriptor_digest = ""
+executor_artifact_digest = ""
+schema_bundle_digest = ""
+codec_bundle_digest = ""
+golden_corpus_digest = ""
+selectable_for_new_rooms = true
+runnable_for_retained_rooms = true
 status = "unresolved"
 required_for_release = true
 

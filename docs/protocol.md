@@ -218,9 +218,10 @@ The response captures one complete barrier and selects exactly one synchronizati
     "room_health": "healthy",
     "integrity_generation": 7,
     "room_head": {
+      "room_id": "01K...",
       "room_seq": 91,
-      "lineage_hash": "blake3:...",
-      "core_schema": "worldstream.core-room-state.v1",
+      "genesis_or_transition_hash": "blake3:...",
+      "core_schema_version": "worldstream.core-room-state.v1",
       "pack_digest": "blake3:...",
       "core_state_hash": "blake3:...",
       "activity_state_hash": "blake3:...",
@@ -263,9 +264,10 @@ Attachment is serialized through the Room lane. The server captures the complete
     "room_id": "01K...",
     "member_id": "01K...",
     "room_head": {
+      "room_id": "01K...",
       "room_seq": 91,
-      "lineage_hash": "blake3:...",
-      "core_schema": "worldstream.core-room-state.v1",
+      "genesis_or_transition_hash": "blake3:...",
+      "core_schema_version": "worldstream.core-room-state.v1",
       "pack_digest": "blake3:...",
       "core_state_hash": "blake3:...",
       "activity_state_hash": "blake3:...",
@@ -331,7 +333,7 @@ The canonical Action Offer bytes are supplied by the exact pack view and reused 
 }
 ~~~
 
-The token is valid only for the Session and barrier that issued it. This acknowledgement may monotonically advance the shared Membership Cursor, but an acknowledgement from another Session can never make this Session Live.
+The token is valid only for the Session and barrier that issued it. This acknowledgement changes only that Session's synchronization state and never advances the durable Membership Cursor. A separate `observation.ack` may advance the shared Cursor, but an acknowledgement from another Session can never satisfy this Session's barrier or make this Session Live.
 
 `through_frame_head` MUST equal the captured frame head/reset baseline bound into the token. A lower, higher, expired, or otherwise mismatched acknowledgement returns a typed synchronization error and neither changes this Session's state nor switches it to Live.
 
@@ -388,9 +390,10 @@ Semantics:
     "transition_id": "01K...",
     "admitted_at": "2026-08-13T18:29:59.999Z",
     "room_head": {
+      "room_id": "01K...",
       "room_seq": 92,
-      "lineage_hash": "blake3:...",
-      "core_schema": "worldstream.core-room-state.v1",
+      "genesis_or_transition_hash": "blake3:...",
+      "core_schema_version": "worldstream.core-room-state.v1",
       "pack_digest": "blake3:...",
       "core_state_hash": "blake3:...",
       "activity_state_hash": "blake3:...",
@@ -460,8 +463,8 @@ The same internal contract covers all Room operation classes:
 |---|---|---|
 | Participant Action | `(room_id, member_id, action_id)` | Original accepted or stable rejected Semantic Receipt |
 | Room administration | `(authenticated_principal, versioned_operation_kind, idempotency_key)` | Original Transition, Rejection, or NoChange receipt |
-| Timer firing | `(room_id, timer_id, generation)` | Original matching Transition; request hash binds immutable `scheduled_for`/payload and an obsolete generation is `NotApplicable` |
-| Host/external input | `(room_id, source_id, input_id)` | Original accepted or stable rejected result where defined |
+| Timer firing | `(room_id, timer_id, generation)` | Original Semantic Receipt and matching Transition; Canonical Request Hash binds immutable `scheduled_for`/payload, while an obsolete `NotApplicable` candidate binds no receipt |
+| Host/external input | `(room_id, source_id, input_id)` | Original Semantic Receipt and matching Transition; an independently obsolete `NotApplicable` candidate binds no receipt |
 
 The server resolves a same-identity retry before later Room lifecycle, integrity, or Membership checks, after current authentication and authorization to read that result. Same identity with changed Canonical Request Hash is `idempotency_conflict` and never executes domain work.
 
@@ -498,7 +501,7 @@ If database COMMIT may or may not have occurred, the server MUST keep the attemp
         }
       ]
     },
-    "payload_hash": "blake3:..."
+    "frame_payload_hash": "blake3:..."
   }
 }
 ~~~
@@ -512,6 +515,8 @@ For one Membership, one accepted Transition may produce:
 - no frame when the Transition is hidden, even though the global Room Head advances.
 
 A frame MUST name exactly one recipient Membership and MUST NOT contain hidden Authoritative Room State or another Membership's private payload. `frame_seq` is monotonic and never reused within that Membership's Observation Stream and may skip Room Transitions that were irrelevant or unauthorized. Genesis creates no frame. Public consequences are copied into each authorized enabled Membership's own coalesced frame; operator-only consequences go only to operator Memberships.
+
+`frame_payload_hash` protects the canonical Observation Frame payload bytes only. It is not a Canonical Request Hash, Operation Identity field, or idempotency receipt binding.
 
 ### observation.ack
 
@@ -631,9 +636,10 @@ Only after claim authorization does the server return private invocation context
     "reason_code": "commitment_opened",
     "deadline": "2026-08-13T18:30:00Z",
     "room_head": {
+      "room_id": "01K...",
       "room_seq": 93,
-      "lineage_hash": "blake3:...",
-      "core_schema": "worldstream.core-room-state.v1",
+      "genesis_or_transition_hash": "blake3:...",
+      "core_schema_version": "worldstream.core-room-state.v1",
       "pack_digest": "blake3:...",
       "core_state_hash": "blake3:...",
       "activity_state_hash": "blake3:...",
@@ -1092,15 +1098,15 @@ See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
 1. Genesis creates no frame; a hidden Transition advances Room Head but emits zero frames; a visible Transition emits one coalesced frame for the Membership.
 2. A participant receives frame N but disconnects before acknowledging it and attaches with Cursor N minus 1.
 3. The server captures complete Room/frame barrier H and a Session sync token; another Transition commits during catch-up.
-4. The server redelivers N through H, but the Session does not become Live until its own token is acknowledged; then it receives the buffered later frame without a gap.
-5. Another Session's acknowledgement may advance the shared Cursor but cannot satisfy this token.
+4. The server redelivers N through H, but the Session does not become Live until its own `room.sync_ack`; then it receives the buffered later frame without a gap, and that sync ACK does not advance Cursor.
+5. Another Session's `observation.ack` may advance the shared Cursor but cannot satisfy this token.
 
 ### Projection reset
 
 1. A first attach and a client with a pruned Cursor each receive a full authorized Projection Reset at a captured Room/frame baseline.
 2. Pruning changed retained floor only: it did not advance Cursor or reuse a frame sequence.
 3. Visibility removal uses a complete Reset or closes the Session, leaving no unauthorized installed data.
-4. Only the matching Session token ACK enters Live; later frames continue after the baseline.
+4. Only matching `room.sync_ack` enters Live and it does not advance Cursor; later frames continue after the baseline.
 
 ### Stable stale Action and Room service surfaces
 

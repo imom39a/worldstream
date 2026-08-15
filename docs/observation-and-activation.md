@@ -73,16 +73,16 @@ An attach is admitted only for a currently authorized, attachable Membership in 
 1. The Room lane registers the Session as `Attaching` and atomically captures the complete Room Head, `frame_head`, `retained_floor`, Cursor, and a new Session-specific opaque sync token.
 2. The Session becomes `CatchingUp`. Storage returns exactly one of:
    - `RetainedFrames { cursor_exclusive, through_frame_head, frames }`, containing the complete retained range through the captured frame head; or
-   - `ProjectionReset { baseline_frame_head, room_head, projection, projection_hash, reason }` when the range is unavailable or this is the first attach.
+   - `ProjectionReset { baseline_frame_head, room_head, projection, projection_hash, reason }` on first attach, when the retained range is unavailable or below its floor, or when visibility loss or another condition makes incremental delivery inappropriate.
 3. Frames committed above the captured frame head wait in that Session's bounded queue.
-4. The client installs the returned range or reset atomically, then acknowledges the captured baseline together with that Session's sync token.
+4. The client installs the returned range or reset atomically, then sends `room.sync_ack` for the captured baseline together with that Session's sync token.
 5. Only the matching token ACK moves that Session to `Live`; the server then flushes buffered frames in sequence order.
 
-An ordinary acknowledgement from any authorized Session may monotonically advance the shared Cursor, but it cannot satisfy another Session's attach barrier. A token is single-use, Session-bound, and invalid after close or a new attach. Buffer overflow closes the slow Session; reconnect repeats the barrier from the durable Cursor and either catches up or resets.
+A distinct `observation.ack` from any authorized Session may monotonically advance the shared Cursor, but it cannot satisfy any Session's attach barrier. `room.sync_ack` changes only the issuing Session's barrier state and never advances the Cursor. A token is single-use, Session-bound, and invalid after close or a new attach. Buffer overflow closes the slow Session; reconnect repeats the barrier from the durable Cursor and either catches up or resets.
 
 ### Stable stale Action results
 
-An Action result is permanently tied to its Action ID, canonical request hash, and complete basis Head. Retrying the same ID and request returns the stored result even if the Room has advanced. A stale result is never rebased or converted to success. The client installs the required catch-up/reset, re-evaluates the current Action Offers, and—if still legal—submits a new Action ID.
+An Action result is permanently tied to its Action ID, Canonical Request Hash, and complete basis Head. Retrying the same ID and request returns the stored result even if the Room has advanced. A stale result is never rebased or converted to success. The client installs the required catch-up/reset, re-evaluates the current Action Offers, and—if still legal—submits a new Action ID.
 
 ## Activation contract
 
@@ -130,7 +130,7 @@ Claim, renew, release, and complete each carry its own operation ID; `claim_id` 
 - same ID and different hash returns `idempotency_conflict`;
 - a new request can durably return `granted`, `not_available`, `expired`, `cancelled`, or `fenced` as applicable.
 
-A successful database COMMIT is the linearization point. Renew/release/complete also name the Activation ID, claim ID, Runner identity, and exact lease generation. An expired or superseded claimant cannot alter a later lease. Cancellation after persistence begins is advisory; an unknown commit outcome is resolved by the same operation identity, never by inventing another ID.
+A successful database COMMIT is the linearization point. Renew/release/complete also name the Activation ID, claim ID, Runner identity, and exact lease generation. An expired or superseded claimant cannot alter a later lease. Cancellation after persistence begins is advisory; an unknown COMMIT resolution is resolved by the same operation identity and Canonical Request Hash, never by inventing another ID.
 
 ### Exact Invocation Context
 
@@ -138,7 +138,7 @@ Private context is prepared outside the write lock, revalidated under exact witn
 
 - Activation/claim identity, typed cause and reason, lease generation/expiry, semantic deadline, and the exact complete Room Head;
 - current Membership/Role/Access facts and the integrity, policy, authority, delivery, and schema witnesses used for the grant;
-- the current authorized Projection, its schema/hash, and current Action Offers/hints based on that complete Head;
+- the current authorized Projection, its schema/hash, and the sole exact ordered ActionOfferV1 representation based on that complete Head;
 - authorized artifact references and explicit runner limits; and
 - exactly one delivery branch:
   - `RetainedFrames { cursor_exclusive, through_frame_head, frames }`; or
@@ -146,7 +146,7 @@ Private context is prepared outside the write lock, revalidated under exact witn
 
 A Head or delivery-witness mismatch may reprepare context under the same claim operation ID before any disposition commits. Authority or integrity mismatch is fenced. Claiming or receiving this context does not move the Cursor or satisfy any Session synchronization token.
 
-Compact intent data, operation receipts, request/result hashes, generations, dispositions, and context hashes are retained for the Room lifetime. Exact private Invocation Context is retained through terminal state plus seven days, or the longer applicable frame-privacy window; afterward it is replaced by an auditable tombstone. A later exact retry returns `result_retired`, not regenerated possibly different private bytes.
+Compact intent data, operation receipts, Canonical Request Hashes, result/context hashes, generations, and dispositions are retained for the Room lifetime. Exact private Invocation Context is retained through terminal state plus seven days, or the longer applicable frame-privacy window; afterward it is replaced by an auditable tombstone. A later exact retry returns `result_retired`, not regenerated possibly different private bytes.
 
 ## Replay authorization
 
@@ -158,7 +158,7 @@ The frozen suite must prove:
 
 1. Genesis emits no frame; a hidden Transition advances Room Head with zero frames; every visible Transition emits at most one coalesced frame per Membership.
 2. Frame head never decreases or reuses values; pruning changes only retained floor; acknowledgements are monotonic and bounded by the current frame head.
-3. First attach and a pruned range return Projection Reset. Retained attach returns the complete range through the captured head. Only the matching Session token ACK enters Live, while another Session's ACK can advance only the shared Cursor.
+3. First attach, a below-floor/pruned range, visibility loss, or another incremental-inappropriate case returns Projection Reset. Retained attach returns the complete range through the captured head. Only matching `room.sync_ack` enters Live and never advances Cursor; only separate `observation.ack` can advance the shared Cursor and never satisfies the Session barrier.
 4. A slow consumer closes; reconnect yields complete retained catch-up or reset without a handoff gap. Visibility loss leaves no unauthorized installed state or later addressed frames.
 5. A stored stale Action result remains stable on the same identity; successful resubmission after synchronization uses a new Action ID.
 6. Loading and Room-CatchingUp deny normal service; Faulted exposes only last-verified allowed surfaces; Quarantined exposes host-operator-only verification surfaces.

@@ -2,7 +2,7 @@
 
 Status: Accepted, 2026-08-15
 
-WorldStream makes immutable Genesis plus accepted Transitions the sole canonical Room lineage. `CoreRoomState v1` is exactly Room Status plus the semantic Membership map; Activity State remains pack-owned; and their pair is Authoritative Room State. Durable `RoomIntegrityState` is generation-fenced operational state outside that pair, Room order, Replay state, and canonical hashes. This boundary makes both reducers replayable, lets every serving cache be discarded, and permits integrity repair without granting repair code authority to rewrite history.
+WorldStream makes immutable Genesis plus accepted Transitions the sole canonical Room lineage. `CoreRoomState v1` is exactly Room Status plus the semantic Membership map; Activity State remains pack-owned; and their pair is Authoritative Room State. Durable Room Integrity State is generation-fenced operational state outside that pair, Room order, Replay state, and canonical hashes. This boundary makes both reducers replayable, lets every serving cache be discarded, and permits integrity repair without granting repair code authority to rewrite history.
 
 ## Decision
 
@@ -55,7 +55,7 @@ Every accepted Transition after Genesis has one `transition_hash` binding exactl
 - deterministic ordered Attention Signals;
 - resulting Core, Activity, and aggregate Authoritative State hashes.
 
-Canonical authority attribution, idempotency identity, expected sequence, reason, and semantic-time/input fields inside the normalized Stimulus are therefore included. The following are excluded: `RoomIntegrityState`, integrity generation and incident/repair audit; bearer secrets and operational authorization/commit witnesses; receipts and disposition rows; current materializations; snapshot bytes, encoding, cadence, and creation time; Projections, frames, frame heads/floors, Cursors, resets, Sessions, and delivery; Activation policy versions/decisions, intents, offers, leases, attempts, completion, and Invocation Context; diagnostics, telemetry, and commit wall time.
+Canonical authority attribution, idempotency identity, expected sequence, reason, and semantic-time/input fields inside the normalized Stimulus are therefore included. The following are excluded: Room Integrity State, integrity generation and incident/repair audit; bearer secrets and operational authorization/commit witnesses; receipts and disposition rows; current materializations; snapshot bytes, encoding, cadence, and creation time; Projections, frames, frame heads/floors, Cursors, resets, Sessions, and delivery; Activation policy versions/decisions, intents, offers, leases, attempts, completion, and Invocation Context; diagnostics, telemetry, and commit wall time.
 
 The complete Room Head at sequence N is:
 
@@ -71,7 +71,7 @@ Snapshot creation is idempotent and happens only after the canonical commit; its
 
 ### Integrity, serving, and repair
 
-`RoomIntegrityState` is durable operational state with a monotonically increasing integrity generation and a separate append-only incident/repair audit:
+Room Integrity State is durable operational state with a monotonically increasing integrity generation and a separate append-only incident/repair audit:
 
 - `healthy`: canonical lineage and required executors verify, so the Room may advance;
 - `faulted`: the last canonical Head verifies, but the runtime cannot safely advance it;

@@ -16,6 +16,10 @@
       "retained_reader_versions": [
         1
       ],
+      "serialization_umbrella_for": [
+        "semantic_receipt",
+        "activation_operation_receipt"
+      ],
       "writer_version": 1
     }
   },
@@ -57,7 +61,7 @@
   },
   "contracts": {
     "config": 1,
-    "core_semantics": 1,
+    "core_schema_version": "worldstream.core-room-state.v1",
     "hash_suite": "blake3-canonical-json-v1",
     "product": "0.1.0",
     "storage_schema": 1,
@@ -287,19 +291,37 @@
   },
   "pack_executors": [
     {
-      "digest": "",
-      "digest_algorithm": "blake3",
+      "codec_bundle_digest": "",
+      "descriptor_digest": "",
+      "executor_artifact_digest": "",
+      "explanatory_version": "0.1.0",
+      "golden_corpus_digest": "",
+      "host_contract_id": "worldstream/activity-pack/v1",
       "pack_id": "worldstream.counter",
-      "pack_release": "0.1.0",
       "required_for_release": true,
+      "revision_digest": "",
+      "revision_digest_algorithm": "blake3",
+      "revision_lock_id": "worldstream/pack-revision-lock/v1",
+      "runnable_for_retained_rooms": true,
+      "schema_bundle_digest": "",
+      "selectable_for_new_rooms": true,
       "status": "unresolved"
     },
     {
-      "digest": "",
-      "digest_algorithm": "blake3",
+      "codec_bundle_digest": "",
+      "descriptor_digest": "",
+      "executor_artifact_digest": "",
+      "explanatory_version": "0.1.0",
+      "golden_corpus_digest": "",
+      "host_contract_id": "worldstream/activity-pack/v1",
       "pack_id": "worldstream.agent-heist",
-      "pack_release": "0.1.0",
       "required_for_release": true,
+      "revision_digest": "",
+      "revision_digest_algorithm": "blake3",
+      "revision_lock_id": "worldstream/pack-revision-lock/v1",
+      "runnable_for_retained_rooms": true,
+      "schema_bundle_digest": "",
+      "selectable_for_new_rooms": true,
       "status": "unresolved"
     }
   ],
@@ -386,7 +408,7 @@
         "wire",
         "config",
         "storage_schema",
-        "core_semantics",
+        "core_schema_version",
         "hash_suite",
         "manifest",
         "exact_engine_identity"
@@ -431,9 +453,10 @@
         "manifest",
         "schema_and_migrations",
         "artifact_digests_and_bytes",
-        "operation_receipts",
+        "operation_identities_canonical_request_hashes_and_receipts",
         "timers",
         "frames_and_cursors",
+        "activation_operation_receipts_context_hashes_and_witness_generations",
         "activation_fencing",
         "exact_pack_executors",
         "every_transition_state_and_head_hash"
@@ -656,10 +679,14 @@
       "heads_and_hashes",
       "core_and_activity_materializations",
       "memberships_and_authority",
-      "timer_ids_generations_due",
+      "timer_ids_generations_scheduled_for",
       "frames_and_cursors",
-      "operation_identities_hashes_dispositions_receipts",
+      "operation_identities_canonical_request_hashes_dispositions_semantic_receipts",
       "activation_intents_claims_audit_fences",
+      "activation_operation_receipts",
+      "activation_context_bytes_or_tombstones",
+      "activation_request_result_context_hashes",
+      "activation_lease_and_witness_generations",
       "principals_capabilities_revocations",
       "integrity_incidents",
       "artifact_metadata_and_bytes"
@@ -686,7 +713,12 @@
     "migrations.schema_contract_fingerprint",
     "migrations.entries[*].sqlite_checksum",
     "migrations.entries[*].postgresql_checksum",
-    "pack_executors[*].digest",
+    "pack_executors[*].revision_digest",
+    "pack_executors[*].executor_artifact_digest",
+    "pack_executors[*].descriptor_digest",
+    "pack_executors[*].schema_bundle_digest",
+    "pack_executors[*].codec_bundle_digest",
+    "pack_executors[*].golden_corpus_digest",
     "release_artifacts[*].digest",
     "evidence[*].artifact_digest"
   ],

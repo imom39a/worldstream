@@ -203,7 +203,7 @@ Backpressure is explicit. The server rejects room_busy or rate_limited and disco
 ### ID and replay confusion
 
 - room/member/action forms the action deduplication boundary;
-- action receipt stores canonical payload hash;
+- Action Semantic Receipt stores the Canonical Request Hash;
 - activation/claim IDs are separately scoped;
 - Cursor cannot move backward through acknowledgement or beyond the Membership frame head; pruning cannot move it;
 - a Session synchronization token is opaque, single-use, bound to its Session/barrier, and never satisfied by another Session's acknowledgement;
@@ -250,7 +250,7 @@ Noninterference test principle:
 
 ## Room integrity, serving, and repair
 
-`RoomIntegrityState` is durable operational security state outside Core Room State, Authoritative Room State, Room sequence, Replay state, and canonical hashes:
+Room Integrity State is durable operational security state outside Core Room State, Authoritative Room State, Room sequence, Replay state, and canonical hashes:
 
 - healthy permits canonical advance;
 - faulted means the last canonical Head verifies but the runtime cannot safely advance it;
@@ -470,7 +470,7 @@ Unsafe default fields:
 - model prompts, outputs, provider metadata, or chain-of-thought.
 - database/admin DSNs, secret-file contents, and exporter credentials.
 
-Metrics use low-cardinality counts and sizes, never entity IDs or raw participant text. Vendor-neutral JSON logs, Prometheus metrics, W3C trace correlation, and optional OpenTelemetry/OTLP export run after commit through bounded nonblocking queues; no exporter participates in admission, reduction, commit, Replay, Room Health, or readiness. Overflow drops telemetry with a metric/rate-limited warning, and shutdown flush is bounded to three seconds.
+Metrics use low-cardinality counts and sizes, never entity IDs or raw participant text. Vendor-neutral JSON logs, Prometheus metrics, W3C trace correlation, and optional OpenTelemetry/OTLP export run after commit through bounded nonblocking queues; no exporter participates in admission, reduction, commit, Replay, Room Integrity State, or readiness. Overflow drops telemetry with a metric/rate-limited warning, and shutdown flush is bounded to three seconds.
 
 ## Required security tests
 

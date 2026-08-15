@@ -11,7 +11,7 @@
 - Deterministic local runners are mandatory; paid LLM APIs are optional demonstrations.
 - Every newly discovered idea goes to the non-normative backlog unless a frozen acceptance gate cannot pass without it.
 
-The normative scope is [Frozen Requirements](requirements.md).
+The normative scope is [Frozen Requirements](requirements.md); implementation ownership and evidence obligations are indexed in the [Canonical Decision Index](decision-index.md).
 
 ## Release story
 
@@ -103,7 +103,7 @@ Exit tests:
 
 1. Two local clients authenticate, attach, submit typed Counter actions, and see one persisted order.
 2. Restart reconstructs the Counter value.
-3. Rust and Python agree on canonical payload hash fixtures.
+3. Rust and Python agree on Canonical Request Hash fixtures.
 
 Scope gate:
 

@@ -250,7 +250,7 @@ Same-process Rust is trusted, not sandboxed. Dynamic/public pack loading and a p
 
 ### Storage service
 
-Room actors submit immutable `PreparedRoomCommit` values through one bounded backend-neutral port. SQLite uses its dedicated writer and a transaction-start write reservation; PostgreSQL uses a transaction-scoped Room-root row lock or an equivalent guarded write under Read Committed. Those physical mechanisms are adapter details and MUST expose the same outcomes, canonical bytes, hashes, and crash semantics.
+Room actors submit immutable `PreparedRoomCommit` values through one bounded backend-neutral port. SQLite uses its dedicated writer and a transaction-start write reservation; PostgreSQL uses a transaction-scoped Room-root row lock or an equivalent guarded write under Read Committed. Those physical mechanisms are adapter details and MUST expose the same Room Commit resolutions, canonical bytes, hashes, and crash semantics.
 
 The SQLite profile funnels prepared commits through one controlled global writer thread and connection. The PostgreSQL profile may execute different Rooms concurrently through direct, session-pooled, or bounded transaction-scoped connections; a transaction-scoped per-Room root lock or conditional compare-and-set preserves the same one-logical-writer semantics under Read Committed with `synchronous_commit=on`. PostgreSQL has no global commit serialization requirement.
 
@@ -267,7 +267,7 @@ The storage service owns:
 - backend-native maintenance metrics and controls;
 - backup, restore, and integrity-verification operations.
 
-The backend is selected at startup and remains fixed until shutdown. Loss of PostgreSQL makes readiness unhealthy and mutations fail closed; WorldStream never falls back to SQLite or authoritative in-memory buffering. Both adapters implement the same transaction/result algebra, canonical byte handling, error classification, receipt lookup, migration fingerprint, recovery, and Replay contracts. PostgreSQL remote connections require TLS, the daemon uses a least-privilege DML role, and `synchronous_commit=on` is mandatory.
+The backend is selected at startup and remains fixed until shutdown. Loss of PostgreSQL makes readiness unhealthy and mutations fail closed; WorldStream never falls back to SQLite or authoritative in-memory buffering. Both adapters implement the same Room Commit resolution algebra, canonical byte handling, error classification, receipt lookup, migration fingerprint, recovery, and Replay contracts. PostgreSQL remote connections require TLS, the daemon uses a least-privilege DML role, and `synchronous_commit=on` is mandatory.
 
 ### Projection and observation engine
 
@@ -318,19 +318,19 @@ The full intent states, operation receipts, eligibility witnesses, context union
 
 ### Timer scheduler
 
-WorldStream, not the Activity Pack, owns each monotonic Timer Generation. A pack requests exactly one normalized `ScheduleNext`, `CancelCurrent(expected_generation)`, or `RescheduleCurrent(expected_generation, new_scheduled_for, new_payload)` mutation per logical Timer ID; the host assigns a never-reused next generation. The generation's Scheduled Time, payload, and creation cause are immutable. A new schedule MUST be strictly later than the causing Stimulus's typed Semantic Time; an initial Genesis timer MUST be strictly later than the typed recorded creation time.
+WorldStream, not the Activity Pack, owns each monotonic Timer Generation. A pack requests exactly one normalized `ScheduleNext(timer_id, due, payload)`, `CancelCurrent(timer_id, expected_generation)`, or `RescheduleCurrent(timer_id, expected_generation, new_due, new_payload)` mutation per logical Timer ID. The host validates the pack-facing `due`/`new_due`, assigns a never-reused next generation, and records it as immutable host-facing `scheduled_for` with its payload and creation cause. A new schedule MUST be strictly later than the causing Stimulus's typed Semantic Time; an initial Genesis timer MUST be strictly later than the typed recorded creation time.
 
 The scheduler uses HostClock only to discover that a generation is due. It reconstructs TimerFired from the immutable `(room_id, timer_id, generation, scheduled_for, payload)` record, adds no `fired_at`, and takes no durable claim. The exact scheduled-generation witness is consumed by the same Advance as its Transition. Retry/restart therefore cannot change semantic input or create a second firing.
 
-Within one Room, due candidates are considered one at a time in `(scheduled_for, timer_id, generation)` order and reread after every outcome. All still-scheduled due generations remain obligations; they are never expired, merged, coalesced, skipped, or marked fired because of lag or a processing budget.
+Within one Room, due candidates are considered one at a time in `(scheduled_for, timer_id, generation)` order and reread after every result. All still-scheduled due generations remain obligations; they are never expired, merged, coalesced, skipped, or marked fired because of lag or a processing budget.
 
 Timer mutation validation is exact:
 
 | Pack request | Valid precondition | Atomic result |
 |---|---|---|
-| `ScheduleNext(timer_id, scheduled_for, payload)` | No generation is currently scheduled; time is strictly later than the causing Stimulus's Semantic Time | Host allocates the next never-used generation and records its immutable schedule |
+| `ScheduleNext(timer_id, due, payload)` | No generation is currently scheduled; `due` is strictly later than the causing Stimulus's Semantic Time | Host allocates the next never-used generation and records `due` as its immutable `scheduled_for` |
 | `CancelCurrent(timer_id, expected_generation)` | That exact generation is scheduled | Current generation becomes cancelled in the causing Advance |
-| `RescheduleCurrent(timer_id, expected_generation, new_scheduled_for, new_payload)` | That exact generation is scheduled and new time is strictly forward | Current generation is cancelled and the next generation is created atomically |
+| `RescheduleCurrent(timer_id, expected_generation, new_due, new_payload)` | That exact generation is scheduled and `new_due` is strictly forward | Current generation is cancelled and the next generation records `new_due` as immutable `scheduled_for` atomically |
 
 Conflicting duplicate mutations, stale/wrong expected generations, cancel of missing/fired/cancelled state, implicit replacement, non-forward time, invalid payload, overflow, and unrepresentable time are Activity Faults with no commit. `NotApplicable` is reserved for a scheduler candidate that was independently valid but legitimately lost a race after preparation.
 
@@ -459,7 +459,7 @@ sequenceDiagram
 
     C->>G: action.submit with action_id and based_on_seq
     G->>R: authenticated, strictly parsed request
-    R->>S: resolve(identity, request_hash)
+    R->>S: resolve(identity, canonical_request_hash)
 
     alt Existing same-hash resolution
         S-->>R: original stored result
@@ -485,7 +485,7 @@ sequenceDiagram
             else COMMIT status unknown
                 D-->>S: ambiguous
                 S-->>R: Indeterminate
-                R->>S: resolve(same identity, same request_hash)
+                R->>S: resolve(same identity, same canonical_request_hash)
             end
         end
     end
@@ -510,7 +510,7 @@ Database COMMIT is the sole linearization point. Commit-before-acknowledgement i
 | Postcommit paired snapshot fails | The Transition remains valid; recovery uses an earlier snapshot or Genesis plus Transitions |
 | Projection/frame computation or pack call fails before transaction | No write; Activity Fault handling applies |
 | Process terminates with due timers | CatchingUp resubmits the exact immutable Timer Generations in deterministic order |
-| Storage/integrity failure prevents known outcome | Fail closed and expose the precise known-absent, Indeterminate, or Fenced class; do not collapse them into generic retry |
+| Storage/integrity failure prevents a known resolution | Fail closed and expose the precise known-absent, Indeterminate, or Fenced class; do not collapse them into generic retry |
 | Activation lease holder fails before completion | The generation-fenced lease expires; the same pending intent may be claimed again |
 | Pack panic or deterministic projection failure | No write; discard the actor and reload or quarantine through integrity handling |
 
@@ -539,8 +539,11 @@ Development bearer capabilities. Only a strong token hash is stored:
     runner_id TEXT NULL
     room_id TEXT NULL
     scopes_json BLOB
+    authority_generation INTEGER
     expires_at TEXT NULL
     revoked_at TEXT NULL
+
+`authority_generation` is the durable compare-and-set witness for the capability's effective scope/revocation state and increments on every such change. A claim never relies on connection-local authentication state or an inferred counter.
 
 ### runners
 
@@ -611,12 +614,14 @@ Room sequence zero names genesis. The first later accepted stimulus is sequence 
     frame_head INTEGER
     retained_frame_floor INTEGER
     last_ack_frame_seq INTEGER
+    membership_generation INTEGER
+    activation_policy_revision INTEGER
     activation_policy_json BLOB
     created_at TEXT
     updated_at TEXT
     PRIMARY KEY (room_id, member_id)
 
-Member ID, Principal ID/kind, standing, Access Mode, and Role are the current Core materialization. Frame head/Cursor and activation policy are operational delivery/control fields co-located physically but excluded from Core and canonical hashes. Connection and model invocation state MUST NOT be columns in this table.
+Member ID, Principal ID/kind, standing, Access Mode, and Role are the current Core materialization. Frame head/Cursor, `membership_generation`, and activation policy/revision are operational delivery/control fields co-located physically but excluded from Core and canonical hashes. Every relevant Membership change increments `membership_generation`; every policy change increments `activation_policy_revision`. Activation claim compare-and-set matches those durable source fields, the capability's `authority_generation`, and the Room's `integrity_generation`; no witness relies on an unpersisted counter. Connection and model invocation state MUST NOT be columns in this table.
 
 `role` is required when `access_mode = 'participant'` and absent for spectator/operator Memberships. The Activity Pack defines allowed Roles and cardinality; the Core reducer owns each current assignment. Member/Principal binding and Principal kind never update, departed is terminal, and a uniqueness constraint permits at most one non-departed Membership per Principal in a Room.
 
@@ -634,7 +639,6 @@ Member ID, Principal ID/kind, standing, Access Mode, and Role are the current Co
     domain_events_json BLOB
     timer_changes_json BLOB
     attention_signals_json BLOB
-    logical_time TEXT
     previous_transition_hash BLOB
     resulting_core_state_hash BLOB
     resulting_activity_state_hash BLOB
@@ -643,48 +647,34 @@ Member ID, Principal ID/kind, standing, Access Mode, and Role are the current Co
     committed_at TEXT
     PRIMARY KEY (room_id, seq)
 
-`stimulus_json` carries exactly one typed Semantic Time; there is no universal transition `logical_time`.
+`stimulus_json` carries exactly one typed Semantic Time; there is no universal Transition time column.
 
-### action_receipts
+### semantic_receipts
 
     room_id TEXT
-    member_id TEXT
-    action_id TEXT
-    codec_version TEXT
-    request_hash BLOB
+    operation_kind TEXT CHECK operation_kind IN ('action', 'administration', 'timer_fired', 'external_input')
+    operation_identity_json BLOB
+    codec_id TEXT
+    canonical_request_hash BLOB
     basis_complete_head_json BLOB
-    admitted_at TEXT
-    result_status TEXT CHECK result_status IN ('accepted', 'domain_rejected')
+    semantic_input_json BLOB
+    resolution_kind TEXT CHECK resolution_kind IN ('transition_committed', 'rejection_recorded', 'no_change_recorded')
     transition_seq INTEGER NULL
-    semantic_result_json BLOB
+    stored_resolution_json BLOB
     committed_at TEXT
-    PRIMARY KEY (room_id, member_id, action_id)
+    PRIMARY KEY (operation_kind, operation_identity_json)
 
-The stored request hash detects same-identity/different-semantic-input Conflict. The receipt retains its exact basis Complete Head, original `admitted_at`, and original result. Transient admission/runtime errors never enter this record and do not consume an Action ID.
+Every committed Action, administration, TimerFired, or external-input Operation Identity binds exactly one Canonical Request Hash and StoredResolution. Action and administration indexes may project their typed identity fields, but they do not define a parallel receipt contract. The receipt retains its exact eight-field basis Complete Head, typed semantic input such as Action `admitted_at` or TimerFired `scheduled_for`/payload, and original result. Same identity and hash returns the StoredResolution; a changed hash is Conflict. `NotApplicable` binds no identity, hash, or receipt. Transient admission/runtime errors never enter this record and do not consume an identity.
 
-### mutation_receipts
+`codec_id = "worldstream/operation-receipt/v1"` is the serialization umbrella for these Semantic Receipts and for the Activation operation receipts below. It identifies a byte envelope, not one shared domain state or resolution algebra.
 
-Durable idempotency for mutating HTTP administration:
-
-    principal_id TEXT
-    operation TEXT
-    idempotency_key TEXT
-    codec_version TEXT
-    request_hash BLOB
-    basis_complete_head_json BLOB
-    result_status TEXT CHECK result_status IN ('accepted', 'rejected', 'no_change')
-    transition_seq INTEGER NULL
-    semantic_result_json BLOB
-    committed_at TEXT
-    PRIMARY KEY (principal_id, operation, idempotency_key)
-
-The Semantic Receipt commits with an Advance, stable Rejection, or administrative NoChange. Same identity and request hash returns the original response; a changed request hash is a Conflict. `worldstreamctl` generates capability bearer secrets locally and sends only their derived token hash, so retrying capability creation never requires the server to store or replay plaintext.
+For mutating HTTP administration, `worldstreamctl` generates capability bearer secrets locally and sends only their derived token hash, so retrying capability creation never requires the server to store or replay plaintext.
 
 ### snapshots
 
     room_id TEXT
     seq INTEGER
-    lineage_hash BLOB
+    genesis_or_transition_hash BLOB
     core_schema_version TEXT
     pack_digest BLOB
     encoding TEXT
@@ -722,11 +712,13 @@ An operator request may enqueue verification, never write `healthy` directly. On
     cause_room_seq INTEGER
     frame_kind TEXT
     payload_json BLOB
-    payload_hash BLOB
+    frame_payload_hash BLOB
     created_at TEXT
     PRIMARY KEY (room_id, recipient_member_id, frame_seq)
 
 Every durable stream belongs to one Membership. Public consequences are materialized into every enabled Membership stream allowed to see them. Spectator and operator Memberships are read-only and have separate Cursors; Principal kind remains independent of Access Mode. This deliberately duplicates small frames to keep privacy and Catch-up semantics unambiguous.
+
+`frame_payload_hash` is frame-only payload integrity. It never substitutes for the Canonical Request Hash bound to an Operation Identity and Semantic Receipt.
 
 `frame_head` never decreases or reuses a value. `retained_frame_floor` may advance during pruning without moving `last_ack_frame_seq`. Genesis has no frame; a later Transition has at most one row per recipient Membership.
 
@@ -781,7 +773,7 @@ Durable claim receipts and stale-lease protection:
     operation_kind TEXT CHECK operation_kind IN ('claim', 'renew', 'release', 'complete')
     operation_id TEXT
     runner_id TEXT
-    request_hash BLOB
+    canonical_request_hash BLOB
     claim_id TEXT NULL
     lease_generation INTEGER
     result_code TEXT CHECK result_code IN ('granted', 'not_available', 'expired', 'cancelled', 'fenced', 'completed', 'released', 'renewed')
@@ -792,7 +784,7 @@ Durable claim receipts and stale-lease protection:
     created_at TEXT
     PRIMARY KEY (activation_id, operation_kind, operation_id)
 
-For claim, `operation_id` and `claim_id` are the same value; later control operations have a new `operation_id` and name the active `claim_id`. The server derives `request_hash` from the complete authenticated request. A repeated operation ID from the same authenticated Runner and identical canonical request returns its exact stored result. Reusing it with a changed request or Runner is an idempotency conflict. Renew, release, and complete match the current claim ID, Runner ID, generation, and unexpired lease. Exact granted Invocation Context is retained according to its privacy window, then replaced by a tombstone; later retry returns `result_retired` rather than regenerated bytes.
+For claim, `operation_id` and `claim_id` are the same value; later control operations have a new `operation_id` and name the active `claim_id`. The server derives `canonical_request_hash` from the complete authenticated request. A repeated operation ID from the same authenticated Runner and identical canonical request returns its exact stored result. Reusing it with a changed request or Runner is an idempotency conflict. Renew, release, and complete match the current claim ID, Runner ID, generation, and unexpired lease. Exact granted Invocation Context is retained according to its privacy window, then replaced by a tombstone; later retry returns `result_retired` rather than regenerated bytes. These receipts also serialize under `worldstream/operation-receipt/v1`, while retaining their distinct Activation result and lease-witness model.
 
 ### artifacts and room_artifacts
 
@@ -862,7 +854,7 @@ Actual migrations MUST mark all required fields NOT NULL, use CHECK constraints 
 - capabilities and runners to principals;
 - genesis, members, transitions, snapshots, frames, timers, activations, uploads, and room artifacts to rooms;
 - members and upload owners to principals/memberships as appropriate;
-- accepted action receipts to their transition;
+- Transition-committed Semantic Receipts to their transition;
 - observation/timer/activation cause sequences to a transition in the same room when nonzero;
 - activation claims to activation intents and runners;
 - room artifacts/uploads to artifact metadata.
@@ -873,11 +865,11 @@ Startup and restore diagnostics run integrity_check and foreign_key_check before
 
 ### Contract surface
 
-For an accepted stimulus, one storage transaction MUST perform the following ordered logical work. SQLite maps it to `BEGIN IMMEDIATE`; PostgreSQL maps it to one Read Committed transaction with the Room root and operation fences locked or conditionally updated:
+An accepted Stimulus uses the contract below. SQLite maps its guarded transaction to `BEGIN IMMEDIATE`; PostgreSQL maps it to one Read Committed transaction with the Room root and operation fences locked or conditionally updated.
 
 The storage port exposes exactly two semantic operations for a prepared Room write:
 
-    commit(PreparedRoomCommit) -> CommitOutcome
+    commit(PreparedRoomCommit) -> RoomCommitResolution
     resolve(OperationIdentity, CanonicalRequestHash) -> ResolveOutcome
 
 `commit` accepts one already-admitted, fully computed write for exactly one Room. `resolve` performs no domain work and returns exactly one of:
@@ -946,27 +938,27 @@ Every new Advance or durable disposition follows this exact guarded order inside
    4. exact timer candidate consumption plus normalized schedule/cancel/reschedule changes;
    5. addressed Observation Frames and each affected stream's frame head;
    6. activation-policy revision/decision, permitted Activation Intents, and required Membership/archive eligibility and lease-generation fences; and
-   7. the Semantic Receipt for the applicable Action, administration, or external input.
+   7. the Semantic Receipt for the applicable Action, administration, TimerFired, or external input.
 7. For a `DurableDisposition`, persist only its Semantic Receipt after all applicable guards pass; do not mutate Head, state, timers, Frames, or Activation.
 8. Issue durable database `COMMIT`.
 
 Archive and any final Membership state that is no longer an enabled Agent Participant with participant Access Mode and a current Role cancel and generation-fence that target's pending/leased Activation work inside step 6. This includes suspension, departure, Role removal, and participant-to-spectator/operator changes; the transaction never leaves newly ineligible work claimable.
 
-Adapters may arrange bounded physical statements around backend constraint mechanics only when failure injection proves the same guard precedence, all-or-none bundle, and externally invisible intermediate state. SQLite maps the fence to its dedicated writer and transaction-start write reservation; PostgreSQL maps it to a Room-root row lock or an equivalent guarded write under Read Committed. Neither adapter may weaken or add a semantic outcome.
+Adapters may arrange bounded physical statements around backend constraint mechanics only when failure injection proves the same guard precedence, all-or-none bundle, and externally invisible intermediate state. SQLite maps the fence to its dedicated writer and transaction-start write reservation; PostgreSQL maps it to a Room-root row lock or an equivalent guarded write under Read Committed. Neither adapter may weaken or add a Room Commit resolution class.
 
 Database COMMIT is the sole linearization point. A conditional row change, lock acquisition, driver return, actor-memory installation, acknowledgement, or live publication is not public success and does not order the Room. Authority revocation, archive, Action, and TimerFired races are ordered by their durable commits.
 
-### CommitOutcome algebra
+### Room Commit resolution algebra
 
-| Outcome | Exact meaning | Permitted next action |
+| Resolution | Exact meaning | Permitted next action |
 |---|---|---|
 | `Resolved(TransitionCommitted { New })` | This attempt committed the prepared Advance. | Install returned Head/state, then acknowledge/publish. |
 | `Resolved(TransitionCommitted { Existing })` | The same identity/hash already committed that Advance. | Return the original receipt; do not install speculative state or recommit. |
-| `Resolved(RejectionRecorded { New | Existing })` | The stable Rejection was newly committed or already stored. | Return the original rejection; that identity is consumed. |
-| `Resolved(NoChangeRecorded { New | Existing })` | The administrative desired state was already true and the stable NoChange was newly committed or already stored. | Return the original NoChange; no `room_seq` was consumed. |
+| `Resolved(RejectionRecorded { New })` or `Resolved(RejectionRecorded { Existing })` | The stable Rejection was newly committed or already stored. | Return the original rejection; that identity is consumed. |
+| `Resolved(NoChangeRecorded { New })` or `Resolved(NoChangeRecorded { Existing })` | The administrative desired state was already true and the stable NoChange was newly committed or already stored. | Return the original NoChange; no `room_seq` was consumed. |
 | `NotApplicable` | An independently valid timer/input candidate is now missing, cancelled, consumed, or obsolete. | Stop; do not call the pack or create a rejection receipt. |
 | `Reprepare` | Head or applicable policy revision changed and this plan is proven absent. | Discard the plan and follow the operation-specific reprepare rule below. |
-| `Fenced` | Integrity/Health or operational authority no longer permits the write. | Stop with no Transition or receipt; require recovery or fresh authority as applicable. |
+| `Fenced` | Room Integrity State/generation or operational authority no longer permits the write. | Stop with no Transition or receipt; require recovery or fresh authority as applicable. |
 | `Conflict` | The identity exists with another Canonical Request Hash. | Return stable conflict; never retry under that identity. |
 | `RetryableKnownAbsent` | Busy, deadlock, serialization, rollback, or equivalent failure proves no Advance/disposition committed. | A bounded retry may resubmit only the identical sealed plan. |
 | `Indeterminate` | COMMIT may or may not have happened. | Resolve the same identity/hash on the authoritative primary before anything else. |
@@ -1030,13 +1022,13 @@ Attachment uses an actor barrier so catch-up cannot lose the transition between 
 2. the room actor verifies Membership/Cursor, registers the Session as Attaching, and captures the complete Room Head, frame head H, retained floor, Cursor, and a Session-specific sync token;
 3. storage reads and sends frames in (cursor, H] using short bounded pages;
 4. newly committed frame references above H enter the session's bounded buffer;
-5. if this is the first attach or the old range was pruned, the server sends a full authorized Projection Reset at the captured Room/frame baseline;
-6. only after the client installs the through-H range/reset and ACKs H with that Session's sync token does the actor atomically switch it to Live and flush buffered frames in order;
+5. on first attach, when the retained range is below its floor/pruned, or when visibility loss or another condition makes incremental delivery inappropriate, the server sends a full authorized Projection Reset at the captured Room/frame baseline;
+6. only after the client installs the through-H range/reset and sends `room.sync_ack` for H with that Session's sync token does the actor atomically switch it to Live and flush buffered frames in order;
 7. buffer overflow closes the connection and requires another attach.
 
 The client deduplicates by room, member, and frame sequence. An action retry uses its independent action ID.
 
-Multiple Sessions attached to one Membership share that Membership's Observation Stream and Cursor. An ordinary acknowledgement from any authorized Session advances the shared Cursor, but cannot satisfy another Session's synchronization token. Independent delivery consumers require separate Memberships.
+Multiple Sessions attached to one Membership share that Membership's Observation Stream and Cursor. A distinct `observation.ack` from any authorized Session may advance the shared Cursor but cannot satisfy a synchronization token; `room.sync_ack` changes only the issuing Session's barrier state and never advances Cursor. Independent delivery consumers require separate Memberships.
 
 ### Default resource limits
 
@@ -1083,14 +1075,13 @@ A runner claim response contains:
 
 - activation ID, claim ID, lease generation, and cause sequence;
 - reason code and deadline;
-- allowed action kinds;
 - current authorized projection;
 - the complete exact Room Head, Projection hash, current Action Offers, and Membership/integrity/policy/authority/delivery witnesses;
 - exactly one of retained frames after the Membership Cursor or a Projection Reset baseline;
 - explicit artifact references authorized for that membership;
 - lease expiry.
 
-Claim grant/reclaim is one conditional database transaction. Claim, renew, release, and complete each use an independent operation ID/request hash and return a durable exact result. Retrying an identical operation returns that result. Renew, release, and complete conditionally match the authenticated Runner, current claim ID, current generation, and unexpired lease. An expired older claim can never complete a later lease. Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents; capability revocation applies immediately.
+Claim grant/reclaim is one conditional database transaction. Claim, renew, release, and complete each use an independent operation ID and Canonical Request Hash and return a durable exact result. Retrying an identical operation returns that result. Renew, release, and complete conditionally match the authenticated Runner, current claim ID, current generation, and unexpired lease. An expired older claim can never complete a later lease. Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents; capability revocation applies immediately.
 
 v0.1 supports a runner control WebSocket and HTTP long poll. It does not call arbitrary user URLs. A webhook is not a committed v0.2 feature.
 
@@ -1102,7 +1093,7 @@ Defaults:
 
 - create one paired Core-and-Activity snapshot every 250 accepted Transitions or five active minutes, whichever occurs first, in an idempotent postcommit job;
 - retain immutable Genesis independently and the latest three automatic pairs; an optional sequence-zero pair is only a cache;
-- keep canonical transitions and action receipts for the room lifetime in frozen releases;
+- keep canonical Transitions and all Semantic Receipts for the Room lifetime in frozen releases;
 - retain acknowledged observation frames for a seven-day safety window, subject to a hard per-Membership ceiling of 10,000 frames or 64 MiB that forces an explicit Projection Reset without moving the Cursor;
 - never use snapshot deletion to change canonical history.
 
@@ -1141,7 +1132,7 @@ Timeline forks and promotion are deferred until after v0.2.
 
 ### Room integrity and verifier repair
 
-`RoomIntegrityState` is operational and never folded into Replay:
+Room Integrity State is operational and never folded into Replay:
 
 - healthy may advance;
 - faulted means the last canonical Head verifies but the runtime cannot safely advance it;
@@ -1200,7 +1191,7 @@ Every backend-native backup receives an immutable backup ID and a WorldStream ma
 
 ### Full WorldStream semantic verifier
 
-The verifier is read-only and never samples, repairs, fires timers, delivers Frames, or starts Activations. It validates the backup/export ID, Storage Epoch and lineage, engine and compatibility manifest, schema fingerprint and migration checksums, artifact sizes/digests/bytes, operation identities/hashes/dispositions/receipts, exact timers, Frames/Cursors, Activation intents/claims/fences, and availability of every exact retained Activity Pack executor. For every Room recorded healthy it reconstructs Genesis through Head and verifies every transition, state, Core/Activity materialization, and Head hash.
+The verifier is read-only and never samples, repairs, fires timers, delivers Frames, or starts Activations. It validates the backup/export ID, Storage Epoch and lineage, engine and compatibility manifest, schema fingerprint and migration checksums, artifact sizes/digests/bytes, Operation Identities/Canonical Request Hashes/dispositions/Semantic Receipts, exact timers, Frames/Cursors, Activation Intents and every operation receipt, retained Invocation Context bytes or tombstones, request/result/context hashes, lease and witness generations, claims/fences, and availability of every exact retained Activity Pack executor. For every Room recorded healthy it reconstructs Genesis through Head and verifies every Transition, state, Core/Activity materialization, and Head hash.
 
 A global lineage, schema, manifest, artifact, or cross-Room authority failure blocks deployment readiness. A Room already recorded as faulted or quarantined may be copied byte-for-byte, remain isolated and unhealthy, and not block otherwise verified Rooms. Any mismatch newly introduced by backup, restore, or transfer aborts verification.
 
@@ -1208,20 +1199,20 @@ A global lineage, schema, manifest, artifact, or cross-Room authority failure bl
 
 The only supported backend transfer is a versioned, resumable, whole-deployment, offline move from authoritative SQLite to an empty PostgreSQL target. The deterministic transfer bundle records source lineage, export identity, Storage Epoch, schema and codec versions, ordered chunks, row/object counts, per-chunk and whole-export digests, and a semantic fingerprint.
 
-Canonical serialized bytes are copied verbatim, never decoded and re-encoded through PostgreSQL JSON, timestamp, numeric, or text types. The bundle preserves Genesis, Transitions, every Head/hash, Core and Activity materializations, Memberships and authority, exact timer IDs/generations/due values, Frames/Cursors, operation identities/payload hashes/dispositions/receipts, Activation intents/claims/audit/fences, principals/capabilities/revocations, integrity incidents, and artifact metadata and bytes. Snapshots, indexes, caches, telemetry, sessions, runner presence, in-memory mailboxes, delivery attempts, and temporary state are invalidated or rebuilt.
+Canonical serialized bytes are copied verbatim, never decoded and re-encoded through PostgreSQL JSON, timestamp, numeric, or text types. The bundle preserves Genesis, Transitions, every Head/hash, Core and Activity materializations, Memberships and authority, exact timer IDs/generations/`scheduled_for` values, Frames/Cursors, Operation Identities/Canonical Request Hashes/dispositions/Semantic Receipts, Activation Intents and every Activation operation receipt, retained Invocation Context bytes or tombstones, request/result/context hashes, lease and witness generations, claims/audit/fences, principals/capabilities/revocations, integrity incidents, and artifact metadata and bytes. Snapshots, indexes, caches, telemetry, Sessions, Runner presence, in-memory mailboxes, delivery attempts, and temporary state are invalidated or rebuilt.
 
 Transfer is two-phase:
 
 1. quiesce the sole WorldStream process, create and verify a recoverable SQLite backup, and durably mark the source `transfer_pending` under its current Storage Epoch;
 2. export/import resumable deterministic chunks into the empty target while neither backend serves, fence every nonterminal Activation lease, run PostgreSQL-native checks and the full WorldStream verifier, then require an explicit finalize command to retire SQLite and make PostgreSQL authoritative at the next Storage Epoch.
 
-Recorded scheduled timers keep their IDs, generations, and due values. Startup enters the ordinary fixed-cutoff CatchingUp path and invents neither a fire nor a generation during transfer. Eligible Activation intents remain reclaimable after old leases are fenced.
+Recorded scheduled timers keep their IDs, generations, and `scheduled_for` values. Startup enters the ordinary fixed-cutoff CatchingUp path and invents neither a fire nor a generation during transfer. Eligible Activation Intents remain reclaimable after old leases are fenced.
 
 Before source retirement, abort discards the target and leaves the verified SQLite source authoritative. After PostgreSQL accepts its first write under the new epoch, returning to SQLite is not supported continuity. The retired SQLite deployment is a read-only recovery artifact; reopening it for writes requires an explicit destructive override. There is no live switch, dual write, reverse or room-at-a-time transfer, automatic fallback, or consensus protocol: the offline authority fence is sufficient only because serving is quiesced.
 
-Transfer and recovery race outcomes are frozen independently of adapter implementation:
+Transfer and recovery race resolutions are frozen independently of adapter implementation:
 
-| Race or failure | Required outcome |
+| Race or failure | Required resolution |
 |---|---|
 | A server starts against SQLite marked `transfer_pending` | It fails closed and does not serve; only resume or abort may clear the fence. |
 | Export/import stops mid-chunk | No target is ready. Resume verifies the export identity and committed chunk digest/count before continuing or safely reapplying that chunk. |
@@ -1345,9 +1336,9 @@ worldstreamctl should eventually provide:
 - trigger backend-native backup/restore workflows and SQLite checkpoint;
 - migrate PostgreSQL offline, transfer SQLite to PostgreSQL, and run backend plus full semantic verification.
 
-Logs are structured JSON with W3C trace correlation. They may include Room, Membership, Action, and Transition IDs only in access-controlled logs/traces; those IDs are never metric labels. Logs exclude Action/Observation bodies, capabilities, private observations, prompts/model output, artifact bytes, DSNs, and credentials. Prometheus metrics and the optional OpenTelemetry/OTLP exporter are vendor-neutral seams; no vendor SDK, account, collector, or credential participates in admission, reduction, commit, Replay, Room Health, or readiness.
+Logs are structured JSON with W3C trace correlation. They may include Room, Membership, Action, and Transition IDs only in access-controlled logs/traces; those IDs are never metric labels. Logs exclude Action/Observation bodies, capabilities, private observations, prompts/model output, artifact bytes, DSNs, and credentials. Prometheus metrics and the optional OpenTelemetry/OTLP exporter are vendor-neutral seams; no vendor SDK, account, collector, or credential participates in admission, reduction, commit, Replay, Room Integrity State, or readiness.
 
-Telemetry happens after authoritative commit through bounded nonblocking queues while holding no Room or database lock. Overflow drops telemetry, increments a metric, and emits a rate-limited warning. Shutdown grants at most three seconds to flush and never delays or changes an authoritative outcome.
+Telemetry happens after authoritative commit through bounded nonblocking queues while holding no Room or database lock. Overflow drops telemetry, increments a metric, and emits a rate-limited warning. Shutdown grants at most three seconds to flush and never delays or changes an authoritative result.
 
 ## Release, platform, and evidence matrix
 
@@ -1355,7 +1346,7 @@ This section implements [ADR 0004](adr/0004-supported-storage-profiles-and-offli
 
 Reviewed [`compatibility.toml`](../compatibility.toml) is the authored source and canonical [`compatibility.json`](../compatibility.json) is its semantically identical, sorted-key mirror. The checked-in pair deliberately describes a specification with `release_ready = false`: migration/schema checksums, exact pack-executor and build/artifact digests, and all execution evidence remain unresolved because no implementation or release exists. Validation fails closed on any unresolved required field.
 
-A real release must generate and review a populated pair, prove semantic parity, set `release_ready = true` only after every hard gate passes, embed the JSON in every binary, and publish it with the release. Startup, `doctor`, `/version`, backups, transfer bundles, release notes, and CI consume that release-valid manifest. The v0.1.0 specification identifies product `0.1.0`, wire `0.1`, config `1`, storage schema `1`, Core semantics `1`, and hash suite `blake3-canonical-json-v1` in addition to the engine/toolchain versions frozen above.
+A real release must generate and review a populated pair, prove semantic parity, set `release_ready = true` only after every hard gate passes, embed the JSON in every binary, and publish it with the release. Startup, `doctor`, `/version`, backups, transfer bundles, release notes, and CI consume that release-valid manifest. The v0.1.0 specification identifies product `0.1.0`, wire `0.1`, config `1`, storage schema `1`, Core schema version `worldstream.core-room-state.v1`, and hash suite `blake3-canonical-json-v1` in addition to the engine/toolchain versions frozen above.
 
 | Profile | Supported/release contract | Mandatory evidence |
 |---|---|---|
@@ -1437,7 +1428,7 @@ PostgreSQL support changes the storage location and concurrency implementation, 
 19. Activation is at-least-once intent delivery, not proof of model execution.
 20. An expired or superseded Activation claim cannot renew, release, or complete a later lease generation; every Activation control operation has a durable idempotent receipt.
 21. Observation delivery is at least once; clients deduplicate and acknowledge.
-22. The Observation Catch-up/live actor barrier returns the complete retained authorized range or an explicit Projection Reset; only the matching Session sync-token acknowledgement enters Live without a handoff gap.
+22. The Observation Catch-up/live actor barrier returns the complete retained authorized range or an explicit Projection Reset; only matching `room.sync_ack` enters Live without a handoff gap and never advances Cursor, while only separate `observation.ack` may advance Cursor.
 23. Paired Core+Activity snapshots are idempotent postcommit caches; snapshots, current materializations, indexes, and projection caches are replaceable derivations.
 24. Every canonical commit fences on `healthy` plus an unchanged integrity generation; canonical disagreement quarantines, while an intact Head that cannot safely advance faults.
 25. Replay has no external effects, applies present-plus-historical authorization, and holds no unbounded database read transaction.

@@ -13,7 +13,7 @@ The reusable rule set that defines a class of Rooms, including Roles, Actions, v
 _Avoid_: Plugin, workflow, prompt pack, room
 
 **Activity Pack Revision**:
-One immutable semantic version of an Activity Pack's rules and schemas, pinned by each Room for its whole lineage.
+One immutable semantic identity for an Activity Pack's rules, schemas, codecs, and executor, pinned by each Room for its whole lineage.
 _Avoid_: Mutable pack version, installed plugin, build label
 
 **Activity Phase**:
@@ -166,10 +166,6 @@ _Avoid_: Member projection when access mode matters, authoritative state
 One durable Membership-addressed unit coalescing the authorized consequences of one accepted Transition. Genesis and a Transition hidden from that Membership produce no frame.
 _Avoid_: Event, message, projection, state dump
 
-**Projection Reset**:
-A full authorized Projection that establishes a new delivery baseline when retained Observation Frames cannot cover a Membership's Cursor.
-_Avoid_: Observation frame, replay, silent cursor advance
-
 **Observation Stream**:
 The ordered progression of Observation Frames belonging to one Membership.
 _Avoid_: Public stream, room event stream, model-token stream
@@ -179,7 +175,7 @@ One Membership's acknowledged position in its Observation Stream.
 _Avoid_: Room version, model progress, replay position
 
 **Projection Reset**:
-A complete authorized Projection that atomically establishes a new Observation Stream baseline when incremental catch-up is unavailable or inappropriate.
+A complete authorized Projection that atomically establishes a new Observation Stream baseline on first attach, when the retained range cannot cover the Cursor, or when visibility loss or another condition makes incremental delivery inappropriate.
 _Avoid_: Observation Frame, silent skip, Replay
 
 **Catch-up**:
@@ -205,7 +201,7 @@ An Activity Pack determination that an Agent Participant may need to act for a s
 _Avoid_: Activation intent, model call, wake-up
 
 **Activation Intent**:
-A durable five-state WorldStream request for an authorized Runner to consider starting a fresh Invocation for an Agent Participant.
+A durable WorldStream request for an authorized Runner to consider starting a fresh Invocation for an Agent Participant.
 _Avoid_: Invocation, task, proof of execution, wake-up job
 
 **Invocation Context**:
