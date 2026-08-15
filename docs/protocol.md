@@ -39,7 +39,7 @@ It does not carry model token streams, hidden reasoning, arbitrary workflow node
 | Observation cursor | Yes | Membership inbox |
 | Activation intent | Yes | Activation queue |
 
-Membership lifecycle is enabled, suspended, or departed.
+Membership Standing is enabled, suspended, or departed. Enabled and suspended are reversible; departed is terminal, and rejoining creates a new Member ID with no inherited Cursor or private frame stream. Suspended/departed Memberships cannot attach, act, receive new frames, or be activated.
 
 Session lifecycle is connected or disconnected.
 
@@ -49,12 +49,16 @@ These are independent dimensions.
 
 A Room is described across four independent axes:
 
-- core status: active or archived;
-- health: healthy, faulted, or quarantined;
+- Core Room Status: active or irreversibly archived;
+- operational Room Integrity State, surfaced as `room_health`: healthy, faulted, or quarantined;
 - Activity Phase: a pack-defined stage such as Commitment, Complete, Review, or Closed;
 - Outcome: a separate pack-defined result such as success, partial failure, or a deterministic score.
 
-Archived, faulted, and quarantined rooms reject ordinary participant mutation. Authorized projection, export, diagnostics, repair, and replay remain available as appropriate. A terminal pack phase normally rejects domain actions through pack rules while the core room may remain active until the host operator archives it.
+`CoreRoomState v1` contains exactly Room Status plus the semantic Membership map. Room Head, hashes, integrity, Sessions, delivery, receipts, Activation, policy, diagnostics, telemetry, and commit time are envelope or operational records, not Core fields.
+
+A healthy archived Room permits authorized reads/export/Replay and ordered suspend/depart only. A faulted Room rejects every canonical mutation but may serve only its last verified authorized Projection, retained Frame Catch-up, and verified Replay with an explicit integrity envelope. A quarantined Room serves no normal Projection, Catch-up, or claimed-current Replay; only authenticated host-operator diagnostics, raw export, restore, and verification remain. A terminal pack phase normally rejects domain Actions while the Core Room may remain active until the host operator archives it.
+
+Whenever a protocol result names the Room Head, the complete value is represented: Room sequence, Genesis-or-Transition lineage hash, Core schema version, exact pack digest, and Core, Activity, and aggregate Authoritative State hashes. A sequence-only field is a causal convenience, not a Room Head.
 
 ## Transport
 
@@ -212,7 +216,16 @@ If retained frames cover the cursor:
     "membership_status": "enabled",
     "room_status": "active",
     "room_health": "healthy",
-    "room_head_seq": 91,
+    "integrity_generation": 7,
+    "room_head": {
+      "room_seq": 91,
+      "lineage_hash": "blake3:...",
+      "core_schema": "worldstream.core-room-state.v1",
+      "pack_digest": "blake3:...",
+      "core_state_hash": "blake3:...",
+      "activity_state_hash": "blake3:...",
+      "authoritative_state_hash": "blake3:..."
+    },
     "last_ack_frame_seq": 184,
     "catch_up_through_frame_seq": 191,
     "pack": {
@@ -225,6 +238,8 @@ If retained frames cover the cursor:
 ~~~
 
 The server then delivers frames 185 through 191. `role` is present only for participant-access Memberships; spectator and operator Memberships have no pack-defined Role.
+
+Suspended/departed Memberships and quarantined Rooms cannot attach. A faulted Room may attach only to the last verified authorized Projection/retained range and includes `room_health: "faulted"` plus its generation; it never represents unverified bytes as current.
 
 If the cursor is too old, room.attached contains resync_required: true, followed by projection.reset. It never silently starts at the newest frame.
 
@@ -240,8 +255,17 @@ Attachment is serialized through the room actor. The actor captures membership f
   "body": {
     "room_id": "01K...",
     "member_id": "01K...",
-    "room_head_seq": 91,
+    "room_head": {
+      "room_seq": 91,
+      "lineage_hash": "blake3:...",
+      "core_schema": "worldstream.core-room-state.v1",
+      "pack_digest": "blake3:...",
+      "core_state_hash": "blake3:...",
+      "activity_state_hash": "blake3:...",
+      "authoritative_state_hash": "blake3:..."
+    },
     "room_health": "healthy",
+    "integrity_generation": 7,
     "frame_seq": 191,
     "projection_schema": "worldstream.projection.v1",
     "projection": {
@@ -269,7 +293,7 @@ Attachment is serialized through the room actor. The actor captures membership f
 
 The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A client processes the reset atomically, stores `frame_seq` as its new baseline, and acknowledges it.
 
-`projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Health, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
+`projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Integrity State/generation, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
 
 ## Action submission
 
@@ -318,9 +342,16 @@ Semantics:
     "room_id": "01K...",
     "member_id": "01K...",
     "action_id": "01K...",
-    "room_seq": 92,
     "transition_id": "01K...",
-    "state_hash": "blake3:...",
+    "room_head": {
+      "room_seq": 92,
+      "lineage_hash": "blake3:...",
+      "core_schema": "worldstream.core-room-state.v1",
+      "pack_digest": "blake3:...",
+      "core_state_hash": "blake3:...",
+      "activity_state_hash": "blake3:...",
+      "authoritative_state_hash": "blake3:..."
+    },
     "duplicate": false
   }
 }
@@ -519,7 +550,15 @@ Only after claim authorization does the server return private invocation context
     },
     "deadline": "2026-08-13T18:30:00Z",
     "allowed_action_types": ["commit_move"],
-    "room_head_seq": 93,
+    "room_head": {
+      "room_seq": 93,
+      "lineage_hash": "blake3:...",
+      "core_schema": "worldstream.core-room-state.v1",
+      "pack_digest": "blake3:...",
+      "core_state_hash": "blake3:...",
+      "activity_state_hash": "blake3:...",
+      "authoritative_state_hash": "blake3:..."
+    },
     "projection": {
       "core": {
         "room_status": "active",
@@ -621,7 +660,9 @@ Public network exposure of these endpoints is not a production-ready control pla
 
 worldstreamctl generates bearer capability secrets locally, sends only the protocol-defined token hash to POST /v1/capabilities, and prints the plaintext locally. The server never stores or must replay a plaintext token to satisfy HTTP idempotency.
 
-Room archival and domain-relevant Membership, Access Mode, or Role changes are routed through the Room and commit as ordered Transitions. Their HTTP mutation receipt commits with the same change. Session presence, Runner availability, and other operational changes do not consume Room sequence. See [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md).
+Room archive and Membership Standing, Access Mode, or Role changes are normalized as versioned Core Stimuli with canonical authority attribution, idempotency identity, exact expected Room sequence, stable reason code, and Core before/after values. A single request may carry a Member-ID-sorted atomic final-state changeset with at most one pair per Membership. The server validates the complete state and Role cardinality without returning or persisting an intermediate assignment.
+
+Join, resume, Access Mode, and Role proposals may receive a stable pack-declared administrative rejection with an idempotent receipt and no Transition. Archive, suspend, and depart are mandatory and cannot be vetoed; a pack attempt is a fault. A pre-existing desired state may return durable NoChange. Every other accepted Core change commits its receipt and one ordered Transition. Archive is irreversible and atomically cancels timers and fences Activation work. See [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md) and [ADR 0005](adr/0005-canonical-core-state-integrity-and-hash-lineage.md).
 
 ### Room creation
 
@@ -644,7 +685,7 @@ Room archival and domain-relevant Membership, Access Mode, or Role changes are r
 }
 ~~~
 
-The server accepts only a compiled-in allowlisted pack digest. Creation records an immutable canonical sequence-zero genesis object containing pack digest, configuration, ordered Memberships/Roles, Room seed, and logical creation time. Genesis hash, initial Activity State hash, Memberships, initial Projections, timers, resource, and mutation receipt commit atomically. Recovery remains possible after every snapshot is deleted.
+The server accepts only a compiled-in allowlisted pack digest. Creation constructs initial `CoreRoomState v1`, initializes canonical Activity State and normalized initial timers with the exact pack, and records one immutable sequence-zero Genesis containing the exact version identities, configuration, both initial state values, timer list, Room seed, and logical creation time. Genesis hash plus initial Core, Activity, and aggregate hashes, complete Head zero, verified current materializations, timers, resource, and mutation receipt commit atomically. Genesis creates no Transition, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
 
 ### Current projection
 
@@ -652,19 +693,23 @@ The server accepts only a compiled-in allowlisted pack digest. Creation records 
 
 The authenticated viewer determines which projection the server returns. Supplying another member ID does not grant its view.
 
+A faulted Room returns only its last verified authorized Projection with `room_health: "faulted"` and the matching integrity generation. A quarantined Room returns `room_quarantined` and no normal Projection bytes.
+
 ### Replay
 
     GET /v1/rooms/{room_id}/replay?at_room_seq=91
 
-Replay authorization is separate from live-room authorization. During an active room, a participant cannot use replay to reveal state it was not allowed to observe. A completed pack may expose a final-reveal projection explicitly.
+Replay applies two authorization gates. Present authentication/authorization first admits the request. The reconstructed historical Membership at sequence N—its existence, Standing, Access Mode, and Role—then selects the viewer passed to the exact pack. A Membership absent at N receives no participant/private view, and a later Role or replacement Membership never inherits earlier private data. Spectator/operator history and completed final reveal require explicit presently authorized projection policy and do not bypass pack privacy.
 
 Replay responses name:
 
 - exact pack digest;
 - requested and reconstructed room sequence;
-- state and transition hashes;
+- complete Room Head with Core, Activity, aggregate, and lineage hashes;
 - authorized historical projection;
 - verification status.
+
+Replay runs the same versioned Core reducer and exact retained pack reducer, creates no Frames or Activation work, and performs no external effect. Faulted Rooms may return only verified history with an explicit integrity envelope. Quarantined Rooms return no normal or claimed-current Replay; host-operator verification/export use separate diagnostic surfaces.
 
 There is no fork or branch-creation API in v0.1 or v0.2.
 
@@ -723,8 +768,9 @@ Core error codes:
 | room_not_found | Unknown or hidden room |
 | membership_not_found | Unknown or hidden membership |
 | membership_not_enabled | Suspended or departed |
-| room_faulted | Integrity or deterministic activity failure |
-| room_quarantined | Hash/genesis integrity failure; read-only diagnostics only |
+| room_faulted | Last canonical Head verifies, but canonical mutation is fenced; only last-verified authorized serving is available |
+| room_quarantined | Canonical integrity cannot be established; no normal Projection, Catch-up, or Replay |
+| integrity_generation_changed | Prepared mutation/repair lost the operational integrity fence; no sequence or receipt was consumed |
 | room_archived | Ordinary mutation is disabled |
 | room_busy | Bounded actor mailbox full |
 | cursor_ahead | Client claims an impossible future frame |
@@ -761,22 +807,51 @@ For action idempotency:
 }
 ~~~
 
-For transition integrity:
+The three state hashes are separate typed objects:
+
+~~~json
+{"domain":"worldstream/core-state/v1","core_schema":"worldstream.core-room-state.v1","core":{}}
+~~~
+
+~~~json
+{"domain":"worldstream/activity-state/v1","pack_digest":"blake3:...","activity":{}}
+~~~
+
+~~~json
+{
+  "domain": "worldstream/authoritative-state/v1",
+  "core_schema": "worldstream.core-room-state.v1",
+  "pack_digest": "blake3:...",
+  "core_state_hash": "blake3:...",
+  "activity_state_hash": "blake3:..."
+}
+~~~
+
+The aggregate Authoritative State hash binds but never replaces both component hashes.
+
+For Transition integrity, the following semantic fields are exact even if pre-freeze wire field names change:
 
 ~~~json
 {
   "domain": "worldstream/transition/v1",
   "room_id": "01K...",
   "room_seq": 92,
+  "core_schema": "worldstream.core-room-state.v1",
   "pack_digest": "blake3:...",
   "previous_transition_or_genesis_hash": "blake3:...",
   "recorded_stimulus": {},
   "ordered_domain_events": [],
-  "resulting_state_hash": "blake3:..."
+  "ordered_timer_changes": [],
+  "ordered_attention_signals": [],
+  "resulting_core_state_hash": "blake3:...",
+  "resulting_activity_state_hash": "blake3:...",
+  "resulting_authoritative_state_hash": "blake3:..."
 }
 ~~~
 
-Genesis uses a third domain, worldstream/genesis/v1, and covers exact pack digest, configuration, ordered initial memberships/roles, seed, and logical creation time.
+The Transition version/hash/codec identities are carried by the typed domain and versioned envelope. Canonical authority attribution, idempotency identity, exact expected sequence, reason, and semantic input/time inside `recorded_stimulus` are included. Integrity state/generation/incidents, bearer/commit witnesses, receipts, materializations, snapshots, Projections/Frames/Cursors/resets/Sessions, policy and Activation records, diagnostics, telemetry, and commit wall time are excluded.
+
+Genesis uses `worldstream/genesis/v1` and binds Room/version identities, Core schema, exact pack digest, canonical configuration, normalized initial timers, Room seed, logical creation time, and initial Core, Activity, and aggregate hashes. The immutable Genesis record also stores both initial canonical state values so it is reconstructible without a snapshot.
 
 BLAKE3 hashes canonical JSON bytes for these typed objects. Golden vectors MUST be shared by Rust and Python and define integer, digest, string, and byte representation. Canonical JSON forbids floating point and duplicate keys and sorts object keys.
 
@@ -803,6 +878,16 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 5. A rate-limit or room-busy error consumes no receipt; retrying the identical action with the same ID can later be admitted.
 6. A deterministic stale-state rejection is durable; retrying that ID returns the same rejection.
 
+### Core, hashes, and integrity
+
+1. Replay a Genesis-only Room and verify complete Head zero plus Core, Activity, aggregate, and Genesis hashes.
+2. Atomically swap two Membership Roles whose sequential intermediate would violate pack cardinality; one Core Transition commits and no intermediate Projection or hash exists.
+3. Exercise enabled ↔ suspended, terminal depart/new-ID rejoin, participant Role requirement, and one-non-departed-Membership-per-Principal constraints.
+4. Verify join/resume/Access/Role vetoes are stable no-Transition administrative results while archive/suspend/depart cannot be declared vetoed.
+5. Race an accepted mutation with an integrity-generation change; one wins and the loser consumes no sequence or receipt.
+6. A faulted Room serves only last-verified authorized data with an integrity envelope; a quarantined Room serves only the host-operator diagnostic surfaces.
+7. Rebuild materializations and snapshots through verifier repair, then prove Genesis/Transition bytes and hashes did not change.
+
 ### Disconnect and catch-up
 
 1. A participant receives frame N but disconnects before acknowledging it.
@@ -826,7 +911,7 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 4. A runner claims it with a claim ID and lease generation.
 5. It starts a fresh invocation with authorized projection and catch-up.
 6. The invocation submits an ordinary idempotent action.
-7. Replaying the room reconstructs the activation decision but contacts no runner.
+7. Replaying the Room reproduces the deterministic Attention Signal but does not reevaluate policy, create Activation work, or contact a Runner.
 8. A lost claim reply is retried with the same claim ID and returns the original lease result.
 9. After lease expiry/reclaim, the old generation cannot complete the new lease.
 
@@ -835,13 +920,14 @@ The public Activity Pack ABI is reviewed only after both reference activities pa
 1. Two memberships have different private state.
 2. Stored frame payloads, catch-up, projection reset, replay, logs, and public UI are tested.
 3. No unauthorized field or artifact reference crosses audiences.
+4. Present authority admits Replay, while the reconstructed Membership/Access/Role at sequence N determines historical private content; later Roles and replacement Member IDs inherit none.
 
 ### Crash recovery
 
 1. The server commits an action and is terminated before its reply.
 2. The retry returns the original accepted result.
 3. Pending frames and activation intents remain available.
-4. Delete every snapshot; Recovery from immutable genesis plus Transitions reaches the recorded Room head, Core Room State, and Activity State hash.
+4. Delete every paired snapshot and current materialization; Recovery from immutable Genesis plus Transitions reaches the complete Room Head and all three state hashes.
 5. Duplicate a due TimerFired candidate; one conditional timer row and one canonical transition win.
 
 ### HTTP mutation idempotency

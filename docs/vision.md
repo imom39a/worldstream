@@ -103,6 +103,8 @@ The complete frozen hierarchy is intentionally small:
 
 A deployment can host many unrelated rooms. Each room is independently ordered and recovered. There is no Project or Workspace entity, no cross-room memory, and no multi-pack composition in v0.1 or v0.2.
 
+Authoritative Room State is exactly WorldStream-owned Core Room State (Room Status plus the semantic Membership map) together with pack-owned Activity State. Room Integrity State is durable operational protection around that truth, not another canonical state axis.
+
 Five concepts carry most of the product:
 
 1. Room — the authoritative shared state machine.
@@ -111,7 +113,7 @@ Five concepts carry most of the product:
 4. Action — the typed request that may change the room.
 5. Cursor and activation — continuity across temporary connections and invocations.
 
-Transitions, snapshots, and replay are the correctness machinery beneath those concepts.
+Immutable Genesis/Transitions, three state hashes, paired disposable snapshots, integrity fencing, and Replay are the correctness machinery beneath those concepts.
 
 ## Agent lifecycle without the metaphor
 
