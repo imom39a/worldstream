@@ -24,9 +24,9 @@ const OPERATOR: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC2";
 // A changed executor, codec, visibility rule, Action Offer, event, or lineage
 // byte must disagree during registry construction.
 const COUNTER_V1_TRANSCRIPT_DIGEST: &str =
-    "blake3:794897a7e3d286091d5a5316157dadee6b16f8e236b00369ac930fbb97aeadd6";
+    "blake3:af195b647116508de2210a5e8aec7d8558295ef8b270eedaeb70a0d624c8e9dd";
 const COUNTER_V2_TRANSCRIPT_DIGEST: &str =
-    "blake3:4f5fc4fb230cc918a7884cdb01418fff3cf4e551653bbecf0d3fccc2ba729ca3";
+    "blake3:2f09686e4b8f78db7220c5f1b55061788753d11619832d28e137412207e7196a";
 
 /// Constructs the complete embedded Counter conformance registry.
 ///

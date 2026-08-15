@@ -4,6 +4,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use worldstream_core::{PackDigestV1, builtin_counter_registry};
 
+use crate::counter_dependency_closure;
+
 const EXPECTED_MANIFEST_SCHEMA: &str = "worldstream/storage-compatibility-manifest/v1";
 
 pub fn generate(repository_root: &Path) -> Result<()> {
@@ -32,6 +34,7 @@ pub fn verify(repository_root: &Path) -> Result<()> {
         .with_context(|| format!("invalid JSON in {}", json_path.display()))?;
     verify_required_identity(&manifest)?;
     verify_workspace_toolchain(repository_root, &manifest)?;
+    counter_dependency_closure::verify(repository_root)?;
     verify_embedded_counter_registry(&manifest)?;
     Ok(())
 }

@@ -1,4 +1,5 @@
 mod compatibility;
+mod counter_dependency_closure;
 
 use std::path::PathBuf;
 
@@ -20,6 +21,12 @@ enum Command {
         #[command(subcommand)]
         command: CompatibilityCommand,
     },
+    /// Generate or verify Counter's scoped normal/build dependency identity.
+    #[command(name = "counter-deps")]
+    CounterDependencies {
+        #[command(subcommand)]
+        command: CounterDependenciesCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -27,6 +34,14 @@ enum CompatibilityCommand {
     /// Deterministically regenerate compatibility.json from compatibility.toml.
     Generate,
     /// Fail when syntax, semantic parity, sorting, or toolchain pins drift.
+    Verify,
+}
+
+#[derive(Debug, Subcommand)]
+enum CounterDependenciesCommand {
+    /// Regenerate the checked-in canonical Counter dependency closure.
+    Generate,
+    /// Fail when Counter's normal/build dependency closure has drifted.
     Verify,
 }
 
@@ -40,5 +55,11 @@ fn main() -> Result<()> {
         Command::Compatibility {
             command: CompatibilityCommand::Verify,
         } => compatibility::verify(&repository_root),
+        Command::CounterDependencies {
+            command: CounterDependenciesCommand::Generate,
+        } => counter_dependency_closure::generate(&repository_root),
+        Command::CounterDependencies {
+            command: CounterDependenciesCommand::Verify,
+        } => counter_dependency_closure::verify(&repository_root),
     }
 }

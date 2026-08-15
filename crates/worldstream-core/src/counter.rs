@@ -578,8 +578,8 @@ fn build_revision(revision: Revision) -> CounterRevisionV1 {
             .unwrap_or_else(|error| unreachable!("Counter codecs digest: {error}")),
         deterministic_static_data_digests: Vec::new(),
         rule_source_digest: artifact_digest.clone(),
-        deterministic_dependency_lock_digest: Blake3DigestV1::hash(&canonical_text_artifact(
-            include_bytes!("../../../Cargo.lock"),
+        deterministic_dependency_lock_digest: Blake3DigestV1::hash(include_bytes!(
+            "counter-dependency-closure.json"
         )),
     };
     descriptor.revision_digest = lock
