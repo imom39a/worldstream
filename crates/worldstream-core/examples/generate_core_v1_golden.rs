@@ -203,7 +203,7 @@ fn core_stimulus(
 
 fn accepted(trace: &mut CoreTraceV1, stimulus: RecordedStimulusV1) -> Result<()> {
     if !matches!(
-        trace.advance(stimulus)?,
+        trace.advance_for_conformance(stimulus)?,
         AdvanceDispositionV1::TransitionAccepted {
             existing: false,
             ..
@@ -431,8 +431,8 @@ fn main() -> Result<()> {
         "reject-1",
         "2026-08-15T12:06:00Z",
     )?;
-    let rejection_new = trace.advance(rejected.clone())?;
-    let rejection_existing = trace.advance(rejected)?;
+    let rejection_new = trace.advance_for_conformance(rejected.clone())?;
+    let rejection_existing = trace.advance_for_conformance(rejected)?;
     let rejection_new_bytes = match rejection_new {
         AdvanceDispositionV1::RejectionRecorded {
             existing: false,
@@ -458,8 +458,8 @@ fn main() -> Result<()> {
         "nochange-1",
         "2026-08-15T12:07:00Z",
     )?;
-    let no_change_new = trace.advance(no_change.clone())?;
-    let no_change_existing = trace.advance(no_change)?;
+    let no_change_new = trace.advance_for_conformance(no_change.clone())?;
+    let no_change_existing = trace.advance_for_conformance(no_change)?;
     let no_change_new_bytes = match no_change_new {
         AdvanceDispositionV1::NoChangeRecorded {
             existing: false,
@@ -618,7 +618,7 @@ fn main() -> Result<()> {
         "swap-reject",
         "2026-08-15T12:01:00Z",
     )?;
-    let atomic_reject_bytes = match swap_reject_trace.advance(stimulus)? {
+    let atomic_reject_bytes = match swap_reject_trace.advance_for_conformance(stimulus)? {
         AdvanceDispositionV1::RejectionRecorded {
             existing: false,
             canonical_receipt_bytes,
@@ -637,7 +637,7 @@ fn main() -> Result<()> {
         "archive-reject",
         "2026-08-15T12:01:00Z",
     )?;
-    let archive_reject = archive_reject_trace.advance(stimulus);
+    let archive_reject = archive_reject_trace.advance_for_conformance(stimulus);
     if !matches!(
         archive_reject,
         Err(worldstream_core::TraceErrorV1::Pack(

@@ -1577,7 +1577,7 @@ struct CodecBundleDigestV1<'a> {
 }
 
 /// One named deterministic build input to a semantic revision.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NamedDigestV1 {
     pub name: String,
@@ -1586,7 +1586,7 @@ pub struct NamedDigestV1 {
 
 /// Canonical semantic identity input. Its digest is always recomputed by the
 /// host; no executor may self-declare its key.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackRevisionLockV1 {
     pub revision_lock_id: String,
@@ -1603,6 +1603,37 @@ pub struct PackRevisionLockV1 {
 }
 
 impl PackRevisionLockV1 {
+    /// Strictly decodes and verifies one persisted revision lock against its
+    /// exact semantic digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for noncanonical bytes, invalid lock shape, or a
+    /// digest mismatch.
+    pub fn from_canonical_bytes(
+        input: &[u8],
+        expected_digest: &PackDigestV1,
+    ) -> Result<Self, PackRegistryErrorV1> {
+        let lock: Self = CanonicalJsonV1::decode_canonical(input)?;
+        if lock.revision_digest()? != *expected_digest {
+            return Err(PackRegistryErrorV1::RevisionDigestMismatch(
+                expected_digest.clone(),
+            ));
+        }
+        lock.validate_shape(expected_digest)?;
+        Ok(lock)
+    }
+
+    /// Returns the unique canonical persistence bytes for this closed revision
+    /// identity object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the closed revision lock cannot be canonically encoded.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, CanonicalJsonError> {
+        encode(self)
+    }
+
     /// Recomputes the semantic revision digest from the complete canonical
     /// lock. This is the only registry-key derivation.
     ///
@@ -1992,6 +2023,32 @@ pub struct ActivityPackHostV1 {
 }
 
 impl ActivityPackHostV1 {
+    /// Validates a declared Action payload before any lifecycle, Membership,
+    /// offer-window, or stale-Head disposition can consume its identity.
+    pub(crate) fn preflight_action_payload(
+        &self,
+        action_type: &str,
+        payload: &CanonicalJsonV1,
+    ) -> Result<Option<Blake3DigestV1>, ActivityPackReduceErrorV1> {
+        let Some(definition) = self
+            .retained
+            .descriptor()
+            .actions
+            .iter()
+            .find(|definition| definition.action_type == action_type)
+        else {
+            return Ok(None);
+        };
+        self.validate_value(
+            &definition.payload_schema,
+            payload,
+            self.retained.descriptor().limits.maximum_state_bytes,
+            "Action payload",
+        )
+        .map_err(|error| ActionAdmissionErrorV1::InvalidPayload(error.to_string()))?;
+        Ok(Some(definition.payload_schema.schema_digest.clone()))
+    }
+
     /// Returns immutable metadata for the bound exact semantic revision.
     #[must_use]
     pub fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
@@ -2037,24 +2094,27 @@ impl ActivityPackHostV1 {
         let output = invoke_pack(ActivityPackOperationV1::Initialize, || {
             self.retained.0.executor.initialize(&input, &cx)
         })?;
-        self.validate_value(
-            &descriptor.state_schema,
-            &output.initial_activity_state,
-            descriptor.limits.maximum_state_bytes,
-            "initial Activity State",
-        )?;
-        let timers =
-            self.normalize_initial_timers(output.timer_requests, request.created_at.as_str())?;
-        Ok(GenesisInputV1::new(
-            request.room_id.clone(),
-            request.pack_digest.clone(),
-            request.configuration.clone(),
-            request.room_seed.clone(),
-            request.created_at.clone(),
-            request.initial_core_state.clone(),
-            output.initial_activity_state,
-        )
-        .with_initial_timers(timers))
+        (|| {
+            self.validate_value(
+                &descriptor.state_schema,
+                &output.initial_activity_state,
+                descriptor.limits.maximum_state_bytes,
+                "initial Activity State",
+            )?;
+            let timers =
+                self.normalize_initial_timers(output.timer_requests, request.created_at.as_str())?;
+            Ok(GenesisInputV1::new(
+                request.room_id.clone(),
+                request.pack_digest.clone(),
+                request.configuration.clone(),
+                request.room_seed.clone(),
+                request.created_at.clone(),
+                request.initial_core_state.clone(),
+                output.initial_activity_state,
+            )
+            .with_initial_timers(timers))
+        })()
+        .map_err(|fault| operation_fault(ActivityPackOperationV1::Initialize, fault))
     }
 
     /// Constructs and validates one complete authorized view.
@@ -2073,54 +2133,69 @@ impl ActivityPackHostV1 {
             "Activity State",
         )?;
         let projection_reference = self.viewer_projection_schema(input.core, input.viewer)?;
-        let raw = invoke_pack(ActivityPackOperationV1::View, || {
+        let raw = match invoke_pack(ActivityPackOperationV1::View, || {
             self.retained.0.executor.view(input)
-        })?;
-        if raw.projection_schema != projection_reference.schema_id {
-            return Err(PackFaultV1::PrivacyContract(format!(
-                "viewer requires projection schema {}",
-                projection_reference.schema_id
-            )));
-        }
-        self.validate_value(
-            projection_reference,
-            &raw.projection,
-            self.retained.descriptor().limits.maximum_projection_bytes,
-            "Activity Projection",
-        )?;
-        if !matches!(input.viewer, PackViewerV1::Participant(_)) && !raw.action_offers.is_empty() {
-            return Err(PackFaultV1::PrivacyContract(
-                "nonparticipant view emitted Action Offers".to_owned(),
-            ));
-        }
-        let action_offers = self.canonicalize_action_offers(raw.action_offers)?;
-        let canonical_bytes = canonical_view_bytes(
-            input.core,
-            input.viewer,
-            &raw.projection_schema,
-            &raw.projection,
-            &action_offers,
-        )?;
-        let complete_view = CanonicalJsonV1::from_canonical_bytes(&canonical_bytes)
-            .map_err(canonical_pack_fault)?;
-        validate_canonical_bounds(
-            &complete_view,
-            self.retained.descriptor().limits,
-            "complete authorized view",
-        )?;
-        enforce_byte_bound(
-            canonical_bytes.len(),
-            self.retained.descriptor().limits.maximum_projection_bytes,
-            "complete Activity Projection",
-        )?;
-        Ok(ValidatedPackViewV1 {
-            viewer: input.viewer.clone(),
-            complete_head: input.complete_head.clone(),
-            projection_schema: raw.projection_schema,
-            projection: raw.projection,
-            action_offers,
-            canonical_bytes: Arc::from(canonical_bytes),
-        })
+        }) {
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::View,
+                fault,
+            }) if matches!(input.viewer, PackViewerV1::FinalReveal(_))
+                && matches!(fault.as_ref(), PackFaultV1::PrivacyContract(_)) =>
+            {
+                return Err(*fault);
+            }
+            result => result?,
+        };
+        (|| {
+            if raw.projection_schema != projection_reference.schema_id {
+                return Err(PackFaultV1::PrivacyContract(format!(
+                    "viewer requires projection schema {}",
+                    projection_reference.schema_id
+                )));
+            }
+            self.validate_value(
+                projection_reference,
+                &raw.projection,
+                self.retained.descriptor().limits.maximum_projection_bytes,
+                "Activity Projection",
+            )?;
+            if !matches!(input.viewer, PackViewerV1::Participant(_))
+                && !raw.action_offers.is_empty()
+            {
+                return Err(PackFaultV1::PrivacyContract(
+                    "nonparticipant view emitted Action Offers".to_owned(),
+                ));
+            }
+            let action_offers = self.canonicalize_action_offers(raw.action_offers)?;
+            let canonical_bytes = canonical_view_bytes(
+                input.core,
+                input.viewer,
+                &raw.projection_schema,
+                &raw.projection,
+                &action_offers,
+            )?;
+            let complete_view = CanonicalJsonV1::from_canonical_bytes(&canonical_bytes)
+                .map_err(canonical_pack_fault)?;
+            validate_canonical_bounds(
+                &complete_view,
+                self.retained.descriptor().limits,
+                "complete authorized view",
+            )?;
+            enforce_byte_bound(
+                canonical_bytes.len(),
+                self.retained.descriptor().limits.maximum_projection_bytes,
+                "complete Activity Projection",
+            )?;
+            Ok(ValidatedPackViewV1 {
+                viewer: input.viewer.clone(),
+                complete_head: input.complete_head.clone(),
+                projection_schema: raw.projection_schema,
+                projection: raw.projection,
+                action_offers,
+                canonical_bytes: Arc::from(canonical_bytes),
+            })
+        })()
+        .map_err(|fault| operation_fault(ActivityPackOperationV1::View, fault))
     }
 
     /// Checks exact current Action Offer membership and payload schema without
@@ -2263,7 +2338,8 @@ impl ActivityPackHostV1 {
         let disposition = invoke_pack(ActivityPackOperationV1::Reduce, || {
             self.retained.0.executor.reduce(input, &cx)
         })?;
-        self.validate_disposition(input, &disposition)?;
+        self.validate_disposition(input, &disposition)
+            .map_err(|fault| operation_fault(ActivityPackOperationV1::Reduce, fault))?;
         Ok(disposition)
     }
 
@@ -2339,70 +2415,74 @@ impl ActivityPackHostV1 {
                 after_view: &after,
             })
         })?;
-        let view_changed = before.canonical_bytes != after.canonical_bytes;
-        let Some(raw) = raw else {
-            if view_changed {
-                return Err(PackFaultV1::PrivacyContract(
-                    "observe returned None for a changed authorized view".to_owned(),
-                ));
+        (|| {
+            let view_changed = before.canonical_bytes != after.canonical_bytes;
+            let Some(raw) = raw else {
+                if view_changed {
+                    return Err(PackFaultV1::PrivacyContract(
+                        "observe returned None for a changed authorized view".to_owned(),
+                    ));
+                }
+                return Ok(ActivityObservationOutcomeV1::Hidden);
+            };
+            let observation_reference =
+                self.viewer_observation_schema(input.core_after, input.viewer)?;
+            if raw.observation_schema != observation_reference.schema_id {
+                return Err(PackFaultV1::PrivacyContract(format!(
+                    "viewer requires observation schema {}",
+                    observation_reference.schema_id
+                )));
             }
-            return Ok(ActivityObservationOutcomeV1::Hidden);
-        };
-        let observation_reference =
-            self.viewer_observation_schema(input.core_after, input.viewer)?;
-        if raw.observation_schema != observation_reference.schema_id {
-            return Err(PackFaultV1::PrivacyContract(format!(
-                "viewer requires observation schema {}",
-                observation_reference.schema_id
-            )));
-        }
-        self.validate_value(
-            observation_reference,
-            &raw.observation,
-            self.retained.descriptor().limits.maximum_observation_bytes,
-            "Activity observation",
-        )?;
-        let offers_changed =
-            before.action_offers.canonical_bytes != after.action_offers.canonical_bytes;
-        match (offers_changed, &raw.action_offers) {
-            (true, Some(offers)) if offers.shares_storage_with(&after.action_offers) => {}
-            (true, _) => {
-                return Err(PackFaultV1::PrivacyContract(
-                    "changed offers did not reuse the exact supplied after-view bytes".to_owned(),
-                ));
+            self.validate_value(
+                observation_reference,
+                &raw.observation,
+                self.retained.descriptor().limits.maximum_observation_bytes,
+                "Activity observation",
+            )?;
+            let offers_changed =
+                before.action_offers.canonical_bytes != after.action_offers.canonical_bytes;
+            match (offers_changed, &raw.action_offers) {
+                (true, Some(offers)) if offers.shares_storage_with(&after.action_offers) => {}
+                (true, _) => {
+                    return Err(PackFaultV1::PrivacyContract(
+                        "changed offers did not reuse the exact supplied after-view bytes"
+                            .to_owned(),
+                    ));
+                }
+                (false, None) => {}
+                (false, Some(_)) => {
+                    return Err(PackFaultV1::PrivacyContract(
+                        "unchanged offers were redundantly re-emitted".to_owned(),
+                    ));
+                }
             }
-            (false, None) => {}
-            (false, Some(_)) => {
-                return Err(PackFaultV1::PrivacyContract(
-                    "unchanged offers were redundantly re-emitted".to_owned(),
-                ));
-            }
-        }
-        let canonical_bytes = canonical_observation_bytes(
-            &raw.observation_schema,
-            &raw.observation,
-            raw.action_offers.as_ref(),
-        )?;
-        let complete_observation = CanonicalJsonV1::from_canonical_bytes(&canonical_bytes)
-            .map_err(canonical_pack_fault)?;
-        validate_canonical_bounds(
-            &complete_observation,
-            self.retained.descriptor().limits,
-            "complete authorized observation",
-        )?;
-        enforce_byte_bound(
-            canonical_bytes.len(),
-            self.retained.descriptor().limits.maximum_observation_bytes,
-            "complete Activity observation",
-        )?;
-        Ok(ActivityObservationOutcomeV1::Observation(
-            ValidatedPackObservationV1 {
-                observation_schema: raw.observation_schema,
-                observation: raw.observation,
-                action_offers: raw.action_offers,
-                canonical_bytes: Arc::from(canonical_bytes),
-            },
-        ))
+            let canonical_bytes = canonical_observation_bytes(
+                &raw.observation_schema,
+                &raw.observation,
+                raw.action_offers.as_ref(),
+            )?;
+            let complete_observation = CanonicalJsonV1::from_canonical_bytes(&canonical_bytes)
+                .map_err(canonical_pack_fault)?;
+            validate_canonical_bounds(
+                &complete_observation,
+                self.retained.descriptor().limits,
+                "complete authorized observation",
+            )?;
+            enforce_byte_bound(
+                canonical_bytes.len(),
+                self.retained.descriptor().limits.maximum_observation_bytes,
+                "complete Activity observation",
+            )?;
+            Ok(ActivityObservationOutcomeV1::Observation(
+                ValidatedPackObservationV1 {
+                    observation_schema: raw.observation_schema,
+                    observation: raw.observation,
+                    action_offers: raw.action_offers,
+                    canonical_bytes: Arc::from(canonical_bytes),
+                },
+            ))
+        })()
+        .map_err(|fault| operation_fault(ActivityPackOperationV1::Observe, fault))
     }
 
     fn validate_bound_head(
@@ -2873,6 +2953,14 @@ fn invoke_pack<T>(
 ) -> Result<T, PackFaultV1> {
     catch_unwind(AssertUnwindSafe(callback))
         .map_err(|_| PackFaultV1::OperationPanicked(operation))?
+        .map_err(|fault| operation_fault(operation, fault))
+}
+
+fn operation_fault(operation: ActivityPackOperationV1, fault: PackFaultV1) -> PackFaultV1 {
+    PackFaultV1::OperationFault {
+        operation,
+        fault: Box::new(fault),
+    }
 }
 
 fn clean_rejection_is_allowed(stimulus: &RecordedStimulusV1) -> bool {
@@ -3676,6 +3764,36 @@ impl PackRegistryV1 {
             return Err(PackRegistryErrorV1::EmptyRegistry);
         }
         Ok(Self { revisions })
+    }
+
+    #[cfg(any(test, feature = "conformance-tracer"))]
+    pub(crate) fn replace_executor_for_conformance(
+        &mut self,
+        digest: &PackDigestV1,
+        executor: Arc<dyn ActivityPackV1>,
+    ) -> Result<(), PackRegistryErrorV1> {
+        let current = self
+            .revisions
+            .get(digest)
+            .ok_or_else(|| PackRegistryErrorV1::MissingRevision(digest.clone()))?;
+        let descriptor = catch_unwind(AssertUnwindSafe(|| executor.descriptor()))
+            .map_err(|_| PackRegistryErrorV1::DescriptorPanicked(digest.clone()))?;
+        if descriptor != current.descriptor {
+            return Err(PackRegistryErrorV1::WrongExecutor(digest.clone()));
+        }
+        let replacement = ValidatedPackEntryV1 {
+            revision_lock: current.revision_lock.clone(),
+            descriptor: current.descriptor,
+            schemas: current.schemas.clone(),
+            codecs: current.codecs.clone(),
+            codec_implementation: current.codec_implementation,
+            executor_artifact_digest: current.executor_artifact_digest.clone(),
+            golden_corpus_digest: current.golden_corpus_digest.clone(),
+            executor,
+            status: current.status,
+        };
+        self.revisions.insert(digest.clone(), Arc::new(replacement));
+        Ok(())
     }
 
     /// Resolves the exact runnable executor for retained lineage.
@@ -5504,8 +5622,11 @@ mod tests {
         );
         assert!(matches!(
             current_view(&host, &trace),
-            Err(PackFaultV1::OutputBoundExceeded(detail))
-                if detail.contains("Action Offers count 2")
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::View,
+                fault,
+            }) if matches!(fault.as_ref(), PackFaultV1::OutputBoundExceeded(detail)
+                if detail.contains("Action Offers count 2"))
         ));
 
         let counts = Arc::new(CallbackCounts::default());
@@ -5523,7 +5644,10 @@ mod tests {
         );
         assert!(matches!(
             current_view(&host, &trace),
-            Err(PackFaultV1::OutputBoundExceeded(_))
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::View,
+                fault,
+            }) if matches!(fault.as_ref(), PackFaultV1::OutputBoundExceeded(_))
         ));
         assert_eq!(counts.view.load(AtomicOrdering::Relaxed), 1);
 
@@ -5553,7 +5677,10 @@ mod tests {
             trace_with_core_and_digest(core, json("{}"), host.descriptor().revision_digest.clone());
         assert!(matches!(
             current_view(&host, &trace),
-            Err(PackFaultV1::OutputBoundExceeded(_))
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::View,
+                fault,
+            }) if matches!(fault.as_ref(), PackFaultV1::OutputBoundExceeded(_))
         ));
     }
 
@@ -5579,11 +5706,25 @@ mod tests {
             match (expected, error) {
                 (
                     "undeclared",
-                    ActivityPackReduceErrorV1::Pack(PackFaultV1::UndeclaredRejectionCode(_)),
-                )
-                | ("schema", ActivityPackReduceErrorV1::Pack(PackFaultV1::SchemaViolation(_)))
-                | ("bound", ActivityPackReduceErrorV1::Pack(PackFaultV1::OutputBoundExceeded(_))) =>
-                    {}
+                    ActivityPackReduceErrorV1::Pack(PackFaultV1::OperationFault {
+                        operation: ActivityPackOperationV1::Reduce,
+                        fault,
+                    }),
+                ) if matches!(fault.as_ref(), PackFaultV1::UndeclaredRejectionCode(_)) => {}
+                (
+                    "schema",
+                    ActivityPackReduceErrorV1::Pack(PackFaultV1::OperationFault {
+                        operation: ActivityPackOperationV1::Reduce,
+                        fault,
+                    }),
+                ) if matches!(fault.as_ref(), PackFaultV1::SchemaViolation(_)) => {}
+                (
+                    "bound",
+                    ActivityPackReduceErrorV1::Pack(PackFaultV1::OperationFault {
+                        operation: ActivityPackOperationV1::Reduce,
+                        fault,
+                    }),
+                ) if matches!(fault.as_ref(), PackFaultV1::OutputBoundExceeded(_)) => {}
                 (_, other) => unreachable!("unexpected malicious-output error: {other}"),
             }
             assert_eq!(counts.reduce.load(AtomicOrdering::Relaxed), 1);
@@ -5613,7 +5754,10 @@ mod tests {
                 transition.after.head(),
                 &transition.stimulus,
             ),
-            Err(PackFaultV1::PrivacyContract(_))
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::Observe,
+                fault,
+            }) if matches!(fault.as_ref(), PackFaultV1::PrivacyContract(_))
         ));
 
         let hidden_counts = Arc::new(CallbackCounts::default());
@@ -5753,7 +5897,10 @@ mod tests {
                 role_trace.head(),
                 &role_stimulus,
             ),
-            Err(PackFaultV1::PrivacyContract(_))
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::Observe,
+                fault,
+            }) if matches!(fault.as_ref(), PackFaultV1::PrivacyContract(_))
         ));
 
         let mut archive_trace = trace_with_activity(json("{}"));
@@ -5780,7 +5927,10 @@ mod tests {
                 archive_trace.head(),
                 &archive_stimulus,
             ),
-            Err(PackFaultV1::PrivacyContract(_))
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::Observe,
+                fault,
+            }) if matches!(fault.as_ref(), PackFaultV1::PrivacyContract(_))
         ));
         assert_eq!(counts.observe.load(AtomicOrdering::Relaxed), 2);
     }
@@ -5938,7 +6088,10 @@ mod tests {
         oversize_pack.projection_behavior = ProjectionBehavior::Oversize;
         assert!(matches!(
             checked_host(oversize_pack).observe(&join_input),
-            Err(PackFaultV1::OutputBoundExceeded(_))
+            Err(PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::View,
+                fault,
+            }) if matches!(fault.as_ref(), PackFaultV1::OutputBoundExceeded(_))
         ));
         assert_eq!(oversize_counts.view.load(AtomicOrdering::Relaxed), 1);
         assert_eq!(oversize_counts.observe.load(AtomicOrdering::Relaxed), 0);
@@ -6048,8 +6201,11 @@ mod tests {
         assert!(matches!(
             result,
             Err(ActivityPackReduceErrorV1::Pack(
-                PackFaultV1::MandatoryStimulusRejected
-            ))
+                PackFaultV1::OperationFault {
+                    operation: ActivityPackOperationV1::Reduce,
+                    fault,
+                }
+            )) if matches!(fault.as_ref(), PackFaultV1::MandatoryStimulusRejected)
         ));
         assert_eq!(counts.reduce.load(AtomicOrdering::Relaxed), 1);
         assert_eq!(&core_before, verified.state());

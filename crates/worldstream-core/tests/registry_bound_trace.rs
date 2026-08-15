@@ -57,7 +57,7 @@ fn new_trace(initial_value: u32, maximum_value: u32) -> (PackRegistryV1, CoreTra
     let prepared = registry
         .prepare_genesis_for_new_room(&request)
         .unwrap_or_else(|error| unreachable!("checked Counter Genesis: {error}"));
-    let trace = CoreTraceV1::create(prepared)
+    let trace = CoreTraceV1::create_from_retained_for_conformance(prepared)
         .unwrap_or_else(|error| unreachable!("registry-bound trace: {error}"));
     (registry, trace)
 }
@@ -108,7 +108,7 @@ fn participant_admission_uses_the_exact_current_view_and_never_reduces_stale_wor
         .unwrap_or_else(|error| unreachable!("first preparation: {error}"));
     assert!(matches!(
         trace
-            .install_prepared(prepared)
+            .install_prepared_for_conformance(prepared)
             .unwrap_or_else(|error| unreachable!("first install: {error}")),
         AdvanceDispositionV1::TransitionAccepted {
             existing: false,
@@ -157,7 +157,7 @@ fn sealed_prepared_observation_and_replay_continuation_remain_registry_bound() {
         .unwrap_or_else(|error| unreachable!("first preparation: {error}"));
     assert!(matches!(
         trace
-            .observe_prepared(
+            .observe_prepared_for_conformance(
                 &prepared,
                 &worldstream_core::PackViewerV1::Participant(parsed(PARTICIPANT)),
             )
@@ -165,7 +165,7 @@ fn sealed_prepared_observation_and_replay_continuation_remain_registry_bound() {
         ActivityObservationOutcomeV1::Observation(_)
     ));
     trace
-        .install_prepared(prepared)
+        .install_prepared_for_conformance(prepared)
         .unwrap_or_else(|error| unreachable!("first install: {error}"));
 
     let genesis_bytes = trace
@@ -196,7 +196,7 @@ fn sealed_prepared_observation_and_replay_continuation_remain_registry_bound() {
         .prepare(continuation)
         .unwrap_or_else(|error| unreachable!("continuation preparation: {error}"));
     restored
-        .install_prepared(prepared)
+        .install_prepared_for_conformance(prepared)
         .unwrap_or_else(|error| unreachable!("continuation install: {error}"));
     assert_eq!(restored.head().room_seq().get(), 2);
 }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    CanonicalJsonV1,
+    CanonicalJsonError, CanonicalJsonV1,
     primitives::{
         ActionAdmittedAt, ActionId, Blake3DigestV1, CoreRecordedAt, ExternalInputRecordedAt,
         InputId, IntegrityGenerationV1, MemberId, PackDigestV1, PrincipalId, RoomId, RoomSeedV1,
@@ -82,6 +82,16 @@ impl CoreRoomStateV1 {
     #[must_use]
     pub const fn room_status(&self) -> RoomStatusV1 {
         self.room_status
+    }
+
+    /// Returns the unique canonical persistence bytes for this closed Core
+    /// state model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the validated state cannot be canonically encoded.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, CanonicalJsonError> {
+        CanonicalJsonV1::from_serialize(self)?.to_bytes()
     }
 }
 
@@ -935,6 +945,16 @@ pub struct CompleteHeadV1 {
 }
 
 impl CompleteHeadV1 {
+    /// Returns the unique canonical persistence bytes for the indivisible
+    /// eight-field Head.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the validated Head cannot be canonically encoded.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, CanonicalJsonError> {
+        CanonicalJsonV1::from_serialize(self)?.to_bytes()
+    }
+
     /// Returns the Room identity.
     #[must_use]
     pub fn room_id(&self) -> &RoomId {

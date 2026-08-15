@@ -47,6 +47,10 @@ typed_ulid!(RoomId, "An immutable Room identifier.");
 typed_ulid!(MemberId, "An immutable Membership identifier.");
 typed_ulid!(PrincipalId, "An authenticated Principal identifier.");
 typed_ulid!(ActionId, "A participant-generated Action identity.");
+typed_ulid!(
+    TransitionId,
+    "An operational immutable Transition identifier."
+);
 typed_ulid!(TimerId, "A logical host-owned Timer identifier.");
 typed_ulid!(SourceId, "A predefined external-input source identifier.");
 typed_ulid!(InputId, "An immutable external-input identity.");
@@ -57,7 +61,9 @@ typed_ulid!(InputId, "An immutable external-input identity.");
 pub struct Blake3DigestV1([u8; 32]);
 
 impl Blake3DigestV1 {
-    pub(crate) fn hash(bytes: &[u8]) -> Self {
+    /// Computes the frozen raw BLAKE3-256 digest of exact bytes.
+    #[must_use]
+    pub fn hash(bytes: &[u8]) -> Self {
         Self(*blake3::hash(bytes).as_bytes())
     }
 

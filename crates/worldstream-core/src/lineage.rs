@@ -183,7 +183,11 @@ pub struct GenesisV1 {
 impl GenesisV1 {
     /// Strictly decodes original persisted bytes and requires byte equality
     /// after canonical re-encoding. Replay never accepts a normalized record.
-    pub(crate) fn from_canonical_bytes(input: &[u8]) -> Result<Self, CanonicalJsonError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the bytes are the exact canonical Genesis wire form.
+    pub fn from_canonical_bytes(input: &[u8]) -> Result<Self, CanonicalJsonError> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct UnverifiedGenesis {
@@ -395,7 +399,11 @@ pub struct TransitionV1 {
 impl TransitionV1 {
     /// Strictly decodes original persisted bytes and requires byte equality
     /// after canonical re-encoding. Replay never accepts a normalized record.
-    pub(crate) fn from_canonical_bytes(input: &[u8]) -> Result<Self, CanonicalJsonError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the bytes are the exact canonical Transition wire form.
+    pub fn from_canonical_bytes(input: &[u8]) -> Result<Self, CanonicalJsonError> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct UnverifiedTransition {

@@ -4,6 +4,7 @@ members = [
     "crates/worldstream-protocol",
     "crates/worldstream-runtime",
     "crates/worldstream-server",
+    "crates/worldstream-sqlite",
     "xtask",
 ]
 resolver = "3"
@@ -24,6 +25,10 @@ directories = "=6.0.0"
 filedescriptor = "=0.8.3"
 http-body-util = "=0.1.5"
 rustix = { version = "=1.1.4", features = ["process"] }
+# This exact source revision carries the official SQLite 3.53.4 amalgamation.
+# Keep the git revision paired with worldstream-sqlite's exact runtime
+# sqlite_version()/sqlite_source_id() checks.
+rusqlite = { git = "https://github.com/rusqlite/rusqlite.git", rev = "229140734a4a60cc9fa34507fe79cb2277142f49", default-features = false, features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tempfile = "=3.27.0"

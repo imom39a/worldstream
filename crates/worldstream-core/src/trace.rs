@@ -13,14 +13,15 @@ use thiserror::Error;
 
 use crate::{
     AccessModeV1, ActionAdmissionErrorV1, ActivityApplyV1, ActivityDispositionV1,
-    ActivityObservationOutcomeV1, ActivityPackReduceErrorV1, ActivityReduceInputV1,
-    ActivityRejectionV1, AdministrationOperationIdentityV1, Blake3DigestV1, CANONICAL_CODEC_ID,
-    CORE_SCHEMA_VERSION, CanonicalJsonError, CanonicalJsonV1, CompleteHeadV1, CoreProposedV1,
-    CoreRoomStateV1, CoreValidationErrorV1, GENESIS_VERSION, GenesisInputV1, GenesisV1,
-    HASH_SUITE_ID, MembershipStandingV1, PackGenesisErrorV1, PackGenesisRequestV1, PackRegistryV1,
-    PackViewerV1, PreparedNewRoomGenesisV1, RecordedStimulusV1, RetainedActivityPackV1, RoomSeedV1,
-    RoomSequenceV1, RoomStatusV1, ScheduledTimerV1, TRANSITION_VERSION, TimerChangeV1,
-    TimerGenerationV1, TimerId, TimerRequestV1, TransitionV1, ViewInputV1,
+    ActivityObservationOutcomeV1, ActivityPackOperationV1, ActivityPackReduceErrorV1,
+    ActivityReduceInputV1, ActivityRejectionV1, AdministrationOperationIdentityV1, Blake3DigestV1,
+    CANONICAL_CODEC_ID, CORE_SCHEMA_VERSION, CanonicalJsonError, CanonicalJsonV1, CompleteHeadV1,
+    CoreProposedV1, CoreRoomStateV1, CoreValidationErrorV1, GENESIS_VERSION, GenesisInputV1,
+    GenesisV1, HASH_SUITE_ID, MembershipStandingV1, PackGenesisErrorV1, PackGenesisRequestV1,
+    PackRegistryErrorV1, PackRegistryV1, PackViewerV1, PreparedNewRoomGenesisV1,
+    RecordedStimulusV1, RetainedActivityPackV1, RoomSeedV1, RoomSequenceV1, RoomStatusV1,
+    ScheduledTimerV1, TRANSITION_VERSION, TimerChangeV1, TimerGenerationV1, TimerId,
+    TimerRequestV1, TransitionV1, ViewInputV1,
     activity_pack::{ObserveTransitionInputV1, VerifiedRetainedGenesisV1},
     canonical::encode,
     lineage::{hash_activity_state, hash_authoritative_state, hash_core_state},
@@ -46,6 +47,15 @@ pub struct CoreTraceV1 {
     room_seed: RoomSeedV1,
     retained_pack: Option<RetainedActivityPackV1>,
     preparer: RoomTransitionPreparerV1,
+}
+
+/// Crate-private pre-reducer classification used to seal a stable Action
+/// disposition without exposing pack host internals to storage.
+pub(crate) struct StableActionAdmissionV1 {
+    pub(crate) code: &'static str,
+    pub(crate) normalized_action: Option<crate::ParticipantActionV1>,
+    pub(crate) current_action_offers: Option<Vec<u8>>,
+    pub(crate) unavailable_reason: Option<&'static str>,
 }
 
 type RoleValidatorFn = dyn Fn(&CoreRoomStateV1) -> Result<(), String> + Send + Sync;
@@ -284,6 +294,7 @@ impl RoomTransitionPreparerV1 {
         if !Arc::ptr_eq(&self.identity, &state.preparer_identity) {
             return Err(TraceErrorV1::TransitionPreparerProvenanceMismatch);
         }
+        let recorded_stimulus = stimulus.clone();
         let administration = match &stimulus {
             RecordedStimulusV1::CoreProposed(proposal) => Some((
                 proposal.operation_identity.clone(),
@@ -298,6 +309,8 @@ impl RoomTransitionPreparerV1 {
             return Ok(PreparedRoomTransitionV1 {
                 preparer_identity: Arc::clone(&self.identity),
                 basis_complete_head: state.head.clone(),
+                recorded_stimulus,
+                action_offer_witness: None,
                 outcome: AdvanceDispositionV1::NoChangeRecorded {
                     existing: false,
                     canonical_receipt_bytes: receipt,
@@ -317,18 +330,23 @@ impl RoomTransitionPreparerV1 {
             next_room_seq,
             recorded_stimulus: &stimulus,
         };
-        let disposition = self.reduce_activity(state, &input, callback_counter)?;
+        let (disposition, action_offer_witness) =
+            self.reduce_activity(state, &input, callback_counter)?;
         let apply = match disposition {
             ActivityDispositionV1::Apply(apply) => apply,
             ActivityDispositionV1::Reject(rejection) => {
                 if !clean_rejection_allowed(&stimulus, proposed.class) {
-                    return Err(PackFaultV1::MandatoryStimulusRejected.into());
+                    return Err(self
+                        .retained_reduce_output_fault(PackFaultV1::MandatoryStimulusRejected)
+                        .into());
                 }
                 let receipt =
                     administration_receipt(&stimulus, &state.head, "rejected", Some(&rejection))?;
                 return Ok(PreparedRoomTransitionV1 {
                     preparer_identity: Arc::clone(&self.identity),
                     basis_complete_head: state.head.clone(),
+                    recorded_stimulus,
+                    action_offer_witness,
                     outcome: AdvanceDispositionV1::RejectionRecorded {
                         existing: false,
                         rejection,
@@ -344,7 +362,9 @@ impl RoomTransitionPreparerV1 {
         if proposed.verified_state.state.room_status == RoomStatusV1::Archived
             && !apply.timer_requests.is_empty()
         {
-            return Err(PackFaultV1::ArchiveTimerMutation.into());
+            return Err(self
+                .retained_reduce_output_fault(PackFaultV1::ArchiveTimerMutation)
+                .into());
         }
         let (normalized_timer_changes, next_timers) = state
             .timers
@@ -353,7 +373,11 @@ impl RoomTransitionPreparerV1 {
                 &apply.timer_requests,
                 proposed.verified_state.state.room_status,
             )
-            .map_err(|error| PackFaultV1::InvalidTimerOutput(error.to_string()))?;
+            .map_err(|error| {
+                self.retained_reduce_output_fault(PackFaultV1::InvalidTimerOutput(
+                    error.to_string(),
+                ))
+            })?;
         let transition = Self::build_transition(
             state,
             next_room_seq,
@@ -376,6 +400,8 @@ impl RoomTransitionPreparerV1 {
         Ok(PreparedRoomTransitionV1 {
             preparer_identity: Arc::clone(&self.identity),
             basis_complete_head: state.head.clone(),
+            recorded_stimulus,
+            action_offer_witness,
             outcome: AdvanceDispositionV1::TransitionAccepted {
                 existing: false,
                 transition: Box::new(transition),
@@ -391,7 +417,7 @@ impl RoomTransitionPreparerV1 {
         state: &RoomTransitionStateV1,
         input: &ActivityReduceInputV1<'_>,
         callback_counter: Option<&AtomicUsize>,
-    ) -> Result<ActivityDispositionV1, TraceErrorV1> {
+    ) -> Result<(ActivityDispositionV1, Option<Vec<u8>>), TraceErrorV1> {
         match &self.activity_reducer {
             BoundActivityReducerV1::Retained {
                 retained_pack,
@@ -424,16 +450,30 @@ impl RoomTransitionPreparerV1 {
                         },
                     )
                     .map_err(map_activity_pack_reduce_error)?;
-                Ok(disposition)
+                let action_offer_witness = participant_view
+                    .as_ref()
+                    .map(|view| view.action_offers().canonical_bytes().to_vec());
+                Ok((disposition, action_offer_witness))
             }
             BoundActivityReducerV1::Conformance(reducer) => {
                 if let Some(counter) = callback_counter {
                     counter.fetch_add(1, AtomicOrdering::Relaxed);
                 }
-                catch_unwind(AssertUnwindSafe(|| reducer(input)))
+                let disposition = catch_unwind(AssertUnwindSafe(|| reducer(input)))
                     .map_err(|_| PackFaultV1::CallbackPanicked)?
-                    .map_err(Into::into)
+                    .map_err(TraceErrorV1::from)?;
+                Ok((disposition, None))
             }
+        }
+    }
+
+    fn retained_reduce_output_fault(&self, fault: PackFaultV1) -> PackFaultV1 {
+        match self.activity_reducer {
+            BoundActivityReducerV1::Retained { .. } => PackFaultV1::OperationFault {
+                operation: ActivityPackOperationV1::Reduce,
+                fault: Box::new(fault),
+            },
+            BoundActivityReducerV1::Conformance(_) => fault,
         }
     }
 
@@ -578,6 +618,63 @@ impl RoomTransitionStateV1 {
     }
 }
 
+fn record_replay_observation_frames(
+    trace: &CoreTraceV1,
+    prepared: &PreparedRoomTransitionV1,
+    frame_heads: &mut BTreeMap<crate::MemberId, u64>,
+    frames: &mut Vec<ReplayObservationFrameV1>,
+) -> Result<(), TraceErrorV1> {
+    if !prepared.is_new()
+        || prepared.basis_complete_head() != trace.head()
+        || !matches!(
+            prepared.disposition(),
+            AdvanceDispositionV1::TransitionAccepted {
+                existing: false,
+                ..
+            }
+        )
+    {
+        return Err(TraceErrorV1::InvalidPreparedAdvance);
+    }
+    let resulting_state = prepared
+        .resulting_state
+        .as_ref()
+        .ok_or(TraceErrorV1::InvalidPreparedAdvance)?;
+    let cause_room_seq = resulting_state.head.room_seq();
+    for membership in resulting_state.core_state().memberships().values() {
+        if membership.standing() != MembershipStandingV1::Enabled {
+            continue;
+        }
+        let viewer = match membership.access_mode() {
+            AccessModeV1::Participant => PackViewerV1::Participant(membership.member_id().clone()),
+            AccessModeV1::Spectator => PackViewerV1::Public(membership.member_id().clone()),
+            AccessModeV1::Operator => PackViewerV1::Operator(membership.member_id().clone()),
+        };
+        match trace.observe_prepared(prepared, &viewer)? {
+            ActivityObservationOutcomeV1::Observation(observation) => {
+                let frame_head = frame_heads
+                    .entry(membership.member_id().clone())
+                    .or_insert(0);
+                let frame_seq = frame_head
+                    .checked_add(1)
+                    .ok_or(TraceErrorV1::InvalidPreparedAdvance)?;
+                let canonical_payload_bytes = observation.canonical_bytes().to_vec();
+                frames.push(ReplayObservationFrameV1 {
+                    member_id: membership.member_id().clone(),
+                    frame_seq,
+                    cause_room_seq,
+                    payload_hash: Blake3DigestV1::hash(&canonical_payload_bytes),
+                });
+                *frame_head = frame_seq;
+            }
+            ActivityObservationOutcomeV1::Hidden
+            | ActivityObservationOutcomeV1::ProjectionReset(_)
+            | ActivityObservationOutcomeV1::VisibilityLost => {}
+        }
+    }
+    Ok(())
+}
+
 impl CoreTraceV1 {
     /// Creates a Room only from the opaque registry-selected and checked
     /// Genesis token. The exact retained executor and immutable Room seed are
@@ -588,7 +685,9 @@ impl CoreTraceV1 {
     /// Returns an error if Genesis, initial Core/Activity state, timers, the
     /// retained revision identity, or canonical hashes fail validation.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn create(prepared_genesis: PreparedNewRoomGenesisV1) -> Result<Self, TraceErrorV1> {
+    pub(crate) fn create_uncommitted(
+        prepared_genesis: PreparedNewRoomGenesisV1,
+    ) -> Result<Self, TraceErrorV1> {
         let input = prepared_genesis.genesis_input().clone();
         let retained_pack = prepared_genesis.retained_pack().clone();
         if input.pack_digest != retained_pack.descriptor().revision_digest {
@@ -599,6 +698,15 @@ impl CoreTraceV1 {
             input.room_seed.clone(),
         );
         Self::create_with_preparer(input, preparer, Some(retained_pack))
+    }
+
+    /// Explicit in-memory retained-pack constructor for conformance only.
+    #[cfg(feature = "conformance-tracer")]
+    #[doc(hidden)]
+    pub fn create_from_retained_for_conformance(
+        prepared_genesis: PreparedNewRoomGenesisV1,
+    ) -> Result<Self, TraceErrorV1> {
+        Self::create_uncommitted(prepared_genesis)
     }
 
     /// Explicit opt-in raw closure seam for generating frozen conformance
@@ -717,7 +825,7 @@ impl CoreTraceV1 {
     /// # Errors
     ///
     /// Returns an error if preparation or checked installation fails.
-    pub fn advance(
+    pub(crate) fn advance(
         &mut self,
         stimulus: RecordedStimulusV1,
     ) -> Result<AdvanceDispositionV1, TraceErrorV1> {
@@ -725,11 +833,21 @@ impl CoreTraceV1 {
         self.install_prepared_inner(prepared, true)
     }
 
+    /// Bypasses durable commit only for explicit conformance tracing.
+    #[cfg(feature = "conformance-tracer")]
+    #[doc(hidden)]
+    pub fn advance_for_conformance(
+        &mut self,
+        stimulus: RecordedStimulusV1,
+    ) -> Result<AdvanceDispositionV1, TraceErrorV1> {
+        self.advance(stimulus)
+    }
+
     /// Purely evaluates one normalized Stimulus against the exact current
     /// Head. This performs Core reduction, Activity reduction, normalization,
     /// canonical encoding, and hashing without installing state or consuming
-    /// a sequence. A runtime may persist the sealed result before calling
-    /// [`Self::install_prepared`].
+    /// a sequence. A runtime must pass the sealed result through the
+    /// storage-backed commit coordinator before installation.
     ///
     /// # Errors
     ///
@@ -749,6 +867,133 @@ impl CoreTraceV1 {
         )
     }
 
+    /// Performs only the stable host-controlled Action admission checks. It
+    /// never invokes Activity reduction and returns `None` when reduction is
+    /// legal rather than fabricating a durable rejection.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn assess_stable_action_disposition(
+        &self,
+        request: &crate::ParticipantActionRequestV1,
+        admitted_at: &crate::ActionAdmittedAt,
+    ) -> Result<Option<StableActionAdmissionV1>, TraceErrorV1> {
+        if request.room_id() != self.head.room_id() {
+            return Err(TraceErrorV1::CompleteHeadMismatch);
+        }
+        let retained_pack = self
+            .retained_pack
+            .as_ref()
+            .ok_or(TraceErrorV1::RetainedPackUnavailable)?;
+        let declared_payload_schema = retained_pack
+            .host()
+            .preflight_action_payload(request.action_type(), request.payload())
+            .map_err(map_activity_pack_reduce_error)?;
+        let membership = self
+            .core_state
+            .membership(request.member_id())
+            .ok_or(TraceErrorV1::ParticipantNotEligible)?;
+        if membership.access_mode() != AccessModeV1::Participant {
+            return Err(TraceErrorV1::ParticipantNotEligible);
+        }
+        if self.core_state.room_status() == RoomStatusV1::Archived {
+            return Ok(Some(StableActionAdmissionV1 {
+                code: "room_archived",
+                normalized_action: None,
+                current_action_offers: None,
+                unavailable_reason: Some("room_archived"),
+            }));
+        }
+        if membership.standing() != MembershipStandingV1::Enabled {
+            return Ok(Some(StableActionAdmissionV1 {
+                code: "membership_not_enabled",
+                normalized_action: None,
+                current_action_offers: None,
+                unavailable_reason: Some("membership_not_enabled"),
+            }));
+        }
+        let current_action_offers = || -> Result<Option<Vec<u8>>, TraceErrorV1> {
+            let viewer = PackViewerV1::Participant(request.member_id().clone());
+            let view = retained_pack.host().view(&ViewInputV1 {
+                core: &self.core_state,
+                activity_state: &self.activity_state,
+                complete_head: &self.head,
+                viewer: &viewer,
+            })?;
+            Ok(Some(view.action_offers().canonical_bytes().to_vec()))
+        };
+
+        if request.based_on_room_seq() != self.head.room_seq() {
+            let offers = current_action_offers()?;
+            return Ok(Some(StableActionAdmissionV1 {
+                code: "stale_room_state",
+                normalized_action: None,
+                unavailable_reason: offers
+                    .is_none()
+                    .then_some("current_view_unavailable_for_stale_basis"),
+                current_action_offers: offers,
+            }));
+        }
+        let viewer = PackViewerV1::Participant(request.member_id().clone());
+        let view = retained_pack.host().view(&ViewInputV1 {
+            core: &self.core_state,
+            activity_state: &self.activity_state,
+            complete_head: &self.head,
+            viewer: &viewer,
+        })?;
+        let offers = view.action_offers().canonical_bytes().to_vec();
+        let Some(offer) = view
+            .action_offers()
+            .offers()
+            .iter()
+            .find(|offer| offer.action_type == request.action_type())
+        else {
+            return Ok(Some(StableActionAdmissionV1 {
+                code: "action_not_allowed",
+                normalized_action: None,
+                current_action_offers: Some(offers),
+                unavailable_reason: None,
+            }));
+        };
+        if declared_payload_schema.as_ref() != Some(&offer.payload_schema_digest) {
+            return Err(ActionAdmissionErrorV1::InvalidPayload(
+                "payload schema digest disagrees with the exact offer".to_owned(),
+            )
+            .into());
+        }
+        let action = crate::ParticipantActionV1 {
+            member_id: request.member_id().clone(),
+            action_id: request.action_id().clone(),
+            action_type: request.action_type().to_owned(),
+            payload_schema_digest: offer.payload_schema_digest.clone(),
+            canonical_payload: request.payload().clone(),
+            exact_basis_head: self.head.clone(),
+            admitted_at: admitted_at.clone(),
+        };
+        match retained_pack
+            .host()
+            .pre_admit_action(&action, &view, &self.head)
+        {
+            Ok(()) => Ok(None),
+            Err(ActivityPackReduceErrorV1::Admission(error)) => {
+                let code = match error {
+                    ActionAdmissionErrorV1::ActionNotAllowed(_)
+                    | ActionAdmissionErrorV1::NotOpen => "action_not_allowed",
+                    ActionAdmissionErrorV1::DeadlinePassed => "deadline_passed",
+                    ActionAdmissionErrorV1::StaleBasis => "stale_room_state",
+                    ActionAdmissionErrorV1::InvalidPayload(_) => {
+                        return Err(error.into());
+                    }
+                };
+                Ok(Some(StableActionAdmissionV1 {
+                    code,
+                    normalized_action: Some(action),
+                    current_action_offers: Some(offers),
+                    unavailable_reason: None,
+                }))
+            }
+            Err(ActivityPackReduceErrorV1::Pack(error)) => Err(error.into()),
+        }
+    }
+
     /// Constructs the checked observation for one newly prepared Transition.
     /// The caller supplies only a typed viewer; all before/after state, Heads,
     /// causing Stimulus, and ordered Domain Events come from this current trace
@@ -758,7 +1003,7 @@ impl CoreTraceV1 {
     ///
     /// Returns an error when the preparation is stale, foreign, does not
     /// contain a new Transition, or the retained observation contract faults.
-    pub fn observe_prepared(
+    pub(crate) fn observe_prepared(
         &self,
         prepared: &PreparedRoomTransitionV1,
         viewer: &PackViewerV1,
@@ -803,6 +1048,18 @@ impl CoreTraceV1 {
             .map_err(Into::into)
     }
 
+    /// Exposes a sealed precommit observation only to explicit conformance
+    /// tests; production publication must wait for the commit coordinator.
+    #[cfg(feature = "conformance-tracer")]
+    #[doc(hidden)]
+    pub fn observe_prepared_for_conformance(
+        &self,
+        prepared: &PreparedRoomTransitionV1,
+        viewer: &PackViewerV1,
+    ) -> Result<ActivityObservationOutcomeV1, TraceErrorV1> {
+        self.observe_prepared(prepared, viewer)
+    }
+
     /// Installs a privately constructed prepared result after the caller's
     /// durable commit point. Installation fails closed if the indivisible
     /// eight-field basis Head has changed since preparation.
@@ -811,11 +1068,21 @@ impl CoreTraceV1 {
     ///
     /// Returns an error for mismatched provenance, Room, basis Head, or
     /// administrative identity/request semantics.
-    pub fn install_prepared(
+    pub(crate) fn install_prepared(
         &mut self,
         prepared: PreparedRoomTransitionV1,
     ) -> Result<AdvanceDispositionV1, TraceErrorV1> {
         self.install_prepared_inner(prepared, true)
+    }
+
+    /// Bypasses durable commit only for explicit conformance tracing.
+    #[cfg(feature = "conformance-tracer")]
+    #[doc(hidden)]
+    pub fn install_prepared_for_conformance(
+        &mut self,
+        prepared: PreparedRoomTransitionV1,
+    ) -> Result<AdvanceDispositionV1, TraceErrorV1> {
+        self.install_prepared(prepared)
     }
 
     fn install_prepared_inner(
@@ -904,6 +1171,8 @@ impl CoreTraceV1 {
             return Ok(Some(PreparedRoomTransitionV1 {
                 preparer_identity: Arc::clone(&self.preparer.identity),
                 basis_complete_head: stored.basis_head.clone(),
+                recorded_stimulus: stimulus.clone(),
+                action_offer_witness: None,
                 outcome: stored.outcome.to_existing(),
                 resulting_state: None,
                 administration: Some((
@@ -971,14 +1240,70 @@ impl CoreTraceV1 {
         genesis_bytes: &[u8],
         transition_bytes: &[Vec<u8>],
     ) -> Result<ReplayReportV1, ReplayFailureV1> {
+        Self::replay_registry(registry, genesis_bytes, transition_bytes, false)
+    }
+
+    pub(crate) fn replay_for_recovery(
+        registry: &PackRegistryV1,
+        genesis_bytes: &[u8],
+        transition_bytes: &[Vec<u8>],
+    ) -> Result<ReplayReportV1, ReplayFailureV1> {
+        Self::replay_registry(registry, genesis_bytes, transition_bytes, true)
+    }
+
+    pub(crate) fn preflight_recovery_materializations(
+        genesis_bytes: &[u8],
+        transition_bytes: &[Vec<u8>],
+    ) -> Result<(CompleteHeadV1, Vec<u8>, Vec<u8>), ReplayFailureV1> {
         let genesis = decode_replay_genesis(genesis_bytes)?;
-        validate_stored_genesis_integrity(&genesis).map_err(|error| {
-            ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
+        let head = preflight_stored_history(&genesis, transition_bytes)?;
+        let (core_state, activity_state) = if let Some(bytes) = transition_bytes.last() {
+            let transition = TransitionV1::from_canonical_bytes(bytes).map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::NonCanonicalRecord,
+                    error.to_string(),
+                    head.clone(),
+                )
+            })?;
+            (
+                transition.resulting_core_state().clone(),
+                transition.resulting_activity_state().clone(),
+            )
+        } else {
+            (
+                genesis.initial_core_state().clone(),
+                genesis.initial_activity_state().clone(),
+            )
+        };
+        let core_state_bytes = core_state.canonical_bytes().map_err(|error| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CanonicalEncoding,
+                error.to_string(),
+                head.clone(),
+            )
         })?;
+        let activity_state_bytes = activity_state.to_bytes().map_err(|error| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CanonicalEncoding,
+                error.to_string(),
+                head.clone(),
+            )
+        })?;
+        Ok((head, core_state_bytes, activity_state_bytes))
+    }
+
+    fn replay_registry(
+        registry: &PackRegistryV1,
+        genesis_bytes: &[u8],
+        transition_bytes: &[Vec<u8>],
+        reproduce_observation_frames: bool,
+    ) -> Result<ReplayReportV1, ReplayFailureV1> {
+        let genesis = decode_replay_genesis(genesis_bytes)?;
+        let preflight_head = preflight_stored_history(&genesis, transition_bytes)?;
         let request = pack_genesis_request_from_record(&genesis);
         let verified = registry
             .prepare_genesis_for_retained_room(&request)
-            .map_err(|error| map_retained_genesis_error(&error))?;
+            .map_err(|error| map_retained_genesis_error(&error, preflight_head))?;
         verify_retained_genesis_matches_record(&genesis, &verified)?;
         let retained_pack = verified.retained_pack().clone();
         let transition_preparer = RoomTransitionPreparerV1::from_retained_pack(
@@ -991,6 +1316,7 @@ impl CoreTraceV1 {
             transition_bytes,
             transition_preparer,
             Some(retained_pack),
+            reproduce_observation_frames,
         )
     }
 
@@ -1019,6 +1345,7 @@ impl CoreTraceV1 {
             transition_bytes,
             transition_preparer,
             None,
+            false,
         )
     }
 
@@ -1029,6 +1356,7 @@ impl CoreTraceV1 {
         transition_bytes: &[Vec<u8>],
         transition_preparer: RoomTransitionPreparerV1,
         retained_pack: Option<RetainedActivityPackV1>,
+        reproduce_observation_frames: bool,
     ) -> Result<ReplayReportV1, ReplayFailureV1> {
         let mut trace = Self::from_verified_genesis(genesis, transition_preparer, retained_pack)
             .map_err(|error| {
@@ -1042,6 +1370,14 @@ impl CoreTraceV1 {
                 )
             })?,
         ];
+        let mut frame_heads = trace
+            .core_state
+            .memberships()
+            .keys()
+            .cloned()
+            .map(|member_id| (member_id, 0_u64))
+            .collect::<BTreeMap<_, _>>();
+        let mut observation_frames = Vec::new();
         for bytes in transition_bytes {
             let last_verified_head = trace.head.clone();
             let stored = TransitionV1::from_canonical_bytes(bytes).map_err(|error| {
@@ -1064,7 +1400,7 @@ impl CoreTraceV1 {
                 .map_err(|error| {
                     let class = match error {
                         TraceErrorV1::Pack(PackFaultV1::RoleValidatorPanicked) => {
-                            ReplayFailureClassV1::ActivityReduction
+                            ReplayFailureClassV1::RuntimeFault
                         }
                         _ => ReplayFailureClassV1::CoreInvariant,
                     };
@@ -1079,6 +1415,21 @@ impl CoreTraceV1 {
                     last_verified_head.clone(),
                 )
             })?;
+            if reproduce_observation_frames {
+                record_replay_observation_frames(
+                    &trace,
+                    &prepared_transition,
+                    &mut frame_heads,
+                    &mut observation_frames,
+                )
+                .map_err(|error| {
+                    ReplayFailureV1::with_head(
+                        classify_replay_advance_error(&error),
+                        error.to_string(),
+                        last_verified_head.clone(),
+                    )
+                })?;
+            }
             let generated = trace
                 .install_prepared_inner(prepared_transition, false)
                 .map_err(|error| {
@@ -1134,6 +1485,7 @@ impl CoreTraceV1 {
             final_state,
             continuation_preparer,
             continuation_trace: trace,
+            observation_frames,
             steps,
             activity_callback_count,
             external_effect_count: 0,
@@ -1350,12 +1702,169 @@ fn verify_retained_genesis_matches_record(
     Ok(())
 }
 
-fn map_retained_genesis_error(error: &PackGenesisErrorV1) -> ReplayFailureV1 {
+fn map_retained_genesis_error(
+    error: &PackGenesisErrorV1,
+    preflight_head: CompleteHeadV1,
+) -> ReplayFailureV1 {
     let class = match error {
+        PackGenesisErrorV1::Registry(
+            PackRegistryErrorV1::MissingRevision(_) | PackRegistryErrorV1::NotRunnable(_),
+        ) => ReplayFailureClassV1::RuntimeUnavailable,
         PackGenesisErrorV1::Registry(_) => ReplayFailureClassV1::VersionOrDigest,
+        PackGenesisErrorV1::Pack(error) if error.is_runtime_fault() => {
+            ReplayFailureClassV1::RuntimeFault
+        }
         PackGenesisErrorV1::Pack(_) => ReplayFailureClassV1::ActivityReduction,
     };
-    ReplayFailureV1::without_head(class, error.to_string())
+    ReplayFailureV1::with_head(class, error.to_string(), preflight_head)
+}
+
+fn preflight_stored_history(
+    genesis: &GenesisV1,
+    transition_bytes: &[Vec<u8>],
+) -> Result<CompleteHeadV1, ReplayFailureV1> {
+    let mut timers = validate_stored_genesis_integrity(genesis).map_err(|error| {
+        ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
+    })?;
+    validate_core_state(&genesis.initial_core_state, &|_| Ok(())).map_err(|error| {
+        let error = map_checked_core_error(error);
+        ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
+    })?;
+    let mut head = genesis.head();
+    let mut core_state = genesis.initial_core_state.clone();
+    for bytes in transition_bytes {
+        let last_verified_head = head.clone();
+        let stored = TransitionV1::from_canonical_bytes(bytes).map_err(|error| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::NonCanonicalRecord,
+                error.to_string(),
+                last_verified_head.clone(),
+            )
+        })?;
+        validate_transition_metadata(&head, &stored).map_err(|(class, detail)| {
+            ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
+        })?;
+        validate_stored_transition_hashes(&stored).map_err(|(class, detail)| {
+            ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
+        })?;
+        validate_preflight_core_transition(&head, &core_state, &timers, &stored).map_err(
+            |(class, detail)| ReplayFailureV1::with_head(class, detail, last_verified_head.clone()),
+        )?;
+        timers
+            .apply_stored_transition(
+                stored.recorded_stimulus(),
+                stored.ordered_timer_changes(),
+                stored.resulting_core_state().room_status(),
+            )
+            .map_err(|error| {
+                ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::TimerChanges,
+                    error.to_string(),
+                    last_verified_head,
+                )
+            })?;
+        core_state = stored.resulting_core_state.clone();
+        head = stored.complete_head();
+    }
+    Ok(head)
+}
+
+fn validate_preflight_core_transition(
+    head: &CompleteHeadV1,
+    core_before: &CoreRoomStateV1,
+    timers: &TimerBookV1,
+    transition: &TransitionV1,
+) -> Result<(), (ReplayFailureClassV1, String)> {
+    validate_core_state(transition.resulting_core_state(), &|_| Ok(())).map_err(|error| {
+        (
+            ReplayFailureClassV1::CoreInvariant,
+            map_checked_core_error(error).to_string(),
+        )
+    })?;
+    match transition.recorded_stimulus() {
+        RecordedStimulusV1::ParticipantAction(action) => {
+            let eligible =
+                core_before
+                    .memberships
+                    .get(&action.member_id)
+                    .is_some_and(|membership| {
+                        membership.standing == MembershipStandingV1::Enabled
+                            && membership.access_mode == AccessModeV1::Participant
+                    });
+            if action.exact_basis_head != *head
+                || core_before.room_status != RoomStatusV1::Active
+                || !eligible
+            {
+                return Err((
+                    ReplayFailureClassV1::Stimulus,
+                    "stored participant Action is invalid at its exact prefix".to_owned(),
+                ));
+            }
+            if transition.resulting_core_state() != core_before {
+                return Err((
+                    ReplayFailureClassV1::CoreState,
+                    "participant Action changed host-owned Core state".to_owned(),
+                ));
+            }
+        }
+        RecordedStimulusV1::TimerFired(fired) => {
+            if core_before.room_status != RoomStatusV1::Active
+                || timers.scheduled.get(&fired.timer_id)
+                    != Some(&ScheduledTimerV1 {
+                        timer_id: fired.timer_id.clone(),
+                        generation: fired.generation,
+                        scheduled_for: fired.scheduled_for.clone(),
+                        canonical_payload: fired.canonical_payload.clone(),
+                    })
+            {
+                return Err((
+                    ReplayFailureClassV1::Stimulus,
+                    "stored Timer firing is invalid at its exact prefix".to_owned(),
+                ));
+            }
+            if transition.resulting_core_state() != core_before {
+                return Err((
+                    ReplayFailureClassV1::CoreState,
+                    "Timer firing changed host-owned Core state".to_owned(),
+                ));
+            }
+        }
+        RecordedStimulusV1::CoreProposed(proposal) => {
+            if proposal.expected_room_seq != head.room_seq {
+                return Err((
+                    ReplayFailureClassV1::Stimulus,
+                    "stored Core proposal expected a different prefix".to_owned(),
+                ));
+            }
+            let proposed = propose_core(core_before, proposal, &|_| Ok(())).map_err(|error| {
+                (
+                    ReplayFailureClassV1::CoreInvariant,
+                    map_checked_core_error(error).to_string(),
+                )
+            })?;
+            if proposed.no_change || proposed.state != *transition.resulting_core_state() {
+                return Err((
+                    ReplayFailureClassV1::CoreState,
+                    "stored Core proposal result differs from the host reducer".to_owned(),
+                ));
+            }
+        }
+        RecordedStimulusV1::ExternalInput(_) => {
+            if core_before.room_status != RoomStatusV1::Active {
+                return Err((
+                    ReplayFailureClassV1::Stimulus,
+                    "stored external input occurred after archive".to_owned(),
+                ));
+            }
+            if transition.resulting_core_state() != core_before {
+                return Err((
+                    ReplayFailureClassV1::CoreState,
+                    "external input changed host-owned Core state".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn map_activity_pack_reduce_error(error: ActivityPackReduceErrorV1) -> TraceErrorV1 {
@@ -1541,6 +2050,108 @@ impl TimerBookV1 {
         Ok((changes, next))
     }
 
+    fn apply_stored_transition(
+        &mut self,
+        stimulus: &RecordedStimulusV1,
+        changes: &[TimerChangeV1],
+        resulting_room_status: RoomStatusV1,
+    ) -> Result<(), TraceErrorV1> {
+        if changes
+            .windows(2)
+            .any(|pair| timer_change_id(&pair[0]) >= timer_change_id(&pair[1]))
+        {
+            return Err(TraceErrorV1::TimerChangesNotStrictlySorted);
+        }
+
+        if resulting_room_status == RoomStatusV1::Archived {
+            if changes != self.archive_cancellations() {
+                return Err(TraceErrorV1::InvalidTimerNormalization);
+            }
+            self.scheduled.clear();
+            return Ok(());
+        }
+
+        if let RecordedStimulusV1::TimerFired(fired) = stimulus {
+            let expected = ScheduledTimerV1 {
+                timer_id: fired.timer_id.clone(),
+                generation: fired.generation,
+                scheduled_for: fired.scheduled_for.clone(),
+                canonical_payload: fired.canonical_payload.clone(),
+            };
+            if self.scheduled.get(&fired.timer_id) != Some(&expected) {
+                return Err(TraceErrorV1::InvalidTimerNormalization);
+            }
+            self.scheduled.remove(&fired.timer_id);
+        }
+
+        for change in changes {
+            match change {
+                TimerChangeV1::Schedule {
+                    timer_id,
+                    generation,
+                    scheduled_for,
+                    canonical_payload,
+                } => {
+                    if *generation != self.successor(timer_id)?
+                        || self.scheduled.contains_key(timer_id)
+                        || compare_timestamp_text(scheduled_for.as_str(), stimulus.semantic_time())
+                            != Ordering::Greater
+                    {
+                        return Err(TraceErrorV1::InvalidTimerNormalization);
+                    }
+                    self.last_generation.insert(timer_id.clone(), *generation);
+                    self.scheduled.insert(
+                        timer_id.clone(),
+                        ScheduledTimerV1 {
+                            timer_id: timer_id.clone(),
+                            generation: *generation,
+                            scheduled_for: scheduled_for.clone(),
+                            canonical_payload: canonical_payload.clone(),
+                        },
+                    );
+                }
+                TimerChangeV1::Cancel {
+                    timer_id,
+                    generation,
+                } => {
+                    if self.scheduled.get(timer_id).map(|timer| timer.generation)
+                        != Some(*generation)
+                    {
+                        return Err(TraceErrorV1::InvalidTimerNormalization);
+                    }
+                    self.scheduled.remove(timer_id);
+                }
+                TimerChangeV1::Reschedule {
+                    timer_id,
+                    previous_generation,
+                    generation,
+                    scheduled_for,
+                    canonical_payload,
+                } => {
+                    if self.scheduled.get(timer_id).map(|timer| timer.generation)
+                        != Some(*previous_generation)
+                        || *generation != self.successor(timer_id)?
+                        || compare_timestamp_text(scheduled_for.as_str(), stimulus.semantic_time())
+                            != Ordering::Greater
+                    {
+                        return Err(TraceErrorV1::InvalidTimerNormalization);
+                    }
+                    self.last_generation.insert(timer_id.clone(), *generation);
+                    self.scheduled.insert(
+                        timer_id.clone(),
+                        ScheduledTimerV1 {
+                            timer_id: timer_id.clone(),
+                            generation: *generation,
+                            scheduled_for: scheduled_for.clone(),
+                            canonical_payload: canonical_payload.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn archive_cancellations(&self) -> Vec<TimerChangeV1> {
         self.scheduled
             .values()
@@ -1559,13 +2170,20 @@ impl TimerBookV1 {
     }
 }
 
+fn timer_change_id(change: &TimerChangeV1) -> &TimerId {
+    match change {
+        TimerChangeV1::Schedule { timer_id, .. }
+        | TimerChangeV1::Cancel { timer_id, .. }
+        | TimerChangeV1::Reschedule { timer_id, .. } => timer_id,
+    }
+}
+
 #[derive(Serialize)]
 struct AdministrationRequestHashObject<'a> {
     domain: &'static str,
     codec_id: &'static str,
     hash_suite: &'static str,
     room_id: &'a crate::RoomId,
-    basis_complete_head: &'a CompleteHeadV1,
     operation_kind: &'static str,
     proposal_kind: crate::CoreProposedKindV1,
     expected_room_seq: RoomSequenceV1,
@@ -1582,7 +2200,6 @@ pub(crate) fn hash_administration_request(
         codec_id: CANONICAL_CODEC_ID,
         hash_suite: HASH_SUITE_ID,
         room_id: &basis_complete_head.room_id,
-        basis_complete_head,
         operation_kind: crate::CORE_OPERATION_KIND,
         proposal_kind: proposal.kind,
         expected_room_seq: proposal.expected_room_seq,
@@ -1630,10 +2247,13 @@ enum StoredOutcomeV1 {
 
 /// Sealed result of pure checked Core/Activity reduction and canonical
 /// hashing at one exact basis Head. Callers can persist its immutable output
-/// before consuming it through [`CoreTraceV1::install_prepared`].
+/// before consuming it through the storage-backed commit coordinator.
 pub struct PreparedRoomTransitionV1 {
     preparer_identity: Arc<()>,
     basis_complete_head: CompleteHeadV1,
+    recorded_stimulus: RecordedStimulusV1,
+    #[cfg_attr(not(any(test, feature = "conformance-tracer")), allow(dead_code))]
+    action_offer_witness: Option<Vec<u8>>,
     outcome: AdvanceDispositionV1,
     resulting_state: Option<RoomTransitionStateV1>,
     administration: Option<(
@@ -1648,41 +2268,42 @@ impl PreparedRoomTransitionV1 {
     /// Returns the indivisible eight-field basis that must still match at
     /// installation/commit time.
     #[must_use]
-    pub fn basis_complete_head(&self) -> &CompleteHeadV1 {
+    pub(crate) fn basis_complete_head(&self) -> &CompleteHeadV1 {
         &self.basis_complete_head
+    }
+
+    /// Returns the exact normalized Stimulus used during pure preparation.
+    #[must_use]
+    pub(crate) fn recorded_stimulus(&self) -> &RecordedStimulusV1 {
+        &self.recorded_stimulus
+    }
+
+    /// Returns the exact current canonical Action Offer list used for
+    /// participant pre-admission and reduction.
+    #[cfg(any(test, feature = "conformance-tracer"))]
+    #[must_use]
+    pub(crate) fn action_offer_witness(&self) -> Option<&[u8]> {
+        self.action_offer_witness.as_deref()
     }
 
     /// Returns the exact Transition or durable no-Transition disposition to
     /// persist. The value cannot be mutated or constructed outside Core.
     #[must_use]
-    pub fn disposition(&self) -> &AdvanceDispositionV1 {
+    pub(crate) fn disposition(&self) -> &AdvanceDispositionV1 {
         &self.outcome
-    }
-
-    /// Returns the administration identity when this is a new Core proposal.
-    #[must_use]
-    pub fn administration_identity(&self) -> Option<&AdministrationOperationIdentityV1> {
-        self.administration.as_ref().map(|values| &values.0)
-    }
-
-    /// Returns the canonical caller-semantic administration request hash when
-    /// this is a new Core proposal.
-    #[must_use]
-    pub fn administration_request_hash(&self) -> Option<&Blake3DigestV1> {
-        self.administration.as_ref().map(|values| &values.1)
     }
 
     /// Reports whether this preparation produced a new value to commit rather
     /// than resolving an existing administration result.
     #[must_use]
-    pub const fn is_new(&self) -> bool {
+    pub(crate) const fn is_new(&self) -> bool {
         self.is_new
     }
 
     /// Returns the verified post-disposition state for a newly prepared value.
     /// It equals the basis for Rejection/NoChange and advances for Apply.
     #[must_use]
-    pub fn resulting_state(&self) -> Option<&RoomTransitionStateV1> {
+    pub(crate) fn resulting_state(&self) -> Option<&RoomTransitionStateV1> {
         self.resulting_state.as_ref()
     }
 
@@ -1777,6 +2398,12 @@ pub enum PackFaultV1 {
     /// Any frozen Activity Pack operation panicked under the checked host.
     #[error("Activity Pack {0:?} operation panicked")]
     OperationPanicked(crate::ActivityPackOperationV1),
+    /// A frozen Activity Pack operation returned a fail-closed fault.
+    #[error("Activity Pack {operation:?} operation faulted: {fault}")]
+    OperationFault {
+        operation: crate::ActivityPackOperationV1,
+        fault: Box<Self>,
+    },
     /// The pinned Role/cardinality validator panicked.
     #[error("Role validator panicked")]
     RoleValidatorPanicked,
@@ -1808,6 +2435,15 @@ pub enum PackFaultV1 {
     /// Descriptor-declared ordering or output shape was malformed.
     #[error("invalid Activity Pack output: {0}")]
     InvalidOutput(String),
+}
+
+impl PackFaultV1 {
+    const fn is_runtime_fault(&self) -> bool {
+        matches!(
+            self,
+            Self::OperationPanicked(_) | Self::OperationFault { .. } | Self::RoleValidatorPanicked
+        )
+    }
 }
 
 /// Live tracing failure. No partial state or Transition is installed.
@@ -1921,6 +2557,37 @@ impl ReplayStepV1 {
     }
 }
 
+/// Exact addressed observation consequence reproduced during retained-Pack replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReplayObservationFrameV1 {
+    member_id: crate::MemberId,
+    frame_seq: u64,
+    cause_room_seq: RoomSequenceV1,
+    payload_hash: Blake3DigestV1,
+}
+
+impl ReplayObservationFrameV1 {
+    #[must_use]
+    pub(crate) const fn member_id(&self) -> &crate::MemberId {
+        &self.member_id
+    }
+
+    #[must_use]
+    pub(crate) const fn frame_seq(&self) -> u64 {
+        self.frame_seq
+    }
+
+    #[must_use]
+    pub(crate) const fn cause_room_seq(&self) -> RoomSequenceV1 {
+        self.cause_room_seq
+    }
+
+    #[must_use]
+    pub(crate) const fn payload_hash(&self) -> &Blake3DigestV1 {
+        &self.payload_hash
+    }
+}
+
 /// Successful no-effect replay report with every prefix Head.
 pub struct ReplayReportV1 {
     /// Final exact Head.
@@ -1928,9 +2595,10 @@ pub struct ReplayReportV1 {
     final_state: RoomTransitionStateV1,
     continuation_preparer: RoomTransitionPreparerV1,
     continuation_trace: CoreTraceV1,
+    observation_frames: Vec<ReplayObservationFrameV1>,
     /// Sequence-zero plus every accepted Transition prefix.
     pub steps: Vec<ReplayStepV1>,
-    /// Activity callback count; exactly one per replayed Transition.
+    /// Activity reduction callback count; exactly one per replayed Transition.
     pub activity_callback_count: usize,
     /// Always zero: replay owns no effect capability.
     pub external_effect_count: usize,
@@ -1952,11 +2620,32 @@ impl ReplayReportV1 {
         &self.continuation_preparer
     }
 
+    /// Returns the exact retained Pack revision lock selected from replayed
+    /// Genesis, when replay used the production registry-bound path.
+    #[must_use]
+    pub fn retained_pack_revision_lock(&self) -> Option<&crate::PackRevisionLockV1> {
+        self.continuation_trace
+            .retained_pack()
+            .map(crate::RetainedActivityPackV1::revision_lock)
+    }
+
+    /// Returns exact addressed observation consequences reproduced from the
+    /// retained Pack without publishing them.
+    #[must_use]
+    pub(crate) fn observation_frames(&self) -> &[ReplayObservationFrameV1] {
+        &self.observation_frames
+    }
+
     /// Consumes the report and returns the recovered current Room executor.
     /// Subsequent preparation therefore still routes through the owning trace
     /// and cannot be invoked with a retained stale snapshot.
     #[must_use]
+    #[cfg(any(test, feature = "conformance-tracer"))]
     pub fn into_trace(self) -> CoreTraceV1 {
+        self.continuation_trace
+    }
+
+    pub(crate) fn into_trace_after_recovery_fence(self) -> CoreTraceV1 {
         self.continuation_trace
     }
 }
@@ -1970,6 +2659,10 @@ pub enum ReplayFailureClassV1 {
     CanonicalEncoding,
     /// Codec/hash/schema/pack/record version identity changed.
     VersionOrDigest,
+    /// The exact retained Pack revision is currently absent or not runnable.
+    RuntimeUnavailable,
+    /// The exact retained Pack runtime faulted while executing pure code.
+    RuntimeFault,
     /// Room sequence changed or skipped.
     Sequence,
     /// Previous Genesis/Transition hash changed.
@@ -2158,6 +2851,7 @@ fn classify_genesis_error(error: &TraceErrorV1) -> ReplayFailureClassV1 {
         TraceErrorV1::Core(_) => ReplayFailureClassV1::CoreInvariant,
         TraceErrorV1::StateHashMismatch => ReplayFailureClassV1::StateHashes,
         TraceErrorV1::LineageHashMismatch => ReplayFailureClassV1::LineageHash,
+        TraceErrorV1::Pack(error) if error.is_runtime_fault() => ReplayFailureClassV1::RuntimeFault,
         TraceErrorV1::Pack(_) => ReplayFailureClassV1::ActivityReduction,
         TraceErrorV1::Canonical(_) => ReplayFailureClassV1::CanonicalEncoding,
         _ => ReplayFailureClassV1::Stimulus,
@@ -2167,6 +2861,7 @@ fn classify_genesis_error(error: &TraceErrorV1) -> ReplayFailureClassV1 {
 fn classify_replay_advance_error(error: &TraceErrorV1) -> ReplayFailureClassV1 {
     match error {
         TraceErrorV1::Core(_) => ReplayFailureClassV1::CoreInvariant,
+        TraceErrorV1::Pack(error) if error.is_runtime_fault() => ReplayFailureClassV1::RuntimeFault,
         TraceErrorV1::Pack(_) => ReplayFailureClassV1::ActivityReduction,
         TraceErrorV1::Canonical(_) => ReplayFailureClassV1::CanonicalEncoding,
         TraceErrorV1::StateHashMismatch => ReplayFailureClassV1::StateHashes,
@@ -2183,7 +2878,8 @@ mod registry_replay_tests {
     use super::*;
     use crate::{
         AccessModeV1, ActionId, MemberId, MembershipV1, PrincipalKindV1, TimerScheduledFor,
-        builtin_counter_registry, counter_v1_digest, counter_v2_digest,
+        builtin_counter_registry, counter_v1_digest, counter_v1_only_registry_for_conformance,
+        counter_v2_digest, counter_v2_runtime_fault_registry_for_conformance,
     };
 
     const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -2355,6 +3051,26 @@ mod registry_replay_tests {
     }
 
     #[test]
+    fn stored_genesis_input_disagreement_is_corrupt_but_initialize_panic_is_runtime_fault() {
+        let registry = builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("Counter registry: {error}"));
+        let trace = retained_trace(&registry, counter_v2_digest());
+        let mut invalid_configuration = trace.genesis.clone();
+        invalid_configuration.configuration = canonical(br"{}");
+        invalid_configuration.genesis_hash = invalid_configuration
+            .calculate_hash()
+            .unwrap_or_else(|error| unreachable!("Genesis hash: {error}"));
+        let failure = replay_genesis_error(&registry, &invalid_configuration);
+        assert_eq!(failure.class, ReplayFailureClassV1::ActivityReduction);
+
+        let panic_registry =
+            counter_v2_runtime_fault_registry_for_conformance(ActivityPackOperationV1::Initialize)
+                .unwrap_or_else(|error| unreachable!("initialize-panic registry: {error}"));
+        let failure = replay_genesis_error(&panic_registry, &trace.genesis);
+        assert_eq!(failure.class, ReplayFailureClassV1::RuntimeFault);
+    }
+
+    #[test]
     fn replay_missing_exact_digest_never_falls_forward_and_corruption_precedes_initialize() {
         let registry = builtin_counter_registry()
             .unwrap_or_else(|error| unreachable!("Counter registry: {error}"));
@@ -2376,8 +3092,35 @@ mod registry_replay_tests {
             .calculate_hash()
             .unwrap_or_else(|error| unreachable!("Genesis hash: {error}"));
         let failure = replay_genesis_error(&registry, &missing);
-        assert_eq!(failure.class, ReplayFailureClassV1::VersionOrDigest);
+        assert_eq!(failure.class, ReplayFailureClassV1::RuntimeUnavailable);
         assert!(failure.detail.contains("pack semantic revision is absent"));
+
+        let mut advanced = retained_trace(&registry, counter_v2_digest());
+        let stimulus = increment(
+            &advanced,
+            "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+            "2026-08-15T12:00:01Z",
+        );
+        advanced
+            .advance(stimulus)
+            .unwrap_or_else(|error| unreachable!("v2 increment: {error}"));
+        let mut corrupt_transition = advanced.transitions[0].clone();
+        corrupt_transition.transition_hash =
+            parsed("blake3:0000000000000000000000000000000000000000000000000000000000000000");
+        let missing_registry = counter_v1_only_registry_for_conformance()
+            .unwrap_or_else(|error| unreachable!("v1-only registry: {error}"));
+        let failure = CoreTraceV1::replay(
+            &missing_registry,
+            &advanced
+                .genesis_bytes()
+                .unwrap_or_else(|error| unreachable!("Genesis bytes: {error}")),
+            &[corrupt_transition
+                .canonical_bytes()
+                .unwrap_or_else(|error| unreachable!("Transition bytes: {error}"))],
+        )
+        .err()
+        .unwrap_or_else(|| unreachable!("corrupt Transition unexpectedly replayed"));
+        assert_eq!(failure.class, ReplayFailureClassV1::LineageHash);
 
         let mut corrupted = trace.genesis.clone();
         corrupted.configuration = canonical(br#"{"initial_value":1,"maximum_value":2}"#);

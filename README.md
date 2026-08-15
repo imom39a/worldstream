@@ -123,10 +123,10 @@ The PowerShell 7.4+ equivalents are `scripts/verify-local.ps1` and `scripts/inst
 [`compatibility.toml`](compatibility.toml) and its deterministic JSON mirror agree.
 
 The operator shell binds to loopback by default. `GET /healthz` reports process liveness,
-`GET /readyz` returns `503 storage_not_initialized` until the storage frontier is implemented,
+`GET /readyz` returns `503 storage_not_initialized` until a production Room store is wired and configured,
 and `GET /version` reports only embedded manifest/build facts. None of these endpoints is a Room
 or public client API, and the bootstrap does not claim release readiness.
 
 ## Status
 
-The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the pinned workspace and operator shell, pure in-memory Core/lineage implementation, retained Activity Pack host, and executable Counter conformance revisions described above. It still has no durable Room Kernel, storage adapter, Agent Heist executor, public SDK/UI behavior, release artifact, or release conformance evidence. Counter is not a release Activity, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.
+The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the pinned workspace and operator shell, canonical Core/lineage implementation with storage-neutral commit and recovery contracts, retained Activity Pack host, executable Counter conformance revisions, and a substitutable bundled-SQLite Counter Room commit/recovery adapter. The adapter is not yet wired into the server or gateway and does not claim the release storage profile. The repository still has no Agent Heist executor, public SDK/UI behavior, release artifact, or release conformance evidence. Counter is not a release Activity, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.

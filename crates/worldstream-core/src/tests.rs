@@ -1763,30 +1763,35 @@ fn admin_request_hash_excludes_recorded_time_and_authority_but_binds_semantics()
     let basis = trace.genesis().complete_head();
     let expected = hash_administration_request(&basis, proposal)
         .unwrap_or_else(|error| unreachable!("request hash failed: {error}"));
-    let mut divergent = Vec::new();
     let mut changed = basis.clone();
     changed.room_id = parsed("01ARZ3NDEKTSV4RRFFQ69G5FB3");
-    divergent.push(changed);
+    assert_ne!(
+        hash_administration_request(&changed, proposal)
+            .unwrap_or_else(|error| unreachable!("request hash failed: {error}")),
+        expected
+    );
+
+    let mut host_head_variations = Vec::new();
     let mut changed = basis.clone();
     changed.genesis_or_transition_hash = parsed(PAYLOAD_DIGEST);
-    divergent.push(changed);
+    host_head_variations.push(changed);
     let mut changed = basis.clone();
     changed.core_schema_version = "worldstream.core-room-state.v2".to_owned();
-    divergent.push(changed);
+    host_head_variations.push(changed);
     let mut changed = basis.clone();
     changed.pack_digest = parsed(PAYLOAD_DIGEST);
-    divergent.push(changed);
+    host_head_variations.push(changed);
     let mut changed = basis.clone();
     changed.core_state_hash = parsed(PAYLOAD_DIGEST);
-    divergent.push(changed);
+    host_head_variations.push(changed);
     let mut changed = basis.clone();
     changed.activity_state_hash = parsed(PAYLOAD_DIGEST);
-    divergent.push(changed);
+    host_head_variations.push(changed);
     let mut changed = basis;
     changed.authoritative_state_hash = parsed(PAYLOAD_DIGEST);
-    divergent.push(changed);
-    for changed_basis in divergent {
-        assert_ne!(
+    host_head_variations.push(changed);
+    for changed_basis in host_head_variations {
+        assert_eq!(
             hash_administration_request(&changed_basis, proposal)
                 .unwrap_or_else(|error| unreachable!("request hash failed: {error}")),
             expected
@@ -2093,10 +2098,7 @@ fn role_validator_panic_is_typed_and_never_aliases_policy_text() {
     ) else {
         unreachable!("panicking validator unexpectedly replayed")
     };
-    assert_eq!(
-        replay_failure.class,
-        ReplayFailureClassV1::ActivityReduction
-    );
+    assert_eq!(replay_failure.class, ReplayFailureClassV1::RuntimeFault);
 
     let calls = Arc::new(AtomicUsize::new(0));
     let validator_calls = Arc::clone(&calls);

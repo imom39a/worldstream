@@ -1,0 +1,20 @@
+[package]
+name = "worldstream-sqlite"
+description = "Bundled SQLite adapter for the prepared WorldStream Room Commit seam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+thiserror.workspace = true
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
+
+[dev-dependencies]
+tempfile.workspace = true
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0", features = ["conformance-tracer"] }
+
+[lints]
+workspace = true

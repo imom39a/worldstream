@@ -1,6 +1,6 @@
 [package]
 name = "worldstream-core"
-description = "Pure canonical WorldStream Core state, lineage, and replay tracer"
+description = "Canonical WorldStream Core, replay, and storage-neutral Room commit contracts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,6 +23,10 @@ anyhow.workspace = true
 
 [[example]]
 name = "generate_core_v1_golden"
+required-features = ["conformance-tracer"]
+
+[[test]]
+name = "registry_bound_trace"
 required-features = ["conformance-tracer"]
 
 [lints]

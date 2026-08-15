@@ -640,7 +640,7 @@
       },
       "profile_id": "sqlite-bundled",
       "reader_model": "bounded_query_only",
-      "source_id": "sqlite-amalgamation-3530400",
+      "source_id": "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc",
       "supported": true,
       "supported_linux_filesystems": [
         "ext4",

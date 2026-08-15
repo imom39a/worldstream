@@ -44,6 +44,115 @@ pub fn builtin_counter_registry() -> Result<PackRegistryV1, PackRegistryErrorV1>
     PackRegistryV1::try_new([v1, v2])
 }
 
+/// Builds the retained-v1-only registry used to prove missing-runtime recovery.
+///
+/// # Errors
+///
+/// Fails closed under the same registry verification as the complete fixture.
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub fn counter_v1_only_registry_for_conformance() -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    PackRegistryV1::try_new([counter_entry(false, true, CounterRevision::V1)?])
+}
+
+/// Builds the complete fixture with the v2 executor replaced by one that
+/// panics at the selected pure host invocation.
+///
+/// # Errors
+///
+/// Fails if the checked fixture registry cannot be built or the replacement
+/// does not retain the exact v2 descriptor identity.
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub fn counter_v2_runtime_fault_registry_for_conformance(
+    operation: crate::ActivityPackOperationV1,
+) -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let mut registry = builtin_counter_registry()?;
+    registry.replace_executor_for_conformance(
+        &counter_v2_digest(),
+        std::sync::Arc::new(FaultingCounterV2 {
+            operation,
+            return_error: false,
+        }),
+    )?;
+    Ok(registry)
+}
+
+/// Builds the complete fixture with the v2 executor returning a typed fault
+/// at the selected host invocation.
+///
+/// # Errors
+///
+/// Fails if the checked fixture registry cannot be built or the replacement
+/// does not retain the exact v2 descriptor identity.
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub fn counter_v2_returned_fault_registry_for_conformance(
+    operation: crate::ActivityPackOperationV1,
+) -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let mut registry = builtin_counter_registry()?;
+    registry.replace_executor_for_conformance(
+        &counter_v2_digest(),
+        std::sync::Arc::new(FaultingCounterV2 {
+            operation,
+            return_error: true,
+        }),
+    )?;
+    Ok(registry)
+}
+
+/// Builds the complete fixture with a successful v2-shaped executor whose
+/// reduction deliberately returns v1 semantics.
+///
+/// # Errors
+///
+/// Fails if the checked fixture registry cannot be built or the replacement
+/// does not retain the exact v2 descriptor identity.
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub fn counter_v2_semantic_mismatch_registry_for_conformance()
+-> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let mut registry = builtin_counter_registry()?;
+    registry.replace_executor_for_conformance(
+        &counter_v2_digest(),
+        std::sync::Arc::new(SemanticMismatchCounterV2),
+    )?;
+    Ok(registry)
+}
+
+/// Builds the complete fixture with a v2 executor that returns a malformed
+/// successful value from the selected operation.
+///
+/// # Errors
+///
+/// Fails if the checked fixture registry cannot be built or the replacement
+/// does not retain the exact v2 descriptor identity.
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub fn counter_v2_malformed_output_registry_for_conformance(
+    operation: crate::ActivityPackOperationV1,
+) -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let mut registry = builtin_counter_registry()?;
+    registry.replace_executor_for_conformance(
+        &counter_v2_digest(),
+        std::sync::Arc::new(MalformedCounterV2 { operation }),
+    )?;
+    Ok(registry)
+}
+
+/// Builds the complete fixture with a v2 reducer that emits a host-invalid
+/// Timer request after otherwise successful reduction.
+///
+/// # Errors
+///
+/// Fails if the checked fixture registry cannot be built or the replacement
+/// does not retain the exact v2 descriptor identity.
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub fn counter_v2_invalid_timer_output_registry_for_conformance()
+-> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let mut registry = builtin_counter_registry()?;
+    registry.replace_executor_for_conformance(
+        &counter_v2_digest(),
+        std::sync::Arc::new(InvalidTimerOutputCounterV2),
+    )?;
+    Ok(registry)
+}
+
 /// Exact retained v1 semantic digest.
 #[must_use]
 pub fn counter_v1_digest() -> PackDigestV1 {
@@ -60,6 +169,251 @@ pub fn counter_v2_digest() -> PackDigestV1 {
 enum CounterRevision {
     V1,
     V2,
+}
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+struct FaultingCounterV2 {
+    operation: crate::ActivityPackOperationV1,
+    return_error: bool,
+}
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+#[allow(clippy::panic)]
+impl crate::ActivityPackV1 for FaultingCounterV2 {
+    fn descriptor(&self) -> &'static crate::PackRevisionDescriptorV1 {
+        crate::ActivityPackV1::descriptor(&crate::counter::CounterV2)
+    }
+
+    fn initialize(
+        &self,
+        input: &crate::ActivityGenesisInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::InitialOutputV1, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::Initialize {
+            if self.return_error {
+                return Err(crate::PackFaultV1::Callback(
+                    "conformance initialize fault".to_owned(),
+                ));
+            }
+            panic!("conformance initialize panic");
+        }
+        crate::ActivityPackV1::initialize(&crate::counter::CounterV2, input, cx)
+    }
+
+    fn reduce(
+        &self,
+        input: &crate::ActivityReduceInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::ActivityDispositionV1, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::Reduce {
+            if self.return_error {
+                return Err(crate::PackFaultV1::Callback(
+                    "conformance reduce fault".to_owned(),
+                ));
+            }
+            panic!("conformance reduce panic");
+        }
+        crate::ActivityPackV1::reduce(&crate::counter::CounterV2, input, cx)
+    }
+
+    fn view(
+        &self,
+        input: &crate::ViewInputV1<'_>,
+    ) -> Result<crate::PackViewV1, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::View {
+            if self.return_error {
+                return Err(crate::PackFaultV1::Callback(
+                    "conformance view fault".to_owned(),
+                ));
+            }
+            panic!("conformance view panic");
+        }
+        crate::ActivityPackV1::view(&crate::counter::CounterV2, input)
+    }
+
+    fn observe(
+        &self,
+        input: &crate::ObserveInputV1<'_>,
+    ) -> Result<Option<crate::PackObservationV1>, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::Observe {
+            if self.return_error {
+                return Err(crate::PackFaultV1::Callback(
+                    "conformance observe fault".to_owned(),
+                ));
+            }
+            panic!("conformance observe panic");
+        }
+        crate::ActivityPackV1::observe(&crate::counter::CounterV2, input)
+    }
+}
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+struct SemanticMismatchCounterV2;
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+impl crate::ActivityPackV1 for SemanticMismatchCounterV2 {
+    fn descriptor(&self) -> &'static crate::PackRevisionDescriptorV1 {
+        crate::ActivityPackV1::descriptor(&crate::counter::CounterV2)
+    }
+
+    fn initialize(
+        &self,
+        input: &crate::ActivityGenesisInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::InitialOutputV1, crate::PackFaultV1> {
+        crate::ActivityPackV1::initialize(&crate::counter::CounterV2, input, cx)
+    }
+
+    fn reduce(
+        &self,
+        input: &crate::ActivityReduceInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::ActivityDispositionV1, crate::PackFaultV1> {
+        let disposition = crate::ActivityPackV1::reduce(&crate::counter::CounterV2, input, cx)?;
+        Ok(match disposition {
+            crate::ActivityDispositionV1::Apply(mut apply) => {
+                apply.next_activity_state =
+                    canonical(br#"{"maximum_value":2,"private_ack_count":0,"value":1}"#);
+                crate::ActivityDispositionV1::Apply(apply)
+            }
+            rejection @ crate::ActivityDispositionV1::Reject(_) => rejection,
+        })
+    }
+
+    fn view(
+        &self,
+        input: &crate::ViewInputV1<'_>,
+    ) -> Result<crate::PackViewV1, crate::PackFaultV1> {
+        crate::ActivityPackV1::view(&crate::counter::CounterV2, input)
+    }
+
+    fn observe(
+        &self,
+        input: &crate::ObserveInputV1<'_>,
+    ) -> Result<Option<crate::PackObservationV1>, crate::PackFaultV1> {
+        crate::ActivityPackV1::observe(&crate::counter::CounterV2, input)
+    }
+}
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+struct MalformedCounterV2 {
+    operation: crate::ActivityPackOperationV1,
+}
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+impl crate::ActivityPackV1 for MalformedCounterV2 {
+    fn descriptor(&self) -> &'static crate::PackRevisionDescriptorV1 {
+        crate::ActivityPackV1::descriptor(&crate::counter::CounterV2)
+    }
+
+    fn initialize(
+        &self,
+        input: &crate::ActivityGenesisInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::InitialOutputV1, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::Initialize {
+            return Ok(crate::InitialOutputV1 {
+                initial_activity_state: canonical(br"{}"),
+                timer_requests: Vec::new(),
+            });
+        }
+        crate::ActivityPackV1::initialize(&crate::counter::CounterV2, input, cx)
+    }
+
+    fn reduce(
+        &self,
+        input: &crate::ActivityReduceInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::ActivityDispositionV1, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::Reduce {
+            return Ok(crate::ActivityDispositionV1::Apply(
+                crate::ActivityApplyV1 {
+                    next_activity_state: canonical(br"{}"),
+                    ordered_domain_events: Vec::new(),
+                    timer_requests: Vec::new(),
+                    ordered_attention_signals: Vec::new(),
+                },
+            ));
+        }
+        crate::ActivityPackV1::reduce(&crate::counter::CounterV2, input, cx)
+    }
+
+    fn view(
+        &self,
+        input: &crate::ViewInputV1<'_>,
+    ) -> Result<crate::PackViewV1, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::View {
+            return Ok(crate::PackViewV1 {
+                projection_schema: "worldstream/invalid-view/v1".to_owned(),
+                projection: canonical(br"{}"),
+                action_offers: Vec::new(),
+            });
+        }
+        crate::ActivityPackV1::view(&crate::counter::CounterV2, input)
+    }
+
+    fn observe(
+        &self,
+        input: &crate::ObserveInputV1<'_>,
+    ) -> Result<Option<crate::PackObservationV1>, crate::PackFaultV1> {
+        if self.operation == crate::ActivityPackOperationV1::Observe {
+            return Ok(Some(crate::PackObservationV1::new(
+                "worldstream/invalid-observation/v1",
+                canonical(br"{}"),
+            )));
+        }
+        crate::ActivityPackV1::observe(&crate::counter::CounterV2, input)
+    }
+}
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+struct InvalidTimerOutputCounterV2;
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+impl crate::ActivityPackV1 for InvalidTimerOutputCounterV2 {
+    fn descriptor(&self) -> &'static crate::PackRevisionDescriptorV1 {
+        crate::ActivityPackV1::descriptor(&crate::counter::CounterV2)
+    }
+
+    fn initialize(
+        &self,
+        input: &crate::ActivityGenesisInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::InitialOutputV1, crate::PackFaultV1> {
+        crate::ActivityPackV1::initialize(&crate::counter::CounterV2, input, cx)
+    }
+
+    fn reduce(
+        &self,
+        input: &crate::ActivityReduceInputV1<'_>,
+        cx: &crate::DeterministicContextV1<'_>,
+    ) -> Result<crate::ActivityDispositionV1, crate::PackFaultV1> {
+        let mut disposition = crate::ActivityPackV1::reduce(&crate::counter::CounterV2, input, cx)?;
+        if let crate::ActivityDispositionV1::Apply(apply) = &mut disposition {
+            apply
+                .timer_requests
+                .push(crate::TimerRequestV1::CancelCurrent {
+                    timer_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FG0"),
+                    expected_generation: crate::TimerGenerationV1::new(1)
+                        .unwrap_or_else(|error| unreachable!("Timer generation: {error}")),
+                });
+        }
+        Ok(disposition)
+    }
+
+    fn view(
+        &self,
+        input: &crate::ViewInputV1<'_>,
+    ) -> Result<crate::PackViewV1, crate::PackFaultV1> {
+        crate::ActivityPackV1::view(&crate::counter::CounterV2, input)
+    }
+
+    fn observe(
+        &self,
+        input: &crate::ObserveInputV1<'_>,
+    ) -> Result<Option<crate::PackObservationV1>, crate::PackFaultV1> {
+        crate::ActivityPackV1::observe(&crate::counter::CounterV2, input)
+    }
 }
 
 impl CounterRevision {
