@@ -11,9 +11,9 @@ The project should make narrow guarantees honestly and fail closed where it cann
 Trusted:
 
 - the host operator;
-- the installed WorldStream binary and local configuration;
+- the installed WorldStream binary, compatibility manifest, and explicitly selected configuration;
 - the exact compiled-in Activity Pack revisions;
-- the operating system and local storage boundary.
+- the operating system, selected durable storage profile, and its operator-controlled credentials/backup boundary.
 
 Untrusted:
 
@@ -23,6 +23,7 @@ Untrusted:
 - free text produced by humans or models;
 - v0.2 artifact bytes and metadata;
 - browser state and URLs;
+- remote network transport and any hosted PostgreSQL control-plane API;
 - network timing, duplication, reordering across reconnect, and disconnection.
 
 Rust packs run in the WorldStream process and are not sandboxed. A malicious or buggy compiled-in pack can compromise the process. The operator must trust the source and build. Do not describe the frozen releases as accepting untrusted plugins.
@@ -35,7 +36,7 @@ Rust packs run in the WorldStream process and are not sandboxed. A malicious or 
 - capability tokens and token hashes;
 - activation context and lease ownership;
 - action idempotency and stable results;
-- SQLite database, WAL, snapshots, and backups;
+- selected database, Storage Epoch/lineage, snapshots, receipts, transfer bundles, and backups;
 - v0.2 content-addressed evidence artifacts;
 - operator controls and replay authorization;
 - availability of bounded room and session resources.
@@ -380,12 +381,13 @@ None of that is promised in v0.1 or v0.2.
 ### Backup consistency
 
 - acquire an artifact-GC/deletion lease;
-- create an online SQLite backup and exact digest manifest;
+- create a backend-native SQLite or PostgreSQL backup and immutable backup ID;
+- record Storage Epoch, engine/schema/migration/codec/pack-executor identities and an exact digest manifest;
 - copy exactly those immutable artifacts;
 - verify every referenced size and digest;
-- fsync backup data, manifest, files, and destination directories before reporting success;
+- durably finalize backup data, manifest, files, and destination metadata before reporting success;
 - report missing/unreferenced files;
-- restore into an empty owner-only directory and verify before readiness.
+- restore into an empty isolated target and run backend checks plus the full WorldStream semantic verifier before readiness.
 
 ## UI security
 
@@ -402,20 +404,22 @@ None of that is promised in v0.1 or v0.2.
 
 ## Persistence, recovery, and filesystem security
 
-- SQLite, WAL, and shared-memory files remain on local storage together;
-- data directory is owner-only;
-- startup validates path type, permissions, free space, SQLite version, migrations, and integrity;
+- the backend is selected once at startup; loss of PostgreSQL fails readiness and mutation rather than falling back to SQLite or memory;
+- SQLite, WAL, and shared-memory files remain together on a validated supported local filesystem, never network/UNC, shared, symlink/reparse, or container-overlay storage;
+- POSIX data and secret paths are owner-only; Windows DACLs permit only the service identity/owner, SYSTEM, and administrators and reject broad write;
+- startup validates path type, permissions/ACL, exclusive SQLite lock where applicable, free space, durable filesystem operations, exact engine/manifest/schema/migrations, Storage Epoch, and global integrity;
+- remote PostgreSQL requires TLS, `synchronous_commit=on`, a least-privilege daemon role, and no provider API, extension, session-state, named-prepared-statement, or replica correctness dependency;
 - immutable canonical genesis is verified before recovery;
 - snapshots are hashed and can fall back to an older verified snapshot or genesis;
 - deleting all snapshots still permits recovery from genesis plus transitions;
-- every SQLite connection enables foreign-key enforcement; startup/restore runs integrity_check and foreign_key_check;
+- every SQLite connection enables foreign-key enforcement; startup/restore runs backend-native integrity and referential checks;
 - missing transitions or hash mismatch quarantine a room;
 - no acknowledged action depends on an unflushed in-memory state;
 - disk-full and I/O errors make readiness fail and mutations stop;
 - logs go to stdout and never into artifact paths;
 - temporary cleanup never traverses outside the configured tmp directory.
 
-At-rest encryption is a host-operator disk concern in frozen releases.
+At-rest encryption is an operator disk or PostgreSQL provider/service concern in frozen releases; WorldStream adds no application-layer encryption.
 
 ## Logging and telemetry
 
@@ -434,8 +438,9 @@ Unsafe default fields:
 - private clues, evidence, drafts, commitments;
 - artifact content or signed download URL;
 - model prompts, outputs, provider metadata, or chain-of-thought.
+- database/admin DSNs, secret-file contents, and exporter credentials.
 
-Metrics use counts and sizes, not high-cardinality raw participant text.
+Metrics use low-cardinality counts and sizes, never entity IDs or raw participant text. Vendor-neutral JSON logs, Prometheus metrics, W3C trace correlation, and optional OpenTelemetry/OTLP export run after commit through bounded nonblocking queues; no exporter participates in admission, reduction, commit, Replay, Room Health, or readiness. Overflow drops telemetry with a metric/rate-limited warning, and shutdown flush is bounded to three seconds.
 
 ## Required security tests
 
@@ -458,6 +463,11 @@ Before Heist v0.1:
 - log/token redaction;
 - stored text XSS;
 - forced process termination and SQLite recovery;
+- native PostgreSQL 17 direct and transaction-pooler conformance, least-privilege/TLS failure, connection replacement, and forced termination around COMMIT;
+- every prior forward migration on both backends, SQLite pre-migration backup/restore, and PostgreSQL offline-admin migration/isolated restore;
+- resumable two-phase SQLite-to-PostgreSQL transfer, abort before retirement, Storage Epoch stale-source rejection, exact byte parity, timer/Activation fencing, and no reverse/live/dual-write path;
+- full semantic verifier coverage of every healthy Room plus preservation/isolation of a pre-existing faulted or quarantined Room;
+- native Linux, native Windows ACL/filesystem/SQLite/PostgreSQL/recovery, Linux/amd64 OCI persistence, and macOS source-quickstart evidence;
 - recovery with every snapshot deleted;
 - corrupt snapshot fallback, genesis verification, foreign-key check, and transition-hash failure.
 
@@ -485,10 +495,10 @@ A public hosted service would additionally need:
 - DDoS/WAF and abuse controls;
 - moderation and content policy;
 - formal pack sandbox;
-- vulnerability response and dependency provenance;
+- vulnerability response policy;
 - audit-log retention policy;
 - regional privacy and compliance review;
-- backup drills, HA, and an uptime model.
+- HA, provider failover services, and an uptime model.
 
 These are not reasons to fake production readiness in the hobby-project releases.
 

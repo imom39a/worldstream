@@ -282,14 +282,36 @@ The generality gate fails if Investigation needs a new core room lifecycle, an I
 
 ## Non-functional requirements
 
-### Correctness and durability
+### Storage profiles and backend-neutral durability
 
-- SQLite durability settings and benchmark settings MUST be published.
-- Database writes that form one transition MUST be atomic.
-- Startup MUST run migrations, verify supported SQLite capabilities, check data-directory permissions, and validate room head/snapshot consistency.
-- Storage-full, corrupt snapshot, pack failure, and slow-client paths MUST fail closed and produce actionable host-operator diagnostics.
+The frozen storage and portability decision is recorded in [ADR 0004](adr/0004-supported-storage-profiles-and-offline-portability.md); release, recovery, and evidence consequences are recorded in [ADR 0011](adr/0011-release-compatibility-recovery-and-supply-chain-gate.md).
 
-### Moderate single-node performance envelope
+- v0.1 and v0.2 MUST support exactly two startup-selected durable profiles: the default release-bundled SQLite profile and `postgres-primary` against one writable hosted or self-managed PostgreSQL 17 primary.
+- Exactly one WorldStream process serves a deployment under either profile. A remote PostgreSQL primary imposes no same-host restriction, but a second live WorldStream process, authoritative replica reads, automatic failover, and provider-specific correctness dependencies are unsupported.
+- Both profiles MUST expose the same logical transaction boundary, canonical bytes and hashes, operation identities and receipts, timers, frames/cursors, Activation evidence and fencing, failure classes, recovery, and Replay. Selecting a backend MUST NOT change Room semantics.
+- SQLite MUST use the exact bundled build and required WAL, `synchronous=FULL`, foreign-key, bounded-busy, query-only-reader, local-filesystem, and controlled-writer policy recorded in the release manifest. Host SQLite, network/UNC filesystems, and shared writers MUST fail closed.
+- PostgreSQL MUST accept major 17 only, use `synchronous_commit=on`, Read Committed transactions with durable compare-and-set/fence predicates, a least-privilege runtime role, and TLS for remote connections. Direct, session-pooled, and bounded transaction-pooled runtime connections are supported; correctness MUST NOT depend on extensions, session state, named prepared statements, provider APIs, or a connection surviving between transactions.
+- Database writes that form one authoritative operation MUST be atomic. Storage-full/unavailable, corrupt snapshot, pack failure, and slow-client paths MUST fail closed with stable actionable diagnostics.
+
+### Migration and compatibility contract
+
+- One ordered logical migration history and schema-contract fingerprint MUST govern both profiles; backend-specific DDL/execution MAY differ but every migration is checksummed, atomic or restart-safe, and covers an empty database and every earlier v0.1 schema.
+- Production migrations are forward-only. Down migrations, rolling mixed binary/schema versions, and starting an old binary after migration are unsupported; rollback restores a pre-upgrade backend backup together with the previous binary.
+- SQLite MAY migrate automatically only during exclusive locked startup after creating and verifying a recoverable backup. Production PostgreSQL migration MUST use an explicit offline maintenance command, a direct admin connection, and no serving process; the daemon uses only its runtime role and verifies the resulting schema. Development-only auto-migration does not count as production evidence.
+- Every release MUST publish, embed, and enforce reviewed `compatibility.toml` plus canonical `compatibility.json`. The Storage Compatibility Manifest MUST pin product/wire/config/storage/Core/hash versions, engine builds and settings, schema and migration checksums, connection modes, canonical and receipt codec writers plus retained readers, exact retained Activity Pack executors, transfer/recovery formats, platform support, and verification evidence.
+- v0.1.0 pins wire `0.1`, config `1`, storage schema `1`, Core semantics `1`, `blake3-canonical-json-v1`, Rust 1.97.1 edition 2024, Node 24.19.0 LTS as build-only, Python SDK 3.11–3.14, and Python 3.14.7 for the quickstart. It bundles SQLite 3.53.4, treats 3.51.3 as the frozen corrective floor, denies 3.52.0, and supports PostgreSQL 17 from 17.11; the manifest distinguishes release-verified 17.x patches from newer supported-but-unverified 17.x patches, and other majors fail closed.
+
+### Transfer, backup, restore, and semantic verification
+
+- WorldStream MUST provide one versioned, resumable, whole-deployment, offline transfer from SQLite to an empty PostgreSQL target. It MUST NOT provide live switching, dual writes, reverse transfer, or a backend-fallback path.
+- Transfer MUST quiesce serving, create and verify a recoverable source backup, mark the source `transfer_pending`, emit a deterministic checksummed manifest, import while neither backend serves, run full target verification, and require explicit finalization to retire SQLite and activate PostgreSQL under the next monotonically increasing Storage Epoch.
+- The transfer bundle MUST copy canonical serialized bytes verbatim rather than decode/re-encode them through PostgreSQL types. It MUST preserve lineage/export identity, Genesis, Transitions, every Head and hash, Core/Activity materializations, Memberships and authority, exact timer identity/generation/due values, Frames/Cursors, operation identities/payload hashes/dispositions/receipts, Activation intents/claims/audit/fences, principals/capabilities/revocations, integrity incidents, and artifact metadata and bytes.
+- Snapshots, indexes, caches, telemetry, sessions, runner presence, mailboxes/delivery attempts, and temporary state MAY be rebuilt or invalidated. Scheduled timers retain their recorded due values and enter normal CatchingUp after transfer; no fire or generation is invented. Nonterminal Activation leases MUST be fenced before target readiness while eligible intents remain reclaimable.
+- Before source retirement, abort MUST discard the target and leave the verified SQLite source authoritative. After PostgreSQL accepts its first write in the new epoch, rollback to SQLite is unsupported; retired SQLite remains a read-only recovery artifact unless an explicit destructive override abandons continuity.
+- Backup mechanisms MUST be backend-native: WorldStream owns SQLite online backup/restore orchestration; PostgreSQL uses operator/provider-native snapshot, PITR, dump, and restore facilities over a direct admin path. Every restore and transfer target MUST then pass the read-only, full WorldStream semantic verifier.
+- The verifier MUST check backup ID, lineage, schema, manifest, artifact digests/bytes, receipts, timers, Frames/Cursors, Activation fencing, exact retained pack executors, and Genesis-to-Head replay with every hash for every healthy Room. Global mismatch blocks readiness. A byte-preserved Room already marked faulted or quarantined MAY remain isolated and unhealthy without blocking verified healthy Rooms; a newly introduced mismatch aborts verification.
+
+### Reference one-process performance envelope
 
 These are release targets, not claims until measured on documented hardware and payloads:
 
@@ -302,12 +324,22 @@ These are release targets, not claims until measured on documented hardware and 
 
 The report MUST separate connection count, active rooms, transition rate, observation fan-out, p50/p95/p99 latency, memory, database growth, and recovery time. WorldStream MUST NOT describe these targets as internet scale.
 
-### Supported deployment
+### Supported release and deployment profiles
 
-- v0.1 and v0.2 MUST run as one process on one host with local SSD-backed storage.
-- SQLite WAL files MUST remain on the same local filesystem as the main database.
-- Network filesystems, multi-writer shared volumes, stateless replicas, and multi-region writes are unsupported.
-- Docker packaging MAY be provided, but the data directory MUST be bind-mounted or placed on a persistent local volume.
+| Profile | Required support and release evidence |
+|---|---|
+| Native Linux | `x86_64-unknown-linux-musl`, kernel 5.15+, local ext4/XFS for SQLite; Ubuntu 24.04 x86-64/ext4 is the release reference. |
+| Native Windows | `x86_64-pc-windows-msvc`; Windows 11 25H2+ or Server 2022/2025 on fixed NTFS/ReFS; SQLite and PostgreSQL profiles are both product-supported and build/package, ACL/filesystem, SQLite, PostgreSQL-connect, and recovery evidence MUST execute natively. |
+| OCI | `linux/amd64` only; static/minimal, user 65532, read-only-root compatible, persistent `/var/lib/worldstream`; SQLite on a writable container overlay MUST be rejected. |
+| macOS quickstart | Source-build development path on macOS 15+ APFS for Intel and Apple Silicon; no macOS release binary/archive. |
+
+- Release artifacts MUST include native server/CLI, embedded UI, examples and Heist clients, licenses, the compatibility manifest, checksums, Sigstore signatures, SPDX SBOM, and SLSA provenance as applicable to that profile. Cross-compilation alone is never platform evidence.
+- ARM64 release artifacts, macOS binary distribution, Windows containers, MSI/MSIX, Windows Service integration, package repositories, Kubernetes/Helm, cloud resources, and release-pipeline implementation are outside the frozen releases.
+- Configuration precedence MUST be compiled defaults, one explicitly selected versioned TOML file, `WORLDSTREAM__SECTION__KEY` environment values, then documented CLI flags; `--config` beats `WORLDSTREAM_CONFIG`, and no current-directory or home-directory search is allowed. Unknown, duplicate, wrong-type, out-of-range, inactive-backend, or unsupported values MUST fail startup.
+- DSNs, capabilities, and exporter credentials MUST arrive only through owner-readable secret files or inherited handles, never plaintext TOML, CLI arguments, or logs. Admin/migration credentials exist only in offline maintenance commands, not the daemon. `config validate`, redacted `config effective`, and `doctor` MUST expose configuration, permission, filesystem, backend, migration, capacity, and manifest diagnostics.
+- `/healthz` reports only process/event-loop liveness. `/readyz` requires current schema, globally healthy authoritative storage with writable capacity, and running writer/scheduler; telemetry failure or an already isolated unhealthy Room does not fail readiness. `/version` reports product/build, protocol/config/storage/Core/hash/manifest, and exact engine identity. `/metrics` is low-cardinality Prometheus exposition.
+- Structured JSON logs, Prometheus metrics, W3C trace correlation, and an optional OpenTelemetry/OTLP export seam MUST remain vendor-neutral and outside admission, reduction, commit, replay, Room Health, and readiness. Post-commit telemetry is bounded and nonblocking, holds no Room/database lock, emits a drop metric and rate-limited warning on overflow, and receives at most a bounded three-second shutdown flush.
+- Correctness, durability, resource bounds, crash/replay/hash parity, migrations, transfer, restore, semantic verification, filesystem/permission/disk-full behavior, and both storage profiles are hard release gates. Performance is measured separately per backend on the Linux reference profile and published as reference evidence, never a universal blocker, SLA, or Windows performance claim.
 
 ### Security posture
 
@@ -334,6 +366,7 @@ The following are frozen out:
 - A2A, MCP, AG-UI, OpenClaw, Hermes, or other full protocol integrations beyond small examples;
 - Wasmtime or another untrusted plugin sandbox;
 - Redis, NATS, Kafka, Temporal, a service mesh, Kubernetes requirement, Raft, CRDTs, federation, active-active mutation, or multi-region operation;
+- live backend switching, dual writes, PostgreSQL-to-SQLite or room-at-a-time transfer, reverse transfer, multi-process serving, authoritative replica reads, automatic failover, HA orchestration, provider services or correctness dependencies, and cloud-resource provisioning;
 - production SaaS tenancy, billing, moderation, compliance certification, or uptime SLA.
 
 These ideas are not rejected forever. They require evidence after both reference releases and a separate ADR.
@@ -348,5 +381,8 @@ These ideas are not rejected forever. They require evidence after both reference
 - [x] Agent Heist is the only v0.1 activity.
 - [x] Investigation Room is the only v0.2 application goal.
 - [x] Investigation adds no Investigation-specific Room Kernel concept beyond the preplanned generic artifact subsystem.
+- [x] Bundled SQLite and `postgres-primary` are the only storage profiles, with one WorldStream process and backend-neutral semantics.
+- [x] Forward-only migrations, retained codecs, offline one-way transfer, Storage Epoch fencing, backend-native recovery, and full semantic verification are testable invariants.
+- [x] Native Linux/Windows, Linux/amd64 OCI, macOS source-only, config/secrets/probes/telemetry, supply-chain evidence, and all negative release clauses are explicit.
 - [x] All excluded marketplace, crypto, workflow, cross-room, coding, memory, plugin, and generated-UI ideas are non-normative.
 - [x] Every performance statement is labeled target or accompanied by a reproducible report.

@@ -4,7 +4,7 @@
 
 This document implements the [Frozen Requirements](requirements.md). It is normative for v0.1 and v0.2 where it defines an invariant or a frozen technology decision.
 
-The intended system is a single self-hosted Rust process with strong internal module boundaries. Those boundaries make future replacement possible; they are not a reason to deploy microservices now.
+The intended system is exactly one self-hosted Rust process with strong internal module boundaries and one startup-selected durable storage profile. The default bundled SQLite files are local; the optional hosted or self-managed PostgreSQL 17 primary may be remote without imposing a same-host process limit. Those boundaries do not authorize multiple WorldStream processes or microservices.
 
 ## Architecture summary
 
@@ -18,7 +18,7 @@ flowchart LR
     RS --> RA["Single-writer room actor"]
     RA --> AP["Trusted Activity Pack"]
     RA --> ST["Storage service"]
-    ST --> DB["SQLite WAL"]
+    ST --> DB["Bundled SQLite or PostgreSQL 17 primary"]
     RA --> DL["Committed frame delivery"]
     DL --> HC
     DL --> AR
@@ -58,20 +58,20 @@ Library versions are pinned in Cargo.lock and the frontend/Python lockfiles when
 | HTTP and WebSocket | Axum plus Tower and tower-http | Small Rust-native gateway and composable limits/middleware |
 | Serialization | Serde and serde_json | Cross-language JSON protocol and simple golden fixtures |
 | Schemas | Schemars plus strict typed deserialization | Publish JSON Schemas while preserving Rust types |
-| Embedded database | Rusqlite with bundled SQLite | Direct transactions and explicit control over one-writer semantics |
+| Storage profiles | Release-bundled SQLite default; optional `postgres-primary` on PostgreSQL 17 | Zero-dependency local default and provider-neutral remote/self-managed primary under identical semantics |
 | Identifiers | ULID strings | Readable, sortable external identifiers; room sequence remains authoritative |
 | Hashing | BLAKE3 | State, transition, payload, and artifact integrity |
-| Time | time crate and RFC 3339 UTC at boundaries | Explicit audit timestamps; pack time remains recorded |
+| Time | time crate and RFC 3339 UTC at boundaries | Explicit audit timestamps; pack semantic time remains recorded |
 | CLI/config | Clap plus versioned TOML and environment overrides | One server binary and predictable local operation |
 | Errors | thiserror in libraries; anyhow only at binary boundary | Typed protocol/storage errors without application boilerplate |
-| Telemetry | tracing, JSON logs, Prometheus text metrics | Debuggability without storing application logs in the data directory |
-| Python SDK | Python 3.11+, websockets, Pydantic | Fastest path for external agent runners and typed examples |
+| Telemetry | Structured JSON logs, Prometheus text metrics, W3C trace correlation, optional OpenTelemetry/OTLP export seam | Vendor-neutral diagnostics outside correctness paths |
+| Python SDK | Python 3.11–3.14, websockets, Pydantic | Fastest path for external agent runners and typed examples |
 | Web UI | React, TypeScript, Vite, native browser WebSocket | Small first-party reference UI; no realtime framework dependency |
-| Packaging | Native binary and non-root multi-stage Docker image | Easy local use and reproducible demo |
+| Packaging | Native Linux x86-64, native Windows x64, Linux/amd64 OCI, macOS source quickstart | Explicitly tested release and development profiles |
 
-SQLite MUST be a release that contains the 2026 WAL-reset correction, such as SQLite 3.51.3 or an official fixed backport. CI and startup diagnostics MUST print and validate the linked SQLite version. Using Rusqlite's bundled feature prevents the host from silently selecting an older system library.
+The v0.1.0 compatibility manifest pins Rust 1.97.1 edition 2024, Node 24.19.0 LTS for builds only, Python SDK 3.11–3.14, and Python 3.14.7 for the quickstart. It bundles SQLite 3.53.4, recognizes 3.51.3 as the frozen corrective floor, and denies 3.52.0; WorldStream never loads host SQLite. It accepts PostgreSQL major 17 from 17.11, distinguishes release-verified patch versions from newer supported-but-unverified 17.x patches, and fails closed on every other major.
 
-Not selected for v0.1 or v0.2: SQLx, an ORM, Postgres, Redis, NATS, Kafka, Temporal, Wasmtime, Kubernetes, an embedded model SDK, or a frontend realtime platform.
+Not selected for v0.1 or v0.2: an ORM, Redis, NATS, Kafka, Temporal, Wasmtime, Kubernetes, a provider database API as a correctness dependency, an embedded model SDK, or a frontend realtime platform.
 
 Primary implementation references:
 
@@ -97,6 +97,8 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   │   └── Activity Pack host interface, room actor, projections, activation model
     │   ├── worldstream-sqlite/
     │   │   └── migrations, storage port, backup and integrity operations
+    │   ├── worldstream-postgres/
+    │   │   └── PostgreSQL 17 migrations, storage port and verification operations
     │   └── worldstream-server/
     │       └── gateway, auth, supervisor, scheduler, binaries
     ├── activities/
@@ -111,6 +113,7 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   ├── python-llm-runner/
     │   └── human-client/
     ├── migrations/
+    ├── compatibility.toml
     ├── tests/
     │   ├── protocol/
     │   ├── activity-conformance/
@@ -123,7 +126,7 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   └── systemd/
     └── docs/
 
-The storage interface belongs in worldstream-core; SQLite is the only implementation. There are no provider, broker, crypto, workflow, plugin, or generic connector crates.
+The storage interface belongs in worldstream-core; bundled SQLite and `postgres-primary` are its only frozen implementations. There are no provider, broker, crypto, workflow, plugin, or generic connector crates.
 
 ## Runtime components
 
@@ -243,9 +246,9 @@ The host supplies no database, network, filesystem, environment, model, wallet, 
 
 ### Storage service
 
-One dedicated database writer thread owns the SQLite write connection. Room actors submit typed commit batches over a bounded channel. This aligns application ordering with SQLite's one-writer behavior and avoids an async connection pool pretending that writes are parallel.
+Room actors submit typed commit batches over one bounded backend-neutral storage lane. The SQLite profile uses one dedicated writer thread and connection. The PostgreSQL profile may execute independent Room transactions concurrently through direct, session-pooled, or bounded transaction-scoped connections; it has no process-count limitation inside the one WorldStream process. A per-Room root fence and conditional predicates preserve the same one-logical-writer semantics under PostgreSQL Read Committed.
 
-The storage module MAY use separate dedicated read connections for room loading, catch-up, replay, and host-operator queries. Reads that determine whether a write is valid are repeated inside the write transaction.
+Storage adapters MAY use separate bounded read connections for room loading, catch-up, Replay, and host-operator queries. Reads that determine whether a write is valid are repeated and fenced inside the write transaction. No correctness path depends on connection affinity, session state, named prepared statements, extensions, replica reads, or a provider API.
 
 The storage service owns:
 
@@ -255,8 +258,10 @@ The storage service owns:
 - snapshot and transition reads;
 - observation-frame and activation queries;
 - cursor acknowledgement persistence;
-- WAL checkpoint control and metrics;
-- backup and integrity-check operations.
+- backend-native maintenance metrics and controls;
+- backup, restore, and integrity-verification operations.
+
+The backend is selected at startup and remains fixed until shutdown. Loss of PostgreSQL makes readiness unhealthy and mutations fail closed; WorldStream never falls back to SQLite or authoritative in-memory buffering. Both adapters implement the same transaction/result algebra, canonical byte handling, error classification, receipt lookup, migration fingerprint, recovery, and Replay contracts. PostgreSQL remote connections require TLS, the daemon uses a least-privilege DML role, and `synchronous_commit=on` is mandatory.
 
 ### Projection and observation engine
 
@@ -369,7 +374,7 @@ sequenceDiagram
     participant G as "Gateway"
     participant R as "Room actor"
     participant P as "Activity Pack"
-    participant S as "SQLite writer"
+    participant S as "Selected storage profile"
 
     C->>G: action.submit with action_id and based_on_seq
     G->>R: authenticated typed command
@@ -402,7 +407,7 @@ Commit-before-acknowledgement is non-negotiable.
 
 | Failure point | Observable result |
 |---|---|
-| Before SQLite commit | Nothing authoritative happened; the client may retry |
+| Before database COMMIT | Nothing authoritative happened; the client may retry |
 | After commit but before action reply | Retry returns the stored original receipt |
 | After commit but before frame send | Cursor catch-up returns the committed frame |
 | After activation creation but before offer | The pending intent remains queryable |
@@ -411,11 +416,11 @@ Commit-before-acknowledgement is non-negotiable.
 | Process termination with due timers | Startup scan resubmits idempotent TimerFired candidates |
 | Projection construction failure | No transition is committed |
 | Pack panic | The room actor fails; the room reloads or is quarantined after repeated deterministic failure |
-| Disk full or SQLite I/O error | Mutation fails closed; readiness reports unhealthy |
+| Capacity, database, or storage I/O error | Mutation fails closed; readiness reports unhealthy |
 
-## SQLite data model
+## Logical durable data model
 
-The concrete migrations may add operational columns, but the following entities and constraints are frozen.
+The concrete SQLite and PostgreSQL migrations may use backend-specific DDL and add operational columns, but the following logical entities and constraints are frozen. The sketches use SQLite type spelling only for brevity; persisted canonical objects remain identical bytes under both profiles.
 
 ### principals
 
@@ -689,7 +694,21 @@ On every write-capable connection:
 
 Every read connection also enables foreign_keys and busy_timeout and sets query_only = ON. Pragmas that are connection-local are never assumed to carry across connections.
 
-Migrations are embedded, forward-only, and run before readiness. The writer controls checkpoints and reports WAL size and checkpoint latency. Large write transactions are avoided.
+The exact release-bundled SQLite source identity/build and all pragmas are recorded in the compatibility manifest. The main, WAL, and shared-memory files remain on one validated local filesystem; system SQLite, network/UNC filesystems, shared writers, and SQLite on a writable container overlay are rejected. The writer controls checkpoints and reports WAL size and checkpoint latency. Large write transactions are avoided.
+
+### Required PostgreSQL 17 behavior
+
+`postgres-primary` connects to one ordinary writable PostgreSQL 17 primary, hosted or self-managed. Runtime transactions use Read Committed, set `synchronous_commit=on`, lock or compare-and-set the Room root and every operation-specific fence, and decide all authoritative preconditions before COMMIT. The runtime role has only required DML/sequence permissions. Remote connections require TLS.
+
+Direct, session-pooled, and bounded transaction-scoped runtime connections are supported. A transaction pooler may select a different connection for every transaction. Named prepared statements, persistent temporary objects, session variables, advisory locks whose meaning outlives one transaction, extensions, replicas, provider APIs, and provider-specific error or failover behavior are not correctness dependencies. Migration, transfer, native dump/restore, and full verification use a direct admin connection outside the daemon.
+
+### Forward-only logical migrations and retained codecs
+
+One ordered logical migration history and schema-contract fingerprint govern both adapters. A logical migration has a stable ID and checksum plus backend-specific DDL/execution; it upgrades an empty store or any earlier v0.1 schema, and is atomic or explicitly restart-safe. Production is forward-only: there are no down migrations, mixed-version serving, rolling multi-version operation, or old-binary start after migration. Rollback restores the pre-upgrade backend backup and previous binary together.
+
+SQLite automatic migration occurs only during exclusive locked startup after creation and verification of a recoverable backup. Production PostgreSQL migration is an explicit offline `worldstreamctl` maintenance operation over a direct admin connection while no WorldStream process serves; daemon startup only checks engine, manifest, schema fingerprint, migration checksums, and runtime capabilities. A development auto-migration option is not production evidence.
+
+Each release retains readers for every canonical and receipt codec that can occur in supported v0.1 data, transfer bundles, and backups. Writers emit only the current manifest-declared versions. Engine-native types never decode and re-encode canonical JSON or receipt bytes during migration, transfer, backup verification, or ordinary persistence.
 
 Actual migrations MUST mark all required fields NOT NULL, use CHECK constraints for every documented enum, and declare foreign keys for correctness relationships, including:
 
@@ -705,7 +724,7 @@ Startup and restore diagnostics run integrity_check and foreign_key_check before
 
 ## Atomic transition transaction
 
-For an accepted stimulus, one BEGIN IMMEDIATE transaction MUST:
+For an accepted stimulus, one storage transaction MUST perform the following ordered logical work. SQLite maps it to `BEGIN IMMEDIATE`; PostgreSQL maps it to one Read Committed transaction with the Room root and operation fences locked or conditionally updated:
 
 1. Re-read the room head and every stimulus-specific durable precondition under the write lock.
 2. For a participant action, require based_on_room_seq to equal head exactly and verify the action receipt/payload hash.
@@ -837,7 +856,7 @@ Defaults:
 
 A corrupt newest snapshot can be skipped in favor of an older verified snapshot or genesis. Deleting every snapshot must still permit full recovery. Missing canonical transitions, corrupt genesis, or an unavailable exact pack revision are fatal.
 
-Room load, replay, and catch-up MUST NOT hold a long SQLite read transaction that pins the WAL. Each operation captures an immutable upper bound H, then pages append-only rows with short read transactions using sequence greater than the prior page and less than or equal to H. Page size, total duration, and concurrent replay count are bounded. Oldest-reader age and checkpoint blockage are metrics; expensive replay is throttled before it threatens mutation durability.
+Room load, Replay, and catch-up MUST NOT hold a long database snapshot or read transaction. Each operation captures an immutable upper bound H, then pages append-only rows with short read transactions using sequence greater than the prior page and less than or equal to H. Page size, total duration, and concurrent Replay count are bounded. SQLite reports oldest-reader age and checkpoint blockage; PostgreSQL reports equivalent pool/snapshot pressure without changing behavior. Expensive Replay is throttled before it threatens mutation durability.
 
 ### Replay mode
 
@@ -855,7 +874,7 @@ Timeline forks and promotion are deferred until after v0.2.
 
 ## Runtime filesystem
 
-One configured data directory contains all durable runtime data:
+One configured data directory contains WorldStream-owned runtime data. Under the SQLite profile it also contains the database; under `postgres-primary`, database files remain owned by PostgreSQL while the artifact tree and local operational files remain here:
 
     WORLDSTREAM_DATA_DIR/
     ├── db/
@@ -872,33 +891,69 @@ One configured data directory contains all durable runtime data:
 Rules:
 
 - the directory defaults to an application-specific local path, never the home directory root;
-- the service process owns it with directory mode 0700 and files mode 0600 where supported;
-- the SQLite main, WAL, and shared-memory files stay together on one local persistent filesystem with working fsync;
-- NFS, SMB, object-mounted filesystems, and an ephemeral container layer are unsupported;
-- snapshots live in SQLite, not loose files;
+- POSIX installs use owner-only umask 077, directory mode 0700, and files mode 0600; Windows grants only the service identity/owner, SYSTEM, and administrators and rejects broadly writable DACLs;
+- the SQLite main, WAL, and shared-memory files stay together on one local persistent ext4, XFS, development APFS, fixed NTFS, or ReFS filesystem with working durable create/fsync/rename;
+- NFS, SMB, object/FUSE mounts, network homes, UNC paths, FAT/exFAT, shared volumes, symlink/reparse-point databases, and an ephemeral container layer are unsupported for SQLite;
+- snapshots live in the selected database, not loose files;
 - JSON logs go to stdout;
-- configuration, TLS keys, bearer-token input, and model-provider credentials do not live in the data directory;
+- plaintext DSNs, configuration secrets, TLS keys, bearer-token input, exporter credentials, and model-provider credentials do not live in the data directory;
 - temporary files are quota-limited and cleaned on startup after verifying they are not referenced.
+
+Startup validates path type, ACL/permissions, exclusive SQLite lock when selected, filesystem class, free space, and durable create/fsync/rename behavior before mutation. The process stops accepting mutation when required durable capacity is unavailable.
 
 ### Container deployment
 
-The Docker image runs as a non-root user. WORLDSTREAM_DATA_DIR must be a bind mount or persistent local volume. The container should bind loopback by default; public exposure requires an explicit listen address and a TLS reverse proxy.
+The OCI release is Linux/amd64 only, static/minimal, runs as non-root UID 65532, and supports a read-only root. `WORLDSTREAM_DATA_DIR` is `/var/lib/worldstream` and MUST be a bind mount or persistent local volume; SQLite on the writable container overlay is rejected. The container binds loopback by default; public exposure requires an explicit listen address and TLS termination. There is no Windows container release.
 
-### Backup
+### Backend-native backup and restore
 
-Do not copy only worldstream.sqlite3 while the service is live. WAL and shared-memory state are part of a running WAL database.
+Do not copy only `worldstream.sqlite3` while the service is live. WAL and shared-memory state are part of a running WAL database. WorldStream owns the SQLite online backup/empty-directory restore flow. For PostgreSQL, the host operator or provider owns native snapshot, PITR, dump, and isolated restore using a direct admin connection; WorldStream does not replace, promise, or automate provider HA/durability services.
 
-Supported backup flow:
+Every backend-native backup receives an immutable backup ID and a WorldStream manifest. The consistent backup boundary also covers generic artifact metadata and bytes:
 
-1. request an online SQLite backup or VACUUM INTO through worldstreamctl;
+1. create the SQLite online backup or a PostgreSQL-native backup at a documented consistent point;
 2. acquire an artifact-GC/deletion lease for the duration of manifest capture and copy;
-3. record the resulting database backup ID and exact digest manifest;
+3. record backup ID, Storage Epoch, engine identity, schema/migration/codec/pack-executor versions, and an exact digest manifest;
 4. copy exactly those immutable content-addressed artifacts;
 5. verify every referenced size and digest;
-6. fsync the database backup, artifact files/tree, manifest, and destination directories before success;
-7. store the configuration version and server build metadata alongside the backup.
+6. durably finalize backend-native data, artifact files/tree, manifest, and destination metadata before success;
+7. restore into an empty isolated target, then run backend integrity checks and the full WorldStream semantic verifier before readiness.
 
-Restore occurs into an empty validated data directory, then runs integrity and replay sampling before the server becomes ready.
+### Full WorldStream semantic verifier
+
+The verifier is read-only and never samples, repairs, fires timers, delivers Frames, or starts Activations. It validates the backup/export ID, Storage Epoch and lineage, engine and compatibility manifest, schema fingerprint and migration checksums, artifact sizes/digests/bytes, operation identities/hashes/dispositions/receipts, exact timers, Frames/Cursors, Activation intents/claims/fences, and availability of every exact retained Activity Pack executor. For every Room recorded healthy it reconstructs Genesis through Head and verifies every transition, state, Core/Activity materialization, and Head hash.
+
+A global lineage, schema, manifest, artifact, or cross-Room authority failure blocks deployment readiness. A Room already recorded as faulted or quarantined may be copied byte-for-byte, remain isolated and unhealthy, and not block otherwise verified Rooms. Any mismatch newly introduced by backup, restore, or transfer aborts verification.
+
+### One-way offline SQLite-to-PostgreSQL transfer
+
+The only supported backend transfer is a versioned, resumable, whole-deployment, offline move from authoritative SQLite to an empty PostgreSQL target. The deterministic transfer bundle records source lineage, export identity, Storage Epoch, schema and codec versions, ordered chunks, row/object counts, per-chunk and whole-export digests, and a semantic fingerprint.
+
+Canonical serialized bytes are copied verbatim, never decoded and re-encoded through PostgreSQL JSON, timestamp, numeric, or text types. The bundle preserves Genesis, Transitions, every Head/hash, Core and Activity materializations, Memberships and authority, exact timer IDs/generations/due values, Frames/Cursors, operation identities/payload hashes/dispositions/receipts, Activation intents/claims/audit/fences, principals/capabilities/revocations, integrity incidents, and artifact metadata and bytes. Snapshots, indexes, caches, telemetry, sessions, runner presence, in-memory mailboxes, delivery attempts, and temporary state are invalidated or rebuilt.
+
+Transfer is two-phase:
+
+1. quiesce the sole WorldStream process, create and verify a recoverable SQLite backup, and durably mark the source `transfer_pending` under its current Storage Epoch;
+2. export/import resumable deterministic chunks into the empty target while neither backend serves, fence every nonterminal Activation lease, run PostgreSQL-native checks and the full WorldStream verifier, then require an explicit finalize command to retire SQLite and make PostgreSQL authoritative at the next Storage Epoch.
+
+Recorded scheduled timers keep their IDs, generations, and due values. Startup enters the ordinary fixed-cutoff CatchingUp path and invents neither a fire nor a generation during transfer. Eligible Activation intents remain reclaimable after old leases are fenced.
+
+Before source retirement, abort discards the target and leaves the verified SQLite source authoritative. After PostgreSQL accepts its first write under the new epoch, returning to SQLite is not supported continuity. The retired SQLite deployment is a read-only recovery artifact; reopening it for writes requires an explicit destructive override. There is no live switch, dual write, reverse or room-at-a-time transfer, automatic fallback, or consensus protocol: the offline authority fence is sufficient only because serving is quiesced.
+
+Transfer and recovery race outcomes are frozen independently of adapter implementation:
+
+| Race or failure | Required outcome |
+|---|---|
+| A server starts against SQLite marked `transfer_pending` | It fails closed and does not serve; only resume or abort may clear the fence. |
+| Export/import stops mid-chunk | No target is ready. Resume verifies the export identity and committed chunk digest/count before continuing or safely reapplying that chunk. |
+| Source data changes after export identity is captured | The exclusive process/storage fence prevents mutation; any lineage, count, or digest change invalidates the bundle. |
+| Finalize is repeated or races an old invocation | Finalize conditionally matches source epoch, export identity, verified target fingerprint, and next epoch. The identical completed finalize returns its stored disposition; different evidence fails. |
+| Process termination interrupts finalize | Source remains `transfer_pending` or retired and target remains non-serving until resume proves the target finalization record and source retirement record agree. Neither backend may accept an ambiguous first write. |
+| Abort races finalize | Abort is legal only before a target finalization record; otherwise finalize/resume wins and SQLite cannot return as authoritative continuity. |
+| A timer becomes due while serving is quiesced | Its exact ID, generation, and due value transfer unchanged; the target's fixed-cutoff CatchingUp scan decides candidates after readiness preparation. |
+| An Activation lease is nonterminal at export | Its audit evidence transfers, but the old generation is fenced before target readiness; an eligible intent can be reclaimed under the preserved identity. |
+| PostgreSQL disappears or a provider promotes/replaces a primary | Readiness and mutation fail closed until the configured supported primary and full contract are verified; WorldStream performs no automatic fallback/failover. |
+| Restore/transfer finds a new mismatch | The whole target stays non-serving. An exactly preserved pre-existing faulted/quarantined Room is the only per-Room isolation exception. |
 
 ## v0.2 artifact store
 
@@ -911,8 +966,8 @@ Upload flow:
 3. enforce a ten-MiB per-blob limit and a default one-hundred-MiB room quota;
 4. calculate BLAKE3 while writing;
 5. if a verified CAS object already exists, discard the duplicate temp file; otherwise atomically install without replacing an existing object, then fsync the target parent directory;
-6. in one small SQLite transaction, insert or verify the generic artifacts row and persist a durable, owner-scoped, expiring artifact_uploads record, then return its upload ID;
-7. let a later typed room action reference that upload ID; its transition validates owner/expiry/digest, verifies the generic artifact row, inserts the room reference metadata, and marks the upload linked in one SQLite transaction;
+6. in one small selected-backend transaction, insert or verify the generic artifacts row and persist a durable, owner-scoped, expiring artifact_uploads record, then return its upload ID;
+7. let a later typed room action reference that upload ID; its transition validates owner/expiry/digest, verifies the generic artifact row, inserts the room reference metadata, and marks the upload linked in one selected-backend transaction;
 8. delete an unreferenced duplicate temp file safely.
 
 A crash before the staging transaction may leave a harmless CAS blob with no metadata. Expiry may leave an artifacts metadata row with no authoritative room reference. A reconciler may delete the metadata row and blob together only after a grace period when no room_artifact and no live staged upload references the digest. Because file and parent-directory durability precede both staging and authoritative linking, a committed room reference must never point to a directory entry lost on power failure.
@@ -957,16 +1012,34 @@ Required controls:
 - no arbitrary outbound network requests;
 - no pack-supplied JavaScript.
 
-The self-hosted preview does not include database encryption. Operators needing at-rest protection should use an encrypted local disk.
+The self-hosted preview does not include application-layer database encryption. SQLite operators use encrypted local disks; PostgreSQL encryption, keys, and transport-at-rest facilities remain operator/provider concerns.
+
+## Configuration and fail-closed startup
+
+Configuration precedence is deterministic: compiled defaults, one explicitly selected versioned TOML file, `WORLDSTREAM__SECTION__KEY` environment variables, then documented CLI flags. `--config` overrides `WORLDSTREAM_CONFIG`; the server never searches the current directory or home directory. Unknown or duplicate keys, wrong types, out-of-range values, values for an inactive backend, and unsupported compatibility values are fatal. `worldstreamctl config validate`, redacted `config effective`, and `doctor` expose the same parser plus filesystem/ACL, backend, migration, free-space, and manifest diagnostics.
+
+DSNs, bearer capabilities, and exporter credentials enter only through owner-readable secret files or inherited handles. They never appear in plaintext TOML, command arguments, effective-config output, logs, traces, crash reports, or metrics. A PostgreSQL admin/migration DSN is accepted only by an offline maintenance command and is never available to the daemon.
+
+Startup runs in this order and fails closed with stable exit classes for config, platform/filesystem/lock, storage/version/migration, integrity/Replay, and listener failures:
+
+1. validate config and the embedded/published compatibility manifest;
+2. initialize local structured logging without a remote dependency;
+3. validate data-path ACL, lock, filesystem, capacity, and durable create/fsync/rename behavior;
+4. open the selected backend and verify engine identity, connection mode, runtime-role capabilities, schema fingerprint, migration checksums, global integrity, foreign keys where applicable, Room Heads/snapshots, exact pack executors, and Storage Epoch;
+5. start the bounded storage writer/lane, scheduler, room supervisor, listener, and only then readiness.
+
+SQLite startup may create/verify a backup and migrate while exclusively locked. PostgreSQL daemon startup verifies only; migration, transfer, dump/restore orchestration, and the full semantic verifier are offline direct-admin commands.
 
 ## Observability and operations
 
 Endpoints:
 
-- GET /healthz: process loop is alive;
-- GET /readyz: migrations complete, database writable, scheduler running, and storage version supported;
-- GET /metrics: Prometheus text exposition;
-- GET /version: server, protocol, schema, Rust build, and SQLite versions.
+- `GET /healthz`: event-loop/process liveness only; it deliberately does not query storage;
+- `GET /readyz`: current compatible schema, globally healthy authoritative storage with writable capacity, and running storage writer/lane and scheduler;
+- `GET /metrics`: low-cardinality Prometheus text exposition;
+- `GET /version`: product/build, wire/config/storage/Core/hash/manifest versions and exact SQLite or PostgreSQL engine identity.
+
+An already isolated unhealthy Room and telemetry/exporter failure do not fail readiness. A global storage, lineage, manifest, schema, or integrity failure does.
 
 Key metrics:
 
@@ -980,8 +1053,9 @@ Key metrics:
 - timer lag;
 - snapshot duration and recovery tail length;
 - replay hash failures;
-- database, WAL, temp, and artifact bytes;
-- oldest SQLite reader age, replay/catch-up page duration, and checkpoint-blocked time.
+- database/pool, WAL where applicable, temp, capacity, and artifact bytes;
+- oldest SQLite reader age or PostgreSQL snapshot/pool pressure, Replay/catch-up page duration, and checkpoint-blocked time where applicable;
+- telemetry dropped events and rate-limited overflow warnings.
 
 worldstreamctl should eventually provide:
 
@@ -989,12 +1063,38 @@ worldstreamctl should eventually provide:
 - create, inspect, archive, and export room;
 - verify replay and hashes;
 - list pending activations and timers;
-- trigger checkpoint and safe backup;
-- run database integrity diagnostics.
+- trigger backend-native backup/restore workflows and SQLite checkpoint;
+- migrate PostgreSQL offline, transfer SQLite to PostgreSQL, and run backend plus full semantic verification.
 
-Logs include correlation IDs, Room ID, Membership ID where authorized, Action ID, Transition sequence, result code, and latency. They do not include Action payloads or private Observations by default.
+Logs are structured JSON with W3C trace correlation. They may include Room, Membership, Action, and Transition IDs only in access-controlled logs/traces; those IDs are never metric labels. Logs exclude Action/Observation bodies, capabilities, private observations, prompts/model output, artifact bytes, DSNs, and credentials. Prometheus metrics and the optional OpenTelemetry/OTLP exporter are vendor-neutral seams; no vendor SDK, account, collector, or credential participates in admission, reduction, commit, Replay, Room Health, or readiness.
 
-## Moderate single-node performance envelope
+Telemetry happens after authoritative commit through bounded nonblocking queues while holding no Room or database lock. Overflow drops telemetry, increments a metric, and emits a rate-limited warning. Shutdown grants at most three seconds to flush and never delays or changes an authoritative outcome.
+
+## Release, platform, and evidence matrix
+
+This section implements [ADR 0004](adr/0004-supported-storage-profiles-and-offline-portability.md) and [ADR 0011](adr/0011-release-compatibility-recovery-and-supply-chain-gate.md).
+
+The canonical `compatibility.json` is generated from reviewed `compatibility.toml`, embedded in every binary, and published with the release. Startup, `doctor`, `/version`, backups, transfer bundles, release notes, and CI consume the same manifest. For v0.1.0 it identifies product `0.1.0`, wire `0.1`, config `1`, storage schema `1`, Core semantics `1`, and hash suite `blake3-canonical-json-v1` in addition to the engine/toolchain versions frozen above.
+
+| Profile | Supported/release contract | Mandatory evidence |
+|---|---|---|
+| Native Linux | `x86_64-unknown-linux-musl`, kernel 5.15+, local ext4/XFS for SQLite; Ubuntu 24.04 x86-64/ext4 reference | Native build/archive, both storage profiles, migration/transfer/restore/Replay, filesystem/ACL/disk-full and performance reference |
+| Native Windows | `x86_64-pc-windows-msvc`; Windows 11 25H2+ or Server 2022/2025; fixed NTFS/ReFS | Native build/package plus ACL/filesystem, bundled SQLite, PostgreSQL connection, backup/restore and recovery tests; cross-compilation alone fails the gate |
+| OCI | Linux/amd64 only, static/minimal, non-root UID 65532, read-only-root compatible, persistent `/var/lib/worldstream` | Image-by-digest test, both storage profiles, persistent-volume enforcement, no writable-overlay SQLite |
+| macOS quickstart | Source build on macOS 15+ APFS, Intel and Apple Silicon, development/default quickstart | Fresh source-build deterministic Heist quickstart; no binary/archive gate |
+
+Each native archive contains `worldstreamd`, `worldstreamctl`, embedded UI, examples/Heist clients, licenses, and compatibility manifest. Published evidence includes source, checksums, Sigstore signatures, SPDX SBOM, and SLSA provenance. ARM64 release artifacts, macOS binary distribution, Windows containers, MSI/MSIX, Windows Service integration, package repositories, Kubernetes/Helm assets, cloud resources, and release-pipeline implementation are not delivered.
+
+| Evidence tier | Bound and required scope |
+|---|---|
+| Fast hook | Warm p95 at most 20 seconds and hard 60 seconds; changed format/config/schema/golden/secret checks; no network or container dependency |
+| Pre-push | Warm target 6 minutes, cold target 15 minutes; lint/unit, SQLite, SDK/UI/protocol/hash plus local PostgreSQL smoke; a visible local skip is incomplete and remote CI may not skip |
+| Minimal CI | Target 15 minutes, hard 25 minutes; parallel Linux plus focused native Windows build/package/ACL/filesystem/SQLite/PostgreSQL-connect/recovery |
+| Release | Target 3 hours, hard 4 hours; every artifact/platform, signature/SBOM/provenance, full backend conformance, all prior migrations, transfer, isolated restore, verifier, failure/fuzz/benchmark suites, and one-hour SQLite soak |
+
+The deterministic quickstart uses SQLite by default and requires no cloud account, paid model, or remote service; PostgreSQL is opt-in. The certified Ubuntu reference uses 4 vCPU, 8 GiB, local SSD and completes deterministic Heist in under five minutes; a fresh checkout completes in under ten. The PostgreSQL harness uses the official PostgreSQL 17.11 image pinned by digest, a unique project and disposable volume, loopback random port, SCRAM, non-superuser runtime role, separate direct-admin and transaction-pooler runtime DSNs, PgBouncer transaction pooling, and scoped teardown. Provider verification is optional, dated, and limited to a migration plus backup/isolated-restore/full-Replay drill for the exact combination; it asserts no HA, SLA, durability, plan, region, or provider service.
+
+## Reference performance envelope
 
 The initial scale target is deliberately ordinary:
 
@@ -1003,7 +1103,7 @@ Reference profile:
 - Linux release build;
 - 4 vCPU and 8 GiB RAM;
 - local SSD or NVMe;
-- SQLite WAL with synchronous FULL;
+- the exact bundled SQLite profile; PostgreSQL is measured and published separately;
 - small Heist/Investigation states and ten or fewer live participants per benchmark room.
 
 Targets, not claims:
@@ -1013,51 +1113,25 @@ Targets, not claims:
 - 1,000 mostly idle WebSocket sessions;
 - sustained 100 accepted transitions per second aggregate for 30 minutes;
 - p95 local-network commit-to-acknowledgement below 100 ms;
-- one-hour soak with bounded memory, mailboxes, output queues, WAL, and temp space;
+- one-hour SQLite soak with bounded memory, mailboxes, output queues, WAL, and temp space;
 - a 100,000-transition room with a snapshot no more than 250 transitions behind ready within five seconds;
 - no acknowledged transition loss across repeated forced termination.
 
-The benchmark report MUST disclose hardware, filesystem, SQLite version and pragmas, payload sizes, pack, participants per room, fan-out, snapshot cadence, p50/p95/p99 latency, process memory, database growth, and recovery time.
+The benchmark report MUST disclose hardware, filesystem, selected profile, exact engine version/settings/connection mode, payload sizes, pack, participants per room, fan-out, snapshot cadence, p50/p95/p99 latency, process memory, database growth, and recovery time. Performance targets are reference measurements, not universal release blockers, SLAs, or Windows performance claims; correctness, durability, crash recovery, resource bounds, and hash parity remain hard gates on every supported profile.
 
-### Single-node optimizations allowed
+### One-process optimizations allowed
 
 1. Passivate idle room actors.
 2. Prune acknowledged observation frames after the retention window.
-3. Keep immutable artifacts outside SQLite.
+3. Keep immutable artifacts outside the selected database.
 4. Add dedicated read workers if profiling shows room load or replay blocks writes.
-5. Tune indexes, snapshot cadence, and WAL checkpointing from metrics.
+5. Tune indexes, snapshot cadence, pool bounds, and SQLite WAL checkpointing from metrics.
 6. Use a very short storage group-commit window across independent rooms only if it preserves per-room ordering and commit-before-ack semantics.
 7. Cache current authorized public projections without making the cache authoritative.
 
-### Moderate scale beyond one node
+### Excluded distributed deployment
 
-This is a design seam, not a committed release:
-
-1. First shard independent room-ID ranges across separately operated WorldStream nodes, each with its own local SQLite volume.
-2. Route a room to one home node.
-3. Move a room through explicit quiesce, export, verify, import, and route-update operations.
-4. Keep cross-room transactions nonexistent.
-
-Only measured pressure should justify a later shared-store design with Postgres, object storage, stateless gateways, and one fenced owner lease per room.
-
-Even then:
-
-- one room retains one writer;
-- ordering remains per room;
-- a broker, if added, carries routing notifications or derived projections, never authoritative mutation;
-- there is no active-active room state, global transition order, CRDT merge, custom consensus, or multi-region write path.
-
-### Revisit triggers
-
-Evaluate a post-v0.2 storage RFC only when reproducible profiles show one or more:
-
-- writer commit latency misses the target despite short transactions and correct indexes;
-- more than 100 genuinely active rooms are needed on one host;
-- the database or backup window becomes operationally unmanageable;
-- a hosted deployment needs independent gateway and worker failure domains;
-- explicit room sharding cannot meet the required operational experience.
-
-Do not add Postgres, NATS, Redis, Kafka, Kubernetes, or Raft because they look scalable.
+PostgreSQL support changes the storage location and concurrency implementation, not the one-process product boundary. The frozen releases have no second live WorldStream process, stateless gateway/worker split, authoritative replica read, room sharding/move protocol, automatic failover, provider HA integration, consensus, active-active state, global transition order, CRDT merge, broker-backed authority, or multi-region mutation. Any later distributed design requires post-v0.2 evidence and a separate ADR; Redis, NATS, Kafka, Kubernetes, and Raft are not implied by the supported PostgreSQL profile.
 
 ## Architecture invariants
 
@@ -1082,10 +1156,13 @@ Do not add Postgres, NATS, Redis, Kafka, Kubernetes, or Raft because they look s
 19. The catch-up/live actor barrier returns the complete retained authorized range or an explicit projection reset without a handoff gap.
 20. Snapshots, indexes, and projection caches are replaceable derivations.
 21. Hash disagreement faults or quarantines a room.
-22. Replay has no external effects and holds no unbounded SQLite read transaction.
+22. Replay has no external effects and holds no unbounded database read transaction.
 23. Mutating HTTP resources and their idempotency receipts commit atomically.
 24. A committed artifact reference points only to bytes made durable before the linking transaction.
 25. Passivation is generation-fenced; no command is routed to an actor that may disappear.
 26. Slow clients and full queues cannot create unbounded memory growth.
 27. Investigation-specific semantics stay outside the Room Kernel; only the preplanned generic artifact subsystem is added.
-28. v0.1 and v0.2 remain single-node developer-preview deployments.
+28. v0.1 and v0.2 run exactly one WorldStream process with exactly one startup-selected supported storage profile.
+29. Both storage profiles preserve identical canonical bytes, semantic outcomes, receipts, timers, frames/cursors, Activation fences, recovery, and Replay.
+30. A Storage Epoch identifies the sole authoritative deployment lineage; offline transfer advances it only at explicit verified finalization.
+31. Backend-native restore or SQLite-to-PostgreSQL transfer is never ready before the full WorldStream semantic verifier passes, except that exactly preserved pre-existing unhealthy Rooms remain isolated.

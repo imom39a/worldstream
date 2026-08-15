@@ -42,7 +42,7 @@ The frozen releases:
 
 - include humans and agents as first-class participants;
 - use trusted compiled-in Rust packs;
-- remain single-node and local-first;
+- run exactly one WorldStream process and remain local-first by default; the optional PostgreSQL 17 primary may be hosted or self-managed on another machine without authorizing a second WorldStream process;
 - provide only a small first-party UI;
 - do not stabilize a public plugin ABI before both reference packs exist.
 

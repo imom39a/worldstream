@@ -33,7 +33,7 @@ If these two stories work without hiding domain special cases in core, the proje
 - Trusted compiled-in Rust Activity Pack host interface.
 - One Activity Pack: Agent Heist.
 - One logical writer actor per active room.
-- Rusqlite with bundled SQLite WAL and forward-only migrations.
+- Backend-neutral durable-storage port with the default release-bundled SQLite profile and optional hosted/self-managed PostgreSQL 17 primary, one process, and forward-only logical migrations.
 - Atomic transition/action-receipt/timer/frame/activation commit.
 - JSON HTTP/WebSocket protocol.
 - Human and agent principals/memberships.
@@ -47,7 +47,7 @@ If these two stories work without hiding domain special cases in core, the proje
 - Async Python SDK.
 - Three deterministic Heist runners.
 - Small first-party Heist public/operator-membership UI.
-- Docker image, native binary, quickstart, failure tests, and reproducible benchmark report.
+- Native Linux x86-64 and Windows x64 archives, Linux/amd64 OCI image, macOS source quickstart, compatibility/supply-chain evidence, failure tests, and reproducible per-backend benchmark report.
 
 ### v0.2 required
 
@@ -71,7 +71,9 @@ If these two stories work without hiding domain special cases in core, the proje
 - A2A/MCP platform integrations;
 - vector search and automatic summaries;
 - marketplace, payments, crypto, wallets, or token;
-- Postgres, NATS, Redis, Kafka, clustering, federation, or multi-region writes;
+- NATS, Redis, Kafka, clustering, multiple live WorldStream processes, federation, or multi-region writes;
+- live storage switching, dual writes, reverse or room-at-a-time transfer, automatic failover, provider HA/services as a correctness dependency, cloud resources, or release-pipeline implementation;
+- ARM64 release artifacts, macOS binaries, Windows containers, MSI/MSIX, Windows Service integration, package repositories, or Kubernetes/Helm;
 - production SaaS tenancy and billing.
 
 ## Phase A: Agent Heist v0.1
@@ -85,7 +87,8 @@ Build:
 - create Cargo workspace and four initial crates;
 - pin Rust toolchain and dependencies;
 - add format, Clippy, unit-test, dependency-audit, and secret-scan CI;
-- add embedded forward-only migration harness;
+- define one checksummed forward-only logical migration history with SQLite and PostgreSQL 17 execution harnesses;
+- add reviewed `compatibility.toml`, generated canonical `compatibility.json`, and exact retained codec/pack-executor declarations;
 - define canonical JSON, ID, room sequence, frame cursor, hash, error, and message envelope types;
 - define the provisional Activity Pack trait;
 - implement worldstreamd health, readiness, version, and one WebSocket handshake;
@@ -100,7 +103,7 @@ Exit tests:
 
 Scope gate:
 
-Do not add Heist content, UI, plugins, adapters, or multiple storage backends until this path works.
+Do not add Heist content, UI, plugins, or unrelated adapters until the backend-neutral storage port and SQLite walking skeleton work.
 
 ### Milestone A1 — Durable Room Kernel
 
@@ -110,8 +113,9 @@ Build:
 
 - room supervisor and lazy room loading;
 - one bounded actor per active room;
-- SQLite schema, foreign keys, WAL, FULL synchronous durability, and supported-version check;
-- dedicated database writer thread;
+- logical schema/contract fingerprint, backend-specific forward migrations, and retained canonical/receipt codecs;
+- bundled SQLite 3.53.4 with foreign keys, WAL, FULL synchronous durability, bounded busy handling, controlled writer, and exact-version check;
+- PostgreSQL major 17 from 17.11 under the manifest's verified-versus-newer-supported patch policy, over direct and transaction pooling with Read Committed room fences, `synchronous_commit=on`, TLS remote, and a least-privilege role;
 - immutable canonical room genesis and pinned pack digest;
 - Transition/Activity State hash chain;
 - action receipts and same-ID/different-payload detection;
@@ -134,6 +138,7 @@ Exit tests:
 6. A timer due during shutdown fires once logically after restart.
 7. A duplicated TimerFired candidate conditionally commits at most once.
 8. A lost room-creation HTTP reply returns the original room on idempotent retry.
+9. The same conformance fixtures produce identical canonical bytes, receipts, timers, frames/cursors, Activation fences, failure classes, and Replay hashes on SQLite and PostgreSQL.
 
 Gate A:
 
@@ -277,9 +282,12 @@ Build:
 - one-hour soak and reproducible load profile;
 - metrics and JSON structured logs;
 - database/WAL/version/integrity startup diagnostics;
-- safe backup and replay verification command;
-- non-root Docker image and persistent-volume example;
-- native quickstart;
+- backend-native backup/isolated restore plus full WorldStream semantic-verification commands;
+- resumable two-phase whole-deployment SQLite-to-PostgreSQL transfer with byte parity and Storage Epoch fences;
+- deterministic config/secret/startup/probe/telemetry contracts;
+- non-root Linux/amd64 OCI image and persistent-volume example;
+- native Linux x86-64 and Windows x64 release archives plus macOS source quickstart;
+- compatibility manifest, checksums, Sigstore signature, SPDX SBOM, SLSA provenance, and platform/backend evidence matrix;
 - SECURITY.md, CONTRIBUTING.md, code of conduct, issue templates, and limitations;
 - architecture article and 60–90 second demo recording.
 
@@ -288,7 +296,7 @@ v0.1 exit:
 - every Heist release gate passes;
 - fresh checkout to running deterministic demo is under ten minutes;
 - benchmark report labels targets versus measured results;
-- single-node developer-preview warning is prominent;
+- one-process developer-preview and unsupported HA/provider-service boundaries are prominent;
 - tag v0.1.0.
 
 ## v0.1 definition of done
@@ -327,6 +335,9 @@ v0.1 exit:
 - [ ] Public protocol examples and golden fixtures exist.
 - [ ] One command starts server, Heist, runners, and UI.
 - [ ] Local filesystem and backup requirements are documented.
+- [ ] SQLite and PostgreSQL profiles pass the same semantic conformance, migration, recovery, receipt/codec, and hash fixtures.
+- [ ] A restored backup and a finalized SQLite-to-PostgreSQL transfer pass the full semantic verifier before readiness.
+- [ ] Native Linux, native Windows, OCI, and macOS source-quickstart evidence match the frozen profile matrix.
 
 ### Performance target
 
@@ -488,7 +499,10 @@ Failure means revise the Activity boundary and repeat the gate. It does not auto
 | Canonical data | Cross-language golden JSON/hash vectors, duplicate keys, prohibited floats |
 | Pack | Golden replay, property tests, invalid actions, size limits, projection noninterference |
 | Room actor | Ordering, stale action, mailbox bound, passivation/reload, pack fault |
-| SQLite | Genesis recovery, atomic commit, idempotency/FK constraints, WAL recovery, disk-full path, migration |
+| Storage profiles | Shared semantic conformance; SQLite Genesis/WAL/disk-full/backup; PostgreSQL direct/transaction-pooler/TLS/least-privilege/COMMIT-failure; every prior migration |
+| Portability | Resumable SQLite-to-PostgreSQL export/import/finalize/abort, Storage Epoch fencing, byte parity, exact timers/Activations/artifacts, no reverse/live/dual-write path |
+| Recovery | Backend-native isolated restore plus full all-healthy-Room semantic verification and preserved unhealthy-Room isolation |
+| Release profiles | Native Linux and Windows, Linux/amd64 OCI persistence, macOS source quickstart, config/secrets/probes/telemetry, checksums/signature/SBOM/provenance |
 | Timer | Schedule/cancel/firing retry, overdue restart storm |
 | Observation | audience isolation, duplicate delivery, actor-barrier handoff, cursor ack, reset, slow consumer |
 | Activation | duplicate offer, claim receipt, claim race, lease generation/expiry, authorization, replay suppression |
@@ -508,13 +522,13 @@ Failure means revise the Activity boundary and repeat the gate. It does not auto
 | Agent metaphor stays misleading | UI says asleep/awake or suggests continuous cognition | Enforce lifecycle vocabulary in code review and docs |
 | Projection leaks private state | Shared serializer or cache key omits audience | Separate types, exact audiences, randomized noninterference tests |
 | Determinism fails | Replay hash differs by run/platform | Eliminate ambient I/O/floats and expand golden fixtures |
-| SQLite contention appears early | Commit latency and mailbox depth rise | Short transactions, one writer, profile; do not introduce a broker |
+| Backend pressure appears early | Commit latency, SQLite checkpoint delay, PostgreSQL pool pressure, or mailbox depth rises | Preserve short fenced transactions and bounded lanes; measure profiles separately and do not introduce a broker |
 | Activation becomes a workflow runtime | Predicates, retries, callbacks, and job state expand | Exact typed reasons and one simple lease lifecycle only |
 | UI consumes the schedule | General renderer/components grow | First-party reference screens only; cut polish |
 | LLM demos are flaky or costly | Provider availability controls release | Deterministic runners are normative; LLM example optional |
 | Investigation becomes enterprise PM | Generic tasks, approvals, dashboards appear | Keep one evidence/claim state machine and one fixture |
 | Artifact handling creates security burden | Format parsing and previews expand | Small allowlist, bounded bytes, no conversion/unpacking |
-| Premature scale architecture | NATS/Postgres/Kubernetes appears before data | Publish single-node numbers and defer distributed RFC |
+| PostgreSQL is mistaken for distributed serving | A second WorldStream process, replicas, provider failover, or HA claims appear | Keep one-process authority explicit and require a later distributed RFC |
 | OSS adoption remains weak | Setup is slow or explanation remains abstract | One-command demos, short video, clear extension seam and limitations |
 
 ## Frozen cut order
@@ -555,7 +569,7 @@ Recognition should come from a small, demonstrably correct system:
 4. One-command deterministic reproduction:
    no provider key or internet dependency.
 5. One architecture article:
-   single-writer rooms, SQLite transaction boundary, audience-specific frames, activation lease, and honest failure semantics.
+   single-writer rooms, backend-neutral transaction boundary, audience-specific frames, activation lease, offline portability, and honest failure semantics.
 6. One reproducible benchmark:
    ordinary hardware and clear payload profile.
 7. One conformance package:
@@ -569,7 +583,7 @@ The first ten issues should be:
 
 1. Scaffold Cargo workspace and pinned toolchain.
 2. Define canonical JSON profile and Rust/Python hash vectors.
-3. Add SQLite bundled-version assertion and initial migration.
+3. Add the compatibility manifest, bundled-SQLite assertion, PostgreSQL 17 capability check, and first logical migration for both profiles.
 4. Implement Counter Activity Pack.
 5. Implement single-writer room actor and atomic accepted transition.
 6. Implement action receipts and idempotency conflict.

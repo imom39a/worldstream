@@ -232,6 +232,8 @@ The technical thesis is supported if:
 - an activity author can define a small third activity after v0.2 without changing core;
 - the resulting demo is visibly more than a WebSocket plus database plus webhook.
 
+Operationally, both reference releases are one-process deployments with one startup-selected backend-neutral durable profile: release-bundled SQLite by default or one hosted/self-managed PostgreSQL 17 primary. PostgreSQL may be remote and provider-operated, but it does not authorize multiple WorldStream processes, provider-specific semantics, replicas, or HA claims. The supported release footprint is native Linux x86-64, native Windows x64, Linux/amd64 OCI, and a macOS source-build quickstart; correctness and recovery evidence is normative while performance remains a published reference measurement.
+
 The thesis should be reconsidered if:
 
 - most activity work requires editing the server;
@@ -252,6 +254,8 @@ Until both reference releases pass, the project will not add:
 - real payments, crypto, wallets, or tokens;
 - third-party plugin upload or a WASM host;
 - generated UI or third-party renderer code;
-- clustering, federation, or multi-region writes.
+- clustering, federation, or multi-region writes;
+- live storage switching, dual writes, reverse transfer, automatic failover, provider services/cloud resources, or a release-pipeline product;
+- ARM64 release artifacts, macOS binary distribution, or Windows containers.
 
 The detailed normative list is in [Frozen Requirements](requirements.md).
