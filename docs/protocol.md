@@ -385,7 +385,7 @@ The same internal contract covers all Room operation classes:
 |---|---|---|
 | Participant Action | `(room_id, member_id, action_id)` | Original accepted or stable rejected Semantic Receipt |
 | Room administration | `(authenticated_principal, versioned_operation_kind, idempotency_key)` | Original Transition, Rejection, or NoChange receipt |
-| Timer firing | `(room_id, timer_id, generation, scheduled_for)` | Original matching Transition; obsolete generation is `NotApplicable` |
+| Timer firing | `(room_id, timer_id, generation)` | Original matching Transition; request hash binds immutable `scheduled_for`/payload and an obsolete generation is `NotApplicable` |
 | Host/external input | `(room_id, source_id, input_id)` | Original accepted or stable rejected result where defined |
 
 The server resolves a same-identity retry before later Room lifecycle, integrity, or Membership checks, after current authentication and authorization to read that result. Same identity with changed Canonical Request Hash is `idempotency_conflict` and never executes domain work.

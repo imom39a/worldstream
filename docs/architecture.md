@@ -18,7 +18,7 @@ flowchart LR
     RS --> RA["Single-writer room actor"]
     RA --> AP["Trusted Activity Pack"]
     RA --> ST["Storage service"]
-    ST --> DB["SQLite or PostgreSQL 17"]
+    ST --> DB["Durable storage adapter"]
     RA --> DL["Committed frame delivery"]
     DL --> HC
     DL --> AR
@@ -58,7 +58,7 @@ Library versions are pinned in Cargo.lock and the frontend/Python lockfiles when
 | HTTP and WebSocket | Axum plus Tower and tower-http | Small Rust-native gateway and composable limits/middleware |
 | Serialization | Serde and serde_json | Cross-language JSON protocol and simple golden fixtures |
 | Schemas | Schemars plus strict typed deserialization | Publish JSON Schemas while preserving Rust types |
-| Durable storage seam | Bundled SQLite plus PostgreSQL 17 adapters | One semantic Room Commit contract with backend-specific transaction fencing |
+| Durable storage seam | Backend-neutral Room Commit port | One semantic contract with backend-specific transaction fencing |
 | Identifiers | ULID strings | Readable, sortable external identifiers; room sequence remains authoritative |
 | Hashing | BLAKE3 | State, transition, payload, and artifact integrity |
 | Time | time crate and RFC 3339 UTC at boundaries | Explicit audit timestamps; pack time remains recorded |
@@ -71,7 +71,7 @@ Library versions are pinned in Cargo.lock and the frontend/Python lockfiles when
 
 SQLite MUST be a release that contains the 2026 WAL-reset correction, such as SQLite 3.51.3 or an official fixed backport. CI and startup diagnostics MUST print and validate the linked SQLite version. Using Rusqlite's bundled feature prevents the host from silently selecting an older system library.
 
-Not selected for v0.1 or v0.2: an ORM, Redis, NATS, Kafka, Temporal, Wasmtime, Kubernetes, an embedded model SDK, or a frontend realtime platform. The exact PostgreSQL driver is an implementation choice; it MUST preserve the contract in this document.
+Not selected for v0.1 or v0.2: an ORM, Redis, NATS, Kafka, Temporal, Wasmtime, Kubernetes, an embedded model SDK, or a frontend realtime platform. Concrete storage profiles and drivers are frozen by the separate deployment/release profile contract; every selected adapter MUST preserve this document's Room Commit semantics.
 
 Primary implementation references:
 
@@ -97,8 +97,6 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   │   └── Activity Pack host interface, room actor, projections, activation model
     │   ├── worldstream-sqlite/
     │   │   └── SQLite adapter, migrations, backup and integrity operations
-    │   ├── worldstream-postgres/
-    │   │   └── PostgreSQL adapter, migrations, backup and integrity operations
     │   └── worldstream-server/
     │       └── gateway, auth, supervisor, scheduler, binaries
     ├── activities/
@@ -125,7 +123,7 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   └── systemd/
     └── docs/
 
-The storage interface belongs in worldstream-core. SQLite and PostgreSQL implement the same logical Room Commit and resolution port; providers do not alter semantics. There are no broker, crypto, workflow, plugin, or generic connector crates.
+The storage interface belongs in worldstream-core. Every selected storage adapter implements the same logical Room Commit and resolution port; providers do not alter semantics. There are no broker, crypto, workflow, plugin, or generic connector crates.
 
 ## Runtime components
 
@@ -496,7 +494,7 @@ Database COMMIT is the sole linearization point. Commit-before-acknowledgement i
 
 ## Backend-neutral logical records
 
-The following records and semantic constraints are frozen. Their field lists illustrate the logical contract, not adapter SQL, physical statement order, index syntax, or provider-specific types. SQLite and PostgreSQL migrations may differ physically only where the shared Room Commit and conformance contract remains identical.
+The following records and semantic constraints are frozen. Their field lists illustrate the logical contract, not adapter SQL, physical statement order, index syntax, or provider-specific types. Adapter migrations may differ physically only where the shared Room Commit and conformance contract remains identical.
 
 ### principals
 
@@ -831,7 +829,7 @@ Preparation seals all bytes that the transaction may persist. The value contains
 
 | Field | Exact meaning |
 |---|---|
-| Operation Identity | Action `(room_id, member_id, action_id)`; administration `(authenticated_principal, versioned_operation_kind, idempotency_key)`; timer `(room_id, timer_id, generation, scheduled_for)`; external input `(room_id, source_id, input_id)` |
+| Operation Identity | Action `(room_id, member_id, action_id)`; administration `(authenticated_principal, versioned_operation_kind, idempotency_key)`; timer `(room_id, timer_id, generation)`; external input `(room_id, source_id, input_id)` |
 | Canonical Request Hash | Versioned hash of all caller-semantic input; excludes Action `admitted_at`, generated Transition ID, commit time, transport IDs, and retry-attempt data |
 | Complete Head witness | Exact `(room_seq, prior_transition_hash, core_hash, activity_hash, authoritative_hash)` observed during preparation |
 | Integrity witness | `healthy` plus the exact integrity generation; an operational state/generation change fences the plan |
@@ -842,7 +840,7 @@ Preparation seals all bytes that the transaction may persist. The value contains
 
 The Complete Head is indivisible. The same `room_seq` with a different prior Transition, Core, Activity, or aggregate Authoritative hash is `Fault` and triggers integrity handling; it is never treated as ordinary contention.
 
-The Canonical Request Hash and prepared canonical Stimulus are different objects. For example, an Action request hash binds the protocol/domain version, Room, Membership, expected basis, Action type, and complete typed payload, while the prepared Stimulus additionally carries host-generated `admitted_at`. The Semantic Receipt preserves both the hash and the committed semantic fields without allowing a retry to alter either.
+The Canonical Request Hash and prepared canonical Stimulus are different objects. For example, an Action request hash binds the protocol/domain version, Room, Membership, expected basis, Action type, and complete typed payload, while the prepared Stimulus additionally carries host-generated `admitted_at`. A Timer request hash binds the immutable `scheduled_for` and payload to `(room_id, timer_id, generation)`, so changed semantic timer bytes under the same identity are a `Conflict`. The Semantic Receipt preserves both the hash and the committed semantic fields without allowing a retry to alter either.
 
 ### Preparation and lock boundary
 
@@ -878,6 +876,8 @@ Every new Advance or durable disposition follows this exact guarded order inside
    7. the Semantic Receipt for the applicable Action, administration, or external input.
 7. For a `DurableDisposition`, persist only its Semantic Receipt after all applicable guards pass; do not mutate Head, state, timers, Frames, or Activation.
 8. Issue durable database `COMMIT`.
+
+Archive and any final Membership state that is no longer an enabled Agent Participant with participant Access Mode and a current Role cancel and generation-fence that target's pending/leased Activation work inside step 6. This includes suspension, departure, Role removal, and participant-to-spectator/operator changes; the transaction never leaves newly ineligible work claimable.
 
 Adapters may arrange bounded physical statements around backend constraint mechanics only when failure injection proves the same guard precedence, all-or-none bundle, and externally invisible intermediate state. SQLite maps the fence to its dedicated writer and transaction-start write reservation; PostgreSQL maps it to a Room-root row lock or an equivalent guarded write under Read Committed. Neither adapter may weaken or add a semantic outcome.
 
@@ -1246,7 +1246,7 @@ This is a design seam, not a committed release:
 3. Move a room through explicit quiesce, export, verify, import, and route-update operations.
 4. Keep cross-room transactions nonexistent.
 
-PostgreSQL 17 is already a supported storage profile for the same single WorldStream process; selecting it does not authorize multiple live application writers. Only measured pressure should justify a later multi-process design with stateless gateways and one fenced owner lease per Room.
+A future storage profile does not by itself authorize multiple live application writers. Only measured pressure should justify a later multi-process design with stateless gateways and one fenced owner lease per Room.
 
 Even then:
 
