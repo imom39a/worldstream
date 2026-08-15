@@ -149,4 +149,4 @@ A presently authorized Replay of sequence zero folds Genesis and passes `m-navig
 
 ## Consequences
 
-Implementations must retain exact Core and pack reducers/codecs for every live lineage, maintain three hashes plus a lineage hash, verify paired checkpoints and serving materializations, and fence commits on integrity generation. This adds storage and conformance work, but yields one reconstructible truth, component-level fault isolation, privacy-correct historical Replay, disposable caches, and a repair path that cannot normalize history after the fact.
+Implementations must retain exact Core and pack reducers/codecs for every live lineage, maintain three hashes plus a lineage hash, verify paired checkpoints and serving materializations, and fence every new Existing Advance or durable disposition on integrity generation. This adds storage and conformance work, but yields one reconstructible truth, component-level fault isolation, privacy-correct historical Replay, disposable caches, and a repair path that cannot normalize history after the fact.
