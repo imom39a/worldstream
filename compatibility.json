@@ -304,7 +304,7 @@
       "revision_lock_id": "worldstream/pack-revision-lock/v1",
       "runnable_for_retained_rooms": true,
       "schema_bundle_digest": "",
-      "selectable_for_new_rooms": true,
+      "selectable_for_new_rooms": false,
       "status": "unresolved"
     },
     {
@@ -456,7 +456,7 @@
         "operation_identities_canonical_request_hashes_and_receipts",
         "timers",
         "frames_and_cursors",
-        "activation_operation_receipts_context_hashes_and_witness_generations",
+        "activation_operation_receipts_result_and_context_hashes_retention_state_and_witness_generations",
         "activation_fencing",
         "exact_pack_executors",
         "every_transition_state_and_head_hash"
@@ -684,7 +684,7 @@
       "operation_identities_canonical_request_hashes_dispositions_semantic_receipts",
       "activation_intents_claims_audit_fences",
       "activation_operation_receipts",
-      "activation_context_bytes_or_tombstones",
+      "activation_context_retention_state_bytes_or_tombstones",
       "activation_request_result_context_hashes",
       "activation_lease_and_witness_generations",
       "principals_capabilities_revocations",

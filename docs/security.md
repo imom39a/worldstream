@@ -295,7 +295,7 @@ Lease defenses:
 - stale claim completion is rejected;
 - repeated delivery does not create another logical activation.
 
-Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents. Capability revocation takes effect immediately. Loading, CatchingUp, Faulted, and Quarantined make pending intents unclaimable. A backward-clock anomaly fences current leases before work can resume.
+Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents. Capability revocation takes effect immediately. Runtime recovery state Loading, CatchingUp, Passivating, or Inactive, or Room Integrity State faulted or quarantined, makes pending intents unclaimable. A backward-clock anomaly fences current leases before work can resume.
 
 Replay verifies canonical Attention and recorded decision evidence only; it never evaluates policy, returns live Invocation Context, creates/offers an intent, grants a lease, or contacts a Runner.
 

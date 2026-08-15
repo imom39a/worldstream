@@ -48,11 +48,11 @@ stateDiagram-v2
     [*] --> Loading
     Loading --> CatchingUp: "verified base loaded"
     CatchingUp --> Active: "ordered overdue work drained"
-    Loading --> Faulted: "verified head cannot safely advance"
-    CatchingUp --> Faulted: "deterministic runtime fault"
-    Loading --> Quarantined: "integrity untrusted"
-    CatchingUp --> Quarantined: "verification disagreement"
+    Active --> Passivating: "idle barrier begins"
+    Passivating --> Inactive: "mailbox drained"
 ~~~
+
+Loading, CatchingUp, Active, Passivating, and Inactive are the complete runtime recovery lifecycle. Durable Room Integrity State is the separate `healthy | faulted | quarantined` axis. A verification or runtime failure updates and fences integrity and retires the actor; Faulted and Quarantined are serving surfaces derived from integrity, not recovery states.
 
 ~~~mermaid
 stateDiagram-v2
@@ -111,14 +111,14 @@ stateDiagram-v2
 
 A new claim requires all of the following at the claim linearization point:
 
-- Room Status active, Room Integrity healthy, and Room recovery state Active;
+- Room Status active, runtime recovery state Active, and Room Integrity State healthy;
 - target Membership enabled, Agent Principal, participant Access Mode, and a current pack Role;
 - Runner capability bound to the target Principal and Membership;
 - current Activation Policy permits the claim;
 - exact Room, integrity, policy, authority, Membership, intent, and lease generations match the prepared witnesses;
 - the intent is pending, not expired, and no other intent for the Membership has a live lease.
 
-Archive atomically cancels pending/leased intents and advances a room-wide Activation fence. Suspend, departure, identity binding changes, Access Mode changes, or Role changes cancel/fence affected targets. Capability revocation applies immediately. A policy revision fences stale prepared claims. Loading, CatchingUp, Faulted, and Quarantined preserve otherwise valid pending intents but make them unclaimable; verified restoration may resume them if their deadline has not passed.
+Archive atomically cancels pending/leased intents and advances a room-wide Activation fence. Suspend, departure, identity binding changes, Access Mode changes, or Role changes cancel/fence affected targets. Capability revocation applies immediately. A policy revision fences stale prepared claims. Runtime recovery state Loading, CatchingUp, Passivating, or Inactive, or Room Integrity State faulted or quarantined, preserves otherwise valid pending intents but makes them unclaimable; verified restoration may resume them if their deadline has not passed.
 
 The operational intent expiry is the earlier of its semantic deadline and the policy maximum. A lease is additionally capped by the policy maximum lease. A detected backward wall-clock jump fences every live lease, returns still-eligible intents to pending under a new generation, and requires a new claim.
 
@@ -126,7 +126,7 @@ The operational intent expiry is the earlier of its semantic deadline and the po
 
 Claim, renew, release, and complete each carry its own operation ID; `claim_id` is the claim operation ID, and later operations also name it as their lease identity. The server derives the canonical request hash from the complete authenticated request. The operation first resolves an existing receipt after authentication and before current availability checks:
 
-- same ID and same hash returns the exact stored result, including after a lost reply;
+- same ID and same hash resolves the durable receipt and returns the exact stored result, including after a lost reply, while any required context is retained; a retired granted context returns deterministic wire `result_retired` without changing that stored result;
 - same ID and different hash returns `idempotency_conflict`;
 - a new request can durably return `granted`, `not_available`, `expired`, `cancelled`, or `fenced` as applicable.
 
@@ -139,14 +139,14 @@ Private context is prepared outside the write lock, revalidated under exact witn
 - Activation/claim identity, typed cause and reason, lease generation/expiry, semantic deadline, and the exact complete Room Head;
 - current Membership/Role/Access facts and the integrity, policy, authority, delivery, and schema witnesses used for the grant;
 - the current authorized Projection, its schema/hash, and the sole exact ordered ActionOfferV1 representation based on that complete Head;
-- authorized artifact references and explicit runner limits; and
+- authorized artifact references plus versioned explicit runner budget and limits; and
 - exactly one delivery branch:
   - `RetainedFrames { cursor_exclusive, through_frame_head, frames }`; or
   - `ProjectionReset { baseline_frame_head, reason }`.
 
 A Head or delivery-witness mismatch may reprepare context under the same claim operation ID before any disposition commits. Authority or integrity mismatch is fenced. Claiming or receiving this context does not move the Cursor or satisfy any Session synchronization token.
 
-Compact intent data, operation receipts, Canonical Request Hashes, result/context hashes, generations, and dispositions are retained for the Room lifetime. Exact private Invocation Context is retained through terminal state plus seven days, or the longer applicable frame-privacy window; afterward it is replaced by an auditable tombstone. A later exact retry returns `result_retired`, not regenerated possibly different private bytes.
+Compact intent data, operation receipts, Canonical Request Hashes, immutable original result codes/hashes, context hashes, generations, and dispositions are retained for the Room lifetime. Exact private Invocation Context is retained through terminal state plus seven days, or the longer applicable frame-privacy window; afterward an explicit retention discriminator replaces the bytes with a versioned auditable tombstone while preserving the context hash. A later exact retry deterministically returns wire `result_retired`, not regenerated possibly different private bytes and not a mutation of the original stored result.
 
 ## Replay authorization
 

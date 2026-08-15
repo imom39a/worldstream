@@ -97,7 +97,7 @@ HTTP is used for:
 - v0.2 artifact upload and download;
 - host-operator backup and diagnostics through local tooling.
 
-All canonical Room-administration operations use the Operation Identity `(authenticated_principal, versioned_operation_kind, idempotency_key)`. Their versioned Canonical Request Hash binds target Room, expected basis, reason, and the complete ordered changeset. An Advance, stable Rejection, or administrative NoChange and its Semantic Receipt reach one database COMMIT. Same identity/hash returns the original result; same identity/different hash returns `idempotency_conflict`.
+All canonical Room-administration operations use the Operation Identity `(authenticated_principal, versioned_operation_kind, idempotency_key)`. For existing-Room administration, the versioned Canonical Request Hash binds target Room, expected basis, reason, and the complete ordered changeset. Room creation instead binds its exact pack digest, configuration, and ordered initial Membership proposal while excluding generated Room/Member IDs, Room seed, and recorded creation time. Genesis creation, an Advance, stable Rejection, or administrative NoChange and its Semantic Receipt reach one database COMMIT. Same identity/hash returns the original result; same identity/different hash returns `idempotency_conflict`.
 
 ## Common envelope
 
@@ -291,28 +291,28 @@ Attachment is serialized through the Room lane. The server captures the complete
         "schema": "worldstream.agent-heist.navigator.v1",
         "value": {
           "phase": "commitment",
-          "deadline": "2026-08-13T18:30:00Z",
-          "action_offers": [
-            {
-              "domain": "worldstream/action-offer/v1",
-              "action_type": "commit_move",
-              "payload_schema_digest": "blake3:...",
-              "eligibility_window": {
-                "opens_at": "2026-08-13T18:29:30Z",
-                "deadline": "2026-08-13T18:30:00Z"
-              }
-            }
-          ]
+          "deadline": "2026-08-13T18:30:00Z"
         }
-      }
+      },
+      "action_offers": [
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "commit_move",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": {
+            "opens_at": "2026-08-13T18:29:30Z",
+            "deadline": "2026-08-13T18:30:00Z"
+          }
+        }
+      ]
     },
     "projection_hash": "blake3:..."
   }
 }
 ~~~
 
-The `projection` value contains authorized Core Room State and Membership metadata plus the pack-owned Activity Projection. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A Projection Reset is not an Observation Frame. A client processes it atomically, stores `baseline_frame_head`, and then sends the Session's synchronization acknowledgement.
-The canonical Action Offer bytes are supplied by the exact pack view and reused unchanged by Observations, Invocation Context, and host pre-admission.
+The `projection` value contains authorized Core Room State and Membership metadata, the pack-owned Activity Projection, and exactly one sibling `action_offers` list. The surrounding body is the Projection Envelope; `room_health` is operational metadata outside the Projection. A Projection Reset is not an Observation Frame. A client processes it atomically, stores `baseline_frame_head`, and then sends the Session's synchronization acknowledgement.
+The canonical `projection.action_offers` bytes are supplied by the exact pack view and reused unchanged by Observations, Invocation Context, and host pre-admission.
 
 `projection_hash` is BLAKE3 over the canonical object `{domain: "worldstream/projection-hash/v1", projection_schema, projection}`. It excludes Projection Envelope fields such as message ID, Room Integrity State/generation, Room sequence, frame sequence, and delivery time, so operational changes do not alter an otherwise identical Projection hash.
 
@@ -462,7 +462,7 @@ The same internal contract covers all Room operation classes:
 | Class | Operation Identity | Same-hash replay |
 |---|---|---|
 | Participant Action | `(room_id, member_id, action_id)` | Original accepted or stable rejected Semantic Receipt |
-| Room administration | `(authenticated_principal, versioned_operation_kind, idempotency_key)` | Original Transition, Rejection, or NoChange receipt |
+| Room administration | `(authenticated_principal, versioned_operation_kind, idempotency_key)` | Original Genesis-created, Transition, Rejection, or NoChange receipt |
 | Timer firing | `(room_id, timer_id, generation)` | Original Semantic Receipt and matching Transition; Canonical Request Hash binds immutable `scheduled_for`/payload, while an obsolete `NotApplicable` candidate binds no receipt |
 | Host/external input | `(room_id, source_id, input_id)` | Original Semantic Receipt and matching Transition; an independently obsolete `NotApplicable` candidate binds no receipt |
 
@@ -613,7 +613,7 @@ Offers may be duplicated and may race another authorized runner.
 }
 ~~~
 
-`claim_id` is both the lease-attempt identity and the claim operation ID for this Activation and authenticated Runner. The server derives its canonical request hash from the complete authenticated request; clients do not submit a trusted hash field. The database atomically grants at most one current lease and persists that hash plus the result. Same claim ID and same request returns that original result after a lost reply; a changed request or different authenticated Runner is an idempotency conflict. A Runner uses a new claim ID if it wants to try again after a stored not-available result.
+`claim_id` is both the lease-attempt identity and the claim operation ID for this Activation and authenticated Runner. The server derives its canonical request hash from the complete authenticated request; clients do not submit a trusted hash field. The database atomically grants at most one current lease and persists that hash plus the result. Same claim ID and same request returns that original result after a lost reply while any required private context is retained; after context retirement it follows the deterministic `result_retired` rule below. A changed request or different authenticated Runner is an idempotency conflict. A Runner uses a new claim ID if it wants to try again after a stored not-available result.
 
 Claim is one of four independent idempotent Activation operations; renew, release, and complete each carries its own operation ID, from which the server derives and stores a canonical request hash. After authentication, an existing identical receipt is returned before current availability is considered. Database COMMIT linearizes every newly recorded disposition.
 
@@ -652,6 +652,7 @@ Only after claim authorization does the server return private invocation context
     "frame_head": 192,
     "retained_floor": 150,
     "cursor": 192,
+    "projection_schema": "worldstream.projection.v1",
     "projection": {
       "core": {
         "room_status": "active",
@@ -664,33 +665,31 @@ Only after claim authorization does the server return private invocation context
       "activity": {
         "schema": "worldstream.agent-heist.navigator.v1",
         "value": {
-          "phase": "commitment",
-          "action_offers": [
-            {
-              "domain": "worldstream/action-offer/v1",
-              "action_type": "commit_move",
-              "payload_schema_digest": "blake3:...",
-              "eligibility_window": {
-                "opens_at": "2026-08-13T18:29:30Z",
-                "deadline": "2026-08-13T18:30:00Z"
-              }
-            }
-          ]
+          "phase": "commitment"
         }
-      }
+      },
+      "action_offers": [
+        {
+          "domain": "worldstream/action-offer/v1",
+          "action_type": "commit_move",
+          "payload_schema_digest": "blake3:...",
+          "eligibility_window": {
+            "opens_at": "2026-08-13T18:29:30Z",
+            "deadline": "2026-08-13T18:30:00Z"
+          }
+        }
+      ]
     },
     "projection_hash": "blake3:...",
-    "action_offers": [
-      {
-        "domain": "worldstream/action-offer/v1",
-        "action_type": "commit_move",
-        "payload_schema_digest": "blake3:...",
-        "eligibility_window": {
-          "opens_at": "2026-08-13T18:29:30Z",
-          "deadline": "2026-08-13T18:30:00Z"
-        }
-      }
-    ],
+    "runner_budget": {
+      "schema": "worldstream/runner-budget/v1",
+      "max_action_submissions": 1
+    },
+    "runner_limits": {
+      "schema": "worldstream/runner-limits/v1",
+      "max_runtime_ms": 30000,
+      "max_result_bytes": 65536
+    },
     "delivery": {
       "kind": "retained_frames",
       "cursor_exclusive": 192,
@@ -702,9 +701,11 @@ Only after claim authorization does the server return private invocation context
 }
 ~~~
 
-The runner uses this exact committed payload to start a new Invocation or route work to a bounded Runner-owned execution runtime. `delivery` is exactly one of `retained_frames` or `projection_reset { baseline_frame_head, reason }`. The complete Head and all displayed witnesses belong to the grant. WorldStream does not know which model is called.
+The runner uses this exact committed payload to start a new Invocation or route work to a bounded Runner-owned execution runtime. `projection.action_offers` is the context's sole exact ordered ActionOfferV1 list. `runner_budget` and `runner_limits` are versioned bounded witnesses selected by the applicable policy and configuration for this grant; the illustrative values above are neither implementation evidence nor a release-performance claim. `delivery` is exactly one of `retained_frames` or `projection_reset { baseline_frame_head, reason }`. The complete Head and all displayed witnesses belong to the grant. WorldStream does not know which model is called.
 
 The claim capability authorizes Activation handling only. To submit a domain Action, the Runner or Invocation uses separate participant authority bound to the target Principal and Membership. Receiving context, claiming, renewing, releasing, or completing the Activation does not advance the Membership Cursor; an authorized room client acknowledges Observation Frames explicitly after durable processing. See [ADR 0003](adr/0003-separate-activation-and-action-authority.md).
+
+If the exact private context later reaches its retention limit, the stored original grant code and result/context hashes remain unchanged. An identical claim retry resolves that receipt but deterministically returns `result_retired`; it never regenerates context or rewrites the original result.
 
 ### activation.renew
 
@@ -775,7 +776,7 @@ The server derives the canonical request hash. Expired leases return to pending 
 
 An operation from an expired or superseded claim returns stale_activation_lease and cannot alter the current lease. A new grant increments lease_generation.
 
-Archive cancels every pending/leased intent and advances a Room-wide Activation fence in the same Room transaction. Suspend, departure, identity, Access Mode, and Role changes cancel/fence affected Memberships. Capability revocation is immediate. Loading, CatchingUp, Faulted, and Quarantined make pending intents unclaimable without deleting them. A backward clock anomaly fences live leases and returns still-eligible intents to pending under a new generation.
+Archive cancels every pending/leased intent and advances a Room-wide Activation fence in the same Room transaction. Suspend, departure, identity, Access Mode, and Role changes cancel/fence affected Memberships. Capability revocation is immediate. Runtime recovery state Loading, CatchingUp, Passivating, or Inactive, or Room Integrity State faulted or quarantined, makes pending intents unclaimable without deleting them. A backward clock anomaly fences live leases and returns still-eligible intents to pending under a new generation.
 
 ### HTTP long poll
 
@@ -865,7 +866,7 @@ Session presence, Runner availability, and other operational changes do not cons
 }
 ~~~
 
-The server accepts only a selectable compiled-in semantic digest whose `PackRevisionLockV1`, executor, schemas, codecs, and goldens agree in the embedded registry. Creation constructs initial `CoreRoomState v1`, calls `initialize`, and records one immutable sequence-zero Genesis containing exact version identities, configuration, both initial state values, normalized timer list, Room seed, and logical creation time. Genesis hash plus initial Core, Activity, and aggregate hashes, complete Head zero, verified current materializations, timers, resource, and mutation receipt commit atomically. Genesis creates no Transition, Domain Event, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
+The server accepts only a selectable compiled-in semantic digest whose `PackRevisionLockV1`, executor, schemas, codecs, and goldens agree in the embedded registry. Creation constructs initial `CoreRoomState v1`, calls `initialize`, and records one immutable sequence-zero Genesis containing exact version identities, configuration, both initial state values, normalized timer list, Room seed, and logical creation time. Genesis hash plus initial Core, Activity, and aggregate hashes, complete Head zero, verified current Room/Core/Membership/Activity materializations, normalized timer rows, and the room-creation Semantic Receipt commit atomically. Genesis creates no Transition, Domain Event, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
 
 ### Current projection
 
@@ -967,7 +968,7 @@ Core error codes:
 | activation_fenced | Authority, policy, integrity, Membership, Room, or lease witness changed |
 | lease_expired | Operation used an expired claim |
 | stale_activation_lease | Claim ID/generation is no longer current |
-| result_retired | Exact private Invocation Context exceeded its retention window; receipt/tombstone remains |
+| result_retired | Deterministic retry response after an original granted receipt's exact private Invocation Context was replaced by its versioned tombstone; the original result code/hash remains unchanged |
 | invalid_payload | Input failed strict schema before admission |
 | activity_fault | Pack/runtime failed before durable action result |
 | rate_limited | Caller exceeded a documented limit |

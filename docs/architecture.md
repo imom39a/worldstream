@@ -160,7 +160,8 @@ The active-room map is in memory. It is not a distributed registry.
 The supervisor uses an explicit recovery lifecycle before ordinary service:
 
     Loading → CatchingUp → Active → Passivating → Inactive
-             ↘ Faulted or Quarantined ↙
+
+These five runtime states are orthogonal to durable Room Integrity State (`healthy | faulted | quarantined`). An integrity failure updates and fences the integrity axis; it does not create another recovery state. A new or reactivated actor enters at Loading, and an actor that cannot continue is removed to Inactive after the applicable integrity disposition is recorded.
 
 Every actor receives a supervisor generation. Loading verifies state; CatchingUp drains the fixed-cutoff overdue-timer set before ordinary canonical work or normal reads attach. Passivation occurs through a barrier: mark Passivating, stop routing directly, drain the actor mailbox, confirm no provisional commit/timer work, then remove the actor. Commands arriving during Loading, CatchingUp, or Passivating have not reserved Room-lane capacity: they wait in a bounded supervisor queue or receive `room_busy`. A stale-generation actor cannot publish after removal, and complete-Head fencing prevents an obsolete commit.
 
@@ -195,7 +196,7 @@ The actor MUST expose one bounded Room Admission Lane for Participant Actions, c
 
 A normalized Core Stimulus carries:
 
-- a versioned kind: join, resume, suspend, depart, Access/Role change, atomic Membership changeset, or archive;
+- a versioned kind: Join, Resume, Suspend, Depart, AccessModeChange, RoleChange, MembershipChangeSet, or Archive, where MembershipChangeSet is the atomic multi-Membership form;
 - canonical authority attribution without bearer secrets;
 - idempotency identity and exact expected Room sequence;
 - a stable reason code and semantic recorded time when applicable;
@@ -236,13 +237,13 @@ Initialization receives exact Genesis input and returns canonical initial Activi
 
 Participant Actions and join/resume/Access/Role proposals may be declared Reject. Archive/suspend/depart and required timers/external inputs cannot be vetoed. WorldStream resolves Core NoChange before pack entry.
 
-Validation and Activity reduction occur in the one `reduce` call so they cannot disagree after state changes. For a non-Core Stimulus, Core before and proposed after are equal. `view` returns the pack-owned Activity Projection plus exact Action Offers, and `observe` returns a bounded pack-owned Activity Observation for one viewer. WorldStream wraps Activity Projection with authorized Core Room and Membership facts to form a Projection; protocol envelopes add causal sequence, operational Room Integrity State/generation, schema, and delivery metadata.
+Validation and Activity reduction occur in the one `reduce` call so they cannot disagree after state changes. For a non-Core Stimulus, Core before and proposed after are equal. `view` returns the pack-owned Activity Projection plus exact Action Offers, and `observe` returns a bounded pack-owned Activity Observation for one viewer. WorldStream wraps the Activity Projection and its one separate ActionOfferV1 list with authorized Core Room and Membership facts to form a Projection; the list appears exactly once as the `projection.action_offers` sibling, while protocol envelopes add causal sequence, operational Room Integrity State/generation, schema, and delivery metadata.
 
 Packs request ScheduleNext, CancelCurrent(expected_generation), or RescheduleCurrent(expected_generation, new due/payload). WorldStream owns, assigns, and verifies monotonic timer generations and strict-forward semantic time.
 
 view returns one authorized Activity Projection and ordered canonical Action Offers. Those same bytes are used by reset, observation, Invocation Context, and host pre-admission. observe receives before/after Core and Activity, normalized Stimulus, ordered events, exact viewer, and exact after-view bytes; it returns zero or one viewer result. A changed authorized view with no observation is PackFault.
 
-WorldStream wraps the pack projection with authorized Core facts. Operator Membership never receives raw Activity State. Callback panic where catchable, malformed output, bound violation, mandatory-Core veto, privacy/view failure, or deterministic disagreement fails closed before commit.
+WorldStream wraps the pack projection and exact Action Offers with authorized Core facts using that single Projection shape. Operator Membership never receives raw Activity State. Callback panic where catchable, malformed output, bound violation, mandatory-Core veto, privacy/view failure, or deterministic disagreement fails closed before commit.
 
 PackRegistryV1 maps each PackRevisionLockV1 semantic digest to the exact executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status. Selectable implies runnable; every retained digest remains runnable even when non-selectable. A Room never changes digest or rewrites Activity State in place. Missing retained executor/codec is an explicit compatibility failure.
 
@@ -457,7 +458,7 @@ sequenceDiagram
     participant S as "Selected storage adapter"
     participant D as "Durable database"
 
-    C->>G: action.submit with action_id and based_on_seq
+    C->>G: action.submit with action_id and based_on_room_seq
     G->>R: authenticated, strictly parsed request
     R->>S: resolve(identity, canonical_request_hash)
 
@@ -656,15 +657,15 @@ Member ID, Principal ID/kind, standing, Access Mode, and Role are the current Co
     operation_identity_json BLOB
     codec_id TEXT
     canonical_request_hash BLOB
-    basis_complete_head_json BLOB
+    basis_complete_head_json BLOB NULL
     semantic_input_json BLOB
-    resolution_kind TEXT CHECK resolution_kind IN ('transition_committed', 'rejection_recorded', 'no_change_recorded')
+    resolution_kind TEXT CHECK resolution_kind IN ('genesis_created', 'transition_committed', 'rejection_recorded', 'no_change_recorded')
     transition_seq INTEGER NULL
     stored_resolution_json BLOB
     committed_at TEXT
     PRIMARY KEY (operation_kind, operation_identity_json)
 
-Every committed Action, administration, TimerFired, or external-input Operation Identity binds exactly one Canonical Request Hash and StoredResolution. Action and administration indexes may project their typed identity fields, but they do not define a parallel receipt contract. The receipt retains its exact eight-field basis Complete Head, typed semantic input such as Action `admitted_at` or TimerFired `scheduled_for`/payload, and original result. Same identity and hash returns the StoredResolution; a changed hash is Conflict. `NotApplicable` binds no identity, hash, or receipt. Transient admission/runtime errors never enter this record and do not consume an identity.
+Every committed Action, administration, TimerFired, or external-input Operation Identity binds exactly one Canonical Request Hash and StoredResolution. Action and administration indexes may project their typed identity fields, but they do not define a parallel receipt contract. Existing-Room operations retain their exact eight-field basis Complete Head, typed semantic input such as Action `admitted_at` or TimerFired `scheduled_for`/payload, and original result. Room creation is the sole no-basis case: it uses the administration Operation Identity, records `genesis_created`, and returns the generated Room identity and complete Head zero from the same transaction that creates Genesis. Same identity and hash returns the StoredResolution; a changed hash is Conflict. `NotApplicable` binds no identity, hash, or receipt. Transient admission/runtime errors never enter this record and do not consume an identity.
 
 `codec_id = "worldstream/operation-receipt/v1"` is the serialization umbrella for these Semantic Receipts and for the Activation operation receipts below. It identifies a byte envelope, not one shared domain state or resolution algebra.
 
@@ -779,12 +780,17 @@ Durable claim receipts and stale-lease protection:
     result_code TEXT CHECK result_code IN ('granted', 'not_available', 'expired', 'cancelled', 'fenced', 'completed', 'released', 'renewed')
     lease_until TEXT NULL
     result_json BLOB
+    result_hash BLOB
+    context_retention_state TEXT CHECK context_retention_state IN ('not_applicable', 'retained', 'retired')
     invocation_context_hash BLOB NULL
     invocation_context_blob BLOB NULL
+    invocation_context_tombstone_json BLOB NULL
     created_at TEXT
     PRIMARY KEY (activation_id, operation_kind, operation_id)
 
-For claim, `operation_id` and `claim_id` are the same value; later control operations have a new `operation_id` and name the active `claim_id`. The server derives `canonical_request_hash` from the complete authenticated request. A repeated operation ID from the same authenticated Runner and identical canonical request returns its exact stored result. Reusing it with a changed request or Runner is an idempotency conflict. Renew, release, and complete match the current claim ID, Runner ID, generation, and unexpired lease. Exact granted Invocation Context is retained according to its privacy window, then replaced by a tombstone; later retry returns `result_retired` rather than regenerated bytes. These receipts also serialize under `worldstream/operation-receipt/v1`, while retaining their distinct Activation result and lease-witness model.
+For claim, `operation_id` and `claim_id` are the same value; later control operations have a new `operation_id` and name the active `claim_id`. The server derives `canonical_request_hash` from the complete authenticated request. A repeated operation ID from the same authenticated Runner and identical canonical request resolves its durable receipt; it returns the exact original result while any required context is retained and follows the retirement rule below otherwise. Reusing it with a changed request or Runner is an idempotency conflict. Renew, release, and complete match the current claim ID, Runner ID, generation, and unexpired lease.
+
+`result_code`, `result_json`, and `result_hash` permanently identify the original stored disposition. `result_json` contains only non-context result fields; exact private context bytes occur only in `invocation_context_blob`. For a granted claim the result hash binds those immutable non-context result fields plus `invocation_context_hash`. A non-grant or control operation uses `not_applicable` and has no context bytes or tombstone. A granted claim starts as `retained` with exact context bytes and no tombstone. At retention expiry, one audited operation changes only the retention discriminator, removes the private bytes, and writes a versioned tombstone containing the context hash, retirement time, and reason. It never changes the original result code or hash. An identical retry of that originally granted operation then deterministically returns the wire error `result_retired` instead of regenerating context or rewriting the stored result. These receipts serialize under `worldstream/operation-receipt/v1`, while retaining their distinct Activation result and lease-witness model.
 
 ### artifacts and room_artifacts
 
@@ -977,8 +983,9 @@ Only `RetryableKnownAbsent` permits retry of an identical sealed plan. If a retr
 
 ### Semantic Receipts and durable dispositions
 
-Every stored Semantic Receipt contains a codec/domain version, Operation Identity, Canonical Request Hash, exact basis Complete Head, original typed Semantic Time where applicable, and exactly one semantic result:
+Every stored Semantic Receipt contains a codec/domain version, Operation Identity, Canonical Request Hash, its exact basis Complete Head when one exists, its original typed Semantic Time when applicable, and exactly one semantic result:
 
+- created Genesis identity and resulting complete Head zero for the sole no-basis room-creation operation;
 - accepted Transition identity, sequence, and resulting complete hashes;
 - stable safe Rejection code and bounded details; or
 - administrative NoChange code and bounded details.
@@ -1075,10 +1082,11 @@ A runner claim response contains:
 
 - activation ID, claim ID, lease generation, and cause sequence;
 - reason code and deadline;
-- current authorized projection;
-- the complete exact Room Head, Projection hash, current Action Offers, and Membership/integrity/policy/authority/delivery witnesses;
+- current authorized Projection, its schema, and its sole ordered ActionOfferV1 list;
+- the complete exact Room Head, Projection hash, and Membership/integrity/policy/authority/delivery witnesses;
 - exactly one of retained frames after the Membership Cursor or a Projection Reset baseline;
 - explicit artifact references authorized for that membership;
+- versioned, bounded runner budget and execution limits selected for the grant;
 - lease expiry.
 
 Claim grant/reclaim is one conditional database transaction. Claim, renew, release, and complete each use an independent operation ID and Canonical Request Hash and return a durable exact result. Retrying an identical operation returns that result. Renew, release, and complete conditionally match the authenticated Runner, current claim ID, current generation, and unexpired lease. An expired older claim can never complete a later lease. Archive and affected Membership/Access/Role changes cancel and generation-fence pending/leased intents; capability revocation applies immediately.
@@ -1191,7 +1199,7 @@ Every backend-native backup receives an immutable backup ID and a WorldStream ma
 
 ### Full WorldStream semantic verifier
 
-The verifier is read-only and never samples, repairs, fires timers, delivers Frames, or starts Activations. It validates the backup/export ID, Storage Epoch and lineage, engine and compatibility manifest, schema fingerprint and migration checksums, artifact sizes/digests/bytes, Operation Identities/Canonical Request Hashes/dispositions/Semantic Receipts, exact timers, Frames/Cursors, Activation Intents and every operation receipt, retained Invocation Context bytes or tombstones, request/result/context hashes, lease and witness generations, claims/fences, and availability of every exact retained Activity Pack executor. For every Room recorded healthy it reconstructs Genesis through Head and verifies every Transition, state, Core/Activity materialization, and Head hash.
+The verifier is read-only and never samples, repairs, fires timers, delivers Frames, or starts Activations. It validates the backup/export ID, Storage Epoch and lineage, engine and compatibility manifest, schema fingerprint and migration checksums, artifact sizes/digests/bytes, Operation Identities/Canonical Request Hashes/dispositions/Semantic Receipts, exact timers, Frames/Cursors, Activation Intents and every operation receipt, the context-retention discriminator and matching retained Invocation Context bytes or versioned tombstone, request/result/context hashes, lease and witness generations, claims/fences, and availability of every exact retained Activity Pack executor. For every Room recorded healthy it reconstructs Genesis through Head and verifies every Transition, state, Core/Activity materialization, and Head hash.
 
 A global lineage, schema, manifest, artifact, or cross-Room authority failure blocks deployment readiness. A Room already recorded as faulted or quarantined may be copied byte-for-byte, remain isolated and unhealthy, and not block otherwise verified Rooms. Any mismatch newly introduced by backup, restore, or transfer aborts verification.
 
@@ -1199,7 +1207,7 @@ A global lineage, schema, manifest, artifact, or cross-Room authority failure bl
 
 The only supported backend transfer is a versioned, resumable, whole-deployment, offline move from authoritative SQLite to an empty PostgreSQL target. The deterministic transfer bundle records source lineage, export identity, Storage Epoch, schema and codec versions, ordered chunks, row/object counts, per-chunk and whole-export digests, and a semantic fingerprint.
 
-Canonical serialized bytes are copied verbatim, never decoded and re-encoded through PostgreSQL JSON, timestamp, numeric, or text types. The bundle preserves Genesis, Transitions, every Head/hash, Core and Activity materializations, Memberships and authority, exact timer IDs/generations/`scheduled_for` values, Frames/Cursors, Operation Identities/Canonical Request Hashes/dispositions/Semantic Receipts, Activation Intents and every Activation operation receipt, retained Invocation Context bytes or tombstones, request/result/context hashes, lease and witness generations, claims/audit/fences, principals/capabilities/revocations, integrity incidents, and artifact metadata and bytes. Snapshots, indexes, caches, telemetry, Sessions, Runner presence, in-memory mailboxes, delivery attempts, and temporary state are invalidated or rebuilt.
+Canonical serialized bytes are copied verbatim, never decoded and re-encoded through PostgreSQL JSON, timestamp, numeric, or text types. The bundle preserves Genesis, Transitions, every Head/hash, Core and Activity materializations, Memberships and authority, exact timer IDs/generations/`scheduled_for` values, Frames/Cursors, Operation Identities/Canonical Request Hashes/dispositions/Semantic Receipts, Activation Intents and every Activation operation receipt, each context-retention discriminator with its matching retained Invocation Context bytes or versioned tombstone, request/result/context hashes, lease and witness generations, claims/audit/fences, principals/capabilities/revocations, integrity incidents, and artifact metadata and bytes. Snapshots, indexes, caches, telemetry, Sessions, Runner presence, in-memory mailboxes, delivery attempts, and temporary state are invalidated or rebuilt.
 
 Transfer is two-phase:
 
@@ -1364,7 +1372,7 @@ Each native archive contains `worldstreamd`, `worldstreamctl`, embedded UI, exam
 | Minimal CI | Target 15 minutes, hard 25 minutes; parallel Linux plus focused native Windows build/package/ACL/filesystem/SQLite/PostgreSQL-connect/recovery |
 | Release | Target 3 hours, hard 4 hours; every artifact/platform, signature/SBOM/provenance, full backend conformance, all prior migrations, transfer, isolated restore, verifier, failure/fuzz/benchmark suites, and one-hour SQLite soak |
 
-The deterministic quickstart uses SQLite by default and requires no cloud account, paid model, or remote service; PostgreSQL is opt-in. The certified Ubuntu reference uses 4 vCPU, 8 GiB, local SSD and completes deterministic Heist in under five minutes; a fresh checkout completes in under ten. The PostgreSQL harness uses the official PostgreSQL 17.11 image pinned by digest, a unique project and disposable volume, loopback random port, SCRAM, non-superuser runtime role, separate direct-admin and transaction-pooler runtime DSNs, PgBouncer transaction pooling, and scoped teardown. Provider verification is optional, dated, and limited to a migration plus backup/isolated-restore/full-Replay drill for the exact combination; it asserts no HA, SLA, durability, plan, region, or provider service.
+The deterministic quickstart release target uses SQLite by default and requires no cloud account, paid model, or remote service; PostgreSQL is opt-in. Release evidence MUST demonstrate deterministic Heist in under five minutes on the documented Ubuntu reference of 4 vCPU, 8 GiB, and local SSD, and a fresh checkout in under ten minutes. The required PostgreSQL evidence harness MUST use the official PostgreSQL 17.11 image pinned by an exact digest in the release evidence, a unique project and disposable volume, loopback random port, SCRAM, non-superuser runtime role, separate direct-admin and transaction-pooler runtime DSNs, PgBouncer transaction pooling, and scoped teardown. These are configuration and evidence obligations, not claims that the current specification-only repository has implemented or passed them. Provider verification, when supplied, is optional, dated, and limited to a migration plus backup/isolated-restore/full-Replay drill for the exact combination; it asserts no HA, SLA, durability, plan, region, or provider service.
 
 ## Reference performance envelope
 

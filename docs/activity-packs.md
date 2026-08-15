@@ -208,9 +208,13 @@ TimerFired {
 }
 
 CoreProposed {
-  proposal_kind,
-  requester_evidence,
-  recorded_at
+  kind,
+  canonical_authority_attribution,
+  operation_identity,
+  expected_room_seq,
+  reason_code,
+  recorded_at,
+  canonical_changeset
 }
 
 ExternalInput {
@@ -223,7 +227,7 @@ ExternalInput {
 }
 ~~~
 
-CoreProposed kinds are Join, Resume, AccessModeChange, RoleChange, Archive, Suspend, and Depart. Their exact state delta is represented only by Core before/proposed after. Host-normalized NoChange never enters the pack.
+CoreProposed kinds are Join, Resume, AccessModeChange, RoleChange, MembershipChangeSet, Archive, Suspend, and Depart. `MembershipChangeSet` is the atomic multi-Membership form. `canonical_changeset` carries an optional Room Status before/after pair plus Member-ID-sorted Membership before/after pairs, with at most one pair per Member ID. It MUST exactly match the delta between the complete immutable Core-before and proposed-Core-after values in ReduceInput; the host fails closed before pack entry on any mismatch. Host-normalized NoChange remains a pre-pack disposition and never enters the pack.
 
 TimerFired contains only the exact timer identity, immutable scheduled_for, and canonical payload; detection, lag, retry, database, and commit times are excluded. ParticipantAction carries host-recorded admitted_at. CoreProposed and ExternalInput carry canonical recorded_at. These typed fields supply semantic time; there is no universal Transition timestamp.
 
@@ -329,7 +333,7 @@ PackObservationV1 is one bounded canonical, viewer-authorized change value and c
 
 A Projection Reset calls view. Genesis creates no Observation Frame. Visibility removal, Session closure, frame sequencing and retention, Cursor movement, attach/reset barriers, and delivery remain host responsibilities.
 
-WorldStream wraps the Activity Projection with authorized Core facts. The pack never exposes raw Activity State to any viewer, including operator Memberships. Replay and final reveal are explicit typed viewers, never an authorization bypass.
+WorldStream wraps the Activity Projection and its separate exact ActionOfferV1 list with authorized Core facts; the protocol Projection places that list exactly once as the `projection.action_offers` sibling. The pack never exposes raw Activity State to any viewer, including operator Memberships. Replay and final reveal are explicit typed viewers, never an authorization bypass.
 
 ## Attention
 

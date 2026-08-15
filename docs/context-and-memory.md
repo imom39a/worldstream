@@ -234,7 +234,7 @@ WorldStream does not periodically scan all data with an LLM to decide whether an
 
 ## Agent Heist example
 
-Navigator invocation context during Commitment:
+Privacy-focused excerpt from a Navigator Invocation Context during Commitment. This is not the complete wire payload; the exact protocol context also carries the complete Head, schema/hash and authority/delivery witnesses, versioned runner budget/limits, and one delivery branch:
 
 ~~~json
 {
@@ -256,19 +256,19 @@ Navigator invocation context during Commitment:
       "disclosed_clues": ["guard-1"],
       "public_plans": ["plan-7"],
       "private_offers": [],
-      "own_commitment": null,
-      "action_offers": [
-        {
-          "domain": "worldstream/action-offer/v1",
-          "action_type": "commit_move",
-          "payload_schema_digest": "blake3:...",
-          "eligibility_window": {
-            "opens_at": "2026-08-13T18:29:30Z",
-            "deadline": "2026-08-13T18:30:00Z"
-          }
+      "own_commitment": null
+    },
+    "action_offers": [
+      {
+        "domain": "worldstream/action-offer/v1",
+        "action_type": "commit_move",
+        "payload_schema_digest": "blake3:...",
+        "eligibility_window": {
+          "opens_at": "2026-08-13T18:29:30Z",
+          "deadline": "2026-08-13T18:30:00Z"
         }
-      ]
-    }
+      }
+    ]
   },
   "changes_after_cursor": [
     {
@@ -284,7 +284,7 @@ It does not contain the Insider clue, Broker commitment, hidden facility state, 
 
 ## Investigation Room example
 
-After a clock correction, the Timeline analyst receives:
+After a clock correction, the Timeline analyst receives the following privacy-focused Projection/artifact excerpt inside that same complete context envelope:
 
 ~~~json
 {
@@ -310,28 +310,28 @@ After a clock correction, the Timeline analyst receives:
         }
       ],
       "own_facts_marked_stale": ["fact-12", "fact-14"],
-      "dependent_claims": ["claim-4"],
-      "action_offers": [
-        {
-          "domain": "worldstream/action-offer/v1",
-          "action_type": "publish_fact",
-          "payload_schema_digest": "blake3:...",
-          "eligibility_window": null
-        },
-        {
-          "domain": "worldstream/action-offer/v1",
-          "action_type": "revise_claim",
-          "payload_schema_digest": "blake3:...",
-          "eligibility_window": null
-        },
-        {
-          "domain": "worldstream/action-offer/v1",
-          "action_type": "request_verification",
-          "payload_schema_digest": "blake3:...",
-          "eligibility_window": null
-        }
-      ]
-    }
+      "dependent_claims": ["claim-4"]
+    },
+    "action_offers": [
+      {
+        "domain": "worldstream/action-offer/v1",
+        "action_type": "publish_fact",
+        "payload_schema_digest": "blake3:...",
+        "eligibility_window": null
+      },
+      {
+        "domain": "worldstream/action-offer/v1",
+        "action_type": "revise_claim",
+        "payload_schema_digest": "blake3:...",
+        "eligibility_window": null
+      },
+      {
+        "domain": "worldstream/action-offer/v1",
+        "action_type": "request_verification",
+        "payload_schema_digest": "blake3:...",
+        "eligibility_window": null
+      }
+    ]
   },
   "artifact_references": [
     {
