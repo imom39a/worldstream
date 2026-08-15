@@ -7,6 +7,8 @@ use thiserror::Error;
 pub const EMBEDDED_COMPATIBILITY_JSON: &str = include_str!("../../../compatibility.json");
 
 const MANIFEST_SCHEMA_V1: &str = "worldstream/storage-compatibility-manifest/v1";
+const COUNTER_PACK_ID: &str = "worldstream.counter";
+const AGENT_HEIST_PACK_ID: &str = "worldstream.agent-heist";
 
 /// Compatibility fields consumed by the process shell.
 #[derive(Clone, Debug, Deserialize)]
@@ -187,7 +189,14 @@ impl CompatibilityManifest {
     }
 
     fn validate_pack_executors(&self) -> Result<(), ManifestError> {
+        if self.pack_executors.is_empty() {
+            return Err(ManifestError::Inconsistent(
+                "pack executor list must not be empty",
+            ));
+        }
         let mut revision_digests = BTreeSet::new();
+        let mut required_pack_ids = BTreeSet::new();
+        let mut selectable_release_activity = false;
         for entry in &self.pack_executors {
             if entry.pack_id.is_empty() || entry.explanatory_version.is_empty() {
                 return Err(ManifestError::Inconsistent(
@@ -238,6 +247,18 @@ impl CompatibilityManifest {
                             "pack executor revision digest collision",
                         ));
                     }
+                    if entry.required_for_release && !entry.runnable_for_retained_rooms {
+                        return Err(ManifestError::Inconsistent(
+                            "required resolved pack executor must be runnable for retained Rooms",
+                        ));
+                    }
+                    if entry.required_for_release
+                        && entry.selectable_for_new_rooms
+                        && entry.runnable_for_retained_rooms
+                        && entry.pack_id != COUNTER_PACK_ID
+                    {
+                        selectable_release_activity = true;
+                    }
                 }
                 _ => {
                     return Err(ManifestError::Inconsistent(
@@ -245,6 +266,21 @@ impl CompatibilityManifest {
                     ));
                 }
             }
+            if entry.required_for_release {
+                required_pack_ids.insert(entry.pack_id.as_str());
+            }
+        }
+        if !required_pack_ids.contains(COUNTER_PACK_ID)
+            || !required_pack_ids.contains(AGENT_HEIST_PACK_ID)
+        {
+            return Err(ManifestError::Inconsistent(
+                "required pack executor entries must include Counter and Agent Heist",
+            ));
+        }
+        if self.release_ready && !selectable_release_activity {
+            return Err(ManifestError::Inconsistent(
+                "release-ready manifest requires a selectable runnable non-Counter Activity Pack",
+            ));
         }
         Ok(())
     }
@@ -342,6 +378,21 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("embedded manifest is valid: {error}"))
     }
 
+    fn resolve(entry: &mut super::PackExecutorManifestEntry, hex: char) {
+        entry.status = "resolved".to_owned();
+        let digest = format!("blake3:{}", hex.to_string().repeat(64));
+        for digest_field in [
+            &mut entry.revision_digest,
+            &mut entry.descriptor_digest,
+            &mut entry.executor_artifact_digest,
+            &mut entry.schema_bundle_digest,
+            &mut entry.codec_bundle_digest,
+            &mut entry.golden_corpus_digest,
+        ] {
+            *digest_field = digest.clone();
+        }
+    }
+
     #[test]
     fn embedded_manifest_is_valid_and_fail_closed() {
         let manifest = embedded_manifest();
@@ -385,19 +436,7 @@ mod tests {
     #[test]
     fn resolved_pack_executors_require_canonical_unique_digests() {
         let mut resolved = manifest();
-        let entry = &mut resolved.pack_executors[0];
-        entry.status = "resolved".to_owned();
-        for digest in [
-            &mut entry.revision_digest,
-            &mut entry.descriptor_digest,
-            &mut entry.executor_artifact_digest,
-            &mut entry.schema_bundle_digest,
-            &mut entry.codec_bundle_digest,
-            &mut entry.golden_corpus_digest,
-        ] {
-            *digest = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_owned();
-        }
+        resolve(&mut resolved.pack_executors[0], 'a');
         assert!(resolved.validate().is_ok());
 
         let mut collision = resolved.clone();
@@ -419,5 +458,46 @@ mod tests {
         partial.pack_executors[0].revision_digest =
             "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
         assert!(partial.validate().is_err());
+    }
+
+    #[test]
+    fn pack_executor_validation_requires_the_frozen_required_pack_entries() {
+        let mut empty = manifest();
+        empty.pack_executors.clear();
+        assert!(empty.validate().is_err());
+
+        let mut missing_counter = manifest();
+        missing_counter
+            .pack_executors
+            .retain(|entry| entry.pack_id != super::COUNTER_PACK_ID);
+        assert!(missing_counter.validate().is_err());
+
+        let mut missing_heist = manifest();
+        missing_heist
+            .pack_executors
+            .retain(|entry| entry.pack_id != super::AGENT_HEIST_PACK_ID);
+        assert!(missing_heist.validate().is_err());
+    }
+
+    #[test]
+    fn required_resolved_pack_executor_must_be_runnable() {
+        let mut invalid = manifest();
+        resolve(&mut invalid.pack_executors[0], 'a');
+        invalid.pack_executors[0].runnable_for_retained_rooms = false;
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn release_ready_manifest_rejects_unresolved_or_no_selectable_release_activity() {
+        let mut unresolved = manifest();
+        unresolved.release_ready = true;
+        assert!(unresolved.validate().is_err());
+
+        let mut no_selectable_release_activity = manifest();
+        no_selectable_release_activity.release_ready = true;
+        resolve(&mut no_selectable_release_activity.pack_executors[0], 'a');
+        resolve(&mut no_selectable_release_activity.pack_executors[1], 'b');
+        no_selectable_release_activity.pack_executors[1].selectable_for_new_rooms = false;
+        assert!(no_selectable_release_activity.validate().is_err());
     }
 }
