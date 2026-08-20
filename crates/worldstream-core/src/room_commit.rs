@@ -25,7 +25,7 @@ use crate::{
     PresentedCapabilityV1, PrincipalId, PrincipalKindV1, RecordedStimulusV1, ReplayFailureClassV1,
     RoomId, RoomSequenceV1, RoomStatusV1, SourceId, TimerChangeV1, TimerFiredV1, TimerGenerationV1,
     TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
-    activity_pack::ValidatedPackObservationV1,
+    activity_pack::{ValidatedPackObservationV1, ValidatedPackViewV1},
     authority::{AuthorityFenceFactsV1, ReceiptReadAdapterInputV1, ReceiptReadTargetPolicyV1},
     canonical::encode,
     primitives::{DigestParseError, compare_timestamp_text},
@@ -1009,6 +1009,34 @@ impl PreparedObservationFrameV1 {
     #[must_use]
     pub const fn payload_hash(&self) -> &Blake3DigestV1 {
         &self.payload_hash
+    }
+}
+
+/// One Membership-addressed delivery consequence of an accepted Transition.
+///
+/// A hidden Transition has no value in this collection. An observation frame,
+/// projection reset, or visibility loss is represented exactly once for the
+/// affected Membership. Reset views are already checked and authorized by the
+/// Activity Pack host; Core does not reinterpret or broaden their bytes.
+#[derive(Clone)]
+pub enum PreparedObservationConsequenceV1 {
+    /// One durable, zero-or-one coalesced Observation Frame.
+    ObservationFrame(PreparedObservationFrameV1),
+    /// Incremental delivery is invalid and the recipient needs a full reset.
+    ResetRequired(Box<ValidatedPackViewV1>),
+    /// The recipient no longer has an enabled Membership view.
+    VisibilityLost(MemberId),
+}
+redacted_debug!(PreparedObservationConsequenceV1);
+
+impl PreparedObservationConsequenceV1 {
+    #[must_use]
+    pub fn member_id(&self) -> &MemberId {
+        match self {
+            Self::ObservationFrame(frame) => frame.member_id(),
+            Self::ResetRequired(view) => view.viewer().member_id(),
+            Self::VisibilityLost(member_id) => member_id,
+        }
     }
 }
 
@@ -2294,7 +2322,7 @@ pub struct PreparedAdvancePersistenceV1 {
     pub canonical_resulting_activity_state_bytes: Vec<u8>,
     pub resulting_memberships: Vec<PreparedMembershipMaterializationV1>,
     pub timer_changes: Vec<PreparedTimerMutationV1>,
-    pub observation_frames: Vec<PreparedObservationFrameV1>,
+    pub delivery_consequences: Vec<PreparedObservationConsequenceV1>,
     pub activation_decisions: Vec<PreparedActivationDecisionV1>,
 }
 redacted_debug!(PreparedAdvancePersistenceV1);
@@ -2374,7 +2402,7 @@ impl PreparedRoomCommitV1 {
                 {
                     return Err(PrepareRoomWriteErrorV1::InvalidPreparedTransition);
                 }
-                let observation_frames = prepare_transition_frames(
+                let delivery_consequences = prepare_transition_consequences(
                     trace,
                     &prepared,
                     resulting_state.core_state(),
@@ -2407,7 +2435,7 @@ impl PreparedRoomCommitV1 {
                         .iter()
                         .map(PreparedTimerMutationV1::from_change)
                         .collect::<Result<Vec<_>, _>>()?,
-                    observation_frames,
+                    delivery_consequences,
                     activation_decisions: Vec::new(),
                 };
                 (
@@ -2528,7 +2556,7 @@ impl PreparedRoomCommitV1 {
         {
             return Err(PrepareRoomWriteErrorV1::InvalidPreparedTransition);
         }
-        let observation_frames = prepare_transition_frames(
+        let delivery_consequences = prepare_transition_consequences(
             trace,
             &prepared,
             resulting_state.core_state(),
@@ -2564,7 +2592,7 @@ impl PreparedRoomCommitV1 {
                 .iter()
                 .map(PreparedTimerMutationV1::from_change)
                 .collect::<Result<Vec<_>, _>>()?,
-            observation_frames,
+            delivery_consequences,
             activation_decisions: Vec::new(),
         };
         let identity = request.operation_identity();
@@ -2698,7 +2726,7 @@ impl PreparedRoomCommitV1 {
                 {
                     return Err(PrepareRoomWriteErrorV1::InvalidPreparedTransition);
                 }
-                let observation_frames = prepare_transition_frames(
+                let delivery_consequences = prepare_transition_consequences(
                     trace,
                     &prepared,
                     resulting_state.core_state(),
@@ -2734,7 +2762,7 @@ impl PreparedRoomCommitV1 {
                         .iter()
                         .map(PreparedTimerMutationV1::from_change)
                         .collect::<Result<Vec<_>, _>>()?,
-                    observation_frames,
+                    delivery_consequences,
                     activation_decisions: Vec::new(),
                 };
                 (
@@ -3070,13 +3098,13 @@ impl PreparedRoomCommitV1 {
     }
 }
 
-fn prepare_transition_frames(
+pub(crate) fn prepare_transition_consequences(
     trace: &CoreTraceV1,
     prepared: &PreparedRoomTransitionV1,
     resulting_core: &CoreRoomStateV1,
     cause_room_seq: RoomSequenceV1,
     current_frame_heads: &BTreeMap<MemberId, u64>,
-) -> Result<Vec<PreparedObservationFrameV1>, PrepareRoomWriteErrorV1> {
+) -> Result<Vec<PreparedObservationConsequenceV1>, PrepareRoomWriteErrorV1> {
     if current_frame_heads.len() != trace.core_state().memberships().len()
         || !trace
             .core_state()
@@ -3086,34 +3114,48 @@ fn prepare_transition_frames(
     {
         return Err(PrepareRoomWriteErrorV1::FrameHeadWitnessMismatch);
     }
-    let mut frames = Vec::new();
-    for membership in resulting_core.memberships().values() {
-        if membership.standing() != MembershipStandingV1::Enabled {
-            continue;
-        }
-        let viewer = match membership.access_mode() {
-            AccessModeV1::Participant => PackViewerV1::Participant(membership.member_id().clone()),
-            AccessModeV1::Spectator => PackViewerV1::Public(membership.member_id().clone()),
-            AccessModeV1::Operator => PackViewerV1::Operator(membership.member_id().clone()),
+    let mut consequences = Vec::new();
+    let mut member_ids = trace
+        .core_state()
+        .memberships()
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    member_ids.extend(resulting_core.memberships().keys().cloned());
+    for member_id in member_ids {
+        let before = trace.core_state().membership(&member_id);
+        let after = resulting_core.membership(&member_id);
+        let viewer_membership = match (before, after) {
+            (Some(before), _) if before.standing() == MembershipStandingV1::Enabled => before,
+            (_, Some(after)) if after.standing() == MembershipStandingV1::Enabled => after,
+            _ => continue,
+        };
+        let viewer = match viewer_membership.access_mode() {
+            AccessModeV1::Participant => PackViewerV1::Participant(member_id.clone()),
+            AccessModeV1::Spectator => PackViewerV1::Public(member_id.clone()),
+            AccessModeV1::Operator => PackViewerV1::Operator(member_id.clone()),
         };
         let outcome = trace.observe_prepared(prepared, &viewer)?;
         match outcome {
             ActivityObservationOutcomeV1::Hidden => {}
             ActivityObservationOutcomeV1::Observation(observation) => {
-                frames.push(PreparedObservationFrameV1::from_validated_observation(
-                    membership.member_id().clone(),
-                    current_frame_heads[membership.member_id()],
+                let frame = PreparedObservationFrameV1::from_validated_observation(
+                    member_id.clone(),
+                    current_frame_heads.get(&member_id).copied().unwrap_or(0),
                     cause_room_seq,
                     &observation,
-                )?);
+                )?;
+                consequences.push(PreparedObservationConsequenceV1::ObservationFrame(frame));
             }
-            ActivityObservationOutcomeV1::ProjectionReset(_)
-            | ActivityObservationOutcomeV1::VisibilityLost => {
-                return Err(PrepareRoomWriteErrorV1::InvalidAddressedFrame);
+            ActivityObservationOutcomeV1::ProjectionReset(view) => {
+                consequences.push(PreparedObservationConsequenceV1::ResetRequired(view));
+            }
+            ActivityObservationOutcomeV1::VisibilityLost => {
+                consequences.push(PreparedObservationConsequenceV1::VisibilityLost(member_id));
             }
         }
     }
-    Ok(frames)
+    Ok(consequences)
 }
 
 fn action_request_hash(
@@ -4398,6 +4440,7 @@ pub struct RecoveredRoomMaterializationsV1 {
     memberships: Vec<PreparedMembershipMaterializationV1>,
     timers: Vec<RecoveredTimerMaterializationV1>,
     observation_frames: Vec<RecoveredObservationFrameV1>,
+    observation_consequences: Vec<RecoveredObservationConsequenceV1>,
 }
 redacted_debug!(RecoveredRoomMaterializationsV1);
 
@@ -4458,6 +4501,7 @@ impl RecoveredRoomMaterializationsV1 {
             memberships,
             timers: recover_timer_ledger(canonical_genesis_bytes, canonical_transition_bytes)?,
             observation_frames: Vec::new(),
+            observation_consequences: Vec::new(),
         })
     }
 
@@ -4501,6 +4545,7 @@ impl RecoveredRoomMaterializationsV1 {
             memberships,
             timers,
             observation_frames: Vec::new(),
+            observation_consequences: Vec::new(),
         })
     }
 
@@ -4533,6 +4578,11 @@ impl RecoveredRoomMaterializationsV1 {
     pub fn observation_frames(&self) -> &[RecoveredObservationFrameV1] {
         &self.observation_frames
     }
+
+    #[must_use]
+    pub fn observation_consequences(&self) -> &[RecoveredObservationConsequenceV1] {
+        &self.observation_consequences
+    }
 }
 
 /// Non-secret addressed frame integrity witness reproduced during replay.
@@ -4544,6 +4594,40 @@ pub struct RecoveredObservationFrameV1 {
     frame_seq: u64,
     cause_room_seq: RoomSequenceV1,
     payload_hash: Blake3DigestV1,
+}
+
+/// Non-secret witness for one non-frame delivery consequence reproduced during
+/// retained-Pack recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RecoveredObservationConsequenceV1 {
+    ResetRequired {
+        member_id: MemberId,
+        cause_room_seq: RoomSequenceV1,
+        projection_hash: Blake3DigestV1,
+    },
+    VisibilityLost {
+        member_id: MemberId,
+        cause_room_seq: RoomSequenceV1,
+    },
+}
+
+impl RecoveredObservationConsequenceV1 {
+    #[must_use]
+    pub const fn member_id(&self) -> &MemberId {
+        match self {
+            Self::ResetRequired { member_id, .. } | Self::VisibilityLost { member_id, .. } => {
+                member_id
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn cause_room_seq(&self) -> RoomSequenceV1 {
+        match self {
+            Self::ResetRequired { cause_room_seq, .. }
+            | Self::VisibilityLost { cause_room_seq, .. } => *cause_room_seq,
+        }
+    }
 }
 
 impl RecoveredObservationFrameV1 {
@@ -4794,13 +4878,42 @@ fn recover_materializations(
             &candidate.canonical_transition_bytes,
         )?,
         observation_frames: report
-            .observation_frames()
+            .observation_consequences()
             .iter()
-            .map(|frame| RecoveredObservationFrameV1 {
-                member_id: frame.member_id().clone(),
-                frame_seq: frame.frame_seq(),
-                cause_room_seq: frame.cause_room_seq(),
-                payload_hash: frame.payload_hash().clone(),
+            .filter_map(|consequence| match consequence {
+                crate::trace::ReplayObservationConsequenceV1::ObservationFrame(frame) => {
+                    Some(RecoveredObservationFrameV1 {
+                        member_id: frame.member_id().clone(),
+                        frame_seq: frame.frame_seq(),
+                        cause_room_seq: frame.cause_room_seq(),
+                        payload_hash: frame.payload_hash().clone(),
+                    })
+                }
+                crate::trace::ReplayObservationConsequenceV1::ResetRequired { .. }
+                | crate::trace::ReplayObservationConsequenceV1::VisibilityLost { .. } => None,
+            })
+            .collect(),
+        observation_consequences: report
+            .observation_consequences()
+            .iter()
+            .filter_map(|consequence| match consequence {
+                crate::trace::ReplayObservationConsequenceV1::ObservationFrame(_) => None,
+                crate::trace::ReplayObservationConsequenceV1::ResetRequired {
+                    member_id,
+                    cause_room_seq,
+                    projection_hash,
+                } => Some(RecoveredObservationConsequenceV1::ResetRequired {
+                    member_id: member_id.clone(),
+                    cause_room_seq: *cause_room_seq,
+                    projection_hash: projection_hash.clone(),
+                }),
+                crate::trace::ReplayObservationConsequenceV1::VisibilityLost {
+                    member_id,
+                    cause_room_seq,
+                } => Some(RecoveredObservationConsequenceV1::VisibilityLost {
+                    member_id: member_id.clone(),
+                    cause_room_seq: *cause_room_seq,
+                }),
             })
             .collect(),
     })

@@ -356,6 +356,111 @@ fn administrative_archive_plan(
     (request, prepared)
 }
 
+fn administrative_membership_plan(
+    trace: &CoreTraceV1,
+    kind: CoreProposedKindV1,
+    changeset: CoreChangeSetV1,
+    idempotency_key: &str,
+    transition_id: &str,
+) -> PreparedRoomCommitV1 {
+    let request = CoreAdministrationRequestV1::new(
+        trace.head().room_id().clone(),
+        AdministrationOperationIdentityV1 {
+            authenticated_principal: parsed(PRINCIPAL),
+            versioned_operation_kind: CORE_OPERATION_KIND.to_owned(),
+            idempotency_key: idempotency_key.to_owned(),
+        },
+        kind,
+        trace.head().room_seq(),
+        "fixture_membership_change",
+        changeset,
+    )
+    .unwrap_or_else(|error| unreachable!("fixture Membership request: {error}"));
+    let (authority, presented) = room_host_authority(trace.head().room_id().to_string().as_str());
+    let grant = authority
+        .authorize_core_administration(&presented, &request, parsed("2026-08-15T12:00:01Z"))
+        .unwrap_or_else(|error| unreachable!("fixture Membership authority: {error}"));
+    let frame_heads = trace
+        .core_state()
+        .memberships()
+        .keys()
+        .cloned()
+        .map(|member_id| (member_id, 0))
+        .collect();
+    PreparedRoomCommitV1::for_authorized_core_administration(
+        trace,
+        &request,
+        parsed("2026-08-15T12:00:02Z"),
+        parsed(transition_id),
+        IntegrityGenerationV1::new(1)
+            .unwrap_or_else(|error| unreachable!("fixture integrity: {error}")),
+        grant,
+        &frame_heads,
+    )
+    .unwrap_or_else(|error| unreachable!("fixture Membership plan: {error}"))
+}
+
+fn advance_persistence(plan: &PreparedRoomCommitV1) -> &PreparedAdvancePersistenceV1 {
+    let PreparedExistingIntentV1::Advance(persistence) = plan.intent() else {
+        unreachable!("fixture plan advances the Room")
+    };
+    persistence
+}
+
+#[test]
+fn prepared_advance_classifies_frames_resets_and_visibility_loss_as_delivery_consequences() {
+    let (_action_trace, action_plan) = action_plan();
+    let action_persistence = advance_persistence(&action_plan);
+    assert!(matches!(
+        action_persistence.delivery_consequences.as_slice(),
+        [PreparedObservationConsequenceV1::ObservationFrame(frame)]
+            if frame.member_id() == &parsed(MEMBER)
+    ));
+
+    let reset_trace = counter_trace();
+    let member = reset_trace
+        .core_state()
+        .membership(&parsed(MEMBER))
+        .unwrap_or_else(|| unreachable!("fixture Membership"))
+        .clone();
+    let reset_plan = administrative_membership_plan(
+        &reset_trace,
+        CoreProposedKindV1::AccessModeChange,
+        CoreChangeSetV1::one(
+            MembershipChangeV1::access_mode_change(member, AccessModeV1::Spectator, None)
+                .unwrap_or_else(|error| unreachable!("fixture Access change: {error}")),
+        ),
+        "room-commit-test-reset-consequence",
+        "01ARZ3NDEKTSV4RRFFQ69G5FC7",
+    );
+    let reset_persistence = advance_persistence(&reset_plan);
+    assert!(matches!(
+        reset_persistence.delivery_consequences.as_slice(),
+        [PreparedObservationConsequenceV1::ResetRequired(view)]
+            if view.viewer() == &PackViewerV1::Public(parsed(MEMBER))
+    ));
+
+    let loss_trace = counter_trace();
+    let member = loss_trace
+        .core_state()
+        .membership(&parsed(MEMBER))
+        .unwrap_or_else(|| unreachable!("fixture Membership"))
+        .clone();
+    let loss_plan = administrative_membership_plan(
+        &loss_trace,
+        CoreProposedKindV1::Suspend,
+        CoreChangeSetV1::one(MembershipChangeV1::suspend(member)),
+        "room-commit-test-loss-consequence",
+        "01ARZ3NDEKTSV4RRFFQ69G5FC8",
+    );
+    let loss_persistence = advance_persistence(&loss_plan);
+    assert!(matches!(
+        loss_persistence.delivery_consequences.as_slice(),
+        [PreparedObservationConsequenceV1::VisibilityLost(member_id)]
+            if member_id == &parsed(MEMBER)
+    ));
+}
+
 fn action_plan() -> (CoreTraceV1, PreparedRoomCommitV1) {
     let trace = counter_trace();
     let action_schema = trace

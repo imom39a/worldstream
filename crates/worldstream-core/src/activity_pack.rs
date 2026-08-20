@@ -28,6 +28,10 @@ pub const ACTIVITY_PACK_HOST_CONTRACT_ID: &str = "worldstream/activity-pack/v1";
 pub const PACK_REVISION_LOCK_ID: &str = "worldstream/pack-revision-lock/v1";
 /// Frozen Action Offer identity.
 pub const ACTION_OFFER_DOMAIN: &str = "worldstream/action-offer/v1";
+/// Frozen complete Projection schema identity.
+pub const PROJECTION_SCHEMA_V1: &str = "worldstream.projection.v1";
+/// Frozen domain used for Projection hashes.
+pub const PROJECTION_HASH_DOMAIN_V1: &str = "worldstream/projection-hash/v1";
 
 const SCHEMA_BUNDLE_DOMAIN: &str = "worldstream/pack-schema-bundle/v1";
 const CODEC_BUNDLE_DOMAIN: &str = "worldstream/pack-codec-bundle/v1";
@@ -581,6 +585,46 @@ impl ValidatedPackViewV1 {
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_bytes
     }
+
+    /// Computes the frozen domain-separated hash of this complete Projection.
+    ///
+    /// The view bytes are the canonical `projection` value. Operational
+    /// envelope fields, including Room and frame positions, are deliberately
+    /// absent from this hash input.
+    ///
+    /// # Errors
+    ///
+    /// Returns the canonical JSON error if the validated view cannot be
+    /// encoded as the frozen hash input.
+    pub fn projection_hash(&self) -> Result<Blake3DigestV1, CanonicalJsonError> {
+        projection_hash_for_canonical_bytes(&self.canonical_bytes)
+    }
+}
+
+#[derive(Serialize)]
+struct ProjectionHashInputV1<'a> {
+    domain: &'static str,
+    projection_schema: &'static str,
+    projection: &'a CanonicalJsonV1,
+}
+
+/// Computes the frozen Projection hash for already-canonical complete view
+/// bytes. Adapters use this when validating durable reset evidence.
+///
+/// # Errors
+///
+/// Returns the canonical JSON error if the bytes are not canonical JSON or
+/// the frozen hash input cannot be encoded.
+pub fn projection_hash_for_canonical_bytes(
+    canonical_bytes: &[u8],
+) -> Result<Blake3DigestV1, CanonicalJsonError> {
+    let projection = CanonicalJsonV1::from_canonical_bytes(canonical_bytes)?;
+    let hash_input = CanonicalJsonV1::from_serialize(&ProjectionHashInputV1 {
+        domain: PROJECTION_HASH_DOMAIN_V1,
+        projection_schema: PROJECTION_SCHEMA_V1,
+        projection: &projection,
+    })?;
+    Ok(Blake3DigestV1::hash(&hash_input.to_bytes()?))
 }
 
 /// Exact input to `observe`.

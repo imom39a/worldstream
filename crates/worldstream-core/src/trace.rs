@@ -620,11 +620,11 @@ impl RoomTransitionStateV1 {
     }
 }
 
-fn record_replay_observation_frames(
+fn record_replay_observation_consequences(
     trace: &CoreTraceV1,
     prepared: &PreparedRoomTransitionV1,
     frame_heads: &mut BTreeMap<crate::MemberId, u64>,
-    frames: &mut Vec<ReplayObservationFrameV1>,
+    consequences: &mut Vec<ReplayObservationConsequenceV1>,
 ) -> Result<(), TraceErrorV1> {
     if !prepared.is_new()
         || prepared.basis_complete_head() != trace.head()
@@ -642,37 +642,55 @@ fn record_replay_observation_frames(
         .resulting_state
         .as_ref()
         .ok_or(TraceErrorV1::InvalidPreparedAdvance)?;
-    let cause_room_seq = resulting_state.head.room_seq();
-    for membership in resulting_state.core_state().memberships().values() {
-        if membership.standing() != MembershipStandingV1::Enabled {
-            continue;
-        }
-        let viewer = match membership.access_mode() {
-            AccessModeV1::Participant => PackViewerV1::Participant(membership.member_id().clone()),
-            AccessModeV1::Spectator => PackViewerV1::Public(membership.member_id().clone()),
-            AccessModeV1::Operator => PackViewerV1::Operator(membership.member_id().clone()),
-        };
-        match trace.observe_prepared(prepared, &viewer)? {
-            ActivityObservationOutcomeV1::Observation(observation) => {
-                let frame_head = frame_heads
-                    .entry(membership.member_id().clone())
-                    .or_insert(0);
-                let frame_seq = frame_head
-                    .checked_add(1)
-                    .ok_or(TraceErrorV1::InvalidPreparedAdvance)?;
-                let canonical_payload_bytes = observation.canonical_bytes().to_vec();
-                frames.push(ReplayObservationFrameV1 {
-                    member_id: membership.member_id().clone(),
-                    frame_seq,
-                    cause_room_seq,
-                    payload_hash: Blake3DigestV1::hash(&canonical_payload_bytes),
-                });
-                *frame_head = frame_seq;
+    let classified = crate::room_commit::prepare_transition_consequences(
+        trace,
+        prepared,
+        resulting_state.core_state(),
+        resulting_state.head.room_seq(),
+        frame_heads,
+    )
+    .map_err(|error| match error {
+        crate::PrepareRoomWriteErrorV1::Canonical(error) => TraceErrorV1::Canonical(error),
+        crate::PrepareRoomWriteErrorV1::Trace(error) => error,
+        _ => TraceErrorV1::InvalidPreparedAdvance,
+    })?;
+    for consequence in classified {
+        match consequence {
+            crate::PreparedObservationConsequenceV1::ObservationFrame(frame) => {
+                let frame_seq = frame.frame_seq();
+                frame_heads.insert(frame.member_id().clone(), frame_seq);
+                consequences.push(ReplayObservationConsequenceV1::ObservationFrame(
+                    ReplayObservationFrameV1 {
+                        member_id: frame.member_id().clone(),
+                        frame_seq,
+                        cause_room_seq: frame.cause_room_seq(),
+                        payload_hash: frame.payload_hash().clone(),
+                    },
+                ));
             }
-            ActivityObservationOutcomeV1::Hidden
-            | ActivityObservationOutcomeV1::ProjectionReset(_)
-            | ActivityObservationOutcomeV1::VisibilityLost => {}
+            crate::PreparedObservationConsequenceV1::ResetRequired(view) => {
+                consequences.push(ReplayObservationConsequenceV1::ResetRequired {
+                    member_id: view.viewer().member_id().clone(),
+                    cause_room_seq: resulting_state.head.room_seq(),
+                    projection_hash: view.projection_hash().map_err(TraceErrorV1::Canonical)?,
+                });
+            }
+            crate::PreparedObservationConsequenceV1::VisibilityLost(member_id) => {
+                consequences.push(ReplayObservationConsequenceV1::VisibilityLost {
+                    member_id,
+                    cause_room_seq: resulting_state.head.room_seq(),
+                });
+            }
         }
+    }
+    frame_heads.retain(|member_id, _| {
+        resulting_state
+            .core_state()
+            .memberships()
+            .contains_key(member_id)
+    });
+    for member_id in resulting_state.core_state().memberships().keys() {
+        frame_heads.entry(member_id.clone()).or_insert(0);
     }
     Ok(())
 }
@@ -1539,11 +1557,11 @@ impl CoreTraceV1 {
             .cloned()
             .map(|member_id| (member_id, 0_u64))
             .collect::<BTreeMap<_, _>>();
-        let mut observation_frames = Vec::new();
+        let mut observation_consequences = Vec::new();
         for bytes in transition_bytes {
             let last_verified_head = trace.head.clone();
-            let frame_output =
-                reproduce_observation_frames.then_some((&mut frame_heads, &mut observation_frames));
+            let frame_output = reproduce_observation_frames
+                .then_some((&mut frame_heads, &mut observation_consequences));
             trace.replay_stored_transition(bytes, frame_output)?;
             steps.push(ReplayStepV1::transition(&trace, bytes).map_err(|error| {
                 ReplayFailureV1::with_head(
@@ -1563,7 +1581,7 @@ impl CoreTraceV1 {
             final_state,
             continuation_preparer,
             continuation_trace: trace,
-            observation_frames,
+            observation_consequences,
             steps,
             activity_callback_count,
             external_effect_count: 0,
@@ -1577,7 +1595,7 @@ impl CoreTraceV1 {
         bytes: &[u8],
         frame_output: Option<(
             &mut BTreeMap<MemberId, u64>,
-            &mut Vec<ReplayObservationFrameV1>,
+            &mut Vec<ReplayObservationConsequenceV1>,
         )>,
     ) -> Result<(), ReplayFailureV1> {
         let last_verified_head = self.head.clone();
@@ -1616,12 +1634,12 @@ impl CoreTraceV1 {
                         last_verified_head.clone(),
                     )
                 })?;
-        if let Some((frame_heads, observation_frames)) = frame_output {
-            record_replay_observation_frames(
+        if let Some((frame_heads, observation_consequences)) = frame_output {
+            record_replay_observation_consequences(
                 self,
                 &prepared_transition,
                 frame_heads,
-                observation_frames,
+                observation_consequences,
             )
             .map_err(|error| {
                 ReplayFailureV1::with_head(
@@ -2750,6 +2768,23 @@ pub(crate) struct ReplayObservationFrameV1 {
     payload_hash: Blake3DigestV1,
 }
 
+/// Exact complete delivery consequence reproduced during retained-Pack
+/// replay. Reset and visibility consequences intentionally retain only the
+/// non-secret witnesses required by storage recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReplayObservationConsequenceV1 {
+    ObservationFrame(ReplayObservationFrameV1),
+    ResetRequired {
+        member_id: crate::MemberId,
+        cause_room_seq: RoomSequenceV1,
+        projection_hash: Blake3DigestV1,
+    },
+    VisibilityLost {
+        member_id: crate::MemberId,
+        cause_room_seq: RoomSequenceV1,
+    },
+}
+
 impl ReplayObservationFrameV1 {
     #[must_use]
     pub(crate) const fn member_id(&self) -> &crate::MemberId {
@@ -3072,7 +3107,7 @@ pub struct ReplayReportV1 {
     final_state: RoomTransitionStateV1,
     continuation_preparer: RoomTransitionPreparerV1,
     continuation_trace: CoreTraceV1,
-    observation_frames: Vec<ReplayObservationFrameV1>,
+    observation_consequences: Vec<ReplayObservationConsequenceV1>,
     /// Sequence-zero plus every accepted Transition prefix.
     pub steps: Vec<ReplayStepV1>,
     /// Activity reduction callback count; exactly one per replayed Transition.
@@ -3109,8 +3144,8 @@ impl ReplayReportV1 {
     /// Returns exact addressed observation consequences reproduced from the
     /// retained Pack without publishing them.
     #[must_use]
-    pub(crate) fn observation_frames(&self) -> &[ReplayObservationFrameV1] {
-        &self.observation_frames
+    pub(crate) fn observation_consequences(&self) -> &[ReplayObservationConsequenceV1] {
+        &self.observation_consequences
     }
 
     /// Consumes the report and returns the recovered current Room executor.

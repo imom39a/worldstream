@@ -17,6 +17,7 @@ mod model;
 mod primitives;
 mod reducer;
 mod room_commit;
+mod session;
 mod trace;
 
 pub use activity_pack::{
@@ -25,13 +26,14 @@ pub use activity_pack::{
     ActivityPackHostV1, ActivityPackOperationV1, ActivityPackReduceErrorV1, ActivityPackV1,
     CanonicalActionOffersV1, CanonicalPackCodecV1, DeterministicContextErrorV1,
     DeterministicContextV1, EligibilityTimeV1, EligibilityWindowV1, InitialOutputV1, NamedDigestV1,
-    ObserveInputV1, PACK_REVISION_LOCK_ID, PackCodecBundleV1, PackCodecKindV1, PackGenesisErrorV1,
-    PackGenesisRequestV1, PackGoldenActionV1, PackGoldenCorpusV1, PackGoldenViewerKindV1,
-    PackGoldenViewerV1, PackLimitsV1, PackObservationV1, PackRegistryErrorV1, PackRegistryStatusV1,
-    PackRegistryV1, PackRevisionDescriptorV1, PackRevisionLockV1, PackSchemaBundleV1, PackSchemaV1,
-    PackViewV1, PackViewerClassV1, PackViewerV1, PreparedNewRoomGenesisV1, RetainedActivityPackV1,
+    ObserveInputV1, PACK_REVISION_LOCK_ID, PROJECTION_HASH_DOMAIN_V1, PROJECTION_SCHEMA_V1,
+    PackCodecBundleV1, PackCodecKindV1, PackGenesisErrorV1, PackGenesisRequestV1,
+    PackGoldenActionV1, PackGoldenCorpusV1, PackGoldenViewerKindV1, PackGoldenViewerV1,
+    PackLimitsV1, PackObservationV1, PackRegistryErrorV1, PackRegistryStatusV1, PackRegistryV1,
+    PackRevisionDescriptorV1, PackRevisionLockV1, PackSchemaBundleV1, PackSchemaV1, PackViewV1,
+    PackViewerClassV1, PackViewerV1, PreparedNewRoomGenesisV1, RetainedActivityPackV1,
     RoleDefinitionV1, SchemaReferenceV1, ValidatedPackObservationV1, ValidatedPackViewV1,
-    ViewInputV1,
+    ViewInputV1, projection_hash_for_canonical_bytes,
 };
 #[cfg(any(test, feature = "conformance-tracer"))]
 pub use authority::InMemoryAuthorityStoreV1;
@@ -103,21 +105,26 @@ pub use room_commit::{
     ParticipantActionRequestV1, PrepareRoomWriteErrorV1, PreparedActionInputWitnessV1,
     PreparedActivationDecisionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
     PreparedCoreAdministrationInputWitnessV1, PreparedCreationPersistenceV1,
-    PreparedExistingIntentV1, PreparedMembershipMaterializationV1, PreparedObservationFrameV1,
-    PreparedOperationInputWitnessV1, PreparedRoomCommitV1, PreparedRoomCreationV1,
-    PreparedRoomWriteV1, PreparedTimerInputWitnessV1, PreparedTimerMaterializationV1,
-    PreparedTimerMutationKindV1, PreparedTimerMutationV1, ReceiptSemanticInputV1,
-    ReceiptSemanticTimeV1, RecoveredObservationFrameV1, RecoveredRoomMaterializationsV1,
-    RecoveredTimerMaterializationV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
-    ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationCommitOutcomeV1, RoomCreationIngressV1, RoomCreationPendingAttemptV1,
-    RoomCreationReprepareV1, RoomCreationRequestV1, RoomCreationResolveV1, RoomCreationRetryV1,
-    RoomOperationIngressErrorV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1,
-    RoomRecoveryStorageV1, SemanticResultV1, StoredSemanticResultV1, TimerFiredReprepareV1,
-    TimerFiredRequestV1, TimerOperationIdentityV1, TimerReprepareOutcomeV1,
-    VerifiedCurrentRoomMaterializationV1, authorize_core_administration_operation,
-    authorize_participant_action_operation, authorize_room_creation_operation,
-    commit_existing_room, commit_room_creation, resolve_authorized_room_operation_for_adapter,
+    PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
+    PreparedObservationConsequenceV1, PreparedObservationFrameV1, PreparedOperationInputWitnessV1,
+    PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1, PreparedTimerInputWitnessV1,
+    PreparedTimerMaterializationV1, PreparedTimerMutationKindV1, PreparedTimerMutationV1,
+    ReceiptSemanticInputV1, ReceiptSemanticTimeV1, RecoveredObservationConsequenceV1,
+    RecoveredObservationFrameV1, RecoveredRoomMaterializationsV1, RecoveredTimerMaterializationV1,
+    RecoveredTimerStateV1, RecoveryIntegrityDispositionV1, ResolutionStatusV1, ResolveOutcomeV1,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationCommitOutcomeV1,
+    RoomCreationIngressV1, RoomCreationPendingAttemptV1, RoomCreationReprepareV1,
+    RoomCreationRequestV1, RoomCreationResolveV1, RoomCreationRetryV1, RoomOperationIngressErrorV1,
+    RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1, SemanticResultV1,
+    StoredSemanticResultV1, TimerFiredReprepareV1, TimerFiredRequestV1, TimerOperationIdentityV1,
+    TimerReprepareOutcomeV1, VerifiedCurrentRoomMaterializationV1,
+    authorize_core_administration_operation, authorize_participant_action_operation,
+    authorize_room_creation_operation, commit_existing_room, commit_room_creation,
+    resolve_authorized_room_operation_for_adapter,
+};
+pub use session::{
+    CapturedSessionBarrierV1, SessionBarrierV1, SessionCloseReasonV1, SessionErrorV1,
+    SessionFrameV1, SessionPublishOutcomeV1, SessionStateV1, SessionSyncTokenV1, SessionV1,
 };
 pub use trace::{
     AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, HistoricalReplayAccumulatorV1,
@@ -131,5 +138,7 @@ pub use trace::{
 mod authority_tests;
 #[cfg(test)]
 mod room_commit_tests;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod tests;
