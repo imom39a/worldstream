@@ -254,6 +254,12 @@
         "postgresql_checksum": "",
         "sqlite_checksum": "",
         "status": "unresolved"
+      },
+      {
+        "id": "0002-operational-authority-v1",
+        "postgresql_checksum": "",
+        "sqlite_checksum": "",
+        "status": "unresolved"
       }
     ],
     "logical_history_id": "worldstream-storage-v1",

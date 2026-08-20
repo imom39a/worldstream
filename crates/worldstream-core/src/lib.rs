@@ -2,11 +2,13 @@
 //!
 //! The module owns canonical Core construction, strict canonical JSON, the
 //! domain-separated BLAKE3 lineage, accepted-transition tracing, replay, and
-//! the backend-neutral prepared Room commit/recovery interfaces. It also owns
-//! opaque Frame and Activation consequence types. Concrete database, network,
-//! scheduler, plugin, and server wiring live in substitutable adapters.
+//! the backend-neutral prepared Room commit/recovery and operational authority
+//! interfaces. It also owns opaque Frame and Activation consequence types.
+//! Concrete database, network, scheduler, plugin, and server wiring live in
+//! substitutable adapters.
 
 mod activity_pack;
+mod authority;
 mod canonical;
 mod counter;
 mod counter_registry;
@@ -30,6 +32,29 @@ pub use activity_pack::{
     PackViewV1, PackViewerClassV1, PackViewerV1, PreparedNewRoomGenesisV1, RetainedActivityPackV1,
     RoleDefinitionV1, SchemaReferenceV1, ValidatedPackObservationV1, ValidatedPackViewV1,
     ViewInputV1,
+};
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub use authority::InMemoryAuthorityStoreV1;
+pub use authority::{
+    AuthorityBootstrapStateV1, AuthorityBootstrapV1, AuthorityChangeReceiptV1,
+    AuthorityChangeResultV1, AuthorityChangeStatePartsV1, AuthorityChangeStateV1,
+    AuthorityChangeTargetV1, AuthorityChangeV1, AuthorityErrorV1, AuthorityGrantV1,
+    AuthorityReasonCodeV1, AuthorityShapeErrorV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1,
+    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorityUseV1, AuthorityV1,
+    AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1, AuthorizedParticipantActionV1,
+    AuthorizedReceiptReadV1, AuthorizedReplayV1, AuthorizedRoomCreationV1,
+    AuthorizedRunnerControlV1, AuthorizedStableActionDispositionV1, AuthorizedViewerV1,
+    CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1, CapabilityBearerV1,
+    CapabilityProfileV1, CapabilityScopeSetV1, CapabilityScopeV1, CapabilityTokenHashV1,
+    ClassifiedCoreAdministrationV1, CoreAdministrationClassV1, DiagnosticAdapterInputV1,
+    DiagnosticOperationV1, DiagnosticTargetV1, MemberAuthorityUseV1, MemberReadOperationV1,
+    MembershipAuthoritySnapshotV1, NewCapabilityV1, ParticipantActionAuthorityV1,
+    PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1, PresentedCapabilityV1,
+    PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1, ReceiptReadAdapterInputV1,
+    ReplayAdapterInputV1, ReplayProjectionKindV1, RoomMembershipKeyV1, RunnerAuthoritySnapshotV1,
+    RunnerAuthorityStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
+    RunnerMembershipSetV1, ValidatedAuthorityBootstrapV1, ValidatedAuthorityChangeV1,
+    ViewerAdapterInputV1,
 };
 pub use canonical::{CanonicalJsonError, CanonicalJsonV1, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER};
 pub use counter_registry::{builtin_counter_registry, counter_v1_digest, counter_v2_digest};
@@ -57,41 +82,53 @@ pub use model::{
     TimerFiredV1, TimerRequestV1,
 };
 pub use primitives::{
-    ActionAdmittedAt, ActionId, Blake3DigestV1, CoreRecordedAt, CreationRecordedAt,
-    DigestParseError, ExternalInputRecordedAt, InputId, IntegrityGenerationV1, MemberId,
-    PackDigestV1, PrincipalId, RoomId, RoomSeedV1, RoomSequenceV1, SafeCounterError,
-    SeedParseError, SourceId, TimerGenerationV1, TimerId, TimerScheduledFor, TimestampParseError,
-    TransitionId,
+    ActionAdmittedAt, ActionId, AuthorityChangeId, AuthorityCheckedAt, AuthorityGenerationV1,
+    Blake3DigestV1, CapabilityExpiresAt, CapabilityId, CapabilityRevokedAt, CoreRecordedAt,
+    CreationRecordedAt, DigestParseError, ExternalInputRecordedAt, InputId, IntegrityGenerationV1,
+    MemberId, MembershipGenerationV1, PackDigestV1, PrincipalGenerationV1, PrincipalId, RoomId,
+    RoomSeedV1, RoomSequenceV1, RunnerGenerationV1, RunnerId, SafeCounterError, SeedParseError,
+    SourceId, TimerGenerationV1, TimerId, TimerScheduledFor, TimestampParseError, TransitionId,
 };
 pub use reducer::{CORE_OPERATION_KIND, CoreValidationErrorV1};
+#[doc(hidden)]
+pub use room_commit::recover_room_from_storage;
 pub use room_commit::{
     ActionAdmissionContextV1, ActionOfferWitnessV1, ActionOffersUnavailableReasonV1,
-    ActorInstallationV1, CREATE_ROOM_OPERATION_KIND, CanonicalRequestHashV1,
+    ActorInstallationV1, AuthorizedReceiptResolverV1, CREATE_ROOM_OPERATION_KIND,
+    CanonicalRequestHashV1, CoreAdministrationIngressV1, CoreAdministrationRequestV1,
     ExistingRoomCommitOutcomeV1, ExistingRoomPendingAttemptV1, ExistingRoomReprepareV1,
     ExistingRoomResolveV1, ExistingRoomRetryV1, ExternalInputOperationIdentityV1,
-    InitialMembershipProposalV1, OperationIdentityV1, ParticipantActionOperationIdentityV1,
-    ParticipantActionReprepareV1, ParticipantActionRequestV1, PrepareRoomWriteErrorV1,
-    PreparedActionInputWitnessV1, PreparedActivationDecisionV1, PreparedAdvancePersistenceV1,
-    PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
-    PreparedMembershipMaterializationV1, PreparedObservationFrameV1,
+    InitialMembershipProposalV1, OperationIdentityV1, ParticipantActionIngressErrorV1,
+    ParticipantActionIngressV1, ParticipantActionOperationIdentityV1, ParticipantActionReprepareV1,
+    ParticipantActionRequestV1, PrepareRoomWriteErrorV1, PreparedActionInputWitnessV1,
+    PreparedActivationDecisionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
+    PreparedCoreAdministrationInputWitnessV1, PreparedCreationPersistenceV1,
+    PreparedExistingIntentV1, PreparedMembershipMaterializationV1, PreparedObservationFrameV1,
     PreparedOperationInputWitnessV1, PreparedRoomCommitV1, PreparedRoomCreationV1,
     PreparedRoomWriteV1, PreparedTimerInputWitnessV1, PreparedTimerMaterializationV1,
     PreparedTimerMutationKindV1, PreparedTimerMutationV1, ReceiptSemanticInputV1,
     ReceiptSemanticTimeV1, RecoveredObservationFrameV1, RecoveredRoomMaterializationsV1,
     RecoveredTimerMaterializationV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
     ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationCommitOutcomeV1, RoomCreationPendingAttemptV1, RoomCreationReprepareV1,
-    RoomCreationRequestV1, RoomCreationResolveV1, RoomCreationRetryV1, RoomRecoveryCandidateV1,
-    RoomRecoveryErrorV1, RoomRecoveryStorageV1, SemanticResultV1, StoredSemanticResultV1,
-    TimerFiredReprepareV1, TimerFiredRequestV1, TimerOperationIdentityV1, TimerReprepareOutcomeV1,
-    commit_existing_room, commit_room_creation, recover_room_from_storage,
+    RoomCreationCommitOutcomeV1, RoomCreationIngressV1, RoomCreationPendingAttemptV1,
+    RoomCreationReprepareV1, RoomCreationRequestV1, RoomCreationResolveV1, RoomCreationRetryV1,
+    RoomOperationIngressErrorV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1,
+    RoomRecoveryStorageV1, SemanticResultV1, StoredSemanticResultV1, TimerFiredReprepareV1,
+    TimerFiredRequestV1, TimerOperationIdentityV1, TimerReprepareOutcomeV1,
+    VerifiedCurrentRoomMaterializationV1, authorize_core_administration_operation,
+    authorize_participant_action_operation, authorize_room_creation_operation,
+    commit_existing_room, commit_room_creation, resolve_authorized_room_operation_for_adapter,
 };
 pub use trace::{
-    AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, PackFaultV1, PreparedCoreStateV1,
-    PreparedRoomTransitionV1, ReplayFailureClassV1, ReplayFailureV1, ReplayReportV1, ReplayStepV1,
-    RoomTransitionPreparerV1, RoomTransitionStateV1, TraceErrorV1, VerifiedCoreStateV1,
+    AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, HistoricalReplayAccumulatorV1,
+    HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
+    PackFaultV1, PreparedCoreStateV1, PreparedRoomTransitionV1, ReplayFailureClassV1,
+    ReplayFailureV1, ReplayReportV1, ReplayStepV1, RoomTransitionPreparerV1, RoomTransitionStateV1,
+    TraceErrorV1, VerifiedCoreStateV1,
 };
 
+#[cfg(test)]
+mod authority_tests;
 #[cfg(test)]
 mod room_commit_tests;
 #[cfg(test)]

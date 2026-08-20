@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
+    fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
@@ -17,9 +18,10 @@ use crate::{
     ActivityReduceInputV1, ActivityRejectionV1, AdministrationOperationIdentityV1, Blake3DigestV1,
     CANONICAL_CODEC_ID, CORE_SCHEMA_VERSION, CanonicalJsonError, CanonicalJsonV1, CompleteHeadV1,
     CoreProposedV1, CoreRoomStateV1, CoreValidationErrorV1, GENESIS_VERSION, GenesisInputV1,
-    GenesisV1, HASH_SUITE_ID, MembershipStandingV1, PackGenesisErrorV1, PackGenesisRequestV1,
-    PackRegistryErrorV1, PackRegistryV1, PackViewerV1, PreparedNewRoomGenesisV1,
-    RecordedStimulusV1, RetainedActivityPackV1, RoomSeedV1, RoomSequenceV1, RoomStatusV1,
+    GenesisV1, HASH_SUITE_ID, MemberId, MembershipStandingV1, PackGenesisErrorV1,
+    PackGenesisRequestV1, PackRegistryErrorV1, PackRegistryV1, PackViewerV1,
+    PreparedNewRoomGenesisV1, RecordedStimulusV1, ReplayProjectionKindV1, RetainedActivityPackV1,
+    RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomSeedV1, RoomSequenceV1, RoomStatusV1,
     ScheduledTimerV1, TRANSITION_VERSION, TimerChangeV1, TimerGenerationV1, TimerId,
     TimerRequestV1, TransitionV1, ViewInputV1,
     activity_pack::{ObserveTransitionInputV1, VerifiedRetainedGenesisV1},
@@ -295,6 +297,7 @@ impl RoomTransitionPreparerV1 {
             return Err(TraceErrorV1::TransitionPreparerProvenanceMismatch);
         }
         let recorded_stimulus = stimulus.clone();
+        let proposed = self.validate_stimulus(state, &stimulus)?;
         let administration = match &stimulus {
             RecordedStimulusV1::CoreProposed(proposal) => Some((
                 proposal.operation_identity.clone(),
@@ -303,7 +306,6 @@ impl RoomTransitionPreparerV1 {
             )),
             _ => None,
         };
-        let proposed = self.validate_stimulus(state, &stimulus)?;
         if proposed.no_change {
             let receipt = administration_receipt(&stimulus, &state.head, "no_change", None)?;
             return Ok(PreparedRoomTransitionV1 {
@@ -1235,12 +1237,108 @@ impl CoreTraceV1 {
     /// Returns a classified failure with the last verified Head when strict
     /// decoding, retained-revision lookup/initialization, lineage,
     /// deterministic reduction, or invariants disagree.
+    #[cfg(any(test, feature = "conformance-tracer"))]
     pub fn replay(
         registry: &PackRegistryV1,
         genesis_bytes: &[u8],
         transition_bytes: &[Vec<u8>],
     ) -> Result<ReplayReportV1, ReplayFailureV1> {
         Self::replay_registry(registry, genesis_bytes, transition_bytes, false)
+    }
+
+    /// Replays one exact historical sequence and constructs a host-validated,
+    /// structurally complete projection envelope.
+    ///
+    /// This is a pure history verifier, not a present-authorization boundary.
+    /// A durable Adapter must first consume an [`crate::AuthorizedReplayV1`],
+    /// revalidate its current authority with a trusted clock, and capture the
+    /// exact lineage prefix plus operational integrity under one serialized
+    /// boundary. Historical Standing, Access Mode, and Role are then
+    /// reconstructed from lineage rather than copied from present state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed failure if the address/sequence does not match,
+    /// historical Membership is absent or disabled, exact replay fails, or
+    /// the retained pack cannot construct the authorized projection.
+    pub fn project_replayed_history(
+        registry: &PackRegistryV1,
+        genesis_bytes: &[u8],
+        transition_bytes: &[Vec<u8>],
+        request: HistoricalReplayProjectionRequestV1,
+    ) -> Result<HistoricalReplayProjectionV1, HistoricalReplayErrorV1> {
+        if request.integrity.status() == RoomIntegrityStatusV1::Quarantined {
+            return Err(HistoricalReplayErrorV1::IntegrityUnavailable);
+        }
+        let transition_count = usize::try_from(request.at_room_seq.get())
+            .map_err(|_| HistoricalReplayErrorV1::SequenceUnavailable)?;
+        let requested_transitions = transition_bytes
+            .get(..transition_count)
+            .ok_or(HistoricalReplayErrorV1::SequenceUnavailable)?;
+        let report = Self::replay_registry(registry, genesis_bytes, requested_transitions, false)
+            .map_err(|failure| HistoricalReplayErrorV1::ReplayFailed(failure.class))?;
+        Self::historical_projection_from_trace(&report.continuation_trace, request)
+    }
+
+    fn historical_projection_from_trace(
+        trace: &Self,
+        request: HistoricalReplayProjectionRequestV1,
+    ) -> Result<HistoricalReplayProjectionV1, HistoricalReplayErrorV1> {
+        if trace.head.room_id() != &request.room_id || trace.head.room_seq() != request.at_room_seq
+        {
+            return Err(HistoricalReplayErrorV1::AddressMismatch);
+        }
+        let historical_membership = trace
+            .core_state()
+            .membership(&request.member_id)
+            .ok_or(HistoricalReplayErrorV1::HistoricalMembershipUnavailable)?;
+        if historical_membership.standing() != MembershipStandingV1::Enabled {
+            return Err(HistoricalReplayErrorV1::HistoricalMembershipUnavailable);
+        }
+        let viewer = match request.projection_kind {
+            ReplayProjectionKindV1::HistoricalMembership => {
+                PackViewerV1::Historical(request.member_id.clone())
+            }
+            ReplayProjectionKindV1::FinalReveal => {
+                PackViewerV1::FinalReveal(request.member_id.clone())
+            }
+        };
+        let retained_pack = trace
+            .retained_pack
+            .as_ref()
+            .ok_or(HistoricalReplayErrorV1::ProjectionUnavailable)?;
+        let view = retained_pack
+            .host()
+            .view(&ViewInputV1 {
+                core: &trace.core_state,
+                activity_state: &trace.activity_state,
+                complete_head: &trace.head,
+                viewer: &viewer,
+            })
+            .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
+        if !view.action_offers().offers().is_empty() {
+            return Err(HistoricalReplayErrorV1::ProjectionUnavailable);
+        }
+        let canonical_view = CanonicalJsonV1::from_canonical_bytes(view.canonical_bytes())
+            .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
+        let historical_membership = historical_membership.clone();
+        let canonical_envelope = CanonicalJsonV1::from_serialize(&HistoricalReplayEnvelopeV1 {
+            envelope: "worldstream/historical-replay-projection/v1",
+            verified_head: &trace.head,
+            integrity: &request.integrity,
+            room_status: trace.core_state.room_status(),
+            membership: &historical_membership,
+            projection_kind: request.projection_kind,
+            activity_projection: &canonical_view,
+        })
+        .map_err(|_| HistoricalReplayErrorV1::ProjectionUnavailable)?;
+        Ok(HistoricalReplayProjectionV1 {
+            verified_head: trace.head.clone(),
+            integrity: request.integrity,
+            historical_room_status: trace.core_state.room_status(),
+            historical_membership,
+            canonical_envelope,
+        })
     }
 
     pub(crate) fn replay_for_recovery(
@@ -1290,6 +1388,70 @@ impl CoreTraceV1 {
             )
         })?;
         Ok((head, core_state_bytes, activity_state_bytes))
+    }
+
+    /// Verifies the one persisted record named by the current Room Head.
+    ///
+    /// This deliberately does not replay the Room. It is the bounded storage
+    /// primitive used to prove that a current serving materialization is the
+    /// exact state embedded in the current canonical Genesis/Transition row.
+    pub(crate) fn preflight_current_storage_materialization(
+        expected_head: &CompleteHeadV1,
+        canonical_current_record_bytes: &[u8],
+        canonical_core_state_bytes: &[u8],
+        canonical_activity_state_bytes: &[u8],
+    ) -> Result<(CoreRoomStateV1, Option<Blake3DigestV1>), TraceErrorV1> {
+        let (core_state, activity_state, previous_lineage_hash) = if expected_head.room_seq().get()
+            == 0
+        {
+            let genesis = GenesisV1::from_canonical_bytes(canonical_current_record_bytes)?;
+            validate_stored_genesis_integrity(&genesis)?;
+            validate_core_state(genesis.initial_core_state(), &|_| Ok(()))
+                .map_err(map_checked_core_error)?;
+            if genesis.complete_head() != *expected_head {
+                return Err(TraceErrorV1::CompleteHeadMismatch);
+            }
+            (
+                genesis.initial_core_state().clone(),
+                genesis.initial_activity_state().clone(),
+                None,
+            )
+        } else {
+            let transition = TransitionV1::from_canonical_bytes(canonical_current_record_bytes)?;
+            if transition.transition_version != TRANSITION_VERSION
+                || transition.codec_id != CANONICAL_CODEC_ID
+                || transition.hash_suite != HASH_SUITE_ID
+                || transition.core_schema_version != CORE_SCHEMA_VERSION
+                || transition.room_id != *expected_head.room_id()
+                || transition.room_seq != expected_head.room_seq()
+                || transition.pack_digest != *expected_head.pack_digest()
+            {
+                return Err(TraceErrorV1::VersionIdentityMismatch);
+            }
+            validate_stored_transition_hashes(&transition).map_err(|(class, _)| match class {
+                ReplayFailureClassV1::LineageHash => TraceErrorV1::LineageHashMismatch,
+                ReplayFailureClassV1::CanonicalEncoding | ReplayFailureClassV1::StateHashes => {
+                    TraceErrorV1::StateHashMismatch
+                }
+                _ => TraceErrorV1::StateHashMismatch,
+            })?;
+            validate_core_state(transition.resulting_core_state(), &|_| Ok(()))
+                .map_err(map_checked_core_error)?;
+            if transition.complete_head() != *expected_head {
+                return Err(TraceErrorV1::CompleteHeadMismatch);
+            }
+            (
+                transition.resulting_core_state().clone(),
+                transition.resulting_activity_state().clone(),
+                Some(transition.previous_lineage_hash().clone()),
+            )
+        };
+        if core_state.canonical_bytes()? != canonical_core_state_bytes
+            || activity_state.to_bytes()? != canonical_activity_state_bytes
+        {
+            return Err(TraceErrorV1::StateHashMismatch);
+        }
+        Ok((core_state, previous_lineage_hash))
     }
 
     fn replay_registry(
@@ -1380,93 +1542,9 @@ impl CoreTraceV1 {
         let mut observation_frames = Vec::new();
         for bytes in transition_bytes {
             let last_verified_head = trace.head.clone();
-            let stored = TransitionV1::from_canonical_bytes(bytes).map_err(|error| {
-                ReplayFailureV1::with_head(
-                    ReplayFailureClassV1::NonCanonicalRecord,
-                    error.to_string(),
-                    last_verified_head.clone(),
-                )
-            })?;
-            validate_transition_metadata(&trace.head, &stored).map_err(|(class, detail)| {
-                ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
-            })?;
-            validate_stored_transition_hashes(&stored).map_err(|(class, detail)| {
-                ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
-            })?;
-            trace
-                .preparer
-                .core_reducer
-                .validate_state(stored.resulting_core_state.clone())
-                .map_err(|error| {
-                    let class = match error {
-                        TraceErrorV1::Pack(PackFaultV1::RoleValidatorPanicked) => {
-                            ReplayFailureClassV1::RuntimeFault
-                        }
-                        _ => ReplayFailureClassV1::CoreInvariant,
-                    };
-                    ReplayFailureV1::with_head(class, error.to_string(), last_verified_head.clone())
-                })?;
-
-            let stimulus = stored.recorded_stimulus.clone();
-            let prepared_transition = trace.prepare(stimulus).map_err(|error| {
-                ReplayFailureV1::with_head(
-                    classify_replay_advance_error(&error),
-                    error.to_string(),
-                    last_verified_head.clone(),
-                )
-            })?;
-            if reproduce_observation_frames {
-                record_replay_observation_frames(
-                    &trace,
-                    &prepared_transition,
-                    &mut frame_heads,
-                    &mut observation_frames,
-                )
-                .map_err(|error| {
-                    ReplayFailureV1::with_head(
-                        classify_replay_advance_error(&error),
-                        error.to_string(),
-                        last_verified_head.clone(),
-                    )
-                })?;
-            }
-            let generated = trace
-                .install_prepared_inner(prepared_transition, false)
-                .map_err(|error| {
-                    ReplayFailureV1::with_head(
-                        classify_replay_advance_error(&error),
-                        error.to_string(),
-                        last_verified_head.clone(),
-                    )
-                })?;
-            let generated_transition = match generated {
-                AdvanceDispositionV1::TransitionAccepted { transition, .. } => *transition,
-                AdvanceDispositionV1::RejectionRecorded { .. }
-                | AdvanceDispositionV1::NoChangeRecorded { .. } => {
-                    return Err(ReplayFailureV1::with_head(
-                        ReplayFailureClassV1::Stimulus,
-                        "stored Transition replayed to a no-Transition disposition".to_owned(),
-                        last_verified_head,
-                    ));
-                }
-            };
-            compare_transition(&generated_transition, &stored).map_err(|(class, detail)| {
-                ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
-            })?;
-            if generated_transition.canonical_bytes().map_err(|error| {
-                ReplayFailureV1::with_head(
-                    ReplayFailureClassV1::CanonicalEncoding,
-                    error.to_string(),
-                    last_verified_head.clone(),
-                )
-            })? != *bytes
-            {
-                return Err(ReplayFailureV1::with_head(
-                    ReplayFailureClassV1::RecordBytes,
-                    "replayed Transition bytes differ".to_owned(),
-                    last_verified_head,
-                ));
-            }
+            let frame_output =
+                reproduce_observation_frames.then_some((&mut frame_heads, &mut observation_frames));
+            trace.replay_stored_transition(bytes, frame_output)?;
             steps.push(ReplayStepV1::transition(&trace, bytes).map_err(|error| {
                 ReplayFailureV1::with_head(
                     ReplayFailureClassV1::CanonicalEncoding,
@@ -1491,6 +1569,106 @@ impl CoreTraceV1 {
             external_effect_count: 0,
             receipt_count: 0,
         })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn replay_stored_transition(
+        &mut self,
+        bytes: &[u8],
+        frame_output: Option<(
+            &mut BTreeMap<MemberId, u64>,
+            &mut Vec<ReplayObservationFrameV1>,
+        )>,
+    ) -> Result<(), ReplayFailureV1> {
+        let last_verified_head = self.head.clone();
+        let stored = TransitionV1::from_canonical_bytes(bytes).map_err(|error| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::NonCanonicalRecord,
+                error.to_string(),
+                last_verified_head.clone(),
+            )
+        })?;
+        validate_transition_metadata(&self.head, &stored).map_err(|(class, detail)| {
+            ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
+        })?;
+        validate_stored_transition_hashes(&stored).map_err(|(class, detail)| {
+            ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
+        })?;
+        self.preparer
+            .core_reducer
+            .validate_state(stored.resulting_core_state.clone())
+            .map_err(|error| {
+                let class = match error {
+                    TraceErrorV1::Pack(PackFaultV1::RoleValidatorPanicked) => {
+                        ReplayFailureClassV1::RuntimeFault
+                    }
+                    _ => ReplayFailureClassV1::CoreInvariant,
+                };
+                ReplayFailureV1::with_head(class, error.to_string(), last_verified_head.clone())
+            })?;
+
+        let prepared_transition =
+            self.prepare(stored.recorded_stimulus.clone())
+                .map_err(|error| {
+                    ReplayFailureV1::with_head(
+                        classify_replay_advance_error(&error),
+                        error.to_string(),
+                        last_verified_head.clone(),
+                    )
+                })?;
+        if let Some((frame_heads, observation_frames)) = frame_output {
+            record_replay_observation_frames(
+                self,
+                &prepared_transition,
+                frame_heads,
+                observation_frames,
+            )
+            .map_err(|error| {
+                ReplayFailureV1::with_head(
+                    classify_replay_advance_error(&error),
+                    error.to_string(),
+                    last_verified_head.clone(),
+                )
+            })?;
+        }
+        let generated = self
+            .install_prepared_inner(prepared_transition, false)
+            .map_err(|error| {
+                ReplayFailureV1::with_head(
+                    classify_replay_advance_error(&error),
+                    error.to_string(),
+                    last_verified_head.clone(),
+                )
+            })?;
+        let generated_transition = match generated {
+            AdvanceDispositionV1::TransitionAccepted { transition, .. } => *transition,
+            AdvanceDispositionV1::RejectionRecorded { .. }
+            | AdvanceDispositionV1::NoChangeRecorded { .. } => {
+                return Err(ReplayFailureV1::with_head(
+                    ReplayFailureClassV1::Stimulus,
+                    "stored Transition replayed to a no-Transition disposition".to_owned(),
+                    last_verified_head,
+                ));
+            }
+        };
+        compare_transition(&generated_transition, &stored).map_err(|(class, detail)| {
+            ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
+        })?;
+        if generated_transition.canonical_bytes().map_err(|error| {
+            ReplayFailureV1::with_head(
+                ReplayFailureClassV1::CanonicalEncoding,
+                error.to_string(),
+                last_verified_head.clone(),
+            )
+        })? != bytes
+        {
+            return Err(ReplayFailureV1::with_head(
+                ReplayFailureClassV1::RecordBytes,
+                "replayed Transition bytes differ".to_owned(),
+                last_verified_head,
+            ));
+        }
+        Ok(())
     }
 
     fn from_verified_genesis(
@@ -1723,17 +1901,37 @@ fn preflight_stored_history(
     genesis: &GenesisV1,
     transition_bytes: &[Vec<u8>],
 ) -> Result<CompleteHeadV1, ReplayFailureV1> {
-    let mut timers = validate_stored_genesis_integrity(genesis).map_err(|error| {
-        ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
-    })?;
-    validate_core_state(&genesis.initial_core_state, &|_| Ok(())).map_err(|error| {
-        let error = map_checked_core_error(error);
-        ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
-    })?;
-    let mut head = genesis.head();
-    let mut core_state = genesis.initial_core_state.clone();
+    let mut preflight = StoredHistoryPreflightV1::from_genesis(genesis)?;
     for bytes in transition_bytes {
-        let last_verified_head = head.clone();
+        preflight.consume_transition(bytes)?;
+    }
+    Ok(preflight.head)
+}
+
+struct StoredHistoryPreflightV1 {
+    head: CompleteHeadV1,
+    core_state: CoreRoomStateV1,
+    timers: TimerBookV1,
+}
+
+impl StoredHistoryPreflightV1 {
+    fn from_genesis(genesis: &GenesisV1) -> Result<Self, ReplayFailureV1> {
+        let timers = validate_stored_genesis_integrity(genesis).map_err(|error| {
+            ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
+        })?;
+        validate_core_state(&genesis.initial_core_state, &|_| Ok(())).map_err(|error| {
+            let error = map_checked_core_error(error);
+            ReplayFailureV1::without_head(classify_genesis_error(&error), error.to_string())
+        })?;
+        Ok(Self {
+            head: genesis.head(),
+            core_state: genesis.initial_core_state.clone(),
+            timers,
+        })
+    }
+
+    fn consume_transition(&mut self, bytes: &[u8]) -> Result<(), ReplayFailureV1> {
+        let last_verified_head = self.head.clone();
         let stored = TransitionV1::from_canonical_bytes(bytes).map_err(|error| {
             ReplayFailureV1::with_head(
                 ReplayFailureClassV1::NonCanonicalRecord,
@@ -1741,16 +1939,17 @@ fn preflight_stored_history(
                 last_verified_head.clone(),
             )
         })?;
-        validate_transition_metadata(&head, &stored).map_err(|(class, detail)| {
+        validate_transition_metadata(&self.head, &stored).map_err(|(class, detail)| {
             ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
         })?;
         validate_stored_transition_hashes(&stored).map_err(|(class, detail)| {
             ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
         })?;
-        validate_preflight_core_transition(&head, &core_state, &timers, &stored).map_err(
-            |(class, detail)| ReplayFailureV1::with_head(class, detail, last_verified_head.clone()),
-        )?;
-        timers
+        validate_preflight_core_transition(&self.head, &self.core_state, &self.timers, &stored)
+            .map_err(|(class, detail)| {
+                ReplayFailureV1::with_head(class, detail, last_verified_head.clone())
+            })?;
+        self.timers
             .apply_stored_transition(
                 stored.recorded_stimulus(),
                 stored.ordered_timer_changes(),
@@ -1763,10 +1962,10 @@ fn preflight_stored_history(
                     last_verified_head,
                 )
             })?;
-        core_state = stored.resulting_core_state.clone();
-        head = stored.complete_head();
+        self.core_state = stored.resulting_core_state.clone();
+        self.head = stored.complete_head();
+        Ok(())
     }
-    Ok(head)
 }
 
 fn validate_preflight_core_transition(
@@ -2178,35 +2377,15 @@ fn timer_change_id(change: &TimerChangeV1) -> &TimerId {
     }
 }
 
-#[derive(Serialize)]
-struct AdministrationRequestHashObject<'a> {
-    domain: &'static str,
-    codec_id: &'static str,
-    hash_suite: &'static str,
-    room_id: &'a crate::RoomId,
-    operation_kind: &'static str,
-    proposal_kind: crate::CoreProposedKindV1,
-    expected_room_seq: RoomSequenceV1,
-    reason_code: &'a str,
-    canonical_changeset: &'a crate::CoreChangeSetV1,
-}
-
 pub(crate) fn hash_administration_request(
     basis_complete_head: &CompleteHeadV1,
     proposal: &CoreProposedV1,
 ) -> Result<Blake3DigestV1, CanonicalJsonError> {
-    let bytes = encode(&AdministrationRequestHashObject {
-        domain: "worldstream/core-administration-request/v1",
-        codec_id: CANONICAL_CODEC_ID,
-        hash_suite: HASH_SUITE_ID,
-        room_id: &basis_complete_head.room_id,
-        operation_kind: crate::CORE_OPERATION_KIND,
-        proposal_kind: proposal.kind,
-        expected_room_seq: proposal.expected_room_seq,
-        reason_code: &proposal.reason_code,
-        canonical_changeset: &proposal.canonical_changeset,
-    })?;
-    Ok(Blake3DigestV1::hash(&bytes))
+    let request = crate::CoreAdministrationRequestV1::from_proposal(
+        basis_complete_head.room_id().clone(),
+        proposal,
+    );
+    Ok(request.canonical_request_hash()?.digest().clone())
 }
 
 #[derive(Serialize)]
@@ -2280,7 +2459,6 @@ impl PreparedRoomTransitionV1 {
 
     /// Returns the exact current canonical Action Offer list used for
     /// participant pre-admission and reduction.
-    #[cfg(any(test, feature = "conformance-tracer"))]
     #[must_use]
     pub(crate) fn action_offer_witness(&self) -> Option<&[u8]> {
         self.action_offer_witness.as_deref()
@@ -2530,7 +2708,7 @@ impl From<crate::SafeCounterError> for TraceErrorV1 {
 }
 
 /// One verified replay prefix, including sequence zero.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ReplayStepV1 {
     /// Exact prefix Head.
     pub head: CompleteHeadV1,
@@ -2540,6 +2718,12 @@ pub struct ReplayStepV1 {
     pub canonical_activity_bytes: Vec<u8>,
     /// Original byte-equal Genesis or Transition record.
     pub canonical_lineage_record_bytes: Vec<u8>,
+}
+
+impl fmt::Debug for ReplayStepV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReplayStepV1([REDACTED])")
+    }
 }
 
 impl ReplayStepV1 {
@@ -2586,6 +2770,299 @@ impl ReplayObservationFrameV1 {
     pub(crate) const fn payload_hash(&self) -> &Blake3DigestV1 {
         &self.payload_hash
     }
+}
+
+/// Pure historical-projection address supplied by a trusted storage Adapter.
+///
+/// Constructing this value does not establish present authority. The public
+/// durable facade consumes [`crate::AuthorizedReplayV1`] before constructing
+/// it, while this type keeps the deterministic history verifier independently
+/// testable.
+pub struct HistoricalReplayProjectionRequestV1 {
+    room_id: crate::RoomId,
+    member_id: MemberId,
+    at_room_seq: RoomSequenceV1,
+    projection_kind: ReplayProjectionKindV1,
+    integrity: RoomIntegrityStateV1,
+}
+
+/// Opaque incremental verifier for one exact historical projection.
+///
+/// The accumulator folds canonical Transition pages into only the current
+/// verified Core/Activity/Timer state. It never retains input pages, Replay
+/// steps, observation Frames, receipts, or effect capabilities. Pack/runtime
+/// failures are held until the complete prefix has independently passed the
+/// host-owned lineage/Core/Timer preflight, so runtime unavailability cannot
+/// mask later canonical corruption.
+#[must_use]
+pub struct HistoricalReplayAccumulatorV1 {
+    request: HistoricalReplayProjectionRequestV1,
+    preflight: StoredHistoryPreflightV1,
+    semantic: HistoricalReplaySemanticStateV1,
+}
+
+enum HistoricalReplaySemanticStateV1 {
+    Active(Box<CoreTraceV1>),
+    Failed(ReplayFailureClassV1),
+}
+
+impl fmt::Debug for HistoricalReplayAccumulatorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HistoricalReplayAccumulatorV1")
+            .field("room_id", &self.request.room_id)
+            .field("at_room_seq", &self.request.at_room_seq)
+            .field("verified_through", &self.preflight.head.room_seq())
+            .field("semantic", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl HistoricalReplayAccumulatorV1 {
+    /// Initializes bounded historical Replay from exact canonical Genesis.
+    ///
+    /// Registry/runtime failures are retained rather than returned until all
+    /// requested Transition pages have passed pack-independent preflight.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed historical Replay failure when Genesis is malformed,
+    /// does not address the request, or the Room is quarantined.
+    pub fn begin(
+        registry: &PackRegistryV1,
+        canonical_genesis_bytes: &[u8],
+        request: HistoricalReplayProjectionRequestV1,
+    ) -> Result<Self, HistoricalReplayErrorV1> {
+        if request.integrity.status() == RoomIntegrityStatusV1::Quarantined {
+            return Err(HistoricalReplayErrorV1::IntegrityUnavailable);
+        }
+        let genesis = decode_replay_genesis(canonical_genesis_bytes)
+            .map_err(|failure| HistoricalReplayErrorV1::ReplayFailed(failure.class))?;
+        let preflight = StoredHistoryPreflightV1::from_genesis(&genesis)
+            .map_err(|failure| HistoricalReplayErrorV1::ReplayFailed(failure.class))?;
+        if preflight.head.room_id() != &request.room_id {
+            return Err(HistoricalReplayErrorV1::AddressMismatch);
+        }
+
+        let semantic = match registry
+            .prepare_genesis_for_retained_room(&pack_genesis_request_from_record(&genesis))
+        {
+            Ok(verified) => match verify_retained_genesis_matches_record(&genesis, &verified) {
+                Ok(()) => {
+                    let retained_pack = verified.retained_pack().clone();
+                    let preparer = RoomTransitionPreparerV1::from_retained_pack(
+                        retained_pack.clone(),
+                        genesis.room_seed.clone(),
+                    );
+                    match CoreTraceV1::from_verified_genesis(genesis, preparer, Some(retained_pack))
+                    {
+                        Ok(trace) => HistoricalReplaySemanticStateV1::Active(Box::new(trace)),
+                        Err(error) => {
+                            HistoricalReplaySemanticStateV1::Failed(classify_genesis_error(&error))
+                        }
+                    }
+                }
+                Err(failure) => HistoricalReplaySemanticStateV1::Failed(failure.class),
+            },
+            Err(error) => HistoricalReplaySemanticStateV1::Failed(
+                map_retained_genesis_error(&error, preflight.head.clone()).class,
+            ),
+        };
+        Ok(Self {
+            request,
+            preflight,
+            semantic,
+        })
+    }
+
+    /// Folds one bounded, strictly ordered Transition page.
+    ///
+    /// The page is borrowed only for this call and is not retained.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first canonical/lineage/Core/Timer disagreement in this
+    /// page, or a sequence error if the page extends beyond the requested
+    /// historical prefix.
+    pub fn consume_page(
+        &mut self,
+        canonical_transition_bytes: &[Vec<u8>],
+    ) -> Result<(), HistoricalReplayErrorV1> {
+        for bytes in canonical_transition_bytes {
+            if self.preflight.head.room_seq().get() >= self.request.at_room_seq.get() {
+                return Err(HistoricalReplayErrorV1::SequenceUnavailable);
+            }
+            self.preflight
+                .consume_transition(bytes)
+                .map_err(|failure| HistoricalReplayErrorV1::ReplayFailed(failure.class))?;
+            if let HistoricalReplaySemanticStateV1::Active(trace) = &mut self.semantic {
+                if let Err(failure) = trace.replay_stored_transition(bytes, None) {
+                    self.semantic = HistoricalReplaySemanticStateV1::Failed(failure.class);
+                } else {
+                    // Historical projection needs only the current verified
+                    // state. Durable operation receipts own idempotency, and
+                    // the Adapter validates their one-to-one Transition rows.
+                    trace.transitions.clear();
+                    trace.administration_results.clear();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns whether the exact requested sequence has been preflighted.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.preflight.head.room_seq() == self.request.at_room_seq
+    }
+
+    /// Finishes the projection after the exact requested prefix was folded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed sequence, retained-runtime, deterministic Replay, or
+    /// historical-view failure. No projection is returned from partial state.
+    pub fn finish(self) -> Result<HistoricalReplayProjectionV1, HistoricalReplayErrorV1> {
+        if !self.is_complete() {
+            return Err(HistoricalReplayErrorV1::SequenceUnavailable);
+        }
+        match self.semantic {
+            HistoricalReplaySemanticStateV1::Active(trace) => {
+                CoreTraceV1::historical_projection_from_trace(&trace, self.request)
+            }
+            HistoricalReplaySemanticStateV1::Failed(class) => {
+                Err(HistoricalReplayErrorV1::ReplayFailed(class))
+            }
+        }
+    }
+}
+
+impl fmt::Debug for HistoricalReplayProjectionRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HistoricalReplayProjectionRequestV1")
+            .field("room_id", &self.room_id)
+            .field("member_id", &self.member_id)
+            .field("at_room_seq", &self.at_room_seq)
+            .field("projection_kind", &self.projection_kind)
+            .field("integrity", &self.integrity)
+            .finish()
+    }
+}
+
+impl HistoricalReplayProjectionRequestV1 {
+    /// Constructs a pure historical projection address. Present authority and
+    /// the integrity generation must be fenced by the calling Adapter.
+    #[must_use]
+    pub const fn new(
+        room_id: crate::RoomId,
+        member_id: MemberId,
+        at_room_seq: RoomSequenceV1,
+        projection_kind: ReplayProjectionKindV1,
+        integrity: RoomIntegrityStateV1,
+    ) -> Self {
+        Self {
+            room_id,
+            member_id,
+            at_room_seq,
+            projection_kind,
+            integrity,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct HistoricalReplayEnvelopeV1<'a> {
+    envelope: &'static str,
+    verified_head: &'a CompleteHeadV1,
+    integrity: &'a RoomIntegrityStateV1,
+    room_status: RoomStatusV1,
+    membership: &'a crate::MembershipV1,
+    projection_kind: ReplayProjectionKindV1,
+    activity_projection: &'a CanonicalJsonV1,
+}
+
+/// Verified projection of one caller-supplied immutable historical prefix.
+///
+/// The canonical envelope collision-proofly binds the exact verified Head,
+/// operational integrity status/generation, historical Membership metadata,
+/// and host-validated Activity projection. It does not claim present
+/// authorization; the durable Adapter wraps it only after a current authority
+/// fence. It never contains canonical Activity
+/// State, lineage bytes, receipts, bearer facts, or an executable continuation.
+pub struct HistoricalReplayProjectionV1 {
+    verified_head: CompleteHeadV1,
+    integrity: RoomIntegrityStateV1,
+    historical_room_status: RoomStatusV1,
+    historical_membership: crate::MembershipV1,
+    canonical_envelope: CanonicalJsonV1,
+}
+
+impl fmt::Debug for HistoricalReplayProjectionV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HistoricalReplayProjectionV1")
+            .field("verified_head", &self.verified_head)
+            .field("integrity", &self.integrity)
+            .field("historical_room_status", &self.historical_room_status)
+            .field(
+                "historical_member_id",
+                self.historical_membership.member_id(),
+            )
+            .field("canonical_envelope", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl HistoricalReplayProjectionV1 {
+    /// Returns the exact historical Head verified by Replay.
+    #[must_use]
+    pub const fn verified_head(&self) -> &CompleteHeadV1 {
+        &self.verified_head
+    }
+
+    /// Returns the exact operational integrity state fenced during capture.
+    #[must_use]
+    pub const fn integrity(&self) -> &RoomIntegrityStateV1 {
+        &self.integrity
+    }
+
+    /// Returns the historical Core Room lifecycle status.
+    #[must_use]
+    pub const fn historical_room_status(&self) -> RoomStatusV1 {
+        self.historical_room_status
+    }
+
+    /// Returns the exact Membership metadata reconstructed at the requested
+    /// historical sequence.
+    #[must_use]
+    pub const fn historical_membership(&self) -> &crate::MembershipV1 {
+        &self.historical_membership
+    }
+
+    /// Returns the historically verified, collision-proof Core/Membership/Activity
+    /// projection envelope.
+    #[must_use]
+    pub const fn canonical_envelope(&self) -> &CanonicalJsonV1 {
+        &self.canonical_envelope
+    }
+}
+
+/// Closed public failure for pure historical projection verification.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum HistoricalReplayErrorV1 {
+    #[error("historical projection address does not match reconstructed lineage")]
+    AddressMismatch,
+    #[error("historical projection sequence is unavailable")]
+    SequenceUnavailable,
+    #[error("historical Membership is absent or not enabled at that sequence")]
+    HistoricalMembershipUnavailable,
+    #[error("Room integrity does not permit historical projection")]
+    IntegrityUnavailable,
+    #[error("exact historical Replay failed: {0:?}")]
+    ReplayFailed(ReplayFailureClassV1),
+    #[error("historical projection is unavailable")]
+    ProjectionUnavailable,
 }
 
 /// Successful no-effect replay report with every prefix Head.

@@ -12,16 +12,21 @@ use thiserror::Error;
 
 use crate::{
     ACTION_OFFER_DOMAIN, AccessModeV1, ActionAdmittedAt, ActionId, ActionOfferV1,
-    ActivityObservationOutcomeV1, AdministrationOperationIdentityV1, Blake3DigestV1,
-    CanonicalJsonError, CanonicalJsonV1, CompleteHeadV1, CoreProposedV1, CoreRecordedAt,
-    CoreRoomStateV1, CoreTraceV1, CreationRecordedAt, ExternalInputRecordedAt, ExternalInputV1,
-    GenesisV1, InputId, IntegrityGenerationV1, MemberId, MembershipStandingV1, MembershipV1,
-    PackDigestV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1, ParticipantActionV1,
-    PreparedNewRoomGenesisV1, PrincipalId, PrincipalKindV1, RecordedStimulusV1,
-    ReplayFailureClassV1, RoomId, RoomSequenceV1, RoomStatusV1, SourceId, TimerChangeV1,
-    TimerFiredV1, TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1, TransitionId,
-    TransitionV1,
+    ActivityObservationOutcomeV1, AdministrationOperationIdentityV1, AuthorityCheckedAt,
+    AuthorityErrorV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1, AuthorityStoreErrorV1,
+    AuthorityUseV1, AuthorityV1, AuthorizedCoreAdministrationV1, AuthorizedParticipantActionV1,
+    AuthorizedReceiptReadV1, AuthorizedRoomCreationV1, Blake3DigestV1, CanonicalJsonError,
+    CanonicalJsonV1, ClassifiedCoreAdministrationV1, CompleteHeadV1, CoreAdministrationClassV1,
+    CoreChangeSetV1, CoreProposedKindV1, CoreProposedV1, CoreRecordedAt, CoreRoomStateV1,
+    CoreTraceV1, CreationRecordedAt, ExternalInputRecordedAt, ExternalInputV1, GenesisV1, InputId,
+    IntegrityGenerationV1, MemberAuthorityUseV1, MemberId, MembershipChangeKindV1,
+    MembershipStandingV1, MembershipV1, PackDigestV1, PackRegistryV1, PackRevisionLockV1,
+    PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionV1, PreparedNewRoomGenesisV1,
+    PresentedCapabilityV1, PrincipalId, PrincipalKindV1, RecordedStimulusV1, ReplayFailureClassV1,
+    RoomId, RoomSequenceV1, RoomStatusV1, SourceId, TimerChangeV1, TimerFiredV1, TimerGenerationV1,
+    TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
     activity_pack::ValidatedPackObservationV1,
+    authority::{AuthorityFenceFactsV1, ReceiptReadAdapterInputV1, ReceiptReadTargetPolicyV1},
     canonical::encode,
     primitives::{DigestParseError, compare_timestamp_text},
     trace::{AdvanceDispositionV1, PreparedRoomTransitionV1},
@@ -31,13 +36,29 @@ const SEMANTIC_RECEIPT_DOMAIN: &str = "worldstream/semantic-result/v1";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;
 
+macro_rules! redacted_debug {
+    ($name:ident) => {
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!(stringify!($name), "([REDACTED])"))
+            }
+        }
+    };
+}
+
 /// Frozen operation kind for the sole no-basis Room creation operation.
 pub const CREATE_ROOM_OPERATION_KIND: &str = "worldstream/create-room/v1";
 
 /// Domain-specific hash of one versioned caller-semantic canonical request.
 /// It cannot be substituted with a pack, state, lineage, or artifact digest.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct CanonicalRequestHashV1(Blake3DigestV1);
+
+impl fmt::Debug for CanonicalRequestHashV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CanonicalRequestHashV1([REDACTED])")
+    }
+}
 
 impl CanonicalRequestHashV1 {
     fn calculate(request: &CanonicalJsonV1) -> Result<Self, CanonicalJsonError> {
@@ -48,6 +69,11 @@ impl CanonicalRequestHashV1 {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; 32] {
         self.0.as_bytes()
+    }
+
+    #[must_use]
+    pub(crate) const fn digest(&self) -> &Blake3DigestV1 {
+        &self.0
     }
 }
 
@@ -111,13 +137,14 @@ impl InitialMembershipProposalV1 {
 
 /// Closed caller-semantic creation request. Generated Room/Member IDs, seed,
 /// creation time, and commit time cannot enter its hash.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoomCreationRequestV1 {
     pack_digest: PackDigestV1,
     configuration: CanonicalJsonV1,
     ordered_initial_memberships: Vec<InitialMembershipProposalV1>,
 }
+redacted_debug!(RoomCreationRequestV1);
 
 impl RoomCreationRequestV1 {
     /// Constructs an exact ordered creation request.
@@ -240,10 +267,210 @@ pub struct ParticipantActionOperationIdentityV1 {
     pub action_id: ActionId,
 }
 
+/// Closed caller-semantic existing-Room administration request. Operational
+/// attribution and recorded time are deliberately added only after authority
+/// grants this exact purpose.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreAdministrationRequestV1 {
+    room_id: RoomId,
+    operation_identity: AdministrationOperationIdentityV1,
+    kind: CoreProposedKindV1,
+    expected_room_seq: RoomSequenceV1,
+    reason_code: String,
+    canonical_changeset: CoreChangeSetV1,
+}
+redacted_debug!(CoreAdministrationRequestV1);
+
+impl CoreAdministrationRequestV1 {
+    /// Validates the operation identity, bounded reason, canonical changeset
+    /// shape, and mandatory/vetoable class before authority is consulted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed identity, reason, changeset shape, or
+    /// a multi-Membership changeset that mixes mandatory and vetoable kinds.
+    pub fn new(
+        room_id: RoomId,
+        operation_identity: AdministrationOperationIdentityV1,
+        kind: CoreProposedKindV1,
+        expected_room_seq: RoomSequenceV1,
+        reason_code: impl Into<String>,
+        canonical_changeset: CoreChangeSetV1,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        let request = Self {
+            room_id,
+            operation_identity,
+            kind,
+            expected_room_seq,
+            reason_code: reason_code.into(),
+            canonical_changeset,
+        };
+        request.validate_shape()?;
+        Ok(request)
+    }
+
+    #[must_use]
+    pub const fn room_id(&self) -> &RoomId {
+        &self.room_id
+    }
+
+    #[must_use]
+    pub const fn operation_identity(&self) -> &AdministrationOperationIdentityV1 {
+        &self.operation_identity
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> CoreProposedKindV1 {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn expected_room_seq(&self) -> RoomSequenceV1 {
+        self.expected_room_seq
+    }
+
+    #[must_use]
+    pub fn reason_code(&self) -> &str {
+        &self.reason_code
+    }
+
+    #[must_use]
+    pub const fn changeset(&self) -> &CoreChangeSetV1 {
+        &self.canonical_changeset
+    }
+
+    /// Computes the frozen caller-semantic administration request hash before
+    /// a host timestamp or authority attribution is added.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if canonical encoding fails.
+    pub fn canonical_request_hash(&self) -> Result<CanonicalRequestHashV1, CanonicalJsonError> {
+        self.validate_shape().map_err(|_| {
+            CanonicalJsonError::TypedDecode(
+                "Core administration request has an invalid closed shape".to_owned(),
+            )
+        })?;
+        core_administration_request_hash(self)
+    }
+
+    pub(crate) fn classified(
+        &self,
+    ) -> Result<ClassifiedCoreAdministrationV1, PrepareRoomWriteErrorV1> {
+        self.validate_shape()
+    }
+
+    fn validate_shape(&self) -> Result<ClassifiedCoreAdministrationV1, PrepareRoomWriteErrorV1> {
+        if self.operation_identity.versioned_operation_kind != crate::CORE_OPERATION_KIND
+            || self.operation_identity.idempotency_key.is_empty()
+            || self.reason_code.is_empty()
+            || self.reason_code.len() > 256
+            || self
+                .canonical_changeset
+                .membership_changes()
+                .windows(2)
+                .any(|pair| pair[0].member_id() >= pair[1].member_id())
+        {
+            return Err(PrepareRoomWriteErrorV1::InvalidCoreAdministrationRequest);
+        }
+
+        let changes = self.canonical_changeset.membership_changes();
+        let class = match self.kind {
+            CoreProposedKindV1::Archive => {
+                if self.canonical_changeset.room_status_change().is_none() || !changes.is_empty() {
+                    return Err(PrepareRoomWriteErrorV1::InvalidCoreAdministrationRequest);
+                }
+                CoreAdministrationClassV1::Mandatory
+            }
+            CoreProposedKindV1::MembershipChangeSet => {
+                if self.canonical_changeset.room_status_change().is_some() || changes.len() < 2 {
+                    return Err(PrepareRoomWriteErrorV1::InvalidCoreAdministrationRequest);
+                }
+                let first = administration_component_class(changes[0].kind());
+                if changes
+                    .iter()
+                    .any(|change| administration_component_class(change.kind()) != first)
+                {
+                    return Err(PrepareRoomWriteErrorV1::InvalidCoreAdministrationRequest);
+                }
+                first
+            }
+            kind => {
+                if self.canonical_changeset.room_status_change().is_some()
+                    || changes.len() != 1
+                    || administration_kind_component(kind) != Some(changes[0].kind())
+                {
+                    return Err(PrepareRoomWriteErrorV1::InvalidCoreAdministrationRequest);
+                }
+                administration_component_class(changes[0].kind())
+            }
+        };
+        let affected_memberships = u16::try_from(changes.len())
+            .map_err(|_| PrepareRoomWriteErrorV1::InvalidCoreAdministrationRequest)?;
+        Ok(ClassifiedCoreAdministrationV1::new(
+            self.kind,
+            class,
+            affected_memberships,
+        ))
+    }
+
+    fn normalized_proposal(
+        &self,
+        attribution: crate::CoreAuthorityAttributionV1,
+        recorded_at: CoreRecordedAt,
+    ) -> CoreProposedV1 {
+        CoreProposedV1::new(
+            self.kind,
+            attribution,
+            self.operation_identity.clone(),
+            self.expected_room_seq,
+            self.reason_code.clone(),
+            recorded_at,
+            self.canonical_changeset.clone(),
+        )
+    }
+
+    pub(crate) fn from_proposal(room_id: RoomId, proposal: &CoreProposedV1) -> Self {
+        Self {
+            room_id,
+            operation_identity: proposal.operation_identity().clone(),
+            kind: proposal.kind(),
+            expected_room_seq: proposal.expected_room_seq(),
+            reason_code: proposal.reason_code().to_owned(),
+            canonical_changeset: proposal.changeset().clone(),
+        }
+    }
+}
+
+const fn administration_kind_component(kind: CoreProposedKindV1) -> Option<MembershipChangeKindV1> {
+    match kind {
+        CoreProposedKindV1::Join => Some(MembershipChangeKindV1::Join),
+        CoreProposedKindV1::Resume => Some(MembershipChangeKindV1::Resume),
+        CoreProposedKindV1::AccessModeChange => Some(MembershipChangeKindV1::AccessModeChange),
+        CoreProposedKindV1::RoleChange => Some(MembershipChangeKindV1::RoleChange),
+        CoreProposedKindV1::Suspend => Some(MembershipChangeKindV1::Suspend),
+        CoreProposedKindV1::Depart => Some(MembershipChangeKindV1::Depart),
+        CoreProposedKindV1::MembershipChangeSet | CoreProposedKindV1::Archive => None,
+    }
+}
+
+const fn administration_component_class(kind: MembershipChangeKindV1) -> CoreAdministrationClassV1 {
+    match kind {
+        MembershipChangeKindV1::Join
+        | MembershipChangeKindV1::Resume
+        | MembershipChangeKindV1::AccessModeChange
+        | MembershipChangeKindV1::RoleChange => CoreAdministrationClassV1::Vetoable,
+        MembershipChangeKindV1::Suspend | MembershipChangeKindV1::Depart => {
+            CoreAdministrationClassV1::Mandatory
+        }
+    }
+}
+
 /// Closed caller request available before lane admission records Semantic
 /// Time or resolves a full host Head. The Action ID is its identity component;
 /// it is deliberately excluded from the versioned request hash bytes.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantActionRequestV1 {
     room_id: RoomId,
@@ -253,6 +480,7 @@ pub struct ParticipantActionRequestV1 {
     action_type: String,
     payload: CanonicalJsonV1,
 }
+redacted_debug!(ParticipantActionRequestV1);
 
 impl ParticipantActionRequestV1 {
     #[must_use]
@@ -335,6 +563,25 @@ impl ParticipantActionRequestV1 {
     }
 }
 
+fn participant_action_authority_use(
+    request: &ParticipantActionRequestV1,
+) -> Result<AuthorityUseV1, PrepareRoomWriteErrorV1> {
+    let request_hash = request.canonical_request_hash()?;
+    Ok(AuthorityUseV1::Member {
+        room_id: request.room_id().clone(),
+        member_id: request.member_id().clone(),
+        operation: MemberAuthorityUseV1::SubmitAction {
+            identity: ParticipantActionOperationIdentityV1 {
+                room_id: request.room_id().clone(),
+                member_id: request.member_id().clone(),
+                action_id: request.action_id().clone(),
+            },
+            request_hash,
+            action_type: request.action_type().to_owned(),
+        },
+    })
+}
+
 /// Exact Timer generation operation identity.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -346,7 +593,7 @@ pub struct TimerOperationIdentityV1 {
 
 /// Immutable scheduled Timer candidate whose identity/hash can be resolved
 /// before loading a current Room Head.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimerFiredRequestV1 {
     room_id: RoomId,
@@ -355,6 +602,7 @@ pub struct TimerFiredRequestV1 {
     scheduled_for: TimerScheduledFor,
     canonical_payload: CanonicalJsonV1,
 }
+redacted_debug!(TimerFiredRequestV1);
 
 impl TimerFiredRequestV1 {
     #[must_use]
@@ -490,8 +738,27 @@ impl OperationIdentityV1 {
 }
 
 /// Operational authority state observed before preparation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Production values are minted only by consuming one purpose-sealed
+/// authority grant. The witness keeps exact capability, Principal,
+/// Membership/Runner generation, scope, revocation, expiry, and request
+/// purpose facts opaque while allowing a storage Adapter to ask Core to
+/// revalidate them in its commit transaction.
+#[derive(Clone)]
 pub struct PreparedAuthorityWitnessV1 {
+    kind: PreparedAuthorityWitnessKindV1,
+}
+
+#[derive(Clone)]
+enum PreparedAuthorityWitnessKindV1 {
+    Capability(AuthorityFenceFactsV1),
+    #[cfg(any(test, feature = "conformance-tracer"))]
+    Conformance(ConformanceAuthorityWitnessV1),
+}
+
+#[cfg(any(test, feature = "conformance-tracer"))]
+#[derive(Clone, Eq, PartialEq)]
+struct ConformanceAuthorityWitnessV1 {
     witness_id: String,
     authenticated_principal: PrincipalId,
     generation: u64,
@@ -499,7 +766,46 @@ pub struct PreparedAuthorityWitnessV1 {
     scope_revocation_hash: Blake3DigestV1,
 }
 
+impl fmt::Debug for PreparedAuthorityWitnessV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut value = formatter.debug_struct("PreparedAuthorityWitnessV1");
+        value.field("authenticated_principal", self.authenticated_principal());
+        match &self.kind {
+            PreparedAuthorityWitnessKindV1::Capability(fence) => {
+                value
+                    .field("capability_id", fence.capability_id())
+                    .field("principal_generation", &fence.principal_generation())
+                    .field("authority_generation", &fence.authority_generation())
+                    .field("authorized_at", fence.authorized_at())
+                    .field("expires_at", &fence.expires_at())
+                    .field("scope_revocation", &"[REDACTED]")
+                    .field("purpose", &"[REDACTED]");
+            }
+            #[cfg(any(test, feature = "conformance-tracer"))]
+            PreparedAuthorityWitnessKindV1::Conformance(witness) => {
+                value
+                    .field("conformance_id", &witness.witness_id)
+                    .field("generation", &witness.generation)
+                    .field("scope_revocation", &"[REDACTED]");
+            }
+        }
+        value.finish()
+    }
+}
+
 impl PreparedAuthorityWitnessV1 {
+    fn from_fence_for_use(
+        fence: AuthorityFenceFactsV1,
+        expected_use: &AuthorityUseV1,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        if !fence.binds_use(expected_use) {
+            return Err(PrepareRoomWriteErrorV1::AuthorityPurposeMismatch);
+        }
+        Ok(Self {
+            kind: PreparedAuthorityWitnessKindV1::Capability(fence),
+        })
+    }
+
     /// Seals an opaque authority/capability scope and revocation witness.
     /// Storage compares the ID, Principal, generation, and digest with its
     /// independently maintained authority fence; it never interprets policy.
@@ -521,11 +827,13 @@ impl PreparedAuthorityWitnessV1 {
         let canonical_scope_revocation_bytes = canonical_scope_revocation.to_bytes()?;
         let scope_revocation_hash = Blake3DigestV1::hash(&canonical_scope_revocation_bytes);
         Ok(Self {
-            witness_id,
-            authenticated_principal,
-            generation,
-            canonical_scope_revocation_bytes,
-            scope_revocation_hash,
+            kind: PreparedAuthorityWitnessKindV1::Conformance(ConformanceAuthorityWitnessV1 {
+                witness_id,
+                authenticated_principal,
+                generation,
+                canonical_scope_revocation_bytes,
+                scope_revocation_hash,
+            }),
         })
     }
 
@@ -535,7 +843,7 @@ impl PreparedAuthorityWitnessV1 {
     /// # Errors
     ///
     /// Returns an error for an empty witness ID or invalid generation.
-    #[cfg(feature = "conformance-tracer")]
+    #[cfg(any(test, feature = "conformance-tracer"))]
     pub fn mint_for_conformance(
         witness_id: impl Into<String>,
         authenticated_principal: PrincipalId,
@@ -551,40 +859,95 @@ impl PreparedAuthorityWitnessV1 {
     }
 
     #[must_use]
-    pub fn witness_id(&self) -> &str {
-        &self.witness_id
-    }
-
-    #[must_use]
     pub const fn authenticated_principal(&self) -> &PrincipalId {
-        &self.authenticated_principal
+        match &self.kind {
+            PreparedAuthorityWitnessKindV1::Capability(fence) => fence.authenticated_principal(),
+            #[cfg(any(test, feature = "conformance-tracer"))]
+            PreparedAuthorityWitnessKindV1::Conformance(witness) => {
+                &witness.authenticated_principal
+            }
+        }
     }
 
+    /// Returns the transaction snapshot query for a production capability
+    /// witness. Conformance-only witnesses deliberately have no production
+    /// authority query.
     #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
+    pub fn authority_snapshot_query(&self) -> Option<AuthoritySnapshotQueryV1> {
+        match &self.kind {
+            PreparedAuthorityWitnessKindV1::Capability(fence) => Some(fence.snapshot_query()),
+            #[cfg(any(test, feature = "conformance-tracer"))]
+            PreparedAuthorityWitnessKindV1::Conformance(_) => None,
+        }
     }
 
-    #[must_use]
-    pub fn canonical_scope_revocation_bytes(&self) -> &[u8] {
-        &self.canonical_scope_revocation_bytes
+    /// Revalidates every sealed production authority fact at commit time.
+    ///
+    /// # Errors
+    ///
+    /// Returns stale generation for revocation, expiry, Principal disablement,
+    /// Membership/Runner generation drift, or any changed scope/profile fact.
+    /// Malformed snapshots and backwards trusted time fail closed.
+    pub fn revalidate_current(
+        &self,
+        snapshot: &AuthoritySnapshotV1,
+        checked_at: &AuthorityCheckedAt,
+    ) -> Result<(), AuthorityStoreErrorV1> {
+        let fence = match &self.kind {
+            PreparedAuthorityWitnessKindV1::Capability(fence) => fence,
+            #[cfg(any(test, feature = "conformance-tracer"))]
+            PreparedAuthorityWitnessKindV1::Conformance(_) => {
+                return Err(AuthorityStoreErrorV1::InvalidChange);
+            }
+        };
+        fence
+            .revalidate_current(snapshot, checked_at)
+            .map_err(|error| match error {
+                AuthorityErrorV1::StaleAuthorityGeneration
+                | AuthorityErrorV1::Unauthenticated
+                | AuthorityErrorV1::Forbidden
+                | AuthorityErrorV1::MembershipNotEnabled => AuthorityStoreErrorV1::StaleGeneration,
+                AuthorityErrorV1::InvalidAuthorityRequest | AuthorityErrorV1::Conflict => {
+                    AuthorityStoreErrorV1::InvalidChange
+                }
+                AuthorityErrorV1::Unavailable => AuthorityStoreErrorV1::Corrupt,
+            })
     }
 
+    #[cfg(any(test, feature = "conformance-tracer"))]
     #[must_use]
-    pub const fn scope_revocation_hash(&self) -> &Blake3DigestV1 {
-        &self.scope_revocation_hash
+    pub fn conformance_key(&self) -> Option<(&str, &PrincipalId, u64, &Blake3DigestV1)> {
+        match &self.kind {
+            PreparedAuthorityWitnessKindV1::Capability(_) => None,
+            PreparedAuthorityWitnessKindV1::Conformance(witness) => Some((
+                &witness.witness_id,
+                &witness.authenticated_principal,
+                witness.generation,
+                &witness.scope_revocation_hash,
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn generation(&self) -> u64 {
+        match &self.kind {
+            PreparedAuthorityWitnessKindV1::Capability(fence) => fence.authority_generation().get(),
+            PreparedAuthorityWitnessKindV1::Conformance(witness) => witness.generation,
+        }
     }
 }
 
 /// One exact prepared Membership materialization.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedMembershipMaterializationV1 {
     pub membership: MembershipV1,
     pub canonical_membership_bytes: Vec<u8>,
 }
+redacted_debug!(PreparedMembershipMaterializationV1);
 
 /// One addressed, coalesced Observation Frame.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedObservationFrameV1 {
     member_id: MemberId,
     previous_frame_head: u64,
@@ -593,6 +956,7 @@ pub struct PreparedObservationFrameV1 {
     canonical_payload_bytes: Vec<u8>,
     payload_hash: Blake3DigestV1,
 }
+redacted_debug!(PreparedObservationFrameV1);
 
 impl PreparedObservationFrameV1 {
     fn from_validated_observation(
@@ -650,12 +1014,13 @@ impl PreparedObservationFrameV1 {
 
 /// One already-decided operational Activation consequence. Counter produces
 /// none, but the Advance bundle keeps the common seam complete.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedActivationDecisionV1 {
     decision_id: String,
     target_member_id: Option<MemberId>,
     canonical_decision_bytes: Vec<u8>,
 }
+redacted_debug!(PreparedActivationDecisionV1);
 
 impl PreparedActivationDecisionV1 {
     #[must_use]
@@ -675,13 +1040,14 @@ impl PreparedActivationDecisionV1 {
 }
 
 /// Exact initial/current scheduled Timer row, including prepared payload bytes.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedTimerMaterializationV1 {
     timer_id: TimerId,
     generation: TimerGenerationV1,
     scheduled_for: TimerScheduledFor,
     canonical_payload_bytes: Vec<u8>,
 }
+redacted_debug!(PreparedTimerMaterializationV1);
 
 impl PreparedTimerMaterializationV1 {
     fn from_scheduled(timer: &crate::ScheduledTimerV1) -> Result<Self, CanonicalJsonError> {
@@ -715,7 +1081,7 @@ impl PreparedTimerMaterializationV1 {
 }
 
 /// One fully encoded normalized Timer mutation.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum PreparedTimerMutationV1 {
     Schedule {
         timer_id: TimerId,
@@ -735,6 +1101,7 @@ pub enum PreparedTimerMutationV1 {
         canonical_payload_bytes: Vec<u8>,
     },
 }
+redacted_debug!(PreparedTimerMutationV1);
 
 /// Borrowed, read-only shape of a sealed Timer mutation.
 pub enum PreparedTimerMutationKindV1<'a> {
@@ -917,7 +1284,7 @@ pub struct ActionAdmissionContextV1 {
 /// Exact committed semantic input retained beside the request hash. The hash
 /// binds caller semantics, while this value also retains host-recorded
 /// semantic time and the storage-only evidence used during admission.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "semantic_input_type",
     rename_all = "snake_case",
@@ -946,6 +1313,7 @@ pub enum ReceiptSemanticInputV1 {
         input: ExternalInputV1,
     },
 }
+redacted_debug!(ReceiptSemanticInputV1);
 
 impl ReceiptSemanticInputV1 {
     fn semantic_time(&self) -> ReceiptSemanticTimeV1 {
@@ -1045,7 +1413,7 @@ struct SemanticReceiptRecordV1 {
 }
 
 /// Durable, typed semantic result returned through commit or resolve.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct StoredSemanticResultV1 {
     operation_identity: OperationIdentityV1,
     canonical_request_hash: CanonicalRequestHashV1,
@@ -1054,6 +1422,12 @@ pub struct StoredSemanticResultV1 {
     semantic_time: ReceiptSemanticTimeV1,
     result: SemanticResultV1,
     canonical_receipt_bytes: Vec<u8>,
+}
+
+impl fmt::Debug for StoredSemanticResultV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StoredSemanticResultV1([REDACTED])")
+    }
 }
 
 impl StoredSemanticResultV1 {
@@ -1130,6 +1504,55 @@ impl StoredSemanticResultV1 {
             result: record.result,
             canonical_receipt_bytes: input.to_vec(),
         })
+    }
+
+    /// Constructs the exact administration Transition receipt used by
+    /// storage conformance fixtures.
+    ///
+    /// This seam is unavailable in production builds. It preserves the
+    /// canonical receipt domain/hash implementation in Core while requiring
+    /// the supplied proposal, basis, and Transition to be one exact accepted
+    /// lineage step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Transition does not exactly succeed `basis`,
+    /// does not record `proposal`, or the canonical receipt cannot be built.
+    #[cfg(any(test, feature = "conformance-tracer"))]
+    pub fn from_core_transition_for_conformance(
+        basis: &CompleteHeadV1,
+        proposal: &CoreProposedV1,
+        transition_id: TransitionId,
+        transition: &TransitionV1,
+    ) -> Result<Self, CanonicalJsonError> {
+        let expected_sequence = basis.room_seq().checked_successor().map_err(|_| {
+            CanonicalJsonError::TypedDecode(
+                "conformance Transition sequence cannot advance".to_owned(),
+            )
+        })?;
+        let complete_head = transition.complete_head();
+        if transition.room_seq() != expected_sequence
+            || transition.previous_lineage_hash() != basis.genesis_or_transition_hash()
+            || transition.recorded_stimulus() != &RecordedStimulusV1::CoreProposed(proposal.clone())
+            || complete_head.room_id() != basis.room_id()
+            || complete_head.room_seq() != expected_sequence
+        {
+            return semantic_receipt_mismatch();
+        }
+        Self::prepare(
+            OperationIdentityV1::Administration(Box::new(proposal.operation_identity().clone())),
+            Some(basis.clone()),
+            ReceiptSemanticInputV1::CoreAdministration {
+                proposal: proposal.clone(),
+            },
+            SemanticResultV1::TransitionCommitted {
+                room_id: complete_head.room_id().clone(),
+                transition_id,
+                room_seq: complete_head.room_seq(),
+                previous_lineage_hash: transition.previous_lineage_hash().clone(),
+                complete_head,
+            },
+        )
     }
 
     #[must_use]
@@ -1355,6 +1778,7 @@ fn validate_semantic_result(
             SemanticResultV1::RejectionRecorded { .. } | SemanticResultV1::NoChangeRecorded { .. },
         ) => {
             proposal.operation_identity() == identity.as_ref()
+                && proposal.authority_attribution().principal_id == identity.authenticated_principal
                 && proposal.expected_room_seq() == basis.room_seq()
         }
         (
@@ -1370,6 +1794,7 @@ fn validate_semantic_result(
             },
         ) => {
             proposal.operation_identity() == identity.as_ref()
+                && proposal.authority_attribution().principal_id == identity.authenticated_principal
                 && proposal.expected_room_seq() == basis.room_seq()
                 && valid_transition_result(
                     basis,
@@ -1595,7 +2020,7 @@ fn semantic_receipt_mismatch<T>() -> Result<T, CanonicalJsonError> {
 }
 
 /// Immutable initial persistence bundle. It contains no snapshot or frame.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedCreationPersistenceV1 {
     pub pack_revision_lock: PackRevisionLockV1,
     pub canonical_pack_revision_lock_bytes: Vec<u8>,
@@ -1611,6 +2036,7 @@ pub struct PreparedCreationPersistenceV1 {
     pub initial_timers: Vec<PreparedTimerMaterializationV1>,
     pub integrity_generation: IntegrityGenerationV1,
 }
+redacted_debug!(PreparedCreationPersistenceV1);
 
 /// Opaque fully prepared creation branch.
 pub struct PreparedRoomCreationV1 {
@@ -1741,11 +2167,55 @@ impl PreparedRoomCreationV1 {
     pub fn from_registry_genesis(
         identity: AdministrationOperationIdentityV1,
         request: &RoomCreationRequestV1,
+        authority: AuthorizedRoomCreationV1,
+        prepared_genesis: PreparedNewRoomGenesisV1,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        let request_hash = request.canonical_request_hash()?;
+        let expected_use = AuthorityUseV1::CreateRoom {
+            identity: identity.clone(),
+            request_hash,
+        };
+        if authority.attribution().principal_id != identity.authenticated_principal {
+            return Err(PrepareRoomWriteErrorV1::AuthorityIdentityMismatch);
+        }
+        let authority_witness = PreparedAuthorityWitnessV1::from_fence_for_use(
+            authority.into_fence_facts(),
+            &expected_use,
+        )?;
+        Self::from_registry_genesis_with_witness(
+            identity,
+            request,
+            authority_witness,
+            prepared_genesis,
+        )
+    }
+
+    fn from_registry_genesis_with_witness(
+        identity: AdministrationOperationIdentityV1,
+        request: &RoomCreationRequestV1,
         authority_witness: PreparedAuthorityWitnessV1,
         prepared_genesis: PreparedNewRoomGenesisV1,
     ) -> Result<Self, PrepareRoomWriteErrorV1> {
         let trace = CoreTraceV1::create_uncommitted(prepared_genesis)?;
         Self::from_trace(identity, request, authority_witness, trace)
+    }
+
+    /// Conformance-only raw witness entry point. Production creation accepts
+    /// only a purpose-sealed [`AuthorizedRoomCreationV1`].
+    #[cfg(any(test, feature = "conformance-tracer"))]
+    #[doc(hidden)]
+    pub fn from_registry_genesis_for_conformance(
+        identity: AdministrationOperationIdentityV1,
+        request: &RoomCreationRequestV1,
+        authority_witness: PreparedAuthorityWitnessV1,
+        prepared_genesis: PreparedNewRoomGenesisV1,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        Self::from_registry_genesis_with_witness(
+            identity,
+            request,
+            authority_witness,
+            prepared_genesis,
+        )
     }
 
     #[must_use]
@@ -1765,7 +2235,7 @@ impl PreparedRoomCreationV1 {
 }
 
 /// Exact Action and Membership facts that affected preparation.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedActionInputWitnessV1 {
     pub request: ParticipantActionRequestV1,
     pub admitted_at: ActionAdmittedAt,
@@ -1776,28 +2246,42 @@ pub struct PreparedActionInputWitnessV1 {
     pub canonical_activity_before_bytes: Vec<u8>,
     pub action_offer_witness: ActionOfferWitnessV1,
 }
+redacted_debug!(PreparedActionInputWitnessV1);
 
 /// Exact scheduled-generation and materialization facts used by Timer
 /// preparation. `SQLite` rechecks and consumes this row atomically.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedTimerInputWitnessV1 {
     pub request: TimerFiredRequestV1,
     pub canonical_core_before_bytes: Vec<u8>,
     pub canonical_activity_before_bytes: Vec<u8>,
     pub canonical_timer_payload_bytes: Vec<u8>,
 }
+redacted_debug!(PreparedTimerInputWitnessV1);
+
+/// Exact normalized host-administration facts used during pure preparation.
+#[derive(Clone)]
+pub struct PreparedCoreAdministrationInputWitnessV1 {
+    pub request: CoreAdministrationRequestV1,
+    pub proposal: CoreProposedV1,
+    pub canonical_core_before_bytes: Vec<u8>,
+    pub canonical_activity_before_bytes: Vec<u8>,
+}
+redacted_debug!(PreparedCoreAdministrationInputWitnessV1);
 
 /// Closed operation-specific witness envelope. Later slices can add opaque
 /// host-minted administration, Timer, and external-input witnesses without
 /// changing the adapter's transaction interface.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum PreparedOperationInputWitnessV1 {
     ParticipantAction(Box<PreparedActionInputWitnessV1>),
     TimerFired(Box<PreparedTimerInputWitnessV1>),
+    CoreAdministration(Box<PreparedCoreAdministrationInputWitnessV1>),
 }
+redacted_debug!(PreparedOperationInputWitnessV1);
 
 /// Complete immutable Advance persistence bundle.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedAdvancePersistenceV1 {
     pub transition_id: TransitionId,
     pub transition: TransitionV1,
@@ -1813,13 +2297,15 @@ pub struct PreparedAdvancePersistenceV1 {
     pub observation_frames: Vec<PreparedObservationFrameV1>,
     pub activation_decisions: Vec<PreparedActivationDecisionV1>,
 }
+redacted_debug!(PreparedAdvancePersistenceV1);
 
 /// The only two prepared existing-Room intents.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum PreparedExistingIntentV1 {
     Advance(Box<PreparedAdvancePersistenceV1>),
     DurableDisposition,
 }
+redacted_debug!(PreparedExistingIntentV1);
 
 /// Opaque fully prepared existing-Room branch.
 pub struct PreparedRoomCommitV1 {
@@ -1842,7 +2328,6 @@ impl PreparedRoomCommitV1 {
     ///
     /// Returns an error for a non-Action preparation, mismatched trace basis,
     /// authority, addressed frame, or sealed transition state.
-    #[cfg(any(test, feature = "conformance-tracer"))]
     #[allow(clippy::too_many_lines)]
     pub(crate) fn for_action(
         trace: &CoreTraceV1,
@@ -2118,6 +2603,202 @@ impl PreparedRoomCommitV1 {
         })
     }
 
+    /// Authorizes, normalizes, reduces, and seals one exact existing-Room
+    /// Core administration request. Caller-supplied attribution is impossible:
+    /// the recorded proposal is derived from the consumed authority grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request/classification/grant disagree, Core or
+    /// pack validation fails, or the prepared consequence cannot be sealed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_authorized_core_administration(
+        trace: &CoreTraceV1,
+        request: &CoreAdministrationRequestV1,
+        recorded_at: CoreRecordedAt,
+        transition_id: TransitionId,
+        integrity_generation: IntegrityGenerationV1,
+        authority: AuthorizedCoreAdministrationV1,
+        current_frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        let classified = request.classified()?;
+        let request_hash = request.canonical_request_hash()?;
+        let expected_use = AuthorityUseV1::CoreAdministration {
+            room_id: request.room_id().clone(),
+            classified: classified.clone(),
+            identity: request.operation_identity().clone(),
+            request_hash: request_hash.clone(),
+        };
+        if authority.classified() != &classified
+            || authority.attribution().principal_id
+                != request.operation_identity().authenticated_principal
+        {
+            return Err(PrepareRoomWriteErrorV1::AuthorityIdentityMismatch);
+        }
+        let attribution = authority.attribution().clone();
+        let authority_witness = PreparedAuthorityWitnessV1::from_fence_for_use(
+            authority.into_fence_facts(),
+            &expected_use,
+        )?;
+        let proposal = request.normalized_proposal(attribution, recorded_at);
+        let prepared = trace.prepare(RecordedStimulusV1::CoreProposed(proposal.clone()))?;
+        Self::for_core_administration(
+            trace,
+            request,
+            proposal,
+            prepared,
+            transition_id,
+            integrity_generation,
+            authority_witness,
+            current_frame_heads,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn for_core_administration(
+        trace: &CoreTraceV1,
+        request: &CoreAdministrationRequestV1,
+        proposal: CoreProposedV1,
+        prepared: PreparedRoomTransitionV1,
+        transition_id: TransitionId,
+        integrity_generation: IntegrityGenerationV1,
+        authority_witness: PreparedAuthorityWitnessV1,
+        current_frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        if !prepared.is_new() || prepared.basis_complete_head() != trace.head() {
+            return Err(PrepareRoomWriteErrorV1::PreparedBasisMismatch);
+        }
+        let RecordedStimulusV1::CoreProposed(stimulus) = prepared.recorded_stimulus() else {
+            return Err(PrepareRoomWriteErrorV1::CoreAdministrationMismatch);
+        };
+        if stimulus != &proposal
+            || request.room_id() != trace.head().room_id()
+            || request.expected_room_seq() != trace.head().room_seq()
+            || request.operation_identity() != proposal.operation_identity()
+            || request.kind() != proposal.kind()
+            || request.reason_code() != proposal.reason_code()
+            || request.changeset() != proposal.changeset()
+        {
+            return Err(PrepareRoomWriteErrorV1::CoreAdministrationMismatch);
+        }
+
+        let basis_complete_head = trace.head().clone();
+        let identity =
+            OperationIdentityV1::Administration(Box::new(request.operation_identity().clone()));
+        let request_hash = request.canonical_request_hash()?;
+        let (intent, result) = match prepared.disposition() {
+            AdvanceDispositionV1::TransitionAccepted { transition, .. } => {
+                let resulting_state = prepared
+                    .resulting_state()
+                    .ok_or(PrepareRoomWriteErrorV1::InvalidPreparedTransition)?;
+                let resulting_complete_head = transition.complete_head();
+                if resulting_state.head() != &resulting_complete_head
+                    || transition.previous_lineage_hash()
+                        != basis_complete_head.genesis_or_transition_hash()
+                {
+                    return Err(PrepareRoomWriteErrorV1::InvalidPreparedTransition);
+                }
+                let observation_frames = prepare_transition_frames(
+                    trace,
+                    &prepared,
+                    resulting_state.core_state(),
+                    transition.room_seq(),
+                    current_frame_heads,
+                )?;
+                let resulting_memberships = resulting_state
+                    .core_state()
+                    .memberships()
+                    .values()
+                    .map(|membership| {
+                        Ok(PreparedMembershipMaterializationV1 {
+                            membership: membership.clone(),
+                            canonical_membership_bytes: encode(membership)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CanonicalJsonError>>()?;
+                let persistence = PreparedAdvancePersistenceV1 {
+                    transition_id: transition_id.clone(),
+                    transition: (**transition).clone(),
+                    canonical_transition_bytes: transition.canonical_bytes()?,
+                    resulting_complete_head: resulting_complete_head.clone(),
+                    canonical_resulting_head_bytes: encode(&resulting_complete_head)?,
+                    resulting_core_state: resulting_state.core_state().clone(),
+                    canonical_resulting_core_state_bytes: encode(resulting_state.core_state())?,
+                    resulting_activity_state: resulting_state.activity_state().clone(),
+                    canonical_resulting_activity_state_bytes: resulting_state
+                        .activity_state()
+                        .to_bytes()?,
+                    resulting_memberships,
+                    timer_changes: transition
+                        .ordered_timer_changes()
+                        .iter()
+                        .map(PreparedTimerMutationV1::from_change)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    observation_frames,
+                    activation_decisions: Vec::new(),
+                };
+                (
+                    PreparedExistingIntentV1::Advance(Box::new(persistence)),
+                    SemanticResultV1::TransitionCommitted {
+                        room_id: resulting_complete_head.room_id().clone(),
+                        transition_id,
+                        room_seq: resulting_complete_head.room_seq(),
+                        previous_lineage_hash: transition.previous_lineage_hash().clone(),
+                        complete_head: resulting_complete_head,
+                    },
+                )
+            }
+            AdvanceDispositionV1::RejectionRecorded { rejection, .. } => (
+                PreparedExistingIntentV1::DurableDisposition,
+                SemanticResultV1::RejectionRecorded {
+                    code: "activity_domain_rejection".to_owned(),
+                    safe_details: CanonicalJsonV1::from_serialize(
+                        &ActivityDomainRejectionDetailsV1 {
+                            declared_code: rejection.declared_code.clone(),
+                            safe_details: rejection.bounded_safe_details.clone(),
+                        },
+                    )?,
+                },
+            ),
+            AdvanceDispositionV1::NoChangeRecorded { .. } => (
+                PreparedExistingIntentV1::DurableDisposition,
+                SemanticResultV1::NoChangeRecorded {
+                    code: "administrative_no_change".to_owned(),
+                    safe_details: CanonicalJsonV1::parse(br"{}")?,
+                },
+            ),
+        };
+        let semantic_result = StoredSemanticResultV1::prepare(
+            identity.clone(),
+            Some(basis_complete_head.clone()),
+            ReceiptSemanticInputV1::CoreAdministration {
+                proposal: proposal.clone(),
+            },
+            result,
+        )?;
+        if semantic_result.canonical_request_hash() != &request_hash {
+            return Err(PrepareRoomWriteErrorV1::CoreAdministrationMismatch);
+        }
+        Ok(Self {
+            identity,
+            request_hash,
+            basis_complete_head,
+            integrity_generation,
+            authority_witness,
+            input_witness: PreparedOperationInputWitnessV1::CoreAdministration(Box::new(
+                PreparedCoreAdministrationInputWitnessV1 {
+                    request: request.clone(),
+                    proposal,
+                    canonical_core_before_bytes: encode(trace.core_state())?,
+                    canonical_activity_before_bytes: trace.activity_state().to_bytes()?,
+                },
+            )),
+            intent,
+            semantic_result,
+            pending_transition: Some(prepared),
+        })
+    }
+
     /// Seals a stable host-controlled Action rejection without invoking the
     /// Activity reducer. Malformed payload/schema input and an actually
     /// admissible Action are rejected before a storage plan exists.
@@ -2208,9 +2889,90 @@ impl PreparedRoomCommitV1 {
         })
     }
 
+    /// Seals one checked participant Action using the exact purpose-specific
+    /// authority grant that admitted its caller request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the grant targets another request or Membership,
+    /// or if the prepared transition/persistence bundle is inconsistent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_authorized_action(
+        trace: &CoreTraceV1,
+        request: &ParticipantActionRequestV1,
+        prepared: PreparedRoomTransitionV1,
+        transition_id: TransitionId,
+        integrity_generation: IntegrityGenerationV1,
+        authority: AuthorizedParticipantActionV1,
+        current_frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        let current_membership = trace
+            .core_state()
+            .membership(request.member_id())
+            .ok_or(PrepareRoomWriteErrorV1::MembershipMissing)?;
+        if authority.membership() != current_membership {
+            return Err(PrepareRoomWriteErrorV1::AuthorityIdentityMismatch);
+        }
+        let expected_use = participant_action_authority_use(request)?;
+        let authority_witness = PreparedAuthorityWitnessV1::from_fence_for_use(
+            authority.into_fence_facts(),
+            &expected_use,
+        )?;
+        Self::for_action(
+            trace,
+            request,
+            prepared,
+            transition_id,
+            integrity_generation,
+            authority_witness,
+            current_frame_heads,
+        )
+    }
+
+    /// Seals a stable disabled-Membership Action disposition using the exact
+    /// authority grant produced for that caller request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the grant targets another request or Membership,
+    /// or the current trace does not yield a stable receiptable disposition.
+    pub fn for_authorized_stable_action_disposition(
+        trace: &CoreTraceV1,
+        request: &ParticipantActionRequestV1,
+        admitted_at: ActionAdmittedAt,
+        integrity_generation: IntegrityGenerationV1,
+        authority: ParticipantActionAuthorityV1,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        let (authorized_membership, fence) = match authority {
+            ParticipantActionAuthorityV1::EnabledParticipant(authority) => {
+                (authority.membership().clone(), authority.into_fence_facts())
+            }
+            ParticipantActionAuthorityV1::StableMembershipNotEnabled(authority) => {
+                (authority.membership().clone(), authority.into_fence_facts())
+            }
+        };
+        let current_membership = trace
+            .core_state()
+            .membership(request.member_id())
+            .ok_or(PrepareRoomWriteErrorV1::MembershipMissing)?;
+        if &authorized_membership != current_membership {
+            return Err(PrepareRoomWriteErrorV1::AuthorityIdentityMismatch);
+        }
+        let expected_use = participant_action_authority_use(request)?;
+        let authority_witness =
+            PreparedAuthorityWitnessV1::from_fence_for_use(fence, &expected_use)?;
+        Self::for_stable_action_disposition(
+            trace,
+            request,
+            admitted_at,
+            integrity_generation,
+            authority_witness,
+        )
+    }
+
     /// Conformance-only entry point for sealing a prepared participant Action.
     /// Production callers receive sealed plans from the Room admission lane.
-    #[cfg(feature = "conformance-tracer")]
+    #[cfg(any(test, feature = "conformance-tracer"))]
     #[doc(hidden)]
     pub fn for_action_for_conformance(
         trace: &CoreTraceV1,
@@ -2234,7 +2996,7 @@ impl PreparedRoomCommitV1 {
 
     /// Conformance-only entry point for sealing a prepared Timer firing.
     /// Production callers receive sealed plans from the Timer lane.
-    #[cfg(feature = "conformance-tracer")]
+    #[cfg(any(test, feature = "conformance-tracer"))]
     #[doc(hidden)]
     pub fn for_timer_fired_for_conformance(
         trace: &CoreTraceV1,
@@ -2376,6 +3138,36 @@ fn action_request_hash(
         based_on_room_seq: request.based_on_room_seq,
         action_type: &request.action_type,
         payload: &request.payload,
+    })?;
+    Ok(CanonicalRequestHashV1(Blake3DigestV1::hash(&bytes)))
+}
+
+fn core_administration_request_hash(
+    request: &CoreAdministrationRequestV1,
+) -> Result<CanonicalRequestHashV1, CanonicalJsonError> {
+    #[derive(Serialize)]
+    struct AdministrationRequest<'a> {
+        domain: &'static str,
+        codec_id: &'static str,
+        hash_suite: &'static str,
+        room_id: &'a RoomId,
+        operation_kind: &'static str,
+        proposal_kind: CoreProposedKindV1,
+        expected_room_seq: RoomSequenceV1,
+        reason_code: &'a str,
+        canonical_changeset: &'a CoreChangeSetV1,
+    }
+
+    let bytes = encode(&AdministrationRequest {
+        domain: "worldstream/core-administration-request/v1",
+        codec_id: crate::CANONICAL_CODEC_ID,
+        hash_suite: crate::HASH_SUITE_ID,
+        room_id: request.room_id(),
+        operation_kind: crate::CORE_OPERATION_KIND,
+        proposal_kind: request.kind(),
+        expected_room_seq: request.expected_room_seq(),
+        reason_code: request.reason_code(),
+        canonical_changeset: request.changeset(),
     })?;
     Ok(CanonicalRequestHashV1(Blake3DigestV1::hash(&bytes)))
 }
@@ -2537,10 +3329,32 @@ impl RoomCreationReprepareV1 {
     /// Returns an error if authority, caller semantics, or selected revision changed.
     pub fn reseal(
         self,
-        current_authority_witness: PreparedAuthorityWitnessV1,
+        current_authority: AuthorizedRoomCreationV1,
         prepared_genesis: PreparedNewRoomGenesisV1,
     ) -> Result<PreparedRoomCreationV1, PrepareRoomWriteErrorV1> {
         let prepared = PreparedRoomCreationV1::from_registry_genesis(
+            self.identity,
+            &self.request,
+            current_authority,
+            prepared_genesis,
+        )?;
+        if prepared.request_hash != self.request_hash
+            || prepared.persistence.pack_revision_lock != self.selected_pack_revision_lock
+        {
+            return Err(PrepareRoomWriteErrorV1::CreationRequestMismatch);
+        }
+        Ok(prepared)
+    }
+
+    /// Conformance-only raw witness reseal.
+    #[cfg(any(test, feature = "conformance-tracer"))]
+    #[doc(hidden)]
+    pub fn reseal_for_conformance(
+        self,
+        current_authority_witness: PreparedAuthorityWitnessV1,
+        prepared_genesis: PreparedNewRoomGenesisV1,
+    ) -> Result<PreparedRoomCreationV1, PrepareRoomWriteErrorV1> {
+        let prepared = PreparedRoomCreationV1::from_registry_genesis_with_witness(
             self.identity,
             &self.request,
             current_authority_witness,
@@ -2937,6 +3751,28 @@ impl ParticipantActionReprepareV1 {
         self,
         trace: &CoreTraceV1,
         integrity_generation: IntegrityGenerationV1,
+        current_authority: ParticipantActionAuthorityV1,
+    ) -> Result<PreparedRoomCommitV1, PrepareRoomWriteErrorV1> {
+        let prepared = PreparedRoomCommitV1::for_authorized_stable_action_disposition(
+            trace,
+            &self.request,
+            self.admitted_at,
+            integrity_generation,
+            current_authority,
+        )?;
+        if prepared.request_hash != self.request_hash {
+            return Err(PrepareRoomWriteErrorV1::ActionRequestMismatch);
+        }
+        Ok(prepared)
+    }
+
+    /// Conformance-only raw witness reseal.
+    #[cfg(any(test, feature = "conformance-tracer"))]
+    #[doc(hidden)]
+    pub fn seal_stable_disposition_for_conformance(
+        self,
+        trace: &CoreTraceV1,
+        integrity_generation: IntegrityGenerationV1,
         current_authority_witness: PreparedAuthorityWitnessV1,
     ) -> Result<PreparedRoomCommitV1, PrepareRoomWriteErrorV1> {
         let prepared = PreparedRoomCommitV1::for_stable_action_disposition(
@@ -3159,6 +3995,7 @@ fn attempt_existing_room_commit(
                     request_hash: prepared.request_hash.clone(),
                 }),
             ),
+            PreparedOperationInputWitnessV1::CoreAdministration(_) => None,
         }
     } else {
         None
@@ -3341,7 +4178,7 @@ impl RoomCommitResolutionV1 {
 }
 
 /// Guarded resolution of one original identity/hash pair.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum ResolveOutcomeV1 {
     StoredResolution(Box<StoredSemanticResultV1>),
     Conflict {
@@ -3351,11 +4188,22 @@ pub enum ResolveOutcomeV1 {
     ResolutionUnavailable,
 }
 
+impl fmt::Debug for ResolveOutcomeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::StoredResolution(_) => "ResolveOutcomeV1::StoredResolution([REDACTED])",
+            Self::Conflict { .. } => "ResolveOutcomeV1::Conflict([REDACTED])",
+            Self::KnownAbsent => "ResolveOutcomeV1::KnownAbsent",
+            Self::ResolutionUnavailable => "ResolveOutcomeV1::ResolutionUnavailable",
+        })
+    }
+}
+
 /// One bounded durable history candidate returned by a recovery storage port.
 /// Core treats every byte as untrusted until registry replay and projection
 /// verification complete, then rechecks the exact Head and integrity fence
 /// through the same storage port before yielding an executable trace.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RoomRecoveryCandidateV1 {
     head: CompleteHeadV1,
     integrity_generation: IntegrityGenerationV1,
@@ -3367,10 +4215,16 @@ pub struct RoomRecoveryCandidateV1 {
     canonical_activity_state_bytes: Option<Vec<u8>>,
 }
 
+impl fmt::Debug for RoomRecoveryCandidateV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RoomRecoveryCandidateV1([REDACTED])")
+    }
+}
+
 impl RoomRecoveryCandidateV1 {
     /// Creates one storage-owned recovery candidate. Construction does not
-    /// validate the bytes; [`recover_room_from_storage`] is the sole trust
-    /// boundary that replays and checks them before guarded installation.
+    /// validate the bytes; the host-internal recovery coordinator is the sole
+    /// trust boundary that replays and checks them before guarded installation.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -3404,49 +4258,16 @@ impl RoomRecoveryCandidateV1 {
     ///
     /// Returns `Corrupt` if lineage, the captured final Head, or any present
     /// current Core/Activity materialization disagrees.
-    pub fn preflight_lineage_materializations(
+    pub(crate) fn preflight_lineage_materializations(
         &self,
     ) -> Result<RecoveredRoomMaterializationsV1, RoomRecoveryErrorV1> {
-        let (head, canonical_core_state_bytes, canonical_activity_state_bytes) =
-            CoreTraceV1::preflight_recovery_materializations(
-                &self.canonical_genesis_bytes,
-                &self.canonical_transition_bytes,
-            )
-            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        if head != self.head
-            || self
-                .canonical_core_state_bytes
-                .as_ref()
-                .is_some_and(|stored| stored != &canonical_core_state_bytes)
-            || self
-                .canonical_activity_state_bytes
-                .as_ref()
-                .is_some_and(|stored| stored != &canonical_activity_state_bytes)
-        {
-            return Err(RoomRecoveryErrorV1::Corrupt);
-        }
-        let core_state =
-            CanonicalJsonV1::decode_canonical::<CoreRoomStateV1>(&canonical_core_state_bytes)
-                .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
-        let memberships = core_state
-            .memberships()
-            .values()
-            .map(|membership| {
-                Ok(PreparedMembershipMaterializationV1 {
-                    membership: membership.clone(),
-                    canonical_membership_bytes: encode(membership)
-                        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
-                })
-            })
-            .collect::<Result<Vec<_>, RoomRecoveryErrorV1>>()?;
-        Ok(RecoveredRoomMaterializationsV1 {
-            room_status: core_state.room_status(),
-            canonical_core_state_bytes,
-            canonical_activity_state_bytes,
-            memberships,
-            timers: recover_timer_ledger(self)?,
-            observation_frames: Vec::new(),
-        })
+        RecoveredRoomMaterializationsV1::preflight_persisted_history_for_storage(
+            &self.head,
+            &self.canonical_genesis_bytes,
+            &self.canonical_transition_bytes,
+            self.canonical_core_state_bytes.as_deref(),
+            self.canonical_activity_state_bytes.as_deref(),
+        )
     }
 }
 
@@ -3459,8 +4280,78 @@ pub enum RecoveredTimerStateV1 {
     Cancelled,
 }
 
+/// Bounded verification of the current canonical Room record and serving
+/// Core materialization. This is a storage-adapter primitive, not a history
+/// Replay or caller authorization result.
+#[derive(Clone)]
+pub struct VerifiedCurrentRoomMaterializationV1 {
+    room_status: RoomStatusV1,
+    memberships: Vec<PreparedMembershipMaterializationV1>,
+    previous_lineage_hash: Option<Blake3DigestV1>,
+}
+redacted_debug!(VerifiedCurrentRoomMaterializationV1);
+
+impl VerifiedCurrentRoomMaterializationV1 {
+    /// Recomputes the state, aggregate, and record hashes for the one
+    /// Genesis/Transition named by `expected_head`, then requires exact
+    /// equality with the current Core and Activity materialization bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Corrupt` for a malformed record, invalid Core shape, hash or
+    /// Head disagreement, or a current materialization mismatch.
+    pub fn verify_for_storage(
+        expected_head: &CompleteHeadV1,
+        canonical_current_record_bytes: &[u8],
+        canonical_core_state_bytes: &[u8],
+        canonical_activity_state_bytes: &[u8],
+    ) -> Result<Self, RoomRecoveryErrorV1> {
+        let (core_state, previous_lineage_hash) =
+            CoreTraceV1::preflight_current_storage_materialization(
+                expected_head,
+                canonical_current_record_bytes,
+                canonical_core_state_bytes,
+                canonical_activity_state_bytes,
+            )
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let memberships = core_state
+            .memberships()
+            .values()
+            .map(|membership| {
+                Ok(PreparedMembershipMaterializationV1 {
+                    membership: membership.clone(),
+                    canonical_membership_bytes: encode(membership)
+                        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+                })
+            })
+            .collect::<Result<Vec<_>, RoomRecoveryErrorV1>>()?;
+        Ok(Self {
+            room_status: core_state.room_status(),
+            memberships,
+            previous_lineage_hash,
+        })
+    }
+
+    #[must_use]
+    pub const fn room_status(&self) -> RoomStatusV1 {
+        self.room_status
+    }
+
+    #[must_use]
+    pub fn memberships(&self) -> &[PreparedMembershipMaterializationV1] {
+        &self.memberships
+    }
+
+    /// Returns the immediate predecessor hash for a current Transition, or
+    /// `None` when the current record is Genesis.
+    #[must_use]
+    pub const fn previous_lineage_hash(&self) -> Option<&Blake3DigestV1> {
+        self.previous_lineage_hash.as_ref()
+    }
+}
+
 /// One complete Timer generation row expected after lineage replay.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct RecoveredTimerMaterializationV1 {
     timer_id: TimerId,
     generation: TimerGenerationV1,
@@ -3468,6 +4359,7 @@ pub struct RecoveredTimerMaterializationV1 {
     canonical_payload_bytes: Vec<u8>,
     state: RecoveredTimerStateV1,
 }
+redacted_debug!(RecoveredTimerMaterializationV1);
 
 impl RecoveredTimerMaterializationV1 {
     #[must_use]
@@ -3498,7 +4390,7 @@ impl RecoveredTimerMaterializationV1 {
 
 /// Replay-derived disposable Room projections supplied to storage only after
 /// the immutable lineage has verified.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RecoveredRoomMaterializationsV1 {
     room_status: RoomStatusV1,
     canonical_core_state_bytes: Vec<u8>,
@@ -3507,8 +4399,68 @@ pub struct RecoveredRoomMaterializationsV1 {
     timers: Vec<RecoveredTimerMaterializationV1>,
     observation_frames: Vec<RecoveredObservationFrameV1>,
 }
+redacted_debug!(RecoveredRoomMaterializationsV1);
 
 impl RecoveredRoomMaterializationsV1 {
+    /// Purely validates caller-supplied immutable history and derives the
+    /// executor-independent storage projections for the exact expected Head.
+    /// This is a storage-adapter verification primitive, not an authorization
+    /// or data-release boundary: every returned byte is already present in the
+    /// supplied Genesis or Transition records.
+    ///
+    /// Optional current materializations are checked when present; absence is
+    /// left rebuildable for the final guarded recovery transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Corrupt` for malformed lineage, a Head mismatch, an invalid
+    /// host-owned Core/Timer consequence, or a present materialization that
+    /// disagrees with immutable history.
+    pub fn preflight_persisted_history_for_storage(
+        expected_head: &CompleteHeadV1,
+        canonical_genesis_bytes: &[u8],
+        canonical_transition_bytes: &[Vec<u8>],
+        stored_core_state_bytes: Option<&[u8]>,
+        stored_activity_state_bytes: Option<&[u8]>,
+    ) -> Result<Self, RoomRecoveryErrorV1> {
+        let (head, canonical_core_state_bytes, canonical_activity_state_bytes) =
+            CoreTraceV1::preflight_recovery_materializations(
+                canonical_genesis_bytes,
+                canonical_transition_bytes,
+            )
+            .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        if &head != expected_head
+            || stored_core_state_bytes
+                .is_some_and(|stored| stored != canonical_core_state_bytes.as_slice())
+            || stored_activity_state_bytes
+                .is_some_and(|stored| stored != canonical_activity_state_bytes.as_slice())
+        {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        let core_state =
+            CanonicalJsonV1::decode_canonical::<CoreRoomStateV1>(&canonical_core_state_bytes)
+                .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let memberships = core_state
+            .memberships()
+            .values()
+            .map(|membership| {
+                Ok(PreparedMembershipMaterializationV1 {
+                    membership: membership.clone(),
+                    canonical_membership_bytes: encode(membership)
+                        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+                })
+            })
+            .collect::<Result<Vec<_>, RoomRecoveryErrorV1>>()?;
+        Ok(Self {
+            room_status: core_state.room_status(),
+            canonical_core_state_bytes,
+            canonical_activity_state_bytes,
+            memberships,
+            timers: recover_timer_ledger(canonical_genesis_bytes, canonical_transition_bytes)?,
+            observation_frames: Vec::new(),
+        })
+    }
+
     /// Builds the current scheduled-only projection used by storage adapter
     /// conformance tests. Production recovery derives the complete ledger
     /// from immutable Genesis and Transitions.
@@ -3685,8 +4637,10 @@ pub trait RoomRecoveryStorageV1: Send + Sync {
     ) -> Result<(), RoomRecoveryErrorV1>;
 }
 
-/// Loads, registry-replays, projection-verifies, and finally fences one Room
-/// recovery before yielding its executable trace.
+/// Host-internal adapter SPI that loads, registry-replays, projection-verifies,
+/// and finally fences one Room recovery before yielding its executable trace.
+/// Application Replay and diagnostic callers must use their present-authorized
+/// facades instead; this coordinator exists only for trusted actor recovery.
 ///
 /// # Errors
 ///
@@ -3835,7 +4789,10 @@ fn recover_materializations(
         canonical_core_state_bytes,
         canonical_activity_state_bytes,
         memberships,
-        timers: recover_timer_ledger(candidate)?,
+        timers: recover_timer_ledger(
+            &candidate.canonical_genesis_bytes,
+            &candidate.canonical_transition_bytes,
+        )?,
         observation_frames: report
             .observation_frames()
             .iter()
@@ -3851,9 +4808,10 @@ fn recover_materializations(
 
 #[allow(clippy::too_many_lines)]
 fn recover_timer_ledger(
-    candidate: &RoomRecoveryCandidateV1,
+    canonical_genesis_bytes: &[u8],
+    canonical_transition_bytes: &[Vec<u8>],
 ) -> Result<Vec<RecoveredTimerMaterializationV1>, RoomRecoveryErrorV1> {
-    let genesis = GenesisV1::from_canonical_bytes(&candidate.canonical_genesis_bytes)
+    let genesis = GenesisV1::from_canonical_bytes(canonical_genesis_bytes)
         .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
     let mut timers =
         BTreeMap::<(TimerId, TimerGenerationV1), RecoveredTimerMaterializationV1>::new();
@@ -3897,7 +4855,7 @@ fn recover_timer_ledger(
             return Err(RoomRecoveryErrorV1::Corrupt);
         }
     }
-    for bytes in &candidate.canonical_transition_bytes {
+    for bytes in canonical_transition_bytes {
         let transition =
             TransitionV1::from_canonical_bytes(bytes).map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
         if transition
@@ -4101,6 +5059,377 @@ pub trait RoomCommitStorageV1: Send + Sync {
     ) -> ResolveOutcomeV1;
 }
 
+/// Present-authorized receipt resolver implemented by a durable Adapter.
+///
+/// Implementations consume the grant, sample trusted time, reread its exact
+/// current authority snapshot, and perform resolution under one serialized
+/// transaction. This remains separate from the frozen two-method mutation SPI.
+pub trait AuthorizedReceiptResolverV1: Send + Sync {
+    /// Resolves one currently authorized receipt without releasing cross-Room
+    /// identity, conflict, or result information.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe authority failure when current authority cannot be
+    /// revalidated at the lookup boundary.
+    fn resolve_authorized(
+        &self,
+        authority: AuthorizedReceiptReadV1,
+    ) -> Result<ResolveOutcomeV1, AuthorityErrorV1>;
+}
+
+/// Result of receipt-first Room creation ingress.
+pub enum RoomCreationIngressV1 {
+    /// The original same-identity/hash Genesis receipt wins. No speculative
+    /// Genesis values are generated or released.
+    Existing(Box<StoredSemanticResultV1>),
+    /// The identity already belongs to a different caller-semantic request.
+    Conflict {
+        existing_request_hash: CanonicalRequestHashV1,
+    },
+    /// Guarded absence was established and exact creation authority is ready
+    /// to be consumed by Genesis preparation.
+    Authorized(Box<AuthorizedRoomCreationV1>),
+}
+
+impl fmt::Debug for RoomCreationIngressV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Existing(_) => "RoomCreationIngressV1::Existing([REDACTED])",
+            Self::Conflict { .. } => "RoomCreationIngressV1::Conflict([REDACTED])",
+            Self::Authorized(_) => "RoomCreationIngressV1::Authorized([OPAQUE])",
+        })
+    }
+}
+
+/// Result of receipt-first existing-Room Core administration ingress.
+pub enum CoreAdministrationIngressV1 {
+    /// The original same-identity/hash administration receipt wins before
+    /// current Room lifecycle or retained-pack execution is consulted.
+    Existing(Box<StoredSemanticResultV1>),
+    /// The identity already belongs to a different caller-semantic request.
+    Conflict {
+        existing_request_hash: CanonicalRequestHashV1,
+    },
+    /// Guarded absence was established and exact administration authority is
+    /// ready to be consumed by preparation.
+    Authorized(Box<AuthorizedCoreAdministrationV1>),
+}
+
+impl fmt::Debug for CoreAdministrationIngressV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Existing(_) => "CoreAdministrationIngressV1::Existing([REDACTED])",
+            Self::Conflict { .. } => "CoreAdministrationIngressV1::Conflict([REDACTED])",
+            Self::Authorized(_) => "CoreAdministrationIngressV1::Authorized([OPAQUE])",
+        })
+    }
+}
+
+/// Closed failure before creation or Core administration preparation.
+#[derive(Debug, Error)]
+pub enum RoomOperationIngressErrorV1 {
+    #[error(transparent)]
+    Authority(#[from] AuthorityErrorV1),
+    #[error("guarded receipt resolution is unavailable")]
+    ResolutionUnavailable,
+    #[error("stored Room operation result disagrees with its requested identity")]
+    InvalidStoredResult,
+}
+
+/// Resolves an existing Create receipt before selecting/running a pack or
+/// generating Room IDs, Member IDs, seed, or semantic time.
+///
+/// # Errors
+///
+/// Returns a safe authority, guarded-resolution, or stored-result failure. No
+/// speculative Genesis is constructed on failure or duplicate success.
+pub fn authorize_room_creation_operation(
+    authority: &AuthorityV1,
+    resolver: &dyn AuthorizedReceiptResolverV1,
+    presented: &PresentedCapabilityV1,
+    identity: &AdministrationOperationIdentityV1,
+    request: &RoomCreationRequestV1,
+    checked_at: AuthorityCheckedAt,
+) -> Result<RoomCreationIngressV1, RoomOperationIngressErrorV1> {
+    let request_hash = request
+        .canonical_request_hash()
+        .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+    let operation_identity = OperationIdentityV1::Administration(Box::new(identity.clone()));
+    let receipt_grant = authority.authorize_receipt_read(
+        presented,
+        operation_identity.clone(),
+        request_hash.clone(),
+        None,
+        checked_at.clone(),
+    )?;
+    match resolver.resolve_authorized(receipt_grant)? {
+        ResolveOutcomeV1::StoredResolution(result)
+            if result.operation_identity() == &operation_identity
+                && result.canonical_request_hash() == &request_hash
+                && matches!(
+                    result.semantic_input(),
+                    ReceiptSemanticInputV1::RoomCreation { request: stored, .. }
+                        if stored == request
+                )
+                && matches!(result.result(), SemanticResultV1::GenesisCreated { .. }) =>
+        {
+            Ok(RoomCreationIngressV1::Existing(result))
+        }
+        ResolveOutcomeV1::StoredResolution(_) => {
+            Err(RoomOperationIngressErrorV1::InvalidStoredResult)
+        }
+        ResolveOutcomeV1::Conflict {
+            existing_request_hash,
+        } => Ok(RoomCreationIngressV1::Conflict {
+            existing_request_hash,
+        }),
+        ResolveOutcomeV1::KnownAbsent => authority
+            .authorize_room_creation(presented, identity.clone(), request, checked_at)
+            .map(|grant| RoomCreationIngressV1::Authorized(Box::new(grant)))
+            .map_err(Into::into),
+        ResolveOutcomeV1::ResolutionUnavailable => {
+            Err(RoomOperationIngressErrorV1::ResolutionUnavailable)
+        }
+    }
+}
+
+/// Resolves an existing Core administration receipt before current Room
+/// lifecycle, retained-pack policy, reduction, or semantic time is consulted.
+///
+/// # Errors
+///
+/// Returns a safe authority, guarded-resolution, or stored-result failure. No
+/// administration preparation or durable mutation occurs on failure.
+pub fn authorize_core_administration_operation(
+    authority: &AuthorityV1,
+    resolver: &dyn AuthorizedReceiptResolverV1,
+    presented: &PresentedCapabilityV1,
+    request: &CoreAdministrationRequestV1,
+    checked_at: AuthorityCheckedAt,
+) -> Result<CoreAdministrationIngressV1, RoomOperationIngressErrorV1> {
+    let request_hash = request
+        .canonical_request_hash()
+        .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+    let operation_identity =
+        OperationIdentityV1::Administration(Box::new(request.operation_identity().clone()));
+    let receipt_grant = authority.authorize_receipt_read(
+        presented,
+        operation_identity.clone(),
+        request_hash.clone(),
+        Some(request.room_id().clone()),
+        checked_at.clone(),
+    )?;
+    match resolver.resolve_authorized(receipt_grant)? {
+        ResolveOutcomeV1::StoredResolution(result)
+            if result.operation_identity() == &operation_identity
+                && result.canonical_request_hash() == &request_hash
+                && result.target_room_id() == request.room_id()
+                && matches!(
+                    result.semantic_input(),
+                    ReceiptSemanticInputV1::CoreAdministration { proposal }
+                        if proposal.kind() == request.kind()
+                            && proposal.operation_identity() == request.operation_identity()
+                            && proposal.authority_attribution().principal_id
+                                == request.operation_identity().authenticated_principal
+                            && proposal.expected_room_seq() == request.expected_room_seq()
+                            && proposal.reason_code() == request.reason_code()
+                            && proposal.changeset() == request.changeset()
+                )
+                && !matches!(result.result(), SemanticResultV1::GenesisCreated { .. }) =>
+        {
+            Ok(CoreAdministrationIngressV1::Existing(result))
+        }
+        ResolveOutcomeV1::StoredResolution(_) => {
+            Err(RoomOperationIngressErrorV1::InvalidStoredResult)
+        }
+        ResolveOutcomeV1::Conflict {
+            existing_request_hash,
+        } => Ok(CoreAdministrationIngressV1::Conflict {
+            existing_request_hash,
+        }),
+        ResolveOutcomeV1::KnownAbsent => authority
+            .authorize_core_administration(presented, request, checked_at)
+            .map(|grant| CoreAdministrationIngressV1::Authorized(Box::new(grant)))
+            .map_err(Into::into),
+        ResolveOutcomeV1::ResolutionUnavailable => {
+            Err(RoomOperationIngressErrorV1::ResolutionUnavailable)
+        }
+    }
+}
+
+/// Result of the receipt-first Participant Action ingress boundary.
+pub enum ParticipantActionIngressV1 {
+    /// The immutable original same-identity/hash receipt wins before current
+    /// Action eligibility is consulted.
+    Existing(Box<StoredSemanticResultV1>),
+    /// The identity already belongs to a different caller-semantic request.
+    Conflict {
+        existing_request_hash: CanonicalRequestHashV1,
+    },
+    /// No receipt exists and present new-work authority was granted.
+    Authorized(Box<ParticipantActionAuthorityV1>),
+}
+
+impl fmt::Debug for ParticipantActionIngressV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Existing(_) => "ParticipantActionIngressV1::Existing([REDACTED])",
+            Self::Conflict { .. } => "ParticipantActionIngressV1::Conflict([REDACTED])",
+            Self::Authorized(_) => "ParticipantActionIngressV1::Authorized([OPAQUE])",
+        })
+    }
+}
+
+/// Closed failure before an Action reaches preparation or durable mutation.
+#[derive(Debug, Error)]
+pub enum ParticipantActionIngressErrorV1 {
+    #[error(transparent)]
+    Authority(#[from] AuthorityErrorV1),
+    #[error("guarded receipt resolution is unavailable")]
+    ResolutionUnavailable,
+    #[error("stored Action result disagrees with its requested identity")]
+    InvalidStoredResult,
+}
+
+/// Resolves an existing Action receipt before consulting Standing, Access
+/// Mode, Role, Room lifecycle, offers, or pack admission for a new identity.
+///
+/// # Errors
+///
+/// Returns a safe authority, guarded-resolution, or stored-result failure. No
+/// Action preparation or durable mutation occurs on failure.
+pub fn authorize_participant_action_operation(
+    authority: &AuthorityV1,
+    resolver: &dyn AuthorizedReceiptResolverV1,
+    presented: &PresentedCapabilityV1,
+    request: &ParticipantActionRequestV1,
+    checked_at: AuthorityCheckedAt,
+) -> Result<ParticipantActionIngressV1, ParticipantActionIngressErrorV1> {
+    let receipt_grant =
+        authority.authorize_action_receipt_read(presented, request, checked_at.clone())?;
+    match resolver.resolve_authorized(receipt_grant)? {
+        ResolveOutcomeV1::StoredResolution(result) => {
+            let expected_identity = OperationIdentityV1::ParticipantAction(Box::new(
+                ParticipantActionOperationIdentityV1 {
+                    room_id: request.room_id().clone(),
+                    member_id: request.member_id().clone(),
+                    action_id: request.action_id().clone(),
+                },
+            ));
+            let expected_hash = request
+                .canonical_request_hash()
+                .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+            if result.operation_identity() != &expected_identity
+                || result.canonical_request_hash() != &expected_hash
+                || result.target_room_id() != request.room_id()
+            {
+                return Err(ParticipantActionIngressErrorV1::InvalidStoredResult);
+            }
+            Ok(ParticipantActionIngressV1::Existing(result))
+        }
+        ResolveOutcomeV1::Conflict {
+            existing_request_hash,
+        } => Ok(ParticipantActionIngressV1::Conflict {
+            existing_request_hash,
+        }),
+        ResolveOutcomeV1::KnownAbsent => authority
+            .authorize_action(presented, request, checked_at)
+            .map(|grant| ParticipantActionIngressV1::Authorized(Box::new(grant)))
+            .map_err(Into::into),
+        ResolveOutcomeV1::ResolutionUnavailable => {
+            Err(ParticipantActionIngressErrorV1::ResolutionUnavailable)
+        }
+    }
+}
+
+/// Applies exact identity/hash/Room filtering for a trusted receipt Adapter.
+///
+/// Before calling this helper, the Adapter must call
+/// [`ReceiptReadAdapterInputV1::revalidate_current`] with an Adapter-owned
+/// trusted clock sample and current authority snapshot inside the same
+/// serialized transaction. This pure filter does not itself establish current
+/// authorization. The resolver closure is invoked once for the requested hash
+/// and, for an administration conflict, once more for the immutable existing
+/// hash.
+#[doc(hidden)]
+#[must_use]
+pub fn resolve_authorized_room_operation_for_adapter<F>(
+    authority: ReceiptReadAdapterInputV1,
+    mut resolve: F,
+) -> ResolveOutcomeV1
+where
+    F: FnMut(&OperationIdentityV1, &CanonicalRequestHashV1) -> ResolveOutcomeV1,
+{
+    let ReceiptReadAdapterInputV1 {
+        fence: _,
+        identity,
+        request_hash,
+        target_policy,
+    } = authority;
+    match resolve(&identity, &request_hash) {
+        ResolveOutcomeV1::StoredResolution(result)
+            if authorized_receipt_matches(
+                &identity,
+                &request_hash,
+                &target_policy,
+                result.as_ref(),
+            ) =>
+        {
+            ResolveOutcomeV1::StoredResolution(result)
+        }
+        ResolveOutcomeV1::Conflict {
+            existing_request_hash,
+        } if existing_request_hash != request_hash => {
+            match resolve(&identity, &existing_request_hash) {
+                ResolveOutcomeV1::StoredResolution(existing)
+                    if authorized_receipt_matches(
+                        &identity,
+                        &existing_request_hash,
+                        &target_policy,
+                        existing.as_ref(),
+                    ) =>
+                {
+                    ResolveOutcomeV1::Conflict {
+                        existing_request_hash,
+                    }
+                }
+                ResolveOutcomeV1::StoredResolution(_)
+                | ResolveOutcomeV1::Conflict { .. }
+                | ResolveOutcomeV1::KnownAbsent
+                | ResolveOutcomeV1::ResolutionUnavailable => {
+                    ResolveOutcomeV1::ResolutionUnavailable
+                }
+            }
+        }
+        ResolveOutcomeV1::KnownAbsent => ResolveOutcomeV1::KnownAbsent,
+        ResolveOutcomeV1::StoredResolution(_)
+        | ResolveOutcomeV1::Conflict { .. }
+        | ResolveOutcomeV1::ResolutionUnavailable => ResolveOutcomeV1::ResolutionUnavailable,
+    }
+}
+
+fn authorized_receipt_matches(
+    identity: &OperationIdentityV1,
+    request_hash: &CanonicalRequestHashV1,
+    target_policy: &ReceiptReadTargetPolicyV1,
+    result: &StoredSemanticResultV1,
+) -> bool {
+    if result.operation_identity() != identity || result.canonical_request_hash() != request_hash {
+        return false;
+    }
+    match target_policy {
+        ReceiptReadTargetPolicyV1::ExactRoom(room_id) => result.target_room_id() == room_id,
+        ReceiptReadTargetPolicyV1::GlobalCreate => {
+            matches!(
+                identity,
+                OperationIdentityV1::Administration(identity)
+                    if identity.versioned_operation_kind == CREATE_ROOM_OPERATION_KIND
+            ) && matches!(result.result(), SemanticResultV1::GenesisCreated { .. })
+        }
+    }
+}
+
 /// Failure while sealing a prepared write. No storage transaction has opened.
 #[derive(Debug, Error)]
 pub enum PrepareRoomWriteErrorV1 {
@@ -4116,6 +5445,8 @@ pub enum PrepareRoomWriteErrorV1 {
     InvalidIntegrityGeneration,
     #[error("authority Principal does not match the operation or Membership")]
     AuthorityIdentityMismatch,
+    #[error("purpose-sealed authority does not match the prepared operation")]
+    AuthorityPurposeMismatch,
     #[error("creation trace has already advanced")]
     CreationTraceAdvanced,
     #[error("creation trace is not bound to an exact retained Pack revision")]
@@ -4124,6 +5455,10 @@ pub enum PrepareRoomWriteErrorV1 {
     CreationRequestMismatch,
     #[error("administration identity does not name the frozen create-Room operation")]
     InvalidCreationOperationKind,
+    #[error("Core administration request has an invalid identity, reason, or changeset class")]
+    InvalidCoreAdministrationRequest,
+    #[error("prepared operation is not the exact authorized Core administration request")]
+    CoreAdministrationMismatch,
     #[error("prepared Transition basis does not match the supplied trace")]
     PreparedBasisMismatch,
     #[error("prepared operation is not a participant Action")]

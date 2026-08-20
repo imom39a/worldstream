@@ -105,8 +105,9 @@ The implemented frontiers currently provide a pinned, deliberately narrow worksp
 
 - Rust `1.97.1` (edition 2024), Node `24.18.1` with pnpm `11.19.0`, Python `3.14.7`, and uv `0.12.5`;
 - `worldstreamd` and `worldstreamctl` operator-shell binaries, protocol/runtime support crates, and a deterministic `xtask` manifest verifier;
-- a pure in-memory canonical Core reducer, lineage tracer, and strict Replay verifier;
+- a pure canonical Core reducer, lineage tracer, strict Replay verifier, and storage-neutral operational Principal/capability/Membership authority module;
 - the retained exact-revision `ActivityPackV1` host and registry, with executable test-only Counter v1 and v2 conformance revisions;
+- a Counter-only bundled-SQLite conformance adapter for atomic Room commit/recovery, durable authority changes, commit-time revocation fences, authorized receipt resolution, and authorized historical Replay;
 - locked Python SDK and web-console package skeletons that expose no Room or public protocol API yet;
 - native Linux and Windows bootstrap checks plus opt-in repository hooks.
 
@@ -129,4 +130,4 @@ or public client API, and the bootstrap does not claim release readiness.
 
 ## Status
 
-The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the pinned workspace and operator shell, canonical Core/lineage implementation with storage-neutral commit and recovery contracts, retained Activity Pack host, executable Counter conformance revisions, and a substitutable bundled-SQLite Counter Room commit/recovery adapter. The adapter is not yet wired into the server or gateway and does not claim the release storage profile. The repository still has no Agent Heist executor, public SDK/UI behavior, release artifact, or release conformance evidence. Counter is not a release Activity, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.
+The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the pinned workspace and operator shell, canonical Core/lineage implementation with storage-neutral commit, recovery, and operational authority contracts, retained Activity Pack host, executable Counter conformance revisions, and a substitutable bundled-SQLite Counter Room commit/recovery and authority adapter. The adapter is not yet wired into the server or gateway and does not claim the release storage profile. The repository still has no Agent Heist executor, public SDK/UI behavior, release artifact, or release conformance evidence. Counter is not a release Activity, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.

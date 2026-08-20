@@ -2,7 +2,7 @@
 
 Status: **Reconciled and implementation-ready, 2026-08-15**
 
-This is a normative locator, not a competing specification. The repository has the pinned workspace, pure Core/lineage implementation, executable retained Activity Pack host with test-only Counter revisions, and a durable Counter-only bundled-SQLite commit/recovery conformance adapter. The adapter is not wired into the server or gateway and is not release-profile implementation or evidence, so the product runtime remains incomplete and [`compatibility.toml`](../compatibility.toml) remains `release_ready = false`. When wording conflicts, use this authority order:
+This is a normative locator, not a competing specification. The repository has the pinned workspace, pure Core/lineage and operational-authority implementation, executable retained Activity Pack host with test-only Counter revisions, and a durable Counter-only bundled-SQLite commit/recovery and authority conformance adapter. The adapter is not wired into the server or gateway and is not release-profile implementation or evidence, so the product runtime remains incomplete and [`compatibility.toml`](../compatibility.toml) remains `release_ready = false`. When wording conflicts, use this authority order:
 
 1. [`CONTEXT.md`](../CONTEXT.md) for whole-product domain language;
 2. [Frozen Requirements](requirements.md) for normative behavior and scope;

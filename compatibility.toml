@@ -130,6 +130,12 @@ sqlite_checksum = ""
 postgresql_checksum = ""
 status = "unresolved"
 
+[[migrations.entries]]
+id = "0002-operational-authority-v1"
+sqlite_checksum = ""
+postgresql_checksum = ""
+status = "unresolved"
+
 [transfer]
 format_id = "worldstream/sqlite-postgresql-transfer/v1"
 direction = "sqlite_to_postgresql"

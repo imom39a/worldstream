@@ -46,6 +46,12 @@ macro_rules! typed_ulid {
 typed_ulid!(RoomId, "An immutable Room identifier.");
 typed_ulid!(MemberId, "An immutable Membership identifier.");
 typed_ulid!(PrincipalId, "An authenticated Principal identifier.");
+typed_ulid!(CapabilityId, "An immutable bearer Capability identifier.");
+typed_ulid!(RunnerId, "A server-issued Runner identifier.");
+typed_ulid!(
+    AuthorityChangeId,
+    "An idempotent operational authority-change identifier."
+);
 typed_ulid!(ActionId, "A participant-generated Action identity.");
 typed_ulid!(
     TransitionId,
@@ -309,6 +315,18 @@ semantic_time!(
     ExternalInputRecordedAt,
     "The declared semantic time of external input."
 );
+semantic_time!(
+    AuthorityCheckedAt,
+    "Trusted operational time supplied to one authority decision."
+);
+semantic_time!(
+    CapabilityExpiresAt,
+    "The exclusive operational expiry of one Capability."
+);
+semantic_time!(
+    CapabilityRevokedAt,
+    "The operational time at which one Capability was revoked."
+);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct NormalizedUtcTimestamp(String);
@@ -534,6 +552,26 @@ safe_counter!(
     IntegrityGenerationV1,
     1,
     "An operational integrity generation."
+);
+safe_counter!(
+    AuthorityGenerationV1,
+    1,
+    "A monotonic Capability scope, expiry, and revocation generation."
+);
+safe_counter!(
+    PrincipalGenerationV1,
+    1,
+    "A monotonic operational Principal-status generation."
+);
+safe_counter!(
+    MembershipGenerationV1,
+    1,
+    "A monotonic operational Membership authority generation."
+);
+safe_counter!(
+    RunnerGenerationV1,
+    1,
+    "A monotonic operational Runner-status generation."
 );
 
 /// A counter cannot be represented in canonical JSON or violates its nonzero
