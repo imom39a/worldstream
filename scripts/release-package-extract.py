@@ -81,11 +81,13 @@ def read_json(path: pathlib.Path, label: str) -> dict[str, Any]:
         f"{label} exceeds its bounded size",
     )
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        content = path.read_bytes()
+    except OSError as error:
         raise ExtractionError(f"{label} is not valid UTF-8 JSON: {error}") from error
-    require(isinstance(value, dict), f"{label} must be a JSON object")
-    return value
+    try:
+        return PACKAGE.json_object(content, label)
+    except PACKAGE.PackageError as error:
+        raise ExtractionError(str(error)) from error
 
 
 def member_is_safe(member: tarfile.TarInfo) -> bool:

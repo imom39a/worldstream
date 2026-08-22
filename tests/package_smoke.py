@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -27,6 +28,73 @@ sys.modules["worldstream_package"] = PACKAGE
 SPEC.loader.exec_module(PACKAGE)
 
 
+def test_package_release_json_rejects_duplicate_top_level_and_nested_keys():
+    for content, key in (
+        (b'{"artifacts":{},"artifacts":{"hidden":{}}}', "artifacts"),
+        (
+            b'{"predicate":{"subject":[],"subject":[{"name":"hidden"}]}}',
+            "subject",
+        ),
+    ):
+        try:
+            PACKAGE.json_object(content, "signed release metadata")
+        except PACKAGE.PackageError as error:
+            assert f"duplicate key '{key}'" in str(error)
+        else:  # pragma: no cover - fail-closed regression guard
+            raise AssertionError(f"duplicate signed JSON key was accepted: {key}")
+
+
+def hosted_build_environment(target: str) -> dict:
+    identity = PACKAGE.BUILD_IDENTITY
+    runner = {
+        "provider": "github-actions",
+        **identity.HOSTED_RUNNER_FACTS[target],
+        "image_version": "20260817.1.0",
+    }
+    if target == "source":
+        return {
+            "runner": runner,
+            "rustc": None,
+            "bundled_sqlite": None,
+            "final_linker": None,
+        }
+    windows = target == "windows-x64"
+    root = "C:\\hostedtoolcache\\fixture" if windows else "/opt/hostedtoolcache/fixture"
+    return {
+        "runner": runner,
+        "rustc": {
+            "path": f"{root}/rustc.exe" if windows else f"{root}/rustc",
+            "version": "rustc 1.97.1 (fixture)",
+            "target": identity.TARGET_TRIPLES[target],
+            "reported_target": "x86_64-pc-windows-msvc"
+            if windows
+            else "x86_64-unknown-linux-gnu",
+        },
+        "bundled_sqlite": {
+            "archiver": {
+                "path": f"{root}/Hostx64/x64/lib.exe"
+                if windows
+                else f"{root}/zig-musl-ar",
+                "version": "fixture archiver 1.0",
+                "target": identity.TARGET_TRIPLES[target],
+                "reported_target": ("x64-coff-library" if windows else "gnu-archive"),
+            },
+            "c_compiler": {
+                "path": f"{root}/cl.exe" if windows else f"{root}/cc",
+                "version": "fixture C compiler 1.0",
+                "target": identity.TARGET_TRIPLES[target],
+                "reported_target": ("x64" if windows else "x86_64-unknown-linux-musl"),
+            },
+        },
+        "final_linker": {
+            "path": f"{root}/Hostx64/x64/link.exe" if windows else f"{root}/rust-lld",
+            "version": "fixture linker 1.0",
+            "target": identity.TARGET_TRIPLES[target],
+            "reported_target": "x64" if windows else "elf_x86_64",
+        },
+    }
+
+
 def write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
@@ -41,7 +109,7 @@ def install_pinned_build_materials(
         "compatibility.toml": manifest_toml,
         "compatibility.json": manifest_json,
     }
-    for relative in PACKAGE.BUILD_IDENTITY.PINNED_MATERIAL_PATHS:
+    for relative in PACKAGE.BUILD_IDENTITY.SOURCE_ENTRY_PATHS:
         content = overrides.get(relative)
         if content is None:
             content = (REPOSITORY_ROOT / relative).read_bytes()
@@ -74,7 +142,17 @@ def fixture_inputs(root: Path) -> dict[str, list[tuple[Path, str]]]:
                 b'{"retained_executor":{"pack_id":"worldstream.fixture","pack_version":"1.0.0","pack_digest":"blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}\n',
             ),
         ],
-        "licenses": [(root / "licenses/Apache-2.0.txt", b"Apache-2.0\n")],
+        "licenses": [
+            (
+                root / "licenses" / name,
+                (REPOSITORY_ROOT / "licenses" / name).read_bytes(),
+            )
+            for name in (
+                "LICENSE-APACHE-2.0.txt",
+                "THIRD-PARTY-NOTICES.json",
+                "THIRD-PARTY-NOTICES.txt",
+            )
+        ],
     }
     result: dict[str, list[tuple[Path, str]]] = {key: [] for key in paths}
     for group, group_paths in paths.items():
@@ -150,6 +228,7 @@ def run_wrapper(
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["SOURCE_DATE_EPOCH"] = "0"
+    environment["WORLDSTREAM_RELEASE_PYTHON"] = sys.executable
     environment["WORLDSTREAM_BUILD_REVISION"] = PACKAGE.BUILD_IDENTITY.source_revision(
         REPOSITORY_ROOT
     )
@@ -225,6 +304,47 @@ def wrapper_workspace(
 
 
 def main() -> None:
+    with tempfile.TemporaryDirectory() as source_inventory_raw:
+        source_inventory = Path(source_inventory_raw)
+        write(source_inventory / ".gitignore", b".DS_Store\n")
+        write(source_inventory / "tracked.txt", b"tracked\n")
+        write(source_inventory / "tmp/pdfs/reference.pdf", b"tracked reference\n")
+        write(source_inventory / ".DS_Store", b"ignored metadata\n")
+        subprocess.run(["git", "init", "-q"], cwd=source_inventory, check=True)
+        subprocess.run(["git", "add", "."], cwd=source_inventory, check=True)
+        source_inputs = PACKAGE.required_inputs(
+            PACKAGE.TARGETS["source"],
+            source_inventory,
+            source_inventory,
+            source_inventory,
+            source_inventory,
+            source_inventory,
+            source_dir=source_inventory,
+        )
+        expect_package_error(
+            lambda: PACKAGE.validate_commit_bound_source_inventory(
+                source_inventory, source_inputs["source"]
+            ),
+            "ignored metadata was accepted into the source archive",
+        )
+        (source_inventory / ".DS_Store").unlink()
+        source_inputs = PACKAGE.required_inputs(
+            PACKAGE.TARGETS["source"],
+            source_inventory,
+            source_inventory,
+            source_inventory,
+            source_inventory,
+            source_inventory,
+            source_dir=source_inventory,
+        )
+        PACKAGE.validate_commit_bound_source_inventory(
+            source_inventory, source_inputs["source"]
+        )
+        assert {
+            destination.removeprefix("source/")
+            for _path, destination in source_inputs["source"]
+        } == {".gitignore", "tracked.txt"}
+
     with tempfile.TemporaryDirectory(prefix="worldstream-package-test-") as temporary:
         root = Path(temporary)
         mountinfo = root / "mountinfo"
@@ -372,10 +492,10 @@ digest_location = 'release-manifest.json'
 [[release_artifacts]]
 id = 'sigstore-bundle'
 profile = 'all'
-digest_algorithm = 'sha256'
+digest_algorithm = ''
 digest = ''
-status = 'detached'
-digest_location = 'release-manifest.json'
+status = 'verification_material'
+verification_material_location = 'release-manifest.json#verification_material.sigstore-bundle.path'
 
 [[release_artifacts]]
 id = 'spdx-sbom'
@@ -399,7 +519,7 @@ digest_location = 'release-manifest.json'
             "postgresql-direct-and-transaction-pooler-conformance",
             "all-prior-forward-migrations-both-backends",
             "sqlite-postgresql-transfer-byte-parity-and-epoch-fencing",
-            "backend-native-isolated-restore-and-full-semantic-verifier",
+            "backend-native-isolated-restore-and-bounded-semantic-verifier",
             "native-linux-release-profile",
             "native-windows-release-profile",
             "oci-linux-amd64-release-profile",
@@ -430,6 +550,8 @@ digest_location = 'release-manifest.json'
             manifest_json,
             inputs,
             0,
+            observed_build_environment=hosted_build_environment("linux-x86_64"),
+            require_hosted_environment=True,
             require_clean_checkout=False,
         )
         first = root / "first" / "worldstream-0.1.0-linux-x86_64.tar.gz"
@@ -700,27 +822,44 @@ digest_location = 'release-manifest.json'
                 },
             }
         )
-        PACKAGE.validate_spdx_shape(
-            {
-                "spdxVersion": "SPDX-2.3",
-                "SPDXID": "SPDXRef-DOCUMENT",
-                "name": "worldstream",
-                "documentNamespace": "https://example.invalid/worldstream",
-                "creationInfo": {
-                    "created": "2026-01-01T00:00:00Z",
-                    "creators": ["Tool: fixture"],
-                },
-                "packages": [{"SPDXID": "SPDXRef-Package"}],
-                "files": [{"SPDXID": "SPDXRef-File"}],
-                "relationships": [
-                    {
-                        "spdxElementId": "SPDXRef-DOCUMENT",
-                        "relationshipType": "DESCRIBES",
-                        "relatedSpdxElement": "SPDXRef-Package",
-                    }
-                ],
-                "documentDescribes": ["SPDXRef-Package"],
-            }
+        valid_spdx = {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "worldstream",
+            "dataLicense": "CC0-1.0",
+            "documentNamespace": "https://example.invalid/worldstream",
+            "creationInfo": {
+                "created": "2026-01-01T00:00:00Z",
+                "creators": ["Tool: fixture-1.0"],
+            },
+            "packages": [{"SPDXID": "SPDXRef-Package"}],
+            "files": [
+                {
+                    "SPDXID": PACKAGE.BUILD_IDENTITY._spdx_id(
+                        "ReleaseSubject", "payload"
+                    ),
+                    "fileName": "payload",
+                    "checksums": [
+                        {"algorithm": "SHA1", "checksumValue": "0" * 40},
+                        {"algorithm": "SHA256", "checksumValue": "0" * 64},
+                    ],
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package",
+                }
+            ],
+            "documentDescribes": ["SPDXRef-Package"],
+        }
+        PACKAGE.validate_spdx_shape(valid_spdx)
+        impossible_created = json.loads(json.dumps(valid_spdx))
+        impossible_created["creationInfo"]["created"] = "2026-99-99T99:99:99Z"
+        expect_package_error(
+            lambda: PACKAGE.validate_spdx_shape(impossible_created),
+            "impossible SPDX UTC timestamp was accepted",
         )
         PACKAGE.validate_slsa_shape(
             {
@@ -762,6 +901,12 @@ digest_location = 'release-manifest.json'
                 PACKAGE.TARGETS["source"],
             ),
             "runtime data payload was accepted",
+        )
+        expect_package_error(
+            lambda: PACKAGE.validate_packaged_artifact_paths(
+                [("ui/data/worldstream.sqlite3", b"nested runtime state")], target
+            ),
+            "nested runtime data payload was accepted",
         )
         expect_package_error(
             lambda: PACKAGE.validate_sigstore_shape({"bundleVersion": "0.3"}),
@@ -842,6 +987,8 @@ digest_location = 'release-manifest.json'
             manifest_json,
             windows_inputs,
             0,
+            observed_build_environment=hosted_build_environment("windows-x64"),
+            require_hosted_environment=True,
             require_clean_checkout=False,
         )
         release_windows = (
@@ -857,7 +1004,7 @@ digest_location = 'release-manifest.json'
         )
 
         repository_root = Path(__file__).resolve().parents[1]
-        for relative in PACKAGE.BUILD_IDENTITY.PINNED_MATERIAL_PATHS:
+        for relative in PACKAGE.BUILD_IDENTITY.SOURCE_ENTRY_PATHS:
             if relative in {"compatibility.toml", "compatibility.json"}:
                 continue
             write(root / relative, (repository_root / relative).read_bytes())
@@ -881,6 +1028,8 @@ digest_location = 'release-manifest.json'
             0,
             source_root=root,
             source_revision=PACKAGE.BUILD_IDENTITY.source_revision(repository_root),
+            observed_build_environment=hosted_build_environment("source"),
+            require_hosted_environment=True,
         )
         release_source = (
             root / "release-fixture-source" / artifact_paths["source-archive"]
@@ -913,6 +1062,7 @@ digest_location = 'release-manifest.json'
             base_image=PACKAGE.BUILD_IDENTITY.expected_base_image(
                 fixture_source_entries
             ),
+            observed_build_environment=hosted_build_environment("oci-linux-amd64"),
         )
         synthetic_oci, _tested_image_id = oci_fixture.oci_layout_fixture(
             oci_fixture_dir,
@@ -925,6 +1075,9 @@ digest_location = 'release-manifest.json'
                 "io.worldstream.base-image": oci_build_identity["oci"]["base_image"],
                 "io.worldstream.build-identity": PACKAGE.BUILD_IDENTITY.build_identity_digest(
                     oci_build_identity
+                ),
+                "io.worldstream.build-environment": PACKAGE.BUILD_IDENTITY.observed_build_environment_label(
+                    oci_build_identity["observed_build_environment"]
                 ),
             },
         )
@@ -1112,9 +1265,15 @@ digest_location = 'release-manifest.json'
                 "fileName": relative,
                 "checksums": [
                     {
+                        "algorithm": "SHA1",
+                        "checksumValue": hashlib.sha1(
+                            content, usedforsecurity=False
+                        ).hexdigest(),
+                    },
+                    {
                         "algorithm": "SHA256",
                         "checksumValue": PACKAGE.sha256_bytes(content),
-                    }
+                    },
                 ],
                 "copyrightText": "NOASSERTION",
                 "licenseConcluded": "NOASSERTION",
@@ -1129,10 +1288,15 @@ digest_location = 'release-manifest.json'
                     "SPDXID": "SPDXRef-DOCUMENT",
                     "name": "worldstream",
                     "dataLicense": "CC0-1.0",
-                    "documentNamespace": "https://example.invalid/worldstream",
+                    "documentNamespace": PACKAGE.BUILD_IDENTITY.spdx_document_namespace(
+                        "0.1.0",
+                        PACKAGE.sha256_bytes(manifest_json),
+                        subject_paths,
+                        "2026-01-01T00:00:00Z",
+                    ),
                     "creationInfo": {
                         "created": "2026-01-01T00:00:00Z",
-                        "creators": ["Tool: fixture"],
+                        "creators": ["Tool: fixture-1.0"],
                     },
                     "packages": spdx_packages,
                     "files": spdx_files,
@@ -1149,12 +1313,24 @@ digest_location = 'release-manifest.json'
             }
             for relative, content in sorted(subject_payloads.items())
         ]
-        provenance_graph = PACKAGE.BUILD_IDENTITY.provenance_graph(
+        provenance_graph, aggregation_result = PACKAGE.BUILD_IDENTITY.provenance_graph(
             version="0.1.0",
             revision=source_revision,
             subjects=payload_paths_by_id,
+            release_subjects=subject_paths,
             identities=build_identities,
             source_entries=release_source_entries,
+            invocation_parameters={
+                "trigger": {
+                    "event": "workflow_dispatch",
+                    "ref": "refs/heads/main",
+                    "inputs": {"release": True},
+                },
+                "source": {
+                    "repository": PACKAGE.BUILD_IDENTITY.REPOSITORY,
+                    "ref": "refs/heads/main",
+                },
+            },
         )
         write(
             valid_evidence / artifact_paths["slsa-provenance"],
@@ -1165,10 +1341,7 @@ digest_location = 'release-manifest.json'
                     "predicateType": "https://slsa.dev/provenance/v1",
                     "predicate": {
                         "buildDefinition": {
-                            "buildType": (
-                                "https://github.com/imom39a/worldstream/"
-                                "release-build/v1"
-                            ),
+                            "buildType": PACKAGE.BUILD_IDENTITY.BUILD_TYPE,
                             **provenance_graph,
                         },
                         "runDetails": {
@@ -1183,8 +1356,6 @@ digest_location = 'release-manifest.json'
                                     "https://github.com/imom39a/worldstream/"
                                     "actions/runs/1/attempts/1"
                                 ),
-                                "startedOn": "2026-01-01T00:00:00Z",
-                                "finishedOn": "2026-01-01T00:00:00Z",
                             },
                             "byproducts": [
                                 PACKAGE.BUILD_IDENTITY.runner_byproduct(
@@ -1193,9 +1364,12 @@ digest_location = 'release-manifest.json'
                                         "os": "Linux",
                                         "architecture": "X64",
                                         "image": "ubuntu24",
-                                        "image_version": "20260801.1",
+                                        "image_version": "20260801.1.0",
                                     }
-                                )
+                                ),
+                                PACKAGE.BUILD_IDENTITY.aggregation_byproduct(
+                                    aggregation_result
+                                ),
                             ],
                         },
                     },
@@ -1395,6 +1569,27 @@ digest_location = 'release-manifest.json'
             lambda: PACKAGE.verify_archive(tampered_identity),
             "archive client identity drift was accepted",
         )
+        tampered_legal_entries = [
+            (
+                relative,
+                content + b"tampered\n"
+                if relative == "licenses/THIRD-PARTY-NOTICES.txt"
+                else content,
+            )
+            for relative, content in relative_entries
+            if relative != "checksums.sha256"
+        ]
+        tampered_legal_entries.append(
+            ("checksums.sha256", PACKAGE.checksums_file(tampered_legal_entries))
+        )
+        tampered_legal = (
+            root / "tampered-legal" / "worldstream-0.1.0-linux-x86_64.tar.gz"
+        )
+        PACKAGE.write_tar_gz(tampered_legal, root_name, tampered_legal_entries, 0)
+        expect_package_error(
+            lambda: PACKAGE.verify_archive(tampered_legal),
+            "archive third-party notice drift was accepted",
+        )
 
         windows_inputs = {group: list(values) for group, values in inputs.items()}
         windows_inputs["bin"] = []
@@ -1425,11 +1620,6 @@ digest_location = 'release-manifest.json'
 
         # Source-only profile is deterministic and contains no native runtime
         # or signing claim.
-        write(
-            root / "Cargo.toml",
-            b"[workspace]\nmembers = []\n[workspace.package]\nversion = '0.1.0'\n",
-        )
-        write(root / "Cargo.lock", b"# fixture lock\n")
         write(root / "compatibility.toml", manifest_toml)
         write(root / "compatibility.json", manifest_json)
         for generated in (
@@ -1722,6 +1912,23 @@ digest_location = 'release-manifest.json'
             root, manifest_toml, manifest_json
         )
         wrapper_output = wrapper_root / "dist"
+        source_build_environment = root / "source-build-environment.json"
+        write(
+            source_build_environment,
+            PACKAGE.BUILD_IDENTITY.canonical_json(hosted_build_environment("source")),
+        )
+        missing_build_environment = run_wrapper(
+            wrapper_root,
+            "package-release.sh",
+            "--target",
+            "source",
+            "--source-dir",
+            str(wrapper_root),
+            "--output",
+            str(wrapper_output / "missing-build-environment"),
+        )
+        assert missing_build_environment.returncode != 0
+        assert "requires --build-environment" in missing_build_environment.stderr
         package_result = run_wrapper(
             wrapper_root,
             "package-release.sh",
@@ -1729,6 +1936,8 @@ digest_location = 'release-manifest.json'
             "source",
             "--source-dir",
             str(wrapper_root),
+            "--build-environment",
+            str(source_build_environment),
             "--output",
             str(wrapper_output),
         )
@@ -1745,6 +1954,12 @@ digest_location = 'release-manifest.json'
         assert archive_report["sha256"] == "sha256:" + PACKAGE.sha256_file(archive_path)
         assert archive_report["identity"]["target"] == "source"
         assert archive_report["identity"]["version"] == "0.1.0"
+        assert (
+            archive_report["identity"]["observed_build_environment"]["runner"][
+                "provider"
+            ]
+            == "github-actions"
+        )
         assert len(archive_report["identity"]["manifest_sha256"]) == 64
         assert (
             archive_report["identity"]["manifest_sha256"]
@@ -1765,6 +1980,8 @@ digest_location = 'release-manifest.json'
             "source",
             "--source-dir",
             str(wrapper_root),
+            "--build-environment",
+            str(source_build_environment),
             "--output",
             str(wrapper_output / "reported"),
             "--report",
@@ -1826,7 +2043,7 @@ digest_location = 'release-manifest.json'
             "--examples-dir",
             str(missing_inputs / "examples"),
             "--licenses-dir",
-            str(wrapper_root / "missing-licenses"),
+            str(wrapper_inputs / "licenses"),
             "--output",
             str(wrapper_root / "dry-dist"),
             "--dry-run",
@@ -1850,6 +2067,14 @@ digest_location = 'release-manifest.json'
             (wrapper_root / "packaging/oci/base-image.txt")
             .read_text(encoding="utf-8")
             .strip(),
+            "--build-environment",
+            str(wrapper_root / "oci-build-environment.json"),
+        )
+        write(
+            wrapper_root / "oci-build-environment.json",
+            PACKAGE.BUILD_IDENTITY.canonical_json(
+                hosted_build_environment("oci-linux-amd64")
+            ),
         )
         oci_first = run_wrapper(
             wrapper_root,
@@ -2046,8 +2271,17 @@ digest_location = 'release-manifest.json'
         ).read_text(encoding="utf-8")
         assert "$ReportArgs.Add('report')" in powershell_wrapper
         assert '"$WorkspaceDir/scripts/package.py" @ReportArgs' in powershell_wrapper
+        assert "WORLDSTREAM_RELEASE_PYTHON" in powershell_wrapper
         assert "ConvertTo-Json" not in powershell_wrapper
         assert "$null -eq $ReportPath" not in powershell_wrapper
+
+        oci_powershell_wrapper = (
+            Path(__file__).resolve().parents[1] / "scripts/package-oci.ps1"
+        ).read_text(encoding="utf-8")
+        assert "WORLDSTREAM_RELEASE_PYTHON" in oci_powershell_wrapper
+        assert ".python-version" in oci_powershell_wrapper
+        assert "& $Python -I" in oci_powershell_wrapper
+        assert "Get-Command py" not in oci_powershell_wrapper
 
         gates_path = Path(__file__).resolve().parents[1] / "scripts/gates.py"
         gates_spec = importlib.util.spec_from_file_location(

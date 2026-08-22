@@ -29,11 +29,17 @@ def main() -> None:
     assert "windows_native_status=INCOMPLETE" in text
     assert "cross_compilation_is_not_native_evidence=true" in text
     assert "finished_digests=release-manifest.json" in text
-    assert "digest_location_release-manifest.json" in text
+    assert "signed_artifact_rows=status_detached" in text
+    assert "sigstore_artifact_row=status_verification_material" in text
     assert "release_evidence=false" in text
     assert "docker buildx build --platform linux/amd64" in text
     assert "native_windows_host_required" in text
     assert "native_linux_x86_64_host_required" in text
+    assert (
+        "alpine:3.22.1@sha256:"
+        "4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1" in text
+    )
+    assert "docker image inspect alpine:3.22.1 " not in text
 
     help_result = run("--help")
     assert help_result.returncode == 0, help_result
@@ -49,7 +55,8 @@ def main() -> None:
     assert "native_linux_status=INCOMPLETE" in report
     assert "release_evidence=false" in report
     assert "finished_digests=release-manifest.json" in report
-    assert "digest_location_release-manifest.json" in report
+    assert "signed_artifact_rows=status_detached" in report
+    assert "sigstore_artifact_row=status_verification_material" in report
 
     # The report is line-oriented by design so exact commands and outcomes can
     # be retained without pretending this diagnostic is a compatibility row.

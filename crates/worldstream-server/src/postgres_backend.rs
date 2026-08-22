@@ -19,19 +19,20 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use worldstream_core::{
-    AccessModeV1, ActionAdmittedAt, ActivationIntentStateV1, ActivationOperationRequestV1,
-    ActivationResultCodeV1, AuthorityChangeId, AuthorityChangeV1, AuthorityCheckedAt,
+    AccessModeV1, ActivationIntentStateV1, ActivationOperationRequestV1, ActivationResultCodeV1,
+    AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1, AuthorityCheckedAt,
     AuthorityErrorV1, AuthorityV1, AuthorizedRunnerControlV1, CREATE_ROOM_OPERATION_KIND,
     CanonicalJsonV1, CapabilityBearerV1, CapabilityExpiresAt, CapabilityId, CapabilityProfileV1,
-    CapabilityScopeSetV1, CreationRecordedAt, HistoricalReplayErrorV1, InitialMembershipProposalV1,
-    MemberReadOperationV1, MembershipStandingV1, MembershipV1, NewCapabilityV1,
+    CapabilityScopeSetV1, CreationRecordedAt, HistoricalReplayErrorV1, HostClockErrorV1,
+    HostClockSampleV1, HostClockV1, InitialMembershipProposalV1, MemberReadOperationV1,
+    MembershipStandingV1, MembershipV1, MonotonicHostClockV1, NewCapabilityV1,
     PackGenesisRequestV1, PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1,
     ParticipantActionIngressV1, ParticipantActionRequestV1, PreparedRoomCreationV1,
-    PrincipalKindV1, ReplayProjectionKindV1, RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1,
-    RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1,
-    SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1, StoredSemanticResultV1,
-    TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
+    PrincipalKindV1, ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1,
+    RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1,
+    SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
     authorize_participant_action_operation, authorize_room_creation_operation,
     commit_room_creation,
 };
@@ -114,6 +115,19 @@ pub struct PostgresGatewayBackend {
     store: Arc<PostgresRoomStore>,
     registry: Option<Arc<PackRegistryV1>>,
     bindings: SessionBindings,
+    host_clock: Arc<dyn HostClockV1>,
+    admission_lanes: RoomAdmissionLanesV1,
+}
+
+struct RuntimeWallClock;
+
+impl HostClockV1 for RuntimeWallClock {
+    fn sample(&self) -> Result<HostClockSampleV1, HostClockErrorV1> {
+        let value = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .map_err(|_| HostClockErrorV1::Unavailable)?;
+        HostClockSampleV1::new(value).map_err(|_| HostClockErrorV1::Unavailable)
+    }
 }
 
 impl fmt::Debug for PostgresGatewayBackend {
@@ -123,6 +137,8 @@ impl fmt::Debug for PostgresGatewayBackend {
             .field("store", &"[OPAQUE]")
             .field("registry", &"[OPAQUE]")
             .field("bindings", &self.bindings)
+            .field("host_clock", &"[OPAQUE]")
+            .field("admission_lanes", &self.admission_lanes)
             .finish()
     }
 }
@@ -131,12 +147,31 @@ impl PostgresGatewayBackend {
     /// Retains the already-configured least-privilege runtime store.
     #[must_use]
     pub fn new(store: PostgresRoomStore) -> Self {
+        Self::with_host_clock(store, Arc::new(MonotonicHostClockV1::new(RuntimeWallClock)))
+    }
+
+    /// Wires the gateway to one application-owned semantic `HostClock`.
+    ///
+    /// Callers providing a raw wall source should wrap it in
+    /// [`MonotonicHostClockV1`].
+    #[must_use]
+    pub fn with_host_clock(store: PostgresRoomStore, host_clock: Arc<dyn HostClockV1>) -> Self {
+        Self::with_runtime(store, host_clock, RoomAdmissionLanesV1::default())
+    }
+
+    fn with_runtime(
+        store: PostgresRoomStore,
+        host_clock: Arc<dyn HostClockV1>,
+        admission_lanes: RoomAdmissionLanesV1,
+    ) -> Self {
         Self {
             store: Arc::new(store),
             registry: worldstream_core::builtin_worldstream_registry()
                 .ok()
                 .map(Arc::new),
             bindings: SessionBindings::default(),
+            host_clock,
+            admission_lanes,
         }
     }
 
@@ -948,6 +983,10 @@ impl PostgresGatewayBackend {
                     .iter()
                     .find(|offer| offer.action_type == request.action_type)
                     .ok_or(BackendError::Rejected)?;
+                let admission = self
+                    .admission_lanes
+                    .reserve_action(&action_room_id, self.host_clock.as_ref())
+                    .map_err(|error| map_admission_lane_error(&error))?;
                 let stimulus = worldstream_core::ParticipantActionV1 {
                     member_id,
                     action_id: request
@@ -958,8 +997,7 @@ impl PostgresGatewayBackend {
                     payload_schema_digest: offer.payload_schema_digest.clone(),
                     canonical_payload: canonical_json(&request.payload)?,
                     exact_basis_head: trace.head().clone(),
-                    admitted_at: ActionAdmittedAt::from_str(&now_text()?)
-                        .map_err(|_| BackendError::StorageUnavailable)?,
+                    admitted_at: admission.admitted_at().clone(),
                 };
                 let resolution = self
                     .store
@@ -978,6 +1016,10 @@ impl PostgresGatewayBackend {
 }
 
 impl GatewayBackend for PostgresGatewayBackend {
+    fn room_admission_queue_snapshot(&self) -> worldstream_core::RoomAdmissionQueueSnapshotV1 {
+        self.admission_lanes.queue_snapshot()
+    }
+
     fn admission_principal(&self, session: &GatewaySession) -> Result<String, BackendError> {
         Ok(self.authenticate(session)?.principal_id().to_string())
     }
@@ -1280,6 +1322,10 @@ impl GatewayBackend for PostgresGatewayBackend {
         {
             return Err(BackendError::Busy);
         }
+        let _admission = self
+            .admission_lanes
+            .reserve_host_stimulus(&room_id)
+            .map_err(|error| map_admission_lane_error(&error))?;
         let resolution = self
             .store
             .commit_authorized_timer_fired(
@@ -2169,6 +2215,15 @@ fn map_participant_action_ingress_error(error: &ParticipantActionIngressErrorV1)
     }
 }
 
+fn map_admission_lane_error(error: &AdmissionLaneErrorV1) -> BackendError {
+    match error {
+        AdmissionLaneErrorV1::Full | AdmissionLaneErrorV1::Unavailable => BackendError::Busy,
+        AdmissionLaneErrorV1::Clock(_) | AdmissionLaneErrorV1::InvalidCapacity => {
+            BackendError::StorageUnavailable
+        }
+    }
+}
+
 fn map_recovery_error(error: worldstream_core::RoomRecoveryErrorV1) -> BackendError {
     match error {
         worldstream_core::RoomRecoveryErrorV1::IntegrityUnavailable => {
@@ -2259,12 +2314,6 @@ fn random_bearer_bytes() -> Result<[u8; 32], BackendError> {
     Ok(bytes)
 }
 
-fn now_text() -> Result<String, BackendError> {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|_| BackendError::StorageUnavailable)
-}
-
 fn creation_time() -> Result<CreationRecordedAt, BackendError> {
     // Pack timer arithmetic preserves whole-second values exactly. Sampling
     // Genesis at that precision therefore cannot reintroduce non-canonical
@@ -2321,11 +2370,12 @@ mod tests {
     use super::{
         ActionReply, ActionSubmit, AttachReply, BackendError, GatewayBackend, GatewaySession,
         MAX_DSN_BYTES, MemberCapabilityIssueRequest, ObservationAck, PostgresGatewayBackend,
-        RoomAttach, RoomSyncAck, creation_time, read_postgres_dsn,
+        RoomAttach, RoomSyncAck, creation_time, map_admission_lane_error, read_postgres_dsn,
     };
     use worldstream_core::{
-        AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1, CapabilityBearerV1,
-        CapabilityScopeV1, PrincipalKindV1, builtin_counter_registry, counter_v2_digest,
+        AdmissionLaneErrorV1, AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1,
+        CapabilityBearerV1, CapabilityScopeV1, PrincipalKindV1, builtin_counter_registry,
+        counter_v2_digest,
     };
     use worldstream_postgres::{
         PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore,
@@ -2397,6 +2447,12 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("runtime store: {error}"));
         let backend = PostgresGatewayBackend::new(store);
         assert!(backend.verify_schema().is_err());
+        assert_eq!(backend.admission_lanes.capacity(), 256);
+        assert!(backend.admission_lanes.host_reserve() > 0);
+        assert!(matches!(
+            map_admission_lane_error(&AdmissionLaneErrorV1::Full),
+            BackendError::Busy
+        ));
         assert_eq!(MAX_DSN_BYTES, 16 * 1024);
     }
 
@@ -2422,6 +2478,8 @@ mod tests {
         for method in [
             "timer_candidate(",
             "commit_authorized_timer_fired(",
+            ".reserve_action(&action_room_id, self.host_clock.as_ref())",
+            ".reserve_host_stimulus(&room_id)",
             "offer_activations_authorized(",
             "prepare_activation_claim(",
             "claim_activation_authorized(",
@@ -2432,6 +2490,8 @@ mod tests {
                 "production PostgreSQL gateway must call {method}"
             );
         }
+        let orphaned_wall_sample = ["ActionAdmittedAt::from_str", "(&now_text()?)"].concat();
+        assert!(!source.contains(&orphaned_wall_sample));
     }
 
     #[test]

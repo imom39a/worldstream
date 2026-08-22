@@ -35,10 +35,13 @@ is visible incomplete; CI does not allow it to become a silent pass.
 
 The release tier is intentionally fail-closed. `release_ready = true` means
 only that the embedded compatibility contract/build identity is complete; it
-is not a claim that archive or evidence bytes have those identities. Release
-artifact rows must use `status = "detached"`, `digest = ""`, and
-`digest_location = "release-manifest.json"`. Release-gated evidence rows use
-the analogous `artifact_digest` and `artifact_digest_location` fields. The
+is not a claim that archive or evidence bytes have those identities. Signed
+release artifact rows use `status = "detached"`, `digest = ""`, and
+`digest_location = "release-manifest.json"`. The Sigstore row instead uses
+`status = "verification_material"`, no digest algorithm or digest location,
+and a path-only `verification_material_location` pointer into the detached
+manifest. Release-gated evidence rows use the analogous `artifact_digest` and
+`artifact_digest_location` fields. The
 release directory (default `dist/`) must contain a detached v2
 `release-manifest.json` with exact artifact and evidence path/digest maps. The
 gate recomputes every file hash, rejects missing/extra/duplicate identities,
@@ -71,17 +74,22 @@ the sidecar and evidence digests while keeping Sigstore path-only.
 The manual GitHub release job builds native Linux and Windows archives, builds
 and runtime-tests the Linux/amd64 OCI image, packages the source archive, and
 uploads those outputs plus platform evidence. Required downstream jobs consume
-the fresh Linux archive and package report: one runs the exact 12-cell SIGKILL
-matrix and 3600-second daemon workload, and the packaged acceptance/reference
-lane runs Counter and absent-Broker Heist across SQLite and pinned PostgreSQL
-before producing measured, explicitly non-SLA reference evidence. The release
-job downloads those typed producer artifacts by exact path, generates the
-reviewed checksums/SBOM/provenance, assembles the detached manifest, installs a
-commit-pinned official Cosign installer, keyless-signs with the release job's
-OIDC token, and runs `verify-release`. If any producer or byte binding is
-absent, its required job or collector stops; package reports and generic exit
-codes never become release evidence. The macOS job remains source-only
-quickstart evidence on both Apple Silicon and Intel.
+the fresh Linux archive and package report: one runs the exact 36-cell SIGKILL
+matrix and 3600-second daemon workload, while packaged acceptance runs Counter
+and absent-Broker Heist across SQLite and pinned PostgreSQL. The separately
+certified reference job then runs the archive's Python SDK against the packaged
+SQLite daemon for the frozen 10,000-Room, 1,000-WebSocket, 1,800-second target
+attempt. It binds—but never relabels as same-host—the independently produced
+acceptance, soak, and kill reports. The finite Counter v2 history attempt is
+published honestly as a measured non-SLA miss after 32 accepted Actions and the
+33rd `counter_limit_reached` rejection; it is not substituted with simulated or
+scaled data. The release job downloads the resulting typed producer artifacts
+by exact path, generates the reviewed checksums/SBOM/provenance, assembles the
+detached manifest, installs a commit-pinned official Cosign installer,
+keyless-signs with the release job's OIDC token, and runs `verify-release`. If
+any producer or byte binding is absent, its required job or collector stops;
+package reports and generic exit codes never become release evidence. The macOS
+job remains source-only quickstart evidence on both Apple Silicon and Intel.
 
 Reference measurements run only on a self-hosted runner carrying the exact
 `ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd` certification label. The typed

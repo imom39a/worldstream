@@ -54,6 +54,19 @@ def main() -> int:
         )
 
     for row in authored.get("release_artifacts", []):
+        if isinstance(row, dict) and row.get("id") == "sigstore-bundle":
+            if (
+                row.get("status") != "verification_material"
+                or row.get("digest") != ""
+                or row.get("digest_algorithm") != ""
+                or row.get("digest_location") is not None
+                or row.get("verification_material_location")
+                != "release-manifest.json#verification_material.sigstore-bundle.path"
+            ):
+                failures.append(
+                    "Sigstore bundle must be path-only verification material"
+                )
+            continue
         if (
             not isinstance(row, dict)
             or row.get("status") != "detached"

@@ -336,13 +336,15 @@ def read_report(
 ) -> dict[str, Any]:
     regular_file(path, f"{source_id}/{kind} diagnostic report")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+    except OSError as error:
         raise ProducerError(
             f"malformed {source_id}/{kind} diagnostic report: {error}"
         ) from error
-    if not isinstance(value, dict):
-        raise ProducerError(f"{source_id}/{kind} diagnostic report must be an object")
+    try:
+        value = COLLECTOR.strict_json_object(raw, f"{source_id}/{kind} diagnostic")
+    except COLLECTOR.CollectionError as error:
+        raise ProducerError(str(error)) from error
     missing = sorted(DIAGNOSTIC_FIELDS - set(value))
     extra = sorted(set(value) - DIAGNOSTIC_FIELDS)
     if missing or extra:

@@ -1,16 +1,37 @@
-# IMO-61 final acceptance report
+# IMO-61 historical acceptance evidence log
 
-## Disposition
+> **Historical boundary:** Every dated snapshot below, including text that
+> originally called itself “current” or “authoritative,” describes an earlier
+> working tree no later than 2026-08-21. It is retained for provenance only and
+> must not be used as the current release runbook or approval record.
 
-This is a factual parent-orchestrator evidence report for the current dirty
-checkout, not a release approval. The implementation work is substantially
-advanced, but the repository is not ready to claim v0.1 acceptance or mark the
-remaining Linear issues Done.
+## Current status (2026-08-22)
+
+The canonical compatibility pair now declares `manifest_kind = "release"` and
+`release_ready = true`, with detached finished-byte evidence required. That
+means the embedded contract is implementation-complete; it does **not** mean a
+release has been certified. The current implementation and release tooling are
+still undergoing the pinned final gate and independent review in the active
+WorldStream completion branch.
+
+The exact frozen one-hour/reference runner label
+`ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd` is not available in the
+repository's GitHub runner inventory. Therefore no certified one-hour soak,
+reference-performance bundle, signed final release bundle, or release approval
+is claimed here. IMO-61 remains In Progress until those external artifacts run
+on the required host and the exact-revision release gate passes.
+
+## Historical disposition
+
+This was a factual parent-orchestrator evidence report for the dirty checkout
+described below, not a release approval. The implementation work was
+substantially advanced, but the repository was not ready to claim v0.1
+acceptance or mark the remaining Linear issues Done.
 
 The continuation addendum at the end supersedes earlier numeric test counts
 and lane summaries in this report where they differ.
 
-The compatibility manifest remains fail-closed:
+At that historical snapshot, the compatibility manifest remained fail-closed:
 
 - `manifest_kind = "specification"`
 - `release_ready = false`
@@ -22,7 +43,7 @@ The compatibility manifest remains fail-closed:
 
 ## Parent-verified implementation lanes
 
-| Lane | Current evidence and boundary |
+| Lane | Historical evidence and boundary |
 |---|---|
 | Core/domain, protocol, authority, replay, Activity Pack, Agent Heist privacy | `cargo test --workspace --locked` passes all 325 workspace tests; the suites cover typed authority, fail-closed pack selection, canonical hashing, replay, action/timer admission, privacy, native backup/restore, transfer fencing, telemetry bounds, and absent-runner behavior. |
 | Bundled SQLite | The 75-test adapter matrix passes atomic failpoints, contention, receipts, authority, timers, delivery, snapshots, recovery, corruption/quarantine, gateway capability lookup/barriers, and replay. This is not native crash/power-loss evidence. |
@@ -144,9 +165,9 @@ remains fail-closed at 13 failures because release readiness, required
 artifact digests, unresolved contract rows, and the release manifest are still
 absent. The issues therefore remain In Progress.
 
-## Parent orchestrator verification addendum (2026-08-20, current)
+## Historical parent orchestrator verification addendum (2026-08-20)
 
-This addendum is the authoritative current evidence for the dirty checkout.
+This addendum was the controlling evidence for its 2026-08-20 dirty checkout.
 The full workspace run now passes 357 Rust tests (including 21 backup, 142
 Core/Heist, 16 PostgreSQL, 12 protocol, 30 runtime, 34 server, 77 SQLite,
 17 transfer, and 8 `xtask` tests), with formatting, strict Clippy, and
@@ -213,7 +234,7 @@ and disk-full portions of the acceptance row remain unresolved; the process-kill
 `evidence_class: "process_level"` result documented in
 `imo-60-61-kill-points.md`.
 
-## Parent continuation addendum (2026-08-21, authoritative)
+## Historical parent continuation addendum (2026-08-21)
 
 The parent used cmux workspace `workspace:26` to dispatch and review three
 additional Luna lanes. All three workers were closed after parent verification:
@@ -368,7 +389,7 @@ cross-platform native result, transaction-pooler result beyond the recorded
 PostgreSQL evidence, live transfer/restore evidence, physical-power-loss
 evidence, or fully configured one-hour database soak was fabricated. The
 remaining Linear issues therefore stay In Progress pending those external
-acceptance inputs; this addendum is the authoritative parent boundary for the
+acceptance inputs; this addendum was the parent boundary for the
 Wave 5 verification.
 
 ## Parent continuation addendum (2026-08-21, Waves 6/7 and final parent gates)

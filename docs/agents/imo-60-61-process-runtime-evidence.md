@@ -6,8 +6,10 @@ binary as release evidence.
 
 ## Exact process-kill matrix
 
-Run the twelve frozen cells with the extracted binary, its verified archive,
-and the package report produced for those exact archive bytes:
+Run the 36 frozen cells with the extracted binary, its verified archive, and
+the package report produced for those exact archive bytes. Docker and `psql`
+must be available so the harness can own its pinned PostgreSQL 17.11 and
+PgBouncer providers:
 
 ```sh
 scripts/kill-point-smoke.sh \
@@ -19,7 +21,13 @@ scripts/kill-point-smoke.sh \
 ```
 
 The report schema is `worldstream/kill-point-evidence/v1`. It contains exactly
-these operations and boundaries:
+the Cartesian product of these storage/runtime profiles, operations, and
+boundaries:
+
+- SQLite with `storage_backend=sqlite`, `connection_mode=embedded`;
+- PostgreSQL with `storage_backend=postgresql`, `connection_mode=direct`;
+- PostgreSQL with `storage_backend=postgresql`,
+  `connection_mode=transaction_pool`;
 
 - `room_create`, `action`, `timer`, and `activation_lease`;
 - `before_commit`, `after_commit_before_publication`, and
@@ -32,13 +40,29 @@ traverses earlier non-target seam calls normally. A missing marker, process
 abort, graceful exit, wrong identity, timeout, unsafe path, or partial matrix
 fails closed.
 
-For Room creation, the harness reopens the production adapter for ordinary WAL
-recovery, closes it, and then uses Python's offline read-only SQLite observer.
-The observer hashes the main database and WAL before and after its queries,
-records its own SQLite version, and requires zero Room/Genesis/Genesis-receipt
-rows before retry at `before_commit`, versus exactly one at both post-commit
-boundaries. This observer does not claim the product's bundled SQLite engine
-identity or conformance.
+The PostgreSQL provider is digest-pinned to PostgreSQL 17.11 and PgBouncer in
+transaction-pool mode. The harness independently extracts the packaged
+`worldstreamctl`, requires its digest to match the release archive, and uses
+the direct-admin endpoint for every migration, closed-store clone, and
+read-only witness. Only daemon runtime DSNs vary between direct PostgreSQL and
+the transaction pool. A pooler-admin path, a mislabeled mode/backend, a
+duplicate-substituted cell, provider cleanup failure, or any set other than the
+exact 36 identities is rejected by the detached producer.
+
+For Room creation, the harness reopens the production adapter for ordinary
+recovery, closes it, and then uses either Python's offline read-only SQLite
+observer or a direct-admin PostgreSQL read-only transaction. Both require zero
+Room/Genesis/Genesis-receipt rows before retry at `before_commit`, versus
+exactly one at both post-commit boundaries. The SQLite observer additionally
+hashes the main database and WAL before and after its queries; it does not
+claim the product's bundled SQLite engine identity or conformance.
+
+Each of the three profiles also runs the overdue-Timer restart regression. It
+requires ready-but-catching-up state, ordinary Room work gated with
+`room_busy`, one exact Timer result plus an identical duplicate retry, and the
+same projection after another restart. The strict producer binds the closed
+three-profile result object; missing, extended, duplicated, or false witnesses
+fail closed.
 
 Room creation has no pre-existing Room observer. Its post-commit publication
 stage therefore consists only of admission/commit telemetry. Action and Timer
@@ -87,9 +111,21 @@ The process report separates temporary-workspace bytes, daemon-log bytes, and
 their exact auxiliary-artifact sum. Each category records initial, final,
 growth, and its configured hard limit; the strict producer recomputes the
 arithmetic and rejects a missing or widened limit. During the workload the
-harness samples `worldstream_telemetry_queued` and the packaged daemon's
-`worldstream_telemetry_queue_capacity` disclosure, retaining maximum observed
-depth, sample count, drop-counter delta, and the exact configured capacity.
+harness samples the packaged daemon's fixed-label public queue families for
+the telemetry exporter, DNS resolver, per-Room admission lane, per-connection
+WebSocket frame queue, and per-connection outbound payload bytes. It retains
+each configured scope/capacity, process current and high-water, per-unit
+high-water, successful activity/completion deltas, sample count, and
+backpressure-counter delta. Missing, inactive, partial, reordered, or
+over-limit observations fail closed; a measured zero backpressure delta under
+normal load is allowed.
+
+Separately, the process harness executes one exact saturation regression for
+each of those five production mechanisms. The typed report binds the closed
+queue/package/test-name matrix, exact-one-test success, per-test output hashes,
+and 300-second aggregate/256-KiB per-test bounds. The detached producer rejects
+a missing, reordered, widened, failed, or unbound boundary result before it can
+promote the normal-load queue measurements.
 
 Before any disposable process directory is removed, the kill matrix and soak
 scan every daemon log for the raw, hex, base64, and unpadded base64url forms of
@@ -135,6 +171,10 @@ python scripts/release-evidence-produce-failure-soak.py \
   --artifact-output release-inputs/failure/artifacts/failure-soak.json \
   --soak-report reports/daemon-transition-soak.json \
   --kill-point-report reports/kill-point-evidence.json \
+  --package-archive "$DIST/worldstream-0.1.0-linux-x86_64.tar.gz" \
+  --package-report "$DIST/worldstream-0.1.0-linux-x86_64.report.json" \
+  --daemon-bin "$EXTRACTED/bin/worldstreamd" \
+  --packaged-acceptance-report reports/postgres-packaged-acceptance.json \
   --retained-log reports/kill-point.log \
   --retained-log reports/daemon-transition-soak.log \
   --manifest-toml compatibility.toml \
@@ -143,7 +183,7 @@ python scripts/release-evidence-produce-failure-soak.py \
 
 The manual Linux workflow must upload both raw reports and both retained logs
 even when a harness fails. It may run the strict producer only after the exact
-twelve-cell matrix and exact one-hour process workload have passed with the
+36-cell matrix and exact one-hour process workload have passed with the
 same verified packaged distribution identity.
 
 Focused contract tests:

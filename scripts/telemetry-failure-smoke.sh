@@ -123,6 +123,49 @@ probe "/readyz" "$smoke_root/ready-before.json" 200
 probe "/metrics" "$smoke_root/metrics-before.txt" 200
 probe "/version" "$smoke_root/version.json" 200
 
+strict_json_field() {
+  local path="$1"
+  local field_path="$2"
+  python3 - "$workspace_dir" "$path" "$field_path" <<'PY'
+import importlib.util
+import pathlib
+import stat
+import sys
+
+workspace = pathlib.Path(sys.argv[1])
+path = pathlib.Path(sys.argv[2])
+field_path = sys.argv[3]
+spec = importlib.util.spec_from_file_location(
+    "worldstream_telemetry_failure_strict_json",
+    workspace / "scripts" / "release_build_identity.py",
+)
+if spec is None or spec.loader is None:
+    raise SystemExit("telemetry failure smoke: strict JSON parser is unavailable")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+metadata = path.lstat()
+if (
+    path.is_symlink()
+    or not stat.S_ISREG(metadata.st_mode)
+    or not 0 < metadata.st_size <= 1024 * 1024
+):
+    raise SystemExit("telemetry failure smoke: response is not bounded regular JSON")
+try:
+    value = module.strict_json(path.read_bytes(), "telemetry smoke response")
+except module.IdentityError as error:
+    raise SystemExit("telemetry failure smoke: response is not strict JSON") from error
+for part in field_path.split("."):
+    if isinstance(value, list):
+        value = value[int(part)]
+    else:
+        value = value[part]
+if not isinstance(value, str) or not value or "\n" in value or "\r" in value:
+    raise SystemExit("telemetry failure smoke: response field is not a bounded string")
+print(value)
+PY
+}
+
 create_status="$(curl -sS --connect-timeout 1 --max-time 5 \
   --config "$host_curl_config" \
   -H 'Content-Type: application/json' \
@@ -134,22 +177,8 @@ create_status="$(curl -sS --connect-timeout 1 --max-time 5 \
   exit 1
 }
 
-room_id="$(python3 - "$smoke_root/create-first.json" <<'PY'
-import json
-import pathlib
-import sys
-
-print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["room_id"])
-PY
-)"
-member_id="$(python3 - "$smoke_root/create-first.json" <<'PY'
-import json
-import pathlib
-import sys
-
-print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["member_ids"][0])
-PY
-)"
+room_id="$(strict_json_field "$smoke_root/create-first.json" "room_id")"
+member_id="$(strict_json_field "$smoke_root/create-first.json" "member_ids.0")"
 capability_idempotency_id="01ARZ3NDEKTSV4RRFFQ69G5FF0"
 cat >"$smoke_root/member-capability.json" <<EOF
 {"room_id":"$room_id","member_id":"$member_id","principal_id":"01ARZ3NDEKTSV4RRFFQ69G5FC2","scopes":["room:observe_member","room:replay"],"idempotency_key":"$capability_idempotency_id"}
@@ -163,14 +192,7 @@ capability_status="$(curl -sS --connect-timeout 1 --max-time 5 \
   printf 'telemetry failure smoke: member capability issuance returned HTTP %s\n' "$capability_status" >&2
   exit 1
 }
-member_bearer="$(python3 - "$smoke_root/member-capability-response.json" <<'PY'
-import json
-import pathlib
-import sys
-
-print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["bearer"])
-PY
-)"
+member_bearer="$(strict_json_field "$smoke_root/member-capability-response.json" "bearer")"
 member_curl_config="$smoke_root/member.curl"
 printf 'header = "Authorization: Bearer %s"\n' "$member_bearer" >"$member_curl_config"
 chmod 600 "$member_curl_config"
@@ -278,26 +300,48 @@ done
 kill -TERM "$invalid_pid" >/dev/null 2>&1 || true
 wait "$invalid_pid" >/dev/null 2>&1 || true
 
-python3 - "$smoke_root" "$server_log" "$invalid_log" <<'PY'
+python3 - "$workspace_dir" "$smoke_root" "$server_log" "$invalid_log" <<'PY'
+import importlib.util
 import json
 import pathlib
 import re
+import stat
 import sys
 
-root = pathlib.Path(sys.argv[1])
-server_log = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
-invalid_log = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8", errors="replace")
-first = json.loads((root / "create-first.json").read_text(encoding="utf-8"))
-retry = json.loads((root / "create-retry.json").read_text(encoding="utf-8"))
+workspace = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+server_log = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8", errors="replace")
+invalid_log = pathlib.Path(sys.argv[4]).read_text(encoding="utf-8", errors="replace")
+spec = importlib.util.spec_from_file_location(
+    "worldstream_telemetry_failure_final_strict_json",
+    workspace / "scripts" / "release_build_identity.py",
+)
+assert spec is not None and spec.loader is not None, "strict JSON parser unavailable"
+strict_parser = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = strict_parser
+spec.loader.exec_module(strict_parser)
+
+def strict_json(name: str):
+    path = root / name
+    metadata = path.lstat()
+    assert not path.is_symlink() and stat.S_ISREG(metadata.st_mode), f"{name} is not regular"
+    assert 0 < metadata.st_size <= 1024 * 1024, f"{name} exceeds its JSON bound"
+    try:
+        return strict_parser.strict_json(path.read_bytes(), name)
+    except strict_parser.IdentityError as error:
+        raise AssertionError(f"{name} is not strict JSON") from error
+
+first = strict_json("create-first.json")
+retry = strict_json("create-retry.json")
 before = (root / "metrics-before.txt").read_text(encoding="utf-8")
 after = (root / "metrics-after.txt").read_text(encoding="utf-8")
-ready_before = json.loads((root / "ready-before.json").read_text(encoding="utf-8"))
-ready_after = json.loads((root / "ready-after.json").read_text(encoding="utf-8"))
-version = json.loads((root / "version.json").read_text(encoding="utf-8"))
-pressure = json.loads((root / "pressure.json").read_text(encoding="utf-8"))
+ready_before = strict_json("ready-before.json")
+ready_after = strict_json("ready-after.json")
+version = strict_json("version.json")
+pressure = strict_json("pressure.json")
 
 assert first == retry, "idempotent retry changed the committed Room response"
-assert json.loads((root / "projection-before.json").read_text(encoding="utf-8")) == json.loads((root / "projection-after.json").read_text(encoding="utf-8")), "telemetry pressure changed the canonical projection"
+assert strict_json("projection-before.json") == strict_json("projection-after.json"), "telemetry pressure changed the canonical projection"
 assert first["room_head"]["room_seq"] == 0
 assert first["room_head"]["authoritative_state_hash"]
 assert ready_before == {"status": "ready"}

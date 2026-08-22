@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import hashlib
 import importlib.util
-import json
 import os
 import re
 import stat
@@ -50,6 +50,56 @@ REQUIRED_KILL_BOUNDARIES = (
     "after_commit_before_publication",
     "after_publication_before_reply",
 )
+REQUIRED_KILL_PROFILES = (
+    ("sqlite", "embedded"),
+    ("postgresql", "direct"),
+    ("postgresql", "transaction_pool"),
+)
+EXPECTED_KILL_CELL_COUNT = 36
+POSTGRES_KILL_IMAGE = (
+    "postgres:17.11-alpine@"
+    "sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
+)
+POSTGRES_KILL_DIGEST = (
+    "postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
+)
+PGBOUNCER_KILL_IMAGE = (
+    "edoburu/pgbouncer@"
+    "sha256:4c1ca296ef525f108f5d3552cc337c0c09587cf8dae7f0067fd93349e47dc1cd"
+)
+PGBOUNCER_KILL_DIGEST = (
+    "edoburu/pgbouncer@"
+    "sha256:4c1ca296ef525f108f5d3552cc337c0c09587cf8dae7f0067fd93349e47dc1cd"
+)
+REQUIRED_PROVIDER_CHANNEL_CLASSES = frozenset(
+    {
+        "process.stdout",
+        "process.stderr",
+        "process.config",
+        "provider.postgresql.stdout",
+        "provider.postgresql.stderr",
+        "provider.pgbouncer.stdout",
+        "provider.pgbouncer.stderr",
+    }
+)
+OVERDUE_TIMER_PROFILE_FIELDS = frozenset(
+    {
+        "status",
+        "storage_backend",
+        "connection_mode",
+        "durable_state",
+        "daemon_ready",
+        "ordinary_work_gated_before_drain",
+        "exact_timer_retry_drained",
+        "first_result_duplicate",
+        "second_result_duplicate",
+        "receipt_hash_equal",
+        "receipt_hash",
+        "projection_hash_equal_after_restart",
+        "projection_hash",
+        "same_data_directory",
+    }
+)
 EXPECTED_KILL_OUTCOMES = {
     "before_commit": "no_commit",
     "after_commit_before_publication": "original_result",
@@ -67,8 +117,90 @@ MAX_AUXILIARY_ARTIFACT_GROWTH_BYTES = (
     MAX_TEMP_GROWTH_BYTES + MAX_RUNTIME_LOG_GROWTH_BYTES
 )
 TELEMETRY_QUEUE_HARD_LIMIT = 256
+DNS_RESOLVER_QUEUE_HARD_LIMIT = 2
+WEBSOCKET_LIVE_PUSH_FRAME_QUEUE_HARD_LIMIT = 256
+WEBSOCKET_OUTBOUND_PAYLOAD_BYTES_HARD_LIMIT = 4 * 1024 * 1024
+RSS_SAMPLE_INTERVAL_MS = 50
+STORAGE_SAMPLE_INTERVAL_MS = 250
+RESOURCE_SAMPLE_MAX_GAP_MS = 1000
+RESOURCE_SAMPLING_SCHEMA = "worldstream/live-resource-sampling/v1"
+QUEUE_OBSERVATION_SCOPE = "all_bounded_runtime_queues_public_prometheus"
+QUEUE_BOUNDARY_TEST_SCHEMA = "worldstream/queue-boundary-tests/v1"
+QUEUE_BOUNDARY_MAX_TOTAL_SECONDS = 300.0
+QUEUE_SPECS = (
+    {
+        "name": "telemetry_exporter",
+        "capacity_scope": "global",
+        "hard_limit": TELEMETRY_QUEUE_HARD_LIMIT,
+        "activity_unit": "events",
+    },
+    {
+        "name": "telemetry_dns_resolver_queue",
+        "capacity_scope": "global",
+        "hard_limit": DNS_RESOLVER_QUEUE_HARD_LIMIT,
+        "activity_unit": "requests",
+    },
+    {
+        "name": "room_admission_lane",
+        "capacity_scope": "per_room",
+        "hard_limit": TELEMETRY_QUEUE_HARD_LIMIT,
+        "activity_unit": "reservations",
+    },
+    {
+        "name": "websocket_live_push_frame_queue",
+        "capacity_scope": "per_connection",
+        "hard_limit": WEBSOCKET_LIVE_PUSH_FRAME_QUEUE_HARD_LIMIT,
+        "activity_unit": "frames",
+    },
+    {
+        "name": "websocket_outbound_payload_bytes",
+        "capacity_scope": "per_connection",
+        "hard_limit": WEBSOCKET_OUTBOUND_PAYLOAD_BYTES_HARD_LIMIT,
+        "activity_unit": "bytes",
+    },
+)
+QUEUE_BOUNDARY_TESTS = (
+    (
+        "telemetry_exporter",
+        "worldstream-server",
+        "telemetry::tests::postgres_bridge_is_nonblocking_when_queue_is_saturated",
+    ),
+    (
+        "telemetry_dns_resolver_queue",
+        "worldstream-server",
+        "telemetry::tests::dns_timeouts_use_a_fixed_worker_and_queue_bound",
+    ),
+    (
+        "room_admission_lane",
+        "worldstream-core",
+        "semantic_time::tests::coordinated_lane_rejects_full_action_before_sampling",
+    ),
+    (
+        "websocket_live_push_frame_queue",
+        "worldstream-server",
+        "tests::live_frame_count_overflow_closes_with_typed_error",
+    ),
+    (
+        "websocket_outbound_payload_bytes",
+        "worldstream-server",
+        "tests::live_payload_byte_overflow_closes_with_typed_error",
+    ),
+)
 MAX_LOG_BYTES = 64 * 1024 * 1024
 SECRET_SCAN_MATRIX_SCHEMA = "worldstream/secret-absence-matrix/v1"
+DISK_FULL_SCHEMA = "worldstream/disk-full-evidence/v1"
+DISK_FULL_SCENARIO = "packaged_sqlite_bootstrap_on_full_ext4_loopback"
+DISK_FULL_EVIDENCE_CLASS = "process_level_daemon_fault_injection"
+DISK_FULL_CONTAINER_IMAGE = (
+    "docker@sha256:12e683a161823b2a839aeea999b9d960e6e1f9a97b1679ad6b441982e2d9cf07"
+)
+DISK_FULL_FILESYSTEM_IMAGE_BYTES = 64 * 1024 * 1024
+DISK_FULL_BLOCK_SIZE_BYTES = 4096
+DISK_FULL_ATTEMPTED_WRITE_BYTES = 4096
+DISK_FULL_MAX_DAEMON_SECONDS = 10.0
+DISK_FULL_MAX_CONTAINER_SECONDS = 120.0
+DISK_FULL_MAX_LOG_BYTES = 64 * 1024
+DISK_FULL_MAX_CAPTURE_BYTES = 256 * 1024
 SHA256_REFERENCE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 REQUIRED_CELL_VERIFICATION = {
     "room_create": frozenset(
@@ -175,10 +307,12 @@ def regular_file(path: Path, label: str) -> Path:
 def read_json(path: Path, label: str) -> dict[str, Any]:
     regular_file(path, label)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+        value = PRODUCER.COLLECTOR.strict_json_object(raw, label)
+    except OSError as error:
         raise EvidenceError(f"{label} is not valid JSON: {error}") from error
-    require(isinstance(value, dict), f"{label} must be a JSON object")
+    except PRODUCER.COLLECTOR.CollectionError as error:
+        raise EvidenceError(f"{label} is not valid JSON: {error}") from error
     return value
 
 
@@ -197,6 +331,171 @@ def number(value: object, label: str) -> float:
 def integer(value: object, label: str, *, minimum: int = 0) -> int:
     require(type(value) is int and value >= minimum, f"{label} must be an integer")
     return value
+
+
+def validate_disk_full(evidence: object, *, binary_sha256: str) -> dict[str, Any]:
+    """Require exact bounded ext4 ENOSPC against the measured daemon."""
+
+    require(isinstance(evidence, dict), "disk-full evidence is missing")
+    expected_top_level = {
+        "schema",
+        "status",
+        "release_evidence",
+        "scenario",
+        "evidence_class",
+        "platform",
+        "container",
+        "bounds",
+        "filesystem",
+        "fault",
+        "daemon",
+        "cleanup",
+        "limitations",
+    }
+    require(
+        set(evidence) == expected_top_level
+        and evidence.get("schema") == DISK_FULL_SCHEMA
+        and evidence.get("status") == "pass"
+        and evidence.get("release_evidence") is False
+        and evidence.get("scenario") == DISK_FULL_SCENARIO
+        and evidence.get("evidence_class") == DISK_FULL_EVIDENCE_CLASS,
+        "disk-full evidence does not describe the exact release scenario",
+    )
+    require(
+        evidence.get("platform")
+        == {
+            "system": "Linux",
+            "machine": "x86_64",
+            "filesystem": "ext4",
+        },
+        "disk-full evidence did not use Linux x86-64 ext4",
+    )
+    container = evidence.get("container")
+    require(
+        isinstance(container, dict)
+        and set(container)
+        == {
+            "image",
+            "platform",
+            "privileged",
+            "network",
+            "root_filesystem_read_only",
+            "daemon_mount_read_only",
+            "observed_elapsed_ms",
+            "captured_output_bytes",
+        }
+        and container.get("image") == DISK_FULL_CONTAINER_IMAGE
+        and container.get("platform") == "linux/amd64"
+        and container.get("privileged") is True
+        and container.get("network") == "none"
+        and container.get("root_filesystem_read_only") is True
+        and container.get("daemon_mount_read_only") is True
+        and type(container.get("observed_elapsed_ms")) in {int, float}
+        and 0
+        <= container["observed_elapsed_ms"]
+        <= DISK_FULL_MAX_CONTAINER_SECONDS * 1000
+        and type(container.get("captured_output_bytes")) is int
+        and 0 < container["captured_output_bytes"] <= DISK_FULL_MAX_CAPTURE_BYTES,
+        "disk-full container identity, isolation, or output bound is invalid",
+    )
+    require(
+        evidence.get("bounds")
+        == {
+            "filesystem_image_bytes": DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+            "attempted_write_bytes": DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "max_daemon_seconds": DISK_FULL_MAX_DAEMON_SECONDS,
+            "max_container_seconds": DISK_FULL_MAX_CONTAINER_SECONDS,
+            "max_log_bytes": DISK_FULL_MAX_LOG_BYTES,
+            "max_capture_bytes": DISK_FULL_MAX_CAPTURE_BYTES,
+        },
+        "disk-full scenario did not use the frozen bounds",
+    )
+    filesystem = evidence.get("filesystem")
+    require(
+        isinstance(filesystem, dict)
+        and set(filesystem)
+        == {
+            "type",
+            "mount_source_class",
+            "image_size_bytes",
+            "block_size_bytes",
+            "available_kib_after_fill",
+            "database_file_type",
+            "database_file_mode",
+            "fill_bytes_written",
+        }
+        and filesystem.get("type") == "ext4"
+        and filesystem.get("mount_source_class") == "loop_device"
+        and filesystem.get("image_size_bytes") == DISK_FULL_FILESYSTEM_IMAGE_BYTES
+        and filesystem.get("block_size_bytes") == DISK_FULL_BLOCK_SIZE_BYTES
+        and filesystem.get("available_kib_after_fill") == 0
+        and filesystem.get("database_file_type") == "regular"
+        and filesystem.get("database_file_mode") == "0600"
+        and type(filesystem.get("fill_bytes_written")) is int
+        and 0 < filesystem["fill_bytes_written"] < DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+        "disk-full ext4 mount or regular database witness is invalid",
+    )
+    require(
+        evidence.get("fault")
+        == {
+            "errno_number": errno.ENOSPC,
+            "errno_name": "ENOSPC",
+            "attempted_write_bytes": DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "write_returned_bytes": 0,
+            "database_size_before_bytes": 0,
+            "database_size_after_bytes": 0,
+        },
+        "disk-full evidence lacks exact bounded ENOSPC",
+    )
+    daemon = evidence.get("daemon")
+    require(
+        isinstance(daemon, dict)
+        and set(daemon)
+        == {
+            "binary_sha256",
+            "started",
+            "exit_observed",
+            "exit_code",
+            "ready_http_200_observed",
+            "public_mutation_available",
+            "storage_failure_observed",
+            "elapsed_ms",
+            "diagnostic_bytes",
+            "diagnostic_sha256",
+        }
+        and daemon.get("binary_sha256") == binary_sha256
+        and daemon.get("started") is True
+        and daemon.get("exit_observed") is True
+        and daemon.get("exit_code") == 1
+        and daemon.get("ready_http_200_observed") is False
+        and daemon.get("public_mutation_available") is False
+        and daemon.get("storage_failure_observed") is True
+        and type(daemon.get("elapsed_ms")) in {int, float}
+        and 0 <= daemon["elapsed_ms"] <= DISK_FULL_MAX_DAEMON_SECONDS * 1000
+        and type(daemon.get("diagnostic_bytes")) is int
+        and 0 < daemon["diagnostic_bytes"] <= DISK_FULL_MAX_LOG_BYTES
+        and isinstance(daemon.get("diagnostic_sha256"), str)
+        and SHA256_REFERENCE.fullmatch(daemon["diagnostic_sha256"]) is not None,
+        "daemon did not fail closed on the bounded disk-full fault",
+    )
+    require(
+        evidence.get("cleanup")
+        == {
+            "internal_unmount_observed": True,
+            "container_remove_requested": True,
+            "container_absent_after_run": True,
+        },
+        "disk-full container cleanup was not proven",
+    )
+    require(
+        evidence.get("limitations")
+        == {
+            "runtime_disk_exhaustion_recovery_observed": False,
+            "physical_power_loss_observed": False,
+        },
+        "disk-full evidence overclaims the bounded startup scenario",
+    )
+    return evidence
 
 
 def validate_distribution(
@@ -258,6 +557,522 @@ def validate_distribution(
     return distribution
 
 
+def validate_live_resource_sampling(
+    report: dict[str, Any],
+    *,
+    configuration: dict[str, Any],
+    elapsed_seconds: float,
+    memory: dict[str, Any],
+    database: dict[str, Any],
+    temporary: dict[str, Any],
+    logs: dict[str, Any],
+    artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    """Require complete bounded-interval peaks and bind legacy final snapshots."""
+
+    hard_limits = {
+        "process_tree_rss_bytes": integer(
+            configuration.get("max_peak_rss_bytes"),
+            "max_peak_rss_bytes",
+            minimum=1,
+        ),
+        "database_bytes": integer(
+            configuration.get("max_database_growth_bytes"),
+            "max_database_growth_bytes",
+            minimum=1,
+        ),
+        "wal_bytes": integer(
+            configuration.get("max_wal_growth_bytes"),
+            "max_wal_growth_bytes",
+            minimum=1,
+        ),
+        "temporary_bytes": integer(
+            configuration.get("max_temp_growth_bytes"),
+            "max_temp_growth_bytes",
+            minimum=1,
+        ),
+        "log_bytes": integer(
+            configuration.get("max_log_growth_bytes"),
+            "max_log_growth_bytes",
+            minimum=1,
+        ),
+        "artifact_bytes": integer(
+            configuration.get("max_artifact_growth_bytes"),
+            "max_artifact_growth_bytes",
+            minimum=1,
+        ),
+    }
+    require(
+        hard_limits
+        == {
+            "process_tree_rss_bytes": MAX_PEAK_RSS_BYTES,
+            "database_bytes": MAX_DATABASE_GROWTH_BYTES,
+            "wal_bytes": MAX_WAL_GROWTH_BYTES,
+            "temporary_bytes": MAX_TEMP_GROWTH_BYTES,
+            "log_bytes": MAX_RUNTIME_LOG_GROWTH_BYTES,
+            "artifact_bytes": MAX_AUXILIARY_ARTIFACT_GROWTH_BYTES,
+        },
+        "live resource sampling does not use the frozen hard limits",
+    )
+    sampling = report.get("resource_sampling")
+    require(
+        isinstance(sampling, dict)
+        and set(sampling)
+        == {
+            "schema",
+            "status",
+            "sampling_complete",
+            "peak_semantics",
+            "workload_elapsed_ms",
+            "resources",
+        }
+        and sampling.get("schema") == RESOURCE_SAMPLING_SCHEMA
+        and sampling.get("status") == "measured"
+        and sampling.get("sampling_complete") is True
+        and sampling.get("peak_semantics")
+        == "maximum_observed_at_bounded_sampling_interval",
+        "live resource sampling contract is missing or incomplete",
+    )
+    workload_elapsed_ms = number(
+        sampling.get("workload_elapsed_ms"), "sampled workload_elapsed_ms"
+    )
+    require(
+        abs(workload_elapsed_ms - elapsed_seconds * 1000) <= 1.0,
+        "live resource sampling is not bound to the one-hour workload window",
+    )
+    resources = sampling.get("resources")
+    expected_names = set(hard_limits)
+    require(
+        isinstance(resources, dict) and set(resources) == expected_names,
+        "live resource sampling inventory is incomplete",
+    )
+
+    rss = resources["process_tree_rss_bytes"]
+    rss_fields = {
+        "measurement_source",
+        "measurement_window",
+        "sampling_interval_ms",
+        "maximum_gap_ms",
+        "observed_max_gap_ms",
+        "coverage_duration_ms",
+        "sample_count",
+        "observed_peak_bytes",
+        "configured_hard_limit_bytes",
+        "bound_status",
+    }
+    require(
+        isinstance(rss, dict)
+        and set(rss) == rss_fields
+        and rss.get("measurement_source") == "linux_proc_process_tree_vmrss"
+        and rss.get("measurement_window") == "transition_workload"
+        and rss.get("sampling_interval_ms") == RSS_SAMPLE_INTERVAL_MS
+        and rss.get("maximum_gap_ms") == RESOURCE_SAMPLE_MAX_GAP_MS
+        and rss.get("configured_hard_limit_bytes")
+        == hard_limits["process_tree_rss_bytes"]
+        and rss.get("bound_status") == "pass",
+        "process-tree RSS live sampling metadata is not exact",
+    )
+    rss_gap = number(rss.get("observed_max_gap_ms"), "RSS observed_max_gap_ms")
+    rss_coverage = number(rss.get("coverage_duration_ms"), "RSS coverage_duration_ms")
+    rss_samples = integer(rss.get("sample_count"), "RSS sample_count", minimum=1)
+    rss_peak = integer(
+        rss.get("observed_peak_bytes"), "RSS observed_peak_bytes", minimum=1
+    )
+    require(
+        0 <= rss_gap <= RESOURCE_SAMPLE_MAX_GAP_MS
+        and rss_coverage >= 0
+        and rss_coverage + RESOURCE_SAMPLE_MAX_GAP_MS >= workload_elapsed_ms
+        and rss_samples > 0
+        and rss_peak <= hard_limits["process_tree_rss_bytes"]
+        and memory.get("peak_rss_bytes") == rss_peak
+        and memory.get("peak_rss_bytes_per_run") == [rss_peak]
+        and memory.get("sampling_interval_ms") == RSS_SAMPLE_INTERVAL_MS
+        and memory.get("maximum_gap_ms") == RESOURCE_SAMPLE_MAX_GAP_MS
+        and memory.get("observed_max_gap_ms") == rss_gap
+        and memory.get("coverage_duration_ms") == rss_coverage
+        and memory.get("sample_count") == rss_samples,
+        "process-tree RSS peak, cadence, or legacy binding is invalid",
+    )
+
+    storage_sources = {
+        "database_bytes": "sqlite_main_plus_wal_regular_file_sizes",
+        "wal_bytes": "sqlite_wal_regular_file_size",
+        "temporary_bytes": "owned_private_working_tree_regular_file_sizes",
+        "log_bytes": "owned_private_working_tree_daemon_log_sizes",
+        "artifact_bytes": "owned_private_working_tree_regular_file_sizes",
+    }
+    storage_snapshots = {
+        "database_bytes": (
+            database.get("initial_bytes"),
+            database.get("final_bytes"),
+            database.get("growth_bytes"),
+        ),
+        "wal_bytes": (
+            database.get("wal_initial_bytes"),
+            database.get("wal_final_bytes"),
+            database.get("wal_growth_bytes"),
+        ),
+        "temporary_bytes": (
+            temporary.get("initial_bytes"),
+            temporary.get("final_bytes"),
+            temporary.get("growth_bytes"),
+        ),
+        "log_bytes": (
+            logs.get("initial_bytes"),
+            logs.get("final_bytes"),
+            logs.get("growth_bytes"),
+        ),
+        "artifact_bytes": (
+            artifacts.get("initial_bytes"),
+            artifacts.get("final_bytes"),
+            artifacts.get("growth_bytes"),
+        ),
+    }
+    storage_fields = {
+        "measurement_source",
+        "measurement_window",
+        "sampling_interval_ms",
+        "maximum_gap_ms",
+        "observed_max_gap_ms",
+        "coverage_duration_ms",
+        "sample_count",
+        "initial_bytes",
+        "observed_peak_bytes",
+        "observed_peak_growth_bytes",
+        "configured_hard_limit_bytes",
+        "bound_status",
+    }
+    common_storage_cadence: tuple[float, float, int, int] | None = None
+    for name, measurement_source in storage_sources.items():
+        row = resources[name]
+        require(
+            isinstance(row, dict)
+            and set(row) == storage_fields
+            and row.get("measurement_source") == measurement_source
+            and row.get("measurement_window") == "transition_workload_through_recovery"
+            and row.get("sampling_interval_ms") == STORAGE_SAMPLE_INTERVAL_MS
+            and row.get("maximum_gap_ms") == RESOURCE_SAMPLE_MAX_GAP_MS
+            and row.get("configured_hard_limit_bytes") == hard_limits[name]
+            and row.get("bound_status") == "pass",
+            f"{name} live sampling metadata is not exact",
+        )
+        observed_gap = number(
+            row.get("observed_max_gap_ms"), f"{name} observed_max_gap_ms"
+        )
+        coverage = number(
+            row.get("coverage_duration_ms"), f"{name} coverage_duration_ms"
+        )
+        sample_count = integer(
+            row.get("sample_count"), f"{name} sample_count", minimum=1
+        )
+        initial = integer(row.get("initial_bytes"), f"{name} initial_bytes")
+        peak = integer(row.get("observed_peak_bytes"), f"{name} observed_peak_bytes")
+        peak_growth = integer(
+            row.get("observed_peak_growth_bytes"),
+            f"{name} observed_peak_growth_bytes",
+        )
+        legacy_initial, legacy_final, legacy_growth = storage_snapshots[name]
+        require(
+            0 <= observed_gap <= RESOURCE_SAMPLE_MAX_GAP_MS
+            and coverage >= 0
+            and coverage + RESOURCE_SAMPLE_MAX_GAP_MS >= workload_elapsed_ms
+            and sample_count > 0
+            and peak >= initial
+            and peak_growth == peak - initial
+            and peak_growth <= hard_limits[name]
+            and legacy_initial == initial
+            and type(legacy_final) is int
+            and initial <= legacy_final <= peak
+            and legacy_growth == legacy_final - initial
+            and legacy_growth <= peak_growth,
+            f"{name} live peak is invalid or not bound to its final snapshot",
+        )
+        cadence = (observed_gap, coverage, sample_count, row["sampling_interval_ms"])
+        if common_storage_cadence is None:
+            common_storage_cadence = cadence
+        else:
+            require(
+                cadence == common_storage_cadence,
+                "storage resources were not captured by one coherent live sampler",
+            )
+    measurements = report.get("measurements")
+    require(
+        isinstance(measurements, dict)
+        and measurements.get("resource_sampling") == sampling,
+        "standard measurements do not bind the exact live resource sampling object",
+    )
+    return sampling
+
+
+def validate_queue_observation(
+    report: dict[str, Any], *, configuration: dict[str, Any]
+) -> dict[str, Any]:
+    """Require live public measurements for every bounded runtime queue."""
+
+    expected_limits = {
+        str(spec["name"]): {
+            "capacity_scope": spec["capacity_scope"],
+            "hard_limit": spec["hard_limit"],
+            "activity_unit": spec["activity_unit"],
+        }
+        for spec in QUEUE_SPECS
+    }
+    require(
+        configuration.get("internal_queue_hard_limits") == expected_limits,
+        "internal queues do not use the frozen hard limits",
+    )
+    observation = report.get("queue_observation")
+    require(
+        report.get("internal_queues") is None
+        and isinstance(observation, dict)
+        and set(observation)
+        == {
+            "status",
+            "observation_scope",
+            "all_internal_queues_observed",
+            "observed_queues",
+        }
+        and observation.get("status") == "measured"
+        and observation.get("observation_scope") == QUEUE_OBSERVATION_SCOPE
+        and observation.get("all_internal_queues_observed") is True,
+        "queue evidence is partial or overclaims its observation scope",
+    )
+    queues = observation.get("observed_queues")
+    require(
+        isinstance(queues, list)
+        and len(queues) == len(QUEUE_SPECS)
+        and [queue.get("name") for queue in queues if isinstance(queue, dict)]
+        == [spec["name"] for spec in QUEUE_SPECS],
+        "one or more bounded queue observations are missing or reordered",
+    )
+    expected_fields = {
+        "status",
+        "name",
+        "measurement_source",
+        "capacity_metric",
+        "process_current_metric",
+        "process_high_water_metric",
+        "unit_high_water_metric",
+        "activity_metric",
+        "completion_metric",
+        "backpressure_metric",
+        "capacity_scope",
+        "activity_unit",
+        "configured_hard_limit",
+        "maximum_observed_process_current",
+        "maximum_reported_process_high_water",
+        "maximum_reported_unit_high_water",
+        "sample_count",
+        "activity_total_initial",
+        "activity_total_final",
+        "activity_total_delta",
+        "completion_total_initial",
+        "completion_total_final",
+        "completion_total_delta",
+        "backpressure_total_initial",
+        "backpressure_total_final",
+        "backpressure_total_delta",
+        "bound_status",
+    }
+    for queue, spec in zip(queues, QUEUE_SPECS, strict=True):
+        name = str(spec["name"])
+        hard_limit = int(spec["hard_limit"])
+        require(
+            isinstance(queue, dict) and set(queue) == expected_fields,
+            f"{name} queue observation shape is invalid",
+        )
+        process_current = integer(
+            queue.get("maximum_observed_process_current"),
+            f"{name} maximum process current",
+        )
+        process_high_water = integer(
+            queue.get("maximum_reported_process_high_water"),
+            f"{name} maximum process high-water",
+        )
+        unit_high_water = integer(
+            queue.get("maximum_reported_unit_high_water"),
+            f"{name} maximum unit high-water",
+            minimum=1,
+        )
+        activity_initial = integer(
+            queue.get("activity_total_initial"), f"{name} initial activity"
+        )
+        activity_final = integer(
+            queue.get("activity_total_final"), f"{name} final activity"
+        )
+        completion_initial = integer(
+            queue.get("completion_total_initial"), f"{name} initial completions"
+        )
+        completion_final = integer(
+            queue.get("completion_total_final"), f"{name} final completions"
+        )
+        backpressure_initial = integer(
+            queue.get("backpressure_total_initial"), f"{name} initial backpressure"
+        )
+        backpressure_final = integer(
+            queue.get("backpressure_total_final"), f"{name} final backpressure"
+        )
+        require(
+            queue.get("status") == "measured"
+            and queue.get("name") == name
+            and queue.get("measurement_source") == "public_prometheus_metrics"
+            and queue.get("capacity_metric") == "worldstream_internal_queue_capacity"
+            and queue.get("process_current_metric")
+            == "worldstream_internal_queue_process_current"
+            and queue.get("process_high_water_metric")
+            == "worldstream_internal_queue_process_high_water"
+            and queue.get("unit_high_water_metric")
+            == "worldstream_internal_queue_unit_high_water"
+            and queue.get("activity_metric")
+            == "worldstream_internal_queue_activity_total"
+            and queue.get("completion_metric")
+            == "worldstream_internal_queue_completion_total"
+            and queue.get("backpressure_metric")
+            == "worldstream_internal_queue_backpressure_total"
+            and queue.get("capacity_scope") == spec["capacity_scope"]
+            and queue.get("activity_unit") == spec["activity_unit"]
+            and queue.get("configured_hard_limit") == hard_limit
+            and process_current <= process_high_water
+            and unit_high_water <= hard_limit
+            and process_high_water >= unit_high_water
+            and (spec["capacity_scope"] != "global" or process_high_water <= hard_limit)
+            and integer(queue.get("sample_count"), f"{name} sample_count", minimum=1)
+            > 0
+            and integer(
+                queue.get("activity_total_delta"), f"{name} activity delta", minimum=1
+            )
+            == activity_final - activity_initial
+            and integer(
+                queue.get("completion_total_delta"),
+                f"{name} completion delta",
+                minimum=1,
+            )
+            == completion_final - completion_initial
+            and integer(
+                queue.get("backpressure_total_delta"),
+                f"{name} backpressure delta",
+            )
+            == backpressure_final - backpressure_initial
+            and queue.get("bound_status") == "pass",
+            f"{name} queue evidence is inactive, inconsistent, or exceeds its hard limit",
+        )
+    measurements = report.get("measurements")
+    require(
+        isinstance(measurements, dict)
+        and measurements.get("queue_observation") == observation,
+        "standard measurements do not bind the exact queue observation object",
+    )
+    return observation
+
+
+def validate_queue_boundary_tests(
+    report: dict[str, Any], *, configuration: dict[str, Any]
+) -> dict[str, Any]:
+    """Bind exact same-production-path saturation tests to the typed gate."""
+
+    require(
+        number(
+            configuration.get("queue_boundary_test_max_total_seconds"),
+            "queue boundary max_total_seconds",
+        )
+        == QUEUE_BOUNDARY_MAX_TOTAL_SECONDS
+        and integer(
+            configuration.get("queue_boundary_test_max_output_bytes"),
+            "queue boundary max_output_bytes",
+            minimum=1,
+        )
+        == MAX_RUNTIME_LOG_GROWTH_BYTES,
+        "queue boundary tests do not use the frozen execution bounds",
+    )
+    evidence = report.get("queue_boundary_tests")
+    expected_fields = {
+        "schema",
+        "status",
+        "execution_scope",
+        "total_duration_ms",
+        "max_total_seconds",
+        "max_output_bytes_per_test",
+        "tests",
+    }
+    require(
+        isinstance(evidence, dict)
+        and set(evidence) == expected_fields
+        and evidence.get("schema") == QUEUE_BOUNDARY_TEST_SCHEMA
+        and evidence.get("status") == "pass"
+        and evidence.get("execution_scope") == "same_production_queue_paths"
+        and number(evidence.get("max_total_seconds"), "queue boundary total bound")
+        == QUEUE_BOUNDARY_MAX_TOTAL_SECONDS
+        and integer(
+            evidence.get("max_output_bytes_per_test"),
+            "queue boundary output bound",
+            minimum=1,
+        )
+        == MAX_RUNTIME_LOG_GROWTH_BYTES,
+        "queue boundary hard-gate evidence is missing or malformed",
+    )
+    total_duration_ms = number(
+        evidence.get("total_duration_ms"), "queue boundary total duration"
+    )
+    require(
+        0 <= total_duration_ms <= QUEUE_BOUNDARY_MAX_TOTAL_SECONDS * 1000,
+        "queue boundary tests exceeded their frozen execution bound",
+    )
+    tests = evidence.get("tests")
+    require(
+        isinstance(tests, list)
+        and len(tests) == len(QUEUE_BOUNDARY_TESTS)
+        and [
+            (
+                row.get("queue_class"),
+                row.get("package"),
+                row.get("test_name"),
+            )
+            for row in tests
+            if isinstance(row, dict)
+        ]
+        == list(QUEUE_BOUNDARY_TESTS),
+        "one or more exact production queue boundary tests are missing or reordered",
+    )
+    row_fields = {
+        "queue_class",
+        "package",
+        "test_name",
+        "status",
+        "exact_test_count",
+        "duration_ms",
+        "output_bytes",
+        "output_sha256",
+    }
+    for row, (queue_class, package, test_name) in zip(
+        tests, QUEUE_BOUNDARY_TESTS, strict=True
+    ):
+        require(
+            isinstance(row, dict)
+            and set(row) == row_fields
+            and row.get("queue_class") == queue_class
+            and row.get("package") == package
+            and row.get("test_name") == test_name
+            and row.get("status") == "passed"
+            and integer(row.get("exact_test_count"), f"{queue_class} exact test count")
+            == 1
+            and 0
+            <= number(row.get("duration_ms"), f"{queue_class} test duration")
+            <= total_duration_ms
+            and integer(row.get("output_bytes"), f"{queue_class} output bytes")
+            <= MAX_RUNTIME_LOG_GROWTH_BYTES
+            and isinstance(row.get("output_sha256"), str)
+            and SHA256_REFERENCE.fullmatch(row["output_sha256"]) is not None,
+            f"{queue_class} production queue boundary test evidence is invalid",
+        )
+    measurements = report.get("measurements")
+    require(
+        isinstance(measurements, dict)
+        and measurements.get("queue_boundary_tests") == evidence,
+        "standard measurements do not bind the exact queue boundary tests",
+    )
+    return evidence
+
+
 def validate_soak(
     report: dict[str, Any],
     *,
@@ -288,7 +1103,8 @@ def validate_soak(
         and isinstance(scope, dict)
         and scope.get("fixture_only") is False
         and scope.get("process_level") is True
-        and scope.get("database_workload_bound") is True,
+        and scope.get("database_workload_bound") is True
+        and scope.get("disk_full_fault_injection") is True,
         "release soak requires a process-level database-bound daemon workload",
     )
     platform = report.get("platform")
@@ -304,6 +1120,9 @@ def validate_soak(
         manifest_json_sha256=manifest_json_sha256,
         manifest_toml_sha256=manifest_toml_sha256,
         label="one-hour soak",
+    )
+    disk_full = validate_disk_full(
+        report.get("disk_full"), binary_sha256=distribution["binary_sha256"]
     )
     gate = report.get("named_gate_evidence")
     require(
@@ -476,17 +1295,11 @@ def validate_soak(
         "max_artifact_growth_bytes",
         minimum=1,
     )
-    queue_limit = integer(
-        configuration.get("max_internal_queue_depth"),
-        "max_internal_queue_depth",
-        minimum=1,
-    )
     require(
         temp_limit == MAX_TEMP_GROWTH_BYTES
         and log_limit == MAX_RUNTIME_LOG_GROWTH_BYTES
         and artifact_limit == MAX_AUXILIARY_ARTIFACT_GROWTH_BYTES
-        and artifact_limit == temp_limit + log_limit
-        and queue_limit == TELEMETRY_QUEUE_HARD_LIMIT,
+        and artifact_limit == temp_limit + log_limit,
         "auxiliary resource configuration does not use the frozen hard limits",
     )
     auxiliary = report.get("temp_and_artifacts")
@@ -546,35 +1359,19 @@ def validate_soak(
         and runs[0].get("output_bytes") == log_final,
         "daemon log inventory is incomplete or not bound to measured output",
     )
-    queue_evidence = report.get("internal_queues")
-    queues = queue_evidence.get("queues") if isinstance(queue_evidence, dict) else None
-    require(
-        isinstance(queue_evidence, dict)
-        and queue_evidence.get("status") == "measured"
-        and queue_evidence.get("configured_hard_limits_enforced") is True
-        and isinstance(queues, list)
-        and len(queues) == 1,
-        "internal queue measurement is missing",
+    resource_sampling = validate_live_resource_sampling(
+        report,
+        configuration=configuration,
+        elapsed_seconds=elapsed,
+        memory=memory,
+        database=database,
+        temporary=temporary,
+        logs=logs,
+        artifacts=artifacts,
     )
-    queue = queues[0]
-    require(
-        isinstance(queue, dict)
-        and queue.get("status") == "measured"
-        and queue.get("name") == "telemetry_exporter"
-        and queue.get("measurement_source") == "public_prometheus_metrics"
-        and queue.get("depth_metric") == "worldstream_telemetry_queued"
-        and queue.get("capacity_metric") == "worldstream_telemetry_queue_capacity"
-        and queue.get("configured_hard_limit") == queue_limit
-        and 0
-        <= integer(queue.get("maximum_observed_depth"), "maximum queue depth")
-        <= queue_limit
-        and integer(queue.get("sample_count"), "queue sample_count", minimum=1) > 0
-        and integer(queue.get("dropped_total_initial"), "initial queue drops") >= 0
-        and integer(queue.get("dropped_total_final"), "final queue drops") >= 0
-        and integer(queue.get("dropped_total_delta"), "queue drop delta")
-        == queue["dropped_total_final"] - queue["dropped_total_initial"]
-        and queue.get("bound_status") == "pass",
-        "internal queue exceeded or did not expose its configured hard limit",
+    queue_observation = validate_queue_observation(report, configuration=configuration)
+    queue_boundary_tests = validate_queue_boundary_tests(
+        report, configuration=configuration
     )
     privacy = report.get("privacy")
     secret_scan = privacy.get("secret_scan") if isinstance(privacy, dict) else None
@@ -632,13 +1429,261 @@ def validate_soak(
         "temp_growth_bytes": temp_growth,
         "log_growth_bytes": log_growth,
         "artifact_growth_bytes": artifact_growth,
-        "internal_queue": queue,
+        "resource_sampling": resource_sampling,
+        "queue_observation": queue_observation,
+        "queue_boundary_tests": queue_boundary_tests,
         "secret_scan": secret_scan,
         "accepted_transition_count": workload["accepted_transition_count"],
         "database_workload_binding": RELEASE_DATABASE_WORKLOAD_BINDING,
         "duration_ms": {name: duration[name] for name in ("p50", "p95", "p99")},
         "distribution": distribution,
+        "disk_full": disk_full,
     }
+
+
+def validate_kill_backend_matrix(report: dict[str, Any]) -> dict[str, Any]:
+    matrix = report.get("backend_matrix")
+    require(
+        isinstance(matrix, dict)
+        and set(matrix)
+        == {
+            "status",
+            "storage_backend_and_connection_mode_separate",
+            "profiles",
+            "postgres_provider",
+        }
+        and matrix.get("status") == "covered"
+        and matrix.get("storage_backend_and_connection_mode_separate") is True,
+        "kill-point backend matrix is missing or not dimensionally exact",
+    )
+    profiles = matrix.get("profiles")
+    require(
+        isinstance(profiles, list) and len(profiles) == len(REQUIRED_KILL_PROFILES),
+        "kill-point backend profile inventory is incomplete",
+    )
+    observed_profiles: list[tuple[str, str]] = []
+    for item in profiles:
+        require(
+            isinstance(item, dict)
+            and set(item)
+            == {
+                "storage_backend",
+                "connection_mode",
+                "cell_count",
+                "overdue_timer_restart",
+            }
+            and item.get("cell_count") == 12
+            and item.get("overdue_timer_restart") == "passed",
+            "kill-point backend profile row is malformed",
+        )
+        observed_profiles.append(
+            (item.get("storage_backend"), item.get("connection_mode"))
+        )
+    require(
+        tuple(observed_profiles) == REQUIRED_KILL_PROFILES,
+        "kill-point storage backend/connection mode inventory is not frozen",
+    )
+
+    provider = matrix.get("postgres_provider")
+    require(
+        isinstance(provider, dict)
+        and set(provider)
+        == {
+            "status",
+            "postgres_image",
+            "postgres_digest",
+            "pgbouncer_image",
+            "pgbouncer_digest",
+            "engine_identity",
+            "server_version_num",
+            "pool_mode",
+            "migration_connection_mode",
+            "observation_connection_mode",
+            "control_binary_sha256",
+            "runtime_dsn_sentinel_coverage",
+            "cleanup",
+            "privacy",
+        }
+        and provider.get("status") == "passed"
+        and provider.get("postgres_image") == POSTGRES_KILL_IMAGE
+        and provider.get("postgres_digest") == POSTGRES_KILL_DIGEST
+        and provider.get("pgbouncer_image") == PGBOUNCER_KILL_IMAGE
+        and provider.get("pgbouncer_digest") == PGBOUNCER_KILL_DIGEST
+        and provider.get("engine_identity")
+        == "postgresql/17.11; server_version_num=170011"
+        and provider.get("server_version_num") == "170011"
+        and provider.get("pool_mode") == "transaction"
+        and provider.get("migration_connection_mode") == "direct_admin_offline"
+        and provider.get("observation_connection_mode") == "direct_admin"
+        and isinstance(provider.get("control_binary_sha256"), str)
+        and SHA256_REFERENCE.fullmatch(provider["control_binary_sha256"]) is not None
+        and provider.get("cleanup") == "pass",
+        "kill-point PostgreSQL provider binding is incomplete or used a pooler admin path",
+    )
+    dsn_coverage = provider.get("runtime_dsn_sentinel_coverage")
+    require(
+        isinstance(dsn_coverage, dict)
+        and set(dsn_coverage)
+        == {"status", "expected_count", "observed_count", "profiles"}
+        and dsn_coverage.get("status") == "complete"
+        and dsn_coverage.get("expected_count") == 32
+        and dsn_coverage.get("observed_count") == 32
+        and dsn_coverage.get("profiles")
+        == [
+            {
+                "storage_backend": "postgresql",
+                "connection_mode": "direct",
+                "dsn_count": 16,
+            },
+            {
+                "storage_backend": "postgresql",
+                "connection_mode": "transaction_pool",
+                "dsn_count": 16,
+            },
+        ],
+        "kill-point PostgreSQL runtime DSN sentinel coverage is incomplete",
+    )
+    privacy = provider.get("privacy")
+    provider_scan = privacy.get("secret_scan") if isinstance(privacy, dict) else None
+    provider_channels = (
+        provider_scan.get("channels") if isinstance(provider_scan, dict) else None
+    )
+    provider_sentinels = (
+        provider_scan.get("sentinels") if isinstance(provider_scan, dict) else None
+    )
+    class_rows = privacy.get("channel_classes") if isinstance(privacy, dict) else None
+    require(
+        isinstance(privacy, dict)
+        and set(privacy) == {"status", "secret_scan", "channel_classes"}
+        and privacy.get("status") == "pass"
+        and isinstance(provider_scan, dict)
+        and provider_scan.get("schema") == SECRET_SCAN_MATRIX_SCHEMA
+        and provider_scan.get("status") == "pass"
+        and provider_scan.get("secrets_emitted") is False
+        and provider_scan.get("encodings_scanned")
+        == ["base64", "base64url", "hex", "raw"]
+        and isinstance(provider_channels, list)
+        and provider_channels
+        and isinstance(provider_sentinels, list)
+        and provider_sentinels
+        and isinstance(class_rows, list)
+        and class_rows,
+        "kill-point PostgreSQL provider privacy evidence is incomplete",
+    )
+    channel_names = {
+        item.get("channel")
+        for item in provider_channels
+        if isinstance(item, dict)
+        and set(item) == {"channel", "sha256", "size_bytes"}
+        and isinstance(item.get("channel"), str)
+        and isinstance(item.get("sha256"), str)
+        and SHA256_REFERENCE.fullmatch(item["sha256"]) is not None
+        and type(item.get("size_bytes")) is int
+        and item["size_bytes"] >= 0
+    }
+    classes_by_channel = {
+        item.get("channel"): item.get("class")
+        for item in class_rows
+        if isinstance(item, dict)
+        and set(item) == {"channel", "class"}
+        and isinstance(item.get("channel"), str)
+        and isinstance(item.get("class"), str)
+    }
+    require(
+        len(channel_names) == len(provider_channels)
+        and len(classes_by_channel) == len(class_rows)
+        and set(classes_by_channel) == channel_names
+        and REQUIRED_PROVIDER_CHANNEL_CLASSES.issubset(
+            set(classes_by_channel.values())
+        ),
+        "kill-point PostgreSQL provider channel inventory is not closed",
+    )
+    sentinel_names = {
+        item.get("name")
+        for item in provider_sentinels
+        if isinstance(item, dict)
+        and set(item) == {"name", "sha256", "size_bytes"}
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("sha256"), str)
+        and SHA256_REFERENCE.fullmatch(item["sha256"]) is not None
+        and type(item.get("size_bytes")) is int
+        and 16 <= item["size_bytes"] <= 512
+    }
+    require(
+        len(sentinel_names) == len(provider_sentinels)
+        and all(
+            any(name.startswith(prefix) for name in sentinel_names)
+            for prefix in (
+                "postgres-admin-password-",
+                "postgres-runtime-password-",
+                "postgres-admin-dsn-",
+                "postgres-runtime-dsn-",
+            )
+        ),
+        "kill-point PostgreSQL provider secret sentinel inventory is incomplete",
+    )
+    expected_runtime_dsn_sentinels = {
+        f"postgres-runtime-dsn-postgresql_{connection_mode}-{sequence:03d}-01"
+        for connection_mode in ("direct", "transaction_pool")
+        for sequence in range(1, 17)
+    }
+    require(
+        {
+            name
+            for name in sentinel_names
+            if name.startswith("postgres-runtime-dsn-postgresql_")
+        }
+        == expected_runtime_dsn_sentinels,
+        "kill-point PostgreSQL runtime DSN sentinels do not cover every cloned store",
+    )
+    return provider
+
+
+def validate_overdue_timer_restart(report: dict[str, Any]) -> dict[str, Any]:
+    overdue = report.get("overdue_timer_restart_regression")
+    profiles = overdue.get("profiles") if isinstance(overdue, dict) else None
+    require(
+        isinstance(overdue, dict)
+        and set(overdue) == {"status", "profiles"}
+        and overdue.get("status") == "passed"
+        and isinstance(profiles, list)
+        and len(profiles) == len(REQUIRED_KILL_PROFILES),
+        "overdue Timer restart regression is missing or incomplete",
+    )
+    observed: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in profiles:
+        require(
+            isinstance(item, dict) and set(item) == OVERDUE_TIMER_PROFILE_FIELDS,
+            "overdue Timer restart profile schema is not closed",
+        )
+        key = (item.get("storage_backend"), item.get("connection_mode"))
+        require(
+            key in REQUIRED_KILL_PROFILES and key not in observed,
+            "overdue Timer restart profiles contain an unexpected or duplicate mode",
+        )
+        require(
+            item.get("status") == "passed"
+            and item.get("durable_state") == "catching_up_with_overdue_timer"
+            and item.get("daemon_ready") is True
+            and item.get("ordinary_work_gated_before_drain") is True
+            and item.get("exact_timer_retry_drained") is True
+            and item.get("first_result_duplicate") is False
+            and item.get("second_result_duplicate") is True
+            and item.get("receipt_hash_equal") is True
+            and isinstance(item.get("receipt_hash"), str)
+            and SHA256_REFERENCE.fullmatch(item["receipt_hash"]) is not None
+            and item.get("projection_hash_equal_after_restart") is True
+            and isinstance(item.get("projection_hash"), str)
+            and SHA256_REFERENCE.fullmatch(item["projection_hash"]) is not None
+            and item.get("same_data_directory") is True,
+            "overdue Timer restart regression did not preserve its exact outcome",
+        )
+        observed[key] = item
+    require(
+        set(observed) == set(REQUIRED_KILL_PROFILES),
+        "overdue Timer restart regression is missing a backend runtime profile",
+    )
+    return {"status": "passed", "profiles": list(observed.values())}
 
 
 def validate_kill(
@@ -680,6 +1725,8 @@ def validate_kill(
         and gate.get("release_gate") is True,
         "kill-point report is not bound to the failure/soak gate",
     )
+    provider = validate_kill_backend_matrix(report)
+    overdue_timer_restart = validate_overdue_timer_restart(report)
     kill = report.get("kill_points")
     boundaries = kill.get("boundaries") if isinstance(kill, dict) else None
     require(
@@ -692,22 +1739,40 @@ def validate_kill(
     )
     require(isinstance(boundaries, list), "documented kill-point cells are missing")
     required_cells = {
-        (operation, boundary)
+        (storage_backend, connection_mode, operation, boundary)
+        for storage_backend, connection_mode in REQUIRED_KILL_PROFILES
         for operation in REQUIRED_KILL_OPERATIONS
         for boundary in REQUIRED_KILL_BOUNDARIES
     }
-    observed_cells: dict[tuple[str, str], dict[str, Any]] = {}
+    observed_cells: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for item in boundaries:
         if not isinstance(item, dict):
             raise EvidenceError("documented kill-point matrix contains an invalid cell")
-        key = (item.get("operation"), item.get("name"))
+        require(
+            all(
+                isinstance(item.get(field), str)
+                for field in (
+                    "storage_backend",
+                    "connection_mode",
+                    "operation",
+                    "name",
+                )
+            ),
+            "documented kill-point matrix contains an invalid cell identity",
+        )
+        key = (
+            item.get("storage_backend"),
+            item.get("connection_mode"),
+            item.get("operation"),
+            item.get("name"),
+        )
         require(
             key in required_cells and key not in observed_cells,
             "documented kill-point matrix contains an unexpected or duplicate cell",
         )
-        expected_outcome = EXPECTED_KILL_OUTCOMES[key[1]]
+        expected_outcome = EXPECTED_KILL_OUTCOMES[key[3]]
         verification = item.get("verification")
-        required_verification = REQUIRED_CELL_VERIFICATION[key[0]]
+        required_verification = REQUIRED_CELL_VERIFICATION[key[2]]
         require(
             item.get("signal") == "SIGKILL"
             and item.get("status") == "passed"
@@ -728,11 +1793,12 @@ def validate_kill(
             isinstance(verification, dict)
             and required_verification.issubset(verification)
             and all(verification[name] is True for name in required_verification),
-            f"documented {key[0]} kill-point cell lacks operation-specific outcome witnesses",
+            f"documented {key[2]} kill-point cell lacks operation-specific outcome witnesses",
         )
         observed_cells[key] = item
     require(
-        set(observed_cells) == required_cells,
+        len(observed_cells) == EXPECTED_KILL_CELL_COUNT
+        and set(observed_cells) == required_cells,
         "documented kill-point matrix is missing required operation/boundary cells",
     )
     privacy = report.get("privacy")
@@ -790,10 +1856,19 @@ def validate_kill(
         "operations": list(REQUIRED_KILL_OPERATIONS),
         "boundaries": list(REQUIRED_KILL_BOUNDARIES),
         "cell_count": len(observed_cells),
+        "profiles": [
+            {
+                "storage_backend": storage_backend,
+                "connection_mode": connection_mode,
+            }
+            for storage_backend, connection_mode in REQUIRED_KILL_PROFILES
+        ],
         "restart": "same_data_directory",
         "power_loss_claim": False,
         "distribution": distribution,
         "secret_scan": secret_scan,
+        "postgres_provider": provider,
+        "overdue_timer_restart_regression": overdue_timer_restart,
     }
 
 
@@ -926,6 +2001,11 @@ def produce(
         },
         "failure/soak reports do not bind the independently verified package bytes",
     )
+    require(
+        kill["postgres_provider"]["control_binary_sha256"]
+        == verified_distribution.get("control_binary_sha256"),
+        "kill-point PostgreSQL direct-admin binary differs from the verified package",
+    )
     logs = validate_logs(log_paths, {soak_path, kill_path})
     input_reports = [
         {
@@ -944,6 +2024,8 @@ def produce(
             "size_bytes": len(packaged_acceptance_raw),
         },
     ]
+    live_resources = soak["resource_sampling"]["resources"]
+    observed_queues = soak["queue_observation"]["observed_queues"]
     artifact = {
         "schema": "worldstream/failure-soak-release-evidence/v1",
         "status": "pass",
@@ -963,27 +2045,23 @@ def produce(
             "coverage_groups": soak["coverage_groups"],
             "listed_test_count": soak["listed_test_count"],
             "fixture_hooks": sorted(REQUIRED_FIXTURE_HOOKS),
+            "disk_full": soak["disk_full"],
             "process_kill": kill,
+            "overdue_timer_restart_regression": kill[
+                "overdue_timer_restart_regression"
+            ],
         },
         "resource_bounds": {
-            "maximum_peak_rss_bytes": MAX_PEAK_RSS_BYTES,
-            "observed_peak_rss_bytes": soak["peak_rss_bytes"],
-            "maximum_database_growth_bytes": MAX_DATABASE_GROWTH_BYTES,
-            "observed_database_growth_bytes": soak["database_growth_bytes"],
-            "maximum_wal_growth_bytes": MAX_WAL_GROWTH_BYTES,
-            "observed_wal_growth_bytes": soak["wal_growth_bytes"],
-            "maximum_temp_growth_bytes": MAX_TEMP_GROWTH_BYTES,
-            "observed_temp_growth_bytes": soak["temp_growth_bytes"],
-            "maximum_log_growth_bytes": MAX_RUNTIME_LOG_GROWTH_BYTES,
-            "observed_log_growth_bytes": soak["log_growth_bytes"],
-            "maximum_auxiliary_artifact_growth_bytes": (
-                MAX_AUXILIARY_ARTIFACT_GROWTH_BYTES
-            ),
-            "observed_auxiliary_artifact_growth_bytes": soak["artifact_growth_bytes"],
-            "internal_queues": {
-                "maximum_depth": TELEMETRY_QUEUE_HARD_LIMIT,
-                "observed": soak["internal_queue"],
+            "live_sampling": soak["resource_sampling"],
+            "final_snapshots": {
+                "database_growth_bytes": soak["database_growth_bytes"],
+                "wal_growth_bytes": soak["wal_growth_bytes"],
+                "temporary_growth_bytes": soak["temp_growth_bytes"],
+                "log_growth_bytes": soak["log_growth_bytes"],
+                "artifact_growth_bytes": soak["artifact_growth_bytes"],
             },
+            "queue_observation": soak["queue_observation"],
+            "queue_boundary_tests": soak["queue_boundary_tests"],
             "database_workload_binding": soak["database_workload_binding"],
             "accepted_transition_count": soak["accepted_transition_count"],
             "command_duration_ms": soak["duration_ms"],
@@ -1009,18 +2087,31 @@ def produce(
         "failure_matrix": (
             f"coverage_groups={len(soak['coverage_groups'])};"
             f"fixture_hooks={len(REQUIRED_FIXTURE_HOOKS)};"
+            f"disk_full_errno={soak['disk_full']['fault']['errno_name']};"
             f"process_kill_cells={kill['cell_count']}"
+            f";process_kill_profiles={len(kill['profiles'])}"
+            ";overdue_timer_restart_profiles="
+            f"{len(kill['overdue_timer_restart_regression']['profiles'])}"
             f";packaged_acceptance={acceptance_sha256}"
         ),
         "resource_bounds": (
-            f"peak_rss_bytes={soak['peak_rss_bytes']};"
-            f"database_growth_bytes={soak['database_growth_bytes']};"
-            f"wal_growth_bytes={soak['wal_growth_bytes']};"
-            f"temp_growth_bytes={soak['temp_growth_bytes']};"
-            f"log_growth_bytes={soak['log_growth_bytes']};"
-            f"artifact_growth_bytes={soak['artifact_growth_bytes']};"
-            f"internal_queue_max_depth={soak['internal_queue']['maximum_observed_depth']};"
-            f"internal_queue_hard_limit={soak['internal_queue']['configured_hard_limit']};"
+            f"observed_peak_rss_bytes="
+            f"{live_resources['process_tree_rss_bytes']['observed_peak_bytes']};"
+            f"database_observed_peak_growth_bytes="
+            f"{live_resources['database_bytes']['observed_peak_growth_bytes']};"
+            f"wal_observed_peak_growth_bytes="
+            f"{live_resources['wal_bytes']['observed_peak_growth_bytes']};"
+            f"temp_observed_peak_growth_bytes="
+            f"{live_resources['temporary_bytes']['observed_peak_growth_bytes']};"
+            f"log_observed_peak_growth_bytes="
+            f"{live_resources['log_bytes']['observed_peak_growth_bytes']};"
+            f"artifact_observed_peak_growth_bytes="
+            f"{live_resources['artifact_bytes']['observed_peak_growth_bytes']};"
+            f"observed_internal_queues={len(observed_queues)};"
+            f"queue_boundary_tests={len(soak['queue_boundary_tests']['tests'])};"
+            f"maximum_unit_high_water="
+            f"{max(queue['maximum_reported_unit_high_water'] for queue in observed_queues)};"
+            "all_internal_queues_observed=true;"
             f"accepted_transitions={soak['accepted_transition_count']}"
         ),
         "one_hour_soak": (

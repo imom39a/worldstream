@@ -24,6 +24,7 @@ GATE_SCHEMA = "worldstream/compatibility-gate-report/v1"
 MANIFEST = ROOT / "compatibility.toml"
 PACKAGE_SCRIPT = ROOT / "scripts/package.py"
 OCI_LAYOUT_VERIFIER = ROOT / "scripts/verify-oci-layout.py"
+BUILD_IDENTITY_PATH = ROOT / "scripts/release_build_identity.py"
 
 PLATFORMS = {
     "native-linux": "native-linux-x86_64",
@@ -105,6 +106,23 @@ def require(condition: bool, message: str) -> None:
         raise DiagnosticError(message)
 
 
+def load_build_identity():
+    name = "worldstream_release_platform_strict_json"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(name, BUILD_IDENTITY_PATH)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise DiagnosticError(f"cannot load verifier: {BUILD_IDENTITY_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+BUILD_IDENTITY = load_build_identity()
+
+
 def regular_file(path: Path, label: str) -> Path:
     try:
         mode = path.lstat().st_mode
@@ -120,11 +138,13 @@ def regular_file(path: Path, label: str) -> Path:
 def read_json(path: Path, label: str) -> dict[str, Any]:
     regular_file(path, label)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        content = path.read_bytes()
+    except OSError as error:
         raise DiagnosticError(f"{label} is not valid JSON: {error}") from error
-    require(isinstance(value, dict), f"{label} must be a JSON object")
-    return value
+    try:
+        return BUILD_IDENTITY.strict_json(content, label)
+    except BUILD_IDENTITY.IdentityError as error:
+        raise DiagnosticError(str(error)) from error
 
 
 def digest(path: Path) -> str:
@@ -248,16 +268,24 @@ def pinned_macos_toolchains() -> dict[str, str]:
     )
     package = read_json(ROOT / "package.json", "root package manifest")
     package_manager = package.get("packageManager")
-    require(
-        isinstance(package_manager, str)
-        and re.fullmatch(r"pnpm@[0-9]+\.[0-9]+\.[0-9]+", package_manager) is not None,
-        "root packageManager is not an exact pnpm pin",
+    package_manager_match = (
+        re.fullmatch(
+            r"pnpm@(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"
+            r"\+sha512\.(?P<integrity>[0-9a-f]{128})",
+            package_manager,
+        )
+        if isinstance(package_manager, str)
+        else None
     )
+    if package_manager_match is None:
+        raise DiagnosticError(
+            "root packageManager is not an exact integrity-bound pnpm pin"
+        )
     return {
         "rust": rust,
         "python": text_pin(".python-version"),
         "node": text_pin(".node-version"),
-        "pnpm": package_manager.removeprefix("pnpm@"),
+        "pnpm": package_manager_match.group("version"),
         "uv": text_pin(".uv-version"),
     }
 
@@ -663,6 +691,7 @@ def emit_oci(args: argparse.Namespace) -> None:
     artifact_digest = verified_artifact["artifact_sha256"]
     profiles = runtime.get("profiles")
     secret_scan = runtime.get("secret_scan")
+    sqlite_volume = runtime.get("sqlite_volume")
     sqlite = contract.get("storage", {}).get("sqlite", {})
     sqlite_identity = (
         f"sqlite/{sqlite.get('version')}; source_id={sqlite.get('source_id')}"
@@ -709,6 +738,34 @@ def emit_oci(args: argparse.Namespace) -> None:
         "OCI secret-absence scan does not cover the exact channel set",
     )
     require(
+        isinstance(sqlite_volume, dict)
+        and set(sqlite_volume)
+        == {
+            "path",
+            "type",
+            "driver",
+            "scope",
+            "driver_options",
+            "mount_device",
+            "filesystem",
+            "mount_source",
+            "locality",
+        }
+        and sqlite_volume.get("path") == "/var/lib/worldstream"
+        and sqlite_volume.get("type") == "docker-volume"
+        and sqlite_volume.get("driver") == "local"
+        and sqlite_volume.get("scope") == "local"
+        and sqlite_volume.get("driver_options") == {}
+        and isinstance(sqlite_volume.get("mount_device"), str)
+        and re.fullmatch(r"[1-9][0-9]*:[0-9]+", sqlite_volume["mount_device"])
+        is not None
+        and sqlite_volume.get("filesystem") in {"ext4", "xfs"}
+        and isinstance(sqlite_volume.get("mount_source"), str)
+        and re.fullmatch(r"/dev/[^\s]+", sqlite_volume["mount_source"]) is not None
+        and sqlite_volume.get("locality") == "local-block-device",
+        "OCI SQLite volume locality is incomplete",
+    )
+    require(
         context.get("schema") == "worldstream/oci-context-report/v1"
         and context.get("kind") == "oci-context"
         and context.get("verified") is True
@@ -727,7 +784,8 @@ def emit_oci(args: argparse.Namespace) -> None:
         and runtime.get("authority_secret_source")
         == "owner-readable-read-only-volume-file"
         and runtime.get("standalone_config") == "valid"
-        and runtime.get("rejected_layouts") == ["tmpfs", "wrong-data-directory"]
+        and runtime.get("rejected_layouts")
+        == ["tmpfs", "wrong-data-directory", "network-configured-volume"]
         and runtime.get("secrets_emitted") is False
         and secret_scan.get("secrets_emitted") is False
         and isinstance(profiles, dict)
@@ -783,7 +841,7 @@ def emit_oci(args: argparse.Namespace) -> None:
                 "context_report_sha256": digest(args.context_report),
                 "context_metadata_sha256": digest(expected_metadata),
                 "runtime_report_sha256": digest(args.runtime_report),
-                "runtime_smoke": "healthy non-root read-only runtime with persistent volume",
+                "runtime_smoke": "healthy non-root read-only runtime with verified local persistent volume",
                 "storage_profiles": "sqlite-bundled and postgres-primary passed",
                 "postgres_provider_image": OCI_POSTGRES_IMAGE,
                 "postgres_engine_identity": OCI_POSTGRES_IDENTITY,
@@ -791,7 +849,7 @@ def emit_oci(args: argparse.Namespace) -> None:
                 "postgres_runtime_role": "least privilege verified",
                 "postgres_network": "disabled network with local Unix socket",
                 "secrets": "not emitted",
-                "filesystem_policy": "ext4/xfs allowlist and negative layout probes passed",
+                "filesystem_policy": "ext4/xfs local block source, local driver without options, and negative layout probes passed",
             },
             contract,
         ),

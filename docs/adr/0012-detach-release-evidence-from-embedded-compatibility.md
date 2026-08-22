@@ -30,12 +30,16 @@ The release system has one deep verification module with two inputs:
    platform build.
 
 `release_artifacts` rows in the embedded manifest declare the closed artifact
-ID/profile inventory with `status = "detached"`, an empty in-band digest, and
-`digest_location = "release-manifest.json"`. Evidence rows use the equivalent
-detached location. The release verifier accepts no artifact or evidence status
-from those declarations; it recomputes every subject digest through the
-detached release-manifest seam and verifies the signature, SPDX SBOM, and SLSA
-provenance over the same closed subject set.
+ID/profile inventory. Signed subjects use `status = "detached"`, an empty
+in-band digest, and `digest_location = "release-manifest.json"`. The Sigstore
+bundle uses the distinct `verification_material` status and a path-only pointer
+to `verification_material.sigstore-bundle.path`; placing its digest in the
+manifest it authenticates would create a signing cycle. Evidence rows use the
+detached digest location. The release verifier accepts no artifact or evidence
+status from those declarations; it recomputes every signed subject digest
+through the detached release-manifest seam and cryptographically verifies the
+path-only signature bundle, SPDX SBOM, and SLSA provenance over the same closed
+subject set.
 
 `release_ready = true` in the embedded manifest means the compatibility
 contract has no unresolved implementation identity and is eligible to be

@@ -62,6 +62,7 @@ SUPPLY_CHAIN_CHECKS = (
     "spdx_subjects",
     "slsa_subjects",
 )
+SPDX_CREATOR = "Tool: worldstream-release-supply-chain-1.0"
 ARTIFACT_PATHS = {
     "subject-inventory": ASSEMBLER.PRE_SIGN_INVENTORY_PATH,
     "subject-signature": ASSEMBLER.PRE_SIGN_SIGNATURE_PATH,
@@ -75,14 +76,11 @@ def now_iso() -> str:
     source_date_epoch = os.environ.get("SOURCE_DATE_EPOCH")
     if source_date_epoch is not None:
         try:
-            return (
-                datetime.fromtimestamp(int(source_date_epoch), tz=timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z")
-            )
+            timestamp = datetime.fromtimestamp(int(source_date_epoch), tz=timezone.utc)
+            return timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
         except ValueError as error:
             ASSEMBLER.fail(f"SOURCE_DATE_EPOCH is not an integer: {error}")
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def parse_sources(values: list[str], expected: set[str]) -> dict[str, Path]:
@@ -123,8 +121,11 @@ def copy_payloads(
     paths: dict[str, Path] = {}
     for artifact_id, source in payloads.items():
         destination = release_dir / names[artifact_id]
-        ASSEMBLER.atomic_write_bytes(
-            destination, source.read_bytes(), f"payload {artifact_id}"
+        ASSEMBLER.copy_atomic(
+            source,
+            destination,
+            f"payload {artifact_id}",
+            maximum=ASSEMBLER.MAX_RELEASE_PAYLOAD_BYTES,
         )
         paths[artifact_id] = destination
     return paths
@@ -192,26 +193,9 @@ def spdx_document_namespace(
     subjects: dict[str, Path],
     created: str,
 ) -> str:
-    """Return a unique, reproducible URI for this exact SPDX document version."""
-    # SPDX 2.3 section 6.5 requires a new namespace when a document is
-    # updated. Product version plus manifest identity is insufficient because
-    # release subjects and creation time can change between attempts.
-    namespace_seed = {
-        "schema": "worldstream/spdx-document-namespace/v1",
-        "product": version,
-        "manifest_sha256": mirror_digest,
-        "created": created,
-        "subjects": [
-            {
-                "path": relative,
-                "sha256": "sha256:" + ASSEMBLER.sha256_file(path),
-                "size_bytes": path.stat().st_size,
-            }
-            for relative, path in sorted(subjects.items())
-        ],
-    }
-    document_version = ASSEMBLER.sha256_bytes(ASSEMBLER.canonical_json(namespace_seed))
-    return f"https://github.com/imom39a/worldstream/spdx/{version}/{document_version}"
+    """Delegate the exact namespace contract to the shared identity verifier."""
+
+    return IDENTITY.spdx_document_namespace(version, mirror_digest, subjects, created)
 
 
 def generate_spdx(
@@ -243,9 +227,13 @@ def generate_spdx(
                 "fileName": relative,
                 "checksums": [
                     {
+                        "algorithm": "SHA1",
+                        "checksumValue": ASSEMBLER.sha1_file(path),
+                    },
+                    {
                         "algorithm": "SHA256",
                         "checksumValue": ASSEMBLER.sha256_file(path),
-                    }
+                    },
                 ],
                 "copyrightText": "NOASSERTION",
                 "licenseConcluded": "NOASSERTION",
@@ -261,7 +249,7 @@ def generate_spdx(
         ),
         "creationInfo": {
             "created": created,
-            "creators": ["Tool: WorldStream release-supply-chain.py"],
+            "creators": [SPDX_CREATOR],
         },
         "packages": packages,
         "files": files,
@@ -281,14 +269,17 @@ def generate_provenance(
             payload_paths, version
         )
         revision = identities["source-archive"]["source"]["revision"]
-        graph = IDENTITY.provenance_graph(
+        invocation_parameters = IDENTITY.release_invocation_parameters()
+        graph, aggregation_result = IDENTITY.provenance_graph(
             version=version,
             revision=revision,
             subjects=payload_paths,
+            release_subjects=subjects,
             identities=identities,
             source_entries=source_entries,
+            invocation_parameters=invocation_parameters,
         )
-        run_details = IDENTITY.github_run_details(created)
+        run_details = IDENTITY.github_run_details(aggregation_result)
     except IDENTITY.IdentityError as error:
         ASSEMBLER.fail(f"release payload build identity rejected: {error}")
     return {
@@ -303,7 +294,7 @@ def generate_provenance(
         "predicateType": "https://slsa.dev/provenance/v1",
         "predicate": {
             "buildDefinition": {
-                "buildType": f"{IDENTITY.REPOSITORY}/release-build/v1",
+                "buildType": IDENTITY.BUILD_TYPE,
                 **graph,
             },
             "runDetails": run_details,
@@ -463,7 +454,10 @@ def produce(
         "pre-sign SLSA provenance",
     )
     ASSEMBLER.validate_spdx_subjects(
-        release_dir / ASSEMBLER.SIDECAR_PATHS["spdx-sbom"], subjects
+        release_dir / ASSEMBLER.SIDECAR_PATHS["spdx-sbom"],
+        subjects,
+        version=version,
+        manifest_sha256=ASSEMBLER.sha256_bytes(mirror_bytes),
     )
     ASSEMBLER.validate_provenance_subjects(
         release_dir / ASSEMBLER.SIDECAR_PATHS["slsa-provenance"], subjects

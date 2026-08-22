@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "reference-evidence.py"
+KINDS = ("counter", "heist", "sqlite", "postgres", "soak", "target")
 
 
 def digest(label: str) -> str:
@@ -20,7 +21,7 @@ def digest(label: str) -> str:
 
 
 def reference_workload(kind: str) -> dict:
-    index = ("counter", "heist", "sqlite", "postgres", "soak").index(kind) + 1
+    index = KINDS.index(kind) + 1
     return {
         "payload_sizes_bytes": [128 * index, 1024 * index],
         "pack_id": {
@@ -29,6 +30,7 @@ def reference_workload(kind: str) -> dict:
             "sqlite": "worldstream.sqlite-reference",
             "postgres": "worldstream.postgresql-reference",
             "soak": "worldstream.counter",
+            "target": "worldstream.counter",
         }[kind],
         "participants_per_room": index + 1,
         "fan_out": index,
@@ -43,10 +45,11 @@ def report(kind: str, *, complete: bool = True) -> dict:
         "sqlite": "worldstream/soak-evidence/v1",
         "postgres": "worldstream/postgresql-evidence/v1",
         "soak": "worldstream/soak-evidence/v1",
+        "target": "worldstream/reference-target-projection/v1",
     }
     value: dict = {
         "schema": schemas[kind],
-        "status": "completed" if kind in {"counter", "heist"} else "pass",
+        "status": "completed" if kind in {"counter", "heist", "target"} else "pass",
         "release_evidence": False,
         "performance_class": "reference_non_release",
         "identity": {
@@ -103,6 +106,14 @@ def report(kind: str, *, complete: bool = True) -> dict:
     if kind == "soak":
         value["one_hour_window_completed"] = complete
         value["database"] = {"status": "measured", "growth_bytes": 4096}
+    if kind == "target":
+        value["reference_environment"]["engines"]["postgresql"] = {
+            "status": "not_observed_by_sqlite_target_workload"
+        }
+        value["measurements"] = {
+            "latency_ms": value["measurements"]["latency_ms"],
+            "reference_targets": {"profile": "frozen_release"},
+        }
     return value
 
 
@@ -118,18 +129,31 @@ class ReferenceEvidenceTests(unittest.TestCase):
                 path.write_text(json.dumps(value), encoding="utf-8")
                 paths[kind] = path
             command = [sys.executable, str(SCRIPT)]
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak"):
+            for kind in KINDS:
                 command.extend((f"--{kind}-report", str(paths[kind])))
             command.extend(extra)
             return subprocess.run(
                 command, cwd=ROOT, text=True, capture_output=True, check=False
             )
 
+    def test_five_report_invocation_cannot_pass_without_frozen_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = [sys.executable, str(SCRIPT)]
+            for kind in KINDS[:-1]:
+                path = root / f"{kind}.json"
+                path.write_text(json.dumps(report(kind)), encoding="utf-8")
+                command.extend((f"--{kind}-report", str(path)))
+
+            completed = subprocess.run(
+                command, cwd=ROOT, text=True, capture_output=True, check=False
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--target-report", completed.stderr)
+
     def test_complete_fixture_is_deterministic_and_recomputes_percentiles(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         first = self.run_aggregator(values)
         second = self.run_aggregator(values)
         self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
@@ -142,7 +166,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         self.assertEqual(percentiles["p50_ms"], 50.0)
         self.assertEqual(percentiles["p95_ms"], 100.0)
         self.assertEqual(percentiles["p99_ms"], 100.0)
-        self.assertEqual(len(result["input_sha256_inventory"]["items"]), 5)
+        self.assertEqual(len(result["input_sha256_inventory"]["items"]), 6)
         self.assertEqual(
             result["workloads"]["counter"]["pack_id"], "worldstream.counter"
         )
@@ -153,14 +177,43 @@ class ReferenceEvidenceTests(unittest.TestCase):
             result["identity"]["packaged_acceptance_sha256"],
             digest("packaged-acceptance"),
         )
+        self.assertEqual(
+            set(result["reference_environments"]),
+            set(KINDS),
+        )
         self.assertNotIn("signature_bundle", result)
         self.assertNotIn("signature_bundle_digest", result)
 
-    def test_soak_report_accepts_existing_nearest_rank_statistics(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
+    def test_each_measurement_retains_its_own_certified_host_attribution(self):
+        values = {kind: report(kind) for kind in KINDS}
+        values["sqlite"]["reference_environment"]["hardware"]["cpu_model"] = (
+            "second certified fixture cpu"
+        )
+        values["soak"]["reference_environment"] = json.loads(
+            json.dumps(values["sqlite"]["reference_environment"])
+        )
+        values["sqlite"]["reference_environment"]["engines"]["postgresql"] = {
+            "status": "not_observed_by_sqlite_process_soak"
         }
+        values["soak"]["reference_environment"]["engines"]["postgresql"] = {
+            "status": "not_observed_by_sqlite_process_soak"
+        }
+
+        completed = self.run_aggregator(values)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+        result = json.loads(completed.stdout)
+        self.assertNotEqual(
+            result["reference_environments"]["counter"],
+            result["reference_environments"]["sqlite"],
+        )
+        self.assertEqual(
+            result["sources"]["sqlite"]["reference_environment"],
+            result["reference_environments"]["sqlite"],
+        )
+
+    def test_soak_report_accepts_existing_nearest_rank_statistics(self):
+        values = {kind: report(kind) for kind in KINDS}
         values["soak"].pop("measurements")
         values["soak"]["statistics"] = {
             "matrix_run_count": 507,
@@ -189,10 +242,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         )
 
     def test_true_release_label_is_blocked(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         values["counter"]["release_evidence"] = True
         completed = self.run_aggregator(values)
         self.assertEqual(completed.returncode, 2)
@@ -201,10 +251,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         self.assertIn("counter:release_evidence_must_be_false", result["errors"])
 
     def test_common_identity_version_mismatch_is_blocked(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         values["postgres"]["identity"]["version"] = "fixture-2"
         completed = self.run_aggregator(values)
         self.assertEqual(completed.returncode, 2)
@@ -213,10 +260,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         self.assertIn("postgres:identity_version_mismatch", result["errors"])
 
     def test_non_linux_reference_profile_is_blocked(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         values["sqlite"]["identity"]["profile"] = "windows-reference"
         completed = self.run_aggregator(values)
         self.assertEqual(completed.returncode, 2)
@@ -256,10 +300,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         )
         for field, value, expected_error in cases:
             with self.subTest(field=field):
-                values = {
-                    kind: report(kind)
-                    for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-                }
+                values = {kind: report(kind) for kind in KINDS}
                 values["counter"]["reference_environment"][field[0]][field[1]] = value
                 completed = self.run_aggregator(values)
                 self.assertEqual(completed.returncode, 2)
@@ -267,11 +308,8 @@ class ReferenceEvidenceTests(unittest.TestCase):
                 self.assertEqual(result["status"], "blocked")
                 self.assertIn(expected_error, result["errors"])
 
-    def test_packaged_acceptance_identity_must_match_all_five_sources(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+    def test_packaged_acceptance_identity_must_match_all_six_sources(self):
+        values = {kind: report(kind) for kind in KINDS}
         values["postgres"]["identity"]["packaged_acceptance_sha256"] = digest(
             "different-acceptance"
         )
@@ -286,10 +324,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         )
 
     def test_missing_backend_dimension_keeps_summary_incomplete(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         values["postgres"]["measurements"].pop("recovery")
         completed = self.run_aggregator(values)
         self.assertEqual(completed.returncode, 2)
@@ -300,10 +335,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         self.assertNotEqual(result["status"], "pass")
 
     def test_numeric_placeholders_do_not_count_as_measured_resources(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         values["sqlite"]["measurements"]["memory"] = {
             "status": "not_measured",
             "peak_rss_bytes": 0,
@@ -324,10 +356,7 @@ class ReferenceEvidenceTests(unittest.TestCase):
         self.assertIn("postgres:database_growth_not_reported", result["gaps"])
 
     def test_identity_and_schema_are_fail_closed(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         values["heist"]["identity"].pop("artifact_sha256")
         values["sqlite"]["schema"] = "worldstream/unknown/v1"
         completed = self.run_aggregator(values)
@@ -338,16 +367,14 @@ class ReferenceEvidenceTests(unittest.TestCase):
             "heist:identity_artifact_sha256:sha256_reference_required", result["errors"]
         )
         self.assertIn("sqlite:unsupported_schema", result["errors"])
-        self.assertEqual(len(result["input_sha256_inventory"]["items"]), 5)
+        self.assertEqual(len(result["input_sha256_inventory"]["items"]), 6)
 
     def test_incomplete_one_hour_and_unmeasured_dimensions_are_honest_gaps(self):
-        values = {
-            kind: report(kind)
-            for kind in ("counter", "heist", "sqlite", "postgres", "soak")
-        }
+        values = {kind: report(kind) for kind in KINDS}
         values["soak"]["one_hour_window_completed"] = False
-        for value in values.values():
-            value.pop("measurements")
+        for kind, value in values.items():
+            if kind != "target":
+                value.pop("measurements")
         values["soak"]["statistics"] = {
             "command_duration_ms": {
                 "definition": "nearest-rank",

@@ -11,8 +11,8 @@ use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 use worldstream_postgres::{PostgresAdmin, PostgresConnectionConfig};
 use worldstream_runtime::{
-    SecretSource, embedded_manifest, prepare_data_directory, validate_owner_only_file,
-    validate_sqlite_data_filesystem,
+    CompatibilitySummary, SecretSource, embedded_manifest, prepare_data_directory,
+    validate_owner_only_file, validate_sqlite_data_filesystem,
 };
 use worldstream_server::CommonConfigArgs;
 
@@ -93,6 +93,34 @@ struct Doctor<'a> {
     storage: &'a str,
 }
 
+#[derive(Serialize)]
+struct VersionDocument {
+    #[serde(flatten)]
+    compatibility: CompatibilitySummary,
+    product_build: ControlProductBuild,
+}
+
+#[derive(Serialize)]
+struct ControlProductBuild {
+    product: String,
+    binary: &'static str,
+    build_version: String,
+    source_revision: &'static str,
+}
+
+fn version_document(compatibility: CompatibilitySummary) -> VersionDocument {
+    let product = compatibility.contracts.product.clone();
+    VersionDocument {
+        compatibility,
+        product_build: ControlProductBuild {
+            product: product.clone(),
+            binary: "worldstreamctl",
+            build_version: product,
+            source_revision: env!("WORLDSTREAM_BUILD_REVISION"),
+        },
+    }
+}
+
 fn main() -> Result<()> {
     let Cli {
         config: config_args,
@@ -144,7 +172,7 @@ fn main() -> Result<()> {
         Command::Version => {
             let _config = config_args.load().context("configuration rejected")?;
             let manifest = embedded_manifest().context("embedded manifest rejected")?;
-            write_json(&manifest.summary())
+            write_json(&version_document(manifest.summary()))
         }
     }
 }
@@ -288,7 +316,8 @@ fn write_json(value: &impl Serialize) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_health_response;
+    use super::{validate_health_response, version_document};
+    use worldstream_runtime::embedded_manifest;
 
     #[test]
     fn health_response_requires_exact_200_liveness_document() {
@@ -304,5 +333,26 @@ mod tests {
         ] {
             assert!(validate_health_response(rejected).is_err());
         }
+    }
+
+    #[test]
+    fn version_document_attests_the_compiled_binary_revision() -> anyhow::Result<()> {
+        let manifest = embedded_manifest()?;
+        let value = serde_json::to_value(version_document(manifest.summary()))?;
+
+        assert_eq!(
+            value["product_build"]["product"],
+            value["contracts"]["product"]
+        );
+        assert_eq!(value["product_build"]["binary"], "worldstreamctl");
+        assert_eq!(
+            value["product_build"]["build_version"],
+            value["contracts"]["product"]
+        );
+        assert_eq!(
+            value["product_build"]["source_revision"],
+            env!("WORLDSTREAM_BUILD_REVISION")
+        );
+        Ok(())
     }
 }

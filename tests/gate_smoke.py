@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,26 @@ def load_gates():
     sys.modules[spec.name] = gates
     spec.loader.exec_module(gates)
     return gates
+
+
+def detached_artifact_row(gates, artifact_id: str, profile: str) -> dict:
+    if artifact_id == gates.SIGSTORE_VERIFICATION_ARTIFACT_ID:
+        return {
+            "id": artifact_id,
+            "profile": profile,
+            "digest_algorithm": "",
+            "digest": "",
+            "status": "verification_material",
+            "verification_material_location": gates.SIGSTORE_VERIFICATION_LOCATION,
+        }
+    return {
+        "id": artifact_id,
+        "profile": profile,
+        "digest_algorithm": "sha256",
+        "digest": "",
+        "status": "detached",
+        "digest_location": "release-manifest.json",
+    }
 
 
 def test_cargo_evidence_rejects_zero_test_success(monkeypatch):
@@ -231,7 +252,7 @@ def test_ci_platform_mismatch_is_an_exact_incomplete_blocker(monkeypatch):
     assert outcome.status == "SKIP_INCOMPLETE"
     assert outcome.classification == "incomplete"
     assert "platform=native-windows-x64" in outcome.detail
-    assert "requires runner=windows-2025" in outcome.detail
+    assert "requires runner=windows-2025-vs2026" in outcome.detail
     assert "observed system=Darwin" in outcome.detail
 
 
@@ -671,6 +692,19 @@ def test_native_ci_provisions_exact_postgresql_before_manifest_cells():
     assert "POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password" in workflow
 
 
+def test_pull_request_runner_matrix_is_static_workflow_data():
+    workflow = (ROOT / ".github/workflows/compatibility-gates.yml").read_text(
+        encoding="utf-8"
+    )
+    native = workflow[workflow.index("  native:") : workflow.index("  macos-source:")]
+
+    assert "fromJSON(needs.cells.outputs.matrix)" not in workflow
+    assert "Resolve manifest gate cells" not in workflow
+    assert native.count("runner: ubuntu-24.04") == 2
+    assert native.count("runner: windows-2025-vs2026") == 1
+    assert "self-hosted" not in native
+
+
 def test_windows_ci_installs_and_proves_byte_pinned_postgresql_17_11():
     script = (ROOT / "scripts/gates-install-postgres.ps1").read_text(encoding="utf-8")
     assert "postgresql-17.11-1-windows-x64-binaries.zip" in script
@@ -722,6 +756,21 @@ def test_release_job_bootstraps_pinned_gate_toolchain_before_release_gate():
     )
     assert "id-token: write" in release
     assert "id-token: write" not in workflow[: workflow.index("  release-evidence:")]
+
+
+def test_every_external_workflow_action_uses_an_exact_commit():
+    gates = load_gates()
+    identity = gates.release_build_identity_verifier()
+    dependencies = identity.workflow_action_dependencies(
+        identity.source_entries_from_root(ROOT)
+    )
+
+    assert dependencies
+    assert all(
+        item["uri"].startswith("https://github.com/")
+        and re.fullmatch(r"[0-9a-f]{40}", item["digest"]["gitCommit"])
+        for item in dependencies
+    )
 
 
 def test_release_workflow_builds_only_supported_distribution_surfaces():
@@ -964,14 +1013,7 @@ def test_detached_release_identity_requires_explicit_locations():
     gates = load_gates()
     manifest = {
         "release_artifacts": [
-            {
-                "id": artifact_id,
-                "profile": profile,
-                "digest_algorithm": "sha256",
-                "digest": "",
-                "status": "detached",
-                "digest_location": "release-manifest.json",
-            }
+            detached_artifact_row(gates, artifact_id, profile)
             for artifact_id, profile in gates.RELEASE_ARTIFACT_PROFILES.items()
         ],
         "evidence": [
@@ -1031,14 +1073,7 @@ def test_detached_inventory_binds_exact_artifact_and_evidence_maps(tmp_path):
     manifest = {
         "release_candidate": "0.1.0",
         "release_artifacts": [
-            {
-                "id": artifact_id,
-                "profile": profile,
-                "digest_algorithm": "sha256",
-                "digest": "",
-                "status": "detached",
-                "digest_location": "release-manifest.json",
-            }
+            detached_artifact_row(gates, artifact_id, profile)
             for artifact_id, profile in gates.RELEASE_ARTIFACT_PROFILES.items()
         ],
         "evidence": [
@@ -1120,14 +1155,7 @@ def test_sigstore_is_verification_material_not_a_signed_subject():
     manifest = {
         "release_candidate": "0.1.0",
         "release_artifacts": [
-            {
-                "id": artifact_id,
-                "profile": profile,
-                "digest_algorithm": "sha256",
-                "digest": "",
-                "status": "detached",
-                "digest_location": "release-manifest.json",
-            }
+            detached_artifact_row(gates, artifact_id, profile)
             for artifact_id, profile in gates.RELEASE_ARTIFACT_PROFILES.items()
         ],
         "evidence": [

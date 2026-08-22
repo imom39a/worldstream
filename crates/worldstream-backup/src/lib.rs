@@ -23,8 +23,10 @@ pub use native_envelope::{
 };
 
 pub use native_restore::{
-    NativeRestoreEvidenceAdapter, NativeRestoreEvidenceV1, NativeRestoreRoomMembershipV1,
-    NativeRestoreTargetEvidenceV1, RestoreCommitWitnessV1, RestoreInstallOutcomeV1,
+    NativeRestoreCanonicalRowV1, NativeRestoreDurableDomainEvidenceV1,
+    NativeRestoreDurableDomainV1, NativeRestoreEvidenceAdapter, NativeRestoreEvidenceV1,
+    NativeRestoreRoomMembershipV1, NativeRestoreTargetEvidenceV1,
+    POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1, RestoreCommitWitnessV1, RestoreInstallOutcomeV1,
     RestoreLifecycleErrorV1, RestoreLifecycleProjectionV1, RestoreLifecycleStateV1,
     RestoreRoomLifecycleStateV1, verify_native_restore, verify_native_restore_from_adapter,
 };
@@ -491,6 +493,12 @@ pub struct ReceiptV1 {
     pub identity_bytes: Vec<u8>,
     /// Canonical request bytes.
     pub request_bytes: Vec<u8>,
+    /// Whether the native ledger persisted the canonical request bytes.
+    ///
+    /// Some provider schemas retain only the canonical request hash. Those
+    /// adapters must leave `request_bytes` empty and carry the exact stored
+    /// hash in `request_digest`; they may not invent or reconstruct bytes.
+    pub request_bytes_available: bool,
     /// Stored canonical request hash.
     pub request_digest: DigestV1,
     /// Receipt resolution bytes.
@@ -503,6 +511,8 @@ pub struct ReceiptV1 {
     pub transition_seq: Option<u64>,
     /// Activation identity for an Activation operation receipt.
     pub activation_id: Option<String>,
+    /// Exact Activation operation kind, absent for semantic Room receipts.
+    pub operation_kind: Option<String>,
 }
 
 /// Receipt families retained by the two operational ledgers.
@@ -1374,14 +1384,24 @@ fn check_receipt_rows(
             receipt.kind != ReceiptKindV1::Semantic
         };
         let activation_relation_invalid = if activation {
-            receipt.activation_id.as_ref().is_none_or(|activation_id| {
-                !image
+            match (
+                receipt.operation_kind.as_deref(),
+                receipt.activation_id.as_ref(),
+            ) {
+                (Some("offer"), None) => false,
+                (Some("claim" | "renew" | "complete" | "release"), Some(activation_id)) => !image
                     .activations
                     .iter()
-                    .any(|activation| &activation.activation_id == activation_id)
-            })
+                    .any(|activation| &activation.activation_id == activation_id),
+                _ => true,
+            }
         } else {
-            receipt.activation_id.is_some()
+            receipt.activation_id.is_some() || receipt.operation_kind.is_some()
+        };
+        let request_invalid = if receipt.request_bytes_available {
+            DigestV1::hash(&receipt.request_bytes) != receipt.request_digest
+        } else {
+            !receipt.request_bytes.is_empty()
         };
         if !identities.insert(&receipt.identity_bytes)
             || receipt.identity_bytes.is_empty()
@@ -1389,7 +1409,7 @@ fn check_receipt_rows(
             || activation_relation_invalid
             || receipt.request_bytes.len() > limits.max_object_bytes
             || receipt.result_bytes.len() > limits.max_object_bytes
-            || DigestV1::hash(&receipt.request_bytes) != receipt.request_digest
+            || request_invalid
             || DigestV1::hash(&receipt.result_bytes) != receipt.result_digest
             || receipt
                 .room_id

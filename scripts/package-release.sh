@@ -2,6 +2,20 @@
 set -euo pipefail
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${WORLDSTREAM_RELEASE_PYTHON:-}"
+if [[ -z "$python_bin" ]]; then
+    python_bin="$(command -v python3 2>/dev/null || true)"
+fi
+if [[ -z "$python_bin" || ! -x "$python_bin" ]]; then
+    echo "release packaging requires an executable WORLDSTREAM_RELEASE_PYTHON" >&2
+    exit 2
+fi
+expected_python="$(tr -d '[:space:]' < "$workspace_dir/.python-version")"
+actual_python="$("$python_bin" -I -c 'import platform; print(platform.python_version())')"
+if [[ "$actual_python" != "$expected_python" ]]; then
+    echo "release packaging requires Python $expected_python, observed $actual_python" >&2
+    exit 2
+fi
 report_path=""
 package_args=()
 while (($#)); do
@@ -21,11 +35,11 @@ while (($#)); do
             ;;
     esac
 done
-python3 "$workspace_dir/scripts/package.py" package "${package_args[@]}"
+"$python_bin" -I "$workspace_dir/scripts/package.py" package "${package_args[@]}"
 
 # package.py owns archive verification and the canonical report schema.  The
 # wrapper only locates the exact archive selected by the package arguments.
-python3 - "$workspace_dir" "$report_path" "${package_args[@]}" <<'PY'
+"$python_bin" -I - "$workspace_dir" "$report_path" "${package_args[@]}" <<'PY'
 from __future__ import annotations
 
 import subprocess

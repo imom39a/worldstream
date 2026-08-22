@@ -13,6 +13,39 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/release-evidence-produce-conformance.py"
+RESTORE_DURABLE_DOMAINS = (
+    "schema_migrations",
+    "operation_guards",
+    "room_roots",
+    "genesis",
+    "materializations",
+    "member_delivery_state",
+    "timers",
+    "transitions",
+    "frames",
+    "observation_consequences",
+    "activation_decisions",
+    "activation_intents",
+    "activation_operation_receipts",
+    "semantic_receipts",
+    "integrity_incidents",
+    "authority_fences",
+    "authority_state",
+    "authority_principals",
+    "authority_runners",
+    "authority_capabilities",
+    "authority_capability_scopes",
+    "authority_runner_capability_memberships",
+    "authority_change_receipts",
+    "authority_audit",
+    "transfer_imports",
+    "transfer_chunks",
+    "transfer_target_fence",
+    "deployment_metadata",
+    "deployment_identity_metadata",
+    "deployment_pack_identities",
+    "deployment_resource_identities",
+)
 
 
 def load_module():
@@ -163,6 +196,11 @@ def transfer_report() -> dict:
         "status": "pass",
         "release_evidence": False,
         "secrets_emitted": False,
+        "provider_mode": "docker",
+        "provider_image": {
+            "reference": "postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+            "repository_digest": "postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+        },
         "source": {
             "canonical_evidence": {"status": "complete"},
             "transfer_contract_gate": {"status": "observed"},
@@ -196,6 +234,16 @@ def transfer_report() -> dict:
 
 
 def restore_report() -> dict:
+    inventory = [
+        {
+            "domain": domain,
+            "source_row_count": 1,
+            "restored_row_count": 1,
+            "source_digest": f"{index:064x}",
+            "restored_digest": f"{index:064x}",
+        }
+        for index, domain in enumerate(RESTORE_DURABLE_DOMAINS, start=1)
+    ]
     return {
         "schema": "worldstream/native-postgres-restore-evidence/v2",
         "status": "ready",
@@ -209,10 +257,128 @@ def restore_report() -> dict:
         "native_witness_minted": True,
         "secrets_emitted": False,
         "semantic_receipts_verified": True,
+        "activation_intents_verified": True,
+        "activation_operation_receipts_verified": True,
+        "activation_request_evidence": "stored_canonical_hash_only_verified",
+        "authority_state_verified": True,
+        "durable_domains_verified": True,
+        "verifier_scope": {
+            "profile": "single_pack_no_resources_no_fired_timers",
+            "source_pack_identity_count": 1,
+            "restored_pack_identity_count": 1,
+            "source_resource_identity_count": 0,
+            "restored_resource_identity_count": 0,
+            "source_fired_timer_count": 0,
+            "restored_fired_timer_count": 0,
+            "general_deployment_support_verified": False,
+        },
+        "source_durable_domains_digest": "a" * 64,
+        "restored_durable_domains_digest": "a" * 64,
+        "durable_domain_inventory": inventory,
         "restored_snapshot_count_before": 2,
         "restored_snapshot_count_after": 0,
         "verifier": {"status": "ready"},
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("activation_intents_verified", False),
+        ("activation_operation_receipts_verified", False),
+        ("activation_request_evidence", "exact_request_bytes_verified"),
+        ("authority_state_verified", False),
+        ("durable_domains_verified", False),
+    ],
+)
+def test_restore_requires_each_typed_activation_and_authority_witness(field, invalid):
+    module = load_module()
+    report = restore_report()
+    report[field] = invalid
+    with pytest.raises(module.EvidenceError, match="isolated semantic contract"):
+        module.validate_restore(sqlite_report(), report)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("profile", "general_deployment"),
+        ("source_pack_identity_count", 2),
+        ("restored_pack_identity_count", 2),
+        ("source_resource_identity_count", 1),
+        ("restored_resource_identity_count", 1),
+        ("source_fired_timer_count", 1),
+        ("restored_fired_timer_count", 1),
+        ("general_deployment_support_verified", True),
+    ],
+)
+def test_restore_requires_exact_bounded_verifier_scope(field, invalid):
+    module = load_module()
+    report = restore_report()
+    report["verifier_scope"][field] = invalid
+    with pytest.raises(module.EvidenceError, match="scope.*overclaims"):
+        module.validate_restore(sqlite_report(), report)
+
+
+def test_restore_requires_complete_bounded_verifier_scope():
+    module = load_module()
+    report = restore_report()
+    report["verifier_scope"].pop("source_fired_timer_count")
+    with pytest.raises(module.EvidenceError, match="scope.*overclaims"):
+        module.validate_restore(sqlite_report(), report)
+
+
+@pytest.mark.parametrize("domain", RESTORE_DURABLE_DOMAINS)
+def test_restore_rejects_each_durable_domain_omission(domain):
+    module = load_module()
+    report = restore_report()
+    report["durable_domain_inventory"] = [
+        row for row in report["durable_domain_inventory"] if row["domain"] != domain
+    ]
+    with pytest.raises(module.EvidenceError, match="inventory is incomplete"):
+        module.validate_restore(sqlite_report(), report)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "message"),
+    [
+        ("source_row_count", 2, "count or digest"),
+        ("restored_row_count", 2, "count or digest"),
+        ("source_digest", "b" * 64, "count or digest"),
+        ("restored_digest", "b" * 64, "count or digest"),
+        ("source_digest", "not-a-digest", "count or digest"),
+    ],
+)
+def test_restore_binds_each_domain_count_and_digest(field, invalid, message):
+    module = load_module()
+    report = restore_report()
+    report["durable_domain_inventory"][0][field] = invalid
+    with pytest.raises(module.EvidenceError, match=message):
+        module.validate_restore(sqlite_report(), report)
+
+
+def test_restore_binds_aggregate_digest_order_and_authority_singleton():
+    module = load_module()
+
+    aggregate = restore_report()
+    aggregate["restored_durable_domains_digest"] = "b" * 64
+    with pytest.raises(module.EvidenceError, match="aggregate digest"):
+        module.validate_restore(sqlite_report(), aggregate)
+
+    order = restore_report()
+    order["durable_domain_inventory"][0], order["durable_domain_inventory"][1] = (
+        order["durable_domain_inventory"][1],
+        order["durable_domain_inventory"][0],
+    )
+    with pytest.raises(module.EvidenceError, match="inventory drifted"):
+        module.validate_restore(sqlite_report(), order)
+
+    singleton = restore_report()
+    index = RESTORE_DURABLE_DOMAINS.index("authority_state")
+    singleton["durable_domain_inventory"][index]["source_row_count"] = 0
+    singleton["durable_domain_inventory"][index]["restored_row_count"] = 0
+    with pytest.raises(module.EvidenceError, match="authority singleton"):
+        module.validate_restore(sqlite_report(), singleton)
 
 
 def producer_args(tmp_path: Path, values: dict[str, dict]) -> argparse.Namespace:

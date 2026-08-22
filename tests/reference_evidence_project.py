@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from reference_target_support import storage_bindings, target_report
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/reference-evidence-project.py"
@@ -108,15 +109,29 @@ def fixture(tmp_path: Path, monkeypatch):
         "reference_environment": {
             "platform": {
                 "system": "Linux",
-                "release": "6.8.0",
+                "distribution": "Ubuntu",
+                "distribution_version": "24.04",
                 "machine": "x86_64",
             },
+            "hardware": {
+                "cpu_model": "acceptance fixture CPU",
+                "logical_cpu_count": 4,
+                "memory_bytes": 8 * 1024 * 1024 * 1024,
+            },
+            "filesystem": {
+                "type": "ext4",
+                "mount_options": ["rw", "noatime"],
+                "storage_class": "local_ssd_or_nvme",
+            },
+            "storage_bindings": storage_bindings(
+                {
+                    "type": "ext4",
+                    "mount_options": ["rw", "noatime"],
+                    "storage_class": "local_ssd_or_nvme",
+                }
+            ),
             "engines": {
                 **json.loads(json.dumps(module.EXPECTED_NORMALIZED_ENGINES)),
-                "pgbouncer": {
-                    "image": module.REFERENCE_PRODUCER.PACKAGED_ACCEPTANCE.PGBOUNCER_IMAGE,
-                    "pool_mode": "transaction",
-                },
             },
         },
         "reference_workloads": {
@@ -201,6 +216,47 @@ def fixture(tmp_path: Path, monkeypatch):
         "distribution": runtime_distribution,
     }
     soak_path = write_json(tmp_path / "soak.json", soak)
+    packaged_sdk = {
+        "source": "verified_native_archive",
+        "pyproject_sha256": "sha256:" + "a" * 64,
+        "pyproject_size_bytes": 101,
+        "lock_sha256": "sha256:" + "b" * 64,
+        "lock_size_bytes": 102,
+        "module_init_sha256": "sha256:" + "c" * 64,
+        "module_init_size_bytes": 103,
+        "client_module_sha256": "sha256:" + "e" * 64,
+        "client_module_size_bytes": 104,
+        "compatibility_identity_sha256": "sha256:" + "d" * 64,
+        "compatibility_identity_size_bytes": 105,
+        "runtime_module_under_packaged_sdk_root": True,
+    }
+    monkeypatch.setattr(
+        module.REFERENCE_PRODUCER,
+        "packaged_sdk_identity",
+        lambda _archive: packaged_sdk,
+    )
+    kill = {
+        "schema": "worldstream/kill-point-evidence/v1",
+        "platform": {"system": "Linux", "machine": "x86_64"},
+    }
+    kill_path = write_json(tmp_path / "kill.json", kill)
+    target = target_report(
+        module.REFERENCE_PRODUCER,
+        manifest=manifest,
+        distribution=distribution,
+        acceptance=acceptance,
+        acceptance_raw=acceptance_raw,
+        soak=soak,
+        soak_raw=soak_path.read_bytes(),
+        kill=kill,
+        kill_raw=kill_path.read_bytes(),
+        package_archive=package_archive,
+        package_report=package_report,
+        daemon=daemon,
+        manifest_toml=manifest_toml,
+        manifest_json=manifest_json,
+    )
+    target_path = write_json(tmp_path / "target.json", target)
     monkeypatch.setattr(
         module.REFERENCE_PRODUCER,
         "verify_packaged_distribution",
@@ -214,11 +270,24 @@ def fixture(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         module.FAILURE_PRODUCER,
         "validate_soak",
-        lambda *_args, **_kwargs: {"distribution": runtime_distribution},
+        lambda *_args, **_kwargs: {
+            "distribution": runtime_distribution,
+            "elapsed_seconds": 3600.01,
+        },
+    )
+    monkeypatch.setattr(
+        module.FAILURE_PRODUCER,
+        "validate_kill",
+        lambda *_args, **_kwargs: {
+            "distribution": runtime_distribution,
+            "cell_count": 36,
+        },
     )
     args = argparse.Namespace(
         packaged_acceptance_report=acceptance_path,
         soak_report=soak_path,
+        kill_point_report=kill_path,
+        target_report=target_path,
         package_archive=package_archive,
         package_report=package_report,
         daemon_bin=daemon,
@@ -230,7 +299,7 @@ def fixture(tmp_path: Path, monkeypatch):
     return module, args, acceptance, soak, acceptance_sha256, runtime_distribution
 
 
-def test_projects_only_verified_raw_measurements_into_five_closed_inputs(fixture):
+def test_projects_only_verified_raw_measurements_into_six_closed_inputs(fixture):
     module, args, _acceptance, _soak, acceptance_sha256, _distribution = fixture
 
     paths = module.project(args)
@@ -241,14 +310,20 @@ def test_projects_only_verified_raw_measurements_into_five_closed_inputs(fixture
         for kind, path in paths.items()
     }
     assert (
-        len(
-            {
-                json.dumps(value["reference_environment"], sort_keys=True)
-                for value in values.values()
-            }
-        )
-        == 1
+        values["counter"]["reference_environment"]
+        == values["postgres"]["reference_environment"]
     )
+    assert (
+        values["sqlite"]["reference_environment"]
+        == values["soak"]["reference_environment"]
+    )
+    assert (
+        values["counter"]["reference_environment"]
+        != values["sqlite"]["reference_environment"]
+    )
+    assert values["sqlite"]["reference_environment"]["engines"]["postgresql"] == {
+        "status": "not_observed_by_sqlite_process_soak"
+    }
     assert all(
         value["identity"]["packaged_acceptance_sha256"] == acceptance_sha256
         for value in values.values()
@@ -317,5 +392,5 @@ def test_projection_rejects_unobserved_or_drifted_engine_settings(fixture):
         "synchronous_commit"
     ] = "off"
 
-    with pytest.raises(module.ProjectionError, match="host/engine observations"):
+    with pytest.raises(module.ProjectionError, match="engine observations"):
         module.project(args)

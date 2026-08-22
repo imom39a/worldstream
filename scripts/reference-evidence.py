@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Aggregate bounded, non-release Linux reference measurements.
 
-This command consumes five explicitly named JSON artifacts.  It never runs a
+This command consumes five legacy reports plus the frozen-target projection.
+It never runs a
 benchmark, reads a database, or turns a fixture into release evidence.  The
 input reports must carry the common artifact identity and non-release labels
 documented in ``docs/agents/imo-61-reference-evidence-luna.md``.
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import sys
@@ -18,9 +20,11 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = "worldstream/imo-61-reference-evidence/v1"
+ROOT = Path(__file__).resolve().parents[1]
+BUILD_IDENTITY_PATH = ROOT / "scripts/release_build_identity.py"
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_JSON_DEPTH = 16
-MAX_SAMPLES = 100_000
+MAX_SAMPLES = 1_000_000
 MAX_GAPS = 64
 DIGEST_PREFIX = "sha256:"
 SHA256_HEX_LENGTH = 64
@@ -44,6 +48,7 @@ EXPECTED_SCHEMAS: dict[str, tuple[str, ...]] = {
         "worldstream/native-postgres-restore-evidence/v2",
     ),
     "soak": ("worldstream/soak-evidence/v1",),
+    "target": ("worldstream/reference-target-projection/v1",),
 }
 
 EXPECTED_STATUSES: dict[str, tuple[str, ...]] = {
@@ -52,6 +57,7 @@ EXPECTED_STATUSES: dict[str, tuple[str, ...]] = {
     "sqlite": ("pass", "passed", "ready", "completed"),
     "postgres": ("pass", "passed", "ready", "completed"),
     "soak": ("pass",),
+    "target": ("completed",),
 }
 
 MEASUREMENT_NAMES = ("measurements", "measurement", "metrics")
@@ -63,11 +69,29 @@ REQUIRED_COVERAGE: dict[str, tuple[str, ...]] = {
     "sqlite": ("latency_ms", "memory", "database_growth", "recovery"),
     "postgres": ("latency_ms", "memory", "database_growth", "recovery"),
     "soak": ("latency_ms", "memory", "database_growth"),
+    "target": ("reference_targets",),
 }
 
 
 class EvidenceError(ValueError):
     """A deterministic, user-actionable input validation failure."""
+
+
+def _load_build_identity():
+    name = "worldstream_reference_strict_json"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(name, BUILD_IDENTITY_PATH)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise RuntimeError(f"cannot load {BUILD_IDENTITY_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+BUILD_IDENTITY = _load_build_identity()
 
 
 def _is_number(value: Any) -> bool:
@@ -121,11 +145,12 @@ def _read_report(kind: str, path_value: str) -> tuple[dict[str, Any], dict[str, 
         raise EvidenceError(f"{kind}:input_exceeds_8_mib_bound")
     try:
         raw = path.read_bytes()
-        report = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except OSError as error:
         raise EvidenceError(f"{kind}:input_is_not_utf8_json") from error
-    if not isinstance(report, dict):
-        raise EvidenceError(f"{kind}:report_root_must_be_object")
+    try:
+        report = BUILD_IDENTITY.strict_json(raw, f"{kind} reference input")
+    except BUILD_IDENTITY.IdentityError as error:
+        raise EvidenceError(f"{kind}:input_is_not_strict_json:{error}") from error
     _check_depth(report)
     inventory = {
         "kind": kind,
@@ -193,12 +218,10 @@ def _validate_reference_environment(
     kind: str, report: dict[str, Any]
 ) -> dict[str, Any]:
     value = report.get("reference_environment")
-    if not isinstance(value, dict) or set(value) != {
-        "platform",
-        "hardware",
-        "filesystem",
-        "engines",
-    }:
+    if not isinstance(value, dict) or set(value) not in (
+        {"platform", "hardware", "filesystem", "engines"},
+        {"platform", "hardware", "filesystem", "storage_bindings", "engines"},
+    ):
         raise EvidenceError(f"{kind}:reference_environment_shape_required")
     platform = value["platform"]
     if not (
@@ -242,6 +265,15 @@ def _validate_reference_environment(
         raise EvidenceError(f"{kind}:reference_engine_disclosure_required")
     for engine in ("sqlite", "postgresql"):
         row = engines[engine]
+        if engine == "postgresql" and isinstance(row, dict) and set(row) == {"status"}:
+            expected_unobserved = (
+                "not_observed_by_sqlite_target_workload"
+                if kind == "target"
+                else "not_observed_by_sqlite_process_soak"
+            )
+            if row.get("status") == expected_unobserved:
+                continue
+            raise EvidenceError(f"{kind}:postgresql_engine_disclosure_required")
         if not (
             isinstance(row, dict)
             and set(row) == {"version", "settings", "connection_mode"}
@@ -254,7 +286,102 @@ def _validate_reference_environment(
             and row["connection_mode"].strip()
         ):
             raise EvidenceError(f"{kind}:{engine}_engine_disclosure_required")
+    if "storage_bindings" in value:
+        _validate_storage_bindings(kind, value["storage_bindings"], filesystem)
     return value
+
+
+def _validate_storage_bindings(
+    kind: str, value: object, workload_filesystem: dict[str, Any]
+) -> None:
+    """Validate the exact workload/provider storage attribution from acceptance."""
+
+    if not (
+        isinstance(value, dict)
+        and set(value)
+        == {
+            "schema",
+            "status",
+            "profile",
+            "reference_environment_filesystem_role",
+            "layout",
+            "raw_paths_retained",
+            "workload",
+            "postgresql_database",
+        }
+        and value.get("schema") == "worldstream/packaged-storage-bindings/v1"
+        and value.get("status") == "verified"
+        and value.get("profile") == "frozen_local_ext4"
+        and value.get("reference_environment_filesystem_role")
+        == "workload_owned_runtime_parent"
+        and value.get("layout") in {"same_host_mount", "split_host_mounts"}
+        and value.get("raw_paths_retained") is False
+    ):
+        raise EvidenceError(f"{kind}:packaged_storage_bindings_required")
+
+    def mount_identity(row: object) -> bool:
+        return (
+            isinstance(row, dict)
+            and set(row) == {"mount_id", "device_id"}
+            and type(row.get("mount_id")) is int
+            and row["mount_id"] > 0
+            and isinstance(row.get("device_id"), str)
+            and bool(row["device_id"])
+        )
+
+    def frozen_filesystem(row: object) -> bool:
+        return (
+            isinstance(row, dict)
+            and set(row) == {"type", "mount_options", "storage_class"}
+            and row.get("type") == "ext4"
+            and row.get("storage_class") == "local_ssd_or_nvme"
+            and isinstance(row.get("mount_options"), list)
+            and bool(row["mount_options"])
+            and all(
+                isinstance(option, str) and option.strip()
+                for option in row["mount_options"]
+            )
+        )
+
+    workload = value.get("workload")
+    database = value.get("postgresql_database")
+    docker_volume = (
+        database.get("docker_volume") if isinstance(database, dict) else None
+    )
+    if not (
+        isinstance(workload, dict)
+        and set(workload) == {"role", "filesystem", "mount_identity"}
+        and workload.get("role") == "workload_owned_runtime_parent"
+        and workload.get("filesystem") == workload_filesystem
+        and frozen_filesystem(workload["filesystem"])
+        and mount_identity(workload.get("mount_identity"))
+        and isinstance(database, dict)
+        and set(database) == {"role", "filesystem", "mount_identity", "docker_volume"}
+        and database.get("role") == "provider_owned_database_volume"
+        and frozen_filesystem(database.get("filesystem"))
+        and mount_identity(database.get("mount_identity"))
+        and isinstance(docker_volume, dict)
+        and set(docker_volume)
+        == {
+            "driver",
+            "scope",
+            "driver_options",
+            "container_destination",
+            "container_mount_type",
+            "read_write",
+            "source_matches_volume_mountpoint",
+            "run_unique_ownership_label_verified",
+        }
+        and docker_volume.get("driver") == "local"
+        and docker_volume.get("scope") == "local"
+        and docker_volume.get("driver_options") == {}
+        and docker_volume.get("container_destination") == "/var/lib/postgresql/data"
+        and docker_volume.get("container_mount_type") == "volume"
+        and docker_volume.get("read_write") is True
+        and docker_volume.get("source_matches_volume_mountpoint") is True
+        and docker_volume.get("run_unique_ownership_label_verified") is True
+    ):
+        raise EvidenceError(f"{kind}:packaged_storage_bindings_required")
 
 
 def _validate_reference_workload(kind: str, report: dict[str, Any]) -> dict[str, Any]:
@@ -553,6 +680,15 @@ def _recovery_for(kind: str, report: dict[str, Any]) -> dict[str, Any] | None:
     raise EvidenceError(f"{kind}.recovery:duration_required")
 
 
+def _reference_targets_for(kind: str, report: dict[str, Any]) -> dict[str, Any] | None:
+    if kind != "target":
+        return None
+    value = _measurement_dict(kind, report).get("reference_targets")
+    if not isinstance(value, dict) or not value:
+        raise EvidenceError("target.reference_targets:non_empty_object_required")
+    return value
+
+
 def _coverage_present(name: str, value: Any) -> bool:
     if not isinstance(value, dict):
         return False
@@ -570,6 +706,8 @@ def _coverage_present(name: str, value: Any) -> bool:
             and isinstance(value.get("growth_bytes"), int)
             and value["growth_bytes"] >= 0
         )
+    if name == "reference_targets":
+        return bool(value)
     return bool(value)
 
 
@@ -586,6 +724,7 @@ def _aggregate(args: argparse.Namespace) -> dict[str, Any]:
         "postgres": args.postgres_report,
         "soak": args.soak_report,
     }
+    paths["target"] = args.target_report
     reports: dict[str, dict[str, Any]] = {}
     inventory: list[dict[str, Any]] = []
     source_metadata: dict[str, dict[str, Any]] = {}
@@ -613,7 +752,7 @@ def _aggregate(args: argparse.Namespace) -> dict[str, Any]:
         },
         "sources": source_metadata,
         "identity": None,
-        "reference_environment": None,
+        "reference_environments": {},
         "workloads": {},
         "coverage": {
             kind: {name: False for name in REQUIRED_COVERAGE[kind]} for kind in paths
@@ -625,6 +764,7 @@ def _aggregate(args: argparse.Namespace) -> dict[str, Any]:
             "memory": {"sources": {}},
             "database_growth": {"sources": {}},
             "recovery": {"sources": {}},
+            "reference_targets": {"sources": {}},
         },
         "gaps": [],
         "errors": sorted(errors),
@@ -657,25 +797,15 @@ def _aggregate(args: argparse.Namespace) -> dict[str, Any]:
                     f"{kind}:identity_packaged_acceptance_mismatch"
                 )
     if len(accepted_identities) != len(paths):
-        _add_gap(gaps, "identity:all_five_reports_must_be_accepted")
-    accepted_environments = [
-        source_metadata[kind]["reference_environment"]
+        _add_gap(gaps, "identity:all_six_reports_must_be_accepted")
+    accepted_environments = {
+        kind: source_metadata[kind]["reference_environment"]
         for kind in paths
         if kind in source_metadata
-    ]
-    if accepted_environments:
-        summary["reference_environment"] = accepted_environments[0]
-        for kind in paths:
-            if (
-                kind in source_metadata
-                and source_metadata[kind]["reference_environment"]
-                != accepted_environments[0]
-            ):
-                summary["errors"].append(
-                    f"{kind}:reference_environment_identity_mismatch"
-                )
+    }
+    summary["reference_environments"] = accepted_environments
     if len(accepted_environments) != len(paths):
-        _add_gap(gaps, "reference_environment:all_five_reports_must_match")
+        _add_gap(gaps, "reference_environments:all_six_reports_must_be_disclosed")
     accepted_workloads = {
         kind: source_metadata[kind]["reference_workload"]
         for kind in paths
@@ -683,7 +813,7 @@ def _aggregate(args: argparse.Namespace) -> dict[str, Any]:
     }
     summary["workloads"] = accepted_workloads
     if len(accepted_workloads) != len(paths):
-        _add_gap(gaps, "reference_workloads:all_five_reports_must_be_disclosed")
+        _add_gap(gaps, "reference_workloads:all_six_reports_must_be_disclosed")
     for kind in paths:
         if kind not in reports:
             _add_gap(gaps, f"{kind}:report_not_accepted")
@@ -697,6 +827,7 @@ def _aggregate(args: argparse.Namespace) -> dict[str, Any]:
             ("memory", _memory_for),
             ("database_growth", _database_for),
             ("recovery", _recovery_for),
+            ("reference_targets", _reference_targets_for),
         )
         for name, extractor in extractors:
             try:
@@ -751,7 +882,7 @@ def _aggregate(args: argparse.Namespace) -> dict[str, Any]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    for kind in ("counter", "heist", "sqlite", "postgres", "soak"):
+    for kind in ("counter", "heist", "sqlite", "postgres", "soak", "target"):
         parser.add_argument(f"--{kind}-report", required=True, metavar="PATH")
     parser.add_argument(
         "--output", metavar="PATH", help="write the same canonical JSON to PATH"
@@ -776,7 +907,7 @@ def main(argv: list[str] | None = None) -> int:
                 "items": [],
             },
             "measurements": {},
-            "reference_environment": None,
+            "reference_environments": {},
             "workloads": {},
             "gaps": [],
             "errors": [str(error)],

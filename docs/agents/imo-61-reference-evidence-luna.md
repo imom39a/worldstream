@@ -1,135 +1,159 @@
-# IMO-61 Linux reference evidence aggregator
+# IMO-61 Linux reference target and evidence
 
-This lane adds a bounded, fail-closed aggregation command for the final
-acceptance packet. It is an evidence reader, not a benchmark runner: it reads
-only the five paths explicitly supplied on the command line and never opens a
-database, starts a daemon, changes a manifest, or promotes a fixture to
-release evidence.
+The authoritative reference-target path is a real packaged-daemon workload,
+not a fixture benchmark or a checkout-SDK smoke test. The workload runner is
+`scripts/reference-target-workload.py`; its raw report is projected with the
+five existing source reports into six normalized inputs, aggregated, and then
+validated again by the typed release-evidence producer.
 
-## Interface
+Reference performance targets are non-SLA and non-blocking. An honestly
+measured target miss remains publishable. Missing, unattempted, scaled,
+simulated, malformed, duplicate, or substituted facts fail closed, as do any
+correctness, acknowledged-durability, receipt, or identity failures.
 
-```sh
-python3 scripts/reference-evidence.py \
-  --counter-report /path/to/counter.json \
-  --heist-report /path/to/heist.json \
-  --sqlite-report /path/to/sqlite.json \
-  --postgres-report /path/to/postgres.json \
-  --soak-report /path/to/one-hour-soak.json \
-  --output /path/to/reference-summary.json
-```
+## Frozen workload
 
-All five reports are required explicitly. Inputs must be regular, non-symlink
-UTF-8 JSON files no larger than 8 MiB. JSON depth, object size, string size,
-and sample count are bounded. The output is canonical sorted-key JSON with no
-input paths, credentials, payloads, Room IDs, or raw samples.
+The release runner accepts only `worldstream/reference-target-profile/v1` with
+the following exact dimensions:
 
-Each report must include:
+- 10,000 stored/passivated Rooms;
+- 100 simultaneously loaded Rooms;
+- 1,000 mostly-idle real WebSocket Sessions;
+- at least 100 accepted transitions in every one-second monotonic bucket for
+  1,800 seconds;
+- nearest-rank local commit-to-ack p50/p95/p99, with p95 below 100 ms as the
+  target result;
+- the exact separately produced 3,600-second bounded-soak report;
+- a genuine attempt at a 100,000-transition Room, a newest valid snapshot no
+  more than 250 transitions behind, and packaged recovery in at most 5,000 ms;
+  and
+- the exact separately produced 36-cell forced-termination report with no
+  acknowledged loss.
 
-```json
-{
-  "schema": "<accepted producer schema>",
-  "status": "<accepted terminal status>",
-  "release_evidence": false,
-  "performance_class": "reference_non_release",
-  "identity": {
-    "product": "worldstream",
-    "profile": "linux-reference",
-    "version": "reviewed-build-label",
-    "artifact_sha256": "sha256:<64 lowercase hex characters>"
-  }
-}
-```
+Every dimension records `attempted`, `completed`, its bounded aggregate
+observation, the exact target, `target_met`, and `outcome`. Stored, loaded,
+idle, rate, latency, soak, and forced-termination dimensions must complete.
+Snapshot-tail recovery is the sole permitted incomplete dimension, and only
+for the exact frozen Counter v2 semantic ceiling described below.
 
-The five reports must all use exactly `identity.product=worldstream`,
-`identity.profile=linux-reference`, and the same `identity.version`. Their
-artifact SHA-256 values may differ because each report is a distinct subject.
-Any version or profile mismatch blocks aggregation; the tool never combines
-unrelated platform/build artifacts.
+The sustained-rate proof uses exactly 1,800 contiguous, half-open, one-second
+buckets from a monotonic start boundary. It retains only aggregate counts and
+nearest-rank percentiles, not Room IDs, transition IDs, capabilities, payloads,
+or latency samples. Dispatch, queue-full, action-attempt, unconsumed-token,
+late-acceptance, and in-window acceptance counts must satisfy the producer's
+exact arithmetic, including the fixed 512-token queue bound.
 
-The explicit negative release/SLA labels are mandatory. A prose limitation or
-an omitted field cannot satisfy them. Accepted producer schemas are the live
-Counter and Heist schemas, the existing SQLite soak/native-restore schemas,
-the PostgreSQL live/native-restore schemas, and
-`worldstream/soak-evidence/v1` for the one-hour input. Status, schema, identity
-and labels are checked before any measurement is accepted.
+## Honest 100,000-transition target miss
 
-## Measurements and gaps
+The frozen `worldstream.counter` v2 pack accepts at most 16 `increment` and 16
+`private_ack` participant Actions. The runner genuinely submits those 32
+Actions and then the 33rd Action. The expected public result is
+`counter_limit_reached`, so the 100,000-transition snapshot/recovery target is
+not reachable with the frozen pack.
 
-Reports may provide a bounded `measurements` object containing `latency_ms`
-(raw samples or a nearest-rank `{definition,sample_count,p50_ms,p95_ms,p99_ms}`
-object), `load`, `fan_out`, `memory`, `database_growth`, and `recovery`.
-The aggregator also understands the existing soak report's
-`statistics.command_duration_ms` and `statistics.memory` fields. It recomputes
-nearest-rank p50/p95/p99 only from supplied samples; it never derives a
-percentile from a mean or from another percentile. Multiple source percentile
-triplets remain separate under the source name; the tool does not pretend that
-percentiles from different populations can be combined.
+The raw report binds the exact Counter pack version, digest, configuration,
+accepted Action sequence, terminal rejection code, and
+`not_reachable_due_to_frozen_pack_semantics`. It reports an attempted but
+incomplete non-SLA target miss; it must not invent a benchmark pack, fabricate
+snapshot/recovery observations, or convert the product limitation into a
+correctness failure. The producer rejects any other incomplete history result
+and does not accept a fabricated completed-history substitute for this frozen
+pack.
 
-The summary keeps source-specific values for:
+## Package and source binding
 
-- load: connections, active rooms, actions/transition rate;
-- observation fan-out parameters;
-- measured peak RSS and method;
-- database and WAL growth;
-- recovery duration or recovery percentile triplets; and
-- p50/p95/p99 latency.
+The target workload starts the daemon from the verified Linux native archive
+and exercises its public API. It must also import the Python SDK extracted
+from that same verified archive. The report binds the exact digest and size of
+the packaged SDK's `pyproject.toml`, `uv.lock`, `worldstream_sdk/__init__.py`,
+`worldstream_sdk/client.py`, and compatibility identity. Runtime module paths
+must equal the two exact source paths beneath the supplied packaged SDK root;
+a checkout copy or an installed copy under `.venv/site-packages` is rejected.
 
-`status: "pass"` additionally requires this complete source-specific matrix:
+The runner also binds the exact archive, package report, daemon, manifests,
+packaged acceptance, one-hour soak, and kill-point report bytes. Inputs are
+strict, bounded JSON or bounded regular files; duplicate keys, non-finite
+numbers, symlinks, oversized inputs, and digest substitutions fail closed.
 
-| Source | Required coverage |
-| --- | --- |
-| Counter | latency, load, observation fan-out |
-| Heist | latency, load, observation fan-out |
-| SQLite | latency, measured memory, database growth, recovery timing |
-| PostgreSQL | latency, measured memory, database growth, recovery timing |
-| one-hour soak | latency, measured memory, database growth, completed one-hour window |
+Packaged acceptance, one-hour soak, kill-point evidence, and target workload
+may be produced by separate jobs and separate hosts. The target report retains
+each external report's own environment under `bound_external_sources` with
+`source_attribution: bound_external_source`. Equality of certified environment
+fields is not evidence that two jobs ran on one host. Only target workload
+facts use the target runner's `reference_environment`; acceptance keeps its
+own workload/provider `storage_bindings` disclosure.
 
-Values from another source cannot satisfy a missing backend row. Missing
-coverage yields `status: "incomplete"` with a source-specific gap; malformed
-coverage is blocked. The pre-existing local soak report without packaged
-Linux-reference identity labels remains honestly ineligible and is rejected
-before aggregation.
+## Commands
 
-Missing dimensions, an incomplete one-hour window, an unconfigured database,
-or unavailable recovery timing are listed as deterministic `gaps`. Malformed,
-misidentified, release-labelled, or otherwise invalid reports make the whole
-summary `status: "blocked"`. Valid reports with honest missing measurements
-make it `status: "incomplete"`; only a complete supplied measurement set is
-`status: "pass"`. Every result remains `release_evidence: false` and
-`performance_class: "reference_non_release"`.
-
-## Exact input inventory
-
-The output contains one sorted inventory item per readable supplied input
-(including a readable JSON report rejected for identity/schema reasons) with
-its logical kind, byte count, schema, terminal status, and SHA-256 of the exact
-file bytes. `input_sha256_inventory.sha256` hashes the canonical inventory
-representation. This makes the packet reproducible without persisting local
-paths or report contents.
-
-## Verification
-
-These are fixture-only boundary tests and do not constitute measurements:
+After the verified native archive has been safely extracted, run the target
+with the Python environment rooted at the archive's `sdk/python` directory:
 
 ```sh
-python3 -m unittest -v tests/reference_evidence.py
-python3 -m py_compile scripts/reference-evidence.py tests/reference_evidence.py
-python3 -m unittest discover -s tests -p 'reference_evidence.py'
-ruff check scripts/reference-evidence.py tests/reference_evidence.py
-ruff format --check scripts/reference-evidence.py tests/reference_evidence.py
-git diff --check -- scripts/reference-evidence.py tests/reference_evidence.py docs/agents/imo-61-reference-evidence-luna.md
+uv run --python 3.14.7 --project "$packaged_sdk_root" --locked python \
+  scripts/reference-target-workload.py \
+  --output reports/reference-target-workload.json \
+  --daemon-bin "$packaged_daemon" \
+  --package-archive "$native_archive" \
+  --package-report "$package_report" \
+  --packaged-acceptance-report "$acceptance_report" \
+  --packaged-sdk-root "$packaged_sdk_root" \
+  --soak-report "$one_hour_soak_report" \
+  --kill-point-report "$kill_point_report"
 ```
 
-Parent verification on 2026-08-21: 8/8 fixture tests passed; `py_compile`,
-Ruff lint, Ruff format check, and `git diff --check` passed. The fixture suite
-also proves deterministic output, nearest-rank recomputation, accepted soak
-nearest-rank statistics, common-version/Linux-profile identity enforcement,
-fail-closed schema/identity/release-label handling, source-specific coverage,
-honest incomplete-soak/database gaps, exact input inventory retention for
-rejected JSON, and absence of signature-bundle fields.
+Project the raw inputs and aggregate all six mandatory normalized reports:
 
-No commit was created. The aggregator intentionally does not claim the
-one-hour soak, native Linux packaging, PostgreSQL provider conformance, or
-any release/SLA result unless those facts are present in the supplied reports.
-The final signed release manifest may hash this summary and its input reports;
-signature-bundle digests are deliberately outside this command's interface.
+```sh
+uv run --python 3.14.7 --project sdk/python --locked python \
+  scripts/reference-evidence-project.py \
+  --packaged-acceptance-report "$acceptance_report" \
+  --soak-report "$one_hour_soak_report" \
+  --kill-point-report "$kill_point_report" \
+  --target-report reports/reference-target-workload.json \
+  --package-archive "$native_archive" \
+  --package-report "$package_report" \
+  --daemon-bin "$packaged_daemon" \
+  --output-dir reference-inputs/normalized \
+  --aggregate-report reference-inputs/reference-summary.json
+```
+
+`reference-evidence.py` requires exactly one explicit `counter`, `heist`,
+`sqlite`, `postgres`, `soak`, and `target` report. A legacy five-report direct
+invocation cannot pass. The typed producer additionally requires the exact raw
+soak, kill-point, and target reports and revalidates their byte bindings:
+
+```sh
+uv run --python 3.14.7 --project sdk/python --locked python \
+  scripts/release-evidence-produce-reference.py \
+  --output reference-performance-producer.json \
+  --artifact-output reference-performance-artifact.json \
+  --report reference-inputs/reference-summary.json \
+  --counter-report reference-inputs/normalized/counter.json \
+  --heist-report reference-inputs/normalized/heist.json \
+  --sqlite-report reference-inputs/normalized/sqlite.json \
+  --postgres-report reference-inputs/normalized/postgres.json \
+  --soak-report reference-inputs/normalized/soak.json \
+  --target-report reference-inputs/normalized/target.json \
+  --package-archive "$native_archive" \
+  --package-report "$package_report" \
+  --daemon-bin "$packaged_daemon" \
+  --packaged-acceptance-report "$acceptance_report" \
+  --raw-soak-report "$one_hour_soak_report" \
+  --kill-point-report "$kill_point_report" \
+  --raw-target-report reports/reference-target-workload.json
+```
+
+The hidden reduced profile exists only for bounded process tests and is
+explicitly non-publishable. Its output cannot satisfy the frozen release
+producer.
+
+## Verification scope
+
+The focused Python tests exercise schema, identity, source attribution,
+SDK-path and byte binding, history-limit handling, monotonic bucket and queue
+arithmetic, target-miss publication, mandatory sixth input, duplicate/tamper
+rejection, process-tree RSS, premature idle-session failure, and cleanup.
+Fixture tests are code coverage only; they are not execution evidence for the
+30-minute workload, one-hour soak, 36-cell kill matrix, or frozen target
+values. Only reports emitted by the package-bound release jobs are execution
+evidence.

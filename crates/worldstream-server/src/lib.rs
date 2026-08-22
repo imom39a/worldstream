@@ -19,7 +19,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
@@ -39,6 +39,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use worldstream_core::{
     Blake3DigestV1, CapabilityBearerV1, CapabilityScopeSetV1, CapabilityScopeV1,
+    RoomAdmissionQueueSnapshotV1,
 };
 use worldstream_protocol::{
     ActionAccepted, ActionRejected, ActionSubmit, ActivationClaim, ActivationLeaseOperation,
@@ -104,10 +105,52 @@ impl Drop for TelemetryRuntimeOwner {
     }
 }
 
-/// Maximum number of retained frames emitted by one gateway response. A
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InternalQueueSnapshot {
+    pub(crate) name: &'static str,
+    pub(crate) capacity_scope: &'static str,
+    pub(crate) capacity: usize,
+    pub(crate) process_current: usize,
+    pub(crate) process_high_water: usize,
+    pub(crate) unit_high_water: usize,
+    pub(crate) activity_total: u64,
+    pub(crate) completion_total: u64,
+    pub(crate) backpressure_total: u64,
+}
+
+impl InternalQueueSnapshot {
+    fn room_admission(snapshot: RoomAdmissionQueueSnapshotV1) -> Self {
+        Self {
+            name: "room_admission_lane",
+            capacity_scope: "per_room",
+            capacity: snapshot.capacity,
+            process_current: snapshot.process_current,
+            process_high_water: snapshot.process_high_water,
+            unit_high_water: snapshot.unit_high_water,
+            activity_total: snapshot.admitted_total,
+            completion_total: snapshot.completed_total,
+            backpressure_total: snapshot.full_total,
+        }
+    }
+}
+
+fn atomic_max_usize(target: &AtomicUsize, candidate: usize) {
+    let mut current = target.load(Ordering::Acquire);
+    while candidate > current {
+        match target.compare_exchange_weak(current, candidate, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+/// Maximum number of Observation Frames buffered by one connection. A
 /// reconnecting client must use another attach/cursor step rather than making
 /// the WebSocket writer hold an unbounded burst for a slow consumer.
-pub const MAX_OUTBOUND_FRAME_BURST: usize = 1024;
+pub const MAX_OUTBOUND_FRAME_BURST: usize = 256;
+const MAX_OUTBOUND_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const WEBSOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const KILL_AFTER_ACTION_COMMIT_BEFORE_REPLY_ENV: &str =
     "WORLDSTREAM_TEST_KILL_AFTER_ACTION_COMMIT_BEFORE_REPLY";
 const KILL_AFTER_ACTIVATION_CLAIM_BEFORE_REPLY_ENV: &str =
@@ -638,6 +681,12 @@ impl std::fmt::Debug for GatewaySession {
 /// adapters provide those Core-owned seams; [`UnavailableBackend`] remains the
 /// fail-closed default when no verified storage adapter has been configured.
 pub trait GatewayBackend: Send + Sync + 'static {
+    /// Returns aggregate bounded Room Admission Lane metrics without Room IDs.
+    #[must_use]
+    fn room_admission_queue_snapshot(&self) -> RoomAdmissionQueueSnapshotV1 {
+        RoomAdmissionQueueSnapshotV1::default()
+    }
+
     /// Resolves the authenticated principal used by transport rate limiting.
     ///
     /// Implementations must authenticate through the same durable authority
@@ -1419,6 +1468,23 @@ async fn metrics(State(state): State<OperatorState>) -> impl IntoResponse {
         || telemetry::TelemetryMetrics::default().prometheus_text(),
         telemetry::TelemetryHandle::prometheus_text,
     );
+    let telemetry_queue = state.telemetry.as_ref().map_or_else(
+        || telemetry::TelemetryMetrics::default().queue_snapshot(telemetry::DEFAULT_QUEUE_CAPACITY),
+        telemetry::TelemetryHandle::queue_snapshot,
+    );
+    let admission_queue =
+        InternalQueueSnapshot::room_admission(state.backend.room_admission_queue_snapshot());
+    let [frame_queue, payload_queue] = state.live_streams.queue_snapshots();
+    append_internal_queue_metrics(
+        &mut body,
+        &[
+            telemetry_queue,
+            telemetry::dns_resolver_queue_snapshot(),
+            admission_queue,
+            frame_queue,
+            payload_queue,
+        ],
+    );
     body.push_str(&state.rate_limiter.prometheus_text());
     (
         StatusCode::OK,
@@ -1428,6 +1494,53 @@ async fn metrics(State(state): State<OperatorState>) -> impl IntoResponse {
         )],
         body,
     )
+}
+
+fn append_internal_queue_metrics(body: &mut String, queues: &[InternalQueueSnapshot]) {
+    body.push_str("# TYPE worldstream_internal_queue_capacity gauge\n");
+    body.push_str("# TYPE worldstream_internal_queue_process_current gauge\n");
+    body.push_str("# TYPE worldstream_internal_queue_process_high_water gauge\n");
+    body.push_str("# TYPE worldstream_internal_queue_unit_high_water gauge\n");
+    body.push_str("# TYPE worldstream_internal_queue_activity_total counter\n");
+    body.push_str("# TYPE worldstream_internal_queue_completion_total counter\n");
+    body.push_str("# TYPE worldstream_internal_queue_backpressure_total counter\n");
+    for queue in queues {
+        let _ = writeln!(
+            body,
+            "worldstream_internal_queue_capacity{{queue=\"{}\",scope=\"{}\"}} {}",
+            queue.name, queue.capacity_scope, queue.capacity
+        );
+        let _ = writeln!(
+            body,
+            "worldstream_internal_queue_process_current{{queue=\"{}\"}} {}",
+            queue.name, queue.process_current
+        );
+        let _ = writeln!(
+            body,
+            "worldstream_internal_queue_process_high_water{{queue=\"{}\"}} {}",
+            queue.name, queue.process_high_water
+        );
+        let _ = writeln!(
+            body,
+            "worldstream_internal_queue_unit_high_water{{queue=\"{}\"}} {}",
+            queue.name, queue.unit_high_water
+        );
+        let _ = writeln!(
+            body,
+            "worldstream_internal_queue_activity_total{{queue=\"{}\"}} {}",
+            queue.name, queue.activity_total
+        );
+        let _ = writeln!(
+            body,
+            "worldstream_internal_queue_completion_total{{queue=\"{}\"}} {}",
+            queue.name, queue.completion_total
+        );
+        let _ = writeln!(
+            body,
+            "worldstream_internal_queue_backpressure_total{{queue=\"{}\"}} {}",
+            queue.name, queue.backpressure_total
+        );
+    }
 }
 
 async fn readyz(State(state): State<OperatorState>) -> axum::response::Response {
@@ -2473,7 +2586,11 @@ where
 }
 
 async fn close_browser_admission(socket: &mut WebSocket) {
-    let _ = socket.send(browser_admission_close_message()).await;
+    let _ = send_websocket_message(
+        socket.send(browser_admission_close_message()),
+        WEBSOCKET_SEND_TIMEOUT,
+    )
+    .await;
 }
 
 fn browser_admission_close_message() -> Message {
@@ -2713,8 +2830,14 @@ async fn stream_loop(
             }
             push = push_receiver.recv() => {
                 match push {
-                    Some(LivePush::Frame(frame)) => {
-                        if send_body(&mut socket, "observation.deliver", None, frame).await.is_err() {
+                    Some(LivePush::Frame(push)) => {
+                        if send_websocket_message(
+                            socket.send(push.message),
+                            WEBSOCKET_SEND_TIMEOUT,
+                        )
+                        .await
+                        .is_err()
+                        {
                             break;
                         }
                     }
@@ -2767,6 +2890,7 @@ struct LiveStreamRegistry {
     sessions: Arc<Mutex<HashMap<String, LiveStreamRegistration>>>,
     active_session_ids: Arc<Mutex<HashSet<UlidString>>>,
     publication_lock: Arc<AsyncMutex<()>>,
+    queue_metrics: Arc<LiveStreamQueueMetrics>,
 }
 
 struct ActiveGatewaySession {
@@ -2806,6 +2930,8 @@ struct LiveStreamRegistration {
     member_id: String,
     last_delivered_frame_seq: u64,
     sender: mpsc::Sender<LivePush>,
+    queued_frames: Arc<AtomicUsize>,
+    queued_payload_bytes: Arc<AtomicUsize>,
     close: watch::Sender<Option<ErrorCode>>,
 }
 
@@ -2817,10 +2943,145 @@ struct LiveStreamSnapshot {
     member_id: String,
     last_delivered_frame_seq: u64,
     sender: mpsc::Sender<LivePush>,
+    queued_frames: Arc<AtomicUsize>,
+    queued_payload_bytes: Arc<AtomicUsize>,
+}
+
+#[derive(Debug, Default)]
+struct LiveQueueCounters {
+    process_current: AtomicUsize,
+    process_high_water: AtomicUsize,
+    unit_high_water: AtomicUsize,
+    activity_total: AtomicU64,
+    completion_total: AtomicU64,
+    backpressure_total: AtomicU64,
+}
+
+impl LiveQueueCounters {
+    fn try_reserve(
+        self: &Arc<Self>,
+        unit_current: Arc<AtomicUsize>,
+        amount: usize,
+        capacity: usize,
+        activity_amount: u64,
+    ) -> Option<LiveQueueReservation> {
+        let Ok(previous) =
+            unit_current.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(amount).filter(|next| *next <= capacity)
+            })
+        else {
+            self.note_backpressure();
+            return None;
+        };
+        let unit_depth = previous + amount;
+        let process_depth = self.process_current.fetch_add(amount, Ordering::AcqRel) + amount;
+        atomic_max_usize(&self.process_high_water, process_depth);
+        atomic_max_usize(&self.unit_high_water, unit_depth);
+        self.activity_total
+            .fetch_add(activity_amount, Ordering::Relaxed);
+        Some(LiveQueueReservation {
+            unit_current,
+            metrics: Arc::clone(self),
+            amount,
+            activity_amount,
+        })
+    }
+
+    fn note_backpressure(&self) {
+        self.backpressure_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self, name: &'static str, capacity: usize) -> InternalQueueSnapshot {
+        InternalQueueSnapshot {
+            name,
+            capacity_scope: "per_connection",
+            capacity,
+            process_current: self.process_current.load(Ordering::Acquire),
+            process_high_water: self.process_high_water.load(Ordering::Acquire),
+            unit_high_water: self.unit_high_water.load(Ordering::Acquire),
+            activity_total: self.activity_total.load(Ordering::Relaxed),
+            completion_total: self.completion_total.load(Ordering::Relaxed),
+            backpressure_total: self.backpressure_total.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct LiveStreamQueueMetrics {
+    frames: Arc<LiveQueueCounters>,
+    payload_bytes: Arc<LiveQueueCounters>,
+}
+
+struct LiveQueueReservation {
+    unit_current: Arc<AtomicUsize>,
+    metrics: Arc<LiveQueueCounters>,
+    amount: usize,
+    activity_amount: u64,
+}
+
+impl Drop for LiveQueueReservation {
+    fn drop(&mut self) {
+        let unit_previous = self.unit_current.fetch_sub(self.amount, Ordering::AcqRel);
+        let process_previous = self
+            .metrics
+            .process_current
+            .fetch_sub(self.amount, Ordering::AcqRel);
+        debug_assert!(unit_previous >= self.amount);
+        debug_assert!(process_previous >= self.amount);
+        self.metrics
+            .completion_total
+            .fetch_add(self.activity_amount, Ordering::Relaxed);
+    }
+}
+
+struct OutboundPayloadReservation {
+    _reservation: LiveQueueReservation,
+}
+
+impl OutboundPayloadReservation {
+    fn try_new(
+        queued_payload_bytes: Arc<AtomicUsize>,
+        payload_bytes: usize,
+        metrics: &Arc<LiveQueueCounters>,
+    ) -> Option<Self> {
+        let activity_amount = u64::try_from(payload_bytes).unwrap_or(u64::MAX);
+        metrics
+            .try_reserve(
+                queued_payload_bytes,
+                payload_bytes,
+                MAX_OUTBOUND_BUFFER_BYTES,
+                activity_amount,
+            )
+            .map(|reservation| Self {
+                _reservation: reservation,
+            })
+    }
+}
+
+struct OutboundFrameReservation {
+    _reservation: LiveQueueReservation,
+}
+
+impl OutboundFrameReservation {
+    fn try_new(queued_frames: Arc<AtomicUsize>, metrics: &Arc<LiveQueueCounters>) -> Option<Self> {
+        metrics
+            .try_reserve(queued_frames, 1, LIVE_PUSH_CAPACITY, 1)
+            .map(|reservation| Self {
+                _reservation: reservation,
+            })
+    }
+}
+
+struct LiveFramePush {
+    #[cfg(test)]
+    frame: ObservationDeliver,
+    message: Message,
+    _frame_reservation: OutboundFrameReservation,
+    _payload_reservation: OutboundPayloadReservation,
 }
 
 enum LivePush {
-    Frame(ObservationDeliver),
+    Frame(LiveFramePush),
 }
 
 impl LiveStreamRegistry {
@@ -2846,6 +3107,8 @@ impl LiveStreamRegistry {
                     member_id,
                     last_delivered_frame_seq,
                     sender,
+                    queued_frames: Arc::new(AtomicUsize::new(0)),
+                    queued_payload_bytes: Arc::new(AtomicUsize::new(0)),
                     close,
                 });
                 Ok(())
@@ -2888,6 +3151,8 @@ impl LiveStreamRegistry {
                 member_id: registration.member_id.clone(),
                 last_delivered_frame_seq: registration.last_delivered_frame_seq,
                 sender: registration.sender.clone(),
+                queued_frames: Arc::clone(&registration.queued_frames),
+                queued_payload_bytes: Arc::clone(&registration.queued_payload_bytes),
             })
             .collect()
     }
@@ -2913,6 +3178,67 @@ impl LiveStreamRegistry {
             let _ = registration.close.send(Some(code));
         }
     }
+
+    fn queue_snapshots(&self) -> [InternalQueueSnapshot; 2] {
+        [
+            self.queue_metrics
+                .frames
+                .snapshot("websocket_live_push_frame_queue", LIVE_PUSH_CAPACITY),
+            self.queue_metrics.payload_bytes.snapshot(
+                "websocket_outbound_payload_bytes",
+                MAX_OUTBOUND_BUFFER_BYTES,
+            ),
+        ]
+    }
+}
+
+fn prepare_observation_batch(
+    frames: Vec<ObservationDeliver>,
+) -> Result<Vec<Message>, OutboundMessageError> {
+    if frames.len() > MAX_OUTBOUND_FRAME_BURST {
+        return Err(OutboundMessageError::SlowConsumer);
+    }
+    let mut payload_bytes = 0usize;
+    let mut messages = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let message = prepare_body_message("observation.deliver", None, &frame)?;
+        payload_bytes = payload_bytes
+            .checked_add(outbound_message_payload_bytes(&message))
+            .ok_or(OutboundMessageError::SlowConsumer)?;
+        if payload_bytes > MAX_OUTBOUND_BUFFER_BYTES {
+            return Err(OutboundMessageError::SlowConsumer);
+        }
+        messages.push(message);
+    }
+    Ok(messages)
+}
+
+fn prepare_live_push(
+    frame: &ObservationDeliver,
+    queued_frames: Arc<AtomicUsize>,
+    queued_payload_bytes: Arc<AtomicUsize>,
+    metrics: &LiveStreamQueueMetrics,
+) -> Result<LivePush, OutboundMessageError> {
+    let message = prepare_body_message("observation.deliver", None, frame)?;
+    let payload_bytes = outbound_message_payload_bytes(&message);
+    let Some(payload_reservation) = OutboundPayloadReservation::try_new(
+        queued_payload_bytes,
+        payload_bytes,
+        &metrics.payload_bytes,
+    ) else {
+        return Err(OutboundMessageError::SlowConsumer);
+    };
+    let Some(frame_reservation) = OutboundFrameReservation::try_new(queued_frames, &metrics.frames)
+    else {
+        return Err(OutboundMessageError::SlowConsumer);
+    };
+    Ok(LivePush::Frame(LiveFramePush {
+        #[cfg(test)]
+        frame: frame.clone(),
+        message,
+        _frame_reservation: frame_reservation,
+        _payload_reservation: payload_reservation,
+    }))
 }
 
 async fn publish_live_frames(
@@ -2940,6 +3266,7 @@ async fn publish_live_frames(
             continue;
         };
         if frames.len() > LIVE_PUSH_CAPACITY {
+            registry.queue_metrics.frames.note_backpressure();
             registry.close(&snapshot.session_id, ErrorCode::SlowConsumer);
             continue;
         }
@@ -2951,15 +3278,30 @@ async fn publish_live_frames(
                 registry.close(&snapshot.session_id, ErrorCode::Internal);
                 break;
             }
-            if snapshot
-                .sender
-                .try_send(LivePush::Frame(frame.clone()))
-                .is_err()
-            {
-                registry.close(&snapshot.session_id, ErrorCode::SlowConsumer);
-                break;
+            let frame_seq = frame.frame_seq;
+            match prepare_live_push(
+                &frame,
+                Arc::clone(&snapshot.queued_frames),
+                Arc::clone(&snapshot.queued_payload_bytes),
+                &registry.queue_metrics,
+            ) {
+                Ok(push) => {
+                    if snapshot.sender.try_send(push).is_err() {
+                        registry.queue_metrics.frames.note_backpressure();
+                        registry.close(&snapshot.session_id, ErrorCode::SlowConsumer);
+                        break;
+                    }
+                    registry.mark_delivered(&snapshot.session_id, frame_seq);
+                }
+                Err(OutboundMessageError::SlowConsumer) => {
+                    registry.close(&snapshot.session_id, ErrorCode::SlowConsumer);
+                    break;
+                }
+                Err(OutboundMessageError::Internal) => {
+                    registry.close(&snapshot.session_id, ErrorCode::Internal);
+                    break;
+                }
             }
-            registry.mark_delivered(&snapshot.session_id, frame.frame_seq);
         }
     }
 }
@@ -3251,27 +3593,42 @@ async fn dispatch_message(
                     return Ok(());
                 }
             };
+            let AttachReply {
+                attached,
+                reset,
+                frames,
+            } = reply;
+            let frame_count = frames.len();
+            let prepared_frames = match prepare_observation_batch(frames) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    send_error(
+                        socket,
+                        request_id,
+                        error.code(),
+                        error == OutboundMessageError::SlowConsumer,
+                    )
+                    .await?;
+                    record_frame_with_correlation(
+                        telemetry,
+                        telemetry::FrameDeliveryOutcomeV1::Failed,
+                        frame_count,
+                        correlation,
+                    );
+                    return Err(());
+                }
+            };
             *attached_stream = Some(AttachedStream {
-                room_id: reply.attached.room_id.clone(),
-                member_id: reply.attached.member_id.clone(),
+                room_id: attached.room_id.clone(),
+                member_id: attached.member_id.clone(),
             });
-            if reply.frames.len() > MAX_OUTBOUND_FRAME_BURST {
-                send_error(socket, request_id, ErrorCode::SlowConsumer, true).await?;
-                record_frame_with_correlation(
-                    telemetry,
-                    telemetry::FrameDeliveryOutcomeV1::Failed,
-                    reply.frames.len(),
-                    correlation,
-                );
-                return Ok(());
-            }
             record_frame_with_correlation(
                 telemetry,
                 telemetry::FrameDeliveryOutcomeV1::Queued,
-                reply.frames.len(),
+                frame_count,
                 correlation,
             );
-            if send_body(socket, "room.attached", request_id, reply.attached)
+            if send_body(socket, "room.attached", request_id, attached)
                 .await
                 .is_err()
             {
@@ -3283,7 +3640,7 @@ async fn dispatch_message(
                 );
                 return Err(());
             }
-            if let Some(reset) = reply.reset
+            if let Some(reset) = reset
                 && send_body(socket, "projection.reset", None, reset)
                     .await
                     .is_err()
@@ -3296,8 +3653,8 @@ async fn dispatch_message(
                 );
                 return Err(());
             }
-            for frame in reply.frames {
-                if send_body(socket, "observation.deliver", None, frame)
+            for message in prepared_frames {
+                if send_websocket_message(socket.send(message), WEBSOCKET_SEND_TIMEOUT)
                     .await
                     .is_err()
                 {
@@ -3331,35 +3688,42 @@ async fn dispatch_message(
                 .await
                 {
                     Ok(frames) => {
-                        let mut registration = Ok(());
-                        if frames.len() <= MAX_OUTBOUND_FRAME_BURST {
-                            let registration_frame_seq = frames
-                                .iter()
-                                .map(|frame| frame.frame_seq)
-                                .max()
-                                .unwrap_or(through_frame_head);
-                            if let Some(attached) = attached_stream.as_ref()
-                                && attached.room_id == sync_room_id
-                                && attached.member_id == sync_member_id
-                            {
-                                registration = live_streams.register(
-                                    Arc::clone(session),
-                                    sync_room_id.clone(),
-                                    sync_member_id.clone(),
-                                    registration_frame_seq,
-                                    push_sender.clone(),
-                                    close_sender.clone(),
-                                );
+                        let frame_count = frames.len();
+                        let registration_frame_seq = frames
+                            .iter()
+                            .map(|frame| frame.frame_seq)
+                            .max()
+                            .unwrap_or(through_frame_head);
+                        match prepare_observation_batch(frames) {
+                            Ok(prepared_frames) => {
+                                let registration = if let Some(attached) = attached_stream.as_ref()
+                                    && attached.room_id == sync_room_id
+                                    && attached.member_id == sync_member_id
+                                {
+                                    live_streams.register(
+                                        Arc::clone(session),
+                                        sync_room_id.clone(),
+                                        sync_member_id.clone(),
+                                        registration_frame_seq,
+                                        push_sender.clone(),
+                                        close_sender.clone(),
+                                    )
+                                } else {
+                                    Ok(())
+                                };
+                                registration
+                                    .map(|()| (prepared_frames, frame_count))
+                                    .map_err(SyncDeliveryError::Backend)
                             }
+                            Err(error) => Err(SyncDeliveryError::Outbound { error, frame_count }),
                         }
-                        registration.map(|()| frames)
                     }
-                    Err(error) => Err(error),
+                    Err(error) => Err(SyncDeliveryError::Backend(error)),
                 }
             };
-            let frames = match sync_result {
-                Ok(frames) => frames,
-                Err(error) => {
+            let (prepared_frames, frame_count) = match sync_result {
+                Ok(prepared) => prepared,
+                Err(SyncDeliveryError::Backend(error)) => {
                     send_error(socket, request_id, error.code(), is_retryable(&error)).await?;
                     record_frame_with_correlation(
                         telemetry,
@@ -3369,26 +3733,32 @@ async fn dispatch_message(
                     );
                     return Ok(());
                 }
+                Err(SyncDeliveryError::Outbound { error, frame_count }) => {
+                    send_error(
+                        socket,
+                        request_id,
+                        error.code(),
+                        error == OutboundMessageError::SlowConsumer,
+                    )
+                    .await?;
+                    record_frame_with_correlation(
+                        telemetry,
+                        telemetry::FrameDeliveryOutcomeV1::Failed,
+                        frame_count,
+                        correlation,
+                    );
+                    return Err(());
+                }
             };
-            if frames.len() > MAX_OUTBOUND_FRAME_BURST {
-                send_error(socket, request_id, ErrorCode::SlowConsumer, true).await?;
-                record_frame_with_correlation(
-                    telemetry,
-                    telemetry::FrameDeliveryOutcomeV1::Failed,
-                    frames.len(),
-                    correlation,
-                );
-                return Ok(());
-            }
             record_frame_with_correlation(
                 telemetry,
                 telemetry::FrameDeliveryOutcomeV1::Queued,
-                frames.len(),
+                frame_count,
                 correlation,
             );
             *live = true;
-            for frame in frames {
-                if send_body(socket, "observation.deliver", None, frame)
+            for message in prepared_frames {
+                if send_websocket_message(socket.send(message), WEBSOCKET_SEND_TIMEOUT)
                     .await
                     .is_err()
                 {
@@ -3785,8 +4155,40 @@ async fn send_body<T: Serialize>(
     request_id: Option<&UlidString>,
     body: T,
 ) -> Result<(), ()> {
+    let message = prepare_body_message(message_type, request_id, body).map_err(|_| ())?;
+    send_websocket_message(socket.send(message), WEBSOCKET_SEND_TIMEOUT).await
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutboundMessageError {
+    Internal,
+    SlowConsumer,
+}
+
+enum SyncDeliveryError {
+    Backend(BackendError),
+    Outbound {
+        error: OutboundMessageError,
+        frame_count: usize,
+    },
+}
+
+impl OutboundMessageError {
+    const fn code(self) -> ErrorCode {
+        match self {
+            Self::Internal => ErrorCode::Internal,
+            Self::SlowConsumer => ErrorCode::SlowConsumer,
+        }
+    }
+}
+
+fn prepare_body_message<T: Serialize>(
+    message_type: &str,
+    request_id: Option<&UlidString>,
+    body: T,
+) -> Result<Message, OutboundMessageError> {
     let Some(message_id) = next_ulid() else {
-        return Err(());
+        return Err(OutboundMessageError::Internal);
     };
     let envelope = ProtocolEnvelope {
         protocol: worldstream_protocol::PROTOCOL_VERSION.to_owned(),
@@ -3795,14 +4197,30 @@ async fn send_body<T: Serialize>(
         request_id: request_id.cloned(),
         body,
     };
-    let text = serde_json::to_string(&envelope).map_err(|_| ())?;
+    let text = serde_json::to_string(&envelope).map_err(|_| OutboundMessageError::Internal)?;
     if text.len() > worldstream_protocol::MAX_MESSAGE_BYTES {
-        return Err(());
+        return Err(OutboundMessageError::SlowConsumer);
     }
-    socket
-        .send(Message::Text(text.into()))
-        .await
-        .map_err(|_| ())
+    Ok(Message::Text(text.into()))
+}
+
+fn outbound_message_payload_bytes(message: &Message) -> usize {
+    match message {
+        Message::Text(text) => text.len(),
+        Message::Binary(bytes) | Message::Ping(bytes) | Message::Pong(bytes) => bytes.len(),
+        Message::Close(Some(frame)) => frame.reason.len(),
+        Message::Close(None) => 0,
+    }
+}
+
+async fn send_websocket_message<F, E>(send: F, timeout: Duration) -> Result<(), ()>
+where
+    F: Future<Output = Result<(), E>>,
+{
+    match tokio::time::timeout(timeout, send).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) | Err(_) => Err(()),
+    }
 }
 
 /// Liveness response that deliberately contains no storage status.
@@ -4306,10 +4724,21 @@ mod tests {
                 observation: serde_json::json!({"value": 1}),
                 frame_payload_hash: "hash".to_owned(),
             };
-            if room_id == "overflow" {
-                return Ok((1..=(super::LIVE_PUSH_CAPACITY as u64 + 1))
+            if room_id == "frame-overflow" {
+                return Ok((1..=257)
                     .map(|frame_seq| ObservationDeliver {
                         frame_seq,
+                        ..frame.clone()
+                    })
+                    .collect());
+            }
+            if room_id == "byte-overflow" {
+                return Ok((1..=17)
+                    .map(|frame_seq| ObservationDeliver {
+                        frame_seq,
+                        observation: serde_json::json!({
+                            "padding": "x".repeat(256 * 1024),
+                        }),
                         ..frame.clone()
                     })
                     .collect());
@@ -4591,11 +5020,11 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("register stream: {error:?}"));
 
         super::publish_live_frames(Arc::new(SuccessfulCreateBackend), &registry, "room").await;
-        let Some(super::LivePush::Frame(frame)) = receiver.recv().await else {
+        let Some(super::LivePush::Frame(push)) = receiver.recv().await else {
             unreachable!("live frame was not queued")
         };
-        assert_eq!(frame.frame_seq, 1);
-        assert_eq!(frame.member_id, "member");
+        assert_eq!(push.frame.frame_seq, 1);
+        assert_eq!(push.frame.member_id, "member");
 
         super::publish_live_frames(Arc::new(SuccessfulCreateBackend), &registry, "room").await;
         assert!(
@@ -4639,10 +5068,10 @@ mod tests {
         publisher
             .await
             .unwrap_or_else(|error| unreachable!("publisher task: {error}"));
-        let Some(super::LivePush::Frame(frame)) = receiver.recv().await else {
+        let Some(super::LivePush::Frame(push)) = receiver.recv().await else {
             unreachable!("live frame was lost across the registration barrier")
         };
-        assert_eq!(frame.frame_seq, 1);
+        assert_eq!(push.frame.frame_seq, 1);
     }
 
     #[tokio::test]
@@ -4690,20 +5119,22 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("register spectator: {error:?}"));
 
         super::publish_live_frames(Arc::new(SuccessfulCreateBackend), &registry, "room").await;
-        let Some(super::LivePush::Frame(participant_frame)) = participant_receiver.recv().await
+        let Some(super::LivePush::Frame(participant_push)) = participant_receiver.recv().await
         else {
             unreachable!("participant frame was not queued")
         };
-        let Some(super::LivePush::Frame(spectator_frame)) = spectator_receiver.recv().await else {
+        let Some(super::LivePush::Frame(spectator_push)) = spectator_receiver.recv().await else {
             unreachable!("spectator frame was not queued")
         };
+        let participant_frame = participant_push.frame;
+        let spectator_frame = spectator_push.frame;
         assert_eq!(participant_frame.member_id, "participant");
         assert_eq!(spectator_frame.member_id, "spectator");
         assert_ne!(participant_frame.member_id, spectator_frame.member_id);
     }
 
     #[tokio::test]
-    async fn live_slow_consumer_closes_with_typed_error() {
+    async fn live_frame_count_overflow_closes_with_typed_error() {
         let session_id = "01ARZ3NDEKTSV4RRFFQ69G5FAZ"
             .parse()
             .unwrap_or_else(|error| unreachable!("ULID: {error}"));
@@ -4717,7 +5148,7 @@ mod tests {
         registry
             .register(
                 session,
-                "overflow".to_owned(),
+                "frame-overflow".to_owned(),
                 "member".to_owned(),
                 0,
                 sender,
@@ -4725,13 +5156,154 @@ mod tests {
             )
             .unwrap_or_else(|error| unreachable!("register stream: {error:?}"));
 
-        super::publish_live_frames(Arc::new(SuccessfulCreateBackend), &registry, "overflow").await;
-        close_receiver
-            .changed()
+        super::publish_live_frames(
+            Arc::new(SuccessfulCreateBackend),
+            &registry,
+            "frame-overflow",
+        )
+        .await;
+        tokio::time::timeout(Duration::from_millis(50), close_receiver.changed())
             .await
+            .unwrap_or_else(|_| unreachable!("frame-count overflow did not close the connection"))
             .unwrap_or_else(|error| unreachable!("slow-consumer close: {error}"));
         assert_eq!(*close_receiver.borrow(), Some(ErrorCode::SlowConsumer));
-        assert!(registry.snapshots_for_room("overflow").is_empty());
+        assert!(registry.snapshots_for_room("frame-overflow").is_empty());
+        let [frames, _] = registry.queue_snapshots();
+        assert_eq!(frames.capacity, super::LIVE_PUSH_CAPACITY);
+        assert_eq!(frames.backpressure_total, 1);
+    }
+
+    #[tokio::test]
+    async fn live_payload_byte_overflow_closes_with_typed_error() {
+        let session_id = "01ARZ3NDEKTSV4RRFFQ69G5FB1"
+            .parse()
+            .unwrap_or_else(|error| unreachable!("ULID: {error}"));
+        let session = Arc::new(GatewaySession::new(
+            session_id,
+            CapabilityBearerV1::from_bytes([0x4a; 32]),
+        ));
+        let (sender, _receiver) = tokio::sync::mpsc::channel(super::LIVE_PUSH_CAPACITY);
+        let (close_sender, mut close_receiver) = tokio::sync::watch::channel(None);
+        let registry = super::LiveStreamRegistry::default();
+        registry
+            .register(
+                session,
+                "byte-overflow".to_owned(),
+                "member".to_owned(),
+                0,
+                sender,
+                close_sender,
+            )
+            .unwrap_or_else(|error| unreachable!("register stream: {error:?}"));
+
+        super::publish_live_frames(
+            Arc::new(SuccessfulCreateBackend),
+            &registry,
+            "byte-overflow",
+        )
+        .await;
+        tokio::time::timeout(Duration::from_millis(50), close_receiver.changed())
+            .await
+            .unwrap_or_else(|_| unreachable!("payload-byte overflow did not close the connection"))
+            .unwrap_or_else(|error| unreachable!("slow-consumer close: {error}"));
+        assert_eq!(*close_receiver.borrow(), Some(ErrorCode::SlowConsumer));
+        assert!(registry.snapshots_for_room("byte-overflow").is_empty());
+        let [frames, payload] = registry.queue_snapshots();
+        assert!(frames.activity_total > 0);
+        assert!(payload.activity_total > 0);
+        assert!(payload.unit_high_water <= super::MAX_OUTBOUND_BUFFER_BYTES);
+        assert_eq!(payload.backpressure_total, 1);
+    }
+
+    #[test]
+    fn observation_batch_admission_enforces_exact_frame_and_byte_limits() {
+        fn frame(frame_seq: u64, padding_bytes: usize) -> ObservationDeliver {
+            ObservationDeliver {
+                room_id: "room".to_owned(),
+                member_id: "member".to_owned(),
+                frame_seq,
+                cause_room_seq: frame_seq,
+                frame_kind: "transition".to_owned(),
+                observation_schema: "counter/v1".to_owned(),
+                observation: serde_json::json!({
+                    "padding": "x".repeat(padding_bytes),
+                }),
+                frame_payload_hash: "hash".to_owned(),
+            }
+        }
+
+        assert_eq!(super::LIVE_PUSH_CAPACITY, 256);
+
+        let exact_frame_limit = (1..=super::MAX_OUTBOUND_FRAME_BURST as u64)
+            .map(|frame_seq| frame(frame_seq, 0))
+            .collect();
+        let prepared = super::prepare_observation_batch(exact_frame_limit)
+            .unwrap_or_else(|error| unreachable!("exact frame limit: {error:?}"));
+        assert_eq!(prepared.len(), 256);
+
+        let over_frame_limit = (1..=super::MAX_OUTBOUND_FRAME_BURST as u64 + 1)
+            .map(|frame_seq| frame(frame_seq, 0))
+            .collect();
+        assert_eq!(
+            super::prepare_observation_batch(over_frame_limit),
+            Err(super::OutboundMessageError::SlowConsumer)
+        );
+
+        let over_byte_limit = (1..=17)
+            .map(|frame_seq| frame(frame_seq, 256 * 1024))
+            .collect();
+        assert_eq!(
+            super::prepare_observation_batch(over_byte_limit),
+            Err(super::OutboundMessageError::SlowConsumer)
+        );
+    }
+
+    #[test]
+    fn live_payload_budget_accepts_exact_limit_and_releases_on_drop() {
+        let queued_payload_bytes = Arc::new(AtomicUsize::new(0));
+        let metrics = Arc::new(super::LiveQueueCounters::default());
+        let reservation = super::OutboundPayloadReservation::try_new(
+            Arc::clone(&queued_payload_bytes),
+            super::MAX_OUTBOUND_BUFFER_BYTES,
+            &metrics,
+        )
+        .unwrap_or_else(|| unreachable!("exact byte limit must be admitted"));
+        assert_eq!(
+            queued_payload_bytes.load(Ordering::Acquire),
+            super::MAX_OUTBOUND_BUFFER_BYTES
+        );
+        assert!(
+            super::OutboundPayloadReservation::try_new(
+                Arc::clone(&queued_payload_bytes),
+                1,
+                &metrics,
+            )
+            .is_none()
+        );
+        assert_eq!(metrics.backpressure_total.load(Ordering::Relaxed), 1);
+        drop(reservation);
+        assert_eq!(queued_payload_bytes.load(Ordering::Acquire), 0);
+        assert_eq!(metrics.process_current.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn websocket_send_timeout_rejects_a_stalled_sender() {
+        let stalled = std::future::pending::<Result<(), std::convert::Infallible>>();
+        assert!(
+            super::send_websocket_message(stalled, Duration::from_millis(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            super::send_websocket_message(
+                std::future::ready(Ok::<(), std::convert::Infallible>(())),
+                Duration::from_millis(1),
+            )
+            .await
+            .is_ok()
+        );
+        assert!(super::WEBSOCKET_SEND_TIMEOUT <= Duration::from_secs(10));
+        assert!(!super::WEBSOCKET_SEND_TIMEOUT.is_zero());
     }
 
     fn auth_header() -> HeaderValue {
@@ -4931,9 +5503,10 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("response: {error}"));
         assert_eq!(response.status(), StatusCode::OK);
 
-        let Some(super::LivePush::Frame(frame)) = receiver.recv().await else {
+        let Some(super::LivePush::Frame(push)) = receiver.recv().await else {
             unreachable!("timer commit did not advance the registered live stream")
         };
+        let frame = push.frame;
         assert_eq!(frame.frame_seq, 2);
         assert_eq!(frame.cause_room_seq, 2);
         assert!(
@@ -5304,6 +5877,27 @@ mod tests {
         assert!(body.contains("worldstream_telemetry_events_total{event=\"activation\"} 0"));
         assert!(body.contains("worldstream_telemetry_queue_capacity 256"));
         assert!(body.contains("worldstream_telemetry_queued 0"));
+        for (queue, scope, capacity) in [
+            ("telemetry_exporter", "global", 256),
+            ("telemetry_dns_resolver_queue", "global", 2),
+            ("room_admission_lane", "per_room", 256),
+            ("websocket_live_push_frame_queue", "per_connection", 256),
+            (
+                "websocket_outbound_payload_bytes",
+                "per_connection",
+                4 * 1024 * 1024,
+            ),
+        ] {
+            assert!(body.contains(&format!(
+                "worldstream_internal_queue_capacity{{queue=\"{queue}\",scope=\"{scope}\"}} {capacity}"
+            )));
+            assert!(body.contains(&format!(
+                "worldstream_internal_queue_process_current{{queue=\"{queue}\"}} 0"
+            )));
+            assert!(body.contains(&format!(
+                "worldstream_internal_queue_backpressure_total{{queue=\"{queue}\"}} 0"
+            )));
+        }
         assert!(!body.contains("room_id"));
         assert!(!body.contains("authorization"));
         assert_eq!(

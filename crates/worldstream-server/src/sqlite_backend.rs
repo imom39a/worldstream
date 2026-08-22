@@ -17,22 +17,23 @@ use std::{
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use worldstream_core::{
-    AccessModeV1, ActionAdmittedAt, ActionOfferWitnessV1, ActivationIntentStateV1,
-    ActivationOperationRequestV1, ActivationResultCodeV1, AuthorityChangeId, AuthorityChangeV1,
+    AccessModeV1, ActionOfferWitnessV1, ActivationIntentStateV1, ActivationOperationRequestV1,
+    ActivationResultCodeV1, AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1,
     AuthorityCheckedAt, AuthorityErrorV1, AuthorityV1, AuthorizedRunnerControlV1,
     AuthorizedTimerFiredV1, CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1,
     CapabilityExpiresAt, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
     CreationRecordedAt, HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
     InitialMembershipProposalV1, MemberReadOperationV1, MembershipStandingV1, MembershipV1,
-    NewCapabilityV1, PackDigestV1, PackGenesisRequestV1, PackRegistryV1, PackViewerV1,
-    ParticipantActionIngressErrorV1, ParticipantActionIngressV1, ParticipantActionRequestV1,
-    PreparedRoomCreationV1, PrincipalKindV1, ReceiptSemanticInputV1, ReceiptSemanticTimeV1,
-    ReplayProjectionKindV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1,
-    RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1,
-    RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1,
-    SessionFrameV1, SessionSyncTokenV1, SessionV1, StoredSemanticResultV1, TimerFiredRequestV1,
-    TimerGenerationV1, TimerId, TransitionId, authorize_participant_action_operation,
-    authorize_room_creation_operation, commit_room_creation,
+    MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1, PackRegistryV1,
+    PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
+    ParticipantActionRequestV1, PreparedRoomCreationV1, PrincipalKindV1, ReceiptSemanticInputV1,
+    ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1,
+    RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1,
+    SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
+    authorize_participant_action_operation, authorize_room_creation_operation,
+    commit_room_creation,
 };
 use worldstream_protocol::{
     AccessMode, ActionAccepted, ActionOffer, ActionRejected, ActionSubmit, ActivationClaim,
@@ -78,6 +79,8 @@ pub struct SqliteGatewayBackend {
     bindings: SessionBindings,
     supervisor: Arc<SqliteRoomSupervisorV1>,
     recoveries: Mutex<BTreeMap<String, CatchingUpRoom>>,
+    host_clock: Arc<dyn HostClockV1>,
+    admission_lanes: RoomAdmissionLanesV1,
 }
 
 struct CatchingUpRoom {
@@ -85,9 +88,9 @@ struct CatchingUpRoom {
     recovery: SqliteRoomRecoveryV1,
 }
 
-struct RecoveryWallClock;
+struct RuntimeWallClock;
 
-impl HostClockV1 for RecoveryWallClock {
+impl HostClockV1 for RuntimeWallClock {
     fn sample(&self) -> Result<HostClockSampleV1, HostClockErrorV1> {
         let value = OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -105,6 +108,8 @@ impl fmt::Debug for SqliteGatewayBackend {
             .field("bindings", &self.bindings)
             .field("supervisor", &self.supervisor)
             .field("recoveries", &"[OPAQUE]")
+            .field("host_clock", &"[OPAQUE]")
+            .field("admission_lanes", &self.admission_lanes)
             .finish()
     }
 }
@@ -115,12 +120,41 @@ impl SqliteGatewayBackend {
     /// coordination, so those operations remain fail closed below.
     #[must_use]
     pub fn new(store: SqliteRoomStore, registry: Arc<PackRegistryV1>) -> Self {
+        Self::with_host_clock(
+            store,
+            registry,
+            Arc::new(MonotonicHostClockV1::new(RuntimeWallClock)),
+        )
+    }
+
+    /// Wires the gateway to one application-owned semantic `HostClock`.
+    ///
+    /// The same monotonic clock is used for Action admission and restart
+    /// catch-up cutoffs. Callers providing a raw wall source should wrap it in
+    /// [`MonotonicHostClockV1`].
+    #[must_use]
+    pub fn with_host_clock(
+        store: SqliteRoomStore,
+        registry: Arc<PackRegistryV1>,
+        host_clock: Arc<dyn HostClockV1>,
+    ) -> Self {
+        Self::with_runtime(store, registry, host_clock, RoomAdmissionLanesV1::default())
+    }
+
+    fn with_runtime(
+        store: SqliteRoomStore,
+        registry: Arc<PackRegistryV1>,
+        host_clock: Arc<dyn HostClockV1>,
+        admission_lanes: RoomAdmissionLanesV1,
+    ) -> Self {
         Self {
             store,
             registry,
             bindings: SessionBindings::default(),
             supervisor: Arc::new(SqliteRoomSupervisorV1::default()),
             recoveries: Mutex::new(BTreeMap::new()),
+            host_clock,
+            admission_lanes,
         }
     }
 
@@ -266,7 +300,7 @@ impl SqliteGatewayBackend {
             .map_err(Self::map_supervisor_error)?;
         let Ok(recovery) =
             self.store
-                .recover_room_catching_up(&self.registry, room_id, &RecoveryWallClock)
+                .recover_room_catching_up(&self.registry, room_id, self.host_clock.as_ref())
         else {
             let _ = self.supervisor.abandon_loading(room_id, lease);
             return Err(BackendError::StorageUnavailable);
@@ -1274,6 +1308,15 @@ fn map_participant_action_ingress_error(error: &ParticipantActionIngressErrorV1)
     }
 }
 
+fn map_admission_lane_error(error: &AdmissionLaneErrorV1) -> BackendError {
+    match error {
+        AdmissionLaneErrorV1::Full | AdmissionLaneErrorV1::Unavailable => BackendError::Busy,
+        AdmissionLaneErrorV1::Clock(_) | AdmissionLaneErrorV1::InvalidCapacity => {
+            BackendError::StorageUnavailable
+        }
+    }
+}
+
 fn map_participant_action_error(error: &SqliteParticipantActionErrorV1) -> BackendError {
     match error {
         SqliteParticipantActionErrorV1::StorageUnavailable => BackendError::StorageUnavailable,
@@ -1487,12 +1530,6 @@ fn random_bearer_bytes() -> Result<[u8; 32], BackendError> {
     Ok(bytes)
 }
 
-fn now_text() -> Result<String, BackendError> {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|_| BackendError::StorageUnavailable)
-}
-
 fn creation_time() -> Result<CreationRecordedAt, BackendError> {
     // Pack timer arithmetic preserves whole-second values exactly. Sampling
     // Genesis at that precision therefore cannot reintroduce non-canonical
@@ -1562,6 +1599,10 @@ struct AttachContext {
 }
 
 impl GatewayBackend for SqliteGatewayBackend {
+    fn room_admission_queue_snapshot(&self) -> worldstream_core::RoomAdmissionQueueSnapshotV1 {
+        self.admission_lanes.queue_snapshot()
+    }
+
     fn admission_principal(&self, session: &GatewaySession) -> Result<String, BackendError> {
         Ok(self.authenticate(session)?.principal_id().to_string())
     }
@@ -1883,8 +1924,10 @@ impl GatewayBackend for SqliteGatewayBackend {
             }
             ParticipantActionIngressV1::Conflict { .. } => Err(BackendError::Conflict),
             ParticipantActionIngressV1::Authorized(grant) => {
-                let admitted_at = ActionAdmittedAt::from_str(&now_text()?)
-                    .map_err(|_| BackendError::StorageUnavailable)?;
+                let admission = self
+                    .admission_lanes
+                    .reserve_action(&action_room_id, self.host_clock.as_ref())
+                    .map_err(|error| map_admission_lane_error(&error))?;
                 let transition_id = next_core_id::<TransitionId>()?;
                 let resolution = self
                     .store
@@ -1892,7 +1935,7 @@ impl GatewayBackend for SqliteGatewayBackend {
                         &self.registry,
                         *grant,
                         &core_request,
-                        admitted_at,
+                        admission.admitted_at().clone(),
                         transition_id,
                     )
                     .map_err(|error| map_participant_action_error(&error))?;
@@ -1985,6 +2028,10 @@ impl GatewayBackend for SqliteGatewayBackend {
             return self.commit_catching_up_timer(&room_id, authority, timer_request);
         }
         let operation = operation.ok_or(BackendError::Busy)?;
+        let _admission = self
+            .admission_lanes
+            .reserve_host_stimulus(&room_id)
+            .map_err(|error| map_admission_lane_error(&error))?;
         let transition_id = next_core_id::<TransitionId>()?;
         let resolution = self
             .store
@@ -2718,6 +2765,7 @@ fn map_replay_error(error: SqliteAuthorizedReplayErrorV1) -> BackendError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::NamedTempFile;
     use worldstream_core::{
         AuthorityBootstrapV1, AuthorityChangeV1, AuthorityCheckedAt, AuthorityV1,
@@ -2740,12 +2788,39 @@ mod tests {
         GatewaySession::new_with_wire(id, bearer, wire)
     }
 
+    struct CountingWallClock {
+        calls: AtomicUsize,
+    }
+
+    impl HostClockV1 for CountingWallClock {
+        fn sample(&self) -> Result<HostClockSampleV1, HostClockErrorV1> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            RuntimeWallClock.sample()
+        }
+    }
+
     #[test]
     fn genesis_creation_time_is_canonical_at_pack_safe_precision() {
         let value = creation_time().unwrap_or_else(|_| panic!("Genesis creation clock"));
         assert_eq!(value.as_str().len(), 20);
         assert!(value.as_str().ends_with('Z'));
         assert!(!value.as_str().contains('.'));
+    }
+
+    #[test]
+    fn sqlite_runtime_wires_the_frozen_action_and_host_lane() {
+        let source = include_str!("sqlite_backend.rs");
+        assert!(source.contains(".reserve_action(&action_room_id, self.host_clock.as_ref())"));
+        assert!(source.contains(".reserve_host_stimulus(&room_id)"));
+        let orphaned_wall_sample = ["ActionAdmittedAt::from_str", "(&now_text()?)"].concat();
+        assert!(!source.contains(&orphaned_wall_sample));
+        assert!(matches!(
+            map_admission_lane_error(&AdmissionLaneErrorV1::Full),
+            BackendError::Busy
+        ));
+        let lanes = RoomAdmissionLanesV1::default();
+        assert_eq!(lanes.capacity(), 256);
+        assert!(lanes.host_reserve() > 0);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2877,15 +2952,28 @@ mod tests {
             }],
             idempotency_key: "gateway-action-create".to_owned(),
         };
-        let backend = SqliteGatewayBackend::new(store, registry);
+        let clock = Arc::new(CountingWallClock {
+            calls: AtomicUsize::new(0),
+        });
+        let backend = SqliteGatewayBackend::with_runtime(
+            store,
+            registry,
+            clock.clone(),
+            RoomAdmissionLanesV1::new(2, 1)
+                .unwrap_or_else(|error| panic!("test Room lane: {error}")),
+        );
         let host_session = session(0xa9, "01ARZ3NDEKTSV4RRFFQ69G5FC5");
         let created = backend
             .create_room(&host_session, create)
             .unwrap_or_else(|error| panic!("create Room: {error:?}"));
         let room_id = created.room_id.clone();
         let member_id = created.member_ids[0].clone();
-        let room_id_typed = room_id.parse().unwrap_or_else(|_| panic!("Room ID"));
-        let member_id_typed = member_id.parse().unwrap_or_else(|_| panic!("Member ID"));
+        let room_id_typed = room_id
+            .parse::<RoomId>()
+            .unwrap_or_else(|_| panic!("Room ID"));
+        let member_id_typed = member_id
+            .parse::<worldstream_core::MemberId>()
+            .unwrap_or_else(|_| panic!("Member ID"));
         let host_presented = PresentedCapabilityV1::new(host_capability, host_bearer);
 
         let member_capability = |capability_id: &str,
@@ -2899,8 +2987,8 @@ mod tests {
                 CapabilityBearerV1::from_bytes(token).token_hash(),
                 principal.clone(),
                 CapabilityProfileV1::RoomMember {
-                    room_id: room_id_typed,
-                    member_id: member_id_typed,
+                    room_id: room_id_typed.clone(),
+                    member_id: member_id_typed.clone(),
                 },
                 CapabilityScopeSetV1::new(scopes)
                     .unwrap_or_else(|_| panic!("member capability scopes")),
@@ -2938,6 +3026,24 @@ mod tests {
             payload,
         };
         let member_session = session(0xb8, "01ARZ3NDEKTSV4RRFFQ69G5FC8");
+        backend
+            .ensure_verified_active(&room_id_typed)
+            .unwrap_or_else(|error| panic!("activate test Room: {error:?}"));
+        let occupied = backend
+            .admission_lanes
+            .reserve_action(&room_id_typed, backend.host_clock.as_ref())
+            .unwrap_or_else(|error| panic!("occupy participant lane: {error}"));
+        let samples_before_busy = clock.calls.load(Ordering::Relaxed);
+        assert!(matches!(
+            backend.action(
+                &member_session,
+                action("01ARZ3NDEKTSV4RRFFQ69G5FD0", 0, json!({})),
+            ),
+            Err(BackendError::Busy)
+        ));
+        assert_eq!(clock.calls.load(Ordering::Relaxed), samples_before_busy);
+        drop(occupied);
+
         let first = match backend
             .action(
                 &member_session,

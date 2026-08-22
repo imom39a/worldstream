@@ -13,14 +13,18 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     } else { $VerifyArgs.Add($args[$Index]) }
 }
 $Artifact = $VerifyArgs | Where-Object { -not $_.StartsWith('-') } | Select-Object -First 1
-$Python = Get-Command py -ErrorAction SilentlyContinue
+$Python = $env:WORLDSTREAM_RELEASE_PYTHON
+if ([string]::IsNullOrWhiteSpace($Python) -or -not (Test-Path -LiteralPath $Python -PathType Leaf)) {
+    throw 'release verification requires an executable WORLDSTREAM_RELEASE_PYTHON'
+}
+$ExpectedPython = (Get-Content "$WorkspaceDir/.python-version" -Raw).Trim()
+$ActualPython = (& $Python -I -c 'import platform; print(platform.python_version())').Trim()
+if ($LASTEXITCODE -ne 0 -or $ActualPython -ne $ExpectedPython) {
+    throw "release verification requires Python $ExpectedPython, observed $ActualPython"
+}
 function Invoke-PackagePython {
     param([string[]]$PackageArgs)
-    if ($null -ne $Python) {
-        & $Python.Source -3 "$WorkspaceDir/scripts/package.py" @PackageArgs
-    } else {
-        & python "$WorkspaceDir/scripts/package.py" @PackageArgs
-    }
+    & $Python -I "$WorkspaceDir/scripts/package.py" @PackageArgs
     $script:PackageExitCode = $LASTEXITCODE
 }
 

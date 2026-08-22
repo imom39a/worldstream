@@ -17,7 +17,6 @@ import json
 import math
 import os
 import pathlib
-import platform
 import re
 import secrets
 import shutil
@@ -27,8 +26,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import tomllib
@@ -36,6 +36,8 @@ import tomllib
 SCHEMA = "worldstream/packaged-backend-parity/v1"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SECRET_SCAN_PATH = ROOT / "scripts" / "verify-secret-absence.py"
+REFERENCE_HOST_PATH = ROOT / "scripts" / "reference_host_environment.py"
+BUILD_IDENTITY_PATH = ROOT / "scripts" / "release_build_identity.py"
 POSTGRES_IMAGE = (
     "postgres:17.11-alpine@"
     "sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
@@ -54,16 +56,67 @@ PGBOUNCER_DIGEST = (
 EXPECTED_ENGINE = "postgresql/17.11; server_version_num=170011"
 PACKAGE_REPORT_SCHEMA = "worldstream/package-report/v1"
 PACKAGE_BINDING_SCHEMA = "worldstream/package-binding/v1"
+STORAGE_BINDING_SCHEMA = "worldstream/packaged-storage-bindings/v1"
+FROZEN_STORAGE_PROFILE = "frozen_local_ext4"
+POSTGRES_DATA_DESTINATION = "/var/lib/postgresql/data"
+POSTGRES_VOLUME_OWNERSHIP_LABEL = "io.worldstream.packaged-parity.owner"
+PRIVACY_CHANNEL_CONTRACT = (
+    "every classified child stdout/stderr/safe invocation config, PostgreSQL "
+    "and PgBouncer provider stdout/stderr, raw cell report, daemon log, and "
+    "aggregate report candidate"
+)
+PRIVACY_CHANNEL_CLASS_SCHEMA = "worldstream/privacy-channel-class-inventory/v1"
+REQUIRED_PRIVACY_CHANNEL_CLASSES = (
+    "process.stdout",
+    "process.stderr",
+    "process.config",
+    "provider.postgresql.stdout",
+    "provider.postgresql.stderr",
+    "provider.pgbouncer.stdout",
+    "provider.pgbouncer.stderr",
+    "report.cell",
+    "daemon.log",
+    "report.aggregate",
+)
 SHA256_PREFIX = "sha256:"
 MAX_ARCHIVE_MEMBERS = 20_000
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CONTROL_FILE_BYTES = 16 * 1024 * 1024
+MAX_PROVIDER_CHANNEL_BYTES = 16 * 1024 * 1024
+MAX_DOCKER_CONTROL_BYTES = 1024 * 1024
+MAX_MOUNTINFO_BYTES = 4 * 1024 * 1024
+PROVIDER_CAPTURE_TIMEOUT_SECONDS = 30.0
+DOCKER_CONTROL_TIMEOUT_SECONDS = 30.0
+PROVIDER_CAPTURE_DRAIN_GRACE_SECONDS = 5.0
 CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^\\\r\n]+)$")
 DATABASES = {
     "counter_postgres_direct": "counter_direct",
     "heist_postgres_direct": "heist_direct",
     "counter_transaction_pooler": "counter_pooler",
     "heist_transaction_pooler": "heist_pooler",
+}
+SQLITE_REFERENCE_SETTINGS = {
+    "journal_mode": "wal",
+    "synchronous": "full",
+    "foreign_keys": "on",
+    "busy_timeout_ms": 5000,
+    "reader_query_only": "on",
+}
+POSTGRESQL_CONTRACT_SETTINGS = {
+    "isolation_contract": "read_committed",
+    "runtime_connection_modes": ["direct", "session_pool", "transaction_pool"],
+    "observed_connection_modes": ["direct", "transaction_pool"],
+    "maintenance_connection_mode": "direct_admin_offline",
+    "transaction_pooler_safe": True,
+    "correctness_dependencies_forbidden": [
+        "extensions",
+        "session_state",
+        "named_prepared_statements",
+        "connection_affinity",
+        "replica_reads",
+        "provider_api",
+        "provider_failover",
+    ],
 }
 
 
@@ -87,7 +140,44 @@ def _load_secret_scan() -> Any:
     return module
 
 
+def _load_reference_host() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "worldstream_reference_host_environment", REFERENCE_HOST_PATH
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise RuntimeError(f"cannot load {REFERENCE_HOST_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_build_identity() -> Any:
+    name = "worldstream_postgres_packaged_strict_json"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(name, BUILD_IDENTITY_PATH)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise RuntimeError(f"cannot load {BUILD_IDENTITY_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+REFERENCE_HOST = _load_reference_host()
+BUILD_IDENTITY = _load_build_identity()
+
+
 SECRET_SCAN = _load_secret_scan()
+
+
+def _strict_json(content: bytes, code: str) -> dict[str, Any]:
+    try:
+        return BUILD_IDENTITY.strict_json(content, code)
+    except BUILD_IDENTITY.IdentityError as error:
+        raise LaneFailure(code) from error
 
 
 def _regular_file(path: pathlib.Path, code: str) -> pathlib.Path:
@@ -143,12 +233,10 @@ def _member_bytes(
 def _parse_package_report(path: pathlib.Path) -> dict[str, Any]:
     _regular_file(path, "package_report_invalid")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
+        content = path.read_bytes()
+    except OSError as error:
         raise LaneFailure("package_report_invalid") from error
-    if not isinstance(value, dict):
-        raise LaneFailure("package_report_invalid")
-    return value
+    return _strict_json(content, "package_report_invalid")
 
 
 def _parse_checksums(value: bytes) -> dict[str, str]:
@@ -311,23 +399,19 @@ def _bind_package(
                 raise LaneFailure("package_manifest_report_binding_failed")
             try:
                 authored = tomllib.loads(manifest_toml.decode("utf-8"))
-                mirrored = json.loads(manifest_json.decode("utf-8"))
             except (UnicodeError, ValueError, tomllib.TOMLDecodeError) as error:
                 raise LaneFailure("package_manifest_pair_invalid") from error
+            mirrored = _strict_json(manifest_json, "package_manifest_pair_invalid")
             canonical = (
                 json.dumps(authored, ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n"
             ).encode()
             if authored != mirrored or manifest_json != canonical:
                 raise LaneFailure("package_manifest_pair_not_canonical")
-            try:
-                metadata = json.loads(
-                    _member_bytes(archive, relative["metadata/release.json"]).decode(
-                        "utf-8"
-                    )
-                )
-            except (UnicodeError, ValueError) as error:
-                raise LaneFailure("package_metadata_invalid") from error
+            metadata = _strict_json(
+                _member_bytes(archive, relative["metadata/release.json"]),
+                "package_metadata_invalid",
+            )
             metadata_manifest = (
                 metadata.get("manifest") if isinstance(metadata, dict) else None
             )
@@ -430,6 +514,7 @@ class PrivacyCapture:
         self.root.mkdir(mode=0o700)
         self.sentinels: dict[str, bytes] = {}
         self.channels: dict[str, pathlib.Path] = {}
+        self.channel_classes: dict[str, str] = {}
         self._sequence = 0
         self._sentinel_sequence: dict[str, int] = {}
         self._authority_inodes: set[tuple[int, int]] = set()
@@ -448,24 +533,34 @@ class PrivacyCapture:
         self._sequence += 1
         return f"child-{self._sequence:04d}-{suffix}"
 
-    def _record_bytes(self, suffix: str, content: bytes) -> None:
+    def _register_channel(
+        self, name: str, path: pathlib.Path, channel_class: str
+    ) -> None:
+        if (
+            channel_class not in REQUIRED_PRIVACY_CHANNEL_CLASSES
+            or name in self.channels
+            or name in self.channel_classes
+        ):
+            raise LaneFailure("privacy_channel_class_invalid")
+        self.channels[name] = path
+        self.channel_classes[name] = channel_class
+
+    def _record_bytes(self, suffix: str, content: bytes, *, channel_class: str) -> None:
+        if not isinstance(content, bytes) or len(content) > MAX_CONTROL_FILE_BYTES:
+            raise LaneFailure("privacy_channel_oversized")
         name = self._channel_name(suffix)
         path = self.root / name
         _owner_bytes(path, content)
-        self.channels[name] = path
+        self._register_channel(name, path, channel_class)
 
-    def record_process(
+    def _record_config(
         self,
         *,
         argv: list[str],
         cwd: pathlib.Path,
         environment: dict[str, str] | None,
         input_supplied: bool,
-        stdout: str,
-        stderr: str,
     ) -> None:
-        self._record_bytes("stdout", stdout.encode("utf-8"))
-        self._record_bytes("stderr", stderr.encode("utf-8"))
         configuration = {
             "argv": argv,
             "cwd": str(cwd),
@@ -479,13 +574,65 @@ class PrivacyCapture:
             (
                 json.dumps(configuration, sort_keys=True, separators=(",", ":")) + "\n"
             ).encode("utf-8"),
+            channel_class="process.config",
         )
 
-    def add_report(self, label: str, path: pathlib.Path) -> None:
+    def record_process(
+        self,
+        *,
+        argv: list[str],
+        cwd: pathlib.Path,
+        environment: dict[str, str] | None,
+        input_supplied: bool,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        self._record_bytes(
+            "stdout", stdout.encode("utf-8"), channel_class="process.stdout"
+        )
+        self._record_bytes(
+            "stderr", stderr.encode("utf-8"), channel_class="process.stderr"
+        )
+        self._record_config(
+            argv=argv,
+            cwd=cwd,
+            environment=environment,
+            input_supplied=input_supplied,
+        )
+
+    def record_provider_process(
+        self,
+        *,
+        provider_class: str,
+        argv: list[str],
+        cwd: pathlib.Path,
+        stdout: bytes,
+        stderr: bytes,
+    ) -> None:
+        if provider_class not in {"postgresql", "pgbouncer"}:
+            raise LaneFailure("privacy_channel_class_invalid")
+        self._record_bytes(
+            f"provider-{provider_class}-stdout",
+            stdout,
+            channel_class=f"provider.{provider_class}.stdout",
+        )
+        self._record_bytes(
+            f"provider-{provider_class}-stderr",
+            stderr,
+            channel_class=f"provider.{provider_class}.stderr",
+        )
+        self._record_config(
+            argv=argv,
+            cwd=cwd,
+            environment=None,
+            input_supplied=False,
+        )
+
+    def add_report(self, label: str, path: pathlib.Path, *, channel_class: str) -> None:
         if path.is_symlink() or not path.is_file():
             raise LaneFailure("privacy_report_channel_invalid")
         name = self._channel_name(label)
-        self.channels[name] = path
+        self._register_channel(name, path, channel_class)
 
     def discover_daemon_channels(
         self, workspace: pathlib.Path, cell_label: str
@@ -548,7 +695,7 @@ class PrivacyCapture:
             destination.flush()
             os.fsync(destination.fileno())
             destination.close()
-            self.channels[name] = path
+            self._register_channel(name, path, "daemon.log")
         self._live_logs.clear()
 
     def scan(self) -> dict[str, Any]:
@@ -565,10 +712,36 @@ class PrivacyCapture:
             for prefix in required_kinds
         ):
             raise LaneFailure("privacy_sentinel_class_incomplete")
+        if set(self.channels) != set(self.channel_classes):
+            raise LaneFailure("privacy_channel_class_invalid")
+        classes = {
+            channel_class: sorted(
+                name
+                for name, observed_class in self.channel_classes.items()
+                if observed_class == channel_class
+            )
+            for channel_class in REQUIRED_PRIVACY_CHANNEL_CLASSES
+        }
+        if any(not names for names in classes.values()):
+            raise LaneFailure("privacy_channel_class_incomplete")
         try:
-            return SECRET_SCAN.scan_sentinels(self.sentinels, self.channels)
+            result = SECRET_SCAN.scan_sentinels(self.sentinels, self.channels)
         except SECRET_SCAN.ScanError as error:
             raise LaneFailure("privacy_secret_absence_scan_failed") from error
+        result["channel_class_inventory"] = {
+            "schema": PRIVACY_CHANNEL_CLASS_SCHEMA,
+            "status": "complete",
+            "required": list(REQUIRED_PRIVACY_CHANNEL_CLASSES),
+            "classes": [
+                {
+                    "class": channel_class,
+                    "channel_count": len(classes[channel_class]),
+                    "channels": classes[channel_class],
+                }
+                for channel_class in REQUIRED_PRIVACY_CHANNEL_CLASSES
+            ],
+        }
+        return result
 
 
 ACTIVE_PRIVACY_CAPTURE: PrivacyCapture | None = None
@@ -604,52 +777,377 @@ def _safe_run(
     return completed
 
 
-def _filesystem_type(path: pathlib.Path) -> str:
-    arguments = (
-        ["stat", "-f", "-c", "%T", str(path)]
-        if sys.platform.startswith("linux")
-        else ["stat", "-f", "%T", str(path)]
-    )
-    completed = subprocess.run(
-        arguments,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return completed.stdout.strip() if completed.returncode == 0 else "unavailable"
+@dataclass(frozen=True)
+class BoundedProcessOutput:
+    """Complete bounded byte output from one provider capture command."""
+
+    returncode: int
+    stdout: bytes
+    stderr: bytes
 
 
-def _reference_environment(repository: pathlib.Path) -> dict[str, Any]:
+def _kill_process(process: subprocess.Popen[bytes]) -> None:
     try:
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        physical_pages = os.sysconf("SC_PHYS_PAGES")
-        memory_bytes = page_size * physical_pages
-    except (AttributeError, OSError, ValueError):
-        memory_bytes = 0
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _bounded_provider_capture(
+    argv: list[str],
+    *,
+    cwd: pathlib.Path,
+    maximum_bytes: int | None = None,
+    timeout_seconds: float | None = None,
+) -> BoundedProcessOutput:
+    """Capture complete provider streams without unbounded memory or disk use."""
+
+    maximum = MAX_PROVIDER_CHANNEL_BYTES if maximum_bytes is None else maximum_bytes
+    timeout = (
+        PROVIDER_CAPTURE_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+    )
+
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise LaneFailure("provider_capture_unavailable") from error
+    if process.stdout is None or process.stderr is None:
+        _kill_process(process)
+        raise LaneFailure("provider_capture_unavailable")
+
+    stream_states: dict[str, dict[str, Any]] = {
+        "stdout": {
+            "content": bytearray(),
+            "complete": False,
+            "error": False,
+            "size": 0,
+        },
+        "stderr": {
+            "content": bytearray(),
+            "complete": False,
+            "error": False,
+            "size": 0,
+        },
+    }
+
+    def drain(label: str, source: Any) -> None:
+        state = stream_states[label]
+        try:
+            while chunk := source.read(64 * 1024):
+                state["size"] += len(chunk)
+                remaining = maximum - len(state["content"])
+                if remaining > 0:
+                    state["content"].extend(chunk[:remaining])
+            state["complete"] = True
+        except OSError:
+            state["error"] = True
+        finally:
+            try:
+                source.close()
+            except OSError:
+                state["error"] = True
+
+    threads = [
+        threading.Thread(
+            target=drain,
+            args=("stdout", process.stdout),
+            name="worldstream-provider-stdout-capture",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=drain,
+            args=("stderr", process.stderr),
+            name="worldstream-provider-stderr-capture",
+            daemon=True,
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_process(process)
+        try:
+            returncode = process.wait(timeout=PROVIDER_CAPTURE_DRAIN_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            returncode = -int(signal.SIGKILL)
+    for thread in threads:
+        thread.join(timeout=PROVIDER_CAPTURE_DRAIN_GRACE_SECONDS)
+
+    if any(state["size"] > maximum for state in stream_states.values()):
+        raise LaneFailure("provider_capture_oversized")
+    if (
+        timed_out
+        or any(thread.is_alive() for thread in threads)
+        or any(
+            state["error"] or not state["complete"] for state in stream_states.values()
+        )
+    ):
+        raise LaneFailure("provider_capture_truncated")
+    return BoundedProcessOutput(
+        returncode=returncode,
+        stdout=bytes(stream_states["stdout"]["content"]),
+        stderr=bytes(stream_states["stderr"]["content"]),
+    )
+
+
+def _mount_identity(
+    path: pathlib.Path,
+    mountinfo_path: pathlib.Path = pathlib.Path("/proc/self/mountinfo"),
+) -> dict[str, Any]:
+    target = path.resolve()
+    try:
+        with mountinfo_path.open("rb") as source:
+            raw = source.read(MAX_MOUNTINFO_BYTES + 1)
+    except OSError as error:
+        raise REFERENCE_HOST.ReferenceHostError(
+            "Linux mount identity was unavailable"
+        ) from error
+    if not raw or len(raw) > MAX_MOUNTINFO_BYTES or b"\0" in raw:
+        raise REFERENCE_HOST.ReferenceHostError("Linux mount identity was invalid")
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeError as error:
+        raise REFERENCE_HOST.ReferenceHostError(
+            "Linux mount identity was not UTF-8"
+        ) from error
+    selected: tuple[int, int, str] | None = None
+    for line in lines:
+        before, separator, after = line.partition(" - ")
+        left = before.split()
+        right = after.split()
+        if not separator or len(left) < 6 or len(right) < 3:
+            raise REFERENCE_HOST.ReferenceHostError("Linux mountinfo row was malformed")
+        mount_point = pathlib.Path(REFERENCE_HOST.unescape_mount_path(left[4]))
+        try:
+            target.relative_to(mount_point)
+        except ValueError:
+            continue
+        try:
+            mount_id = int(left[0])
+        except ValueError as error:
+            raise REFERENCE_HOST.ReferenceHostError(
+                "Linux mount identity was invalid"
+            ) from error
+        if (
+            mount_id <= 0
+            or re.fullmatch(r"[0-9]+:[0-9]+", left[2]) is None
+            or not mount_point.is_absolute()
+        ):
+            raise REFERENCE_HOST.ReferenceHostError("Linux mount identity was invalid")
+        candidate = (len(mount_point.parts), mount_id, left[2])
+        if selected is None or candidate[0] > selected[0]:
+            selected = candidate
+    if selected is None:
+        raise REFERENCE_HOST.ReferenceHostError("Linux mount identity was unavailable")
+    return {"mount_id": selected[1], "device_id": selected[2]}
+
+
+def _require_frozen_ext4(host: dict[str, Any], *, database: bool) -> None:
+    filesystem = host.get("filesystem")
+    valid = (
+        isinstance(filesystem, dict)
+        and set(filesystem) == {"type", "mount_options", "storage_class"}
+        and filesystem.get("type") == "ext4"
+        and filesystem.get("storage_class") == "local_ssd_or_nvme"
+        and isinstance(filesystem.get("mount_options"), list)
+        and bool(filesystem["mount_options"])
+        and all(
+            isinstance(option, str) and bool(option.strip())
+            for option in filesystem["mount_options"]
+        )
+    )
+    if not valid:
+        raise LaneFailure(
+            "reference_database_storage_not_frozen_local_ext4"
+            if database
+            else "reference_workload_storage_not_frozen_local_ext4"
+        )
+
+
+def _reference_environment(
+    workload_storage: pathlib.Path,
+    database_storage: pathlib.Path,
+    provider_storage: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        workload_host = REFERENCE_HOST.observe(workload_storage)
+    except REFERENCE_HOST.ReferenceHostError as error:
+        raise LaneFailure(
+            "reference_workload_storage_observation_unavailable"
+        ) from error
+    try:
+        database_host = REFERENCE_HOST.observe(database_storage)
+    except REFERENCE_HOST.ReferenceHostError as error:
+        raise LaneFailure(
+            "reference_database_storage_observation_unavailable"
+        ) from error
+    _require_frozen_ext4(workload_host, database=False)
+    _require_frozen_ext4(database_host, database=True)
+    if workload_host.get("platform") != database_host.get(
+        "platform"
+    ) or workload_host.get("hardware") != database_host.get("hardware"):
+        raise LaneFailure("reference_storage_host_identity_mismatch")
+    try:
+        workload_mount = _mount_identity(workload_storage)
+    except REFERENCE_HOST.ReferenceHostError as error:
+        raise LaneFailure("reference_workload_mount_identity_unavailable") from error
+    try:
+        database_mount = _mount_identity(database_storage)
+    except REFERENCE_HOST.ReferenceHostError as error:
+        raise LaneFailure("reference_database_mount_identity_unavailable") from error
     return {
-        "schema": "worldstream/reference-environment/v1",
-        "platform": {
-            "system": platform.system(),
-            "release": platform.release(),
-            "machine": platform.machine(),
-        },
-        "hardware": {
-            "logical_cpus": os.cpu_count() or 0,
-            "physical_memory_bytes": memory_bytes,
-        },
-        "filesystem": {
-            "repository": _filesystem_type(repository),
-            "temporary": _filesystem_type(pathlib.Path(tempfile.gettempdir())),
+        "platform": workload_host["platform"],
+        "hardware": workload_host["hardware"],
+        # Retained as the workload-path summary for existing consumers. The
+        # exact provider database observation is independently disclosed below.
+        "filesystem": workload_host["filesystem"],
+        "storage_bindings": {
+            "schema": STORAGE_BINDING_SCHEMA,
+            "status": "verified",
+            "profile": FROZEN_STORAGE_PROFILE,
+            "reference_environment_filesystem_role": "workload_owned_runtime_parent",
+            "layout": (
+                "same_host_mount"
+                if workload_mount == database_mount
+                else "split_host_mounts"
+            ),
+            "raw_paths_retained": False,
+            "workload": {
+                "role": "workload_owned_runtime_parent",
+                "filesystem": workload_host["filesystem"],
+                "mount_identity": workload_mount,
+            },
+            "postgresql_database": {
+                "role": "provider_owned_database_volume",
+                "filesystem": database_host["filesystem"],
+                "mount_identity": database_mount,
+                "docker_volume": provider_storage,
+            },
         },
         "engines": {
             "postgresql": None,
-            "pgbouncer": {
-                "image": PGBOUNCER_IMAGE,
-                "pool_mode": "transaction",
-            },
             "sqlite": None,
         },
+    }
+
+
+def _bounded_docker_text(argv: list[str], *, cwd: pathlib.Path, code: str) -> str:
+    completed = _bounded_provider_capture(
+        argv,
+        cwd=cwd,
+        maximum_bytes=MAX_DOCKER_CONTROL_BYTES,
+        timeout_seconds=DOCKER_CONTROL_TIMEOUT_SECONDS,
+    )
+    try:
+        stdout = completed.stdout.decode("utf-8")
+        stderr = completed.stderr.decode("utf-8")
+    except UnicodeError as error:
+        raise LaneFailure(code) from error
+    if ACTIVE_PRIVACY_CAPTURE is not None:
+        ACTIVE_PRIVACY_CAPTURE.record_process(
+            argv=argv,
+            cwd=cwd,
+            environment=None,
+            input_supplied=False,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    if completed.returncode != 0:
+        raise LaneFailure(code)
+    return stdout
+
+
+def _bounded_docker_object(
+    argv: list[str], *, cwd: pathlib.Path, code: str
+) -> dict[str, Any]:
+    return _strict_json(_bounded_docker_text(argv, cwd=cwd, code=code).encode(), code)
+
+
+def _owned_local_volume_mountpoint(
+    volume_record: dict[str, Any],
+    expected_volume: str,
+    expected_owner: str,
+) -> pathlib.Path:
+    labels = volume_record.get("Labels")
+    options = volume_record.get("Options")
+    mountpoint = volume_record.get("Mountpoint")
+    if (
+        volume_record.get("Name") != expected_volume
+        or volume_record.get("Driver") != "local"
+        or volume_record.get("Scope") != "local"
+        or labels != {POSTGRES_VOLUME_OWNERSHIP_LABEL: expected_owner}
+        or options not in (None, {})
+        or not isinstance(mountpoint, str)
+        or not (0 < len(mountpoint) <= 4096)
+        or any(ord(character) < 32 for character in mountpoint)
+    ):
+        raise LaneFailure("postgres_database_volume_not_owned_local")
+    path = pathlib.Path(mountpoint)
+    if not path.is_absolute() or ".." in path.parts:
+        raise LaneFailure("postgres_database_volume_not_owned_local")
+    return path
+
+
+def _provider_database_storage_binding(
+    volume_record: dict[str, Any],
+    container_record: dict[str, Any],
+    expected_volume: str,
+    expected_owner: str,
+) -> tuple[pathlib.Path, dict[str, Any]]:
+    path = _owned_local_volume_mountpoint(
+        volume_record, expected_volume, expected_owner
+    )
+    mountpoint = str(path)
+    mounts = container_record.get("Mounts")
+    if not isinstance(mounts, list) or not all(
+        isinstance(mount, dict) for mount in mounts
+    ):
+        raise LaneFailure("postgres_database_volume_mount_unverified")
+    matching_destination = [
+        mount
+        for mount in mounts
+        if mount.get("Destination") == POSTGRES_DATA_DESTINATION
+    ]
+    matching_volume = [
+        mount for mount in mounts if mount.get("Name") == expected_volume
+    ]
+    if (
+        len(matching_destination) != 1
+        or len(matching_volume) != 1
+        or matching_destination[0] is not matching_volume[0]
+    ):
+        raise LaneFailure("postgres_database_volume_mount_unverified")
+    mount = matching_destination[0]
+    if (
+        mount.get("Type") != "volume"
+        or mount.get("Driver") != "local"
+        or mount.get("Source") != mountpoint
+        or mount.get("RW") is not True
+    ):
+        raise LaneFailure("postgres_database_volume_mount_unverified")
+    return path, {
+        "driver": "local",
+        "scope": "local",
+        "driver_options": {},
+        "container_destination": POSTGRES_DATA_DESTINATION,
+        "container_mount_type": "volume",
+        "read_write": True,
+        "source_matches_volume_mountpoint": True,
+        "run_unique_ownership_label_verified": True,
     }
 
 
@@ -812,11 +1310,16 @@ class Provider:
     network: str
     postgres_name: str
     pooler_name: str
+    postgres_volume: str
+    volume_ownership_id: str
     postgres_port: int | None = None
     pooler_port: int | None = None
     network_started: bool = False
     postgres_started: bool = False
     pooler_started: bool = False
+    volume_started: bool = False
+    volume_creation_attempted: bool = False
+    _removed_containers: set[str] = field(default_factory=set, init=False, repr=False)
 
     @classmethod
     def create(
@@ -839,6 +1342,8 @@ class Provider:
             network=f"worldstream-packaged-parity-{suffix}",
             postgres_name=f"worldstream-packaged-parity-db-{suffix}",
             pooler_name=f"worldstream-packaged-parity-pooler-{suffix}",
+            postgres_volume=f"worldstream-packaged-parity-data-{suffix}",
+            volume_ownership_id=secrets.token_hex(16),
         )
         if ACTIVE_PRIVACY_CAPTURE is not None:
             ACTIVE_PRIVACY_CAPTURE.register_sentinel(
@@ -926,6 +1431,7 @@ class Provider:
 
         password_file = self.root / "postgres-admin-password"
         _owner_file(password_file, self.admin_password + "\n")
+        self._create_database_volume()
         self._docker("network", "create", self.network)
         self.network_started = True
         self._docker(
@@ -945,6 +1451,11 @@ class Provider:
             "POSTGRES_DB=postgres",
             "--volume",
             f"{password_file}:/run/secrets/postgres-password:ro",
+            "--mount",
+            (
+                f"type=volume,source={self.postgres_volume},"
+                f"destination={POSTGRES_DATA_DESTINATION}"
+            ),
             "--publish",
             "127.0.0.1::5432",
             POSTGRES_IMAGE,
@@ -973,6 +1484,87 @@ class Provider:
             self._psql("postgres", f"CREATE DATABASE {database} OWNER admin;")
             self._prepare_database(database)
         self._start_pooler()
+
+    def _create_database_volume(self) -> None:
+        existing = _bounded_docker_text(
+            [
+                self.docker,
+                "volume",
+                "ls",
+                "--quiet",
+                "--filter",
+                f"name=^{self.postgres_volume}$",
+            ],
+            cwd=self.repository,
+            code="postgres_database_volume_absence_unverified",
+        )
+        if existing.strip():
+            raise LaneFailure("postgres_database_volume_name_collision")
+        self.volume_creation_attempted = True
+        self._docker(
+            "volume",
+            "create",
+            "--driver",
+            "local",
+            "--label",
+            f"{POSTGRES_VOLUME_OWNERSHIP_LABEL}={self.volume_ownership_id}",
+            self.postgres_volume,
+        )
+        volume_record = _bounded_docker_object(
+            [
+                self.docker,
+                "volume",
+                "inspect",
+                self.postgres_volume,
+                "--format",
+                "{{json .}}",
+            ],
+            cwd=self.repository,
+            code="postgres_database_volume_inspect_failed",
+        )
+        # Docker volume create is idempotent. Cleanup ownership begins only
+        # after post-create metadata proves this invocation's unguessable label.
+        if volume_record.get("Name") != self.postgres_volume or volume_record.get(
+            "Labels"
+        ) != {POSTGRES_VOLUME_OWNERSHIP_LABEL: self.volume_ownership_id}:
+            raise LaneFailure("postgres_database_volume_not_owned_local")
+        _owned_local_volume_mountpoint(
+            volume_record, self.postgres_volume, self.volume_ownership_id
+        )
+        self.volume_started = True
+
+    def database_storage_binding(self) -> tuple[pathlib.Path, dict[str, Any]]:
+        if not self.postgres_started or not self.volume_started:
+            raise LaneFailure("postgres_database_volume_mount_unverified")
+        volume_record = _bounded_docker_object(
+            [
+                self.docker,
+                "volume",
+                "inspect",
+                self.postgres_volume,
+                "--format",
+                "{{json .}}",
+            ],
+            cwd=self.repository,
+            code="postgres_database_volume_inspect_failed",
+        )
+        container_record = _bounded_docker_object(
+            [
+                self.docker,
+                "inspect",
+                self.postgres_name,
+                "--format",
+                "{{json .}}",
+            ],
+            cwd=self.repository,
+            code="postgres_database_container_inspect_failed",
+        )
+        return _provider_database_storage_binding(
+            volume_record,
+            container_record,
+            self.postgres_volume,
+            self.volume_ownership_id,
+        )
 
     def _prepare_database(self, database: str) -> None:
         self._psql(
@@ -1162,47 +1754,129 @@ class Provider:
                 "server_version_num": fields[0],
                 "synchronous_commit": fields[1],
                 "transaction_isolation": fields[2],
+                **POSTGRESQL_CONTRACT_SETTINGS,
             },
             "connection_mode": "direct_and_transaction_pooler",
         }
 
+    def _capture_container_output(self, name: str, provider_class: str) -> None:
+        if name in self._removed_containers:
+            raise LaneFailure("provider_capture_after_removal")
+        capture = ACTIVE_PRIVACY_CAPTURE
+        if capture is None:
+            raise LaneFailure("provider_capture_unavailable")
+        argv = [self.docker, "logs", "--timestamps", name]
+        completed = _bounded_provider_capture(argv, cwd=self.repository)
+        capture.record_provider_process(
+            provider_class=provider_class,
+            argv=argv,
+            cwd=self.repository,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+        if completed.returncode != 0:
+            raise LaneFailure("provider_capture_unavailable")
+
+    def _remove_container(self, name: str) -> bool:
+        if name in self._removed_containers:
+            return False
+        # Mark the destructive boundary before invoking Docker. Even if the
+        # command result cannot be retained, no later capture may race behind
+        # an rm attempt that might already have removed the provider.
+        self._removed_containers.add(name)
+        try:
+            completed = _safe_run(
+                [self.docker, "rm", "-f", name],
+                cwd=self.repository,
+                timeout=30,
+            )
+        except (LaneFailure, OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0
+
     def cleanup(self) -> str:
         failed = False
+        containers = []
         if self.pooler_started:
-            completed = _safe_run(
-                [self.docker, "rm", "-f", self.pooler_name],
-                cwd=self.repository,
-                timeout=30,
-            )
-            failed = failed or completed.returncode != 0
-            self.pooler_started = False
+            containers.append((self.pooler_name, "pgbouncer"))
         if self.postgres_started:
-            completed = _safe_run(
-                [self.docker, "rm", "-f", self.postgres_name],
-                cwd=self.repository,
-                timeout=30,
-            )
-            failed = failed or completed.returncode != 0
-            self.postgres_started = False
+            containers.append((self.postgres_name, "postgresql"))
+        for name, provider_class in containers:
+            try:
+                self._capture_container_output(name, provider_class)
+            except (LaneFailure, OSError, subprocess.SubprocessError):
+                failed = True
+        for name, _provider_class in containers:
+            failed = not self._remove_container(name) or failed
+        self.pooler_started = False
+        self.postgres_started = False
+        if self.volume_started or self.volume_creation_attempted:
+            try:
+                existing = _bounded_docker_text(
+                    [
+                        self.docker,
+                        "volume",
+                        "ls",
+                        "--quiet",
+                        "--filter",
+                        f"name=^{self.postgres_volume}$",
+                    ],
+                    cwd=self.repository,
+                    code="postgres_database_volume_cleanup_inspect_failed",
+                )
+                candidates = existing.splitlines()
+                if not candidates:
+                    failed = self.volume_started or failed
+                elif candidates == [self.postgres_volume]:
+                    volume_record = _bounded_docker_object(
+                        [
+                            self.docker,
+                            "volume",
+                            "inspect",
+                            self.postgres_volume,
+                            "--format",
+                            "{{json .}}",
+                        ],
+                        cwd=self.repository,
+                        code="postgres_database_volume_cleanup_inspect_failed",
+                    )
+                    _owned_local_volume_mountpoint(
+                        volume_record,
+                        self.postgres_volume,
+                        self.volume_ownership_id,
+                    )
+                    completed = _safe_run(
+                        [self.docker, "volume", "rm", self.postgres_volume],
+                        cwd=self.repository,
+                        timeout=30,
+                    )
+                    failed = completed.returncode != 0 or failed
+                else:
+                    failed = True
+            except (LaneFailure, OSError, subprocess.SubprocessError):
+                failed = True
+            self.volume_started = False
+            self.volume_creation_attempted = False
         if self.network_started:
-            completed = _safe_run(
-                [self.docker, "network", "rm", self.network],
-                cwd=self.repository,
-                timeout=30,
-            )
-            failed = failed or completed.returncode != 0
+            try:
+                completed = _safe_run(
+                    [self.docker, "network", "rm", self.network],
+                    cwd=self.repository,
+                    timeout=30,
+                )
+                failed = completed.returncode != 0 or failed
+            except (LaneFailure, OSError, subprocess.SubprocessError):
+                failed = True
             self.network_started = False
         return "failed" if failed else "pass"
 
 
 def _load_report(path: pathlib.Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        content = path.read_bytes()
+    except OSError as error:
         raise LaneFailure("cell_report_unavailable") from error
-    if not isinstance(value, dict):
-        raise LaneFailure("cell_report_invalid")
-    return value
+    return _strict_json(content, "cell_report_invalid")
 
 
 def _counter_normalized(report: dict[str, Any]) -> dict[str, Any]:
@@ -1492,6 +2166,7 @@ def _run_cell(
     repository: pathlib.Path,
     daemon: pathlib.Path,
     report_path: pathlib.Path,
+    workload_storage_root: pathlib.Path,
     dsn_file: pathlib.Path | None,
     timeout: float,
     timer_timeout: float,
@@ -1522,7 +2197,7 @@ def _run_cell(
     environment.pop("WORLDSTREAM__STORAGE__POSTGRESQL__DSN", None)
     environment.pop("WORLDSTREAM__STORAGE__POSTGRESQL__DSN_HANDLE", None)
     privacy_label = f"{story}-{backend}"
-    privacy_workspace = report_path.parent / f"{privacy_label}-temporary"
+    privacy_workspace = workload_storage_root / f"{privacy_label}-temporary"
     privacy_workspace.mkdir(mode=0o700)
     environment["TMPDIR"] = str(privacy_workspace)
     sdk_source = repository / "sdk" / "python" / "src"
@@ -1549,7 +2224,9 @@ def _run_cell(
             "secrets": "not_emitted",
         }
     if ACTIVE_PRIVACY_CAPTURE is not None and report_path.is_file():
-        ACTIVE_PRIVACY_CAPTURE.add_report(f"{privacy_label}-report", report_path)
+        ACTIVE_PRIVACY_CAPTURE.add_report(
+            f"{privacy_label}-report", report_path, channel_class="report.cell"
+        )
     return {**measurement, "report": report}
 
 
@@ -1613,7 +2290,7 @@ def main() -> int:
             "pgbouncer_image": PGBOUNCER_IMAGE,
             "pool_mode": "transaction",
         },
-        "reference_environment": _reference_environment(repository),
+        "reference_environment": None,
         "reference_workloads": {"counter": {}, "heist": {}},
         "cells": {"counter": {}, "heist": {}},
         "comparison": {},
@@ -1627,10 +2304,7 @@ def main() -> int:
         "cleanup": "not_started",
         "privacy": {
             "status": "pending",
-            "channel_contract": (
-                "every captured child stdout/stderr/safe invocation config, raw cell "
-                "report, daemon log, and aggregate report candidate"
-            ),
+            "channel_contract": PRIVACY_CHANNEL_CONTRACT,
         },
     }
     package_mode = not args.diagnostic_source_tree
@@ -1652,6 +2326,8 @@ def main() -> int:
 
     root = pathlib.Path(tempfile.mkdtemp(prefix="worldstream-packaged-parity-"))
     root.chmod(0o700)
+    workload_storage_root = root / "workload-storage"
+    workload_storage_root.mkdir(mode=0o700)
     if package_mode:
         if not sys.platform.startswith("linux"):
             report["reason_code"] = "linux_package_execution_host_required"
@@ -1709,6 +2385,12 @@ def main() -> int:
     try:
         print("packaged parity: starting pinned provider", file=sys.stderr, flush=True)
         provider.start()
+        database_storage, provider_storage = provider.database_storage_binding()
+        report["reference_environment"] = _reference_environment(
+            workload_storage_root,
+            database_storage,
+            provider_storage,
+        )
         report["reference_environment"]["engines"]["postgresql"] = (
             provider.reference_engine()
         )
@@ -1767,6 +2449,7 @@ def main() -> int:
                 repository=repository,
                 daemon=daemon,
                 report_path=cell_report_path,
+                workload_storage_root=workload_storage_root,
                 dsn_file=dsn_file,
                 timeout=args.cell_timeout,
                 timer_timeout=args.timer_timeout,
@@ -1868,7 +2551,7 @@ def main() -> int:
             failures.append("sqlite_reference_settings_invalid")
         report["reference_environment"]["engines"]["sqlite"] = {
             "version": "3.53.4",
-            "settings": sqlite_settings,
+            "settings": SQLITE_REFERENCE_SETTINGS,
             "connection_mode": sqlite_connection_mode,
         }
 
@@ -1921,7 +2604,9 @@ def main() -> int:
                     + "\n"
                 ).encode("utf-8"),
             )
-            privacy_capture.add_report("packaged-report", candidate)
+            privacy_capture.add_report(
+                "packaged-report", candidate, channel_class="report.aggregate"
+            )
             secret_scan = privacy_capture.scan()
             report["privacy"] = {
                 "status": "pass",

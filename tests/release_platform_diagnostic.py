@@ -402,6 +402,34 @@ def test_macos_diagnostic_rejects_every_noncanonical_toolchain_pin(tmp_path, too
         module.emit_macos(args)
 
 
+@pytest.mark.parametrize(
+    "package_manager",
+    [
+        "pnpm@11.19.0",
+        "pnpm@11.19.0+sha512." + "0" * 127,
+        "pnpm@11.19.0+sha256." + "0" * 64,
+    ],
+)
+def test_macos_toolchain_pin_requires_exact_pnpm_tarball_integrity(
+    tmp_path, package_manager
+):
+    module = load_module()
+    for relative in (
+        "rust-toolchain.toml",
+        ".python-version",
+        ".node-version",
+        ".uv-version",
+    ):
+        (tmp_path / relative).write_bytes((ROOT / relative).read_bytes())
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    package["packageManager"] = package_manager
+    write_json(tmp_path / "package.json", package)
+    module.ROOT = tmp_path
+
+    with pytest.raises(module.DiagnosticError, match="integrity-bound pnpm pin"):
+        module.pinned_macos_toolchains()
+
+
 def test_macos_diagnostic_rejects_wrong_or_mismatched_source_revision(tmp_path):
     module = load_module()
     args = macos_args(tmp_path, module, ["arm64", "x86_64"])
@@ -547,9 +575,24 @@ def test_oci_diagnostic_requires_binary_healthcheck_to_fail_without_daemon(
         "read_only_root": True,
         "non_root": "65532:65532",
         "persistent_volume": "/var/lib/worldstream",
+        "sqlite_volume": {
+            "path": "/var/lib/worldstream",
+            "type": "docker-volume",
+            "driver": "local",
+            "scope": "local",
+            "driver_options": {},
+            "mount_device": "254:1",
+            "filesystem": "ext4",
+            "mount_source": "/dev/vda1",
+            "locality": "local-block-device",
+        },
         "authority_secret_source": "owner-readable-read-only-volume-file",
         "standalone_config": "valid",
-        "rejected_layouts": ["tmpfs", "wrong-data-directory"],
+        "rejected_layouts": [
+            "tmpfs",
+            "wrong-data-directory",
+            "network-configured-volume",
+        ],
         "profiles": {
             "sqlite-bundled": {
                 "status": "pass",
@@ -645,6 +688,7 @@ def test_oci_diagnostic_requires_binary_healthcheck_to_fail_without_daemon(
     assert facts["postgres_runtime_role"] == "least privilege verified"
     assert facts["postgres_network"] == "disabled network with local Unix socket"
     assert facts["secrets"] == "not emitted"
+    assert "local block source" in facts["filesystem_policy"]
     assert facts["context_report_sha256"] == module.digest(args.context_report)
     assert facts["context_metadata_sha256"] == module.digest(args.context_metadata)
     assert facts["runtime_report_sha256"] == module.digest(args.runtime_report)
@@ -702,6 +746,7 @@ def test_oci_diagnostic_requires_binary_healthcheck_to_fail_without_daemon(
         "healthcheck_without_daemon",
         "authority_secret_source",
         "standalone_config",
+        "sqlite_volume",
         "artifact_binding",
         "profiles",
         "secrets_emitted",
@@ -710,10 +755,28 @@ def test_oci_diagnostic_requires_binary_healthcheck_to_fail_without_daemon(
         tampered = dict(runtime)
         tampered.pop(required)
         write_json(args.runtime_report, tampered)
-        message = (
-            "secret-absence" if required == "secret_scan" else "runtime diagnostic"
-        )
+        if required == "secret_scan":
+            message = "secret-absence"
+        elif required == "sqlite_volume":
+            message = "volume locality"
+        else:
+            message = "runtime diagnostic"
         with pytest.raises(module.DiagnosticError, match=message):
+            module.emit_oci(args)
+
+    for field, invalid in (
+        ("driver", "nfs-plugin"),
+        ("scope", "global"),
+        ("driver_options", {"type": "nfs"}),
+        ("mount_device", "0:30"),
+        ("filesystem", "nfs"),
+        ("mount_source", "server:/worldstream"),
+        ("locality", "unknown"),
+    ):
+        tampered = json.loads(json.dumps(runtime))
+        tampered["sqlite_volume"][field] = invalid
+        write_json(args.runtime_report, tampered)
+        with pytest.raises(module.DiagnosticError, match="volume locality"):
             module.emit_oci(args)
 
     tampered = json.loads(json.dumps(runtime))

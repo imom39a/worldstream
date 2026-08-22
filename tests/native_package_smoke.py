@@ -137,6 +137,72 @@ def test_verify_and_extract_executes_only_exact_canonical_package_bytes(
     assert manifest["release_ready"] is True
 
 
+def test_packaged_control_version_requires_the_exact_source_revision():
+    module = load_module()
+    manifest_summary = {"contracts": {"product": "1.2.3"}, "release_ready": True}
+    revision = "1" * 40
+    value = {
+        **manifest_summary,
+        "product_build": {
+            "product": "1.2.3",
+            "binary": "worldstreamctl",
+            "build_version": "1.2.3",
+            "source_revision": revision,
+        },
+    }
+
+    module.validate_control_version(
+        value,
+        manifest_summary=manifest_summary,
+        product="1.2.3",
+        source_revision=revision,
+        code="ctl_revision_mismatch",
+    )
+    value["product_build"]["source_revision"] = "2" * 40
+    with pytest.raises(module.SmokeError, match="ctl_revision_mismatch"):
+        module.validate_control_version(
+            value,
+            manifest_summary=manifest_summary,
+            product="1.2.3",
+            source_revision=revision,
+            code="ctl_revision_mismatch",
+        )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"status":"bad","status":"ok"}',
+        b'{"status":NaN}',
+        b'{"status":Infinity}',
+        b'{"status":-Infinity}',
+    ],
+)
+def test_runtime_json_boundaries_reject_duplicate_and_nonfinite_values(raw: bytes):
+    module = load_module()
+
+    with pytest.raises(module.SmokeError, match="runtime_not_strict_json"):
+        module.strict_runtime_json(raw, "runtime_not_strict_json")
+
+
+def test_runtime_process_capture_fails_before_stdout_can_grow_unbounded():
+    module = load_module()
+
+    with pytest.raises(module.SmokeError, match="runtime_output_too_large"):
+        module.run_bounded_process(
+            [
+                sys.executable,
+                "-c",
+                "import os; os.write(1, b'x' * (1024 * 1024))",
+            ],
+            environment=None,
+            timeout=10,
+            stdout_limit=1024,
+            stderr_limit=1024,
+            code="runtime_output_too_large",
+        )
+
+
 @pytest.mark.parametrize(
     ("tamper", "reason"),
     [

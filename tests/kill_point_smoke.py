@@ -8,6 +8,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -154,6 +155,50 @@ def test_distribution_identity_binds_extracted_binary_archive_report_and_manifes
 
 
 @pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"status":"wrong","status":"pass"}',
+        b'{"status":"pass","ignored":NaN}',
+        b'{"status":"pass","ignored":Infinity}',
+    ],
+)
+def test_failure_harness_strict_json_rejects_duplicates_and_nonfinite(
+    kill, raw: bytes
+) -> None:
+    with pytest.raises(kill.EvidenceFailure, match="not strict JSON"):
+        kill.strict_json_bytes(raw, "runtime witness", 1024)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"room_id":"wrong","room_id":"room-fixture"}',
+        b'{"room_id":"room-fixture","ignored":NaN}',
+        b'{"room_id":"room-fixture","ignored":Infinity}',
+    ],
+)
+def test_public_http_runtime_json_rejects_ambiguous_pass_inputs(
+    kill, monkeypatch: pytest.MonkeyPatch, raw: bytes
+) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _maximum: int) -> bytes:
+            return raw
+
+    monkeypatch.setattr(
+        kill.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()
+    )
+
+    with pytest.raises(kill.EvidenceFailure, match="not strict JSON"):
+        kill.post_json("http://127.0.0.1:1", "wsb1:fixture", "/v1/rooms", {})
+
+
+@pytest.mark.parametrize(
     "tamper",
     [
         "binary",
@@ -270,6 +315,47 @@ def test_harness_sends_external_sigkill_only_after_exact_private_marker(
     assert daemon.process is None
 
 
+@pytest.mark.skipif(os.name != "posix", reason="SIGKILL process test requires POSIX")
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"schema":"wrong","schema":"worldstream/test-crash-boundary-ready/v1"}',
+        b'{"schema":"worldstream/test-crash-boundary-ready/v1","ignored":NaN}',
+        b'{"schema":"worldstream/test-crash-boundary-ready/v1","ignored":Infinity}',
+    ],
+)
+def test_crash_marker_ambiguous_json_never_reaches_pass(
+    tmp_path: pathlib.Path, kill, raw: bytes
+) -> None:
+    tmp_path.chmod(0o700)
+    crash = kill.CrashSpec(
+        "action", "after_commit_before_publication", "01ARZ3NDEKTSV4RRFFQ69G5FC6"
+    )
+    daemon = kill.Daemon(
+        tmp_path,
+        pathlib.Path(sys.executable),
+        startup_timeout=1,
+        shutdown_timeout=2,
+    )
+    daemon.process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    marker_path = tmp_path / "crash-marker.json"
+    marker_path.write_bytes(raw)
+    marker_path.chmod(0o600)
+    try:
+        with pytest.raises(kill.EvidenceFailure, match="did not appear"):
+            daemon.kill_at_marker(crash, 0.05)
+    finally:
+        if daemon.process is not None:
+            daemon.process.kill()
+            daemon.process.wait(timeout=2)
+            daemon.process = None
+
+
 def create_witness_database(path: pathlib.Path, count: int) -> None:
     connection = sqlite3.connect(path)
     try:
@@ -308,9 +394,42 @@ def test_offline_create_observer_is_read_only_and_distinguishes_commit(
     assert sqlite3.sqlite_version
 
 
+def test_authority_clone_is_created_owner_only_without_a_permissive_window(
+    kill, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = kill.private_root("worldstream-authority-source-")
+    (source / "data").mkdir(mode=0o700)
+    opened: list[tuple[pathlib.Path, int, int]] = []
+    original_open = kill.os.open
+
+    def observed_open(path, flags, mode=0o777, *args, **kwargs):
+        if pathlib.Path(path).name == "authority.secret":
+            opened.append((pathlib.Path(path), flags, mode))
+        return original_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(kill.os, "open", observed_open)
+    clone = kill.clone_root(source, "worldstream-authority-clone-")
+    try:
+        assert (clone / "authority.secret").read_bytes() == (
+            source / "authority.secret"
+        ).read_bytes()
+        assert (clone / "authority.secret").stat().st_mode & 0o777 == 0o600
+        assert len(opened) == 1
+        assert opened[0][1] & os.O_EXCL
+        assert opened[0][2] == 0o600
+    finally:
+        shutil.rmtree(source, ignore_errors=True)
+        shutil.rmtree(clone, ignore_errors=True)
+
+
 def test_frozen_matrix_and_one_hour_boundary_are_exact(kill, soak) -> None:
     expected = {
-        (operation, boundary)
+        (storage_backend, connection_mode, operation, boundary)
+        for storage_backend, connection_mode in (
+            ("sqlite", "embedded"),
+            ("postgresql", "direct"),
+            ("postgresql", "transaction_pool"),
+        )
         for operation in ("room_create", "action", "timer", "activation_lease")
         for boundary in (
             "before_commit",
@@ -318,7 +437,13 @@ def test_frozen_matrix_and_one_hour_boundary_are_exact(kill, soak) -> None:
             "after_publication_before_reply",
         )
     }
-    assert len(expected) == 12
+    assert expected == {
+        (storage_backend, connection_mode, operation, boundary)
+        for storage_backend, connection_mode in kill.BACKEND_PROFILES
+        for operation in ("room_create", "action", "timer", "activation_lease")
+        for boundary in kill.BOUNDARIES
+    }
+    assert len(expected) == kill.EXPECTED_CELL_COUNT == 36
     assert len(kill.BOUNDARIES) == 3
     assert soak.WORKLOAD_BINDING == "worldstream-daemon-transition-soak/v1"
     assert soak.COUNTER_ACTIONS_PER_ROOM == 8
@@ -336,6 +461,102 @@ def test_frozen_matrix_and_one_hour_boundary_are_exact(kill, soak) -> None:
     assert soak.release_window_is_complete(
         one_hour=True, target_seconds=3600, elapsed_seconds=3600
     )
+
+
+def test_postgres_admin_clone_and_observation_are_direct_while_runtime_dsn_varies(
+    tmp_path: pathlib.Path, kill, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider_root = tmp_path / "provider"
+    provider_root.mkdir(mode=0o700)
+    provider = kill.POSTGRES_HARNESS.Provider(
+        root=provider_root,
+        repository=tmp_path,
+        docker="docker",
+        psql="psql",
+        worldstreamctl=tmp_path / "worldstreamctl",
+        admin_password="a" * 48,
+        runtime_password="b" * 48,
+        network="fixture-network",
+        postgres_name="fixture-postgres",
+        pooler_name="fixture-pooler",
+        postgres_volume="fixture-postgres-data",
+        volume_ownership_id="fixture-volume-owner",
+        postgres_port=15432,
+        pooler_port=16432,
+    )
+    psql_calls: list[tuple[str, str, dict]] = []
+
+    def fake_psql(database: str, sql: str, **kwargs):
+        psql_calls.append((database, sql, kwargs))
+        if "SELECT oid FROM pg_database" in sql:
+            return "42"
+        if "SELECT (SELECT count(*)" in sql:
+            return "0|0|0"
+        return ""
+
+    provider._psql = fake_psql
+    control_calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        control_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(kill.POSTGRES_HARNESS, "_safe_run", fake_run)
+    provider._prepare_database("kill_admin_fixture")
+    admin_dsn = (provider_root / "kill_admin_fixture-admin.dsn").read_text()
+    assert "port=15432" in admin_dsn
+    assert "port=16432" not in admin_dsn
+    assert [call[2] for call in psql_calls] == [{}, {}]
+    assert [call[1:3] for call in control_calls] == [
+        ["postgres", "migrate"],
+        ["postgres", "verify"],
+    ]
+
+    class Capture:
+        def __init__(self):
+            self.values: list[tuple[str, bytes]] = []
+
+        def register_sentinel(self, name: str, value: bytes) -> None:
+            self.values.append((name, value))
+
+    capture = Capture()
+    roots: list[pathlib.Path] = []
+    try:
+        for mode, expected_port in (("direct", 15432), ("transaction_pool", 16432)):
+            profile = kill.BackendProfile(
+                "postgresql", mode, provider, capture, "kill_admin_fixture"
+            )
+            before = len(psql_calls)
+            root = profile.new_root(f"worldstream-{mode}-fixture-")
+            roots.append(root)
+            runtime_dsn = (root / "postgresql-runtime.dsn").read_text()
+            assert f"port={expected_port}" in runtime_dsn
+            assert all(kwargs == {} for _database, _sql, kwargs in psql_calls[before:])
+            daemon = kill.Daemon(
+                root,
+                pathlib.Path(sys.executable),
+                startup_timeout=1,
+                shutdown_timeout=1,
+            )
+            assert profile.store_identity(daemon) == (
+                "postgresql",
+                profile.database(root),
+                42,
+            )
+            assert profile.creation_witness(daemon) == {
+                "room_count": 0,
+                "genesis_count": 0,
+                "creation_receipt_count": 0,
+                "observer": "postgresql_direct_admin_read_only_transaction",
+            }
+            assert all(kwargs == {} for _database, _sql, kwargs in psql_calls[before:])
+    finally:
+        for root in roots:
+            shutil.rmtree(root, ignore_errors=True)
+    assert {name for name, _value in capture.values} == {
+        "postgres-runtime-dsn-postgresql_direct-001",
+        "postgres-runtime-dsn-postgresql_transaction_pool-001",
+    }
 
 
 def packaged_acceptance_fixture(distribution: dict) -> dict:
@@ -471,8 +692,8 @@ def test_cli_contract_exposes_packaged_identity_reports_and_retained_logs(
 
 def test_offline_observer_wording_does_not_claim_bundled_engine_identity() -> None:
     text = KILL_SCRIPT.read_text(encoding="utf-8")
-    assert "offline read-only SQLite observer" in text
-    assert "offline_observer_sqlite_version" in text
+    assert "PostgreSQL creation witness" in text
+    assert "postgresql_direct_admin_read_only_transaction" in text
     assert "read-only bundled SQLite witness" not in text
     assert "engine conformance" in text
 

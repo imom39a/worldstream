@@ -1,5 +1,12 @@
 # IMO-60/61 process kill-point evidence
 
+> Historical implementation note: this page describes the original
+> single-SQLite-cell diagnostic and is not current release proof. The
+> authoritative release procedure is
+> [`imo-60-61-process-runtime-evidence.md`](imo-60-61-process-runtime-evidence.md),
+> which requires the packaged 36-cell SQLite/PostgreSQL direct/PostgreSQL
+> transaction-pool matrix and the strict detached producer.
+
 `scripts/kill-point-smoke.sh` is the bounded Linux process harness for
 the process-level crash/kill-point gap. It is intentionally separate from
 `/readyz`, the in-process SQLite test matrix, and the repeated soak

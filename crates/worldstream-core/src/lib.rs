@@ -145,8 +145,10 @@ pub use room_commit::{
     resolve_authorized_room_operation_for_adapter,
 };
 pub use semantic_time::{
-    ActionLaneReservationV1, AdmissionLaneClassV1, AdmissionLaneErrorV1, HostClockErrorV1,
-    HostClockSampleV1, HostClockV1, LaneReservationV1, MonotonicHostClockV1, RoomAdmissionLaneV1,
+    ActionLaneReservationV1, ActionRoomAdmissionV1, AdmissionLaneClassV1, AdmissionLaneErrorV1,
+    HostClockErrorV1, HostClockSampleV1, HostClockV1, LaneReservationV1, MonotonicHostClockV1,
+    ROOM_ADMISSION_HOST_RESERVE_V1, ROOM_ADMISSION_LANE_CAPACITY_V1, RoomAdmissionLaneV1,
+    RoomAdmissionLanesV1, RoomAdmissionQueueSnapshotV1, RoomAdmissionTurnV1,
 };
 pub use session::{
     CapturedSessionBarrierV1, SessionBarrierV1, SessionCloseReasonV1, SessionErrorV1,

@@ -45,7 +45,7 @@ const REQUIRED_COVERAGE_TABLES: [&str; 9] = [
 ];
 
 const TRUSTED_COMPATIBILITY_JSON_DIGEST: &str =
-    "0b981bdccca4b28c35c0559f76cda4ab1f705c4d8af3de0c713918fdb40cf631";
+    "69c44216a2f2815a3af012b179a83b67ee9bd15d46c0f7d3f7858012acb4d1ec";
 
 type RequestKey = (NativeSqliteRequestLedgerV1, Vec<u8>);
 type RequestMap = BTreeMap<RequestKey, Vec<u8>>;
@@ -352,6 +352,7 @@ impl NativeSqliteBackupEnvelopeV1 {
                     })
                     .collect(),
             ),
+            durable_domains: None,
         };
         Ok(NativeRestoreEvidenceV1::new(image, target))
     }
@@ -971,12 +972,14 @@ fn build_semantic_receipts(
             kind: ReceiptKindV1::Semantic,
             identity_bytes: identity.to_vec(),
             request_bytes: request.clone(),
+            request_bytes_available: true,
             request_digest,
             result_digest: DigestV1::hash(&result_bytes),
             result_bytes,
             room_id: Some(room_id),
             transition_seq,
             activation_id: None,
+            operation_kind: None,
         });
     }
     Ok(result)
@@ -1007,12 +1010,14 @@ fn build_activation_receipts(
             kind: ReceiptKindV1::ActivationOperation,
             identity_bytes: operation_id,
             request_bytes: request.clone(),
+            request_bytes_available: true,
             request_digest,
             result_digest: DigestV1::hash(&result_bytes),
             result_bytes,
             room_id: text(&row.values, 0).map(str::to_owned),
             transition_seq: None,
             activation_id: optional_text(&row.values, 4).map(str::to_owned),
+            operation_kind: text(&row.values, 2).map(str::to_owned),
         });
     }
     Ok(result)

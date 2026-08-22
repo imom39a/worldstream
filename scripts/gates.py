@@ -40,9 +40,14 @@ HOSTED_REQUIRED_TOOL_VERSIONS = {
     "gitleaks": "8.29.1",
 }
 
+SHA1_DIGEST = re.compile(r"[0-9a-f]{40}\Z")
 SHA256_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 SHA256_REFERENCE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 EVIDENCE_DIGEST = re.compile(r"(?:sha256|blake3):[0-9a-f]{64}\Z")
+SPDX_CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+SPDX_TOOL_CREATOR = re.compile(
+    r"Tool: [A-Za-z0-9][A-Za-z0-9._-]*-[0-9]+(?:\.[0-9]+)+(?:[-+][0-9A-Za-z.-]+)?\Z"
+)
 
 RELEASE_ARTIFACT_PROFILES = {
     "source-archive": "source",
@@ -60,6 +65,9 @@ SUPPLY_CHAIN_ARTIFACT_IDS = frozenset(
     {"checksums", "sigstore-bundle", "spdx-sbom", "slsa-provenance"}
 )
 SIGSTORE_VERIFICATION_ARTIFACT_ID = "sigstore-bundle"
+SIGSTORE_VERIFICATION_LOCATION = (
+    "release-manifest.json#verification_material.sigstore-bundle.path"
+)
 CHECKSUM_PAYLOAD_ARTIFACT_IDS = frozenset(
     {
         "source-archive",
@@ -75,6 +83,32 @@ PRE_SIGN_SUPPLY_CHAIN_FILES = frozenset(
         "supply-chain/subject-inventory.bundle.json",
     }
 )
+
+
+def path_only_sigstore_declaration(row: object) -> bool:
+    return (
+        isinstance(row, dict)
+        and row.get("id") == SIGSTORE_VERIFICATION_ARTIFACT_ID
+        and row.get("status") == "verification_material"
+        and row.get("digest") == ""
+        and row.get("digest_algorithm") == ""
+        and row.get("digest_location") is None
+        and row.get("verification_material_location") == SIGSTORE_VERIFICATION_LOCATION
+    )
+
+
+def detached_release_artifact_declaration(row: object) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if row.get("id") == SIGSTORE_VERIFICATION_ARTIFACT_ID:
+        return path_only_sigstore_declaration(row)
+    return (
+        row.get("status") == "detached"
+        and row.get("digest") == ""
+        and row.get("digest_algorithm") == "sha256"
+        and row.get("digest_location") == "release-manifest.json"
+        and row.get("verification_material_location") is None
+    )
 
 
 def release_evidence_verifier():
@@ -115,7 +149,7 @@ CELL_ROUTES = {
         "system": "Linux",
     },
     "native-windows-x64": {
-        "runner": "windows-2025",
+        "runner": "windows-2025-vs2026",
         "shell": "pwsh",
         "system": "Windows",
     },
@@ -219,11 +253,7 @@ def uses_detached_release_identity(manifest: dict[str, Any]) -> bool:
     rows = release_rows if isinstance(release_rows, list) else []
     evidence = evidence_rows if isinstance(evidence_rows, list) else []
     detached_artifacts = bool(rows) and all(
-        isinstance(row, dict)
-        and row.get("status") == "detached"
-        and row.get("digest") == ""
-        and row.get("digest_location") == "release-manifest.json"
-        for row in rows
+        detached_release_artifact_declaration(row) for row in rows
     )
     detached_evidence = bool(evidence) and all(
         isinstance(row, dict)
@@ -330,9 +360,10 @@ def release_blocker_matrix(
             )
             continue
         digest = row.get("digest")
-        declaration_ready = (
-            row.get("profile") == expected_profile
-            and row.get("digest_algorithm") == "sha256"
+        declaration_ready = row.get("profile") == expected_profile and (
+            path_only_sigstore_declaration(row)
+            if artifact_id == SIGSTORE_VERIFICATION_ARTIFACT_ID
+            else row.get("digest_algorithm") == "sha256"
             and (
                 (row.get("status") == "resolved" and _digest_is_valid(digest))
                 or (
@@ -401,7 +432,7 @@ def release_blocker_matrix(
         ),
         "native-windows-x64": (
             "x86_64-pc-windows-msvc",
-            "windows-2025",
+            "windows-2025-vs2026",
             "Windows",
             "native-windows-release-profile",
             "native-windows-x64-archive",
@@ -859,6 +890,13 @@ def release_artifact_inventory_diagnostics(
                 f"release artifact profile mismatch: {artifact_id} "
                 f"(expected {expected_profile})"
             )
+        if artifact_id == SIGSTORE_VERIFICATION_ARTIFACT_ID:
+            if not path_only_sigstore_declaration(row):
+                failures.append(
+                    "Sigstore bundle must use the exact path-only verification-"
+                    "material declaration"
+                )
+            continue
         if row.get("digest_algorithm") != "sha256":
             failures.append(
                 f"release artifact digest algorithm is not sha256: {artifact_id}"
@@ -2261,7 +2299,7 @@ def contract_inventory(
             "all-prior-forward-migrations-both-backends",
         ],
         "transfer": ["sqlite-postgresql-transfer-byte-parity-and-epoch-fencing"],
-        "restore": ["backend-native-isolated-restore-and-full-semantic-verifier"],
+        "restore": ["backend-native-isolated-restore-and-bounded-semantic-verifier"],
         "snapshot": ["sqlite-conformance-migration-backup-restore-crash"],
         "kill-point": ["failure-fuzz-resource-and-one-hour-sqlite-soak"],
         "privacy": ["config-secrets-probes-observability-security"],
@@ -2423,22 +2461,36 @@ def sigstore_shape_error(value: dict[str, Any]) -> str | None:
 
 
 def spdx_shape_error(value: dict[str, Any]) -> str | None:
+    namespace = value.get("documentNamespace")
+    parsed_namespace = (
+        urllib.parse.urlparse(namespace) if isinstance(namespace, str) else None
+    )
     if not (
         isinstance(value.get("spdxVersion"), str)
         and value["spdxVersion"] == "SPDX-2.3"
         and value.get("SPDXID") == "SPDXRef-DOCUMENT"
         and isinstance(value.get("name"), str)
-        and isinstance(value.get("documentNamespace"), str)
+        and value.get("dataLicense") == "CC0-1.0"
+        and parsed_namespace is not None
+        and bool(parsed_namespace.scheme)
+        and not parsed_namespace.fragment
     ):
         return "document is not an SPDX JSON document identity"
     creation = value.get("creationInfo")
-    if not isinstance(creation, dict) or not isinstance(creation.get("created"), str):
+    if (
+        not isinstance(creation, dict)
+        or not isinstance(creation.get("created"), str)
+        or SPDX_CREATED.fullmatch(creation["created"]) is None
+    ):
         return "SPDX creationInfo is incomplete"
     creators = creation.get("creators")
     if (
         not isinstance(creators, list)
         or not creators
-        or any(not isinstance(item, str) or not item for item in creators)
+        or not any(
+            isinstance(item, str) and SPDX_TOOL_CREATOR.fullmatch(item) is not None
+            for item in creators
+        )
     ):
         return "SPDX creationInfo creators are incomplete"
     for field in ("packages", "files", "relationships", "documentDescribes"):
@@ -2458,6 +2510,62 @@ def spdx_shape_error(value: dict[str, Any]) -> str | None:
             for item in value[field]
         ):
             return f"SPDX {field} contains an invalid item"
+    for item in value["files"]:
+        checksums = item.get("checksums")
+        if not isinstance(item.get("fileName"), str) or not isinstance(checksums, list):
+            return "SPDX file entry has no filename or checksums"
+        if any(
+            not isinstance(checksum, dict)
+            or set(checksum) != {"algorithm", "checksumValue"}
+            for checksum in checksums
+        ):
+            return "SPDX file checksum entry is malformed"
+        by_algorithm = {
+            str(checksum["algorithm"]).replace("-", "").upper(): checksum[
+                "checksumValue"
+            ]
+            for checksum in checksums
+        }
+        if (
+            len(checksums) != 2
+            or set(by_algorithm) != {"SHA1", "SHA256"}
+            or not isinstance(by_algorithm["SHA1"], str)
+            or SHA1_DIGEST.fullmatch(by_algorithm["SHA1"]) is None
+            or not isinstance(by_algorithm["SHA256"], str)
+            or SHA256_DIGEST.fullmatch(by_algorithm["SHA256"]) is None
+        ):
+            return "SPDX file must have exactly one valid SHA-1 and SHA-256 checksum"
+    element_ids = {"SPDXRef-DOCUMENT"}
+    for item in value["packages"]:
+        identifier = item["SPDXID"]
+        if identifier in element_ids:
+            return "SPDX element identifiers must be unique"
+        element_ids.add(identifier)
+    for item in value["files"]:
+        identifier = item["SPDXID"]
+        expected_identifier = (
+            "SPDXRef-ReleaseSubject-"
+            + hashlib.sha256(item["fileName"].encode("utf-8")).hexdigest()[:24]
+        )
+        if identifier != expected_identifier or identifier in element_ids:
+            return "SPDX file identifier is not exact or unique"
+        element_ids.add(identifier)
+    for relationship in value["relationships"]:
+        if not isinstance(relationship, dict) or set(relationship) != {
+            "spdxElementId",
+            "relationshipType",
+            "relatedSpdxElement",
+        }:
+            return "SPDX relationship is malformed"
+        for endpoint in ("spdxElementId", "relatedSpdxElement"):
+            identifier = relationship[endpoint]
+            if (
+                identifier not in {"NONE", "NOASSERTION"}
+                and identifier not in element_ids
+            ):
+                return "SPDX relationship contains a dangling element identifier"
+    if any(identifier not in element_ids for identifier in value["documentDescribes"]):
+        return "SPDX documentDescribes contains a dangling element identifier"
     return None
 
 
@@ -2493,7 +2601,6 @@ def slsa_shape_error(value: dict[str, Any]) -> str | None:
         not isinstance(definition.get("externalParameters"), dict)
         or not definition["externalParameters"]
         or not isinstance(definition.get("internalParameters"), dict)
-        or not definition["internalParameters"]
         or not isinstance(definition.get("resolvedDependencies"), list)
         or not definition["resolvedDependencies"]
     ):

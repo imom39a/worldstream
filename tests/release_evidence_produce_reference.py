@@ -13,6 +13,11 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from reference_target_support import (
+    storage_bindings,
+    target_report,
+    valid_kill_report,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/release-evidence-produce-reference.py"
@@ -189,6 +194,17 @@ def build_archive(
     files = {
         "bin/worldstreamd": daemon_bytes,
         "bin/worldstreamctl": control_bytes,
+        "sdk/python/pyproject.toml": (ROOT / "sdk/python/pyproject.toml").read_bytes(),
+        "sdk/python/uv.lock": (ROOT / "sdk/python/uv.lock").read_bytes(),
+        "sdk/python/src/worldstream_sdk/__init__.py": (
+            ROOT / "sdk/python/src/worldstream_sdk/__init__.py"
+        ).read_bytes(),
+        "sdk/python/src/worldstream_sdk/client.py": (
+            ROOT / "sdk/python/src/worldstream_sdk/client.py"
+        ).read_bytes(),
+        "sdk/python/src/worldstream_sdk/compatibility_identity.json": (
+            ROOT / "sdk/python/src/worldstream_sdk/compatibility_identity.json"
+        ).read_bytes(),
         "manifest/compatibility.toml": manifest_toml,
         "manifest/compatibility.json": manifest_json,
         "metadata/release.json": metadata,
@@ -317,6 +333,26 @@ def story_report(story: str, backend: str) -> dict:
 
 
 def packaged_acceptance_report(module, package_binding: dict) -> dict:
+    privacy_channels = []
+    privacy_classes = []
+    for index, channel_class in enumerate(
+        module.PACKAGED_ACCEPTANCE.REQUIRED_PRIVACY_CHANNEL_CLASSES, start=1
+    ):
+        channel_name = f"child-{index:04d}-{channel_class.replace('.', '-')}"
+        privacy_channels.append(
+            {
+                "channel": channel_name,
+                "sha256": "sha256:" + format(index, "x")[-1] * 64,
+                "size_bytes": 11 + index,
+            }
+        )
+        privacy_classes.append(
+            {
+                "class": channel_class,
+                "channel_count": 1,
+                "channels": [channel_name],
+            }
+        )
     cells: dict[str, dict] = {"counter": {}, "heist": {}}
     top_performance = {
         "classification": "measured_non_sla",
@@ -401,14 +437,29 @@ def packaged_acceptance_report(module, package_binding: dict) -> dict:
             "pool_mode": "transaction",
         },
         "reference_environment": {
-            "schema": "worldstream/reference-environment/v1",
             "platform": {
                 "system": "Linux",
-                "release": "6.8.0-fixture",
+                "distribution": "Ubuntu",
+                "distribution_version": "24.04",
                 "machine": "x86_64",
             },
-            "hardware": {"logical_cpus": 8, "physical_memory_bytes": 17_179_869_184},
-            "filesystem": {"repository": "ext4", "temporary": "ext4"},
+            "hardware": {
+                "cpu_model": "acceptance fixture cpu",
+                "logical_cpu_count": 4,
+                "memory_bytes": 8_589_934_592,
+            },
+            "filesystem": {
+                "type": "ext4",
+                "mount_options": ["rw", "relatime"],
+                "storage_class": "local_ssd_or_nvme",
+            },
+            "storage_bindings": storage_bindings(
+                {
+                    "type": "ext4",
+                    "mount_options": ["rw", "relatime"],
+                    "storage_class": "local_ssd_or_nvme",
+                }
+            ),
             "engines": {
                 "postgresql": {
                     "version": "17.11",
@@ -416,16 +467,13 @@ def packaged_acceptance_report(module, package_binding: dict) -> dict:
                         "server_version_num": "170011",
                         "synchronous_commit": "on",
                         "transaction_isolation": "read committed",
+                        **module.PACKAGED_ACCEPTANCE.POSTGRESQL_CONTRACT_SETTINGS,
                     },
                     "connection_mode": "direct_and_transaction_pooler",
                 },
-                "pgbouncer": {
-                    "image": module.PACKAGED_ACCEPTANCE.PGBOUNCER_IMAGE,
-                    "pool_mode": "transaction",
-                },
                 "sqlite": {
                     "version": "3.53.4",
-                    "settings": {"journal_mode": "wal", "synchronous": "full"},
+                    "settings": module.PACKAGED_ACCEPTANCE.SQLITE_REFERENCE_SETTINGS,
                     "connection_mode": "embedded",
                 },
             },
@@ -435,12 +483,46 @@ def packaged_acceptance_report(module, package_binding: dict) -> dict:
         "comparison": comparisons,
         "package_binding": package_binding,
         "performance": top_performance,
+        "privacy": {
+            "status": "pass",
+            "channel_contract": module.PACKAGED_ACCEPTANCE.PRIVACY_CHANNEL_CONTRACT,
+            "secret_scan": {
+                "schema": module.PACKAGED_ACCEPTANCE.SECRET_SCAN.MATRIX_SCHEMA,
+                "status": "pass",
+                "secrets_emitted": False,
+                "encodings_scanned": ["base64", "base64url", "hex", "raw"],
+                "channels": privacy_channels,
+                "channel_class_inventory": {
+                    "schema": (module.PACKAGED_ACCEPTANCE.PRIVACY_CHANNEL_CLASS_SCHEMA),
+                    "status": "complete",
+                    "required": list(
+                        module.PACKAGED_ACCEPTANCE.REQUIRED_PRIVACY_CHANNEL_CLASSES
+                    ),
+                    "classes": privacy_classes,
+                },
+                "sentinels": [
+                    {
+                        "name": name,
+                        "sha256": "sha256:" + digest * 64,
+                        "size_bytes": 32,
+                    }
+                    for name, digest in (
+                        ("authority-secret-01", "3"),
+                        ("operator-capability-01", "4"),
+                        ("postgres-admin-dsn-01", "5"),
+                        ("postgres-admin-password-01", "6"),
+                        ("postgres-runtime-dsn-01", "7"),
+                        ("postgres-runtime-password-01", "8"),
+                    )
+                ],
+            },
+        },
         "cleanup": "pass",
     }
 
 
 @pytest.fixture()
-def fixture(tmp_path: Path):
+def fixture(tmp_path: Path, monkeypatch):
     module = load_module()
     manifest_toml = tmp_path / "compatibility.toml"
     manifest_json = tmp_path / "compatibility.json"
@@ -526,6 +608,209 @@ def fixture(tmp_path: Path):
         name: {"status": "covered", "matched_tests": [f"tests::{name}"]}
         for name in failure.REQUIRED_COVERAGE_GROUPS
     }
+
+    def observed_queue(spec):
+        unit_high_water = min(4096, spec["hard_limit"])
+        return {
+            "status": "measured",
+            "name": spec["name"],
+            "measurement_source": "public_prometheus_metrics",
+            "capacity_metric": "worldstream_internal_queue_capacity",
+            "process_current_metric": "worldstream_internal_queue_process_current",
+            "process_high_water_metric": (
+                "worldstream_internal_queue_process_high_water"
+            ),
+            "unit_high_water_metric": "worldstream_internal_queue_unit_high_water",
+            "activity_metric": "worldstream_internal_queue_activity_total",
+            "completion_metric": "worldstream_internal_queue_completion_total",
+            "backpressure_metric": ("worldstream_internal_queue_backpressure_total"),
+            "capacity_scope": spec["capacity_scope"],
+            "activity_unit": spec["activity_unit"],
+            "configured_hard_limit": spec["hard_limit"],
+            "maximum_observed_process_current": unit_high_water,
+            "maximum_reported_process_high_water": unit_high_water,
+            "maximum_reported_unit_high_water": unit_high_water,
+            "sample_count": 72000,
+            "activity_total_initial": 10,
+            "activity_total_final": 20,
+            "activity_total_delta": 10,
+            "completion_total_initial": 8,
+            "completion_total_final": 18,
+            "completion_total_delta": 10,
+            "backpressure_total_initial": 0,
+            "backpressure_total_final": 0,
+            "backpressure_total_delta": 0,
+            "bound_status": "pass",
+        }
+
+    queue_observation = {
+        "status": "measured",
+        "observation_scope": failure.QUEUE_OBSERVATION_SCOPE,
+        "all_internal_queues_observed": True,
+        "observed_queues": [observed_queue(spec) for spec in failure.QUEUE_SPECS],
+    }
+    queue_boundary_tests = {
+        "schema": failure.QUEUE_BOUNDARY_TEST_SCHEMA,
+        "status": "pass",
+        "execution_scope": "same_production_queue_paths",
+        "total_duration_ms": 5000.0,
+        "max_total_seconds": failure.QUEUE_BOUNDARY_MAX_TOTAL_SECONDS,
+        "max_output_bytes_per_test": failure.MAX_RUNTIME_LOG_GROWTH_BYTES,
+        "tests": [
+            {
+                "queue_class": queue_class,
+                "package": package,
+                "test_name": test_name,
+                "status": "passed",
+                "exact_test_count": 1,
+                "duration_ms": 500.0,
+                "output_bytes": 1024,
+                "output_sha256": "sha256:" + str(index) * 64,
+            }
+            for index, (queue_class, package, test_name) in enumerate(
+                failure.QUEUE_BOUNDARY_TESTS, start=1
+            )
+        ],
+    }
+    disk_full = {
+        "schema": failure.DISK_FULL_SCHEMA,
+        "status": "pass",
+        "release_evidence": False,
+        "scenario": failure.DISK_FULL_SCENARIO,
+        "evidence_class": failure.DISK_FULL_EVIDENCE_CLASS,
+        "platform": {
+            "system": "Linux",
+            "machine": "x86_64",
+            "filesystem": "ext4",
+        },
+        "container": {
+            "image": failure.DISK_FULL_CONTAINER_IMAGE,
+            "platform": "linux/amd64",
+            "privileged": True,
+            "network": "none",
+            "root_filesystem_read_only": True,
+            "daemon_mount_read_only": True,
+            "observed_elapsed_ms": 2100.5,
+            "captured_output_bytes": 2048,
+        },
+        "bounds": {
+            "filesystem_image_bytes": failure.DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+            "attempted_write_bytes": failure.DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "max_daemon_seconds": failure.DISK_FULL_MAX_DAEMON_SECONDS,
+            "max_container_seconds": failure.DISK_FULL_MAX_CONTAINER_SECONDS,
+            "max_log_bytes": failure.DISK_FULL_MAX_LOG_BYTES,
+            "max_capture_bytes": failure.DISK_FULL_MAX_CAPTURE_BYTES,
+        },
+        "filesystem": {
+            "type": "ext4",
+            "mount_source_class": "loop_device",
+            "image_size_bytes": failure.DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+            "block_size_bytes": failure.DISK_FULL_BLOCK_SIZE_BYTES,
+            "available_kib_after_fill": 0,
+            "database_file_type": "regular",
+            "database_file_mode": "0600",
+            "fill_bytes_written": 63 * 1024 * 1024,
+        },
+        "fault": {
+            "errno_number": 28,
+            "errno_name": "ENOSPC",
+            "attempted_write_bytes": failure.DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "write_returned_bytes": 0,
+            "database_size_before_bytes": 0,
+            "database_size_after_bytes": 0,
+        },
+        "daemon": {
+            "binary_sha256": distribution["binary_sha256"],
+            "started": True,
+            "exit_observed": True,
+            "exit_code": 1,
+            "ready_http_200_observed": False,
+            "public_mutation_available": False,
+            "storage_failure_observed": True,
+            "elapsed_ms": 125.5,
+            "diagnostic_bytes": 512,
+            "diagnostic_sha256": "sha256:" + "6" * 64,
+        },
+        "cleanup": {
+            "internal_unmount_observed": True,
+            "container_remove_requested": True,
+            "container_absent_after_run": True,
+        },
+        "limitations": {
+            "runtime_disk_exhaustion_recovery_observed": False,
+            "physical_power_loss_observed": False,
+        },
+    }
+
+    def storage_sampling(
+        source: str, initial: int, peak: int, hard_limit: int
+    ) -> dict[str, object]:
+        return {
+            "measurement_source": source,
+            "measurement_window": "transition_workload_through_recovery",
+            "sampling_interval_ms": failure.STORAGE_SAMPLE_INTERVAL_MS,
+            "maximum_gap_ms": failure.RESOURCE_SAMPLE_MAX_GAP_MS,
+            "observed_max_gap_ms": 250,
+            "coverage_duration_ms": 3_600_500,
+            "sample_count": 14402,
+            "initial_bytes": initial,
+            "observed_peak_bytes": peak,
+            "observed_peak_growth_bytes": peak - initial,
+            "configured_hard_limit_bytes": hard_limit,
+            "bound_status": "pass",
+        }
+
+    resource_sampling = {
+        "schema": failure.RESOURCE_SAMPLING_SCHEMA,
+        "status": "measured",
+        "sampling_complete": True,
+        "peak_semantics": "maximum_observed_at_bounded_sampling_interval",
+        "workload_elapsed_ms": 3_600_010,
+        "resources": {
+            "process_tree_rss_bytes": {
+                "measurement_source": "linux_proc_process_tree_vmrss",
+                "measurement_window": "transition_workload",
+                "sampling_interval_ms": failure.RSS_SAMPLE_INTERVAL_MS,
+                "maximum_gap_ms": failure.RESOURCE_SAMPLE_MAX_GAP_MS,
+                "observed_max_gap_ms": 50,
+                "coverage_duration_ms": 3_600_010,
+                "sample_count": 72001,
+                "observed_peak_bytes": 10_000_000,
+                "configured_hard_limit_bytes": failure.MAX_PEAK_RSS_BYTES,
+                "bound_status": "pass",
+            },
+            "database_bytes": storage_sampling(
+                "sqlite_main_plus_wal_regular_file_sizes",
+                4096,
+                12288,
+                failure.MAX_DATABASE_GROWTH_BYTES,
+            ),
+            "wal_bytes": storage_sampling(
+                "sqlite_wal_regular_file_size",
+                0,
+                4096,
+                failure.MAX_WAL_GROWTH_BYTES,
+            ),
+            "temporary_bytes": storage_sampling(
+                "owned_private_working_tree_regular_file_sizes",
+                1024,
+                4096,
+                failure.MAX_TEMP_GROWTH_BYTES,
+            ),
+            "log_bytes": storage_sampling(
+                "owned_private_working_tree_daemon_log_sizes",
+                0,
+                16000,
+                failure.MAX_RUNTIME_LOG_GROWTH_BYTES,
+            ),
+            "artifact_bytes": storage_sampling(
+                "owned_private_working_tree_regular_file_sizes",
+                1024,
+                20000,
+                failure.MAX_AUXILIARY_ARTIFACT_GROWTH_BYTES,
+            ),
+        },
+    }
     soak = write_json(
         tmp_path / "raw-soak.json",
         {
@@ -545,6 +830,7 @@ def fixture(tmp_path: Path):
                 "fixture_only": False,
                 "process_level": True,
                 "database_workload_bound": True,
+                "disk_full_fault_injection": True,
             },
             "mode": "one_hour",
             "platform": {"system": "Linux", "machine": "x86_64"},
@@ -556,12 +842,27 @@ def fixture(tmp_path: Path):
                 "one_hour_target_seconds": 3600,
                 "max_output_bytes": 262144,
                 "max_database_growth_bytes": 268435456,
+                "max_wal_growth_bytes": failure.MAX_WAL_GROWTH_BYTES,
                 "max_temp_growth_bytes": failure.MAX_TEMP_GROWTH_BYTES,
                 "max_log_growth_bytes": failure.MAX_RUNTIME_LOG_GROWTH_BYTES,
                 "max_artifact_growth_bytes": (
                     failure.MAX_AUXILIARY_ARTIFACT_GROWTH_BYTES
                 ),
-                "max_internal_queue_depth": failure.TELEMETRY_QUEUE_HARD_LIMIT,
+                "internal_queue_hard_limits": {
+                    spec["name"]: {
+                        "capacity_scope": spec["capacity_scope"],
+                        "hard_limit": spec["hard_limit"],
+                        "activity_unit": spec["activity_unit"],
+                    }
+                    for spec in failure.QUEUE_SPECS
+                },
+                "queue_boundary_test_max_total_seconds": (
+                    failure.QUEUE_BOUNDARY_MAX_TOTAL_SECONDS
+                ),
+                "queue_boundary_test_max_output_bytes": (
+                    failure.MAX_RUNTIME_LOG_GROWTH_BYTES
+                ),
+                "max_peak_rss_bytes": failure.MAX_PEAK_RSS_BYTES,
                 "database_workload_binding": failure.RELEASE_DATABASE_WORKLOAD_BINDING,
             },
             "named_gate_evidence": {
@@ -569,6 +870,7 @@ def fixture(tmp_path: Path):
                 "release_gate": True,
                 "release_evidence": False,
             },
+            "disk_full": disk_full,
             "preflight": {
                 "test_list_parse": {
                     "status": "pass",
@@ -596,16 +898,25 @@ def fixture(tmp_path: Path):
                 "memory": {
                     "status": "measured",
                     "scope": "worldstreamd_process_tree",
+                    "peak_rss_bytes": 10_000_000,
                     "peak_rss_bytes_per_run": [10_000_000],
                     "observed_peak_delta_bytes": 0,
+                    "sampling_interval_ms": failure.RSS_SAMPLE_INTERVAL_MS,
+                    "maximum_gap_ms": failure.RESOURCE_SAMPLE_MAX_GAP_MS,
+                    "observed_max_gap_ms": 50,
+                    "coverage_duration_ms": 3_600_010,
+                    "sample_count": 72001,
                 },
             },
+            "resource_sampling": resource_sampling,
             "database": {
                 "status": "measured",
                 "workload_binding": failure.RELEASE_DATABASE_WORKLOAD_BINDING,
                 "initial_bytes": 4096,
                 "final_bytes": 8192,
                 "growth_bytes": 4096,
+                "wal_initial_bytes": 0,
+                "wal_final_bytes": 2048,
                 "wal_growth_bytes": 2048,
                 "growth_bound_status": "pass",
                 "wal_growth_bound_status": "pass",
@@ -653,26 +964,8 @@ def fixture(tmp_path: Path):
                     "sha256:" + "b" * 64,
                 ],
             },
-            "internal_queues": {
-                "status": "measured",
-                "configured_hard_limits_enforced": True,
-                "queues": [
-                    {
-                        "status": "measured",
-                        "name": "telemetry_exporter",
-                        "measurement_source": "public_prometheus_metrics",
-                        "depth_metric": "worldstream_telemetry_queued",
-                        "capacity_metric": "worldstream_telemetry_queue_capacity",
-                        "configured_hard_limit": failure.TELEMETRY_QUEUE_HARD_LIMIT,
-                        "maximum_observed_depth": 4,
-                        "sample_count": 10,
-                        "dropped_total_initial": 0,
-                        "dropped_total_final": 0,
-                        "dropped_total_delta": 0,
-                        "bound_status": "pass",
-                    }
-                ],
-            },
+            "queue_observation": queue_observation,
+            "queue_boundary_tests": queue_boundary_tests,
             "privacy": {
                 "status": "pass",
                 "secret_scan": {
@@ -750,17 +1043,41 @@ def fixture(tmp_path: Path):
                     "wal_growth_bytes": 2048,
                 },
                 "recovery": {"durations_ms": [10.0, 20.0, 30.0]},
+                "resource_sampling": resource_sampling,
+                "queue_observation": queue_observation,
+                "queue_boundary_tests": queue_boundary_tests,
             },
             "elapsed_seconds": 3600.01,
             "one_hour_window_completed": True,
         },
     )
+    kill_value = valid_kill_report(tmp_path, monkeypatch, distribution=distribution)
+    kill = write_json(tmp_path / "raw-kill.json", kill_value)
+    target_value = target_report(
+        module,
+        manifest=json.loads(manifest_json.read_text(encoding="utf-8")),
+        distribution=distribution,
+        acceptance=json.loads(packaged_acceptance.read_text(encoding="utf-8")),
+        acceptance_raw=packaged_acceptance.read_bytes(),
+        soak=json.loads(soak.read_text(encoding="utf-8")),
+        soak_raw=soak.read_bytes(),
+        kill=kill_value,
+        kill_raw=kill.read_bytes(),
+        package_archive=archive,
+        package_report=package_report,
+        daemon=daemon,
+        manifest_toml=manifest_toml,
+        manifest_json=manifest_json,
+    )
+    target = write_json(tmp_path / "raw-target.json", target_value)
     normalized_dir = tmp_path / "normalized"
     aggregate = tmp_path / "reference.json"
     inputs = projector.project(
         argparse.Namespace(
             packaged_acceptance_report=packaged_acceptance,
             soak_report=soak,
+            kill_point_report=kill,
+            target_report=target,
             package_archive=archive,
             package_report=package_report,
             daemon_bin=daemon,
@@ -781,6 +1098,8 @@ def fixture(tmp_path: Path):
         "package_report": package_report,
         "packaged_acceptance": packaged_acceptance,
         "soak": soak,
+        "kill": kill,
+        "target": target,
         "inputs": inputs,
         "aggregate": aggregate,
         "root": tmp_path,
@@ -801,6 +1120,8 @@ def produce(value: dict) -> tuple[dict, dict]:
         value["daemon"],
         value["packaged_acceptance"],
         value["soak"],
+        value["kill"],
+        value["target"],
         value["manifest_toml"],
         value["manifest_json"],
     )
@@ -809,6 +1130,51 @@ def produce(value: dict) -> tuple[dict, dict]:
 
 def refresh_aggregate(value: dict) -> None:
     write_json(value["aggregate"], value["module"].recompute_report(value["inputs"]))
+
+
+def test_cli_parser_keeps_normalized_and_raw_soak_reports_distinct():
+    module = load_module()
+    arguments = module.parser().parse_args(
+        [
+            "--output",
+            "producer.json",
+            "--artifact-output",
+            "artifact.json",
+            "--report",
+            "aggregate.json",
+            "--counter-report",
+            "counter.json",
+            "--heist-report",
+            "heist.json",
+            "--sqlite-report",
+            "sqlite.json",
+            "--postgres-report",
+            "postgres.json",
+            "--soak-report",
+            "normalized-soak.json",
+            "--target-report",
+            "normalized-target.json",
+            "--package-archive",
+            "package.tar.gz",
+            "--package-report",
+            "package.json",
+            "--daemon-bin",
+            "worldstreamd",
+            "--packaged-acceptance-report",
+            "acceptance.json",
+            "--raw-soak-report",
+            "raw-soak.json",
+            "--kill-point-report",
+            "raw-kill.json",
+            "--raw-target-report",
+            "raw-target.json",
+        ]
+    )
+
+    assert arguments.soak_report == Path("normalized-soak.json")
+    assert arguments.raw_soak_report == Path("raw-soak.json")
+    assert arguments.target_report == Path("normalized-target.json")
+    assert arguments.raw_target_report == Path("raw-target.json")
 
 
 def test_complete_measurements_emit_closed_byte_bound_non_sla_publication(fixture):
@@ -824,7 +1190,7 @@ def test_complete_measurements_emit_closed_byte_bound_non_sla_publication(fixtur
         "non_sla_publication",
     }
     assert (
-        "no threshold or SLA comparison"
+        "target comparisons are measured non-SLA;target misses remain publishable"
         in producer["outcomes"]["non_sla_publication"]["observations"][0]["value"]
     )
     assert bundle["performance_class"] == "reference_non_release"
@@ -947,6 +1313,99 @@ def test_packaged_acceptance_must_exactly_bind_independently_verified_package(fi
         produce(fixture)
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda report: report.pop("privacy"), "complete releasable six-cell"),
+        (
+            lambda report: report["privacy"]["secret_scan"]["channels"][0].update(
+                {"sha256": "sha256:not-a-digest"}
+            ),
+            "exact SHA-256 reference",
+        ),
+        (
+            lambda report: report["privacy"]["secret_scan"]["sentinels"].pop(),
+            "sentinel classes are incomplete",
+        ),
+        (
+            lambda report: report["privacy"]["secret_scan"].pop(
+                "channel_class_inventory"
+            ),
+            "privacy scan matrix is invalid",
+        ),
+        (
+            lambda report: report["privacy"]["secret_scan"][
+                "channel_class_inventory"
+            ].update({"status": "partial"}),
+            "channel-class contract is invalid",
+        ),
+        (
+            lambda report: report["privacy"]["secret_scan"]["channel_class_inventory"][
+                "required"
+            ].pop(),
+            "channel-class contract is invalid",
+        ),
+        (
+            lambda report: report["privacy"]["secret_scan"]["channel_class_inventory"][
+                "classes"
+            ][1].update(
+                {
+                    "channel_count": 1,
+                    "channels": report["privacy"]["secret_scan"][
+                        "channel_class_inventory"
+                    ]["classes"][0]["channels"],
+                }
+            ),
+            "channel-class mapping is invalid",
+        ),
+        (
+            lambda report: report["privacy"]["secret_scan"]["channels"].append(
+                {
+                    "channel": "child-9999-unclassified",
+                    "sha256": "sha256:" + "f" * 64,
+                    "size_bytes": 1,
+                }
+            ),
+            "do not exactly cover scanned channels",
+        ),
+    ],
+)
+def test_packaged_acceptance_requires_closed_privacy_scan_evidence(
+    fixture, mutation, message
+):
+    acceptance = json.loads(fixture["packaged_acceptance"].read_text())
+    mutation(acceptance)
+    write_json(fixture["packaged_acceptance"], acceptance)
+
+    with pytest.raises(fixture["module"].ReferenceError, match=message):
+        produce(fixture)
+
+
+def test_reference_projector_rejects_incomplete_channel_class_inventory(fixture):
+    acceptance = json.loads(fixture["packaged_acceptance"].read_text())
+    acceptance["privacy"]["secret_scan"]["channel_class_inventory"]["classes"].pop()
+    write_json(fixture["packaged_acceptance"], acceptance)
+    projector = load_projector()
+
+    with pytest.raises(
+        projector.REFERENCE_PRODUCER.ReferenceError,
+        match="channel-class contract is invalid",
+    ):
+        projector.project(
+            argparse.Namespace(
+                packaged_acceptance_report=fixture["packaged_acceptance"],
+                soak_report=fixture["soak"],
+                package_archive=fixture["archive"],
+                package_report=fixture["package_report"],
+                daemon_bin=fixture["daemon"],
+                output_dir=fixture["root"] / "rejected-normalized",
+                aggregate_report=fixture["root"] / "rejected-reference.json",
+                manifest_toml=fixture["manifest_toml"],
+                manifest_json=fixture["manifest_json"],
+            )
+        )
+
+
 def test_packaged_acceptance_revalidates_cell_contract_and_normalized_comparator(
     fixture,
 ):
@@ -1064,7 +1523,7 @@ def test_stale_normalized_inputs_reject_changed_raw_acceptance_or_soak(fixture):
         fixture["packaged_acceptance"]
     )
     write_json(fixture["soak"], soak)
-    with pytest.raises(module.ReferenceError, match="exact projection"):
+    with pytest.raises(module.ReferenceError, match="independently project"):
         produce(fixture)
 
     # Restore the acceptance bytes, then alter an independently valid raw soak metric.
@@ -1086,5 +1545,117 @@ def test_stale_normalized_inputs_reject_changed_raw_acceptance_or_soak(fixture):
     )
     soak["measurements"]["latency_ms"]["p50_ms"] += 0.125
     write_json(fixture["soak"], soak)
-    with pytest.raises(module.ReferenceError, match="exact projection"):
+    with pytest.raises(module.ReferenceError, match="independently project"):
         produce(fixture)
+
+
+def validate_raw_target(fixture: dict, report: dict) -> dict:
+    module = fixture["module"]
+    manifest = module.ADAPTER.COLLECTOR.load_manifest(
+        fixture["manifest_toml"], fixture["manifest_json"]
+    )
+    distribution, _package, _raw, _binding = module.verify_packaged_distribution(
+        fixture["archive"],
+        fixture["package_report"],
+        fixture["daemon"],
+        fixture["manifest_toml"],
+        fixture["manifest_json"],
+        manifest,
+    )
+    original = json.loads(fixture["target"].read_text(encoding="utf-8"))
+    return module.validate_reference_target(
+        report,
+        manifest=manifest,
+        distribution=distribution,
+        packaged_acceptance_sha256=module.sha256(fixture["packaged_acceptance"]),
+        expected_bindings=original["bindings"],
+        expected_external_sources=original["bound_external_sources"],
+        expected_packaged_sdk=module.packaged_sdk_identity(fixture["archive"]),
+        kill_cell_count=36,
+        soak_elapsed_seconds=3600.01,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("incomplete", "completion/classification"),
+        ("classification", "completion/classification"),
+        ("rate_arithmetic", "transition-rate measurement"),
+        ("rate_bucket_coherence", "transition-rate measurement"),
+        ("external_source", "external-source facts"),
+        ("sdk_client", "SDK bytes"),
+        ("history_substitution", "frozen-Counter limit attempt"),
+        ("target_host_attribution", "disclosure is invalid"),
+        ("rss_samples", "retained measurements"),
+        ("scaled", "scaled, simulated"),
+    ],
+)
+def test_frozen_target_proof_boundaries_fail_closed(fixture, case, message):
+    report = json.loads(fixture["target"].read_text(encoding="utf-8"))
+    if case == "incomplete":
+        report["dimensions"][0]["completed"] = False
+    elif case == "classification":
+        report["dimensions"][0]["classification"] = "bound_hard_gate"
+    elif case == "rate_arithmetic":
+        report["dimensions"][3]["observed"]["aggregate_accepted_per_second"] = 99.0
+        report["measurements"]["transition_rate"] = report["dimensions"][3]["observed"]
+    elif case == "rate_bucket_coherence":
+        rate = report["dimensions"][3]["observed"]
+        rate["accepted_transition_count"] = 179_999
+        rate["action_attempt_count"] = 179_999
+        rate["aggregate_accepted_per_second"] = round(179_999 / 1_800, 3)
+        report["dimensions"][4]["observed"]["sample_count"] = 179_999
+        report["measurements"]["transition_rate"] = rate
+        report["measurements"]["commit_to_ack_latency"] = report["dimensions"][4][
+            "observed"
+        ]
+    elif case == "external_source":
+        report["bound_external_sources"]["one_hour_soak"]["source_attribution"] = (
+            "target_workload_source"
+        )
+    elif case == "sdk_client":
+        report["identity"]["packaged_sdk"]["client_module_sha256"] = (
+            "sha256:" + "0" * 64
+        )
+    elif case == "history_substitution":
+        report["dimensions"][6]["observed"]["terminal_rejection_code"] = "limit_reached"
+    elif case == "target_host_attribution":
+        report["reference_environment"]["engines"]["postgresql"]["status"] = (
+            "not_observed_by_sqlite_process_soak"
+        )
+    elif case == "rss_samples":
+        report["measurements"]["resource_observation"][
+            "process_tree_rss_sample_count"
+        ] = 0
+    elif case == "scaled":
+        report["execution"]["scaled"] = True
+    else:  # pragma: no cover
+        raise AssertionError(case)
+    with pytest.raises(fixture["module"].ReferenceError, match=message):
+        validate_raw_target(fixture, report)
+
+
+def test_honest_frozen_performance_miss_remains_publishable(fixture):
+    report = json.loads(fixture["target"].read_text(encoding="utf-8"))
+    rate = report["dimensions"][3]["observed"]
+    rate.update(
+        {
+            "action_attempt_count": 178_200,
+            "dispatch_queue_full_count": 46_288,
+            "minimum_accepted_per_full_second": 99,
+            "accepted_transition_count": 178_200,
+            "aggregate_accepted_per_second": 99.0,
+        }
+    )
+    report["dimensions"][3].update({"target_met": False, "outcome": "missed"})
+    report["dimensions"][4]["observed"]["sample_count"] = 178_200
+    report["measurements"]["transition_rate"] = rate
+    report["measurements"]["commit_to_ack_latency"] = report["dimensions"][4][
+        "observed"
+    ]
+
+    validated = validate_raw_target(fixture, report)
+
+    assert "sustained_accepted_transition_rate" in validated["target_miss_ids"]
+    assert "snapshot_tail_recovery" in validated["target_miss_ids"]

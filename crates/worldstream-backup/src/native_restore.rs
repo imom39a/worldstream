@@ -7,16 +7,236 @@
 //! repairs a Room, changes readiness outside the returned report, or performs
 //! any other side effect.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use worldstream_core::CanonicalJsonV1;
 
 use crate::{
     BackendNativePointV1, BackendProfileV1, BackupImageV1, CanonicalRecordKindV1,
     ConsistencyClassV1, IntegrityWitnessV1, MAX_SAFE_INTEGER, MigrationContractV1, PackIdentityV1,
     ResourceIdentityV1, RoomDispositionV1, VerificationReportV1, VerifierLimits, verify_restore,
 };
+
+/// Fixed provider-neutral durable domains required for a `PostgreSQL` native
+/// restore to qualify as full semantic evidence.
+pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomainV1; 31] = [
+    NativeRestoreDurableDomainV1::SchemaMigrations,
+    NativeRestoreDurableDomainV1::OperationGuards,
+    NativeRestoreDurableDomainV1::RoomRoots,
+    NativeRestoreDurableDomainV1::Genesis,
+    NativeRestoreDurableDomainV1::Materializations,
+    NativeRestoreDurableDomainV1::MemberDeliveryState,
+    NativeRestoreDurableDomainV1::Timers,
+    NativeRestoreDurableDomainV1::Transitions,
+    NativeRestoreDurableDomainV1::Frames,
+    NativeRestoreDurableDomainV1::ObservationConsequences,
+    NativeRestoreDurableDomainV1::ActivationDecisions,
+    NativeRestoreDurableDomainV1::ActivationIntents,
+    NativeRestoreDurableDomainV1::ActivationOperationReceipts,
+    NativeRestoreDurableDomainV1::SemanticReceipts,
+    NativeRestoreDurableDomainV1::IntegrityIncidents,
+    NativeRestoreDurableDomainV1::AuthorityFences,
+    NativeRestoreDurableDomainV1::AuthorityState,
+    NativeRestoreDurableDomainV1::AuthorityPrincipals,
+    NativeRestoreDurableDomainV1::AuthorityRunners,
+    NativeRestoreDurableDomainV1::AuthorityCapabilities,
+    NativeRestoreDurableDomainV1::AuthorityCapabilityScopes,
+    NativeRestoreDurableDomainV1::AuthorityRunnerCapabilityMemberships,
+    NativeRestoreDurableDomainV1::AuthorityChangeReceipts,
+    NativeRestoreDurableDomainV1::AuthorityAudit,
+    NativeRestoreDurableDomainV1::TransferImports,
+    NativeRestoreDurableDomainV1::TransferChunks,
+    NativeRestoreDurableDomainV1::TransferTargetFence,
+    NativeRestoreDurableDomainV1::DeploymentMetadata,
+    NativeRestoreDurableDomainV1::DeploymentIdentityMetadata,
+    NativeRestoreDurableDomainV1::DeploymentPackIdentities,
+    NativeRestoreDurableDomainV1::DeploymentResourceIdentities,
+];
+
+/// One exact durable ledger domain captured on both sides of a native restore.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeRestoreDurableDomainV1 {
+    /// Full forward-only migration rows including lineage/fingerprint columns.
+    SchemaMigrations,
+    /// Operation identities, request hashes, Rooms, and indeterminate receipts.
+    OperationGuards,
+    /// Current Room Heads and integrity state/generation.
+    RoomRoots,
+    /// Exact retained Pack lock and Genesis bytes.
+    Genesis,
+    /// Current Core and Activity materialization bytes.
+    Materializations,
+    /// Complete Membership delivery head, floor, Cursor, and reset state.
+    MemberDeliveryState,
+    /// Timer identities, generations, schedules, payloads, and states.
+    Timers,
+    /// Exact ordered Transition bytes.
+    Transitions,
+    /// Exact addressed Frame payloads and hashes.
+    Frames,
+    /// Durable reset/visibility consequences and their payload/hash witnesses.
+    ObservationConsequences,
+    /// Canonical Activation decisions that created zero or more intents.
+    ActivationDecisions,
+    /// Activation intent, lease, runner, context, and generation state.
+    ActivationIntents,
+    /// Activation operation identities, request hashes, results, and contexts.
+    ActivationOperationReceipts,
+    /// Room operation identities, request hashes, semantic inputs/times, and results.
+    SemanticReceipts,
+    /// Ordered operational Room-integrity incidents and generations.
+    IntegrityIncidents,
+    /// Core authority witnesses and their active generation fences.
+    AuthorityFences,
+    /// Singleton authority initialization state.
+    AuthorityState,
+    /// Durable principals, statuses, and generations.
+    AuthorityPrincipals,
+    /// Durable Runner owners, statuses, and generations.
+    AuthorityRunners,
+    /// Capability targets, revocations, expiry, and authority generations.
+    AuthorityCapabilities,
+    /// Exact capability scopes.
+    AuthorityCapabilityScopes,
+    /// Runner capability Room/Membership targets.
+    AuthorityRunnerCapabilityMemberships,
+    /// Idempotent authority mutation receipts.
+    AuthorityChangeReceipts,
+    /// Ordered immutable authority audit facts.
+    AuthorityAudit,
+    /// Offline transfer state and target fingerprint.
+    TransferImports,
+    /// Exact resumable transfer chunk evidence.
+    TransferChunks,
+    /// Target-wide transfer identity fence.
+    TransferTargetFence,
+    /// Target-wide deployment lineage and storage epoch bytes/value.
+    DeploymentMetadata,
+    /// Canonical deployment identity bytes and component-set hashes.
+    DeploymentIdentityMetadata,
+    /// Exact installed Pack identity rows.
+    DeploymentPackIdentities,
+    /// Exact installed resource identity rows.
+    DeploymentResourceIdentities,
+}
+
+impl NativeRestoreDurableDomainV1 {
+    /// Stable diagnostic/report label for this domain.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SchemaMigrations => "schema_migrations",
+            Self::OperationGuards => "operation_guards",
+            Self::RoomRoots => "room_roots",
+            Self::Genesis => "genesis",
+            Self::Materializations => "materializations",
+            Self::MemberDeliveryState => "member_delivery_state",
+            Self::Timers => "timers",
+            Self::Transitions => "transitions",
+            Self::Frames => "frames",
+            Self::ObservationConsequences => "observation_consequences",
+            Self::ActivationDecisions => "activation_decisions",
+            Self::ActivationIntents => "activation_intents",
+            Self::ActivationOperationReceipts => "activation_operation_receipts",
+            Self::SemanticReceipts => "semantic_receipts",
+            Self::IntegrityIncidents => "integrity_incidents",
+            Self::AuthorityFences => "authority_fences",
+            Self::AuthorityState => "authority_state",
+            Self::AuthorityPrincipals => "authority_principals",
+            Self::AuthorityRunners => "authority_runners",
+            Self::AuthorityCapabilities => "authority_capabilities",
+            Self::AuthorityCapabilityScopes => "authority_capability_scopes",
+            Self::AuthorityRunnerCapabilityMemberships => "authority_runner_capability_memberships",
+            Self::AuthorityChangeReceipts => "authority_change_receipts",
+            Self::AuthorityAudit => "authority_audit",
+            Self::TransferImports => "transfer_imports",
+            Self::TransferChunks => "transfer_chunks",
+            Self::TransferTargetFence => "transfer_target_fence",
+            Self::DeploymentMetadata => "deployment_metadata",
+            Self::DeploymentIdentityMetadata => "deployment_identity_metadata",
+            Self::DeploymentPackIdentities => "deployment_pack_identities",
+            Self::DeploymentResourceIdentities => "deployment_resource_identities",
+        }
+    }
+}
+
+/// One bounded canonical database row and its exact BLAKE3 digest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeRestoreCanonicalRowV1 {
+    /// Canonical JSON array containing every modeled column in fixed order.
+    pub canonical_bytes: Vec<u8>,
+    /// Hash of `canonical_bytes`.
+    pub digest: crate::DigestV1,
+}
+
+impl NativeRestoreCanonicalRowV1 {
+    /// Constructs a row witness from adapter-canonicalized bytes.
+    #[must_use]
+    pub fn new(canonical_bytes: Vec<u8>) -> Self {
+        let digest = crate::DigestV1::hash(&canonical_bytes);
+        Self {
+            canonical_bytes,
+            digest,
+        }
+    }
+}
+
+/// Exact source/restored inventory for one durable domain.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeRestoreDurableDomainEvidenceV1 {
+    /// Typed domain identity.
+    pub domain: NativeRestoreDurableDomainV1,
+    /// Declared source row count, checked against `source_rows`.
+    pub source_row_count: u64,
+    /// Declared restored row count, checked against `restored_rows`.
+    pub restored_row_count: u64,
+    /// Digest over the typed domain and ordered source row witnesses.
+    pub source_digest: crate::DigestV1,
+    /// Digest over the typed domain and ordered restored row witnesses.
+    pub restored_digest: crate::DigestV1,
+    /// Ordered exact source rows.
+    pub source_rows: Vec<NativeRestoreCanonicalRowV1>,
+    /// Ordered exact restored rows.
+    pub restored_rows: Vec<NativeRestoreCanonicalRowV1>,
+}
+
+impl NativeRestoreDurableDomainEvidenceV1 {
+    /// Builds the complete count/digest binding for one domain.
+    #[must_use]
+    pub fn new(
+        domain: NativeRestoreDurableDomainV1,
+        source_rows: Vec<NativeRestoreCanonicalRowV1>,
+        restored_rows: Vec<NativeRestoreCanonicalRowV1>,
+    ) -> Self {
+        Self {
+            domain,
+            source_row_count: source_rows.len() as u64,
+            restored_row_count: restored_rows.len() as u64,
+            source_digest: durable_domain_digest(domain, &source_rows),
+            restored_digest: durable_domain_digest(domain, &restored_rows),
+            source_rows,
+            restored_rows,
+        }
+    }
+}
+
+fn durable_domain_digest(
+    domain: NativeRestoreDurableDomainV1,
+    rows: &[NativeRestoreCanonicalRowV1],
+) -> crate::DigestV1 {
+    let mut bytes = b"worldstream/native-restore-durable-domain/v1\0".to_vec();
+    bytes.extend_from_slice(domain.as_str().as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&(rows.len() as u64).to_be_bytes());
+    for row in rows {
+        bytes.extend_from_slice(&(row.canonical_bytes.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(row.digest.as_str().as_bytes());
+    }
+    crate::DigestV1::hash(&bytes)
+}
 
 /// The target-side metadata and membership witness supplied by a native
 /// restore adapter.
@@ -44,6 +264,12 @@ pub struct NativeRestoreTargetEvidenceV1 {
     pub resource_identities: Option<Vec<ResourceIdentityV1>>,
     /// Complete source/target integrity membership for every restored Room.
     pub room_membership: Option<Vec<NativeRestoreRoomMembershipV1>>,
+    /// Exact source/restored durable operational-domain inventory.
+    ///
+    /// `PostgreSQL` full-semantic readiness requires the fixed inventory in
+    /// [`POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1`]. `None` is retained for
+    /// adapters whose native contract does not yet claim that coverage.
+    pub durable_domains: Option<Vec<NativeRestoreDurableDomainEvidenceV1>>,
 }
 
 /// Source and target integrity evidence for one Room in a native restore.
@@ -441,8 +667,104 @@ pub fn verify_native_restore(
     check_pack_identities(evidence, &mut report, limits);
     check_resource_identities(evidence, &mut report, limits);
     check_room_membership(evidence, &mut report, limits);
+    check_durable_domains(evidence, &mut report, limits);
     check_exact_canonical_evidence(evidence, &mut report, limits);
     report
+}
+
+fn check_durable_domains(
+    evidence: &NativeRestoreEvidenceV1,
+    report: &mut VerificationReportV1,
+    limits: VerifierLimits,
+) {
+    if evidence.image.manifest.backend != BackendProfileV1::PostgresPrimary {
+        return;
+    }
+    let Some(domains) = evidence.target.durable_domains.as_ref() else {
+        block(
+            report,
+            limits,
+            ConsistencyClassV1::OperationalRelation,
+            "native_restore_durable_domains_missing",
+            "durable operational domains",
+            "recapture every required Activation, authority, and transfer-fence domain",
+        );
+        return;
+    };
+    if domains.len() != POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1.len() {
+        block(
+            report,
+            limits,
+            ConsistencyClassV1::OperationalRelation,
+            "native_restore_durable_domain_inventory_mismatch",
+            "durable operational domains",
+            "restore the fixed complete durable-domain inventory exactly once",
+        );
+    }
+    let mut observed = BTreeSet::new();
+    let mut total_rows = 0usize;
+    for domain in domains {
+        let mut invalid = !observed.insert(domain.domain);
+        let source_count = usize::try_from(domain.source_row_count).ok();
+        let restored_count = usize::try_from(domain.restored_row_count).ok();
+        invalid |= source_count != Some(domain.source_rows.len())
+            || restored_count != Some(domain.restored_rows.len())
+            || domain.source_rows != domain.restored_rows
+            || domain.source_digest != domain.restored_digest
+            || durable_domain_digest(domain.domain, &domain.source_rows) != domain.source_digest
+            || durable_domain_digest(domain.domain, &domain.restored_rows)
+                != domain.restored_digest;
+        total_rows = total_rows.saturating_add(domain.source_rows.len());
+        let mut source_identities = BTreeSet::new();
+        let mut restored_identities = BTreeSet::new();
+        invalid |= domain.source_rows.iter().any(|row| {
+            row.canonical_bytes.is_empty()
+                || row.canonical_bytes.len() > limits.max_object_bytes
+                || CanonicalJsonV1::from_canonical_bytes(&row.canonical_bytes).is_err()
+                || crate::DigestV1::hash(&row.canonical_bytes) != row.digest
+                || !source_identities.insert(row.digest.clone())
+        });
+        invalid |= domain.restored_rows.iter().any(|row| {
+            row.canonical_bytes.is_empty()
+                || row.canonical_bytes.len() > limits.max_object_bytes
+                || CanonicalJsonV1::from_canonical_bytes(&row.canonical_bytes).is_err()
+                || crate::DigestV1::hash(&row.canonical_bytes) != row.digest
+                || !restored_identities.insert(row.digest.clone())
+        });
+        if invalid {
+            block(
+                report,
+                limits,
+                ConsistencyClassV1::OperationalRelation,
+                "native_restore_durable_domain_mismatch",
+                domain.domain.as_str(),
+                "discard the target and restore the exact ordered source rows, counts, and hashes",
+            );
+        }
+    }
+    if total_rows > limits.max_ledger_rows {
+        block(
+            report,
+            limits,
+            ConsistencyClassV1::OperationalRelation,
+            "native_restore_durable_domain_bound_exceeded",
+            "durable operational domains",
+            "restore within the reviewed aggregate durable-row bound",
+        );
+    }
+    let required = POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if observed != required {
+        block(
+            report,
+            limits,
+            ConsistencyClassV1::OperationalRelation,
+            "native_restore_durable_domain_inventory_mismatch",
+            "durable operational domains",
+            "recapture every required typed domain without omissions or additions",
+        );
+    }
 }
 
 /// Verifies evidence supplied through a provider-specific read-only adapter.
@@ -981,8 +1303,50 @@ mod tests {
                     })
                     .collect(),
             ),
+            durable_domains: None,
         };
         NativeRestoreEvidenceV1::new(image, target)
+    }
+
+    fn postgres_evidence() -> NativeRestoreEvidenceV1 {
+        let mut evidence = evidence(vec![room("healthy", IntegrityStatusV1::Healthy)]);
+        let native_point = BackendNativePointV1::PostgresNative {
+            major: 17,
+            engine_identity: "postgresql-17.11".to_owned(),
+            point_id: "dump-point-1".to_owned(),
+            mechanism: crate::PostgresNativeMechanismV1::Dump,
+        };
+        evidence.image.manifest.backend = BackendProfileV1::PostgresPrimary;
+        evidence.image.manifest.native_point = native_point.clone();
+        evidence.image.restored_native_point = native_point.clone();
+        evidence.target.backend = Some(BackendProfileV1::PostgresPrimary);
+        evidence.target.native_point = Some(native_point);
+        evidence.target.durable_domains = Some(
+            POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1
+                .into_iter()
+                .map(|domain| {
+                    let bytes = match domain {
+                        NativeRestoreDurableDomainV1::OperationGuards => {
+                            br#"["identity","request-hash","room",null]"#.to_vec()
+                        }
+                        NativeRestoreDurableDomainV1::MemberDeliveryState => {
+                            // A member with a durable head/cursor but no Frame rows.
+                            br#"["room","member","membership",0,1,1,null,null]"#.to_vec()
+                        }
+                        NativeRestoreDurableDomainV1::ObservationConsequences => {
+                            br#"["room",1,"member",1,0,"payload-hash"]"#.to_vec()
+                        }
+                        NativeRestoreDurableDomainV1::IntegrityIncidents => {
+                            br#"["room",1,"quarantined","reason",1]"#.to_vec()
+                        }
+                        _ => format!("[\"{}\"]", domain.as_str()).into_bytes(),
+                    };
+                    let rows = vec![NativeRestoreCanonicalRowV1::new(bytes)];
+                    NativeRestoreDurableDomainEvidenceV1::new(domain, rows.clone(), rows)
+                })
+                .collect(),
+        );
+        evidence
     }
 
     struct FixtureAdapter(NativeRestoreEvidenceV1);
@@ -1003,6 +1367,125 @@ mod tests {
             Some(&crate::RoomDispositionV1::Verified)
         );
         assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn complete_postgres_durable_domain_inventory_is_required_and_ready() {
+        let report = verify_native_restore(&postgres_evidence(), VerifierLimits::default());
+        assert!(report.is_ready(), "{:?}", report.diagnostics);
+    }
+
+    #[test]
+    fn postgres_retry_reset_incident_and_zero_frame_member_rows_are_nonempty() {
+        let evidence = postgres_evidence();
+        let domains = evidence
+            .target
+            .durable_domains
+            .as_ref()
+            .unwrap_or_else(|| unreachable!());
+        for required in [
+            NativeRestoreDurableDomainV1::OperationGuards,
+            NativeRestoreDurableDomainV1::ObservationConsequences,
+            NativeRestoreDurableDomainV1::IntegrityIncidents,
+            NativeRestoreDurableDomainV1::MemberDeliveryState,
+        ] {
+            let domain = domains
+                .iter()
+                .find(|domain| domain.domain == required)
+                .unwrap_or_else(|| unreachable!());
+            assert_eq!(domain.source_row_count, 1, "{}", required.as_str());
+            assert_eq!(domain.restored_row_count, 1, "{}", required.as_str());
+            assert_eq!(domain.source_rows, domain.restored_rows);
+        }
+        let member = domains
+            .iter()
+            .find(|domain| domain.domain == NativeRestoreDurableDomainV1::MemberDeliveryState)
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(
+            member.source_rows[0].canonical_bytes,
+            br#"["room","member","membership",0,1,1,null,null]"#
+        );
+        let guard = domains
+            .iter()
+            .find(|domain| domain.domain == NativeRestoreDurableDomainV1::OperationGuards)
+            .unwrap_or_else(|| unreachable!());
+        assert!(guard.source_rows[0].canonical_bytes.ends_with(b",null]"));
+    }
+
+    #[test]
+    fn every_postgres_durable_domain_omission_fails_closed() {
+        for omitted in POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1 {
+            let mut evidence = postgres_evidence();
+            evidence
+                .target
+                .durable_domains
+                .as_mut()
+                .unwrap_or_else(|| unreachable!())
+                .retain(|domain| domain.domain != omitted);
+            let report = verify_native_restore(&evidence, VerifierLimits::default());
+            assert!(!report.is_ready(), "omitted {}", omitted.as_str());
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "native_restore_durable_domain_inventory_mismatch"
+            }));
+        }
+    }
+
+    #[test]
+    fn every_postgres_durable_domain_row_tamper_fails_closed() {
+        for tampered in POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1 {
+            let mut evidence = postgres_evidence();
+            let domain = evidence
+                .target
+                .durable_domains
+                .as_mut()
+                .unwrap_or_else(|| unreachable!())
+                .iter_mut()
+                .find(|domain| domain.domain == tampered)
+                .unwrap_or_else(|| unreachable!());
+            domain.source_rows[0].canonical_bytes = b"[\"tampered\"]".to_vec();
+            let report = verify_native_restore(&evidence, VerifierLimits::default());
+            assert!(!report.is_ready(), "tampered {}", tampered.as_str());
+            assert!(
+                report.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == "native_restore_durable_domain_mismatch"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_durable_domain_counts_and_aggregate_digests_are_bound() {
+        let mut count = postgres_evidence();
+        count
+            .target
+            .durable_domains
+            .as_mut()
+            .unwrap_or_else(|| unreachable!())[0]
+            .source_row_count += 1;
+        let report = verify_native_restore(&count, VerifierLimits::default());
+        assert!(!report.is_ready());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "native_restore_durable_domain_mismatch")
+        );
+
+        let mut digest = postgres_evidence();
+        digest
+            .target
+            .durable_domains
+            .as_mut()
+            .unwrap_or_else(|| unreachable!())[0]
+            .source_digest = DigestV1::hash(b"forged-domain-digest");
+        let report = verify_native_restore(&digest, VerifierLimits::default());
+        assert!(!report.is_ready());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "native_restore_durable_domain_mismatch")
+        );
     }
 
     #[test]

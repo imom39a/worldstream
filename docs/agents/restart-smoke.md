@@ -33,9 +33,9 @@ It removes its temporary directory on exit.
 ## Observations required for a pass
 
 - `/healthz` returns HTTP 200.
-- `/readyz` returns HTTP 503 with `storage_not_initialized`.
-- `/version` returns HTTP 200 and reports `manifest.release_ready: false`,
-  `engine.status: not_initialized`, and no `engine.exact_identity`.
+- `/readyz` returns HTTP 200 with `status: ready`.
+- `/version` returns HTTP 200 and reports `manifest.release_ready: true`,
+  `engine.status: verified`, and a non-empty `engine.exact_identity`.
 - A SQLite file appears under the temporary data directory, survives the
   first graceful `TERM`, and is reopened at the same file identity after the
   restart. This is bounded file-persistence evidence only; it is not Room
@@ -47,18 +47,16 @@ It removes its temporary directory on exit.
   bearer and therefore expects `403 forbidden`; that is explicitly recorded
   as an authority/bootstrap blocker, not as a created Room.
 
-## Current unresolved outcomes
+## Scope of the evidence
 
-The current daemon does not expose a successful ready state: `/readyz` is
-still the deliberate storage bootstrap response. The SQLite gateway is wired
-for the process, but `create_room` remains fail-closed and the live harness
-has no authority-bootstrap fixture or secret capability to use. Consequently
-the smoke lane cannot honestly prove Room creation, Room replay, or durable
-Room state across restart. It reports those as unresolved while still proving
-the process, signal, restart, bounded SQLite-file, and invalid-storage
-observations available today.
+The daemon exposes a successful verified ready state, but this bounded smoke
+lane intentionally has no authority-bootstrap fixture or secret capability.
+Consequently it does not claim Room creation, Room replay, or durable Room
+state across restart. Those behaviors are covered by the packaged reference
+and recovery lanes; this harness proves the process, signal, restart, bounded
+SQLite-file, verified runtime identity, and invalid-storage observations.
 
 The Python test file uses a temporary fixture daemon to exercise those process
-boundaries when a live Rust binary is absent. It also injects a fixture that
-incorrectly returns ready, and verifies that the shell harness rejects that
-claim rather than weakening the evidence gate.
+boundaries when a live Rust binary is absent. It also injects an unready
+fixture and verifies that the shell harness rejects that result rather than
+weakening the evidence gate.

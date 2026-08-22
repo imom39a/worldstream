@@ -106,7 +106,7 @@
     {
       "artifact_digest": "",
       "artifact_digest_location": "release-manifest.json",
-      "id": "backend-native-isolated-restore-and-full-semantic-verifier",
+      "id": "backend-native-isolated-restore-and-bounded-semantic-verifier",
       "release_gate": true,
       "status": "detached"
     },
@@ -689,11 +689,11 @@
     },
     {
       "digest": "",
-      "digest_algorithm": "sha256",
-      "digest_location": "release-manifest.json",
+      "digest_algorithm": "",
       "id": "sigstore-bundle",
       "profile": "all",
-      "status": "detached"
+      "status": "verification_material",
+      "verification_material_location": "release-manifest.json#verification_material.sigstore-bundle.path"
     },
     {
       "digest": "",

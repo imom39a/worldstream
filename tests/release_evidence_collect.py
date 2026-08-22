@@ -133,6 +133,33 @@ def test_collects_exact_manifest_ids_and_cites_hashed_sources(collector):
     assert set(assembled_ids) == set(evidence_ids)
 
 
+def test_shared_release_json_parser_rejects_duplicate_security_keys(collector):
+    module, _manifest_toml, _manifest_json, _tmp_path = collector
+
+    with pytest.raises(module.CollectionError, match="duplicate key 'status'"):
+        module.strict_json_object(
+            b'{"status":"passed","status":"failed"}', "source report"
+        )
+    with pytest.raises(module.CollectionError, match="duplicate key 'subject'"):
+        module.strict_json_object(
+            b'{"predicate":{"subject":[],"subject":[{"name":"hidden"}]}}',
+            "signed provenance",
+        )
+
+
+def test_collector_bounds_control_file_reads(collector, monkeypatch):
+    module, _manifest_toml, _manifest_json, tmp_path = collector
+    document = b'{"value":"bounded"}'
+    monkeypatch.setattr(module.BUILD_IDENTITY, "MAX_RELEASE_JSON_BYTES", len(document))
+    path = tmp_path / "control.json"
+    path.write_bytes(document)
+
+    assert module.bounded_regular_bytes(path, "control JSON") == document
+    path.write_bytes(document + b" ")
+    with pytest.raises(module.CollectionError, match="too large"):
+        module.bounded_regular_bytes(path, "control JSON")
+
+
 def test_identical_source_bytes_in_different_roots_have_identical_output(collector):
     module, manifest_toml, manifest_json, tmp_path = collector
     first_sources = valid_sources(module, manifest_toml, tmp_path / "first" / "sources")

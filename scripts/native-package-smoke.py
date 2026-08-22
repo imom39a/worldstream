@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -97,6 +98,39 @@ def read_json(path: Path, code: str) -> dict[str, Any]:
         raise SmokeError(code) from error
     require(isinstance(value, dict), code)
     return value
+
+
+def strict_runtime_json(raw: bytes, code: str) -> dict[str, Any]:
+    """Parse a bounded runtime response with the shared release JSON boundary."""
+
+    require(isinstance(raw, bytes) and 0 < len(raw) <= MAX_CONTROL_BYTES, code)
+    try:
+        return PACKAGE.BUILD_IDENTITY.strict_json(raw, code)
+    except PACKAGE.BUILD_IDENTITY.IdentityError as error:
+        raise SmokeError(code) from error
+
+
+def validate_control_version(
+    value: object,
+    *,
+    manifest_summary: object,
+    product: str,
+    source_revision: str,
+    code: str,
+) -> None:
+    """Bind the packaged control binary to the daemon/package source revision."""
+
+    require(isinstance(manifest_summary, dict), code)
+    expected = {
+        **manifest_summary,
+        "product_build": {
+            "product": product,
+            "binary": "worldstreamctl",
+            "build_version": product,
+            "source_revision": source_revision,
+        },
+    }
+    require(value == expected, code)
 
 
 def atomic_write(path: Path, value: object) -> None:
@@ -367,6 +401,80 @@ def run_process(
     )
 
 
+def run_bounded_process(
+    argv: list[str],
+    *,
+    environment: dict[str, str] | None,
+    timeout: float,
+    stdout_limit: int,
+    stderr_limit: int,
+    code: str,
+) -> tuple[int, bytes, bytes]:
+    """Capture a child without permitting either output pipe to grow unbounded."""
+
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as error:
+        raise SmokeError(code) from error
+    require(process.stdout is not None and process.stderr is not None, code)
+    overflow = threading.Event()
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+
+    def drain(name: str, stream, limit: int) -> None:
+        try:
+            while chunk := stream.read(64 * 1024):
+                remaining = max(0, limit + 1 - len(buffers[name]))
+                if remaining:
+                    buffers[name].extend(chunk[:remaining])
+                if len(chunk) > remaining or len(buffers[name]) > limit:
+                    overflow.set()
+                    with contextlib.suppress(OSError):
+                        process.kill()
+                    return
+        except OSError:
+            overflow.set()
+            with contextlib.suppress(OSError):
+                process.kill()
+
+    readers = [
+        threading.Thread(
+            target=drain,
+            args=("stdout", process.stdout, stdout_limit),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=drain,
+            args=("stderr", process.stderr, stderr_limit),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.wait()
+        for reader in readers:
+            reader.join(timeout=5)
+        raise SmokeError(code) from error
+    for reader in readers:
+        reader.join(timeout=5)
+    if any(reader.is_alive() for reader in readers):
+        process.kill()
+        process.wait()
+        raise SmokeError(code)
+    require(not overflow.is_set(), code)
+    return returncode, bytes(buffers["stdout"]), bytes(buffers["stderr"])
+
+
 def run_json(
     argv: list[str],
     code: str,
@@ -374,14 +482,16 @@ def run_json(
     environment: dict[str, str] | None = None,
     timeout: float = 120,
 ) -> dict[str, Any]:
-    completed = run_process(argv, environment=environment, timeout=timeout)
-    require(completed.returncode == 0, code)
-    try:
-        value = json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
-        raise SmokeError(code) from error
-    require(isinstance(value, dict), code)
-    return value
+    returncode, raw, _stderr = run_bounded_process(
+        argv,
+        environment=environment,
+        timeout=timeout,
+        stdout_limit=MAX_CONTROL_BYTES,
+        stderr_limit=MAX_LOG_BYTES,
+        code=code,
+    )
+    require(returncode == 0, code)
+    return strict_runtime_json(raw, code)
 
 
 def psql(
@@ -434,12 +544,7 @@ def http_json(base_url: str, path: str) -> tuple[int, dict[str, Any]]:
         status = error.code
         body = error.read(MAX_CONTROL_BYTES + 1)
     require(len(body) <= MAX_CONTROL_BYTES, "runtime_probe_response_too_large")
-    try:
-        value = json.loads(body.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise SmokeError("runtime_probe_invalid_json") from error
-    require(isinstance(value, dict), "runtime_probe_invalid_json")
-    return status, value
+    return status, strict_runtime_json(body, "runtime_probe_invalid_json")
 
 
 def daemon_environment(secret_file: Path, dsn_file: Path | None) -> dict[str, str]:
@@ -606,6 +711,13 @@ def run_profile(
             f"{profile}_packaged_ctl_version_failed",
             environment=environment,
         )
+        validate_control_version(
+            ctl_version,
+            manifest_summary=version.get("manifest"),
+            product=manifest["release_candidate"],
+            source_revision=source_revision,
+            code=f"{profile}_packaged_ctl_contract_drift",
+        )
         require(
             config == {"status": "valid", "storage_profile": profile}
             and effective.get("config_version") == 1
@@ -626,8 +738,7 @@ def run_profile(
                 "data_directory": "owner_only",
                 "storage": "not_initialized",
             }
-            and ctl_health == {"status": "ok", "probe": "daemon-healthz"}
-            and ctl_version == version.get("manifest"),
+            and ctl_health == {"status": "ok", "probe": "daemon-healthz"},
             f"{profile}_packaged_ctl_contract_drift",
         )
         if profile == "postgres-primary":
@@ -670,6 +781,7 @@ def run_profile(
                 "health": "pass",
                 "version": "pass",
                 "binary_version": manifest["release_candidate"],
+                "source_revision": source_revision,
             },
         }
     finally:

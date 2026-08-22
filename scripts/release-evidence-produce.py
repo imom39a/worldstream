@@ -148,11 +148,13 @@ def checked_status(value: object, label: str) -> str:
 def read_producer(path: Path, spec, manifest: dict[str, Any]) -> dict[str, Any]:
     regular_file(path, f"producer result {spec.source_id}")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+    except OSError as error:
         raise ProducerError(f"producer result is not valid JSON: {error}") from error
-    if not isinstance(value, dict):
-        raise ProducerError("producer result must be a JSON object")
+    try:
+        value = COLLECTOR.strict_json_object(raw, f"producer result {spec.source_id}")
+    except COLLECTOR.CollectionError as error:
+        raise ProducerError(str(error)) from error
     missing = sorted(PRODUCER_FIELDS - set(value))
     extra = sorted(set(value) - PRODUCER_FIELDS)
     if missing or extra:
@@ -490,7 +492,9 @@ def main(argv: list[str] | None = None) -> int:
         for source_id in failed:
             spec = SOURCE_BY_ID[source_id]
             report_path = args.output_dir / f"{spec.evidence_id}.json"
-            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report = COLLECTOR.strict_json_object(
+                report_path.read_bytes(), f"written source report {source_id}"
+            )
             details = report.get("details", {})
             print(
                 f"fail-closed producer: source={source_id}; "

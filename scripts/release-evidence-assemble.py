@@ -18,11 +18,15 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
+from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -79,7 +83,13 @@ SIDECAR_PATHS = {
 PRE_SIGN_SUBJECT_DIRECTORY = "supply-chain/subjects"
 PRE_SIGN_INVENTORY_PATH = "supply-chain/subject-inventory.json"
 PRE_SIGN_SIGNATURE_PATH = "supply-chain/subject-inventory.bundle.json"
+MAX_RELEASE_PAYLOAD_BYTES = 8 * 1024 * 1024 * 1024
+COPY_CHUNK_BYTES = 1024 * 1024
 HEX_DIGEST = set("0123456789abcdef")
+SPDX_CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+SPDX_TOOL_CREATOR = re.compile(
+    r"Tool: [A-Za-z0-9][A-Za-z0-9._-]*-[0-9]+(?:\.[0-9]+)+(?:[-+][0-9A-Za-z.-]+)?\Z"
+)
 PAYLOAD_EVIDENCE_BINDINGS = {
     "native-linux-release-profile": (
         "native-linux-x86_64-archive",
@@ -96,6 +106,7 @@ PAYLOAD_EVIDENCE_BINDINGS = {
 }
 
 
+@cache
 def evidence_collector():
     """Load the code-owned evidence/source/producer identity mapping."""
 
@@ -125,6 +136,20 @@ def package_verifier():
     return module
 
 
+def release_build_identity_verifier():
+    """Load the shared SPDX/SLSA identity verifier."""
+
+    path = ROOT / "scripts/release_build_identity.py"
+    name = "worldstream_release_assembly_build_identity"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        fail(f"cannot load release build identity verifier: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def oci_layout_verifier():
     """Load the canonical closed OCI-layout verifier."""
 
@@ -147,6 +172,39 @@ def fail(message: str) -> None:
     raise AssemblyError(message)
 
 
+def strict_json_bytes(content: bytes, label: str) -> dict[str, Any]:
+    """Use the shared release parser so signed bytes have one interpretation."""
+
+    collector = evidence_collector()
+    try:
+        return collector.strict_json_object(content, label)
+    except collector.CollectionError as error:
+        fail(str(error))
+
+
+def bounded_regular_bytes(path: Path, label: str) -> bytes:
+    """Read a release control document through the shared allocation bound."""
+
+    collector = evidence_collector()
+    try:
+        return collector.bounded_regular_bytes(path, label)
+    except collector.CollectionError as error:
+        fail(str(error))
+
+
+def validate_spdx_created(value: object) -> None:
+    if not isinstance(value, str):
+        fail("SPDX creation time is not a string")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as error:
+        raise AssemblyError("SPDX creation time is not a real UTC second") from error
+    if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != value:
+        fail("SPDX creation time is not canonical UTC-second text")
+
+
 def canonical_json(value: object) -> bytes:
     return (
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -159,7 +217,24 @@ def sha256_bytes(value: bytes) -> str:
 
 def sha256_file(path: Path) -> str:
     try:
-        return sha256_bytes(path.read_bytes())
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(COPY_CHUNK_BYTES):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError as error:
+        fail(f"cannot read {path}: {error}")
+
+
+def sha1_file(path: Path) -> str:
+    """Return SPDX's mandatory SHA-1 integrity checksum."""
+
+    try:
+        digest = hashlib.sha1(usedforsecurity=False)
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
     except OSError as error:
         fail(f"cannot read {path}: {error}")
 
@@ -251,20 +326,17 @@ def directory(path: Path, label: str) -> Path:
 def load_manifest(
     toml_path: Path, json_path: Path
 ) -> tuple[dict[str, Any], bytes, bytes]:
-    regular_file(toml_path, "compatibility.toml")
-    regular_file(json_path, "compatibility.json")
     try:
-        authored_bytes = toml_path.read_bytes()
+        authored_bytes = bounded_regular_bytes(toml_path, "compatibility.toml")
         authored = tomllib.loads(authored_bytes.decode("utf-8"))
-        mirror_bytes = json_path.read_bytes()
-        mirror = json.loads(mirror_bytes)
+        mirror_bytes = bounded_regular_bytes(json_path, "compatibility.json")
     except (
         OSError,
         UnicodeError,
         tomllib.TOMLDecodeError,
-        json.JSONDecodeError,
     ) as error:
         fail(f"cannot read compatibility manifest pair: {error}")
+    mirror = strict_json_bytes(mirror_bytes, "compatibility.json")
     if not isinstance(authored, dict) or not isinstance(mirror, dict):
         fail("compatibility manifest pair must contain objects")
     if authored != mirror:
@@ -333,6 +405,19 @@ def validate_release_contract(manifest: dict[str, Any]) -> tuple[str, tuple[str,
         if artifact_id not in RELEASE_ARTIFACT_IDS or artifact_id in observed:
             fail(f"invalid or duplicate release artifact id: {artifact_id!r}")
         observed.add(artifact_id)
+        if artifact_id == "sigstore-bundle":
+            if (
+                row.get("status") != "verification_material"
+                or row.get("digest") != ""
+                or row.get("digest_algorithm") != ""
+                or row.get("digest_location") is not None
+                or row.get("verification_material_location")
+                != "release-manifest.json#verification_material.sigstore-bundle.path"
+            ):
+                fail(
+                    "Sigstore bundle must be declared as path-only verification material"
+                )
+            continue
         if row.get("status") != "detached" or row.get("digest") != "":
             fail(
                 "release assembly requires detached artifact identities with empty embedded digests: "
@@ -344,6 +429,8 @@ def validate_release_contract(manifest: dict[str, Any]) -> tuple[str, tuple[str,
             )
         if row.get("digest_algorithm") != "sha256":
             fail(f"artifact digest algorithm is not sha256: {artifact_id}")
+        if row.get("verification_material_location") is not None:
+            fail(f"non-Sigstore artifact claims verification material: {artifact_id}")
     if observed != set(RELEASE_ARTIFACT_IDS):
         fail(
             "compatibility release artifact inventory is incomplete: "
@@ -590,12 +677,7 @@ def validate_evidence_inputs(
     result: dict[str, Path] = {}
     for evidence_id in evidence_ids:
         path = entries[evidence_id + ".json"]
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            fail(f"evidence report {evidence_id} is not valid JSON: {error}")
-        if not isinstance(value, dict):
-            fail(f"evidence report {evidence_id} must be a JSON object")
+        value = json_object(path, f"evidence report {evidence_id}")
         report_is_passed(value, evidence_id, path, version, contract)
         result[evidence_id] = path
     return result
@@ -656,10 +738,9 @@ def validate_release_payloads(
         if len(manifest_paths) != 1:
             fail(f"release payload {artifact_id} has no unique embedded manifest")
         manifest_bytes = entries[manifest_paths[0]]
-        try:
-            embedded_manifest = json.loads(manifest_bytes)
-        except (UnicodeError, json.JSONDecodeError) as error:  # pragma: no cover
-            fail(f"release payload {artifact_id} embedded manifest is invalid: {error}")
+        embedded_manifest = strict_json_bytes(
+            manifest_bytes, f"release payload {artifact_id} embedded manifest"
+        )
         if (
             not isinstance(embedded_manifest, dict)
             or embedded_manifest.get("contracts") != expected_contract
@@ -775,9 +856,81 @@ def atomic_write_bytes(path: Path, content: bytes, label: str) -> None:
         raise
 
 
-def copy_atomic(source: Path, destination: Path, label: str) -> None:
-    regular_file(source, label)
-    atomic_write_bytes(destination, source.read_bytes(), label)
+def copy_atomic(
+    source: Path,
+    destination: Path,
+    label: str,
+    *,
+    maximum: int,
+) -> tuple[str, int]:
+    """Copy one bounded regular file without materializing it in memory."""
+
+    if maximum <= 0:
+        fail(f"{label} has an invalid byte limit")
+    source_metadata = regular_file(source, label).lstat()
+    if not (0 < source_metadata.st_size <= maximum):
+        fail(f"{label} is empty or exceeds its {maximum}-byte limit")
+    if destination.is_symlink():
+        fail(f"{label} destination must not be a symlink: {destination}")
+    if destination.exists() and not destination.is_file():
+        fail(f"{label} destination must be a regular file: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    digest = hashlib.sha256()
+    copied = 0
+    descriptor_open = True
+    try:
+        # Enter separately so a failed source open leaves the temporary
+        # descriptor under the cleanup path below.
+        with source.open("rb") as input_stream:  # noqa: SIM117
+            with os.fdopen(descriptor, "wb") as output_stream:
+                descriptor_open = False
+                opened = os.fstat(input_stream.fileno())
+                if not stat.S_ISREG(opened.st_mode) or (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                ) != (
+                    source_metadata.st_dev,
+                    source_metadata.st_ino,
+                    source_metadata.st_size,
+                    source_metadata.st_mtime_ns,
+                    source_metadata.st_ctime_ns,
+                ):
+                    fail(f"{label} changed before it could be copied")
+                while chunk := input_stream.read(COPY_CHUNK_BYTES):
+                    copied += len(chunk)
+                    if copied > maximum:
+                        fail(f"{label} exceeded its byte limit while being copied")
+                    digest.update(chunk)
+                    output_stream.write(chunk)
+                finished = os.fstat(input_stream.fileno())
+                if (
+                    copied != opened.st_size
+                    or (finished.st_dev, finished.st_ino, finished.st_size)
+                    != (opened.st_dev, opened.st_ino, opened.st_size)
+                    or finished.st_mtime_ns != opened.st_mtime_ns
+                    or finished.st_ctime_ns != opened.st_ctime_ns
+                ):
+                    fail(f"{label} changed while it was being copied")
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+    except BaseException:
+        if descriptor_open:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        temporary.unlink(missing_ok=True)
+        raise
+    return digest.hexdigest(), copied
 
 
 def stage_release_inputs(
@@ -796,12 +949,20 @@ def stage_release_inputs(
     payload_paths = payload_names(version)
     for artifact_id, source in payloads.items():
         copy_atomic(
-            source, release_dir / payload_paths[artifact_id], f"payload {artifact_id}"
+            source,
+            release_dir / payload_paths[artifact_id],
+            f"payload {artifact_id}",
+            maximum=MAX_RELEASE_PAYLOAD_BYTES,
         )
     evidence_paths: dict[str, Path] = {}
     for evidence_id, source in reports.items():
         destination = release_dir / "evidence" / f"{evidence_id}.json"
-        copy_atomic(source, destination, f"evidence report {evidence_id}")
+        copy_atomic(
+            source,
+            destination,
+            f"evidence report {evidence_id}",
+            maximum=evidence_collector().BUILD_IDENTITY.MAX_RELEASE_JSON_BYTES,
+        )
         evidence_paths[evidence_id] = destination
     return (
         {
@@ -840,14 +1001,7 @@ def checksums_bytes(subjects: dict[str, Path]) -> bytes:
 
 
 def json_object(path: Path, label: str) -> dict[str, Any]:
-    regular_file(path, label)
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        fail(f"{label} is not valid JSON: {error}")
-    if not isinstance(value, dict):
-        fail(f"{label} must be a JSON object")
-    return value
+    return strict_json_bytes(bounded_regular_bytes(path, label), label)
 
 
 def validate_pre_sign_material(
@@ -1011,58 +1165,165 @@ def validate_pre_sign_material(
             fail(f"supply-chain artifact binding does not match bytes: {binding_id}")
 
     checksums_path = release_dir / SIDECAR_PATHS["checksums"]
-    if checksums_path.read_bytes() != checksums_bytes(
+    if bounded_regular_bytes(checksums_path, "SHA256SUMS") != checksums_bytes(
         {path: release_dir / path for path in expected.values()}
     ):
         fail("SHA256SUMS does not match the signed pre-sign subject inventory")
     subjects_by_path = {path: release_dir / path for path in expected.values()}
-    validate_spdx_subjects(release_dir / SIDECAR_PATHS["spdx-sbom"], subjects_by_path)
+    validate_spdx_subjects(
+        release_dir / SIDECAR_PATHS["spdx-sbom"],
+        subjects_by_path,
+        version=version,
+        manifest_sha256=manifest_sha256,
+    )
     validate_provenance_subjects(
         release_dir / SIDECAR_PATHS["slsa-provenance"], subjects_by_path
     )
     return subjects_by_path
 
 
-def validate_spdx_subjects(path: Path, subjects: dict[str, Path]) -> None:
+def validate_spdx_subjects(
+    path: Path,
+    subjects: dict[str, Path],
+    *,
+    version: str,
+    manifest_sha256: str,
+) -> None:
     value = json_object(path, "SPDX SBOM")
+    namespace = value.get("documentNamespace")
+    parsed_namespace = (
+        urllib.parse.urlparse(namespace) if isinstance(namespace, str) else None
+    )
+    creation = value.get("creationInfo")
     if (
         value.get("spdxVersion") != "SPDX-2.3"
         or value.get("SPDXID") != "SPDXRef-DOCUMENT"
-        or not isinstance(value.get("creationInfo"), dict)
+        or value.get("dataLicense") != "CC0-1.0"
+        or parsed_namespace is None
+        or not parsed_namespace.scheme
+        or bool(parsed_namespace.fragment)
+        or not isinstance(creation, dict)
+        or not isinstance(creation.get("created"), str)
+        or SPDX_CREATED.fullmatch(creation["created"]) is None
+        or not isinstance(creation.get("creators"), list)
+        or not any(
+            isinstance(creator, str)
+            and SPDX_TOOL_CREATOR.fullmatch(creator) is not None
+            for creator in creation["creators"]
+        )
         or not isinstance(value.get("files"), list)
         or not isinstance(value.get("packages"), list)
         or not isinstance(value.get("relationships"), list)
     ):
         fail("SPDX SBOM is not a valid SPDX-2.3 JSON document")
-    observed: dict[str, str] = {}
+    validate_spdx_created(creation["created"])
+    identity = release_build_identity_verifier()
+    try:
+        expected_namespace = identity.spdx_document_namespace(
+            version, manifest_sha256, subjects, creation["created"]
+        )
+    except identity.IdentityError as error:
+        fail(f"SPDX namespace inputs are invalid: {error}")
+    if namespace != expected_namespace:
+        fail("SPDX document namespace does not bind the exact document version")
+    observed_sha1: dict[str, str] = {}
+    observed_sha256: dict[str, str] = {}
+    element_ids = {"SPDXRef-DOCUMENT"}
+    for package in value["packages"]:
+        identifier = package.get("SPDXID") if isinstance(package, dict) else None
+        if not isinstance(identifier, str) or identifier in element_ids:
+            fail("SPDX contains a missing or duplicate package identifier")
+        element_ids.add(identifier)
     for item in value["files"]:
-        if not isinstance(item, dict) or not isinstance(item.get("fileName"), str):
+        if (
+            not isinstance(item, dict)
+            or set(item)
+            != {
+                "SPDXID",
+                "fileName",
+                "checksums",
+                "copyrightText",
+                "licenseConcluded",
+            }
+            or not isinstance(item.get("fileName"), str)
+            or item.get("SPDXID")
+            != identity._spdx_id("ReleaseSubject", item["fileName"])
+            or item.get("copyrightText") != "NOASSERTION"
+            or item.get("licenseConcluded") != "NOASSERTION"
+            or item["SPDXID"] in element_ids
+        ):
             fail("SPDX SBOM contains an invalid file entry")
+        element_ids.add(item["SPDXID"])
         checksums = item.get("checksums")
-        if not isinstance(checksums, list):
-            fail(f"SPDX file has no checksums: {item['fileName']}")
-        sha = [
-            checksum.get("checksumValue")
+        if not isinstance(checksums, list) or any(
+            not isinstance(checksum, dict)
+            or set(checksum) != {"algorithm", "checksumValue"}
             for checksum in checksums
-            if isinstance(checksum, dict)
-            and str(checksum.get("algorithm", "")).replace("-", "").upper()
-            in {"SHA256", "SHA2_256"}
-        ]
-        if len(sha) != 1 or not isinstance(sha[0], str) or len(sha[0]) != 64:
-            fail(f"SPDX file has no single SHA-256 checksum: {item['fileName']}")
-        observed[item["fileName"]] = sha[0].lower()
-    expected = {relative: sha256_file(path) for relative, path in subjects.items()}
-    if set(observed) != set(expected):
+        ):
+            fail(f"SPDX file has no checksums: {item['fileName']}")
+        by_algorithm = {
+            str(checksum["algorithm"]).replace("-", "").upper(): checksum[
+                "checksumValue"
+            ]
+            for checksum in checksums
+        }
+        if set(by_algorithm) != {"SHA1", "SHA256"} or len(checksums) != 2:
+            fail(
+                "SPDX file must have exactly one SHA-1 and SHA-256 checksum: "
+                + item["fileName"]
+            )
+        sha1 = by_algorithm["SHA1"]
+        sha256 = by_algorithm["SHA256"]
+        if (
+            not isinstance(sha1, str)
+            or len(sha1) != 40
+            or any(character not in HEX_DIGEST for character in sha1)
+            or not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(character not in HEX_DIGEST for character in sha256)
+        ):
+            fail(f"SPDX file has an invalid checksum: {item['fileName']}")
+        if item["fileName"] in observed_sha256:
+            fail(f"SPDX contains duplicate file subject: {item['fileName']}")
+        observed_sha1[item["fileName"]] = sha1
+        observed_sha256[item["fileName"]] = sha256
+    expected_sha1 = {relative: sha1_file(file) for relative, file in subjects.items()}
+    expected_sha256 = {
+        relative: sha256_file(file) for relative, file in subjects.items()
+    }
+    if set(observed_sha256) != set(expected_sha256):
         fail(
             "SPDX subject coverage does not match payload+evidence: "
-            f"missing={sorted(set(expected) - set(observed))}; "
-            f"extra={sorted(set(observed) - set(expected))}"
+            f"missing={sorted(set(expected_sha256) - set(observed_sha256))}; "
+            f"extra={sorted(set(observed_sha256) - set(expected_sha256))}"
         )
     mismatches = sorted(
-        relative for relative in expected if observed[relative] != expected[relative]
+        relative
+        for relative in expected_sha256
+        if observed_sha1[relative] != expected_sha1[relative]
+        or observed_sha256[relative] != expected_sha256[relative]
     )
     if mismatches:
-        fail("SPDX subject SHA-256 mismatch: " + ", ".join(mismatches))
+        fail("SPDX subject checksum mismatch: " + ", ".join(mismatches))
+    for relationship in value["relationships"]:
+        if not isinstance(relationship, dict) or set(relationship) != {
+            "spdxElementId",
+            "relationshipType",
+            "relatedSpdxElement",
+        }:
+            fail("SPDX contains a malformed relationship")
+        for endpoint in ("spdxElementId", "relatedSpdxElement"):
+            identifier = relationship[endpoint]
+            if (
+                identifier not in {"NONE", "NOASSERTION"}
+                and identifier not in element_ids
+            ):
+                fail("SPDX relationship contains a dangling element identifier")
+    if any(
+        identifier not in element_ids
+        for identifier in value.get("documentDescribes", [])
+    ):
+        fail("SPDX documentDescribes contains a dangling element identifier")
 
 
 def validate_provenance_subjects(path: Path, subjects: dict[str, Path]) -> None:

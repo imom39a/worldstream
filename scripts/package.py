@@ -55,13 +55,19 @@ DEFAULT_LICENSES = ROOT / "licenses"
 OCI_FILES = ROOT / "packaging/oci"
 MANIFEST_TOML = ROOT / "compatibility.toml"
 MANIFEST_JSON = ROOT / "compatibility.json"
+SHA1_DIGEST = re.compile(r"[0-9a-f]{40}")
 SHA256_DIGEST = re.compile(r"[0-9a-f]{64}")
 SHA256_REFERENCE = re.compile(r"sha256:[0-9a-f]{64}")
+SPDX_CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+SPDX_TOOL_CREATOR = re.compile(
+    r"Tool: [A-Za-z0-9][A-Za-z0-9._-]*-[0-9]+(?:\.[0-9]+)+(?:[-+][0-9A-Za-z.-]+)?"
+)
 VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?")
 MAX_NATIVE_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
 MAX_NATIVE_ARCHIVE_MEMBERS = 20_000
 MAX_NATIVE_ARCHIVE_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
 MAX_NATIVE_ARCHIVE_UNPACKED_BYTES = 32 * 1024 * 1024 * 1024
+MAX_RELEASE_JSON_BYTES = BUILD_IDENTITY.MAX_RELEASE_JSON_BYTES
 CLIENT_IDENTITY_SCHEMA = "worldstream/client-contract-identity/v1"
 CLIENT_IDENTITY_SDK_PATH = "sdk/python/src/worldstream_sdk/compatibility_identity.json"
 CLIENT_IDENTITY_UI_PATH = "ui/compatibility-identity.json"
@@ -104,7 +110,12 @@ RELEASE_ARTIFACT_PROFILES = {
     "spdx-sbom": "all",
     "slsa-provenance": "all",
 }
-RELEASE_ARTIFACT_STATUSES = {"resolved", "unresolved", "detached"}
+RELEASE_ARTIFACT_STATUSES = {
+    "resolved",
+    "unresolved",
+    "detached",
+    "verification_material",
+}
 OCI_CONTEXT_REQUIRED_FILES = frozenset(
     {
         "Dockerfile",
@@ -224,10 +235,9 @@ def release_evidence_verifier():
 def validate_manifest_shape(manifest: dict) -> None:
     """Validate identity and release inventory without approving a release.
 
-    The checked-in pair is deliberately a specification.  This validation is
-    intentionally usable for both that specification and a separately
-    reviewed release manifest, but never turns a specification into release
-    evidence.
+    The checked-in pair is the reviewed compatibility contract. This
+    validation is intentionally usable for both specification and release
+    manifests, but contract identity alone is not detached release evidence.
     """
 
     if manifest.get("schema") != "worldstream/storage-compatibility-manifest/v1":
@@ -284,6 +294,25 @@ def validate_manifest_shape(manifest: dict) -> None:
             fail(
                 f"compatibility manifest release artifact profile mismatch: {artifact_id}"
             )
+        if artifact_id == "sigstore-bundle":
+            if (
+                row.get("status") != "verification_material"
+                or row.get("digest") != ""
+                or row.get("digest_algorithm") != ""
+                or row.get("digest_location") is not None
+                or row.get("verification_material_location")
+                != "release-manifest.json#verification_material.sigstore-bundle.path"
+            ):
+                fail(
+                    "compatibility manifest Sigstore bundle is not path-only "
+                    "verification material"
+                )
+            continue
+        if row.get("verification_material_location") is not None:
+            fail(
+                "non-Sigstore compatibility artifact claims verification material: "
+                f"{artifact_id}"
+            )
         if row.get("digest_algorithm") != "sha256":
             fail(
                 f"compatibility manifest release artifact digest algorithm mismatch: {artifact_id}"
@@ -338,12 +367,12 @@ def validate_manifest_shape(manifest: dict) -> None:
 
 def read_manifest() -> tuple[dict, bytes, bytes]:
     try:
-        authored_bytes = MANIFEST_TOML.read_bytes()
+        authored_bytes = bounded_regular_bytes(MANIFEST_TOML, "compatibility.toml")
         authored = tomllib.loads(authored_bytes.decode("utf-8"))
-        mirror_bytes = MANIFEST_JSON.read_bytes()
-        mirror = json.loads(mirror_bytes)
+        mirror_bytes = bounded_regular_bytes(MANIFEST_JSON, "compatibility.json")
     except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
         fail(f"cannot read compatibility manifest pair: {error}")
+    mirror = json_object(mirror_bytes, "compatibility.json")
 
     canonical = (
         json.dumps(authored, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -784,15 +813,8 @@ def source_date_epoch_of(value: str) -> int:
     return epoch
 
 
-def relative_files(
-    directory: Path,
-    *,
-    include_empty_dirs: bool = False,
-    excluded_directories: tuple[Path, ...] = (),
-) -> list[Path]:
-    if directory.is_symlink() or not directory.is_dir():
-        fail(f"required directory is missing: {directory}")
-    excluded = {
+SOURCE_ARCHIVE_EXCLUDED_DIRECTORY_NAMES = frozenset(
+    {
         ".git",
         ".hypothesis",
         ".mypy_cache",
@@ -816,11 +838,24 @@ def relative_files(
         "release-inputs",
         "reports",
     }
+)
+
+
+def relative_files(
+    directory: Path,
+    *,
+    include_empty_dirs: bool = False,
+    excluded_directories: tuple[Path, ...] = (),
+) -> list[Path]:
+    if directory.is_symlink() or not directory.is_dir():
+        fail(f"required directory is missing: {directory}")
     excluded_paths = tuple(path.resolve(strict=False) for path in excluded_directories)
     files: list[Path] = []
     for path in sorted(directory.rglob("*"), key=lambda item: item.as_posix()):
         relative = path.relative_to(directory)
-        if any(part in excluded for part in relative.parts):
+        if any(
+            part in SOURCE_ARCHIVE_EXCLUDED_DIRECTORY_NAMES for part in relative.parts
+        ):
             continue
         resolved = path.resolve(strict=False)
         if any(
@@ -840,6 +875,36 @@ def relative_files(
     for path in files:
         validate_source_file(path, path.relative_to(directory).as_posix())
     return files
+
+
+def validate_commit_bound_source_inventory(
+    source_root: Path, source_inputs: list[tuple[Path, str]]
+) -> None:
+    """Require the deterministic release-source subset of tracked Git files."""
+
+    tracked = BUILD_IDENTITY.tracked_source_paths(source_root)
+    if tracked is None:
+        return
+    expected = {
+        relative
+        for relative in tracked
+        if not any(
+            part in SOURCE_ARCHIVE_EXCLUDED_DIRECTORY_NAMES
+            for part in PurePosixPath(relative).parts
+        )
+    }
+    packaged = {
+        destination.removeprefix("source/")
+        for _source, destination in source_inputs
+        if destination.startswith("source/")
+    }
+    if packaged != expected:
+        missing = sorted(expected - packaged)[:10]
+        extra = sorted(packaged - expected)[:10]
+        fail(
+            "source archive inputs must equal the commit-bound release-source "
+            f"inventory: missing={missing}; extra={extra}"
+        )
 
 
 def required_inputs(
@@ -1207,7 +1272,9 @@ def validate_oci_inputs(directory: Path) -> None:
         'CMD ["/usr/local/bin/worldstreamctl", "--data-dir", "/var/lib/worldstream", "health"]',
         'io.worldstream.target="linux/amd64"',
         'org.opencontainers.image.revision="${SOURCE_REVISION}"',
+        "ARG BUILD_ENVIRONMENT_BASE64=unresolved",
         'io.worldstream.build-identity="${BUILD_IDENTITY_SHA256}"',
+        'io.worldstream.build-environment="${BUILD_ENVIRONMENT_BASE64}"',
         'io.worldstream.base-image="${WORLDSTREAM_BASE_IMAGE}"',
         "COPY metadata /opt/worldstream/metadata",
         "COPY oci-metadata.json /opt/worldstream/metadata/oci.json",
@@ -1254,6 +1321,7 @@ def canonical_oci_metadata(
     epoch: int,
     source_revision: str,
     build_identity_sha256: str,
+    observed_build_environment: dict,
 ) -> dict:
     return {
         "artifact": "worldstream-oci/v1",
@@ -1264,6 +1332,10 @@ def canonical_oci_metadata(
         "base_image": base_image,
         "source_revision": source_revision,
         "build_identity_sha256": build_identity_sha256,
+        "observed_build_environment": observed_build_environment,
+        "build_environment_base64": BUILD_IDENTITY.observed_build_environment_label(
+            observed_build_environment
+        ),
         "source_date_epoch": epoch,
         "runtime": {
             "uid": 65532,
@@ -1304,6 +1376,7 @@ def validate_generated_oci_metadata(
     epoch: int,
     source_revision: str,
     build_identity_sha256: str,
+    observed_build_environment: dict,
 ) -> None:
     metadata = json_object(content, "generated OCI metadata")
     if metadata != canonical_oci_metadata(
@@ -1313,6 +1386,7 @@ def validate_generated_oci_metadata(
         epoch=epoch,
         source_revision=source_revision,
         build_identity_sha256=build_identity_sha256,
+        observed_build_environment=observed_build_environment,
     ):
         fail("generated OCI metadata is not canonical for the release inputs")
 
@@ -1348,12 +1422,7 @@ def toml_version(content: bytes, label: str) -> str:
 
 
 def json_version(content: bytes, label: str) -> str:
-    try:
-        value = json.loads(content)
-    except (UnicodeDecodeError, ValueError) as error:
-        fail(f"{label} is not valid JSON: {error}")
-    if not isinstance(value, dict):
-        fail(f"{label} must be a JSON object")
+    value = json_object(content, label)
     version = value.get("version")
     if not isinstance(version, str) or VERSION.fullmatch(version) is None:
         fail(f"{label} has no valid package version")
@@ -1376,7 +1445,7 @@ def validate_component_version_sources(
     )
     for path, parser, label in sources:
         try:
-            content = path.read_bytes()
+            content = bounded_regular_bytes(path, label)
         except OSError as error:
             fail(f"{label} is missing: {path}: {error}")
         observed = parser(content, label)
@@ -1427,6 +1496,8 @@ def collect_package_files(
     source_root: Path = ROOT,
     source_revision: str | None = None,
     base_image: str | None = None,
+    observed_build_environment: dict | None = None,
+    require_hosted_environment: bool = False,
     require_clean_checkout: bool = True,
 ) -> list[tuple[str, bytes]]:
     files = [
@@ -1449,9 +1520,41 @@ def collect_package_files(
         source_revision,
         require_clean_checkout=require_clean_checkout,
     )
+    if target.source and require_clean_checkout:
+        validate_commit_bound_source_inventory(source_root, inputs.get("source", []))
     source_entries = BUILD_IDENTITY.source_entries_from_root(source_root)
     source_entries["compatibility.toml"] = manifest_toml
     source_entries["compatibility.json"] = manifest_json
+    try:
+        BUILD_IDENTITY.validate_third_party_notices(source_entries)
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(f"third-party notice bundle rejected: {error}")
+    if not target.source:
+        packaged_files = dict(files)
+        for relative in (
+            "licenses/LICENSE-APACHE-2.0.txt",
+            BUILD_IDENTITY.THIRD_PARTY_NOTICE_MANIFEST_PATH,
+            BUILD_IDENTITY.THIRD_PARTY_NOTICE_TEXT_PATH,
+        ):
+            if packaged_files.get(relative) != source_entries.get(relative):
+                fail(
+                    f"packaged legal notice differs from the pinned source: {relative}"
+                )
+    if observed_build_environment is None:
+        observed_build_environment = BUILD_IDENTITY.local_observed_build_environment(
+            target.name,
+            rustc_version=BUILD_IDENTITY.toolchains_from_materials(source_entries)[
+                "rustc"
+            ]["version"],
+        )
+    BUILD_IDENTITY.validate_observed_build_environment(
+        observed_build_environment,
+        target=target.name,
+        expected_rustc_version=BUILD_IDENTITY.toolchains_from_materials(source_entries)[
+            "rustc"
+        ]["version"],
+        require_hosted=require_hosted_environment,
+    )
     if target.source:
         files.append(
             (
@@ -1466,6 +1569,7 @@ def collect_package_files(
         source_date_epoch=source_date_epoch,
         manifest_sha256=sha256_bytes(manifest_json),
         base_image=base_image,
+        observed_build_environment=observed_build_environment,
     )
     files.append(
         (BUILD_IDENTITY.BUILD_METADATA_PATH, BUILD_IDENTITY.canonical_json(build))
@@ -1659,6 +1763,9 @@ def package(args: argparse.Namespace) -> int:
         source_excludes=(output,),
     )
     epoch = source_date_epoch_of(args.source_date_epoch)
+    observed_build_environment, require_hosted_environment = build_environment_argument(
+        args
+    )
     files = collect_package_files(
         target,
         version,
@@ -1668,6 +1775,8 @@ def package(args: argparse.Namespace) -> int:
         epoch,
         source_root=source_path or ROOT,
         source_revision=getattr(args, "source_revision", None),
+        observed_build_environment=observed_build_environment,
+        require_hosted_environment=require_hosted_environment,
     )
     archive_name = f"worldstream-{version}-{target.name}{target.archive_suffix}"
     output = Path(args.output)
@@ -1914,12 +2023,20 @@ def parse_checksums(content: bytes) -> dict[str, str]:
 
 def json_object(content: bytes, label: str) -> dict:
     try:
-        value = json.loads(content)
-    except (UnicodeDecodeError, ValueError) as error:
-        fail(f"{label} is not valid JSON: {error}")
-    if not isinstance(value, dict):
-        fail(f"{label} must be a JSON object")
-    return value
+        return BUILD_IDENTITY.strict_json(content, label)
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(str(error))
+
+
+def bounded_regular_bytes(path: Path, label: str) -> bytes:
+    try:
+        return BUILD_IDENTITY.regular_bytes(
+            path,
+            label,
+            maximum=MAX_RELEASE_JSON_BYTES,
+        )
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(str(error))
 
 
 def safe_release_path(release_dir: Path, relative: str, label: str) -> Path:
@@ -1938,10 +2055,7 @@ def safe_release_path(release_dir: Path, relative: str, label: str) -> Path:
 
 
 def load_json_file(path: Path, label: str) -> dict:
-    try:
-        return json_object(path.read_bytes(), label)
-    except OSError as error:
-        fail(f"cannot read {label}: {error}")
+    return json_object(bounded_regular_bytes(path, label), label)
 
 
 def release_artifact_basename(version: str, artifact_id: str) -> str | None:
@@ -1994,8 +2108,11 @@ def validate_packaged_artifact_paths(
         package_relative = (
             relative.removeprefix("source/") if target.source else relative
         )
-        first_component = PurePosixPath(package_relative).parts[0]
-        if first_component in {"data", "backup", "backups", "export", "exports"}:
+        components = PurePosixPath(package_relative).parts
+        if any(
+            component.casefold() in {"data", "backup", "backups", "export", "exports"}
+            for component in components
+        ):
             fail(
                 "packaged payload contains runtime data/backup/export state: "
                 f"{relative}"
@@ -2078,22 +2195,40 @@ def validate_sigstore_shape(value: dict) -> None:
 
 
 def validate_spdx_shape(value: dict) -> None:
+    namespace = value.get("documentNamespace")
+    parsed_namespace = (
+        urllib.parse.urlparse(namespace) if isinstance(namespace, str) else None
+    )
     if not (
         isinstance(value.get("spdxVersion"), str)
         and value["spdxVersion"] == "SPDX-2.3"
         and value.get("SPDXID") == "SPDXRef-DOCUMENT"
         and isinstance(value.get("name"), str)
-        and isinstance(value.get("documentNamespace"), str)
+        and value.get("dataLicense") == "CC0-1.0"
+        and parsed_namespace is not None
+        and bool(parsed_namespace.scheme)
+        and not parsed_namespace.fragment
     ):
         fail("SBOM is not a valid SPDX JSON document identity")
     creation = value.get("creationInfo")
-    if not isinstance(creation, dict) or not isinstance(creation.get("created"), str):
+    if (
+        not isinstance(creation, dict)
+        or not isinstance(creation.get("created"), str)
+        or SPDX_CREATED.fullmatch(creation["created"]) is None
+    ):
         fail("SBOM creationInfo is incomplete")
+    try:
+        BUILD_IDENTITY.validate_spdx_created(creation["created"])
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(f"SBOM creationInfo timestamp is invalid: {error}")
     creators = creation.get("creators")
     if (
         not isinstance(creators, list)
         or not creators
-        or any(not isinstance(item, str) or not item for item in creators)
+        or not any(
+            isinstance(item, str) and SPDX_TOOL_CREATOR.fullmatch(item) is not None
+            for item in creators
+        )
     ):
         fail("SBOM creationInfo creators are incomplete")
     for field in ("packages", "files", "relationships", "documentDescribes"):
@@ -2113,6 +2248,61 @@ def validate_spdx_shape(value: dict) -> None:
             for item in value[field]
         ):
             fail(f"SBOM {field} contains an invalid SPDX item")
+    for item in value["files"]:
+        checksums = item.get("checksums")
+        if not isinstance(item.get("fileName"), str) or not isinstance(checksums, list):
+            fail("SBOM file entry has no filename or checksums")
+        if any(
+            not isinstance(checksum, dict)
+            or set(checksum) != {"algorithm", "checksumValue"}
+            for checksum in checksums
+        ):
+            fail("SBOM file checksum entry is malformed")
+        by_algorithm = {
+            str(checksum["algorithm"]).replace("-", "").upper(): checksum[
+                "checksumValue"
+            ]
+            for checksum in checksums
+        }
+        if (
+            len(checksums) != 2
+            or set(by_algorithm) != {"SHA1", "SHA256"}
+            or not isinstance(by_algorithm["SHA1"], str)
+            or SHA1_DIGEST.fullmatch(by_algorithm["SHA1"]) is None
+            or not isinstance(by_algorithm["SHA256"], str)
+            or SHA256_DIGEST.fullmatch(by_algorithm["SHA256"]) is None
+        ):
+            fail("SBOM file must have exactly one valid SHA-1 and SHA-256 checksum")
+    element_ids = {"SPDXRef-DOCUMENT"}
+    for item in value["packages"]:
+        identifier = item["SPDXID"]
+        if identifier in element_ids:
+            fail("SBOM element identifiers must be unique")
+        element_ids.add(identifier)
+    for item in value["files"]:
+        identifier = item["SPDXID"]
+        if (
+            identifier != BUILD_IDENTITY._spdx_id("ReleaseSubject", item["fileName"])
+            or identifier in element_ids
+        ):
+            fail("SBOM file identifier is not exact or unique")
+        element_ids.add(identifier)
+    for relationship in value["relationships"]:
+        if not isinstance(relationship, dict) or set(relationship) != {
+            "spdxElementId",
+            "relationshipType",
+            "relatedSpdxElement",
+        }:
+            fail("SBOM relationship is malformed")
+        for endpoint in ("spdxElementId", "relatedSpdxElement"):
+            identifier = relationship[endpoint]
+            if (
+                identifier not in {"NONE", "NOASSERTION"}
+                and identifier not in element_ids
+            ):
+                fail("SBOM relationship contains a dangling element identifier")
+    if any(identifier not in element_ids for identifier in value["documentDescribes"]):
+        fail("SBOM documentDescribes contains a dangling element identifier")
 
 
 def validate_slsa_shape(value: dict) -> None:
@@ -2146,7 +2336,6 @@ def validate_slsa_shape(value: dict) -> None:
         not isinstance(definition.get("externalParameters"), dict)
         or not definition["externalParameters"]
         or not isinstance(definition.get("internalParameters"), dict)
-        or not definition["internalParameters"]
         or not isinstance(definition.get("resolvedDependencies"), list)
         or not definition["resolvedDependencies"]
     ):
@@ -2302,14 +2491,62 @@ def reject_report_overlap(report: Path, artifact: Path, label: str) -> None:
         fail(f"{label} must not be inside the artifact: {report}")
 
 
+def build_environment_argument(
+    args: argparse.Namespace,
+) -> tuple[dict | None, bool]:
+    """Load a hosted build observation for CLI packaging; direct test APIs stay local."""
+
+    if not hasattr(args, "build_environment"):
+        return None, False
+    raw = args.build_environment
+    if getattr(args, "dry_run", False) and not raw:
+        return None, False
+    if not isinstance(raw, str) or not raw:
+        fail("release packaging requires --build-environment from the capture step")
+    path = Path(raw)
+    try:
+        content = BUILD_IDENTITY.regular_bytes(
+            path, "observed payload build environment", maximum=64 * 1024
+        )
+        value = BUILD_IDENTITY.strict_json(
+            content, "observed payload build environment"
+        )
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(f"observed payload build environment rejected: {error}")
+    return value, True
+
+
+def capture_build_environment(args: argparse.Namespace) -> int:
+    """Capture one hosted payload runner/toolchain witness before packaging."""
+
+    output = Path(args.output)
+    if path_exists(output):
+        fail(f"refusing to overwrite observed build environment: {output}")
+    source_entries = BUILD_IDENTITY.source_entries_from_root(ROOT)
+    rustc_version = BUILD_IDENTITY.toolchains_from_materials(source_entries)["rustc"]
+    try:
+        value = BUILD_IDENTITY.capture_observed_build_environment(
+            args.target, rustc_version=rustc_version["version"]
+        )
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(f"cannot capture payload build environment: {error}")
+    write_json_atomically(output, value)
+    print(f"wrote observed build environment {output}")
+    return 0
+
+
 def oci_context_report(context: Path, *, verified: bool) -> dict:
     records, size_bytes, digest = directory_inventory(context)
+    build_identity = load_json_file(
+        context / BUILD_IDENTITY.BUILD_METADATA_PATH,
+        "OCI context build identity",
+    )
     return {
         "schema": "worldstream/oci-context-report/v1",
         "artifact": context.name,
         "kind": "oci-context",
-        # Reports are embedded in release evidence.  Keep their identity
-        # portable across runners instead of recording the checkout path.
+        # Keep the artifact path portable. The nested build identity
+        # intentionally records the selected hosted tool paths.
         "path": context.name,
         "sha256": "sha256:" + digest,
         "size_bytes": size_bytes,
@@ -2320,6 +2557,14 @@ def oci_context_report(context: Path, *, verified: bool) -> dict:
         },
         "release_evidence": False,
         "verified": verified,
+        "identity": {
+            "target": "oci-linux-amd64",
+            "source_revision": build_identity["source"]["revision"],
+            "build_identity_sha256": BUILD_IDENTITY.build_identity_digest(
+                build_identity
+            ),
+            "observed_build_environment": build_identity["observed_build_environment"],
+        },
     }
 
 
@@ -2376,14 +2621,22 @@ def verify_oci_context(context: Path) -> dict:
     manifest, manifest_toml, manifest_json = read_manifest()
     validate_target_profile(manifest, TARGETS["oci-linux-amd64"])
     validate_release_manifest(manifest, dry_run=False)
-    if entries["manifest/compatibility.toml"].read_bytes() != manifest_toml:
+    if (
+        bounded_regular_bytes(
+            entries["manifest/compatibility.toml"], "OCI compatibility.toml"
+        )
+        != manifest_toml
+    ):
         fail("OCI context compatibility.toml differs from the workspace manifest")
-    if entries["manifest/compatibility.json"].read_bytes() != manifest_json:
+    if (
+        bounded_regular_bytes(
+            entries["manifest/compatibility.json"], "OCI compatibility.json"
+        )
+        != manifest_json
+    ):
         fail("OCI context compatibility.json differs from the workspace manifest")
 
-    metadata = json_object(
-        entries["oci-metadata.json"].read_bytes(), "generated OCI metadata"
-    )
+    metadata = load_json_file(entries["oci-metadata.json"], "generated OCI metadata")
     version = version_of(manifest)
     base_image = metadata.get("base_image")
     epoch = metadata.get("source_date_epoch")
@@ -2394,23 +2647,34 @@ def verify_oci_context(context: Path) -> dict:
     if isinstance(epoch, bool) or not isinstance(epoch, int):
         fail("OCI metadata source_date_epoch is not an integer")
     source_date_epoch_of(epoch)
+    build_value = load_json_file(
+        entries[BUILD_IDENTITY.BUILD_METADATA_PATH],
+        "OCI context build identity",
+    )
     validate_generated_oci_metadata(
-        entries["oci-metadata.json"].read_bytes(),
+        bounded_regular_bytes(entries["oci-metadata.json"], "generated OCI metadata"),
         version=version,
         manifest_bytes=manifest_json,
         base_image=base_image,
         epoch=epoch,
         source_revision=source_revision,
         build_identity_sha256=build_identity_sha256,
-    )
-    build_value = json_object(
-        entries[BUILD_IDENTITY.BUILD_METADATA_PATH].read_bytes(),
-        "OCI context build identity",
+        observed_build_environment=build_value.get("observed_build_environment"),
     )
     source_entries = BUILD_IDENTITY.source_entries_from_root(ROOT)
     source_entries["compatibility.toml"] = manifest_toml
     source_entries["compatibility.json"] = manifest_json
     try:
+        BUILD_IDENTITY.validate_third_party_notices(source_entries)
+        for relative in (
+            "licenses/LICENSE-APACHE-2.0.txt",
+            BUILD_IDENTITY.THIRD_PARTY_NOTICE_MANIFEST_PATH,
+            BUILD_IDENTITY.THIRD_PARTY_NOTICE_TEXT_PATH,
+        ):
+            if bounded_regular_bytes(entries[relative], relative) != source_entries.get(
+                relative
+            ):
+                fail(f"OCI legal notice differs from the pinned source: {relative}")
         BUILD_IDENTITY.validate_build_identity(
             build_value,
             target="oci-linux-amd64",
@@ -2442,15 +2706,17 @@ def verify_oci_context(context: Path) -> dict:
     validate_packaged_ui_consumed_identity(
         package_files, manifest, TARGETS["oci-linux-amd64"]
     )
-    profile = entries["metadata/profile.json"].read_bytes()
+    profile = bounded_regular_bytes(
+        entries["metadata/profile.json"], "OCI profile metadata"
+    )
     validate_profile_metadata(
         profile,
         target=TARGETS["oci-linux-amd64"],
         version=version,
         manifest_bytes=manifest_json,
     )
-    metadata_release = json_object(
-        entries["metadata/release.json"].read_bytes(), "OCI release metadata"
+    metadata_release = load_json_file(
+        entries["metadata/release.json"], "OCI release metadata"
     )
     expected_release = json_object(
         canonical_metadata(
@@ -2469,7 +2735,9 @@ def verify_oci_context(context: Path) -> dict:
     if metadata_release != expected_release:
         fail("OCI metadata/release.json is not canonical")
 
-    checksums = parse_checksums(entries["checksums.sha256"].read_bytes())
+    checksums = parse_checksums(
+        bounded_regular_bytes(entries["checksums.sha256"], "OCI checksums")
+    )
     expected_checksum_paths = {
         path for path in package_paths if path != "checksums.sha256"
     }
@@ -2593,9 +2861,16 @@ def verify_release_directory(release_dir: Path, *, structural_only: bool) -> int
             row for row in manifest["release_artifacts"] if row["id"] == artifact_id
         )
         if artifact_id == "sigstore-bundle":
-            if manifest_row["status"] != "detached" or manifest_row["digest"]:
+            if (
+                manifest_row.get("status") != "verification_material"
+                or manifest_row.get("digest") != ""
+                or manifest_row.get("digest_algorithm") != ""
+                or manifest_row.get("digest_location") is not None
+                or manifest_row.get("verification_material_location")
+                != "release-manifest.json#verification_material.sigstore-bundle.path"
+            ):
                 fail(
-                    "Sigstore bundle must use the detached verification-material declaration"
+                    "Sigstore bundle must use the path-only verification-material declaration"
                 )
             continue
         expected_digest = artifact_digests.get(artifact_id)
@@ -2660,7 +2935,7 @@ def verify_release_directory(release_dir: Path, *, structural_only: bool) -> int
     checksums_path = safe_release_path(release_dir, "SHA256SUMS", "checksums")
     if artifacts.get("checksums") != "SHA256SUMS":
         fail("checksums artifact must be named SHA256SUMS")
-    checksums = parse_checksums(checksums_path.read_bytes())
+    checksums = parse_checksums(bounded_regular_bytes(checksums_path, "SHA256SUMS"))
     checksum_artifact_paths = {artifacts["checksums"]}
     # Checksums cover the four distributable payloads and every signed
     # non-supply-chain source report. The supply-chain report is emitted
@@ -3182,6 +3457,7 @@ def _verify_archive(path: Path) -> None:
             revision_content = source_entries.get(BUILD_IDENTITY.SOURCE_REVISION_FILE)
             if not isinstance(revision_content, bytes):
                 fail("source archive has no exact source revision file")
+            BUILD_IDENTITY.validate_third_party_notices(source_entries)
             BUILD_IDENTITY.validate_build_identity(
                 build_value,
                 target=target,
@@ -3190,6 +3466,19 @@ def _verify_archive(path: Path) -> None:
                 source_date_epoch=source_date_epoch,
                 manifest_sha256=sha256_bytes(entries[manifest_path]),
             )
+        else:
+            source_entries = BUILD_IDENTITY.source_entries_from_root(ROOT)
+            BUILD_IDENTITY.validate_third_party_notices(source_entries)
+            for relative in (
+                "licenses/LICENSE-APACHE-2.0.txt",
+                BUILD_IDENTITY.THIRD_PARTY_NOTICE_MANIFEST_PATH,
+                BUILD_IDENTITY.THIRD_PARTY_NOTICE_TEXT_PATH,
+            ):
+                if entries.get(f"{root}/{relative}") != source_entries.get(relative):
+                    fail(
+                        "archive legal notice differs from the pinned source: "
+                        f"{relative}"
+                    )
     except (BUILD_IDENTITY.IdentityError, UnicodeError) as error:
         fail(f"archive build identity rejected: {error}")
     payload_files = [
@@ -3247,8 +3536,8 @@ def archive_report(path: Path) -> dict:
         "schema": "worldstream/package-report/v1",
         "artifact": path.name,
         "kind": "archive",
-        # This report can be published inside signed evidence, so do not leak
-        # or bind it to an ephemeral runner workspace.
+        # Keep the artifact path portable. The nested build identity
+        # intentionally records the selected hosted tool paths.
         "path": path.name,
         "sha256": "sha256:" + sha256_file(path),
         "size_bytes": path.stat().st_size,
@@ -3268,6 +3557,7 @@ def archive_report(path: Path) -> dict:
             "manifest_toml_sha256": manifest_toml_sha256,
             "source_revision": build_identity["source"]["revision"],
             "build_identity_sha256": "sha256:" + sha256_bytes(build_identity_bytes),
+            "observed_build_environment": build_identity["observed_build_environment"],
         },
     }
 
@@ -3279,10 +3569,8 @@ def write_archive_report(args: argparse.Namespace) -> int:
     if args.check:
         if Path(args.check).is_symlink() or not Path(args.check).is_file():
             fail(f"package report is missing or is a symlink: {args.check}")
-        try:
-            actual = json.loads(Path(args.check).read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            fail(f"package report is not valid JSON: {error}")
+        content = bounded_regular_bytes(Path(args.check), "package report")
+        actual = json_object(content, "package report")
         if actual != report:
             fail("package report does not exactly identify the verified archive")
     elif args.report:
@@ -3365,6 +3653,9 @@ def oci_context(args: argparse.Namespace) -> int:
     if path_exists(context):
         fail(f"OCI context output already exists; refusing to overwrite: {context}")
     epoch = source_date_epoch_of(args.source_date_epoch)
+    observed_build_environment, require_hosted_environment = build_environment_argument(
+        args
+    )
     files = collect_package_files(
         target,
         version,
@@ -3375,6 +3666,8 @@ def oci_context(args: argparse.Namespace) -> int:
         source_root=ROOT,
         source_revision=getattr(args, "source_revision", None),
         base_image=base_image,
+        observed_build_environment=observed_build_environment,
+        require_hosted_environment=require_hosted_environment,
     )
     build_identity = json_object(
         dict(files)[BUILD_IDENTITY.BUILD_METADATA_PATH], "OCI build identity"
@@ -3400,18 +3693,22 @@ def oci_context(args: argparse.Namespace) -> int:
             epoch=epoch,
             source_revision=source_revision,
             build_identity_sha256=build_identity_sha256,
+            observed_build_environment=build_identity["observed_build_environment"],
         )
         (staging / "oci-metadata.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         validate_generated_oci_metadata(
-            (staging / "oci-metadata.json").read_bytes(),
+            bounded_regular_bytes(
+                staging / "oci-metadata.json", "generated OCI metadata"
+            ),
             version=version,
             manifest_bytes=manifest_json,
             base_image=base_image,
             epoch=epoch,
             source_revision=source_revision,
             build_identity_sha256=build_identity_sha256,
+            observed_build_environment=build_identity["observed_build_environment"],
         )
         for file in staging.rglob("*"):
             if file.is_file():
@@ -3459,6 +3756,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     package_parser.add_argument(
         "--source-revision", default=os.environ.get("WORLDSTREAM_BUILD_REVISION")
+    )
+    package_parser.add_argument(
+        "--build-environment",
+        help="canonical observation emitted by capture-build-environment",
     )
     package_parser.add_argument("--dry-run", action="store_true")
     package_parser.set_defaults(function=package)
@@ -3544,11 +3845,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--source-revision", default=os.environ.get("WORLDSTREAM_BUILD_REVISION")
     )
     oci_parser.add_argument(
+        "--build-environment",
+        help="canonical observation emitted by capture-build-environment",
+    )
+    oci_parser.add_argument(
         "--report",
         help="write a deterministic content inventory report for the generated context",
     )
     oci_parser.add_argument("--dry-run", action="store_true")
     oci_parser.set_defaults(function=oci_context)
+
+    capture_parser = subparsers.add_parser(
+        "capture-build-environment",
+        help="capture the exact hosted runner and selected native build tools",
+    )
+    capture_parser.add_argument(
+        "--target",
+        choices=["source", "linux-x86_64", "windows-x64", "oci-linux-amd64"],
+        required=True,
+    )
+    capture_parser.add_argument("--output", required=True)
+    capture_parser.set_defaults(function=capture_build_environment)
     return parser
 
 
@@ -3560,6 +3877,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"package verification failed: {error}", file=sys.stderr)
         return 1
     except (
+        BUILD_IDENTITY.IdentityError,
         OSError,
         ValueError,
         json.JSONDecodeError,

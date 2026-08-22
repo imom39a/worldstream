@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -24,6 +25,56 @@ VERIFY_RELEASE_PS1 = ROOT / "scripts/verify-release.ps1"
 PACKAGE_SMOKE = ROOT / "tests/package_smoke.py"
 OCI_RUNTIME_SMOKE = ROOT / "tests/oci_runtime_smoke.py"
 PAYLOAD_BYTES_CACHE: dict[str, bytes] | None = None
+
+
+def hosted_build_environment(identity, target: str) -> dict:
+    runner = {
+        "provider": "github-actions",
+        **identity.HOSTED_RUNNER_FACTS[target],
+        "image_version": "20260817.1.0",
+    }
+    if target == "source":
+        return {
+            "runner": runner,
+            "rustc": None,
+            "bundled_sqlite": None,
+            "final_linker": None,
+        }
+    windows = target == "windows-x64"
+    root = "C:\\hostedtoolcache\\fixture" if windows else "/opt/hostedtoolcache/fixture"
+    return {
+        "runner": runner,
+        "rustc": {
+            "path": f"{root}/rustc.exe" if windows else f"{root}/rustc",
+            "version": "rustc 1.97.1 (fixture)",
+            "target": identity.TARGET_TRIPLES[target],
+            "reported_target": "x86_64-pc-windows-msvc"
+            if windows
+            else "x86_64-unknown-linux-gnu",
+        },
+        "bundled_sqlite": {
+            "archiver": {
+                "path": f"{root}/Hostx64/x64/lib.exe"
+                if windows
+                else f"{root}/zig-musl-ar",
+                "version": "fixture archiver 1.0",
+                "target": identity.TARGET_TRIPLES[target],
+                "reported_target": ("x64-coff-library" if windows else "gnu-archive"),
+            },
+            "c_compiler": {
+                "path": f"{root}/cl.exe" if windows else f"{root}/cc",
+                "version": "fixture C compiler 1.0",
+                "target": identity.TARGET_TRIPLES[target],
+                "reported_target": ("x64" if windows else "x86_64-unknown-linux-musl"),
+            },
+        },
+        "final_linker": {
+            "path": f"{root}/Hostx64/x64/link.exe" if windows else f"{root}/rust-lld",
+            "version": "fixture linker 1.0",
+            "target": identity.TARGET_TRIPLES[target],
+            "reported_target": "x64" if windows else "elf_x86_64",
+        },
+    }
 
 
 def load_module(name: str, path: Path):
@@ -92,6 +143,10 @@ def valid_payload_bytes(
         manifest_json,
         inputs,
         0,
+        observed_build_environment=hosted_build_environment(
+            package.BUILD_IDENTITY, "linux-x86_64"
+        ),
+        require_hosted_environment=True,
         require_clean_checkout=False,
     )
     linux_path = build_root / payload_names(version)["native-linux-x86_64-archive"]
@@ -112,6 +167,10 @@ def valid_payload_bytes(
         manifest_json,
         windows_inputs,
         0,
+        observed_build_environment=hosted_build_environment(
+            package.BUILD_IDENTITY, "windows-x64"
+        ),
+        require_hosted_environment=True,
         require_clean_checkout=False,
     )
     windows_path = build_root / payload_names(version)["native-windows-x64-archive"]
@@ -139,6 +198,10 @@ def valid_payload_bytes(
         manifest_json,
         source_inputs,
         0,
+        observed_build_environment=hosted_build_environment(
+            package.BUILD_IDENTITY, "source"
+        ),
+        require_hosted_environment=True,
         require_clean_checkout=False,
     )
     source_path = build_root / payload_names(version)["source-archive"]
@@ -159,6 +222,9 @@ def valid_payload_bytes(
         source_date_epoch=0,
         manifest_sha256=hashlib.sha256(manifest_json).hexdigest(),
         base_image=base_image,
+        observed_build_environment=hosted_build_environment(
+            package.BUILD_IDENTITY, "oci-linux-amd64"
+        ),
     )
     synthetic_oci, _config_digest = oci_helpers.oci_layout_fixture(
         oci_fixture_root,
@@ -169,6 +235,9 @@ def valid_payload_bytes(
             "io.worldstream.base-image": base_image,
             "io.worldstream.build-identity": package.BUILD_IDENTITY.build_identity_digest(
                 oci_identity
+            ),
+            "io.worldstream.build-environment": package.BUILD_IDENTITY.observed_build_environment_label(
+                oci_identity["observed_build_environment"]
             ),
         },
     )
@@ -298,6 +367,9 @@ def make_inputs(tmp_path: Path) -> tuple[Path, Path, Path, tuple[str, ...]]:
             ),
             "GITHUB_RUN_ID": "123456789",
             "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/heads/main",
+            "WORLDSTREAM_RELEASE_INPUT": "true",
             "RUNNER_OS": "Linux",
             "RUNNER_ARCH": "X64",
             "ImageOS": "ubuntu24",
@@ -403,7 +475,64 @@ def verify_supply_chain(release: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_assembly_parser_rejects_duplicate_signed_security_keys(tmp_path):
+    assembler = load_module("strict_release_assembly", ASSEMBLE)
+    document = tmp_path / "provenance.json"
+    document.write_bytes(
+        b'{"predicate":{"buildDefinition":{},"buildDefinition":{"hidden":true}}}'
+    )
+
+    with pytest.raises(
+        assembler.AssemblyError, match="duplicate key 'buildDefinition'"
+    ):
+        assembler.json_object(document, "signed SLSA provenance")
+
+
+def test_assembly_bounded_json_reader_and_streamed_copy(tmp_path, monkeypatch):
+    assembler = load_module("bounded_release_assembly", ASSEMBLE)
+    collector = assembler.evidence_collector()
+    document = b'{"value":"bounded"}'
+    monkeypatch.setattr(
+        collector.BUILD_IDENTITY, "MAX_RELEASE_JSON_BYTES", len(document)
+    )
+    exact = tmp_path / "exact.json"
+    exact.write_bytes(document)
+
+    assert assembler.json_object(exact, "exact JSON") == {"value": "bounded"}
+    exact.write_bytes(document + b" ")
+    with pytest.raises(assembler.AssemblyError, match="too large"):
+        assembler.json_object(exact, "oversized JSON")
+
+    source = tmp_path / "payload.bin"
+    destination = tmp_path / "release" / "payload.bin"
+    payload = (b"stream-copy" * 257) + b"\n"
+    source.write_bytes(payload)
+    digest, size = assembler.copy_atomic(
+        source,
+        destination,
+        "payload fixture",
+        maximum=len(payload),
+    )
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert size == len(payload)
+    assert destination.read_bytes() == payload
+
+    destination.write_bytes(b"preserved")
+    with pytest.raises(assembler.AssemblyError, match="exceeds"):
+        assembler.copy_atomic(
+            source,
+            destination,
+            "oversized payload fixture",
+            maximum=len(payload) - 1,
+        )
+    assert destination.read_bytes() == b"preserved"
+
+
 def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
+    identity = load_module(
+        "release_build_identity_assembly_assertions",
+        ROOT / "scripts/release_build_identity.py",
+    )
     _payload, _reports, release, evidence_ids = assembled_release(tmp_path)
     metadata = json.loads((release / "release-manifest.json").read_text())
     assert len(evidence_ids) == 14
@@ -420,8 +549,77 @@ def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
     assert metadata["verification_material"] == {
         "sigstore-bundle": {"path": "sigstore.bundle.json"}
     }
-    assert len(json.loads((release / "sbom.spdx.json").read_text())["files"]) == 17
-    assert len(json.loads((release / "provenance.json").read_text())["subject"]) == 17
+    spdx = json.loads((release / "sbom.spdx.json").read_text())
+    assert len(spdx["files"]) == 17
+    assert spdx["dataLicense"] == "CC0-1.0"
+    assert spdx["creationInfo"]["creators"] == [
+        "Tool: worldstream-release-supply-chain-1.0"
+    ]
+    assert all(
+        {checksum["algorithm"] for checksum in item["checksums"]} == {"SHA1", "SHA256"}
+        for item in spdx["files"]
+    )
+    package_names = {package["name"] for package in spdx["packages"]}
+    for profile in ("linux-x86_64", "windows-x64", "oci-linux-amd64"):
+        assert f"{profile}-bundled-sqlite-c-compiler" in package_names
+        assert f"{profile}-bundled-sqlite-archiver" in package_names
+        assert f"{profile}-final-linker" in package_names
+    zig_package = next(
+        package for package in spdx["packages"] if package["name"] == "zig"
+    )
+    assert zig_package["downloadLocation"] == identity.ZIG_LINUX_X86_64_URL
+    assert zig_package["checksums"] == [
+        {
+            "algorithm": "SHA256",
+            "checksumValue": identity.ZIG_LINUX_X86_64_SHA256,
+        }
+    ]
+    provenance = json.loads((release / "provenance.json").read_text())
+    assert len(provenance["subject"]) == 17
+    aggregation = json.loads(
+        base64.b64decode(
+            provenance["predicate"]["runDetails"]["byproducts"][1]["content"]
+        )
+    )
+    payload_rows = aggregation["payload_producers"]
+    assert len(payload_rows) == 4
+    assert all(
+        row["observed_build_environment"]["runner"]["provider"] == "github-actions"
+        for row in payload_rows
+    )
+    source_row = next(
+        row for row in payload_rows if row["artifact_id"] == "source-archive"
+    )
+    assert source_row["observed_build_environment"]["bundled_sqlite"] is None
+    assert source_row["observed_build_environment"]["final_linker"] is None
+    assert all(
+        row["observed_build_environment"]["bundled_sqlite"] is not None
+        for row in payload_rows
+        if row["artifact_id"] != "source-archive"
+    )
+    assert all(
+        row["observed_build_environment"]["final_linker"] is not None
+        for row in payload_rows
+        if row["artifact_id"] != "source-archive"
+    )
+    resolved_dependencies = provenance["predicate"]["buildDefinition"][
+        "resolvedDependencies"
+    ]
+    assert {
+        "uri": identity.ZIG_LINUX_X86_64_URL,
+        "digest": {"sha256": identity.ZIG_LINUX_X86_64_SHA256},
+    } in resolved_dependencies
+    oci_dependencies = {
+        item["uri"]: item["digest"]
+        for item in resolved_dependencies
+        if item["uri"].startswith("oci://")
+    }
+    assert set(oci_dependencies) == {
+        "oci://docker.io/library/alpine",
+        "oci://docker.io/moby/buildkit",
+        "oci://docker.io/docker/dockerfile:1.7",
+    }
+    assert all(set(digest) == {"sha256"} for digest in oci_dependencies.values())
     assert len((release / "SHA256SUMS").read_text().splitlines()) == 17
 
 
@@ -446,6 +644,54 @@ def test_spdx_namespace_is_unique_for_each_exact_document_version(tmp_path):
     )
     assert first.startswith("https://github.com/imom39a/worldstream/spdx/0.1.0/")
     assert "#" not in first
+
+
+@pytest.mark.parametrize("tamper", ["namespace", "file_id"])
+def test_spdx_verifier_recomputes_document_and_element_identity(tmp_path, tamper):
+    _payload, _reports, release, _evidence_ids = assembled_release(tmp_path)
+    path = release / "sbom.spdx.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if tamper == "namespace":
+        value["documentNamespace"] = "https://example.invalid/fabricated"
+    else:
+        value["files"][0]["SPDXID"] = "SPDXRef-ReleaseSubject-fabricated"
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    inventory = json.loads(
+        (release / "supply-chain/subject-inventory.json").read_text(encoding="utf-8")
+    )
+    subjects = {item["path"]: release / item["path"] for item in inventory["subjects"]}
+    assembler = load_module(f"release_assembly_spdx_identity_{tamper}", ASSEMBLE)
+    with pytest.raises(assembler.AssemblyError, match="SPDX"):
+        assembler.validate_spdx_subjects(
+            path,
+            subjects,
+            version=manifest()["release_candidate"],
+            manifest_sha256=hashlib.sha256(
+                (ROOT / "compatibility.json").read_bytes()
+            ).hexdigest(),
+        )
+
+
+def test_spdx_verifier_rejects_impossible_utc_timestamp(tmp_path):
+    _payload, _reports, release, _evidence_ids = assembled_release(tmp_path)
+    path = release / "sbom.spdx.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["creationInfo"]["created"] = "2026-99-99T99:99:99Z"
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    inventory = json.loads(
+        (release / "supply-chain/subject-inventory.json").read_text(encoding="utf-8")
+    )
+    subjects = {item["path"]: release / item["path"] for item in inventory["subjects"]}
+    assembler = load_module("release_assembly_spdx_timestamp", ASSEMBLE)
+    with pytest.raises(assembler.AssemblyError, match="creation time"):
+        assembler.validate_spdx_subjects(
+            path,
+            subjects,
+            version=manifest()["release_candidate"],
+            manifest_sha256=hashlib.sha256(
+                (ROOT / "compatibility.json").read_bytes()
+            ).hexdigest(),
+        )
 
 
 def test_two_level_supply_chain_binds_inventory_and_verifies_both_signatures(tmp_path):
@@ -599,6 +845,10 @@ def test_powershell_wrapper_routes_deep_and_report_verification_through_package(
     assert "@('verify') + [string[]]$VerifyArgs" in script
     assert "@('report', $Artifact, '--check', $ReportPath)" in script
     assert "$PackageExitCode -eq 11" in script
+    assert "WORLDSTREAM_RELEASE_PYTHON" in script
+    assert ".python-version" in script
+    assert "& $Python -I" in script
+    assert "Get-Command py" not in script
     assert "Get-FileHash" not in script
 
 

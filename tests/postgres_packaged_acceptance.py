@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "postgres-packaged-acceptance.py"
@@ -189,6 +190,85 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
             capture.register_sentinel(kind, value)
         return capture
 
+    @staticmethod
+    def _record_required_privacy_channels(
+        module,
+        capture,
+        *,
+        injected_class: str | None = None,
+        injected: bytes = b"clean\n",
+    ) -> None:
+        for channel_class in module.REQUIRED_PRIVACY_CHANNEL_CLASSES:
+            capture._record_bytes(
+                channel_class.replace(".", "-"),
+                injected if channel_class == injected_class else b"clean\n",
+                channel_class=channel_class,
+            )
+
+    @staticmethod
+    def _fake_docker(
+        root: Path,
+        *,
+        provider_stdout: bytes = b"provider stdout\n",
+        provider_stderr: bytes = b"provider stderr\n",
+        logs_returncode: int = 0,
+        logs_delay_seconds: float = 0.0,
+        volume_owner: str = "owner-123",
+    ) -> tuple[Path, Path]:
+        trace = root / "docker.trace"
+        docker = root / "docker"
+        docker.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib\n"
+            "import json\n"
+            "import sys\n"
+            "import time\n"
+            f"trace = pathlib.Path({str(trace)!r})\n"
+            "with trace.open('a', encoding='utf-8') as output:\n"
+            "    output.write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:2] == ['logs']:\n"
+            f"    time.sleep({logs_delay_seconds!r})\n"
+            f"    sys.stdout.buffer.write({provider_stdout!r})\n"
+            f"    sys.stderr.buffer.write({provider_stderr!r})\n"
+            f"    raise SystemExit({logs_returncode})\n"
+            "if sys.argv[1:3] == ['volume', 'ls']:\n"
+            "    print('provider-postgresql-data')\n"
+            "if sys.argv[1:3] == ['volume', 'inspect']:\n"
+            "    print(json.dumps({\n"
+            "        'Name': 'provider-postgresql-data',\n"
+            "        'Driver': 'local',\n"
+            "        'Scope': 'local',\n"
+            "        'Options': None,\n"
+            f"        'Labels': {{'io.worldstream.packaged-parity.owner': {volume_owner!r}}},\n"
+            "        'Mountpoint': '/var/lib/docker/volumes/provider-postgresql-data/_data',\n"
+            "    }))\n",
+            encoding="utf-8",
+        )
+        docker.chmod(0o700)
+        return docker, trace
+
+    @staticmethod
+    def _provider(module, root: Path, docker: Path):
+        return module.Provider(
+            root=root,
+            repository=root,
+            docker=str(docker),
+            psql="unused-psql",
+            worldstreamctl=root / "worldstreamctl",
+            admin_password="a" * 48,
+            runtime_password="b" * 48,
+            network="provider-network",
+            postgres_name="provider-postgresql",
+            pooler_name="provider-pgbouncer",
+            postgres_volume="provider-postgresql-data",
+            volume_ownership_id="owner-123",
+            network_started=True,
+            postgres_started=True,
+            pooler_started=True,
+            volume_started=True,
+            volume_creation_attempted=True,
+        )
+
     def test_help_is_side_effect_free_and_script_is_executable(self) -> None:
         self.assertTrue(SCRIPT.stat().st_mode & stat.S_IXUSR)
         completed = subprocess.run(
@@ -207,10 +287,7 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="worldstream-privacy-capture-") as name:
             root = Path(name)
             capture = self._privacy_capture(module, root)
-            capture._record_bytes("stdout", b"clean stdout\n")
-            capture._record_bytes("stderr", b"")
-            capture._record_bytes("config", b'{"secret_source":"file"}\n')
-            capture._record_bytes("report", b'{"secrets":"not_emitted"}\n')
+            self._record_required_privacy_channels(module, capture)
             result = capture.scan()
 
         self.assertEqual(result["schema"], "worldstream/secret-absence-matrix/v1")
@@ -219,10 +296,37 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             result["encodings_scanned"], ["base64", "base64url", "hex", "raw"]
         )
-        self.assertEqual(len(result["channels"]), 4)
+        self.assertEqual(
+            len(result["channels"]), len(module.REQUIRED_PRIVACY_CHANNEL_CLASSES)
+        )
         self.assertTrue(
             all(row["sha256"].startswith("sha256:") for row in result["channels"])
         )
+        inventory = result["channel_class_inventory"]
+        self.assertEqual(inventory["schema"], module.PRIVACY_CHANNEL_CLASS_SCHEMA)
+        self.assertEqual(
+            inventory["required"], list(module.REQUIRED_PRIVACY_CHANNEL_CLASSES)
+        )
+        self.assertEqual(
+            {row["class"] for row in inventory["classes"]},
+            set(module.REQUIRED_PRIVACY_CHANNEL_CLASSES),
+        )
+
+    def test_privacy_capture_rejects_missing_required_channel_class(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-privacy-class-") as name:
+            root = Path(name)
+            capture = self._privacy_capture(module, root)
+            for channel_class in module.REQUIRED_PRIVACY_CHANNEL_CLASSES[:-1]:
+                capture._record_bytes(
+                    channel_class.replace(".", "-"),
+                    b"clean\n",
+                    channel_class=channel_class,
+                )
+            with self.assertRaisesRegex(
+                module.LaneFailure, "privacy_channel_class_incomplete"
+            ):
+                capture.scan()
 
     def test_privacy_capture_rejects_each_encoding_in_every_child_channel(self) -> None:
         module = _module()
@@ -233,10 +337,10 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
             "base64": base64.b64encode(sentinel),
             "base64url": base64.urlsafe_b64encode(sentinel).rstrip(b"="),
         }
-        for channel in ("daemon-log", "stdout", "stderr", "config", "report"):
+        for channel_class in module.REQUIRED_PRIVACY_CHANNEL_CLASSES:
             for encoding, injected in encoded.items():
                 with (
-                    self.subTest(channel=channel, encoding=encoding),
+                    self.subTest(channel_class=channel_class, encoding=encoding),
                     tempfile.TemporaryDirectory(
                         prefix="worldstream-privacy-negative-"
                     ) as name,
@@ -244,17 +348,12 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
                     root = Path(name)
                     capture = self._privacy_capture(module, root)
                     capture.register_sentinel("injected-password", sentinel)
-                    for candidate in (
-                        "daemon-log",
-                        "stdout",
-                        "stderr",
-                        "config",
-                        "report",
-                    ):
-                        capture._record_bytes(
-                            candidate,
-                            injected if candidate == channel else b"clean\n",
-                        )
+                    self._record_required_privacy_channels(
+                        module,
+                        capture,
+                        injected_class=channel_class,
+                        injected=injected,
+                    )
                     with self.assertRaisesRegex(
                         module.LaneFailure, "privacy_secret_absence_scan_failed"
                     ):
@@ -286,6 +385,443 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
         self.assertIn('"PGPASSWORD"', config)
         self.assertIn('"environment_values_retained":false', config)
         self.assertNotIn("not-retained", config)
+
+    def test_provider_cleanup_captures_both_containers_before_removal(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(
+            prefix="worldstream-provider-capture-"
+        ) as name:
+            root = Path(name)
+            docker, trace = self._fake_docker(root)
+            capture = self._privacy_capture(module, root)
+            provider = self._provider(module, root, docker)
+            module.ACTIVE_PRIVACY_CAPTURE = capture
+            try:
+                cleanup = provider.cleanup()
+            finally:
+                module.ACTIVE_PRIVACY_CAPTURE = None
+
+            self.assertEqual(cleanup, "pass")
+            self.assertEqual(
+                trace.read_text(encoding="utf-8").splitlines(),
+                [
+                    "logs --timestamps provider-pgbouncer",
+                    "logs --timestamps provider-postgresql",
+                    "rm -f provider-pgbouncer",
+                    "rm -f provider-postgresql",
+                    "volume ls --quiet --filter name=^provider-postgresql-data$",
+                    "volume inspect provider-postgresql-data --format {{json .}}",
+                    "volume rm provider-postgresql-data",
+                    "network rm provider-network",
+                ],
+            )
+            self.assertTrue(
+                {
+                    "provider.pgbouncer.stdout",
+                    "provider.pgbouncer.stderr",
+                    "provider.postgresql.stdout",
+                    "provider.postgresql.stderr",
+                }.issubset(set(capture.channel_classes.values()))
+            )
+            observed_classes = set(capture.channel_classes.values())
+            for channel_class in module.REQUIRED_PRIVACY_CHANNEL_CLASSES:
+                if channel_class not in observed_classes:
+                    capture._record_bytes(
+                        channel_class.replace(".", "-"),
+                        b"clean\n",
+                        channel_class=channel_class,
+                    )
+            scan = capture.scan()
+            scanned_names = {row["channel"] for row in scan["channels"]}
+            provider_inventory = [
+                row
+                for row in scan["channel_class_inventory"]["classes"]
+                if row["class"].startswith("provider.")
+            ]
+            self.assertEqual(len(provider_inventory), 4)
+            self.assertTrue(
+                all(
+                    set(row["channels"]).issubset(scanned_names)
+                    for row in provider_inventory
+                )
+            )
+            with self.assertRaisesRegex(
+                module.LaneFailure, "provider_capture_after_removal"
+            ):
+                provider._capture_container_output(provider.postgres_name, "postgresql")
+
+    def test_provider_cleanup_fails_closed_on_incomplete_capture(self) -> None:
+        scenarios = (
+            (
+                "unavailable",
+                {"logs_returncode": 9},
+                {},
+                "provider_capture_unavailable",
+            ),
+            (
+                "oversized",
+                {"provider_stdout": b"x" * 17},
+                {"maximum": 16},
+                "provider_capture_oversized",
+            ),
+            (
+                "truncated",
+                {"logs_delay_seconds": 0.25},
+                {"timeout": 0.01},
+                "provider_capture_truncated",
+            ),
+        )
+        for label, docker_options, bounds, reason_code in scenarios:
+            with (
+                self.subTest(label=label),
+                tempfile.TemporaryDirectory(
+                    prefix="worldstream-provider-capture-failure-"
+                ) as name,
+            ):
+                module = _module()
+                root = Path(name)
+                docker, trace = self._fake_docker(root, **docker_options)
+                if "maximum" in bounds:
+                    module.MAX_PROVIDER_CHANNEL_BYTES = bounds["maximum"]
+                if "timeout" in bounds:
+                    module.PROVIDER_CAPTURE_TIMEOUT_SECONDS = bounds["timeout"]
+                capture = module.PrivacyCapture(root)
+                provider = self._provider(module, root, docker)
+                provider.pooler_started = False
+                provider.network_started = False
+                module.ACTIVE_PRIVACY_CAPTURE = capture
+                try:
+                    with self.assertRaisesRegex(module.LaneFailure, reason_code):
+                        provider._capture_container_output(
+                            provider.postgres_name, "postgresql"
+                        )
+                    cleanup = provider.cleanup()
+                finally:
+                    module.ACTIVE_PRIVACY_CAPTURE = None
+
+                self.assertEqual(cleanup, "failed")
+                self.assertEqual(
+                    trace.read_text(encoding="utf-8").splitlines()[-1],
+                    "volume rm provider-postgresql-data",
+                )
+
+    def test_reference_environment_observes_workload_and_database_storage(self) -> None:
+        module = _module()
+        workload = Path("/srv/worldstream/workload")
+        database = Path("/var/lib/docker/volumes/provider/_data")
+        platform = {
+            "system": "Linux",
+            "distribution": "Ubuntu",
+            "distribution_version": "24.04",
+            "machine": "x86_64",
+        }
+        hardware = {
+            "cpu_model": "fixture CPU",
+            "logical_cpu_count": 4,
+            "memory_bytes": 8 * 1024 * 1024 * 1024,
+        }
+        filesystem = {
+            "type": "ext4",
+            "mount_options": ["relatime", "rw"],
+            "storage_class": "local_ssd_or_nvme",
+        }
+        observed: list[Path] = []
+
+        def observe(path: Path):
+            observed.append(path)
+            return {
+                "platform": platform,
+                "hardware": hardware,
+                "filesystem": filesystem,
+            }
+
+        provider_storage = {
+            "driver": "local",
+            "scope": "local",
+            "driver_options": {},
+            "container_destination": module.POSTGRES_DATA_DESTINATION,
+            "container_mount_type": "volume",
+            "read_write": True,
+            "source_matches_volume_mountpoint": True,
+            "run_unique_ownership_label_verified": True,
+        }
+        with (
+            mock.patch.object(module.REFERENCE_HOST, "observe", side_effect=observe),
+            mock.patch.object(
+                module,
+                "_mount_identity",
+                side_effect=[
+                    {"mount_id": 31, "device_id": "259:1"},
+                    {"mount_id": 42, "device_id": "259:2"},
+                ],
+            ),
+        ):
+            environment = module._reference_environment(
+                workload, database, provider_storage
+            )
+
+        self.assertEqual(observed, [workload, database])
+        self.assertEqual(environment["filesystem"], filesystem)
+        bindings = environment["storage_bindings"]
+        self.assertEqual(bindings["schema"], module.STORAGE_BINDING_SCHEMA)
+        self.assertEqual(bindings["profile"], module.FROZEN_STORAGE_PROFILE)
+        self.assertEqual(bindings["layout"], "split_host_mounts")
+        self.assertFalse(bindings["raw_paths_retained"])
+        self.assertEqual(bindings["workload"]["filesystem"], filesystem)
+        self.assertEqual(bindings["postgresql_database"]["filesystem"], filesystem)
+        self.assertEqual(
+            bindings["postgresql_database"]["docker_volume"], provider_storage
+        )
+        self.assertNotIn(str(workload), json.dumps(environment))
+        self.assertNotIn(str(database), json.dumps(environment))
+
+    def test_reference_database_storage_must_be_frozen_local_ext4(self) -> None:
+        module = _module()
+        common = {
+            "platform": {"system": "Linux"},
+            "hardware": {"cpu_model": "fixture"},
+        }
+        workload = {
+            **common,
+            "filesystem": {
+                "type": "ext4",
+                "mount_options": ["rw"],
+                "storage_class": "local_ssd_or_nvme",
+            },
+        }
+        database = {
+            **common,
+            "filesystem": {
+                "type": "xfs",
+                "mount_options": ["rw"],
+                "storage_class": "local_ssd_or_nvme",
+            },
+        }
+        with (
+            mock.patch.object(
+                module.REFERENCE_HOST,
+                "observe",
+                side_effect=[workload, database],
+            ),
+            self.assertRaisesRegex(
+                module.LaneFailure,
+                "reference_database_storage_not_frozen_local_ext4",
+            ),
+        ):
+            module._reference_environment(Path("/workload"), Path("/database"), {})
+
+    def test_provider_database_storage_requires_exact_local_volume_mount(self) -> None:
+        module = _module()
+        volume = {
+            "Name": "provider-data",
+            "Driver": "local",
+            "Scope": "local",
+            "Options": None,
+            "Labels": {
+                module.POSTGRES_VOLUME_OWNERSHIP_LABEL: "owner-123",
+            },
+            "Mountpoint": "/var/lib/docker/volumes/provider-data/_data",
+        }
+        mount = {
+            "Type": "volume",
+            "Name": "provider-data",
+            "Driver": "local",
+            "Source": volume["Mountpoint"],
+            "Destination": module.POSTGRES_DATA_DESTINATION,
+            "RW": True,
+        }
+        path, disclosure = module._provider_database_storage_binding(
+            volume, {"Mounts": [mount]}, "provider-data", "owner-123"
+        )
+        self.assertEqual(path, Path(volume["Mountpoint"]))
+        self.assertEqual(disclosure["driver"], "local")
+        self.assertTrue(disclosure["source_matches_volume_mountpoint"])
+
+        for field, value in (
+            ("Type", "bind"),
+            ("Source", "/different/source"),
+            ("Destination", "/different/destination"),
+            ("RW", False),
+        ):
+            with self.subTest(field=field):
+                tampered = dict(mount)
+                tampered[field] = value
+                with self.assertRaises(module.LaneFailure):
+                    module._provider_database_storage_binding(
+                        volume,
+                        {"Mounts": [tampered]},
+                        "provider-data",
+                        "owner-123",
+                    )
+
+        network_volume = {**volume, "Options": {"type": "nfs"}}
+        with self.assertRaisesRegex(
+            module.LaneFailure, "postgres_database_volume_not_owned_local"
+        ):
+            module._provider_database_storage_binding(
+                network_volume,
+                {"Mounts": [mount]},
+                "provider-data",
+                "owner-123",
+            )
+
+    def test_provider_database_storage_binding_uses_run_owner(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-volume-binding-") as name:
+            root = Path(name)
+            docker, _trace = self._fake_docker(root)
+            provider = self._provider(module, root, docker)
+            provider.postgres_started = True
+            provider.volume_started = True
+            volume = {
+                "Name": provider.postgres_volume,
+                "Driver": "local",
+                "Scope": "local",
+                "Options": None,
+                "Labels": {
+                    module.POSTGRES_VOLUME_OWNERSHIP_LABEL: provider.volume_ownership_id,
+                },
+                "Mountpoint": (
+                    f"/var/lib/docker/volumes/{provider.postgres_volume}/_data"
+                ),
+            }
+            container = {
+                "Mounts": [
+                    {
+                        "Type": "volume",
+                        "Name": provider.postgres_volume,
+                        "Driver": "local",
+                        "Source": volume["Mountpoint"],
+                        "Destination": module.POSTGRES_DATA_DESTINATION,
+                        "RW": True,
+                    }
+                ]
+            }
+            with mock.patch.object(
+                module,
+                "_bounded_docker_object",
+                side_effect=[volume, container],
+            ):
+                path, disclosure = provider.database_storage_binding()
+
+            self.assertEqual(path, Path(volume["Mountpoint"]))
+            self.assertTrue(disclosure["run_unique_ownership_label_verified"])
+
+    def test_provider_volume_collision_is_never_claimed_or_removed(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(
+            prefix="worldstream-volume-collision-"
+        ) as name:
+            root = Path(name)
+            docker, trace = self._fake_docker(root)
+            provider = self._provider(module, root, docker)
+            provider.volume_started = False
+            provider.volume_creation_attempted = False
+            with (
+                mock.patch.object(
+                    module,
+                    "_bounded_docker_text",
+                    return_value=provider.postgres_volume + "\n",
+                ),
+                self.assertRaisesRegex(
+                    module.LaneFailure, "postgres_database_volume_name_collision"
+                ),
+            ):
+                provider._create_database_volume()
+            self.assertFalse(provider.volume_started)
+            self.assertFalse(trace.exists())
+            provider.network_started = False
+            provider.postgres_started = False
+            provider.pooler_started = False
+            self.assertEqual(provider.cleanup(), "pass")
+            self.assertFalse(trace.exists())
+
+    def test_provider_foreign_volume_label_is_never_claimed_or_removed(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-volume-foreign-") as name:
+            root = Path(name)
+            docker, trace = self._fake_docker(root, volume_owner="foreign-owner")
+            provider = self._provider(module, root, docker)
+            provider.volume_started = False
+            provider.volume_creation_attempted = False
+            foreign = {
+                "Name": provider.postgres_volume,
+                "Driver": "local",
+                "Scope": "local",
+                "Options": None,
+                "Labels": {module.POSTGRES_VOLUME_OWNERSHIP_LABEL: "foreign-owner"},
+                "Mountpoint": (
+                    f"/var/lib/docker/volumes/{provider.postgres_volume}/_data"
+                ),
+            }
+            with (
+                mock.patch.object(module, "_bounded_docker_text", return_value=""),
+                mock.patch.object(
+                    module, "_bounded_docker_object", return_value=foreign
+                ),
+                self.assertRaisesRegex(
+                    module.LaneFailure, "postgres_database_volume_not_owned_local"
+                ),
+            ):
+                provider._create_database_volume()
+            self.assertFalse(provider.volume_started)
+            self.assertEqual(
+                trace.read_text(encoding="utf-8").splitlines(),
+                [
+                    (
+                        "volume create --driver local --label "
+                        f"{module.POSTGRES_VOLUME_OWNERSHIP_LABEL}=owner-123 "
+                        "provider-postgresql-data"
+                    )
+                ],
+            )
+            provider.network_started = False
+            provider.postgres_started = False
+            provider.pooler_started = False
+            self.assertEqual(provider.cleanup(), "failed")
+            cleanup_trace = trace.read_text(encoding="utf-8")
+            self.assertIn(
+                "volume inspect provider-postgresql-data --format {{json .}}",
+                cleanup_trace,
+            )
+            self.assertNotIn("volume rm", cleanup_trace)
+
+    def test_post_create_inspect_failure_still_cleans_proven_owned_volume(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-volume-recovery-") as name:
+            root = Path(name)
+            docker, trace = self._fake_docker(root)
+            provider = self._provider(module, root, docker)
+            provider.volume_started = False
+            provider.volume_creation_attempted = False
+            with (
+                mock.patch.object(module, "_bounded_docker_text", return_value=""),
+                mock.patch.object(
+                    module,
+                    "_bounded_docker_object",
+                    side_effect=module.LaneFailure(
+                        "postgres_database_volume_inspect_failed"
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    module.LaneFailure,
+                    "postgres_database_volume_inspect_failed",
+                ),
+            ):
+                provider._create_database_volume()
+            self.assertTrue(provider.volume_creation_attempted)
+            self.assertFalse(provider.volume_started)
+
+            provider.network_started = False
+            provider.postgres_started = False
+            provider.pooler_started = False
+            self.assertEqual(provider.cleanup(), "pass")
+            cleanup_trace = trace.read_text(encoding="utf-8")
+            self.assertIn(
+                "volume inspect provider-postgresql-data --format {{json .}}",
+                cleanup_trace,
+            )
+            self.assertIn("volume rm provider-postgresql-data", cleanup_trace)
 
     def test_missing_package_inputs_are_closed_without_starting_docker(self) -> None:
         with tempfile.TemporaryDirectory(

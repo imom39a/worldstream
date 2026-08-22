@@ -18,9 +18,19 @@ The embedded manifest declares the closed contract and subject inventory; the
 signed release manifest, SBOM, and provenance bind final artifact and evidence
 bytes without a cryptographic self-reference.
 Every compiled release binary embeds the exact source commit exposed by
-`/version`; SPDX and SLSA are accepted only when their locked component,
-material, toolchain, target, runner, compiler, build-argument, and OCI-base
-relationships reproduce the payload build identities exactly.
+`/version`. SPDX and SLSA are accepted as one closed pair only when their
+combined relationships reproduce the payload build identities exactly: SPDX
+enumerates locked components, the union of payload build tools (including
+Buildx), and digest-pinned OCI base/BuildKit/frontend packages; SLSA binds the
+exact materials, target, configured runner, compiler, package/UI/build
+arguments, and per-payload OCI relationships. Each payload build identity also
+contains the observed hosted provider, runner OS/architecture, image and image
+version. Native Linux, Windows, and OCI identities bind the exact selected
+rustc, bundled-SQLite C compiler/archiver, and final linker paths, versions,
+payload targets, and probed host/tool targets or archive formats; the source
+archive truthfully records no native
+compiler. These observations are captured in the static producing job and
+must agree across package metadata, reports, OCI labels, and SLSA payload rows.
 
 The repository may author a specification pair before implementation, but it remains fail-closed with `release_ready = false` while portable implementation identities are unresolved. A fully populated, semantically identical TOML/JSON pair may set `release_ready = true` to identify a complete buildable contract. As clarified by ADR 0012, that embedded flag is not artifact or acceptance evidence; only the detached signed inventory can verify a distribution.
 

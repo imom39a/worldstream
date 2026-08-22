@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import pathlib
@@ -36,6 +38,7 @@ from worldstream_sdk import Client, ProtocolError
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 COMMON_PATH = ROOT / "scripts" / "kill-point-matrix.py"
 SECRET_SCAN_PATH = ROOT / "scripts" / "verify-secret-absence.py"
+BUILD_IDENTITY_PATH = ROOT / "scripts" / "release_build_identity.py"
 SCHEMA = "worldstream/soak-evidence/v1"
 EVIDENCE_ID = "failure-fuzz-resource-and-one-hour-sqlite-soak"
 WORKLOAD_BINDING = "worldstream-daemon-transition-soak/v1"
@@ -49,9 +52,93 @@ DEFAULT_MAX_ARTIFACT_GROWTH_BYTES = (
     DEFAULT_MAX_TEMP_GROWTH_BYTES + DEFAULT_MAX_OUTPUT_BYTES
 )
 DEFAULT_INTERNAL_QUEUE_HARD_LIMIT = 256
+DNS_RESOLVER_QUEUE_HARD_LIMIT = 2
+WEBSOCKET_LIVE_PUSH_FRAME_QUEUE_HARD_LIMIT = 256
+WEBSOCKET_OUTBOUND_PAYLOAD_BYTES_HARD_LIMIT = 4 * 1024 * 1024
+RSS_SAMPLE_INTERVAL_SECONDS = 0.05
+STORAGE_SAMPLE_INTERVAL_SECONDS = 0.25
+RESOURCE_SAMPLE_MAX_GAP_SECONDS = 1.0
+RESOURCE_SAMPLING_SCHEMA = "worldstream/live-resource-sampling/v1"
+QUEUE_OBSERVATION_SCOPE = "all_bounded_runtime_queues_public_prometheus"
+QUEUE_BOUNDARY_TEST_SCHEMA = "worldstream/queue-boundary-tests/v1"
+QUEUE_BOUNDARY_MAX_TOTAL_SECONDS = 300.0
+QUEUE_SPECS = (
+    {
+        "name": "telemetry_exporter",
+        "capacity_scope": "global",
+        "hard_limit": DEFAULT_INTERNAL_QUEUE_HARD_LIMIT,
+        "activity_unit": "events",
+    },
+    {
+        "name": "telemetry_dns_resolver_queue",
+        "capacity_scope": "global",
+        "hard_limit": DNS_RESOLVER_QUEUE_HARD_LIMIT,
+        "activity_unit": "requests",
+    },
+    {
+        "name": "room_admission_lane",
+        "capacity_scope": "per_room",
+        "hard_limit": DEFAULT_INTERNAL_QUEUE_HARD_LIMIT,
+        "activity_unit": "reservations",
+    },
+    {
+        "name": "websocket_live_push_frame_queue",
+        "capacity_scope": "per_connection",
+        "hard_limit": WEBSOCKET_LIVE_PUSH_FRAME_QUEUE_HARD_LIMIT,
+        "activity_unit": "frames",
+    },
+    {
+        "name": "websocket_outbound_payload_bytes",
+        "capacity_scope": "per_connection",
+        "hard_limit": WEBSOCKET_OUTBOUND_PAYLOAD_BYTES_HARD_LIMIT,
+        "activity_unit": "bytes",
+    },
+)
+QUEUE_BOUNDARY_TESTS = (
+    (
+        "telemetry_exporter",
+        "worldstream-server",
+        "telemetry::tests::postgres_bridge_is_nonblocking_when_queue_is_saturated",
+    ),
+    (
+        "telemetry_dns_resolver_queue",
+        "worldstream-server",
+        "telemetry::tests::dns_timeouts_use_a_fixed_worker_and_queue_bound",
+    ),
+    (
+        "room_admission_lane",
+        "worldstream-core",
+        "semantic_time::tests::coordinated_lane_rejects_full_action_before_sampling",
+    ),
+    (
+        "websocket_live_push_frame_queue",
+        "worldstream-server",
+        "tests::live_frame_count_overflow_closes_with_typed_error",
+    ),
+    (
+        "websocket_outbound_payload_bytes",
+        "worldstream-server",
+        "tests::live_payload_byte_overflow_closes_with_typed_error",
+    ),
+)
+TELEMETRY_ENDPOINT_ENV = "WORLDSTREAM__TELEMETRY__OTLP__ENDPOINT"
 MAX_AUXILIARY_REPORT_BYTES = 8 * 1024 * 1024
+MAX_PUBLIC_JSON_BYTES = 1024 * 1024
 MAX_OS_RELEASE_BYTES = 64 * 1024
 PACKAGED_ACCEPTANCE_SCHEMA = "worldstream/packaged-backend-parity/v1"
+DISK_FULL_SCHEMA = "worldstream/disk-full-evidence/v1"
+DISK_FULL_SCENARIO = "packaged_sqlite_bootstrap_on_full_ext4_loopback"
+DISK_FULL_EVIDENCE_CLASS = "process_level_daemon_fault_injection"
+DISK_FULL_CONTAINER_IMAGE = (
+    "docker@sha256:12e683a161823b2a839aeea999b9d960e6e1f9a97b1679ad6b441982e2d9cf07"
+)
+DISK_FULL_FILESYSTEM_IMAGE_BYTES = 64 * 1024 * 1024
+DISK_FULL_BLOCK_SIZE_BYTES = 4096
+DISK_FULL_ATTEMPTED_WRITE_BYTES = 4096
+DISK_FULL_MAX_DAEMON_SECONDS = 10.0
+DISK_FULL_MAX_CONTAINER_SECONDS = 120.0
+DISK_FULL_MAX_LOG_BYTES = 64 * 1024
+DISK_FULL_MAX_CAPTURE_BYTES = 256 * 1024
 COUNTER_ACTIONS_PER_ROOM = 8
 COUNTER_PACK = {
     "id": "worldstream.counter",
@@ -79,6 +166,21 @@ def load_common() -> Any:
 COMMON = load_common()
 
 
+def load_build_identity() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "worldstream_daemon_soak_strict_json", BUILD_IDENTITY_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise SoakFailure("strict release JSON parser could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+BUILD_IDENTITY = load_build_identity()
+
+
 def load_secret_scan() -> Any:
     spec = importlib.util.spec_from_file_location(
         "worldstream_process_secret_scan", SECRET_SCAN_PATH
@@ -96,6 +198,21 @@ SECRET_SCAN = load_secret_scan()
 
 def workload_target_seconds(one_hour: bool, short_duration_seconds: float) -> float:
     return ONE_HOUR_SECONDS if one_hour else short_duration_seconds
+
+
+def start_daemon_with_dns_telemetry(daemon: Any) -> None:
+    """Start with a hostname OTLP target so the real DNS queue is exercised."""
+
+    endpoint = f"http://localhost:{COMMON.loopback_port()}/v1/logs"
+    previous = os.environ.get(TELEMETRY_ENDPOINT_ENV)
+    os.environ[TELEMETRY_ENDPOINT_ENV] = endpoint
+    try:
+        daemon.start()
+    finally:
+        if previous is None:
+            os.environ.pop(TELEMETRY_ENDPOINT_ENV, None)
+        else:
+            os.environ[TELEMETRY_ENDPOINT_ENV] = previous
 
 
 def release_window_is_complete(
@@ -142,21 +259,58 @@ class RssSampler(threading.Thread):
         self.peak_bytes = 0
         self.samples = 0
         self._stop_event = threading.Event()
+        self._first_sample_at: float | None = None
+        self._last_sample_at: float | None = None
+        self._maximum_gap_seconds = 0.0
+
+    def _sample(self) -> None:
+        values = [read_proc_rss(pid) for pid in process_tree(self.pid)]
+        total = sum(value for value in values if value is not None)
+        if total <= 0:
+            return
+        observed_at = time.monotonic()
+        if self._first_sample_at is None:
+            self._first_sample_at = observed_at
+        if self._last_sample_at is not None:
+            self._maximum_gap_seconds = max(
+                self._maximum_gap_seconds,
+                observed_at - self._last_sample_at,
+            )
+        self._last_sample_at = observed_at
+        self.peak_bytes = max(self.peak_bytes, total)
+        self.samples += 1
 
     def run(self) -> None:
-        while not self._stop_event.wait(0.05):
-            values = [read_proc_rss(pid) for pid in process_tree(self.pid)]
-            total = sum(value for value in values if value is not None)
-            if total > 0:
-                self.peak_bytes = max(self.peak_bytes, total)
-                self.samples += 1
+        while not self._stop_event.is_set():
+            self._sample()
+            if self._stop_event.wait(RSS_SAMPLE_INTERVAL_SECONDS):
+                break
 
-    def finish(self) -> int:
+    def finish(self) -> dict[str, int | float]:
         self._stop_event.set()
         self.join(timeout=2)
-        if self.peak_bytes <= 0 or self.samples <= 0:
+        if self.is_alive():
+            raise SoakFailure("worldstreamd RSS sampler did not stop within its bound")
+        self._sample()
+        if (
+            self.peak_bytes <= 0
+            or self.samples <= 0
+            or self._first_sample_at is None
+            or self._last_sample_at is None
+        ):
             raise SoakFailure("worldstreamd process-tree RSS could not be measured")
-        return self.peak_bytes
+        if self._maximum_gap_seconds > RESOURCE_SAMPLE_MAX_GAP_SECONDS:
+            raise SoakFailure("worldstreamd RSS sampling interval exceeded its bound")
+        return {
+            "sampling_interval_ms": round(RSS_SAMPLE_INTERVAL_SECONDS * 1000),
+            "maximum_gap_ms": round(RESOURCE_SAMPLE_MAX_GAP_SECONDS * 1000),
+            "observed_max_gap_ms": round(self._maximum_gap_seconds * 1000, 3),
+            "coverage_duration_ms": round(
+                (self._last_sample_at - self._first_sample_at) * 1000, 3
+            ),
+            "sample_count": self.samples,
+            "peak_bytes": self.peak_bytes,
+        }
 
     def cancel(self) -> None:
         self._stop_event.set()
@@ -225,22 +379,252 @@ def auxiliary_snapshot(
     }
 
 
-def metric_value(text: str, name: str) -> int:
-    match = re.search(rf"^{re.escape(name)} ([0-9]+)$", text, re.MULTILINE)
+STORAGE_RESOURCE_NAMES = (
+    "database_bytes",
+    "wal_bytes",
+    "temporary_bytes",
+    "log_bytes",
+    "artifact_bytes",
+)
+
+
+def storage_resource_values(
+    root: pathlib.Path,
+    data_dir: pathlib.Path,
+    excluded: set[pathlib.Path],
+) -> dict[str, int]:
+    database = sqlite_sizes(data_dir)
+    auxiliary = auxiliary_snapshot(root, excluded)
+    return {
+        "database_bytes": database["main_bytes"] + database["wal_bytes"],
+        "wal_bytes": database["wal_bytes"],
+        "temporary_bytes": auxiliary["temporary_bytes"],
+        "log_bytes": auxiliary["log_bytes"],
+        "artifact_bytes": auxiliary["artifact_bytes"],
+    }
+
+
+class LiveStorageSampler(threading.Thread):
+    """Retain live file-size peaks without storing an unbounded sample series."""
+
+    def __init__(
+        self,
+        root: pathlib.Path,
+        data_dir: pathlib.Path,
+        excluded: set[pathlib.Path],
+        baseline: dict[str, int],
+        *,
+        interval_seconds: float = STORAGE_SAMPLE_INTERVAL_SECONDS,
+        maximum_gap_seconds: float = RESOURCE_SAMPLE_MAX_GAP_SECONDS,
+    ) -> None:
+        super().__init__(daemon=True, name="worldstream-live-storage-sampler")
+        if (
+            set(baseline) != set(STORAGE_RESOURCE_NAMES)
+            or any(type(value) is not int or value < 0 for value in baseline.values())
+            or interval_seconds <= 0
+            or maximum_gap_seconds < interval_seconds
+        ):
+            raise SoakFailure("live storage sampler configuration was invalid")
+        self.root = root
+        self.data_dir = data_dir
+        self.excluded = excluded
+        self.baseline = dict(baseline)
+        self.interval_seconds = interval_seconds
+        self.maximum_gap_seconds = maximum_gap_seconds
+        self._peaks = dict(baseline)
+        self._sample_count = 0
+        self._first_sample_at: float | None = None
+        self._last_sample_at: float | None = None
+        self._maximum_observed_gap_seconds = 0.0
+        self._error: BaseException | None = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+    def _sample(self) -> None:
+        try:
+            values = storage_resource_values(self.root, self.data_dir, self.excluded)
+        except (OSError, SoakFailure) as error:
+            self._error = error
+            return
+        observed_at = time.monotonic()
+        with self._lock:
+            if self._first_sample_at is None:
+                self._first_sample_at = observed_at
+            if self._last_sample_at is not None:
+                self._maximum_observed_gap_seconds = max(
+                    self._maximum_observed_gap_seconds,
+                    observed_at - self._last_sample_at,
+                )
+            self._last_sample_at = observed_at
+            for name, value in values.items():
+                self._peaks[name] = max(self._peaks[name], value)
+            self._sample_count += 1
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            self._sample()
+            if self._error is not None or self._stop_event.wait(self.interval_seconds):
+                return
+
+    def observed_peak(self, resource: str) -> int:
+        if resource not in STORAGE_RESOURCE_NAMES:
+            raise SoakFailure("unknown live storage resource")
+        with self._lock:
+            return self._peaks[resource]
+
+    def finish(self) -> dict[str, Any]:
+        self._stop_event.set()
+        self.join(timeout=2)
+        if self.is_alive():
+            raise SoakFailure("live storage sampler did not stop within its bound")
+        if self._error is None:
+            self._sample()
+        if self._error is not None:
+            raise SoakFailure(
+                "live storage resources could not be sampled"
+            ) from self._error
+        with self._lock:
+            if (
+                self._sample_count <= 0
+                or self._first_sample_at is None
+                or self._last_sample_at is None
+            ):
+                raise SoakFailure("live storage resources had no complete samples")
+            if self._maximum_observed_gap_seconds > self.maximum_gap_seconds:
+                raise SoakFailure("live storage sampling interval exceeded its bound")
+            return {
+                "sampling_interval_ms": round(self.interval_seconds * 1000),
+                "maximum_gap_ms": round(self.maximum_gap_seconds * 1000),
+                "observed_max_gap_ms": round(
+                    self._maximum_observed_gap_seconds * 1000, 3
+                ),
+                "coverage_duration_ms": round(
+                    (self._last_sample_at - self._first_sample_at) * 1000, 3
+                ),
+                "sample_count": self._sample_count,
+                "initial": dict(self.baseline),
+                "peaks": dict(self._peaks),
+            }
+
+    def cancel(self) -> None:
+        self._stop_event.set()
+        self.join(timeout=2)
+
+
+def live_resource_sampling(
+    rss: dict[str, int | float],
+    storage: dict[str, Any],
+    *,
+    workload_elapsed_seconds: float,
+    hard_limits: dict[str, int],
+) -> dict[str, Any]:
+    """Build exact live peak evidence and reject gaps or exceeded limits."""
+
+    if set(hard_limits) != {"process_tree_rss_bytes", *STORAGE_RESOURCE_NAMES}:
+        raise SoakFailure("live resource hard-limit inventory was incomplete")
+    if set(storage.get("initial", {})) != set(STORAGE_RESOURCE_NAMES) or set(
+        storage.get("peaks", {})
+    ) != set(STORAGE_RESOURCE_NAMES):
+        raise SoakFailure("live storage resource inventory was incomplete")
+    workload_elapsed_ms = workload_elapsed_seconds * 1000
+    for label, summary in (("RSS", rss), ("storage", storage)):
+        coverage = summary.get("coverage_duration_ms")
+        maximum_gap = summary.get("maximum_gap_ms")
+        if (
+            type(coverage) not in {int, float}
+            or type(maximum_gap) not in {int, float}
+            or coverage + maximum_gap < workload_elapsed_ms
+        ):
+            raise SoakFailure(
+                f"live {label} sampling did not cover the transition workload"
+            )
+
+    rss_peak = rss.get("peak_bytes")
+    rss_limit = hard_limits["process_tree_rss_bytes"]
+    if type(rss_peak) is not int or rss_peak <= 0 or rss_peak > rss_limit:
+        raise SoakFailure("process-tree RSS exceeded its configured live peak bound")
+    resources: dict[str, dict[str, Any]] = {
+        "process_tree_rss_bytes": {
+            "measurement_source": "linux_proc_process_tree_vmrss",
+            "measurement_window": "transition_workload",
+            "sampling_interval_ms": rss["sampling_interval_ms"],
+            "maximum_gap_ms": rss["maximum_gap_ms"],
+            "observed_max_gap_ms": rss["observed_max_gap_ms"],
+            "coverage_duration_ms": rss["coverage_duration_ms"],
+            "sample_count": rss["sample_count"],
+            "observed_peak_bytes": rss_peak,
+            "configured_hard_limit_bytes": rss_limit,
+            "bound_status": "pass",
+        }
+    }
+    storage_sources = {
+        "database_bytes": "sqlite_main_plus_wal_regular_file_sizes",
+        "wal_bytes": "sqlite_wal_regular_file_size",
+        "temporary_bytes": "owned_private_working_tree_regular_file_sizes",
+        "log_bytes": "owned_private_working_tree_daemon_log_sizes",
+        "artifact_bytes": "owned_private_working_tree_regular_file_sizes",
+    }
+    for name in STORAGE_RESOURCE_NAMES:
+        initial = storage["initial"][name]
+        peak = storage["peaks"][name]
+        limit = hard_limits[name]
+        peak_growth = peak - initial
+        if (
+            type(initial) is not int
+            or type(peak) is not int
+            or type(limit) is not int
+            or initial < 0
+            or peak_growth < 0
+            or peak_growth > limit
+        ):
+            raise SoakFailure(f"{name} exceeded its configured live peak bound")
+        resources[name] = {
+            "measurement_source": storage_sources[name],
+            "measurement_window": "transition_workload_through_recovery",
+            "sampling_interval_ms": storage["sampling_interval_ms"],
+            "maximum_gap_ms": storage["maximum_gap_ms"],
+            "observed_max_gap_ms": storage["observed_max_gap_ms"],
+            "coverage_duration_ms": storage["coverage_duration_ms"],
+            "sample_count": storage["sample_count"],
+            "initial_bytes": initial,
+            "observed_peak_bytes": peak,
+            "observed_peak_growth_bytes": peak_growth,
+            "configured_hard_limit_bytes": limit,
+            "bound_status": "pass",
+        }
+    return {
+        "schema": RESOURCE_SAMPLING_SCHEMA,
+        "status": "measured",
+        "sampling_complete": True,
+        "peak_semantics": "maximum_observed_at_bounded_sampling_interval",
+        "workload_elapsed_ms": round(workload_elapsed_ms, 3),
+        "resources": resources,
+    }
+
+
+def metric_value(text: str, name: str, labels: dict[str, str]) -> int:
+    label_text = ",".join(f'{key}="{value}"' for key, value in labels.items())
+    match = re.search(
+        rf"^{re.escape(name)}\{{{re.escape(label_text)}\}} ([0-9]+)$",
+        text,
+        re.MULTILINE,
+    )
     if match is None:
-        raise SoakFailure(f"public metric {name} was unavailable")
+        raise SoakFailure(
+            f"public metric {name} with the required fixed labels was unavailable"
+        )
     return int(match.group(1))
 
 
 class InternalQueueSampler(threading.Thread):
-    """Samples the packaged daemon's public bounded telemetry queue facts."""
+    """Samples every packaged daemon bounded queue through public metrics."""
 
     def __init__(self, base_url: str) -> None:
         super().__init__(daemon=True)
         self.base_url = base_url
-        self.depths: list[int] = []
-        self.capacities: list[int] = []
-        self.dropped: list[int] = []
+        self.samples: dict[str, list[dict[str, int]]] = {
+            str(spec["name"]): [] for spec in QUEUE_SPECS
+        }
         self._stop_event = threading.Event()
         self._error: BaseException | None = None
 
@@ -254,18 +638,56 @@ class InternalQueueSampler(threading.Thread):
                 if len(raw) > 1024 * 1024:
                     raise SoakFailure("public metrics response exceeded its bound")
                 text = raw.decode("utf-8")
-                self.depths.append(metric_value(text, "worldstream_telemetry_queued"))
-                self.capacities.append(
-                    metric_value(text, "worldstream_telemetry_queue_capacity")
-                )
-                self.dropped.append(
-                    metric_value(text, "worldstream_telemetry_dropped_total")
-                )
+                for spec in QUEUE_SPECS:
+                    queue = str(spec["name"])
+                    queue_label = {"queue": queue}
+                    self.samples[queue].append(
+                        {
+                            "capacity": metric_value(
+                                text,
+                                "worldstream_internal_queue_capacity",
+                                {
+                                    "queue": queue,
+                                    "scope": str(spec["capacity_scope"]),
+                                },
+                            ),
+                            "process_current": metric_value(
+                                text,
+                                "worldstream_internal_queue_process_current",
+                                queue_label,
+                            ),
+                            "process_high_water": metric_value(
+                                text,
+                                "worldstream_internal_queue_process_high_water",
+                                queue_label,
+                            ),
+                            "unit_high_water": metric_value(
+                                text,
+                                "worldstream_internal_queue_unit_high_water",
+                                queue_label,
+                            ),
+                            "activity_total": metric_value(
+                                text,
+                                "worldstream_internal_queue_activity_total",
+                                queue_label,
+                            ),
+                            "completion_total": metric_value(
+                                text,
+                                "worldstream_internal_queue_completion_total",
+                                queue_label,
+                            ),
+                            "backpressure_total": metric_value(
+                                text,
+                                "worldstream_internal_queue_backpressure_total",
+                                queue_label,
+                            ),
+                        }
+                    )
             except (OSError, UnicodeDecodeError, ValueError, SoakFailure) as error:
                 self._error = error
                 return
 
-    def finish(self) -> dict[str, Any]:
+    def finish(self) -> list[dict[str, Any]]:
         self._stop_event.set()
         self.join(timeout=2)
         if self.is_alive():
@@ -274,30 +696,107 @@ class InternalQueueSampler(threading.Thread):
             raise SoakFailure(
                 "internal queue metrics could not be sampled"
             ) from self._error
-        if not self.depths or len(self.depths) != len(self.capacities):
-            raise SoakFailure("internal queue metrics had no complete samples")
-        capacities = set(self.capacities)
-        if capacities != {DEFAULT_INTERNAL_QUEUE_HARD_LIMIT}:
-            raise SoakFailure(
-                "packaged daemon queue capacity differed from the hard limit"
+        return self.summarize()
+
+    def summarize(self) -> list[dict[str, Any]]:
+        """Validate already captured samples and build the closed evidence rows."""
+
+        observed: list[dict[str, Any]] = []
+        for spec in QUEUE_SPECS:
+            name = str(spec["name"])
+            rows = self.samples[name]
+            if not rows:
+                raise SoakFailure(f"{name} queue metrics had no complete samples")
+            hard_limit = int(spec["hard_limit"])
+            if {row["capacity"] for row in rows} != {hard_limit}:
+                raise SoakFailure(f"{name} capacity differed from its hard limit")
+            process_current = [row["process_current"] for row in rows]
+            process_high_water = [row["process_high_water"] for row in rows]
+            unit_high_water = [row["unit_high_water"] for row in rows]
+            activity = [row["activity_total"] for row in rows]
+            completion = [row["completion_total"] for row in rows]
+            backpressure = [row["backpressure_total"] for row in rows]
+            monotonic_series = (
+                process_high_water,
+                unit_high_water,
+                activity,
+                completion,
+                backpressure,
             )
-        maximum_depth = max(self.depths)
-        if maximum_depth > DEFAULT_INTERNAL_QUEUE_HARD_LIMIT:
-            raise SoakFailure("internal queue exceeded its configured hard limit")
-        return {
-            "status": "measured",
-            "name": "telemetry_exporter",
-            "measurement_source": "public_prometheus_metrics",
-            "depth_metric": "worldstream_telemetry_queued",
-            "capacity_metric": "worldstream_telemetry_queue_capacity",
-            "configured_hard_limit": DEFAULT_INTERNAL_QUEUE_HARD_LIMIT,
-            "maximum_observed_depth": maximum_depth,
-            "sample_count": len(self.depths),
-            "dropped_total_initial": self.dropped[0],
-            "dropped_total_final": self.dropped[-1],
-            "dropped_total_delta": self.dropped[-1] - self.dropped[0],
-            "bound_status": "pass",
-        }
+            if any(
+                any(
+                    next_value < value
+                    for value, next_value in itertools.pairwise(series)
+                )
+                for series in monotonic_series
+            ):
+                raise SoakFailure(f"{name} cumulative queue metrics moved backwards")
+            if any(
+                current > high_water
+                for current, high_water in zip(process_current, process_high_water)
+            ):
+                raise SoakFailure(
+                    f"{name} current depth exceeded its process high-water"
+                )
+            maximum_unit_high_water = max(unit_high_water)
+            if maximum_unit_high_water > hard_limit:
+                raise SoakFailure(f"{name} exceeded its configured unit hard limit")
+            if (
+                str(spec["capacity_scope"]) == "global"
+                and max(process_high_water) > hard_limit
+            ):
+                raise SoakFailure(f"{name} exceeded its configured global hard limit")
+            activity_delta = activity[-1] - activity[0]
+            completion_delta = completion[-1] - completion[0]
+            backpressure_delta = backpressure[-1] - backpressure[0]
+            if (
+                activity_delta <= 0
+                or completion_delta <= 0
+                or maximum_unit_high_water <= 0
+            ):
+                raise SoakFailure(f"{name} production queue path was not exercised")
+            observed.append(
+                {
+                    "status": "measured",
+                    "name": name,
+                    "measurement_source": "public_prometheus_metrics",
+                    "capacity_metric": "worldstream_internal_queue_capacity",
+                    "process_current_metric": (
+                        "worldstream_internal_queue_process_current"
+                    ),
+                    "process_high_water_metric": (
+                        "worldstream_internal_queue_process_high_water"
+                    ),
+                    "unit_high_water_metric": (
+                        "worldstream_internal_queue_unit_high_water"
+                    ),
+                    "activity_metric": "worldstream_internal_queue_activity_total",
+                    "completion_metric": (
+                        "worldstream_internal_queue_completion_total"
+                    ),
+                    "backpressure_metric": (
+                        "worldstream_internal_queue_backpressure_total"
+                    ),
+                    "capacity_scope": spec["capacity_scope"],
+                    "activity_unit": spec["activity_unit"],
+                    "configured_hard_limit": hard_limit,
+                    "maximum_observed_process_current": max(process_current),
+                    "maximum_reported_process_high_water": max(process_high_water),
+                    "maximum_reported_unit_high_water": maximum_unit_high_water,
+                    "sample_count": len(rows),
+                    "activity_total_initial": activity[0],
+                    "activity_total_final": activity[-1],
+                    "activity_total_delta": activity_delta,
+                    "completion_total_initial": completion[0],
+                    "completion_total_final": completion[-1],
+                    "completion_total_delta": completion_delta,
+                    "backpressure_total_initial": backpressure[0],
+                    "backpressure_total_final": backpressure[-1],
+                    "backpressure_total_delta": backpressure_delta,
+                    "bound_status": "pass",
+                }
+            )
+        return observed
 
     def cancel(self) -> None:
         self._stop_event.set()
@@ -307,11 +806,12 @@ class InternalQueueSampler(threading.Thread):
 def public_json(base_url: str, path: str) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(f"{base_url}{path}", timeout=5) as response:
-            value = json.loads(response.read())
-    except (OSError, ValueError) as error:
+            raw = response.read(MAX_PUBLIC_JSON_BYTES + 1)
+        if not (0 < len(raw) <= MAX_PUBLIC_JSON_BYTES):
+            raise SoakFailure(f"public {path} disclosure exceeded its JSON bound")
+        value = BUILD_IDENTITY.strict_json(raw, f"public {path} disclosure")
+    except (OSError, BUILD_IDENTITY.IdentityError) as error:
         raise SoakFailure(f"public {path} disclosure was unavailable") from error
-    if not isinstance(value, dict):
-        raise SoakFailure(f"public {path} disclosure was not an object")
     return value
 
 
@@ -615,11 +1115,9 @@ def read_bounded_json_report(
         raise SoakFailure(f"{label} report was not a bounded regular file")
     try:
         raw = path.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as error:
-        raise SoakFailure(f"{label} report was invalid UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise SoakFailure(f"{label} report root was not an object")
+        value = BUILD_IDENTITY.strict_json(raw, f"{label} report")
+    except (OSError, BUILD_IDENTITY.IdentityError) as error:
+        raise SoakFailure(f"{label} report was invalid strict JSON") from error
     return value, raw
 
 
@@ -643,6 +1141,504 @@ def validate_preflight(report: dict[str, Any]) -> dict[str, Any]:
     ):
         raise SoakFailure("SQLite evidence preflight was incomplete")
     return report
+
+
+def validate_disk_full_evidence(
+    evidence: dict[str, Any], *, binary_sha256: str
+) -> dict[str, Any]:
+    """Validate the exact bounded packaged-daemon ext4 ENOSPC scenario."""
+
+    expected_top_level = {
+        "schema",
+        "status",
+        "release_evidence",
+        "scenario",
+        "evidence_class",
+        "platform",
+        "container",
+        "bounds",
+        "filesystem",
+        "fault",
+        "daemon",
+        "cleanup",
+        "limitations",
+    }
+    platform_evidence = evidence.get("platform")
+    container = evidence.get("container")
+    bounds = evidence.get("bounds")
+    filesystem = evidence.get("filesystem")
+    fault = evidence.get("fault")
+    daemon = evidence.get("daemon")
+    cleanup = evidence.get("cleanup")
+    limitations = evidence.get("limitations")
+    if (
+        set(evidence) != expected_top_level
+        or evidence.get("schema") != DISK_FULL_SCHEMA
+        or evidence.get("status") != "pass"
+        or evidence.get("release_evidence") is not False
+        or evidence.get("scenario") != DISK_FULL_SCENARIO
+        or evidence.get("evidence_class") != DISK_FULL_EVIDENCE_CLASS
+        or platform_evidence
+        != {
+            "system": "Linux",
+            "machine": "x86_64",
+            "filesystem": "ext4",
+        }
+        or not isinstance(container, dict)
+        or set(container)
+        != {
+            "image",
+            "platform",
+            "privileged",
+            "network",
+            "root_filesystem_read_only",
+            "daemon_mount_read_only",
+            "observed_elapsed_ms",
+            "captured_output_bytes",
+        }
+        or container.get("image") != DISK_FULL_CONTAINER_IMAGE
+        or container.get("platform") != "linux/amd64"
+        or container.get("privileged") is not True
+        or container.get("network") != "none"
+        or container.get("root_filesystem_read_only") is not True
+        or container.get("daemon_mount_read_only") is not True
+        or type(container.get("observed_elapsed_ms")) not in {int, float}
+        or not 0
+        <= container["observed_elapsed_ms"]
+        <= DISK_FULL_MAX_CONTAINER_SECONDS * 1000
+        or type(container.get("captured_output_bytes")) is not int
+        or not 0 < container["captured_output_bytes"] <= DISK_FULL_MAX_CAPTURE_BYTES
+        or bounds
+        != {
+            "filesystem_image_bytes": DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+            "attempted_write_bytes": DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "max_daemon_seconds": DISK_FULL_MAX_DAEMON_SECONDS,
+            "max_container_seconds": DISK_FULL_MAX_CONTAINER_SECONDS,
+            "max_log_bytes": DISK_FULL_MAX_LOG_BYTES,
+            "max_capture_bytes": DISK_FULL_MAX_CAPTURE_BYTES,
+        }
+        or not isinstance(filesystem, dict)
+        or set(filesystem)
+        != {
+            "type",
+            "mount_source_class",
+            "image_size_bytes",
+            "block_size_bytes",
+            "available_kib_after_fill",
+            "database_file_type",
+            "database_file_mode",
+            "fill_bytes_written",
+        }
+        or filesystem.get("type") != "ext4"
+        or filesystem.get("mount_source_class") != "loop_device"
+        or filesystem.get("image_size_bytes") != DISK_FULL_FILESYSTEM_IMAGE_BYTES
+        or filesystem.get("block_size_bytes") != DISK_FULL_BLOCK_SIZE_BYTES
+        or filesystem.get("available_kib_after_fill") != 0
+        or filesystem.get("database_file_type") != "regular"
+        or filesystem.get("database_file_mode") != "0600"
+        or type(filesystem.get("fill_bytes_written")) is not int
+        or not 0 < filesystem["fill_bytes_written"] < DISK_FULL_FILESYSTEM_IMAGE_BYTES
+        or fault
+        != {
+            "errno_number": errno.ENOSPC,
+            "errno_name": "ENOSPC",
+            "attempted_write_bytes": DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "write_returned_bytes": 0,
+            "database_size_before_bytes": 0,
+            "database_size_after_bytes": 0,
+        }
+        or not isinstance(daemon, dict)
+        or set(daemon)
+        != {
+            "binary_sha256",
+            "started",
+            "exit_observed",
+            "exit_code",
+            "ready_http_200_observed",
+            "public_mutation_available",
+            "storage_failure_observed",
+            "elapsed_ms",
+            "diagnostic_bytes",
+            "diagnostic_sha256",
+        }
+        or daemon.get("binary_sha256") != binary_sha256
+        or daemon.get("started") is not True
+        or daemon.get("exit_observed") is not True
+        or daemon.get("exit_code") != 1
+        or daemon.get("ready_http_200_observed") is not False
+        or daemon.get("public_mutation_available") is not False
+        or daemon.get("storage_failure_observed") is not True
+        or type(daemon.get("elapsed_ms")) not in {int, float}
+        or not 0 <= daemon["elapsed_ms"] <= DISK_FULL_MAX_DAEMON_SECONDS * 1000
+        or type(daemon.get("diagnostic_bytes")) is not int
+        or not 0 < daemon["diagnostic_bytes"] <= DISK_FULL_MAX_LOG_BYTES
+        or not isinstance(daemon.get("diagnostic_sha256"), str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", daemon["diagnostic_sha256"]) is None
+        or cleanup
+        != {
+            "internal_unmount_observed": True,
+            "container_remove_requested": True,
+            "container_absent_after_run": True,
+        }
+        or limitations
+        != {
+            "runtime_disk_exhaustion_recovery_observed": False,
+            "physical_power_loss_observed": False,
+        }
+    ):
+        raise SoakFailure("packaged daemon disk-full evidence was incomplete")
+    return evidence
+
+
+def parse_disk_full_container_output(output: bytes) -> dict[str, str]:
+    """Parse the fixed, non-secret container witness without accepting extras."""
+
+    prefix = "WORLDSTREAM_ENOSPC_V1 "
+    expected = {
+        "filesystem_type",
+        "mount_source_class",
+        "image_size_bytes",
+        "block_size_bytes",
+        "available_kib_after_fill",
+        "database_file_type",
+        "database_file_mode",
+        "fill_bytes_written",
+        "fault_errno_name",
+        "fault_attempted_write_bytes",
+        "fault_write_returned_bytes",
+        "database_size_before_bytes",
+        "database_size_after_bytes",
+        "daemon_exit_code",
+        "daemon_ready_http_200_observed",
+        "daemon_storage_failure_observed",
+        "daemon_uptime_start_seconds",
+        "daemon_uptime_end_seconds",
+        "diagnostic_bytes",
+        "diagnostic_sha256",
+        "internal_unmount_observed",
+    }
+    try:
+        lines = output.decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise SoakFailure("disk-full container output was not ASCII") from error
+    values: dict[str, str] = {}
+    for line in lines:
+        if not line.startswith(prefix) or "=" not in line[len(prefix) :]:
+            raise SoakFailure("disk-full container output was malformed")
+        name, value = line[len(prefix) :].split("=", 1)
+        if name not in expected or name in values or not value:
+            raise SoakFailure("disk-full container output was malformed")
+        values[name] = value
+    if set(values) != expected:
+        raise SoakFailure("disk-full container output was incomplete")
+    return values
+
+
+def remove_disk_full_container(docker: str, name: str) -> bool:
+    """Force removal and prove that the named temporary container is absent."""
+
+    try:
+        subprocess.run(
+            [docker, "rm", "--force", name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        listed = subprocess.run(
+            [docker, "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return listed.returncode == 0 and not listed.stdout.strip()
+
+
+DISK_FULL_CONTAINER_SCRIPT = r"""
+set -eu
+mounted=0
+cleanup() {
+  if [ "$mounted" -eq 1 ]; then
+    umount /scratch/disk >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+truncate -s 67108864 /scratch/disk.ext4
+[ "$(stat -c %s /scratch/disk.ext4)" -eq 67108864 ]
+mkfs.ext4 -q -F -b 4096 /scratch/disk.ext4
+mkdir /scratch/disk
+mount -o loop /scratch/disk.ext4 /scratch/disk
+mounted=1
+grep -Eq ' /scratch/disk .* - ext4 /dev/loop[0-9]+ ' /proc/self/mountinfo
+
+mkdir -m 700 /scratch/disk/data
+: > /scratch/disk/data/worldstream.sqlite3
+chmod 600 /scratch/disk/data/worldstream.sqlite3
+[ -f /scratch/disk/data/worldstream.sqlite3 ]
+[ ! -L /scratch/disk/data/worldstream.sqlite3 ]
+head -c 32 /dev/urandom > /scratch/authority.secret
+chmod 600 /scratch/authority.secret
+database_size_before=$(stat -c %s /scratch/disk/data/worldstream.sqlite3)
+
+set +e
+dd if=/dev/zero of=/scratch/disk/filler bs=1048576 status=none \
+  2>/scratch/fill.err
+fill_rc=$?
+set -e
+[ "$fill_rc" -ne 0 ]
+grep -q 'No space left on device' /scratch/fill.err
+available_kib=$(df -Pk /scratch/disk | tail -1 | tr -s ' ' | cut -d ' ' -f4)
+[ "$available_kib" -eq 0 ]
+fill_bytes=$(stat -c %s /scratch/disk/filler)
+
+set +e
+dd if=/dev/zero of=/scratch/disk/data/worldstream.sqlite3 bs=4096 count=1 \
+  conv=notrunc status=none 2>/scratch/fault.err
+fault_rc=$?
+set -e
+[ "$fault_rc" -ne 0 ]
+grep -q 'No space left on device' /scratch/fault.err
+database_size_after=$(stat -c %s /scratch/disk/data/worldstream.sqlite3)
+[ "$database_size_before" -eq 0 ]
+[ "$database_size_after" -eq 0 ]
+
+daemon_start=$(cut -d ' ' -f1 /proc/uptime)
+set +e
+WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE=/scratch/authority.secret \
+  RUST_LOG=warn /worldstreamd --data-dir /scratch/disk/data \
+  --bind 127.0.0.1:48123 > /scratch/daemon.log 2>&1 &
+daemon_pid=$!
+set -e
+ready_observed=0
+exited_in_bound=0
+poll=0
+while [ "$poll" -lt 40 ]; do
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    exited_in_bound=1
+    break
+  fi
+  set +e
+  timeout 0.2 wget -q -T 1 -O /dev/null http://127.0.0.1:48123/readyz
+  ready_rc=$?
+  set -e
+  if [ "$ready_rc" -eq 0 ]; then
+    ready_observed=1
+    break
+  fi
+  poll=$((poll + 1))
+  sleep 0.05
+done
+if kill -0 "$daemon_pid" 2>/dev/null; then
+  kill -TERM "$daemon_pid" 2>/dev/null || true
+  sleep 0.2
+  kill -KILL "$daemon_pid" 2>/dev/null || true
+fi
+set +e
+wait "$daemon_pid"
+daemon_rc=$?
+set -e
+daemon_end=$(cut -d ' ' -f1 /proc/uptime)
+[ "$exited_in_bound" -eq 1 ]
+[ "$ready_observed" -eq 0 ]
+[ "$daemon_rc" -eq 1 ]
+grep -q 'SQLite durable store initialization/verification failed' /scratch/daemon.log
+diagnostic_bytes=$(wc -c < /scratch/daemon.log | tr -d ' ')
+[ "$diagnostic_bytes" -gt 0 ]
+[ "$diagnostic_bytes" -le 65536 ]
+diagnostic_sha256=$(sha256sum /scratch/daemon.log | cut -d ' ' -f1)
+block_size=$(stat -f -c %S /scratch/disk)
+[ "$block_size" -eq 4096 ]
+[ "$(stat -c %a /scratch/disk/data/worldstream.sqlite3)" -eq 600 ]
+
+printf 'WORLDSTREAM_ENOSPC_V1 filesystem_type=ext4\n'
+printf 'WORLDSTREAM_ENOSPC_V1 mount_source_class=loop_device\n'
+printf 'WORLDSTREAM_ENOSPC_V1 image_size_bytes=67108864\n'
+printf 'WORLDSTREAM_ENOSPC_V1 block_size_bytes=%s\n' "$block_size"
+printf 'WORLDSTREAM_ENOSPC_V1 available_kib_after_fill=%s\n' "$available_kib"
+printf 'WORLDSTREAM_ENOSPC_V1 database_file_type=regular\n'
+printf 'WORLDSTREAM_ENOSPC_V1 database_file_mode=0600\n'
+printf 'WORLDSTREAM_ENOSPC_V1 fill_bytes_written=%s\n' "$fill_bytes"
+printf 'WORLDSTREAM_ENOSPC_V1 fault_errno_name=ENOSPC\n'
+printf 'WORLDSTREAM_ENOSPC_V1 fault_attempted_write_bytes=4096\n'
+printf 'WORLDSTREAM_ENOSPC_V1 fault_write_returned_bytes=0\n'
+printf 'WORLDSTREAM_ENOSPC_V1 database_size_before_bytes=%s\n' "$database_size_before"
+printf 'WORLDSTREAM_ENOSPC_V1 database_size_after_bytes=%s\n' "$database_size_after"
+printf 'WORLDSTREAM_ENOSPC_V1 daemon_exit_code=%s\n' "$daemon_rc"
+printf 'WORLDSTREAM_ENOSPC_V1 daemon_ready_http_200_observed=%s\n' "$ready_observed"
+printf 'WORLDSTREAM_ENOSPC_V1 daemon_storage_failure_observed=1\n'
+printf 'WORLDSTREAM_ENOSPC_V1 daemon_uptime_start_seconds=%s\n' "$daemon_start"
+printf 'WORLDSTREAM_ENOSPC_V1 daemon_uptime_end_seconds=%s\n' "$daemon_end"
+printf 'WORLDSTREAM_ENOSPC_V1 diagnostic_bytes=%s\n' "$diagnostic_bytes"
+printf 'WORLDSTREAM_ENOSPC_V1 diagnostic_sha256=%s\n' "$diagnostic_sha256"
+umount /scratch/disk
+mounted=0
+printf 'WORLDSTREAM_ENOSPC_V1 internal_unmount_observed=1\n'
+"""
+
+
+def run_disk_full_scenario(
+    daemon_bin: pathlib.Path, *, binary_sha256: str
+) -> dict[str, Any]:
+    """Run the packaged SQLite bootstrap on a bounded full ext4 filesystem."""
+
+    if platform.system() != "Linux" or platform.machine().lower() not in {
+        "x86_64",
+        "amd64",
+    }:
+        raise SoakFailure("packaged daemon disk-full evidence requires Linux x86-64")
+    docker = shutil.which("docker")
+    if docker is None:
+        raise SoakFailure("packaged daemon disk-full evidence requires Docker")
+    resolved_daemon = daemon_bin.resolve()
+    if ":" in str(resolved_daemon) or "\n" in str(resolved_daemon):
+        raise SoakFailure("packaged daemon path cannot be mounted safely")
+    container_name = f"worldstream-enospc-{os.getpid()}-{time.time_ns()}"
+    started = time.monotonic()
+    result: subprocess.CompletedProcess[bytes] | None = None
+    run_error: BaseException | None = None
+    try:
+        result = subprocess.run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--name",
+                container_name,
+                "--platform",
+                "linux/amd64",
+                "--privileged",
+                "--network",
+                "none",
+                "--read-only",
+                "--pids-limit",
+                "64",
+                "--tmpfs",
+                "/scratch:rw,size=96m,mode=700",
+                "--volume",
+                f"{resolved_daemon}:/worldstreamd:ro",
+                DISK_FULL_CONTAINER_IMAGE,
+                "sh",
+                "-c",
+                DISK_FULL_CONTAINER_SCRIPT,
+            ],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=DISK_FULL_MAX_CONTAINER_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        run_error = error
+    container_elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+    removed = remove_disk_full_container(docker, container_name)
+    if not removed:
+        raise SoakFailure("disk-full container cleanup could not be verified")
+    if run_error is not None:
+        raise SoakFailure(
+            "disk-full container did not complete within its bound"
+        ) from run_error
+    if result is None:  # pragma: no cover - guarded by run_error.
+        raise SoakFailure("disk-full container did not return a result")
+    captured_bytes = len(result.stdout) + len(result.stderr)
+    if (
+        result.returncode != 0
+        or captured_bytes > DISK_FULL_MAX_CAPTURE_BYTES
+        or container_elapsed_ms > DISK_FULL_MAX_CONTAINER_SECONDS * 1000
+    ):
+        raise SoakFailure("packaged daemon disk-full container failed closed")
+    values = parse_disk_full_container_output(result.stdout)
+    try:
+        daemon_elapsed_ms = round(
+            (
+                float(values["daemon_uptime_end_seconds"])
+                - float(values["daemon_uptime_start_seconds"])
+            )
+            * 1000,
+            3,
+        )
+        fill_bytes = int(values["fill_bytes_written"])
+        diagnostic_bytes = int(values["diagnostic_bytes"])
+    except (KeyError, ValueError) as error:
+        raise SoakFailure(
+            "disk-full container emitted invalid numeric evidence"
+        ) from error
+    evidence = {
+        "schema": DISK_FULL_SCHEMA,
+        "status": "pass",
+        "release_evidence": False,
+        "scenario": DISK_FULL_SCENARIO,
+        "evidence_class": DISK_FULL_EVIDENCE_CLASS,
+        "platform": {
+            "system": "Linux",
+            "machine": "x86_64",
+            "filesystem": "ext4",
+        },
+        "container": {
+            "image": DISK_FULL_CONTAINER_IMAGE,
+            "platform": "linux/amd64",
+            "privileged": True,
+            "network": "none",
+            "root_filesystem_read_only": True,
+            "daemon_mount_read_only": True,
+            "observed_elapsed_ms": container_elapsed_ms,
+            "captured_output_bytes": captured_bytes,
+        },
+        "bounds": {
+            "filesystem_image_bytes": DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+            "attempted_write_bytes": DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "max_daemon_seconds": DISK_FULL_MAX_DAEMON_SECONDS,
+            "max_container_seconds": DISK_FULL_MAX_CONTAINER_SECONDS,
+            "max_log_bytes": DISK_FULL_MAX_LOG_BYTES,
+            "max_capture_bytes": DISK_FULL_MAX_CAPTURE_BYTES,
+        },
+        "filesystem": {
+            "type": values["filesystem_type"],
+            "mount_source_class": values["mount_source_class"],
+            "image_size_bytes": int(values["image_size_bytes"]),
+            "block_size_bytes": int(values["block_size_bytes"]),
+            "available_kib_after_fill": int(values["available_kib_after_fill"]),
+            "database_file_type": values["database_file_type"],
+            "database_file_mode": values["database_file_mode"],
+            "fill_bytes_written": fill_bytes,
+        },
+        "fault": {
+            "errno_number": errno.ENOSPC,
+            "errno_name": values["fault_errno_name"],
+            "attempted_write_bytes": int(values["fault_attempted_write_bytes"]),
+            "write_returned_bytes": int(values["fault_write_returned_bytes"]),
+            "database_size_before_bytes": int(values["database_size_before_bytes"]),
+            "database_size_after_bytes": int(values["database_size_after_bytes"]),
+        },
+        "daemon": {
+            "binary_sha256": binary_sha256,
+            "started": True,
+            "exit_observed": True,
+            "exit_code": int(values["daemon_exit_code"]),
+            "ready_http_200_observed": values["daemon_ready_http_200_observed"] == "1",
+            "public_mutation_available": False,
+            "storage_failure_observed": values["daemon_storage_failure_observed"]
+            == "1",
+            "elapsed_ms": daemon_elapsed_ms,
+            "diagnostic_bytes": diagnostic_bytes,
+            "diagnostic_sha256": "sha256:" + values["diagnostic_sha256"],
+        },
+        "cleanup": {
+            "internal_unmount_observed": values["internal_unmount_observed"] == "1",
+            "container_remove_requested": True,
+            "container_absent_after_run": True,
+        },
+        "limitations": {
+            "runtime_disk_exhaustion_recovery_observed": False,
+            "physical_power_loss_observed": False,
+        },
+    }
+    return validate_disk_full_evidence(evidence, binary_sha256=binary_sha256)
 
 
 def run_preflight(total_timeout: float, max_output_bytes: int) -> dict[str, Any]:
@@ -680,6 +1676,97 @@ def run_preflight(total_timeout: float, max_output_bytes: int) -> dict[str, Any]
             raise SoakFailure("SQLite evidence preflight did not pass")
         report, _ = read_bounded_json_report(output, "SQLite evidence preflight")
     return validate_preflight(report)
+
+
+def run_queue_boundary_tests(
+    total_timeout: float, max_output_bytes: int, *, cargo: str = "cargo"
+) -> dict[str, Any]:
+    """Run each exact production queue saturation regression within one bound."""
+
+    started = time.monotonic()
+    deadline = started + total_timeout
+    results: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="worldstream-queue-boundary-") as temporary:
+        for index, (queue_class, package, test_name) in enumerate(
+            QUEUE_BOUNDARY_TESTS, start=1
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SoakFailure("queue boundary tests exceeded their total bound")
+            output_path = pathlib.Path(temporary) / f"test-{index}.log"
+            test_started = time.monotonic()
+            with output_path.open("w+b") as output:
+                process = subprocess.Popen(
+                    [
+                        cargo,
+                        "test",
+                        "--locked",
+                        "-p",
+                        package,
+                        "--lib",
+                        test_name,
+                        "--",
+                        "--exact",
+                    ],
+                    cwd=ROOT,
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    env={**os.environ, "CARGO_TERM_COLOR": "never"},
+                    start_new_session=True,
+                )
+                try:
+                    returncode = process.wait(timeout=min(remaining, 120.0))
+                except subprocess.TimeoutExpired as error:
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        process.wait(timeout=1)
+                    except (OSError, subprocess.TimeoutExpired):
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                        process.wait(timeout=2)
+                    raise SoakFailure(
+                        f"{queue_class} queue boundary test exceeded its bound"
+                    ) from error
+                output.flush()
+                size_bytes = output.tell()
+                if size_bytes > max_output_bytes:
+                    raise SoakFailure(
+                        f"{queue_class} queue boundary output exceeded its bound"
+                    )
+                output.seek(0)
+                raw = output.read()
+            text = raw.decode("utf-8", errors="replace")
+            exact_result = re.search(
+                rf"^test {re.escape(test_name)} \.\.\. ok$", text, re.MULTILINE
+            )
+            if returncode != 0 or exact_result is None or "running 1 test" not in text:
+                raise SoakFailure(
+                    f"{queue_class} exact production queue boundary test did not pass"
+                )
+            results.append(
+                {
+                    "queue_class": queue_class,
+                    "package": package,
+                    "test_name": test_name,
+                    "status": "passed",
+                    "exact_test_count": 1,
+                    "duration_ms": round((time.monotonic() - test_started) * 1000, 3),
+                    "output_bytes": size_bytes,
+                    "output_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                }
+            )
+    return {
+        "schema": QUEUE_BOUNDARY_TEST_SCHEMA,
+        "status": "pass",
+        "execution_scope": "same_production_queue_paths",
+        "total_duration_ms": round((time.monotonic() - started) * 1000, 3),
+        "max_total_seconds": total_timeout,
+        "max_output_bytes_per_test": max_output_bytes,
+        "tests": results,
+    }
 
 
 def supplied_preflight(path: pathlib.Path) -> dict[str, Any]:
@@ -969,6 +2056,8 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         raise SoakFailure("daemon transition soak requires Linux x86-64")
     if not args.daemon_bin.is_file() or not os.access(args.daemon_bin, os.X_OK):
         raise SoakFailure("worldstreamd is unavailable or not executable")
+    if args.package_report is not None:
+        read_bounded_json_report(args.package_report, "package identity")
     distribution = COMMON.distribution_identity(
         args.daemon_bin, args.package_archive, args.package_report
     )
@@ -982,6 +2071,16 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         )
     else:
         preflight = await asyncio.to_thread(supplied_preflight, args.preflight_report)
+    queue_boundary_tests = await asyncio.to_thread(
+        run_queue_boundary_tests,
+        QUEUE_BOUNDARY_MAX_TOTAL_SECONDS,
+        DEFAULT_MAX_OUTPUT_BYTES,
+    )
+    disk_full = await asyncio.to_thread(
+        run_disk_full_scenario,
+        args.daemon_bin,
+        binary_sha256=distribution["binary_sha256"],
+    )
     root = COMMON.private_root("worldstream-daemon-transition-soak-")
     daemon = COMMON.Daemon(
         root,
@@ -991,9 +2090,10 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     )
     started = time.monotonic()
     sampler: RssSampler | None = None
+    storage_sampler: LiveStorageSampler | None = None
     queue_sampler: InternalQueueSampler | None = None
     try:
-        daemon.start()
+        start_daemon_with_dns_telemetry(daemon)
         observed_environment = environment_observation(daemon)
         process = daemon.process
         if process is None:
@@ -1010,15 +2110,31 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             root / "authority.secret",
         }
         initial_auxiliary = auxiliary_snapshot(root, database_files)
+        storage_baseline = {
+            "database_bytes": (
+                initial_database["main_bytes"] + initial_database["wal_bytes"]
+            ),
+            "wal_bytes": initial_database["wal_bytes"],
+            "temporary_bytes": initial_auxiliary["temporary_bytes"],
+            "log_bytes": initial_auxiliary["log_bytes"],
+            "artifact_bytes": initial_auxiliary["artifact_bytes"],
+        }
+        storage_sampler = LiveStorageSampler(
+            root,
+            daemon.data_dir,
+            database_files,
+            storage_baseline,
+        )
+        storage_sampler.start()
         workload_started = time.monotonic()
         workload, last_room, capability_sentinels = await run_transition_workload(
             daemon, target_seconds
         )
         workload_elapsed = time.monotonic() - workload_started
-        peak_rss = sampler.finish()
-        rss_sample_count = sampler.samples
+        rss_summary = sampler.finish()
+        peak_rss = rss_summary["peak_bytes"]
         sampler = None
-        internal_queue = queue_sampler.finish()
+        internal_queues = queue_sampler.finish()
         queue_sampler = None
         final_database = sqlite_sizes(daemon.data_dir)
         main_growth = final_database["main_bytes"] - initial_database["main_bytes"]
@@ -1033,7 +2149,6 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         if (
             database_growth > args.max_database_growth_bytes
             or wal_growth > args.max_wal_growth_bytes
-            or peak_rss > args.max_peak_rss_bytes
         ):
             raise SoakFailure("daemon workload exceeded a configured resource bound")
         before_recovery_store = COMMON.store_identity(daemon)
@@ -1056,6 +2171,8 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                 "post-SIGKILL recovery changed the final public projection"
             )
         daemon.stop()
+        storage_summary = storage_sampler.finish()
+        storage_sampler = None
         final_auxiliary = auxiliary_snapshot(root, database_files)
         temp_growth = (
             final_auxiliary["temporary_bytes"] - initial_auxiliary["temporary_bytes"]
@@ -1077,6 +2194,38 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         output_bytes = final_auxiliary["log_bytes"]
         if output_bytes > args.max_output_bytes:
             raise SoakFailure("daemon logs exceeded the configured output bound")
+        resource_sampling = live_resource_sampling(
+            rss_summary,
+            storage_summary,
+            workload_elapsed_seconds=workload_elapsed,
+            hard_limits={
+                "process_tree_rss_bytes": args.max_peak_rss_bytes,
+                "database_bytes": args.max_database_growth_bytes,
+                "wal_bytes": args.max_wal_growth_bytes,
+                "temporary_bytes": args.max_temp_growth_bytes,
+                "log_bytes": args.max_output_bytes,
+                "artifact_bytes": args.max_artifact_growth_bytes,
+            },
+        )
+        live_resources = resource_sampling["resources"]
+        final_storage_values = {
+            "database_bytes": database_final,
+            "wal_bytes": final_database["wal_bytes"],
+            "temporary_bytes": final_auxiliary["temporary_bytes"],
+            "log_bytes": final_auxiliary["log_bytes"],
+            "artifact_bytes": final_auxiliary["artifact_bytes"],
+        }
+        if any(
+            final_storage_values[name] > live_resources[name]["observed_peak_bytes"]
+            for name in STORAGE_RESOURCE_NAMES
+        ):
+            raise SoakFailure("final storage snapshot exceeded its retained live peak")
+        queue_observation = {
+            "status": "measured",
+            "observation_scope": QUEUE_OBSERVATION_SCOPE,
+            "all_internal_queues_observed": True,
+            "observed_queues": internal_queues,
+        }
         secret_sentinels = {
             "authority-secret": (root / "authority.secret").read_bytes(),
             "operator-capability": daemon.operator_bearer.encode("ascii"),
@@ -1135,32 +2284,37 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "memory": {
                 "status": "measured",
                 "peak_rss_bytes": peak_rss,
-                "method": "50ms /proc process-tree VmRSS samples",
+                "method": "bounded /proc process-tree VmRSS live samples",
+                "sampling_interval_ms": rss_summary["sampling_interval_ms"],
+                "maximum_gap_ms": rss_summary["maximum_gap_ms"],
+                "observed_max_gap_ms": rss_summary["observed_max_gap_ms"],
+                "coverage_duration_ms": rss_summary["coverage_duration_ms"],
+                "sample_count": rss_summary["sample_count"],
             },
             "database_growth": {
                 "status": "measured",
+                "measurement_semantics": "final_snapshot_not_peak_bound",
                 "growth_bytes": database_growth,
                 "wal_growth_bytes": wal_growth,
             },
             "temporary_growth": {
                 "status": "measured",
+                "measurement_semantics": "final_snapshot_not_peak_bound",
                 "growth_bytes": temp_growth,
-                "configured_hard_limit_bytes": args.max_temp_growth_bytes,
             },
             "log_growth": {
                 "status": "measured",
+                "measurement_semantics": "final_snapshot_not_peak_bound",
                 "growth_bytes": log_growth,
-                "configured_hard_limit_bytes": args.max_output_bytes,
             },
             "artifact_growth": {
                 "status": "measured",
+                "measurement_semantics": "final_snapshot_not_peak_bound",
                 "growth_bytes": artifact_growth,
-                "configured_hard_limit_bytes": args.max_artifact_growth_bytes,
             },
-            "internal_queues": {
-                "status": "measured",
-                "queues": [internal_queue],
-            },
+            "resource_sampling": resource_sampling,
+            "queue_observation": queue_observation,
+            "queue_boundary_tests": queue_boundary_tests,
             "recovery": {"durations_ms": [round(recovery_ms, 3)]},
         }
         report = {
@@ -1178,6 +2332,7 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "environment_observation": observed_environment,
             "reference_workload": reference_workload,
             "measurements": measurements,
+            "resource_sampling": resource_sampling,
             "distribution": distribution,
             "configuration": {
                 "max_total_seconds": target_seconds,
@@ -1188,7 +2343,18 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                 "max_temp_growth_bytes": args.max_temp_growth_bytes,
                 "max_log_growth_bytes": args.max_output_bytes,
                 "max_artifact_growth_bytes": args.max_artifact_growth_bytes,
-                "max_internal_queue_depth": DEFAULT_INTERNAL_QUEUE_HARD_LIMIT,
+                "internal_queue_hard_limits": {
+                    str(spec["name"]): {
+                        "capacity_scope": spec["capacity_scope"],
+                        "hard_limit": spec["hard_limit"],
+                        "activity_unit": spec["activity_unit"],
+                    }
+                    for spec in QUEUE_SPECS
+                },
+                "queue_boundary_test_max_total_seconds": (
+                    QUEUE_BOUNDARY_MAX_TOTAL_SECONDS
+                ),
+                "queue_boundary_test_max_output_bytes": DEFAULT_MAX_OUTPUT_BYTES,
                 "max_peak_rss_bytes": args.max_peak_rss_bytes,
                 "database_workload_binding": WORKLOAD_BINDING,
             },
@@ -1209,7 +2375,9 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                 "process_level": True,
                 "database_workload_bound": True,
                 "process_kill_recovery": True,
+                "disk_full_fault_injection": True,
             },
+            "disk_full": disk_full,
             "preflight": {"test_list_parse": parsed},
             "fixture_hooks": fixture_hooks,
             "matrix_runs": [
@@ -1235,7 +2403,11 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                     "peak_rss_bytes": peak_rss,
                     "peak_rss_bytes_per_run": [peak_rss],
                     "observed_peak_delta_bytes": 0,
-                    "sample_count": rss_sample_count,
+                    "sampling_interval_ms": rss_summary["sampling_interval_ms"],
+                    "maximum_gap_ms": rss_summary["maximum_gap_ms"],
+                    "observed_max_gap_ms": rss_summary["observed_max_gap_ms"],
+                    "coverage_duration_ms": rss_summary["coverage_duration_ms"],
+                    "sample_count": rss_summary["sample_count"],
                 },
             },
             "database": {
@@ -1288,11 +2460,8 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                 "daemon_log_count": len(log_hashes),
                 "daemon_log_sha256": log_hashes,
             },
-            "internal_queues": {
-                "status": "measured",
-                "configured_hard_limits_enforced": True,
-                "queues": [internal_queue],
-            },
+            "queue_observation": queue_observation,
+            "queue_boundary_tests": queue_boundary_tests,
             "privacy": {
                 "status": "pass",
                 "secret_scan": secret_scan,
@@ -1317,6 +2486,10 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "limitations": [
                 "Measured Linux reference data is not an SLA.",
                 "Short mode is diagnostic and never one-hour release evidence.",
+                (
+                    "Queue backpressure totals are measured outcomes; a zero delta is "
+                    "valid when the bounded workload does not saturate a queue."
+                ),
                 "Release promotion remains owned by the strict detached producer.",
             ],
         }
@@ -1329,17 +2502,32 @@ async def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             f"p50_ms={duration_percentiles['p50']:.3f} "
             f"p95_ms={duration_percentiles['p95']:.3f} "
             f"p99_ms={duration_percentiles['p99']:.3f}\n"
-            f"peak_rss_bytes={peak_rss} database_growth_bytes={database_growth} "
-            f"wal_growth_bytes={wal_growth} temp_growth_bytes={temp_growth} "
-            f"log_growth_bytes={log_growth} artifact_growth_bytes={artifact_growth}\n"
-            f"internal_queue_max_depth={internal_queue['maximum_observed_depth']} "
-            f"internal_queue_hard_limit={internal_queue['configured_hard_limit']}\n"
+            f"peak_rss_bytes={peak_rss} "
+            f"database_observed_peak_growth_bytes="
+            f"{live_resources['database_bytes']['observed_peak_growth_bytes']} "
+            f"wal_observed_peak_growth_bytes="
+            f"{live_resources['wal_bytes']['observed_peak_growth_bytes']} "
+            f"temp_observed_peak_growth_bytes="
+            f"{live_resources['temporary_bytes']['observed_peak_growth_bytes']} "
+            f"log_observed_peak_growth_bytes="
+            f"{live_resources['log_bytes']['observed_peak_growth_bytes']} "
+            f"artifact_observed_peak_growth_bytes="
+            f"{live_resources['artifact_bytes']['observed_peak_growth_bytes']}\n"
+            f"observed_internal_queues={len(internal_queues)} "
+            f"queue_samples={min(queue['sample_count'] for queue in internal_queues)} "
+            "all_internal_queues_observed=true\n"
+            f"queue_boundary_tests={len(queue_boundary_tests['tests'])} "
+            "queue_boundary_tests_status=pass\n"
+            "disk_full_errno=ENOSPC disk_full_ready_observed=false "
+            "disk_full_public_mutation_available=false\n"
             f"recovery_time_ms={recovery_ms:.3f} status=passed\n"
         )
         return report, log
     finally:
         if sampler is not None:
             sampler.cancel()
+        if storage_sampler is not None:
+            storage_sampler.cancel()
         if queue_sampler is not None:
             queue_sampler.cancel()
         daemon.stop()

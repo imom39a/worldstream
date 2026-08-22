@@ -10,8 +10,8 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, OnceLock,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -44,6 +44,198 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_HTTP_REQUEST_BODY_BYTES: usize = MAX_EVENT_BYTES * MAX_BATCH_SIZE + 16 * 1024;
 const MAX_HTTP_RESPONSE_BYTES: usize = 8192;
+const DNS_RESOLVER_WORKERS: usize = 2;
+const DNS_RESOLVER_QUEUE_PER_WORKER: usize = 1;
+pub(crate) const DEFAULT_QUEUE_CAPACITY: usize = 256;
+
+#[derive(Debug, Default)]
+struct DnsQueueCounters {
+    current: AtomicUsize,
+    high_water: AtomicUsize,
+    submitted: AtomicU64,
+    completed: AtomicU64,
+    rejected: AtomicU64,
+}
+
+impl DnsQueueCounters {
+    fn note_submitted(&self) {
+        let depth = self.current.fetch_add(1, Ordering::AcqRel) + 1;
+        atomic_max_usize(&self.high_water, depth);
+        self.submitted.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_dequeued(&self) {
+        let previous = self.current.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "a submitted DNS request must still be queued");
+    }
+
+    fn note_completed(&self) {
+        self.completed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_rejected(&self) {
+        self.rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self, capacity: usize) -> crate::InternalQueueSnapshot {
+        let high_water = self.high_water.load(Ordering::Acquire);
+        crate::InternalQueueSnapshot {
+            name: "telemetry_dns_resolver_queue",
+            capacity_scope: "global",
+            capacity,
+            process_current: self.current.load(Ordering::Acquire),
+            process_high_water: high_water,
+            unit_high_water: high_water,
+            activity_total: self.submitted.load(Ordering::Relaxed),
+            completion_total: self.completed.load(Ordering::Relaxed),
+            backpressure_total: self.rejected.load(Ordering::Relaxed),
+        }
+    }
+}
+
+fn atomic_max_usize(target: &AtomicUsize, candidate: usize) {
+    let mut current = target.load(Ordering::Acquire);
+    while candidate > current {
+        match target.compare_exchange_weak(current, candidate, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn atomic_max_u64(target: &AtomicU64, candidate: u64) {
+    let mut current = target.load(Ordering::Acquire);
+    while candidate > current {
+        match target.compare_exchange_weak(current, candidate, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+type DnsLookup = Arc<dyn Fn(String) -> Vec<SocketAddr> + Send + Sync>;
+
+struct DnsRequest {
+    connect_target: String,
+    response: SyncSender<Vec<SocketAddr>>,
+    submitted: Arc<AtomicBool>,
+}
+
+struct DnsResolverPool {
+    workers: Vec<SyncSender<DnsRequest>>,
+    next_worker: AtomicUsize,
+    queue_capacity: usize,
+    metrics: Arc<DnsQueueCounters>,
+}
+
+impl DnsResolverPool {
+    fn new() -> Result<Self, ExportError> {
+        let lookup: DnsLookup = Arc::new(|connect_target| {
+            connect_target
+                .to_socket_addrs()
+                .map_or_else(|_| Vec::new(), Iterator::collect)
+        });
+        Self::with_lookup(DNS_RESOLVER_WORKERS, DNS_RESOLVER_QUEUE_PER_WORKER, &lookup)
+    }
+
+    fn with_lookup(
+        worker_count: usize,
+        queue_capacity: usize,
+        lookup: &DnsLookup,
+    ) -> Result<Self, ExportError> {
+        if worker_count == 0 || queue_capacity == 0 {
+            return Err(ExportError::Unavailable);
+        }
+        let metrics = Arc::new(DnsQueueCounters::default());
+        let mut workers = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let (sender, receiver) = mpsc::sync_channel::<DnsRequest>(queue_capacity);
+            let worker_lookup = Arc::clone(lookup);
+            let worker_metrics = Arc::clone(&metrics);
+            thread::Builder::new()
+                .name(format!("worldstream-telemetry-dns-{index}"))
+                .spawn(move || {
+                    while let Ok(request) = receiver.recv() {
+                        while !request.submitted.load(Ordering::Acquire) {
+                            thread::yield_now();
+                        }
+                        worker_metrics.note_dequeued();
+                        let addresses = worker_lookup(request.connect_target);
+                        let _ = request.response.send(addresses);
+                        worker_metrics.note_completed();
+                    }
+                })
+                .map_err(|_| ExportError::Unavailable)?;
+            workers.push(sender);
+        }
+        Ok(Self {
+            workers,
+            next_worker: AtomicUsize::new(0),
+            queue_capacity: worker_count.saturating_mul(queue_capacity),
+            metrics,
+        })
+    }
+
+    fn resolve(
+        &self,
+        connect_target: String,
+        timeout: Duration,
+    ) -> Result<Vec<SocketAddr>, ExportError> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let submitted_signal = Arc::new(AtomicBool::new(false));
+        let mut request = DnsRequest {
+            connect_target,
+            response: sender,
+            submitted: Arc::clone(&submitted_signal),
+        };
+        let start = self.next_worker.fetch_add(1, Ordering::Relaxed);
+        let mut was_submitted = false;
+        for offset in 0..self.workers.len() {
+            let index = start.wrapping_add(offset) % self.workers.len();
+            match self.workers[index].try_send(request) {
+                Ok(()) => {
+                    self.metrics.note_submitted();
+                    submitted_signal.store(true, Ordering::Release);
+                    was_submitted = true;
+                    break;
+                }
+                Err(TrySendError::Full(returned) | TrySendError::Disconnected(returned)) => {
+                    request = returned;
+                }
+            }
+        }
+        if !was_submitted {
+            self.metrics.note_rejected();
+            return Err(ExportError::Unavailable);
+        }
+        receiver
+            .recv_timeout(timeout)
+            .ok()
+            .filter(|addresses| !addresses.is_empty())
+            .ok_or(ExportError::Unavailable)
+    }
+
+    fn queue_snapshot(&self) -> crate::InternalQueueSnapshot {
+        self.metrics.snapshot(self.queue_capacity)
+    }
+}
+
+static DNS_RESOLVER_POOL: OnceLock<Option<DnsResolverPool>> = OnceLock::new();
+
+pub(crate) fn dns_resolver_queue_snapshot() -> crate::InternalQueueSnapshot {
+    DNS_RESOLVER_POOL
+        .get()
+        .and_then(Option::as_ref)
+        .map_or_else(
+            || {
+                DnsQueueCounters::default()
+                    .snapshot(DNS_RESOLVER_WORKERS.saturating_mul(DNS_RESOLVER_QUEUE_PER_WORKER))
+            },
+            DnsResolverPool::queue_snapshot,
+        )
+}
 
 /// The bounded, fixed-cardinality event families supported by the seam.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -1027,22 +1219,11 @@ fn connect_stream(authority: &str, default_port: u16) -> Result<TcpStream, Expor
 
 fn resolve_addresses(authority: &str, default_port: u16) -> Result<Vec<SocketAddr>, ExportError> {
     let connect_target = authority_connect_target(authority, default_port);
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::Builder::new()
-        .name("worldstream-telemetry-dns".to_owned())
-        .spawn(move || {
-            let addresses = match connect_target.to_socket_addrs() {
-                Ok(addresses) => addresses.collect::<Vec<_>>(),
-                Err(_) => Vec::new(),
-            };
-            let _ = sender.send(addresses);
-        })
-        .map_err(|_| ExportError::Unavailable)?;
-    receiver
-        .recv_timeout(HTTP_CONNECT_TIMEOUT)
-        .ok()
-        .filter(|addresses| !addresses.is_empty())
-        .ok_or(ExportError::Unavailable)
+    DNS_RESOLVER_POOL
+        .get_or_init(|| DnsResolverPool::new().ok())
+        .as_ref()
+        .ok_or(ExportError::Unavailable)?
+        .resolve(connect_target, HTTP_CONNECT_TIMEOUT)
 }
 
 fn authority_connect_target(authority: &str, default_port: u16) -> String {
@@ -1193,6 +1374,9 @@ struct MetricCounters {
     exporter_permanent_failures: AtomicU64,
     exporter_slow: AtomicU64,
     queued: AtomicU64,
+    queue_high_water: AtomicU64,
+    queue_completed: AtomicU64,
+    queue_full: AtomicU64,
     events: [AtomicU64; 8],
     last_overflow_warning_ms: AtomicU64,
     overflow_warning_pending: AtomicBool,
@@ -1210,6 +1394,9 @@ impl Default for MetricCounters {
             exporter_permanent_failures: AtomicU64::new(0),
             exporter_slow: AtomicU64::new(0),
             queued: AtomicU64::new(0),
+            queue_high_water: AtomicU64::new(0),
+            queue_completed: AtomicU64::new(0),
+            queue_full: AtomicU64::new(0),
             events: std::array::from_fn(|_| AtomicU64::new(0)),
             last_overflow_warning_ms: AtomicU64::new(0),
             overflow_warning_pending: AtomicBool::new(false),
@@ -1238,6 +1425,25 @@ impl TelemetryMetrics {
             queued: self.inner.queued.load(Ordering::Relaxed),
             events: EventKindV1::ALL
                 .map(|kind| self.inner.events[kind.index()].load(Ordering::Relaxed)),
+        }
+    }
+
+    pub(crate) fn queue_snapshot(&self, queue_capacity: usize) -> crate::InternalQueueSnapshot {
+        let snapshot = self.snapshot();
+        let process_current = usize::try_from(snapshot.queued).unwrap_or(usize::MAX);
+        let process_high_water =
+            usize::try_from(self.inner.queue_high_water.load(Ordering::Acquire))
+                .unwrap_or(usize::MAX);
+        crate::InternalQueueSnapshot {
+            name: "telemetry_exporter",
+            capacity_scope: "global",
+            capacity: queue_capacity,
+            process_current,
+            process_high_water,
+            unit_high_water: process_high_water,
+            activity_total: snapshot.enqueued,
+            completion_total: self.inner.queue_completed.load(Ordering::Relaxed),
+            backpressure_total: self.inner.queue_full.load(Ordering::Relaxed),
         }
     }
 
@@ -1293,9 +1499,7 @@ impl TelemetryMetrics {
         let _ = writeln!(
             text,
             "# TYPE worldstream_telemetry_queued gauge\nworldstream_telemetry_queued {}",
-            queue_capacity.map_or(snapshot.queued, |capacity| {
-                snapshot.queued.min(capacity as u64)
-            })
+            snapshot.queued
         );
         if let Some(queue_capacity) = queue_capacity {
             let _ = writeln!(
@@ -1321,6 +1525,7 @@ impl TelemetryMetrics {
 
     fn note_overflow(&self) {
         self.note_drop();
+        self.inner.queue_full.fetch_add(1, Ordering::Relaxed);
         let now = unix_ms();
         let previous = self.inner.last_overflow_warning_ms.load(Ordering::Relaxed);
         let warning_interval =
@@ -1431,7 +1636,7 @@ pub struct TelemetryConfig {
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
-            queue_capacity: 256,
+            queue_capacity: DEFAULT_QUEUE_CAPACITY,
             batch_size: 32,
             slow_export_after: Duration::from_millis(250),
         }
@@ -1464,6 +1669,10 @@ impl TelemetryHandle {
             .prometheus_text_with_queue_capacity(Some(self.queue_capacity))
     }
 
+    pub(crate) fn queue_snapshot(&self) -> crate::InternalQueueSnapshot {
+        self.metrics.queue_snapshot(self.queue_capacity)
+    }
+
     #[must_use]
     pub fn submit(&self, draft: TelemetryDraftV1) -> QueueSubmitResult {
         let Some(event) = TelemetryEventV1::redact(draft) else {
@@ -1480,9 +1689,26 @@ impl TelemetryHandle {
             return QueueSubmitResult::Dropped;
         }
         let kind = event.event;
-        self.metrics.inner.queued.fetch_add(1, Ordering::Relaxed);
+        let capacity = u64::try_from(self.queue_capacity).unwrap_or(u64::MAX);
+        let mut current = self.metrics.inner.queued.load(Ordering::Acquire);
+        let queued_depth = loop {
+            let Some(next) = current.checked_add(1).filter(|next| *next <= capacity) else {
+                self.metrics.note_overflow();
+                return QueueSubmitResult::Dropped;
+            };
+            match self.metrics.inner.queued.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break next,
+                Err(observed) => current = observed,
+            }
+        };
         match self.sender.try_send(event) {
             Ok(()) => {
+                atomic_max_u64(&self.metrics.inner.queue_high_water, queued_depth);
                 self.metrics.inner.enqueued.fetch_add(1, Ordering::Relaxed);
                 self.metrics.inner.events[kind.index()].fetch_add(1, Ordering::Relaxed);
                 QueueSubmitResult::Enqueued
@@ -1651,6 +1877,10 @@ fn worker_loop(
             .inner
             .queued
             .fetch_sub(batch.len() as u64, Ordering::Relaxed);
+        metrics
+            .inner
+            .queue_completed
+            .fetch_add(batch.len() as u64, Ordering::Relaxed);
         let started = Instant::now();
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| exporter.export(&batch)))
@@ -2273,6 +2503,40 @@ mod tests {
             TlsHttpOtlpTransport::default().send("https://127.0.0.1:1/v1/logs", &body),
             Err(ExportError::PayloadTooLarge)
         );
+    }
+
+    #[test]
+    fn dns_timeouts_use_a_fixed_worker_and_queue_bound() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum_active = Arc::new(AtomicUsize::new(0));
+        let lookup_active = Arc::clone(&active);
+        let lookup_maximum = Arc::clone(&maximum_active);
+        let lookup: DnsLookup = Arc::new(move |_| {
+            let current = lookup_active.fetch_add(1, Ordering::SeqCst) + 1;
+            lookup_maximum.fetch_max(current, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(100));
+            lookup_active.fetch_sub(1, Ordering::SeqCst);
+            Vec::new()
+        });
+        let pool = DnsResolverPool::with_lookup(2, 1, &lookup)
+            .unwrap_or_else(|_| unreachable!("fixed resolver pool"));
+
+        for _ in 0..32 {
+            assert_eq!(
+                pool.resolve(
+                    "collector.invalid:4318".to_owned(),
+                    Duration::from_millis(1)
+                ),
+                Err(ExportError::Unavailable)
+            );
+        }
+
+        assert!(maximum_active.load(Ordering::SeqCst) <= 2);
+        let snapshot = pool.queue_snapshot();
+        assert_eq!(snapshot.capacity, 2);
+        assert!(snapshot.activity_total > 0);
+        assert!(snapshot.process_high_water <= snapshot.capacity);
+        assert!(snapshot.backpressure_total > 0);
     }
 
     #[test]
@@ -3028,6 +3292,14 @@ mod tests {
         let metrics = runtime.metrics();
         let _ = runtime.shutdown(Duration::from_secs(1));
         assert!(metrics.snapshot().dropped > 0);
+        let queue = metrics.queue_snapshot(1);
+        assert_eq!(queue.capacity, 1);
+        assert_eq!(queue.unit_high_water, 1);
+        assert!(queue.process_current <= queue.capacity);
+        assert!(queue.process_high_water <= queue.capacity);
+        assert!(queue.activity_total > 0);
+        assert!(queue.completion_total > 0);
+        assert!(queue.backpressure_total > 0);
     }
 
     #[test]

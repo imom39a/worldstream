@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -28,6 +29,7 @@ from typing import Any
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+BUILD_IDENTITY_PATH = ROOT / "scripts/release_build_identity.py"
 DEFAULT_MANIFEST_TOML = ROOT / "compatibility.toml"
 DEFAULT_MANIFEST_JSON = ROOT / "compatibility.json"
 SOURCE_SCHEMA_PREFIX = "worldstream/release-evidence/"
@@ -151,12 +153,12 @@ SOURCE_SPECS = (
     ),
     SourceSpec(
         "restore",
-        "backend-native-isolated-restore-and-full-semantic-verifier",
+        "backend-native-isolated-restore-and-bounded-semantic-verifier",
         "native-linux-x86_64",
         (
             "sqlite_isolated_restore",
             "postgresql_isolated_restore",
-            "full_semantic_verifier",
+            "bounded_fixture_semantic_verifier",
         ),
     ),
     SourceSpec(
@@ -231,6 +233,47 @@ def fail(message: str) -> None:
     raise CollectionError(message)
 
 
+def load_build_identity():
+    """Load the repository-wide strict JSON and release identity helpers."""
+
+    name = "worldstream_release_evidence_strict_json"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(name, BUILD_IDENTITY_PATH)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        fail(f"cannot load strict release JSON parser: {BUILD_IDENTITY_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+BUILD_IDENTITY = load_build_identity()
+
+
+def strict_json_object(raw: bytes, label: str) -> dict[str, Any]:
+    """Parse a release JSON object while rejecting every duplicate key."""
+
+    try:
+        return BUILD_IDENTITY.strict_json(raw, label)
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(str(error))
+
+
+def bounded_regular_bytes(path: Path, label: str) -> bytes:
+    """Read a release control document without permitting unbounded allocation."""
+
+    try:
+        return BUILD_IDENTITY.regular_bytes(
+            path,
+            label,
+            maximum=BUILD_IDENTITY.MAX_RELEASE_JSON_BYTES,
+        )
+    except BUILD_IDENTITY.IdentityError as error:
+        fail(str(error))
+
+
 def canonical_json(value: object) -> bytes:
     return (
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -258,20 +301,17 @@ def regular_file(path: Path, label: str) -> Path:
 def load_manifest(toml_path: Path, json_path: Path) -> dict[str, Any]:
     if toml_path.name != "compatibility.toml" or json_path.name != "compatibility.json":
         fail("collector requires compatibility.toml and compatibility.json filenames")
-    regular_file(toml_path, "compatibility.toml")
-    regular_file(json_path, "compatibility.json")
     try:
-        authored_bytes = toml_path.read_bytes()
+        authored_bytes = bounded_regular_bytes(toml_path, "compatibility.toml")
         authored = tomllib.loads(authored_bytes.decode("utf-8"))
-        mirror_bytes = json_path.read_bytes()
-        mirror = json.loads(mirror_bytes)
+        mirror_bytes = bounded_regular_bytes(json_path, "compatibility.json")
     except (
         OSError,
         UnicodeError,
         tomllib.TOMLDecodeError,
-        json.JSONDecodeError,
     ) as error:
         fail(f"cannot read compatibility manifest pair: {error}")
+    mirror = strict_json_object(mirror_bytes, "compatibility.json")
     if not isinstance(authored, dict) or not isinstance(mirror, dict):
         fail("compatibility manifest pair must contain objects")
     if authored != mirror:
@@ -443,13 +483,8 @@ def validate_producer_details(value: dict[str, Any], spec: SourceSpec) -> None:
 def source_report(
     path: Path, spec: SourceSpec, manifest: dict[str, Any]
 ) -> dict[str, Any]:
-    try:
-        raw = path.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        fail(f"source report {spec.source_id} is not valid JSON: {error}")
-    if not isinstance(value, dict):
-        fail(f"source report {spec.source_id} must be a JSON object")
+    raw = bounded_regular_bytes(path, f"source report {spec.source_id}")
+    value = strict_json_object(raw, f"source report {spec.source_id}")
     unknown = sorted(set(value) - EXPECTED_SOURCE_FIELDS - OPTIONAL_SOURCE_FIELDS)
     missing = sorted(EXPECTED_SOURCE_FIELDS - set(value))
     if missing or unknown:

@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 # Build context: an output directory created by `package.py oci-context`.
 # The base image must be pinned by digest by the release evidence job.
 ARG WORLDSTREAM_BASE_IMAGE
@@ -8,6 +8,7 @@ ARG VERSION=unresolved
 ARG MANIFEST_SHA256=unresolved
 ARG SOURCE_REVISION=unresolved
 ARG BUILD_IDENTITY_SHA256=unresolved
+ARG BUILD_ENVIRONMENT_BASE64=unresolved
 ARG WORLDSTREAM_BASE_IMAGE
 
 LABEL org.opencontainers.image.title="WorldStream" \
@@ -18,6 +19,7 @@ LABEL org.opencontainers.image.title="WorldStream" \
       io.worldstream.target="linux/amd64" \
       io.worldstream.manifest-sha256="${MANIFEST_SHA256}" \
       io.worldstream.build-identity="${BUILD_IDENTITY_SHA256}" \
+      io.worldstream.build-environment="${BUILD_ENVIRONMENT_BASE64}" \
       io.worldstream.base-image="${WORLDSTREAM_BASE_IMAGE}" \
       io.worldstream.read-only-root="true" \
       io.worldstream.sqlite-filesystems="ext4,xfs" \

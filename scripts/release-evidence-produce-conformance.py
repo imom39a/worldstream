@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -31,6 +32,40 @@ SOURCE_INPUTS = {
     "transfer": ("transfer",),
     "restore": ("sqlite", "postgres-restore"),
 }
+RESTORE_DURABLE_DOMAINS = (
+    "schema_migrations",
+    "operation_guards",
+    "room_roots",
+    "genesis",
+    "materializations",
+    "member_delivery_state",
+    "timers",
+    "transitions",
+    "frames",
+    "observation_consequences",
+    "activation_decisions",
+    "activation_intents",
+    "activation_operation_receipts",
+    "semantic_receipts",
+    "integrity_incidents",
+    "authority_fences",
+    "authority_state",
+    "authority_principals",
+    "authority_runners",
+    "authority_capabilities",
+    "authority_capability_scopes",
+    "authority_runner_capability_memberships",
+    "authority_change_receipts",
+    "authority_audit",
+    "transfer_imports",
+    "transfer_chunks",
+    "transfer_target_fence",
+    "deployment_metadata",
+    "deployment_identity_metadata",
+    "deployment_pack_identities",
+    "deployment_resource_identities",
+)
+BLAKE3_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 def load_adapter():
@@ -72,11 +107,13 @@ def regular_file(path: Path, label: str) -> Path:
 def read_json(path: Path, label: str) -> dict[str, Any]:
     regular_file(path, label)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+    except OSError as error:
         raise EvidenceError(f"{label} is not valid JSON: {error}") from error
-    require(isinstance(value, dict), f"{label} must be a JSON object")
-    return value
+    try:
+        return ADAPTER.COLLECTOR.strict_json_object(raw, label)
+    except ADAPTER.COLLECTOR.CollectionError as error:
+        raise EvidenceError(str(error)) from error
 
 
 def sha256(path: Path) -> str:
@@ -357,6 +394,15 @@ def validate_transfer(report: dict[str, Any]) -> dict[str, str]:
         and report.get("secrets_emitted") is False,
         "live transfer diagnostic did not pass safely",
     )
+    require(
+        report.get("provider_mode") == "docker"
+        and report.get("provider_image")
+        == {
+            "reference": "postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+            "repository_digest": "postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+        },
+        "transfer PostgreSQL provider is not the reviewed digest-pinned image",
+    )
     source = report.get("source")
     transfer = report.get("transfer")
     require(
@@ -436,9 +482,102 @@ def validate_restore(
         and postgres_report.get("native_witness_minted") is True
         and postgres_report.get("secrets_emitted") is False
         and postgres_report.get("semantic_receipts_verified") is True
+        and postgres_report.get("activation_intents_verified") is True
+        and postgres_report.get("activation_operation_receipts_verified") is True
+        and postgres_report.get("activation_request_evidence")
+        == "stored_canonical_hash_only_verified"
+        and postgres_report.get("authority_state_verified") is True
+        and postgres_report.get("durable_domains_verified") is True
         and postgres_report.get("restored_snapshot_count_before", 0) > 0
         and postgres_report.get("restored_snapshot_count_after") == 0,
         "native PostgreSQL restore did not satisfy the isolated semantic contract",
+    )
+    verifier_scope = postgres_report.get("verifier_scope")
+    require(
+        isinstance(verifier_scope, dict)
+        and set(verifier_scope)
+        == {
+            "profile",
+            "source_pack_identity_count",
+            "restored_pack_identity_count",
+            "source_resource_identity_count",
+            "restored_resource_identity_count",
+            "source_fired_timer_count",
+            "restored_fired_timer_count",
+            "general_deployment_support_verified",
+        }
+        and verifier_scope.get("profile") == "single_pack_no_resources_no_fired_timers"
+        and all(
+            type(verifier_scope.get(field)) is int
+            for field in (
+                "source_pack_identity_count",
+                "restored_pack_identity_count",
+                "source_resource_identity_count",
+                "restored_resource_identity_count",
+                "source_fired_timer_count",
+                "restored_fired_timer_count",
+            )
+        )
+        and verifier_scope.get("source_pack_identity_count") == 1
+        and verifier_scope.get("restored_pack_identity_count") == 1
+        and verifier_scope.get("source_resource_identity_count") == 0
+        and verifier_scope.get("restored_resource_identity_count") == 0
+        and verifier_scope.get("source_fired_timer_count") == 0
+        and verifier_scope.get("restored_fired_timer_count") == 0
+        and verifier_scope.get("general_deployment_support_verified") is False,
+        "native PostgreSQL restore verifier scope is missing or overclaims general deployment support",
+    )
+    source_digest = postgres_report.get("source_durable_domains_digest")
+    restored_digest = postgres_report.get("restored_durable_domains_digest")
+    require(
+        isinstance(source_digest, str)
+        and BLAKE3_DIGEST.fullmatch(source_digest) is not None
+        and source_digest == restored_digest,
+        "native PostgreSQL restore durable-domain aggregate digest mismatch",
+    )
+    inventory = postgres_report.get("durable_domain_inventory")
+    require(
+        isinstance(inventory, list) and len(inventory) == len(RESTORE_DURABLE_DOMAINS),
+        "native PostgreSQL restore durable-domain inventory is incomplete",
+    )
+    observed_domains: list[str] = []
+    for row in inventory:
+        require(
+            isinstance(row, dict)
+            and set(row)
+            == {
+                "domain",
+                "source_row_count",
+                "restored_row_count",
+                "source_digest",
+                "restored_digest",
+            },
+            "native PostgreSQL restore durable-domain row is malformed",
+        )
+        domain = row.get("domain")
+        source_count = row.get("source_row_count")
+        restored_count = row.get("restored_row_count")
+        row_source_digest = row.get("source_digest")
+        row_restored_digest = row.get("restored_digest")
+        require(
+            isinstance(domain, str)
+            and type(source_count) is int
+            and source_count >= 0
+            and source_count == restored_count
+            and isinstance(row_source_digest, str)
+            and BLAKE3_DIGEST.fullmatch(row_source_digest) is not None
+            and row_source_digest == row_restored_digest,
+            "native PostgreSQL restore durable-domain count or digest mismatch",
+        )
+        observed_domains.append(domain)
+    require(
+        observed_domains == list(RESTORE_DURABLE_DOMAINS),
+        "native PostgreSQL restore durable-domain inventory drifted",
+    )
+    authority_state = inventory[RESTORE_DURABLE_DOMAINS.index("authority_state")]
+    require(
+        authority_state.get("source_row_count") == 1,
+        "native PostgreSQL restore authority singleton evidence is incomplete",
     )
     verifier = postgres_report.get("verifier")
     require(
@@ -448,7 +587,7 @@ def validate_restore(
     return {
         "sqlite_isolated_restore": "complete SQLite matrix included exact native envelope restore",
         "postgresql_isolated_restore": "native PostgreSQL dump/restore was isolated and exact",
-        "full_semantic_verifier": "provider-neutral verifier ready; snapshots disposed after proof",
+        "bounded_fixture_semantic_verifier": "provider-neutral verifier ready for the explicit single-Pack/no-resource/no-fired-Timer fixture with exact Activation, authority, and transfer-fence source/restore domains; general deployment support is not claimed",
     }
 
 

@@ -117,6 +117,8 @@ fi
 metadata_output=""
 metadata_reason=""
 if ! metadata_output="$("$python_bin" - "$context_dir/oci-metadata.json" 2>/dev/null <<'PY'
+import base64
+import binascii
 import json
 import re
 import sys
@@ -143,6 +145,7 @@ version = metadata.get("version")
 manifest_sha256 = metadata.get("manifest_sha256")
 source_revision = metadata.get("source_revision")
 build_identity_sha256 = metadata.get("build_identity_sha256")
+build_environment_base64 = metadata.get("build_environment_base64")
 if not isinstance(version, str) or not version or any(ord(char) < 32 for char in version):
     reject("version_metadata_invalid")
 if not isinstance(manifest_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
@@ -153,6 +156,20 @@ if not isinstance(build_identity_sha256, str) or not re.fullmatch(
     r"sha256:[0-9a-f]{64}", build_identity_sha256
 ):
     reject("build_identity_digest_required")
+if not isinstance(build_environment_base64, str):
+    reject("build_environment_identity_required")
+try:
+    build_environment_bytes = base64.b64decode(build_environment_base64, validate=True)
+    build_environment = json.loads(build_environment_bytes)
+except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+    reject("build_environment_identity_invalid")
+canonical_environment = (
+    json.dumps(build_environment, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+).encode("utf-8")
+if base64.b64encode(canonical_environment).decode("ascii") != build_environment_base64:
+    reject("build_environment_identity_invalid")
+if metadata.get("observed_build_environment") != build_environment:
+    reject("build_environment_identity_invalid")
 if metadata.get("artifact") != "worldstream-oci/v1":
     reject("metadata_artifact_identity_invalid")
 if metadata.get("profile") != "oci-linux-amd64" or metadata.get("target") != "linux/amd64":
@@ -187,6 +204,7 @@ print(version)
 print(manifest_sha256)
 print(source_revision)
 print(build_identity_sha256)
+print(build_environment_base64)
 PY
 )"; then
   if [[ -z "$metadata_output" ]]; then
@@ -195,14 +213,14 @@ PY
   fi
   metadata_reason="${metadata_output#FAIL:}"
   case "$metadata_reason" in
-    context_metadata_unreadable|context_metadata_not_an_object|pinned_base_image_required|version_metadata_invalid|manifest_digest_required|source_revision_required|build_identity_digest_required|metadata_artifact_identity_invalid|metadata_target_identity_invalid|runtime_policy_missing|runtime_policy_invalid|runtime_filesystem_deny_list_invalid|runtime_identity_invalid) ;;
+    context_metadata_unreadable|context_metadata_not_an_object|pinned_base_image_required|version_metadata_invalid|manifest_digest_required|build_environment_identity_required|build_environment_identity_invalid|source_revision_required|build_identity_digest_required|metadata_artifact_identity_invalid|metadata_target_identity_invalid|runtime_policy_missing|runtime_policy_invalid|runtime_filesystem_deny_list_invalid|runtime_identity_invalid) ;;
     *) metadata_reason="context_metadata_invalid" ;;
   esac
   report "INCOMPLETE" "$metadata_reason"
   exit "$EXIT_INCOMPLETE"
 fi
 mapfile -t metadata_values <<< "$metadata_output"
-if [[ "${#metadata_values[@]}" -ne 5 ]]; then
+if [[ "${#metadata_values[@]}" -ne 6 ]]; then
   report "FAIL" "invalid_context_metadata_shape"
   exit "$EXIT_CONFIGURATION"
 fi
@@ -211,19 +229,22 @@ version="${metadata_values[1]}"
 manifest_sha256="${metadata_values[2]}"
 source_revision="${metadata_values[3]}"
 build_identity_sha256="${metadata_values[4]}"
+build_environment_base64="${metadata_values[5]}"
 
 validate_profile_probes() {
-  local health_json="$1"
-  local ready_json="$2"
-  local version_json="$3"
-  local profile="$4"
-  local expected_engine_identity="${5:-}"
+  local health_path="$1"
+  local ready_path="$2"
+  local version_path="$3"
+  local control_version_path="$4"
+  local profile="$5"
+  local expected_engine_identity="${6:-}"
   "$python_bin" - \
     "$SCRIPT_DIR/package.py" \
     "$context_dir/manifest/compatibility.json" \
-    "$health_json" \
-    "$ready_json" \
-    "$version_json" \
+    "$health_path" \
+    "$ready_path" \
+    "$version_path" \
+    "$control_version_path" \
     "$profile" \
     "$expected_engine_identity" \
     "$source_revision" <<'PY'
@@ -242,12 +263,24 @@ spec.loader.exec_module(package)
 
 with pathlib.Path(sys.argv[2]).open("rb") as source:
     manifest = json.load(source)
-health = json.loads(sys.argv[3])
-ready = json.loads(sys.argv[4])
-version = json.loads(sys.argv[5])
-profile = sys.argv[6]
-expected_engine_identity = sys.argv[7]
-expected_source_revision = sys.argv[8]
+
+def strict_runtime_json(path_value, label):
+    try:
+        encoded = package.BUILD_IDENTITY.regular_bytes(
+            pathlib.Path(path_value), label, maximum=16 * 1024 * 1024
+        )
+        return package.BUILD_IDENTITY.strict_json(encoded, label)
+    except package.BUILD_IDENTITY.IdentityError as error:
+        raise SystemExit(f"{label}_not_strict_json") from error
+
+
+health = strict_runtime_json(sys.argv[3], "runtime_health")
+ready = strict_runtime_json(sys.argv[4], "runtime_ready")
+version = strict_runtime_json(sys.argv[5], "runtime_version")
+control_version = strict_runtime_json(sys.argv[6], "runtime_control_version")
+profile = sys.argv[7]
+expected_engine_identity = sys.argv[8]
+expected_source_revision = sys.argv[9]
 
 if health != {"status": "ok"} or ready != {"status": "ready"}:
     raise SystemExit(1)
@@ -280,6 +313,17 @@ for field in ("wire", "config", "storage_schema", "core_schema_version", "hash_s
         raise SystemExit(1)
 if version.get("manifest") != package.canonical_runtime_manifest_summary(manifest):
     raise SystemExit(1)
+expected_control_version = {
+    **version["manifest"],
+    "product_build": {
+        "product": product,
+        "binary": "worldstreamctl",
+        "build_version": product,
+        "source_revision": expected_source_revision,
+    },
+}
+if control_version != expected_control_version:
+    raise SystemExit(1)
 engine = version.get("engine")
 if not isinstance(engine, dict) or set(engine) != {
     "profile",
@@ -290,7 +334,7 @@ if not isinstance(engine, dict) or set(engine) != {
 package.validate_runtime_engine_identity(engine, manifest, profile)
 if expected_engine_identity and engine.get("exact_identity") != expected_engine_identity:
     raise SystemExit(1)
-rendered = json.dumps((health, ready, version), sort_keys=True).lower()
+rendered = json.dumps((health, ready, version, control_version), sort_keys=True).lower()
 if "fallback" in rendered or "degraded" in rendered:
     raise SystemExit(1)
 print(engine["exact_identity"])
@@ -298,6 +342,7 @@ PY
 }
 
 volume_name="worldstream-oci-smoke-volume-$$"
+nonlocal_volume_name="worldstream-oci-smoke-nonlocal-volume-$$"
 secret_volume_name="worldstream-oci-smoke-secret-$$"
 postgres_socket_volume_name="worldstream-oci-smoke-postgres-socket-$$"
 container_name="worldstream-oci-smoke-container-$$"
@@ -310,6 +355,7 @@ cleanup() {
   docker rm -f "$container_name" >/dev/null 2>&1 || true
   docker rm -f "$postgres_container_name" >/dev/null 2>&1 || true
   docker volume rm "$volume_name" >/dev/null 2>&1 || true
+  docker volume rm "$nonlocal_volume_name" >/dev/null 2>&1 || true
   docker volume rm "$secret_volume_name" >/dev/null 2>&1 || true
   docker volume rm "$postgres_socket_volume_name" >/dev/null 2>&1 || true
   if ((keep_image == 0)); then docker image rm "$image_tag" >/dev/null 2>&1 || true; fi
@@ -322,6 +368,93 @@ trap cleanup EXIT
 
 secret_scan_root="$(mktemp -d "${TMPDIR:-/tmp}/worldstream-oci-secret-scan.XXXXXX")"
 chmod 0700 "$secret_scan_root"
+
+capture_bounded_output() {
+  local output_path="$1"
+  local timeout_seconds="$2"
+  shift 2
+  "$python_bin" - "$output_path" 16777216 "$timeout_seconds" "$@" <<'PY'
+import os
+import selectors
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+output_path = Path(sys.argv[1])
+limit = int(sys.argv[2])
+timeout = float(sys.argv[3])
+command = sys.argv[4:]
+if not command or limit <= 0 or timeout <= 0:
+    raise SystemExit(1)
+try:
+    if output_path.is_symlink() or output_path.is_dir():
+        raise SystemExit(1)
+    parent = output_path.parent
+    parent_mode = parent.stat().st_mode
+    if not stat.S_ISDIR(parent_mode):
+        raise SystemExit(1)
+except OSError as error:
+    raise SystemExit(1) from error
+
+descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output_path.name}.", dir=parent)
+temporary = Path(temporary_name)
+os.close(descriptor)
+process = None
+try:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    if process.stdout is None:
+        raise RuntimeError("bounded capture has no stdout pipe")
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    content = bytearray()
+    eof = False
+    while not eof:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("bounded capture timed out")
+        events = selector.select(min(remaining, 0.25))
+        if not events:
+            continue
+        read_limit = min(64 * 1024, limit + 1 - len(content))
+        chunk = os.read(process.stdout.fileno(), read_limit)
+        if not chunk:
+            eof = True
+            continue
+        content.extend(chunk)
+        if len(content) > limit:
+            raise OverflowError("bounded capture exceeded limit")
+    if process.wait(timeout=max(0.1, deadline - time.monotonic())) != 0:
+        raise RuntimeError("bounded command failed")
+    with temporary.open("wb") as output:
+        output.write(content)
+        output.flush()
+        os.fsync(output.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, output_path)
+except BaseException:
+    if process is not None and process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    temporary.unlink(missing_ok=True)
+    output_path.unlink(missing_ok=True)
+    raise SystemExit(1)
+PY
+}
+
 secret_sentinel_file="$secret_scan_root/sentinel"
 "$python_bin" - "$secret_sentinel_file" <<'PY'
 import os
@@ -346,18 +479,68 @@ else
     --build-arg "MANIFEST_SHA256=$manifest_sha256" \
     --build-arg "SOURCE_REVISION=$source_revision" \
     --build-arg "BUILD_IDENTITY_SHA256=$build_identity_sha256" \
+    --build-arg "BUILD_ENVIRONMENT_BASE64=$build_environment_base64" \
     --build-arg "SOURCE_DATE_EPOCH=0" \
     --tag "$image_tag" "$context_dir"
 fi
 
 stage="image_configuration"
-"$python_bin" - "$image_tag" 2>/dev/null <<'PY'
-import json
-import subprocess
+image_inspection="$secret_scan_root/image-inspection.json"
+base_package_database="$secret_scan_root/base-package-database.sha256"
+capture_bounded_output "$image_inspection" 30 \
+  docker image inspect --format '{{json .}}' "$image_tag"
+capture_bounded_output "$base_package_database" 30 \
+  docker run --rm --network none --read-only --platform linux/amd64 \
+  --entrypoint /bin/sh "$image_tag" -eu -c \
+  'sha256sum /lib/apk/db/installed'
+"$python_bin" - "$SCRIPT_DIR/package.py" "$image_inspection" \
+  "$base_package_database" \
+  "$context_dir/licenses/THIRD-PARTY-NOTICES.json" 2>/dev/null <<'PY'
+import importlib.util
+import pathlib
+import re
 import sys
 
-image = sys.argv[1]
-record = json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
+package_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("worldstream_oci_image_package", package_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+package = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = package
+spec.loader.exec_module(package)
+
+try:
+    raw = package.BUILD_IDENTITY.regular_bytes(
+        pathlib.Path(sys.argv[2]),
+        "Docker image inspection",
+        maximum=16 * 1024 * 1024,
+    )
+    record = package.BUILD_IDENTITY.strict_json(raw, "Docker image inspection")
+except package.BUILD_IDENTITY.IdentityError as error:
+    raise SystemExit(1) from error
+try:
+    base_database = package.BUILD_IDENTITY.regular_bytes(
+        pathlib.Path(sys.argv[3]),
+        "OCI base installed package database digest",
+        maximum=1024,
+    ).decode("ascii")
+    notice_manifest = package.BUILD_IDENTITY.strict_json(
+        package.BUILD_IDENTITY.regular_bytes(
+            pathlib.Path(sys.argv[4]),
+            "third-party notice manifest",
+            maximum=16 * 1024 * 1024,
+        ),
+        "third-party notice manifest",
+    )
+except (UnicodeError, package.BUILD_IDENTITY.IdentityError) as error:
+    raise SystemExit(1) from error
+match = re.fullmatch(r"([0-9a-f]{64})  /lib/apk/db/installed\n", base_database)
+oci_base = notice_manifest.get("components", {}).get("oci_base", {})
+if (
+    match is None
+    or oci_base.get("installed_database_sha256") != "sha256:" + match.group(1)
+):
+    raise SystemExit(1)
 config = record["Config"]
 if config.get("User") != "65532:65532":
     raise SystemExit(1)
@@ -381,39 +564,91 @@ docker image inspect "$image_tag" >"$secret_scan_root/image-config.json"
 docker history --no-trunc --format '{{json .}}' "$image_tag" \
   >"$secret_scan_root/image-history.jsonl"
 
-artifact_binding='{"status":"not_requested"}'
+artifact_binding="$secret_scan_root/artifact-binding.json"
+"$python_bin" - "$artifact_binding" <<'PY'
+import json
+import os
+import sys
+
+descriptor = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+    json.dump({"status": "not_requested"}, output, sort_keys=True)
+    output.write("\n")
+    output.flush()
+    os.fsync(output.fileno())
+PY
 if [[ -n "$artifact_path" ]]; then
   stage="artifact_binding"
   tested_image_id="$(docker image inspect --format '{{.Id}}' "$image_tag")"
-  artifact_binding="$("$python_bin" "$SCRIPT_DIR/verify-oci-layout.py" \
+  capture_bounded_output "$artifact_binding" 120 \
+    "$python_bin" "$SCRIPT_DIR/verify-oci-layout.py" \
     --artifact "$artifact_path" \
-    --tested-image-id "$tested_image_id")"
+    --tested-image-id "$tested_image_id"
 fi
 
 stage="negative_policy"
-ephemeral_status=0
-ephemeral_output="$(docker run --rm --read-only --mount type=tmpfs,destination=/var/lib/worldstream "$image_tag" 2>&1)" || ephemeral_status=$?
-wrong_path_status=0
-wrong_path_output="$(docker run --rm --read-only -e WORLDSTREAM__STORAGE__DATA_DIR=/tmp "$image_tag" 2>&1)" || wrong_path_status=$?
-printf '%s\n%s\n' "$ephemeral_output" "$wrong_path_output" \
-  >"$secret_scan_root/negative-probe-output.log"
-if [[ "$ephemeral_status" != 78 || "$ephemeral_output" != *filesystem* ]]; then
+ephemeral_output="$secret_scan_root/negative-ephemeral.log"
+wrong_path_output="$secret_scan_root/negative-data-directory.log"
+if ! capture_bounded_output "$ephemeral_output" 30 \
+  bash -c 'set +e; "$@" 2>&1; status=$?; [[ "$status" -eq 78 ]]' \
+  bounded-negative docker run --rm --read-only \
+  --mount type=tmpfs,destination=/var/lib/worldstream "$image_tag"; then
   report "FAIL" "tmpfs_policy_not_rejected"
   exit "$EXIT_RUNTIME"
 fi
-if [[ "$wrong_path_status" != 78 || "$wrong_path_output" != *"data directory"* ]]; then
+if ! grep -q filesystem "$ephemeral_output"; then
+  report "FAIL" "tmpfs_policy_not_rejected"
+  exit "$EXIT_RUNTIME"
+fi
+if ! capture_bounded_output "$wrong_path_output" 30 \
+  bash -c 'set +e; "$@" 2>&1; status=$?; [[ "$status" -eq 78 ]]' \
+  bounded-negative docker run --rm --read-only \
+  -e WORLDSTREAM__STORAGE__DATA_DIR=/tmp "$image_tag"; then
   report "FAIL" "non_canonical_data_directory_not_rejected"
   exit "$EXIT_RUNTIME"
 fi
+if ! grep -q "data directory" "$wrong_path_output"; then
+  report "FAIL" "non_canonical_data_directory_not_rejected"
+  exit "$EXIT_RUNTIME"
+fi
+docker volume create --driver local \
+  --opt type=nfs \
+  --opt o=addr=127.0.0.1,nolock \
+  --opt device=:/worldstream \
+  "$nonlocal_volume_name" >/dev/null
+nonlocal_volume_output="$secret_scan_root/negative-network-volume.log"
+if ! capture_bounded_output "$nonlocal_volume_output" 30 \
+  bash -c 'set +e; "$@" 2>&1; status=$?; [[ "$status" -ne 0 ]]' \
+  bounded-negative "$python_bin" "$SCRIPT_DIR/verify-local-docker-volume.py" \
+  --volume "$nonlocal_volume_name"; then
+  report "FAIL" "network_configured_local_volume_not_rejected"
+  exit "$EXIT_RUNTIME"
+fi
+if ! grep -q "driver options" "$nonlocal_volume_output"; then
+  report "FAIL" "network_configured_volume_rejection_unproven"
+  exit "$EXIT_RUNTIME"
+fi
+printf '%s\n%s\n%s\n' \
+  "$ephemeral_output" "$wrong_path_output" "$nonlocal_volume_output" \
+  >"$secret_scan_root/negative-probe-output.log"
 
 stage="volume_probe"
-docker volume create "$volume_name" >/dev/null
+docker volume create --driver local "$volume_name" >/dev/null
+volume_driver_identity="$secret_scan_root/volume-driver-identity.json"
+if ! capture_bounded_output "$volume_driver_identity" 30 \
+  "$python_bin" "$SCRIPT_DIR/verify-local-docker-volume.py" \
+  --volume "$volume_name"; then
+  report "FAIL" "local_volume_driver_identity_invalid"
+  exit "$EXIT_RUNTIME"
+fi
 docker run --rm --user 0:0 --entrypoint sh \
   --mount "type=volume,source=$volume_name,target=/var/lib/worldstream" \
   "$image_tag" -eu -c 'chown 65532:65532 /var/lib/worldstream; chmod 0700 /var/lib/worldstream'
-volume_filesystem="$(docker run --rm --entrypoint sh \
+volume_mount_identity="$(docker run --rm --entrypoint sh \
   --mount "type=volume,source=$volume_name,target=/var/lib/worldstream" \
-  "$image_tag" -eu -c 'awk '\''$5 == "/var/lib/worldstream" { for (field = 6; field <= NF; field += 1) if ($field == "-" && field < NF) print $(field + 1) }'\'' /proc/self/mountinfo | tail -n 1')"
+  "$image_tag" -eu -c 'awk '\''$5 == "/var/lib/worldstream" { for (field = 6; field <= NF; field += 1) if ($field == "-" && field + 2 <= NF) printf "%s\t%s\t%s\n", $3, $(field + 1), $(field + 2) }'\'' /proc/self/mountinfo | tail -n 1')"
+IFS=$'\t' read -r volume_mount_device volume_filesystem volume_mount_source \
+  <<<"$volume_mount_identity"
 case "$volume_filesystem" in
   ext4|xfs) ;;
   *)
@@ -433,6 +668,26 @@ PY
     exit "$EXIT_INCOMPLETE"
     ;;
 esac
+if [[ ! "$volume_mount_device" =~ ^[1-9][0-9]*:[0-9]+$ \
+  || ! "$volume_mount_source" =~ ^/dev/[^[:space:]]+$ ]]; then
+  "$python_bin" - \
+    "$volume_mount_device" "$volume_filesystem" "$volume_mount_source" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "schema": "worldstream/oci-runtime-smoke/v1",
+    "status": "INCOMPLETE",
+    "reason": "local_volume_mount_source_unproven",
+    "mount_device": sys.argv[1],
+    "filesystem": sys.argv[2],
+    "mount_source": sys.argv[3],
+    "negative_policy_checks": "PASS",
+    "release_evidence": False,
+}, sort_keys=True))
+PY
+  exit "$EXIT_INCOMPLETE"
+fi
 
 stage="authority_secret"
 docker volume create "$secret_volume_name" >/dev/null
@@ -500,22 +755,29 @@ if [[ "$health" != healthy ]]; then
 fi
 
 stage="sqlite_profile_probes"
-sqlite_health_json=""
-sqlite_ready_json=""
-sqlite_version_json=""
+sqlite_health_json="$secret_scan_root/sqlite-health.json"
+sqlite_ready_json="$secret_scan_root/sqlite-ready.json"
+sqlite_version_json="$secret_scan_root/sqlite-version.json"
+sqlite_control_version_json="$secret_scan_root/sqlite-control-version.json"
 for _ in {1..30}; do
-  sqlite_health_json="$(docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/healthz 2>/dev/null || true)"
-  sqlite_ready_json="$(docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/readyz 2>/dev/null || true)"
-  sqlite_version_json="$(docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/version 2>/dev/null || true)"
-  if [[ -n "$sqlite_health_json" && -n "$sqlite_ready_json" && -n "$sqlite_version_json" ]]; then
+  if capture_bounded_output "$sqlite_health_json" 10 \
+      docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/healthz \
+    && capture_bounded_output "$sqlite_ready_json" 10 \
+      docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/readyz \
+    && capture_bounded_output "$sqlite_version_json" 10 \
+      docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/version; then
     break
   fi
   sleep 1
 done
+capture_bounded_output "$sqlite_control_version_json" 30 \
+  docker exec "$container_name" \
+  /usr/local/bin/worldstreamctl --data-dir /var/lib/worldstream version
 sqlite_engine_identity="$(validate_profile_probes \
   "$sqlite_health_json" \
   "$sqlite_ready_json" \
   "$sqlite_version_json" \
+  "$sqlite_control_version_json" \
   "sqlite-bundled")"
 
 stage="healthcheck_requires_daemon"
@@ -604,14 +866,35 @@ postgres_admin_common=(
   --entrypoint /usr/local/bin/worldstreamctl
   "$image_tag" postgres
 )
-migrate_output="$("${postgres_admin_common[@]}" migrate --dsn-file /run/worldstream-secrets/postgres-admin.dsn)"
-verify_output="$("${postgres_admin_common[@]}" verify --dsn-file /run/worldstream-secrets/postgres-admin.dsn)"
-"$python_bin" - "$migrate_output" "$verify_output" <<'PY'
-import json
+migrate_output="$secret_scan_root/postgres-admin-migrate.json"
+verify_output="$secret_scan_root/postgres-admin-verify.json"
+capture_bounded_output "$migrate_output" 120 \
+  "${postgres_admin_common[@]}" migrate --dsn-file /run/worldstream-secrets/postgres-admin.dsn
+capture_bounded_output "$verify_output" 120 \
+  "${postgres_admin_common[@]}" verify --dsn-file /run/worldstream-secrets/postgres-admin.dsn
+"$python_bin" - "$SCRIPT_DIR/package.py" "$migrate_output" "$verify_output" <<'PY'
+import importlib.util
+import pathlib
 import sys
 
-for expected, raw in zip(("migrate", "verify"), sys.argv[1:], strict=True):
-    value = json.loads(raw)
+package_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("worldstream_oci_admin_package", package_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+package = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = package
+spec.loader.exec_module(package)
+
+for expected, path_value in zip(("migrate", "verify"), sys.argv[2:], strict=True):
+    try:
+        encoded = package.BUILD_IDENTITY.regular_bytes(
+            pathlib.Path(path_value),
+            f"{expected} output",
+            maximum=16 * 1024 * 1024,
+        )
+        value = package.BUILD_IDENTITY.strict_json(encoded, f"{expected} output")
+    except package.BUILD_IDENTITY.IdentityError as error:
+        raise SystemExit(1) from error
     if value != {
         "status": "ok",
         "operation": expected,
@@ -676,17 +959,20 @@ fi
 
 stage="postgres_profile_probes"
 postgres_health=0
-postgres_health_json=""
-postgres_ready_json=""
-postgres_version_json=""
+postgres_health_json="$secret_scan_root/postgres-health.json"
+postgres_ready_json="$secret_scan_root/postgres-ready.json"
+postgres_version_json="$secret_scan_root/postgres-version.json"
+postgres_control_version_json="$secret_scan_root/postgres-control-version.json"
 for _ in {1..60}; do
   if docker exec "$container_name" /usr/local/bin/worldstreamctl \
     --data-dir /var/lib/worldstream health >/dev/null 2>&1; then
-    postgres_health=1
-    postgres_health_json="$(docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/healthz 2>/dev/null || true)"
-    postgres_ready_json="$(docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/readyz 2>/dev/null || true)"
-    postgres_version_json="$(docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/version 2>/dev/null || true)"
-    if [[ -n "$postgres_health_json" && -n "$postgres_ready_json" && -n "$postgres_version_json" ]]; then
+    if capture_bounded_output "$postgres_health_json" 10 \
+        docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/healthz \
+      && capture_bounded_output "$postgres_ready_json" 10 \
+        docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/readyz \
+      && capture_bounded_output "$postgres_version_json" 10 \
+        docker exec "$container_name" busybox wget -qO- http://127.0.0.1:9410/version; then
+      postgres_health=1
       break
     fi
   fi
@@ -697,10 +983,14 @@ if ((postgres_health != 1)); then
   report "FAIL" "postgres_profile_health_probe_failed"
   exit "$EXIT_RUNTIME"
 fi
+capture_bounded_output "$postgres_control_version_json" 30 \
+  docker exec "$container_name" \
+  /usr/local/bin/worldstreamctl --data-dir /var/lib/worldstream version
 postgres_engine_identity="$(validate_profile_probes \
   "$postgres_health_json" \
   "$postgres_ready_json" \
   "$postgres_version_json" \
+  "$postgres_control_version_json" \
   "postgres-primary" \
   "$POSTGRES_IDENTITY")"
 if [[ "$postgres_engine_identity" != "$POSTGRES_IDENTITY" ]]; then
@@ -716,44 +1006,87 @@ printf '%s\n' \
   "sqlite_health=$sqlite_health_json" \
   "sqlite_ready=$sqlite_ready_json" \
   "sqlite_version=$sqlite_version_json" \
+  "sqlite_control_version=$sqlite_control_version_json" \
   "postgres_health=$postgres_health_json" \
   "postgres_ready=$postgres_ready_json" \
   "postgres_version=$postgres_version_json" \
+  "postgres_control_version=$postgres_control_version_json" \
   "migrate=$migrate_output" \
   "verify=$verify_output" \
   >"$secret_scan_root/probe-output.log"
 
-"$python_bin" - "$image_tag" "$health" "$artifact_binding" "$sqlite_engine_identity" "$POSTGRES_IMAGE" "$POSTGRES_IDENTITY" >"$secret_scan_root/runtime-report-candidate.json" <<'PY'
+"$python_bin" - "$SCRIPT_DIR/package.py" \
+  "$image_tag" "$health" "$artifact_binding" "$sqlite_engine_identity" \
+  "$POSTGRES_IMAGE" "$POSTGRES_IDENTITY" "$volume_driver_identity" \
+  "$volume_mount_device" "$volume_filesystem" "$volume_mount_source" \
+  >"$secret_scan_root/runtime-report-candidate.json" <<'PY'
+import importlib.util
 import json
+import pathlib
 import sys
 
+package_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("worldstream_oci_report_package", package_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+package = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = package
+spec.loader.exec_module(package)
+
+def strict_json_file(path_value, label):
+    try:
+        raw = package.BUILD_IDENTITY.regular_bytes(
+            pathlib.Path(path_value), label, maximum=16 * 1024 * 1024
+        )
+        return package.BUILD_IDENTITY.strict_json(raw, label)
+    except package.BUILD_IDENTITY.IdentityError as error:
+        raise SystemExit(1) from error
+
+
+driver_identity = strict_json_file(sys.argv[8], "volume driver identity")
+artifact_binding = strict_json_file(sys.argv[4], "artifact binding")
 print(json.dumps({
     "schema": "worldstream/oci-runtime-smoke/v1",
     "status": "PASS",
-    "image": sys.argv[1],
-    "health": sys.argv[2],
+    "image": sys.argv[2],
+    "health": sys.argv[3],
     "read_only_root": True,
     "non_root": "65532:65532",
     "persistent_volume": "/var/lib/worldstream",
+    "sqlite_volume": {
+        "path": "/var/lib/worldstream",
+        "type": "docker-volume",
+        "driver": driver_identity["driver"],
+        "scope": driver_identity["scope"],
+        "driver_options": driver_identity["driver_options"],
+        "mount_device": sys.argv[9],
+        "filesystem": sys.argv[10],
+        "mount_source": sys.argv[11],
+        "locality": "local-block-device",
+    },
     "authority_secret_source": "owner-readable-read-only-volume-file",
     "standalone_config": "valid",
-    "rejected_layouts": ["tmpfs", "wrong-data-directory"],
+    "rejected_layouts": [
+        "tmpfs",
+        "wrong-data-directory",
+        "network-configured-volume",
+    ],
     "healthcheck_without_daemon": "rejected",
-    "artifact_binding": json.loads(sys.argv[3]),
+    "artifact_binding": artifact_binding,
     "profiles": {
         "sqlite-bundled": {
             "status": "pass",
             "health": "healthy",
             "filesystem": "ext4-or-xfs-explicit-volume",
-            "engine_identity": sys.argv[4],
+            "engine_identity": sys.argv[5],
             "healthz": "pass",
             "readyz": "pass",
             "version": "pass",
         },
         "postgres-primary": {
             "status": "pass",
-            "provider_image": sys.argv[5],
-            "engine_identity": sys.argv[6],
+            "provider_image": sys.argv[6],
+            "engine_identity": sys.argv[7],
             "packaged_admin_migrate": "pass",
             "packaged_admin_verify": "pass",
             "runtime_role_least_privilege": True,
@@ -769,27 +1102,62 @@ print(json.dumps({
 PY
 "$python_bin" "$SCRIPT_DIR/verify-secret-absence.py" \
   --sentinel-file "$secret_sentinel_file" \
+  --channel "image-inspection=$image_inspection" \
+  --channel "base-package-database=$base_package_database" \
   --channel "image-config=$secret_scan_root/image-config.json" \
   --channel "image-history=$secret_scan_root/image-history.jsonl" \
   --channel "negative-probes=$secret_scan_root/negative-probe-output.log" \
+  --channel "negative-ephemeral=$ephemeral_output" \
+  --channel "negative-data-directory=$wrong_path_output" \
+  --channel "negative-network-volume=$nonlocal_volume_output" \
   --channel "sqlite-container-config=$secret_scan_root/sqlite-container-config.json" \
   --channel "sqlite-container-logs=$secret_scan_root/sqlite-container.log" \
   --channel "postgres-container-config=$secret_scan_root/postgres-container-config.json" \
   --channel "postgres-container-logs=$secret_scan_root/postgres-container.log" \
   --channel "provider-container-config=$secret_scan_root/provider-container-config.json" \
   --channel "provider-container-logs=$secret_scan_root/provider-container.log" \
+  --channel "artifact-binding=$artifact_binding" \
+  --channel "volume-driver-identity=$volume_driver_identity" \
+  --channel "sqlite-health=$sqlite_health_json" \
+  --channel "sqlite-ready=$sqlite_ready_json" \
+  --channel "sqlite-version=$sqlite_version_json" \
+  --channel "sqlite-control-version=$sqlite_control_version_json" \
+  --channel "postgres-health=$postgres_health_json" \
+  --channel "postgres-ready=$postgres_ready_json" \
+  --channel "postgres-version=$postgres_version_json" \
+  --channel "postgres-control-version=$postgres_control_version_json" \
+  --channel "postgres-admin-migrate=$migrate_output" \
+  --channel "postgres-admin-verify=$verify_output" \
   --channel "probe-output=$secret_scan_root/probe-output.log" \
   --channel "runtime-report=$secret_scan_root/runtime-report-candidate.json" \
   --output "$secret_scan_root/secret-scan.json" \
   >/dev/null
-final_report="$("$python_bin" - "$secret_scan_root/runtime-report-candidate.json" "$secret_scan_root/secret-scan.json" <<'PY'
+final_report="$("$python_bin" - "$SCRIPT_DIR/package.py" "$secret_scan_root/runtime-report-candidate.json" "$secret_scan_root/secret-scan.json" <<'PY'
+import importlib.util
 import json
+import pathlib
 import sys
 
-with open(sys.argv[1], encoding="utf-8") as source:
-    report = json.load(source)
-with open(sys.argv[2], encoding="utf-8") as source:
-    scan = json.load(source)
+package_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("worldstream_oci_final_package", package_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+package = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = package
+spec.loader.exec_module(package)
+
+def strict_json_file(path_value, label):
+    try:
+        raw = package.BUILD_IDENTITY.regular_bytes(
+            pathlib.Path(path_value), label, maximum=16 * 1024 * 1024
+        )
+        return package.BUILD_IDENTITY.strict_json(raw, label)
+    except package.BUILD_IDENTITY.IdentityError as error:
+        raise SystemExit(1) from error
+
+
+report = strict_json_file(sys.argv[2], "runtime report candidate")
+scan = strict_json_file(sys.argv[3], "runtime secret scan")
 if scan.get("status") != "pass" or scan.get("secrets_emitted") is not False:
     raise SystemExit(1)
 report["secrets_emitted"] = False

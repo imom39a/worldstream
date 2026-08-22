@@ -21,6 +21,7 @@ FIXTURE_DAEMON = textwrap.dedent(
     import argparse
     import http.server
     import json
+    import os
     import signal
     import threading
 
@@ -42,6 +43,9 @@ FIXTURE_DAEMON = textwrap.dedent(
 
         def send_json(self, status, body):
             payload = json.dumps(body, separators=(",", ":")).encode()
+            self.send_raw_json(status, payload)
+
+        def send_raw_json(self, status, payload):
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -64,6 +68,25 @@ FIXTURE_DAEMON = textwrap.dedent(
                     b'worldstream_telemetry_events_total{event="migration"} 2\n'
                 )
             elif self.path == "/version":
+                tamper = os.environ.get("WORLDSTREAM_TEST_JSON_TAMPER")
+                if tamper == "duplicate":
+                    self.send_raw_json(
+                        200,
+                        b'{"manifest":{"release_ready":false},'
+                        b'"manifest":{"release_ready":true},'
+                        b'"engine":{"status":"verified"}}',
+                    )
+                    return
+                if tamper in {"nan", "infinity"}:
+                    constant = b"NaN" if tamper == "nan" else b"Infinity"
+                    self.send_raw_json(
+                        200,
+                        b'{"manifest":{"release_ready":true},'
+                        b'"engine":{"status":"verified"},"ignored":'
+                        + constant
+                        + b"}",
+                    )
+                    return
                 self.send_json(
                     200,
                     {
@@ -128,7 +151,9 @@ FIXTURE_DAEMON = textwrap.dedent(
 
 
 class TelemetryFailureSmokeBoundaryTests(unittest.TestCase):
-    def run_smoke(self, daemon: Path) -> subprocess.CompletedProcess[str]:
+    def run_smoke(
+        self, daemon: Path, *, json_tamper: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         fake_bin = daemon.parent / "fake-bin"
         fake_bin.mkdir()
@@ -146,6 +171,8 @@ class TelemetryFailureSmokeBoundaryTests(unittest.TestCase):
                 "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
             }
         )
+        if json_tamper is not None:
+            environment["WORLDSTREAM_TEST_JSON_TAMPER"] = json_tamper
         return subprocess.run(
             ["bash", str(SCRIPT)],
             cwd=ROOT,
@@ -174,6 +201,19 @@ class TelemetryFailureSmokeBoundaryTests(unittest.TestCase):
             result = self.run_smoke(Path(temporary) / "missing-worldstreamd")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("daemon is not executable", result.stderr)
+
+    def test_duplicate_and_nonfinite_runtime_json_fail_closed(self) -> None:
+        for tamper in ("duplicate", "nan", "infinity"):
+            with self.subTest(tamper=tamper):
+                with tempfile.TemporaryDirectory(
+                    prefix="telemetry-failure-smoke-test-"
+                ) as temporary:
+                    daemon = Path(temporary) / "fixture-worldstreamd"
+                    daemon.write_text(FIXTURE_DAEMON, encoding="utf-8")
+                    daemon.chmod(0o700)
+                    result = self.run_smoke(daemon, json_tamper=tamper)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("not strict JSON", result.stderr)
 
     def test_process_witness_does_not_claim_collector_delivery(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")

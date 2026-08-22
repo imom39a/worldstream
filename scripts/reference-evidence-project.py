@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project verified package acceptance and soak bytes into five reference inputs."""
+"""Project verified raw package, soak, kill, and target bytes into six inputs."""
 
 from __future__ import annotations
 
@@ -19,11 +19,17 @@ REFERENCE_PRODUCER_PATH = ROOT / "scripts/release-evidence-produce-reference.py"
 FAILURE_PRODUCER_PATH = ROOT / "scripts/release-evidence-produce-failure-soak.py"
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 SHA256_PREFIX = "sha256:"
-KINDS = ("counter", "heist", "sqlite", "postgres", "soak")
+KINDS = ("counter", "heist", "sqlite", "postgres", "soak", "target")
 EXPECTED_NORMALIZED_ENGINES = {
     "sqlite": {
         "version": "3.53.4",
-        "settings": {"journal_mode": "wal", "synchronous": "full"},
+        "settings": {
+            "journal_mode": "wal",
+            "synchronous": "full",
+            "foreign_keys": "on",
+            "busy_timeout_ms": 5000,
+            "reader_query_only": "on",
+        },
         "connection_mode": "embedded",
     },
     "postgresql": {
@@ -32,6 +38,24 @@ EXPECTED_NORMALIZED_ENGINES = {
             "server_version_num": "170011",
             "synchronous_commit": "on",
             "transaction_isolation": "read committed",
+            "isolation_contract": "read_committed",
+            "runtime_connection_modes": [
+                "direct",
+                "session_pool",
+                "transaction_pool",
+            ],
+            "observed_connection_modes": ["direct", "transaction_pool"],
+            "maintenance_connection_mode": "direct_admin_offline",
+            "transaction_pooler_safe": True,
+            "correctness_dependencies_forbidden": [
+                "extensions",
+                "session_state",
+                "named_prepared_statements",
+                "connection_affinity",
+                "replica_reads",
+                "provider_api",
+                "provider_failover",
+            ],
         },
         "connection_mode": "direct_and_transaction_pooler",
     },
@@ -84,10 +108,9 @@ def read_json(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
     regular_file(path, label)
     raw = path.read_bytes()
     try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ProjectionError(f"{label} is not UTF-8 JSON") from error
-    require(isinstance(value, dict), f"{label} must be a JSON object")
+        value = REFERENCE_PRODUCER.ADAPTER.COLLECTOR.strict_json_object(raw, label)
+    except REFERENCE_PRODUCER.ADAPTER.COLLECTOR.CollectionError as error:
+        raise ProjectionError(str(error)) from error
     return value, raw
 
 
@@ -115,9 +138,31 @@ def atomic_write(path: Path, value: object) -> None:
         raise
 
 
-def certified_environment(
-    soak: dict[str, Any], acceptance: dict[str, Any]
-) -> dict[str, Any]:
+def certified_acceptance_environment(acceptance: dict[str, Any]) -> dict[str, Any]:
+    environment = acceptance.get("reference_environment")
+    engines = environment.get("engines") if isinstance(environment, dict) else None
+    require(
+        isinstance(environment, dict)
+        and isinstance(engines, dict)
+        and engines == EXPECTED_NORMALIZED_ENGINES,
+        "packaged acceptance engine observations are incomplete",
+    )
+    require(
+        "storage_bindings" in environment,
+        "packaged acceptance did not retain exact workload/provider storage attribution",
+    )
+    try:
+        AGGREGATOR._validate_reference_environment(
+            "packaged-acceptance", {"reference_environment": environment}
+        )
+    except AGGREGATOR.EvidenceError as error:
+        raise ProjectionError(
+            f"packaged acceptance host is not certified: {error}"
+        ) from error
+    return environment
+
+
+def certified_soak_environment(soak: dict[str, Any]) -> dict[str, Any]:
     observed = soak.get("environment_observation")
     require(isinstance(observed, dict), "soak host environment was not observed")
     platform_value = observed.get("platform")
@@ -146,34 +191,13 @@ def certified_environment(
         and sqlite_observed["exact_identity"].startswith("sqlite/3.53.4;"),
         "soak did not observe the exact bundled SQLite identity",
     )
-    acceptance_environment = acceptance.get("reference_environment")
-    acceptance_platform = (
-        acceptance_environment.get("platform")
-        if isinstance(acceptance_environment, dict)
-        else None
-    )
-    engines = (
-        acceptance_environment.get("engines")
-        if isinstance(acceptance_environment, dict)
-        else None
-    )
-    require(
-        isinstance(acceptance_platform, dict)
-        and acceptance_platform.get("system") == platform_value.get("system")
-        and acceptance_platform.get("machine") == platform_value.get("machine")
-        and isinstance(engines, dict)
-        and set(engines) == {"sqlite", "postgresql", "pgbouncer"}
-        and {name: engines[name] for name in ("sqlite", "postgresql")}
-        == EXPECTED_NORMALIZED_ENGINES,
-        "packaged acceptance and soak host/engine observations disagree",
-    )
     environment = {
         "platform": platform_value,
         "hardware": hardware,
         "filesystem": filesystem,
         "engines": {
-            "sqlite": engines["sqlite"],
-            "postgresql": engines["postgresql"],
+            "sqlite": EXPECTED_NORMALIZED_ENGINES["sqlite"],
+            "postgresql": {"status": "not_observed_by_sqlite_process_soak"},
         },
     }
     try:
@@ -263,7 +287,11 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
             args.packaged_acceptance_report, distribution, package_binding
         )
     )
-    soak, _soak_raw = read_json(args.soak_report, "one-hour process soak report")
+    soak, soak_raw = read_json(args.soak_report, "one-hour process soak report")
+    kill, kill_raw = read_json(args.kill_point_report, "kill-point matrix report")
+    target, _target_raw = read_json(
+        args.target_report, "reference-target workload report"
+    )
     try:
         soak_validated = FAILURE_PRODUCER.validate_soak(
             soak,
@@ -276,13 +304,29 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
         raise ProjectionError(
             f"one-hour process soak is incomplete: {error}"
         ) from error
+    try:
+        kill_validated = FAILURE_PRODUCER.validate_kill(
+            kill,
+            version=manifest["release_candidate"],
+            manifest_json_sha256=distribution["manifest_json_sha256"],
+            manifest_toml_sha256=distribution["manifest_toml_sha256"],
+        )
+    except FAILURE_PRODUCER.EvidenceError as error:
+        raise ProjectionError(f"kill-point matrix is incomplete: {error}") from error
     reported_distribution = soak_validated["distribution"]
     require(
         reported_distribution
         == {field: distribution[field] for field in reported_distribution},
         "one-hour soak does not bind the independently verified package bytes",
     )
-    environment = certified_environment(soak, acceptance)
+    kill_distribution = kill_validated["distribution"]
+    require(
+        kill_distribution
+        == {field: distribution[field] for field in kill_distribution},
+        "kill-point matrix does not bind the independently verified package bytes",
+    )
+    acceptance_environment = certified_acceptance_environment(acceptance)
+    soak_environment = certified_soak_environment(soak)
     identity = {
         "product": "worldstream",
         "profile": "linux-reference",
@@ -290,6 +334,58 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
         "artifact_sha256": distribution["archive_sha256"],
         "packaged_acceptance_sha256": acceptance_sha256,
     }
+    expected_bindings = {
+        "package_archive": REFERENCE_PRODUCER.file_binding(
+            args.package_archive, "worldstream/linux-release-archive/v1"
+        ),
+        "package_report": REFERENCE_PRODUCER.file_binding(
+            args.package_report, "worldstream/package-report/v1"
+        ),
+        "daemon": REFERENCE_PRODUCER.file_binding(
+            args.daemon_bin, "worldstream/worldstreamd-elf/v1"
+        ),
+        "packaged_acceptance": REFERENCE_PRODUCER.exact_binding(
+            acceptance_raw, acceptance["schema"]
+        ),
+        "one_hour_soak": REFERENCE_PRODUCER.exact_binding(soak_raw, soak["schema"]),
+        "kill_point": REFERENCE_PRODUCER.exact_binding(kill_raw, kill["schema"]),
+        "manifest_toml": REFERENCE_PRODUCER.file_binding(
+            args.manifest_toml, "worldstream/storage-compatibility-manifest/toml"
+        ),
+        "manifest_json": REFERENCE_PRODUCER.file_binding(
+            args.manifest_json, manifest["schema"]
+        ),
+    }
+    expected_external_sources = {
+        "packaged_acceptance": {
+            "source_attribution": "bound_external_source",
+            "report_sha256": expected_bindings["packaged_acceptance"]["sha256"],
+            "source_environment": acceptance["reference_environment"],
+        },
+        "one_hour_soak": {
+            "source_attribution": "bound_external_source",
+            "report_sha256": expected_bindings["one_hour_soak"]["sha256"],
+            "source_environment": soak["environment_observation"],
+        },
+        "kill_point": {
+            "source_attribution": "bound_external_source",
+            "report_sha256": expected_bindings["kill_point"]["sha256"],
+            "source_environment": {"platform": kill["platform"]},
+        },
+    }
+    target_validated = REFERENCE_PRODUCER.validate_reference_target(
+        target,
+        manifest=manifest,
+        distribution=distribution,
+        packaged_acceptance_sha256=acceptance_sha256,
+        expected_bindings=expected_bindings,
+        expected_external_sources=expected_external_sources,
+        expected_packaged_sdk=REFERENCE_PRODUCER.packaged_sdk_identity(
+            args.package_archive
+        ),
+        kill_cell_count=kill_validated["cell_count"],
+        soak_elapsed_seconds=soak_validated["elapsed_seconds"],
+    )
     counter_cell = cell(acceptance, "counter", "sqlite")
     heist_cell = cell(acceptance, "heist", "sqlite")
     postgres_cell = cell(acceptance, "counter", "postgres_direct")
@@ -309,7 +405,7 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
             schema="worldstream/imo-55-live-counter-luna/v1",
             status="completed",
             identity=identity,
-            environment=environment,
+            environment=acceptance_environment,
             workload_value=workload(acceptance, "counter", "sqlite"),
             measurements={
                 name: counter_cell["performance"][name]
@@ -321,7 +417,7 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
             schema="worldstream/imo-57-absent-broker-live/v1",
             status="completed",
             identity=identity,
-            environment=environment,
+            environment=acceptance_environment,
             workload_value=workload(acceptance, "heist", "sqlite"),
             measurements={
                 name: heist_cell["performance"][name]
@@ -333,7 +429,7 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
             schema="worldstream/soak-evidence/v1",
             status="pass",
             identity=identity,
-            environment=environment,
+            environment=soak_environment,
             workload_value=soak["reference_workload"],
             measurements={
                 name: soak_measurements[name]
@@ -350,7 +446,7 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
             schema="worldstream/postgresql-live-evidence/v1",
             status="pass",
             identity=identity,
-            environment=environment,
+            environment=acceptance_environment,
             workload_value=workload(acceptance, "counter", "postgres_direct"),
             measurements={
                 "latency_ms": postgres_performance["latency_ms"],
@@ -368,7 +464,7 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
             schema="worldstream/soak-evidence/v1",
             status="pass",
             identity=identity,
-            environment=environment,
+            environment=soak_environment,
             workload_value=soak["reference_workload"],
             measurements={
                 name: soak_measurements[name]
@@ -376,6 +472,24 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
             },
             source="one-hour-process-soak:3600s",
             one_hour=True,
+        ),
+        "target": report(
+            schema=REFERENCE_PRODUCER.REFERENCE_TARGET_PROJECTION_SCHEMA,
+            status="completed",
+            identity=identity,
+            environment=target_validated["environment"],
+            workload_value=target_validated["workload"],
+            measurements={
+                "latency_ms": target_validated["measurements"]["commit_to_ack_latency"],
+                "reference_targets": {
+                    "schema": REFERENCE_PRODUCER.REFERENCE_TARGET_PROFILE_SCHEMA,
+                    "profile": target_validated["profile"],
+                    "dimensions": target_validated["dimensions"],
+                    "target_miss_ids": target_validated["target_miss_ids"],
+                    "raw_report_sha256": REFERENCE_PRODUCER.sha256(args.target_report),
+                },
+            },
+            source="reference-target-workload:package-bound-public-api",
         ),
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +500,8 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
         args.daemon_bin.resolve(),
         args.packaged_acceptance_report.resolve(),
         args.soak_report.resolve(),
+        args.kill_point_report.resolve(),
+        args.target_report.resolve(),
         args.manifest_toml.resolve(),
         args.manifest_json.resolve(),
     }
@@ -415,6 +531,8 @@ def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
     command.add_argument("--packaged-acceptance-report", type=Path, required=True)
     command.add_argument("--soak-report", type=Path, required=True)
+    command.add_argument("--kill-point-report", type=Path, required=True)
+    command.add_argument("--target-report", type=Path, required=True)
     command.add_argument("--package-archive", type=Path, required=True)
     command.add_argument("--package-report", type=Path, required=True)
     command.add_argument("--daemon-bin", type=Path, required=True)

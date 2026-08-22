@@ -14,6 +14,8 @@ set -euo pipefail
 readonly SCHEMA="worldstream/sqlite-postgresql-transfer-evidence/v1"
 readonly REQUIRED_MAJOR=17
 readonly REQUIRED_PATCH=11
+readonly POSTGRES_IMAGE="postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
+readonly POSTGRES_REPOSITORY_DIGEST="postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
 readonly EXIT_PASS=0
 readonly EXIT_UNAVAILABLE=10
 readonly EXIT_WRONG_VERSION=11
@@ -49,7 +51,7 @@ usage() {
   printf '%s\n' \
     "Usage: scripts/postgres-transfer-smoke.sh (--sqlite PATH | --build-source) [--evidence PATH]" \
     "" \
-    "Default mode creates a disposable postgres:17.11-alpine target with" \
+    "Default mode creates a digest-pinned disposable postgres:17.11-alpine target with" \
     "separate admin/runtime credentials. Set" \
     "WORLDSTREAM_PG_TRANSFER_MODE=external together with" \
     "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN and WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN" \
@@ -250,7 +252,7 @@ PY
       --env "POSTGRES_PASSWORD=$admin_password" \
       --env POSTGRES_DB=worldstream \
       --publish 127.0.0.1::5432 \
-      postgres:17.11-alpine >"$temp_root/docker-id" 2>"$temp_root/docker-run.log"; then
+      "$POSTGRES_IMAGE" >"$temp_root/docker-id" 2>"$temp_root/docker-run.log"; then
     status="unavailable"
     reason="postgres_17_11_image_unavailable"
     EXIT_CODE="$EXIT_UNAVAILABLE" write_static_evidence "$EXIT_UNAVAILABLE"
@@ -1919,7 +1921,9 @@ if [[ "$helper_code" -eq "$EXIT_PASS" ]]; then
   status="pass"
 fi
 
-if [[ -z "$helper_json" ]] || ! "$python_bin" - "$helper_json" "$evidence_file" "$helper_code" <<'PY'
+if [[ -z "$helper_json" ]] || ! "$python_bin" - \
+  "$helper_json" "$evidence_file" "$helper_code" \
+  "$POSTGRES_IMAGE" "$POSTGRES_REPOSITORY_DIGEST" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1939,6 +1943,16 @@ if status not in {"incomplete", "wrong_version", "pass", "unavailable"}:
     raise SystemExit("unknown transfer evidence status")
 if (helper_code == 0) != (status == "pass"):
     raise SystemExit("transfer evidence status/exit mismatch")
+provider_mode = value.get("provider_mode")
+if provider_mode == "docker":
+    value["provider_image"] = {
+        "reference": sys.argv[4],
+        "repository_digest": sys.argv[5],
+    }
+elif provider_mode == "external":
+    value["provider_image"] = None
+else:
+    raise SystemExit("transfer evidence provider mode is not exact")
 if status == "pass":
     transfer = value.get("transfer")
     source = value.get("source")

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Exercise the frozen Linux SIGKILL matrix through public WorldStream APIs.
 
-Every cell starts a disposable ``worldstreamd`` against a private SQLite data
-directory, waits for the daemon's exact opt-in boundary marker, sends SIGKILL
-from this harness, restarts the same data directory, and resolves the original
-operation identity.  The marker seam is inert without the full guarded test
-configuration and cannot turn an abort, timeout, or graceful exit into a pass.
+Every cell starts the packaged ``worldstreamd`` against a private SQLite or
+PostgreSQL store, waits for the daemon's exact opt-in boundary marker, sends
+SIGKILL from this harness, restarts the same store, and resolves the original
+operation identity. PostgreSQL is exercised through both its direct runtime
+path and its pinned transaction-pool path; migrations and observations always
+use the direct-admin path. The guarded marker seam is inert without the full
+test configuration and cannot turn an abort, timeout, or graceful exit into a
+pass.
 """
 
 from __future__ import annotations
@@ -42,6 +45,8 @@ from worldstream_sdk import Client, LostActionReply, LostRunnerReply, ProtocolEr
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SECRET_SCAN_PATH = ROOT / "scripts" / "verify-secret-absence.py"
+BUILD_IDENTITY_PATH = ROOT / "scripts" / "release_build_identity.py"
+POSTGRES_HARNESS_PATH = ROOT / "scripts" / "postgres-packaged-acceptance.py"
 SCHEMA = "worldstream/kill-point-evidence/v1"
 MARKER_SCHEMA = "worldstream/test-crash-boundary-ready/v1"
 ENABLE_VALUE = "worldstream-linux-process-evidence-v1"
@@ -51,6 +56,12 @@ BOUNDARIES = (
     "after_commit_before_publication",
     "after_publication_before_reply",
 )
+BACKEND_PROFILES = (
+    ("sqlite", "embedded"),
+    ("postgresql", "direct"),
+    ("postgresql", "transaction_pool"),
+)
+EXPECTED_CELL_COUNT = 36
 EXPECTED_OUTCOME = {
     "before_commit": "no_commit",
     "after_commit_before_publication": "original_result",
@@ -80,10 +91,53 @@ HEIST_CONFIG = {
     "maximum_open_offers_per_role": 4,
 }
 ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+MAX_HTTP_JSON_BYTES = 1024 * 1024
+MAX_MARKER_JSON_BYTES = 64 * 1024
+MAX_PACKAGE_REPORT_BYTES = 8 * 1024 * 1024
+MAX_MANIFEST_JSON_BYTES = 8 * 1024 * 1024
 
 
 class EvidenceFailure(RuntimeError):
     """A closed, non-secret failure in the process evidence harness."""
+
+
+def load_build_identity() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "worldstream_kill_point_strict_json", BUILD_IDENTITY_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise EvidenceFailure("strict JSON parser could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+BUILD_IDENTITY = load_build_identity()
+
+
+def load_postgres_harness() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "worldstream_kill_point_postgres_harness", POSTGRES_HARNESS_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise EvidenceFailure("PostgreSQL provider harness could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+POSTGRES_HARNESS = load_postgres_harness()
+
+
+def strict_json_bytes(raw: bytes, label: str, maximum: int) -> dict[str, Any]:
+    if not (0 < len(raw) <= maximum):
+        raise EvidenceFailure(f"{label} exceeded its bounded JSON size")
+    try:
+        return BUILD_IDENTITY.strict_json(raw, label)
+    except BUILD_IDENTITY.IdentityError as error:
+        raise EvidenceFailure(f"{label} was not strict JSON") from error
 
 
 def load_secret_scan() -> Any:
@@ -151,11 +205,13 @@ def distribution_identity(
     ):
         raise EvidenceFailure("package identity inputs must not be symlinks")
     try:
-        report = json.loads(package_report.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        report = strict_json_bytes(
+            package_report.read_bytes(),
+            "package report",
+            MAX_PACKAGE_REPORT_BYTES,
+        )
+    except OSError as error:
         raise EvidenceFailure("package report is unavailable or invalid") from error
-    if not isinstance(report, dict):
-        raise EvidenceFailure("package report must be an object")
     identity = report.get("identity")
     inventory = report.get("inventory")
     archive_digest = sha256_file(package_archive)
@@ -234,7 +290,11 @@ def distribution_identity(
             manifest_digest = hashlib.sha256(manifest_toml_bytes).hexdigest()
             mirror_digest = hashlib.sha256(manifest_json_bytes).hexdigest()
             manifest = tomllib.loads(manifest_toml_bytes.decode("utf-8"))
-            mirror = json.loads(manifest_json_bytes)
+            mirror = strict_json_bytes(
+                manifest_json_bytes,
+                "packaged compatibility mirror",
+                MAX_MANIFEST_JSON_BYTES,
+            )
             canonical_mirror = (
                 json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n"
@@ -296,24 +356,348 @@ def percentile(values: list[float], fraction: float) -> float:
     return round(ordered[rank - 1], 3)
 
 
-def private_root(prefix: str) -> pathlib.Path:
+def private_root(prefix: str, authority_secret: bytes | None = None) -> pathlib.Path:
     root = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
     root.chmod(0o700)
+    secret = os.urandom(32) if authority_secret is None else authority_secret
+    if not isinstance(secret, bytes) or len(secret) != 32:
+        shutil.rmtree(root, ignore_errors=True)
+        raise EvidenceFailure("authority secret clone input was invalid")
     secret_path = root / "authority.secret"
     descriptor = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as output:
-        output.write(os.urandom(32))
+        output.write(secret)
         output.flush()
         os.fsync(output.fileno())
     return root
 
 
 def clone_root(source: pathlib.Path, prefix: str) -> pathlib.Path:
-    root = private_root(prefix)
-    (root / "authority.secret").write_bytes((source / "authority.secret").read_bytes())
-    (root / "authority.secret").chmod(0o600)
+    root = private_root(prefix, (source / "authority.secret").read_bytes())
     shutil.copytree(source / "data", root / "data")
     return root
+
+
+def owner_text(path: pathlib.Path, value: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(value)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    if stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise EvidenceFailure("owner-only runtime file mode was not preserved")
+
+
+@dataclass
+class BackendProfile:
+    storage_backend: str
+    connection_mode: str
+    provider: Any | None = None
+    privacy_capture: Any | None = None
+    empty_database: str | None = None
+    sequence: int = 0
+
+    @property
+    def profile_id(self) -> str:
+        return f"{self.storage_backend}_{self.connection_mode}"
+
+    def database(self, root: pathlib.Path) -> str:
+        path = root / "postgresql-database"
+        if (
+            self.storage_backend != "postgresql"
+            or path.is_symlink()
+            or not path.is_file()
+        ):
+            raise EvidenceFailure("PostgreSQL root database identity was unavailable")
+        database = path.read_text(encoding="ascii").strip()
+        if not database or not database.replace("_", "").isalnum():
+            raise EvidenceFailure("PostgreSQL root database identity was invalid")
+        return database
+
+    def _next_database(self) -> str:
+        self.sequence += 1
+        token = "direct" if self.connection_mode == "direct" else "pool"
+        database = f"kill_{token}_{os.getpid()}_{self.sequence}"
+        if len(database) > 63 or not database.replace("_", "").isalnum():
+            raise EvidenceFailure("generated PostgreSQL database name was invalid")
+        return database
+
+    def _clone_database(self, source_database: str, target_database: str) -> None:
+        if self.provider is None:
+            raise EvidenceFailure("PostgreSQL provider was unavailable")
+        self.provider._psql(
+            "postgres",
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            f"WHERE datname = '{source_database}' AND pid <> pg_backend_pid();",
+        )
+        self.provider._psql(
+            "postgres",
+            f'CREATE DATABASE "{target_database}" WITH TEMPLATE '
+            f'"{source_database}" OWNER admin;',
+        )
+
+    def _write_runtime_identity(self, root: pathlib.Path, database: str) -> None:
+        if self.provider is None:
+            raise EvidenceFailure("PostgreSQL provider was unavailable")
+        pooler = self.connection_mode == "transaction_pool"
+        port = self.provider.pooler_port if pooler else self.provider.postgres_port
+        if port is None:
+            raise EvidenceFailure("PostgreSQL runtime port was unavailable")
+        dsn = (
+            "host=127.0.0.1 "
+            f"port={port} dbname={database} user=runtime "
+            f"password={self.provider.runtime_password} connect_timeout=5"
+        )
+        owner_text(root / "postgresql-runtime.dsn", dsn + "\n")
+        owner_text(root / "postgresql-database", database + "\n")
+        if self.privacy_capture is not None:
+            self.privacy_capture.register_sentinel(
+                f"postgres-runtime-dsn-{self.profile_id}-{self.sequence:03d}",
+                dsn.encode("ascii"),
+            )
+
+    def new_root(
+        self, prefix: str, *, source: pathlib.Path | None = None
+    ) -> pathlib.Path:
+        if self.storage_backend == "sqlite":
+            return (
+                private_root(prefix) if source is None else clone_root(source, prefix)
+            )
+        if self.storage_backend != "postgresql" or self.empty_database is None:
+            raise EvidenceFailure("unknown or incomplete storage profile")
+        authority_secret = (
+            None if source is None else (source / "authority.secret").read_bytes()
+        )
+        root = private_root(prefix, authority_secret)
+        try:
+            source_database = (
+                self.empty_database if source is None else self.database(source)
+            )
+            target_database = self._next_database()
+            self._clone_database(source_database, target_database)
+            self._write_runtime_identity(root, target_database)
+            return root
+        except BaseException:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
+
+    def store_identity(self, daemon: Daemon) -> tuple[Any, ...]:
+        if self.storage_backend == "sqlite":
+            value = daemon.database_path.stat()
+            return "sqlite", value.st_dev, value.st_ino
+        if self.provider is None:
+            raise EvidenceFailure("PostgreSQL provider was unavailable")
+        database = self.database(daemon.root)
+        oid = self.provider._psql(
+            "postgres", f"SELECT oid FROM pg_database WHERE datname = '{database}';"
+        )
+        if not oid.isdigit():
+            raise EvidenceFailure("PostgreSQL store identity was unavailable")
+        return "postgresql", database, int(oid)
+
+    def creation_witness(self, daemon: Daemon) -> dict[str, Any]:
+        if self.storage_backend == "sqlite":
+            return offline_create_witness(daemon.database_path)
+        if self.provider is None:
+            raise EvidenceFailure("PostgreSQL provider was unavailable")
+        database = self.database(daemon.root)
+        value = self.provider._psql(
+            database,
+            "BEGIN READ ONLY;"
+            "SELECT (SELECT count(*) FROM worldstream_room_roots),"
+            "(SELECT count(*) FROM worldstream_genesis),"
+            "(SELECT count(*) FROM worldstream_semantic_receipts "
+            "WHERE resolution_kind = 'genesis_created' AND transition_seq IS NULL);"
+            "ROLLBACK;",
+        )
+        rows = [line for line in value.splitlines() if line]
+        if len(rows) != 1:
+            raise EvidenceFailure("PostgreSQL creation witness was invalid")
+        fields = rows[0].split("|")
+        if len(fields) != 3 or any(not field.isdigit() for field in fields):
+            raise EvidenceFailure("PostgreSQL creation witness was invalid")
+        return {
+            "room_count": int(fields[0]),
+            "genesis_count": int(fields[1]),
+            "creation_receipt_count": int(fields[2]),
+            "observer": "postgresql_direct_admin_read_only_transaction",
+        }
+
+
+@dataclass
+class BackendProviderContext:
+    root: pathlib.Path
+    provider: Any
+    privacy_capture: Any
+    profiles: tuple[BackendProfile, ...]
+    package_binding: dict[str, Any]
+    reference_engine: dict[str, Any]
+    cleanup_status: str = "not_started"
+
+    def cleanup(self) -> str:
+        if self.cleanup_status == "not_started":
+            self.cleanup_status = self.provider.cleanup()
+            POSTGRES_HARNESS.ACTIVE_PRIVACY_CAPTURE = None
+        return self.cleanup_status
+
+    def privacy_evidence(self) -> dict[str, Any]:
+        if self.cleanup_status != "pass":
+            raise EvidenceFailure("PostgreSQL provider cleanup did not pass")
+        if not self.privacy_capture.channels:
+            raise EvidenceFailure("PostgreSQL provider privacy channels were empty")
+        try:
+            scan = SECRET_SCAN.scan_sentinels(
+                self.privacy_capture.sentinels, self.privacy_capture.channels
+            )
+        except SECRET_SCAN.ScanError as error:
+            raise EvidenceFailure(
+                "PostgreSQL provider channel secret scan failed closed"
+            ) from error
+        return {
+            "status": "pass",
+            "secret_scan": scan,
+            "channel_classes": [
+                {
+                    "channel": channel,
+                    "class": self.privacy_capture.channel_classes[channel],
+                }
+                for channel in sorted(self.privacy_capture.channels)
+            ],
+        }
+
+    def evidence(self) -> dict[str, Any]:
+        binaries = self.package_binding.get("binaries", {})
+        control = (
+            binaries.get("worldstreamctl", {}) if isinstance(binaries, dict) else {}
+        )
+        postgres_profiles = [
+            profile
+            for profile in self.profiles
+            if profile.storage_backend == "postgresql"
+        ]
+        expected_sentinels = {
+            f"postgres-runtime-dsn-{profile.profile_id}-{sequence:03d}-01"
+            for profile in postgres_profiles
+            for sequence in range(1, profile.sequence + 1)
+        }
+        observed_sentinels = {
+            name
+            for name in self.privacy_capture.sentinels
+            if name.startswith("postgres-runtime-dsn-postgresql_")
+        }
+        if (
+            any(profile.sequence != 16 for profile in postgres_profiles)
+            or len(expected_sentinels) != 32
+            or observed_sentinels != expected_sentinels
+        ):
+            raise EvidenceFailure(
+                "PostgreSQL runtime DSN sentinel coverage was incomplete"
+            )
+        return {
+            "status": "passed",
+            "postgres_image": POSTGRES_HARNESS.POSTGRES_IMAGE,
+            "postgres_digest": POSTGRES_HARNESS.POSTGRES_DIGEST,
+            "pgbouncer_image": POSTGRES_HARNESS.PGBOUNCER_IMAGE,
+            "pgbouncer_digest": POSTGRES_HARNESS.PGBOUNCER_DIGEST,
+            "engine_identity": POSTGRES_HARNESS.EXPECTED_ENGINE,
+            "server_version_num": "170011",
+            "pool_mode": "transaction",
+            "migration_connection_mode": "direct_admin_offline",
+            "observation_connection_mode": "direct_admin",
+            "control_binary_sha256": control.get("sha256"),
+            "runtime_dsn_sentinel_coverage": {
+                "status": "complete",
+                "expected_count": len(expected_sentinels),
+                "observed_count": len(observed_sentinels),
+                "profiles": [
+                    {
+                        "storage_backend": profile.storage_backend,
+                        "connection_mode": profile.connection_mode,
+                        "dsn_count": profile.sequence,
+                    }
+                    for profile in postgres_profiles
+                ],
+            },
+            "cleanup": self.cleanup_status,
+            "privacy": self.privacy_evidence(),
+        }
+
+
+def prepare_backend_provider(
+    args: argparse.Namespace, distribution: dict[str, Any]
+) -> BackendProviderContext:
+    if args.package_archive is None or args.package_report is None:
+        raise EvidenceFailure(
+            "the 36-cell matrix requires a verified packaged Linux archive"
+        )
+    if not args.docker or not args.psql:
+        raise EvidenceFailure("Docker and psql are required for PostgreSQL kill cells")
+    root = pathlib.Path(tempfile.mkdtemp(prefix="worldstream-kill-provider-"))
+    root.chmod(0o700)
+    provider: Any | None = None
+    try:
+        try:
+            extracted_daemon, ctl, binding = POSTGRES_HARNESS._bind_package(
+                args.package_archive, args.package_report, root / "verified-package"
+            )
+        except POSTGRES_HARNESS.LaneFailure as error:
+            raise EvidenceFailure(
+                "PostgreSQL provider could not bind the packaged binaries"
+            ) from error
+        if sha256_file(extracted_daemon) != distribution.get("binary_sha256"):
+            raise EvidenceFailure(
+                "PostgreSQL provider daemon differs from the kill matrix package"
+            )
+        privacy_capture = POSTGRES_HARNESS.PrivacyCapture(root)
+        POSTGRES_HARNESS.ACTIVE_PRIVACY_CAPTURE = privacy_capture
+        provider = POSTGRES_HARNESS.Provider.create(
+            root, ROOT, args.docker, args.psql, ctl
+        )
+        provider.start()
+        reference_engine = provider.reference_engine()
+        if (
+            reference_engine.get("version") != "17.11"
+            or reference_engine.get("connection_mode")
+            != "direct_and_transaction_pooler"
+        ):
+            raise EvidenceFailure("PostgreSQL reference engine contract was not frozen")
+        profiles = (
+            BackendProfile("sqlite", "embedded"),
+            BackendProfile(
+                "postgresql",
+                "direct",
+                provider,
+                privacy_capture,
+                POSTGRES_HARNESS.DATABASES["counter_postgres_direct"],
+            ),
+            BackendProfile(
+                "postgresql",
+                "transaction_pool",
+                provider,
+                privacy_capture,
+                POSTGRES_HARNESS.DATABASES["counter_transaction_pooler"],
+            ),
+        )
+        return BackendProviderContext(
+            root, provider, privacy_capture, profiles, binding, reference_engine
+        )
+    except BaseException:
+        if provider is not None:
+            try:
+                provider.cleanup()
+            except (
+                POSTGRES_HARNESS.LaneFailure,
+                OSError,
+                subprocess.SubprocessError,
+            ):
+                POSTGRES_HARNESS.ACTIVE_PRIVACY_CAPTURE = None
+        POSTGRES_HARNESS.ACTIVE_PRIVACY_CAPTURE = None
+        shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 def loopback_port() -> int:
@@ -348,11 +732,19 @@ def post_json(
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
-            value = json.loads(response.read())
+            value = strict_json_bytes(
+                response.read(MAX_HTTP_JSON_BYTES + 1),
+                "public HTTP response",
+                MAX_HTTP_JSON_BYTES,
+            )
     except urllib.error.HTTPError as error:
         try:
-            value = json.loads(error.read())
-        except (OSError, ValueError) as parse_error:
+            value = strict_json_bytes(
+                error.read(MAX_HTTP_JSON_BYTES + 1),
+                "public HTTP error response",
+                MAX_HTTP_JSON_BYTES,
+            )
+        except (OSError, EvidenceFailure) as parse_error:
             raise EvidenceFailure(
                 f"public HTTP failed with status {error.code}"
             ) from parse_error
@@ -360,8 +752,6 @@ def post_json(
         raise EvidenceFailure(
             f"public HTTP rejected the operation with {code or error.code}"
         ) from error
-    if not isinstance(value, dict):
-        raise EvidenceFailure("public HTTP response was not an object")
     return value
 
 
@@ -476,6 +866,17 @@ class Daemon:
             ),
             "RUST_LOG": "warn",
         }
+        environment.pop("WORLDSTREAM__STORAGE__POSTGRESQL__DSN", None)
+        environment.pop("WORLDSTREAM__STORAGE__POSTGRESQL__DSN_HANDLE", None)
+        runtime_dsn = self.root / "postgresql-runtime.dsn"
+        if runtime_dsn.exists():
+            if runtime_dsn.is_symlink() or not runtime_dsn.is_file():
+                raise EvidenceFailure("PostgreSQL runtime DSN source was invalid")
+            environment["WORLDSTREAM__STORAGE__PROFILE"] = "postgres-primary"
+            environment["WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE"] = str(runtime_dsn)
+        else:
+            environment["WORLDSTREAM__STORAGE__PROFILE"] = "sqlite-bundled"
+            environment.pop("WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE", None)
         for name in (
             "WORLDSTREAM_TEST_CRASH_EVIDENCE_ENABLE",
             "WORLDSTREAM_TEST_CRASH_EVIDENCE_POINT",
@@ -533,8 +934,19 @@ class Daemon:
                 raise EvidenceFailure("daemon exited before the exact crash marker")
             try:
                 marker_stat = marker_path.lstat()
-                value = json.loads(marker_path.read_text(encoding="utf-8"))
-            except (FileNotFoundError, OSError, ValueError):
+                marker_bytes = marker_path.read_bytes()
+                if len(marker_bytes) > MAX_MARKER_JSON_BYTES:
+                    raise EvidenceFailure("crash marker exceeded its JSON bound")
+                try:
+                    value = strict_json_bytes(
+                        marker_bytes,
+                        "crash marker",
+                        MAX_MARKER_JSON_BYTES,
+                    )
+                except EvidenceFailure:
+                    time.sleep(0.01)
+                    continue
+            except (FileNotFoundError, OSError):
                 time.sleep(0.01)
                 continue
             if (
@@ -704,9 +1116,12 @@ def private_claim(projection: dict[str, Any], clue_id: str) -> str:
 
 
 async def prepare_counter_template(
-    binary: pathlib.Path, startup: float, shutdown: float
+    profile: BackendProfile,
+    binary: pathlib.Path,
+    startup: float,
+    shutdown: float,
 ) -> CounterTemplate:
-    root = private_root("worldstream-kill-counter-template-")
+    root = profile.new_root(f"worldstream-kill-{profile.profile_id}-counter-template-")
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     try:
         daemon.start()
@@ -745,9 +1160,12 @@ async def prepare_counter_template(
 
 
 async def prepare_heist_template(
-    binary: pathlib.Path, startup: float, shutdown: float
+    profile: BackendProfile,
+    binary: pathlib.Path,
+    startup: float,
+    shutdown: float,
 ) -> HeistTemplate:
-    root = private_root("worldstream-kill-heist-template-")
+    root = profile.new_root(f"worldstream-kill-{profile.profile_id}-heist-template-")
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     try:
         daemon.start()
@@ -857,9 +1275,19 @@ async def crash_request(
     )
 
 
-def store_identity(daemon: Daemon) -> tuple[int, int]:
-    value = daemon.database_path.stat()
-    return value.st_dev, value.st_ino
+def store_identity(
+    profile: BackendProfile | Daemon, daemon: Daemon | None = None
+) -> tuple[Any, ...]:
+    """Return durable identity while preserving the SQLite helper call shape."""
+
+    if daemon is None:
+        daemon = profile
+        if not isinstance(daemon, Daemon):
+            raise EvidenceFailure("durable store identity input was invalid")
+        return BackendProfile("sqlite", "embedded").store_identity(daemon)
+    if not isinstance(profile, BackendProfile):
+        raise EvidenceFailure("durable store profile was invalid")
+    return profile.store_identity(daemon)
 
 
 def offline_create_witness(database_path: pathlib.Path) -> dict[str, int]:
@@ -920,16 +1348,15 @@ def receipt_core(value: dict[str, Any], operation: str) -> dict[str, Any]:
 
 
 def completed_cell(
+    profile: BackendProfile,
     crash: CrashSpec,
     kill_result: dict[str, Any],
-    before_store: tuple[int, int],
-    after_store: tuple[int, int],
+    before_store: tuple[Any, ...],
+    after_store: tuple[Any, ...],
     verification: dict[str, Any],
 ) -> dict[str, Any]:
     if before_store != after_store:
-        raise EvidenceFailure(
-            "same data directory did not preserve the SQLite file identity"
-        )
+        raise EvidenceFailure("restart did not preserve the durable store identity")
     if not all(
         value is True for value in verification.values() if isinstance(value, bool)
     ):
@@ -937,6 +1364,8 @@ def completed_cell(
             f"{crash.operation}/{crash.boundary} outcome verification failed"
         )
     return {
+        "storage_backend": profile.storage_backend,
+        "connection_mode": profile.connection_mode,
         "operation": crash.operation,
         "name": crash.boundary,
         "signal": kill_result["signal"],
@@ -955,13 +1384,14 @@ def completed_cell(
 
 
 async def room_create_cell(
+    profile: BackendProfile,
     boundary: str,
     binary: pathlib.Path,
     startup: float,
     request_timeout: float,
     shutdown: float,
 ) -> tuple[dict[str, Any], float, pathlib.Path]:
-    root = private_root(f"worldstream-kill-create-{boundary}-")
+    root = profile.new_root(f"worldstream-kill-{profile.profile_id}-create-{boundary}-")
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     request = {
         "pack": COUNTER_PACK,
@@ -981,7 +1411,7 @@ async def room_create_cell(
     succeeded = False
     try:
         daemon.start(crash)
-        before_store = store_identity(daemon)
+        before_store = store_identity(profile, daemon)
         operator = Client(daemon.base_url, daemon.operator_bearer)
         _, kill_result = await crash_request(
             operator.create_room(request),
@@ -993,9 +1423,9 @@ async def room_create_cell(
         # Reopen once to let the production adapter perform normal WAL
         # recovery, then close it before the offline read-only SQLite observer.
         daemon.start()
-        after_store = store_identity(daemon)
+        after_store = store_identity(profile, daemon)
         daemon.stop()
-        witness = offline_create_witness(daemon.database_path)
+        witness = profile.creation_witness(daemon)
         expected_count = 0 if boundary == "before_commit" else 1
         daemon.start()
         operator = Client(daemon.base_url, daemon.operator_bearer)
@@ -1014,12 +1444,14 @@ async def room_create_cell(
             ]
             == expected_count,
             "offline_observer_nonmutation_hash_check": True,
-            "offline_observer_sqlite_version": sqlite3.sqlite_version,
+            "offline_observer": witness.get(
+                "observer", f"sqlite/{sqlite3.sqlite_version}/read_only"
+            ),
             "receipt_hash": canonical_hash(first),
             "boundary_marker_precedes_signal": True,
         }
         cell = completed_cell(
-            crash, kill_result, before_store, after_store, verification
+            profile, crash, kill_result, before_store, after_store, verification
         )
         succeeded = True
         return cell, (time.monotonic() - started) * 1000, root
@@ -1030,6 +1462,7 @@ async def room_create_cell(
 
 
 async def action_cell(
+    profile: BackendProfile,
     boundary: str,
     template: CounterTemplate,
     binary: pathlib.Path,
@@ -1037,7 +1470,10 @@ async def action_cell(
     request_timeout: float,
     shutdown: float,
 ) -> tuple[dict[str, Any], float, pathlib.Path]:
-    root = clone_root(template.root, f"worldstream-kill-action-{boundary}-")
+    root = profile.new_root(
+        f"worldstream-kill-{profile.profile_id}-action-{boundary}-",
+        source=template.root,
+    )
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     action_id = new_ulid()
     crash = CrashSpec("action", boundary, action_id)
@@ -1046,7 +1482,7 @@ async def action_cell(
     succeeded = False
     try:
         daemon.start(crash)
-        before_store = store_identity(daemon)
+        before_store = store_identity(profile, daemon)
         client = Client(daemon.base_url, template.member_bearer)
         before = await client.projection(template.room_id)
         room = await open_room_with_retry(
@@ -1064,7 +1500,7 @@ async def action_cell(
         await room.close()
         room = None
         daemon.start()
-        after_store = store_identity(daemon)
+        after_store = store_identity(profile, daemon)
         client = Client(daemon.base_url, template.member_bearer)
         before_retry = await projection_with_retry(client, template.room_id, 15)
         retry_room = await open_room_with_retry(
@@ -1093,7 +1529,7 @@ async def action_cell(
             "receipt_hash": canonical_hash(receipt_core(first, "action")),
         }
         cell = completed_cell(
-            crash, kill_result, before_store, after_store, verification
+            profile, crash, kill_result, before_store, after_store, verification
         )
         succeeded = True
         return cell, (time.monotonic() - started) * 1000, root
@@ -1106,6 +1542,7 @@ async def action_cell(
 
 
 async def timer_cell(
+    profile: BackendProfile,
     boundary: str,
     template: HeistTemplate,
     binary: pathlib.Path,
@@ -1113,7 +1550,10 @@ async def timer_cell(
     request_timeout: float,
     shutdown: float,
 ) -> tuple[dict[str, Any], float, pathlib.Path]:
-    root = clone_root(template.root, f"worldstream-kill-timer-{boundary}-")
+    root = profile.new_root(
+        f"worldstream-kill-{profile.profile_id}-timer-{boundary}-",
+        source=template.root,
+    )
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     match_id = f"{HEIST_TIMER_ID}#1"
     crash = CrashSpec("timer", boundary, match_id)
@@ -1122,7 +1562,7 @@ async def timer_cell(
     succeeded = False
     try:
         daemon.start(crash)
-        before_store = store_identity(daemon)
+        before_store = store_identity(profile, daemon)
         member = Client(daemon.base_url, template.member_bearers[0])
         before = await member.projection(template.room_id)
         # The before-commit seam precedes the adapter's due-time validation,
@@ -1147,7 +1587,7 @@ async def timer_cell(
             (urllib.error.URLError, OSError, EvidenceFailure),
         )
         daemon.start()
-        after_store = store_identity(daemon)
+        after_store = store_identity(profile, daemon)
         member = Client(daemon.base_url, template.member_bearers[0])
         before_retry = await projection_with_retry(member, template.room_id, 15)
         remaining = template.timer_due_monotonic - time.monotonic()
@@ -1185,7 +1625,7 @@ async def timer_cell(
             "receipt_hash": canonical_hash(receipt_core(first, "timer")),
         }
         cell = completed_cell(
-            crash, kill_result, before_store, after_store, verification
+            profile, crash, kill_result, before_store, after_store, verification
         )
         succeeded = True
         return cell, (time.monotonic() - started) * 1000, root
@@ -1196,12 +1636,16 @@ async def timer_cell(
 
 
 async def prepare_activation_template(
+    profile: BackendProfile,
     template: HeistTemplate,
     binary: pathlib.Path,
     startup: float,
     shutdown: float,
 ) -> pathlib.Path:
-    root = clone_root(template.root, "worldstream-kill-activation-template-")
+    root = profile.new_root(
+        f"worldstream-kill-{profile.profile_id}-activation-template-",
+        source=template.root,
+    )
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     try:
         daemon.start()
@@ -1260,6 +1704,7 @@ async def prepare_activation_template(
 
 
 async def verify_overdue_timer_restart(
+    profile: BackendProfile,
     template: HeistTemplate,
     binary: pathlib.Path,
     startup: float,
@@ -1267,14 +1712,16 @@ async def verify_overdue_timer_restart(
 ) -> tuple[dict[str, Any], pathlib.Path]:
     """Prove a closed overdue store starts gated and drains exactly once."""
 
-    root = clone_root(template.root, "worldstream-overdue-recovery-")
+    root = profile.new_root(
+        f"worldstream-{profile.profile_id}-overdue-recovery-", source=template.root
+    )
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     succeeded = False
     try:
         remaining = template.timer_due_monotonic - time.monotonic()
         if remaining > 0:
             await asyncio.sleep(remaining)
-        before_store = store_identity(daemon)
+        before_store = store_identity(profile, daemon)
         daemon.start()
         member = Client(daemon.base_url, template.member_bearers[0])
         try:
@@ -1316,7 +1763,7 @@ async def verify_overdue_timer_restart(
         recovered_hash = canonical_hash(recovered)
         daemon.stop()
         daemon.start()
-        after_store = store_identity(daemon)
+        after_store = store_identity(profile, daemon)
         restarted_member = Client(daemon.base_url, template.member_bearers[0])
         restarted = await projection_with_retry(restarted_member, template.room_id, 15)
         restarted_hash = canonical_hash(restarted)
@@ -1326,6 +1773,8 @@ async def verify_overdue_timer_restart(
             )
         result = {
             "status": "passed",
+            "storage_backend": profile.storage_backend,
+            "connection_mode": profile.connection_mode,
             "durable_state": "catching_up_with_overdue_timer",
             "daemon_ready": True,
             "ordinary_work_gated_before_drain": True,
@@ -1364,6 +1813,7 @@ async def runner_retry_with_room_busy(
 
 
 async def activation_cell(
+    profile: BackendProfile,
     boundary: str,
     activation_template: pathlib.Path,
     template: HeistTemplate,
@@ -1372,7 +1822,10 @@ async def activation_cell(
     request_timeout: float,
     shutdown: float,
 ) -> tuple[dict[str, Any], float, pathlib.Path]:
-    root = clone_root(activation_template, f"worldstream-kill-activation-{boundary}-")
+    root = profile.new_root(
+        f"worldstream-kill-{profile.profile_id}-activation-{boundary}-",
+        source=activation_template,
+    )
     daemon = Daemon(root, binary, startup_timeout=startup, shutdown_timeout=shutdown)
     claim_id = new_ulid()
     crash = CrashSpec("activation_lease", boundary, claim_id)
@@ -1381,7 +1834,7 @@ async def activation_cell(
     succeeded = False
     try:
         daemon.start(crash)
-        before_store = store_identity(daemon)
+        before_store = store_identity(profile, daemon)
         runner_client = Client(daemon.base_url, template.runner_bearer)
         runner = await runner_client.open_runner(
             template.runner_id, 1, [HEIST_PACK["id"]]
@@ -1409,7 +1862,7 @@ async def activation_cell(
         await runner.close()
         runner = None
         daemon.start()
-        after_store = store_identity(daemon)
+        after_store = store_identity(profile, daemon)
         runner_client = Client(daemon.base_url, template.runner_bearer)
         runner = await runner_client.open_runner(
             template.runner_id, 1, [HEIST_PACK["id"]]
@@ -1437,7 +1890,7 @@ async def activation_cell(
             "receipt_hash": canonical_hash(receipt_core(first, "activation_lease")),
         }
         cell = completed_cell(
-            crash, kill_result, before_store, after_store, verification
+            profile, crash, kill_result, before_store, after_store, verification
         )
         succeeded = True
         return cell, (time.monotonic() - started) * 1000, root
@@ -1471,6 +1924,8 @@ def safe_log(cells: list[dict[str, Any]], durations: list[float]) -> str:
         lines.append(
             " ".join(
                 (
+                    f"storage_backend={cell['storage_backend']}",
+                    f"connection_mode={cell['connection_mode']}",
                     f"operation={cell['operation']}",
                     f"boundary={cell['name']}",
                     "signal=SIGKILL",
@@ -1484,7 +1939,9 @@ def safe_log(cells: list[dict[str, Any]], durations: list[float]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def scan_daemon_logs(roots: list[pathlib.Path]) -> dict[str, Any]:
+def scan_daemon_logs(
+    roots: list[pathlib.Path], extra_sentinels: dict[str, bytes] | None = None
+) -> dict[str, Any]:
     sentinels: dict[str, bytes] = {}
     channels: dict[str, pathlib.Path] = {}
     unique_roots = sorted({root for root in roots if root.is_dir()})
@@ -1497,6 +1954,8 @@ def scan_daemon_logs(roots: list[pathlib.Path]) -> dict[str, Any]:
         sentinels[f"operator-capability-{index:02d}"] = b"wsb1:" + value.hex().encode(
             "ascii"
         )
+    for name, value in sorted((extra_sentinels or {}).items()):
+        sentinels[f"provider-{name}"] = value
     log_index = 0
     for root in unique_roots:
         for path in sorted(root.glob("worldstreamd-*.log")):
@@ -1512,115 +1971,196 @@ def scan_daemon_logs(roots: list[pathlib.Path]) -> dict[str, Any]:
         ) from error
 
 
+async def run_profile(
+    profile: BackendProfile,
+    args: argparse.Namespace,
+    templates: list[pathlib.Path],
+    cell_roots: list[pathlib.Path],
+) -> tuple[list[dict[str, Any]], list[float], dict[str, Any]]:
+    cells: list[dict[str, Any]] = []
+    durations: list[float] = []
+    counter = await prepare_counter_template(
+        profile,
+        args.daemon_bin,
+        args.startup_timeout_seconds,
+        args.shutdown_timeout_seconds,
+    )
+    templates.append(counter.root)
+    for boundary in BOUNDARIES:
+        cell, duration, root = await room_create_cell(
+            profile,
+            boundary,
+            args.daemon_bin,
+            args.startup_timeout_seconds,
+            args.request_timeout_seconds,
+            args.shutdown_timeout_seconds,
+        )
+        cells.append(cell)
+        durations.append(duration)
+        cell_roots.append(root)
+    for boundary in BOUNDARIES:
+        cell, duration, root = await action_cell(
+            profile,
+            boundary,
+            counter,
+            args.daemon_bin,
+            args.startup_timeout_seconds,
+            args.request_timeout_seconds,
+            args.shutdown_timeout_seconds,
+        )
+        cells.append(cell)
+        durations.append(duration)
+        cell_roots.append(root)
+
+    # All Timer and Activation precondition clones start before the same public
+    # deadline. Each cell receives its own closed SQLite copy or direct-admin
+    # PostgreSQL template clone before the runtime connection path is selected.
+    heist = await prepare_heist_template(
+        profile,
+        args.daemon_bin,
+        args.startup_timeout_seconds,
+        args.shutdown_timeout_seconds,
+    )
+    templates.append(heist.root)
+    timer_and_activation = await asyncio.gather(
+        *(
+            timer_cell(
+                profile,
+                boundary,
+                heist,
+                args.daemon_bin,
+                args.startup_timeout_seconds,
+                args.request_timeout_seconds,
+                args.shutdown_timeout_seconds,
+            )
+            for boundary in BOUNDARIES
+        ),
+        prepare_activation_template(
+            profile,
+            heist,
+            args.daemon_bin,
+            args.startup_timeout_seconds,
+            args.shutdown_timeout_seconds,
+        ),
+    )
+    for result in timer_and_activation[: len(BOUNDARIES)]:
+        if not isinstance(result, tuple) or len(result) != 3:
+            raise EvidenceFailure("Timer cell result was invalid")
+        cell, duration, root = result
+        cells.append(cell)
+        durations.append(duration)
+        cell_roots.append(root)
+    activation_template = timer_and_activation[-1]
+    if not isinstance(activation_template, pathlib.Path):
+        raise EvidenceFailure("Activation template result was invalid")
+    templates.append(activation_template)
+    overdue_restart, overdue_root = await verify_overdue_timer_restart(
+        profile,
+        heist,
+        args.daemon_bin,
+        args.startup_timeout_seconds,
+        args.shutdown_timeout_seconds,
+    )
+    templates.append(overdue_root)
+    for boundary in BOUNDARIES:
+        cell, duration, root = await activation_cell(
+            profile,
+            boundary,
+            activation_template,
+            heist,
+            args.daemon_bin,
+            args.startup_timeout_seconds,
+            args.request_timeout_seconds,
+            args.shutdown_timeout_seconds,
+        )
+        cells.append(cell)
+        durations.append(duration)
+        cell_roots.append(root)
+
+    expected = {
+        (operation, boundary)
+        for operation in ("room_create", "action", "timer", "activation_lease")
+        for boundary in BOUNDARIES
+    }
+    observed = {(cell["operation"], cell["name"]) for cell in cells}
+    if len(cells) != 12 or observed != expected:
+        raise EvidenceFailure(
+            f"{profile.profile_id} did not produce its exact 12 kill cells"
+        )
+    return cells, durations, overdue_restart
+
+
 async def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
-    if platform.system() != "Linux":
-        raise EvidenceFailure("Linux is required for process-level SIGKILL evidence")
+    if platform.system() != "Linux" or platform.machine() not in {"x86_64", "amd64"}:
+        raise EvidenceFailure(
+            "Linux x86-64 is required for process-level SIGKILL evidence"
+        )
     if not args.daemon_bin.is_file() or not os.access(args.daemon_bin, os.X_OK):
         raise EvidenceFailure("worldstreamd is unavailable or not executable")
     distribution = distribution_identity(
         args.daemon_bin, args.package_archive, args.package_report
     )
+    if distribution.get("packaged_artifact_bound") is not True:
+        raise EvidenceFailure("release kill evidence must bind a packaged daemon")
     templates: list[pathlib.Path] = []
     cell_roots: list[pathlib.Path] = []
     cells: list[dict[str, Any]] = []
     durations: list[float] = []
+    overdue_profiles: list[dict[str, Any]] = []
+    provider_context: BackendProviderContext | None = None
     started = time.monotonic()
     try:
-        counter = await prepare_counter_template(
-            args.daemon_bin, args.startup_timeout_seconds, args.shutdown_timeout_seconds
-        )
-        templates.append(counter.root)
-        for boundary in BOUNDARIES:
-            cell, duration, root = await room_create_cell(
-                boundary,
-                args.daemon_bin,
-                args.startup_timeout_seconds,
-                args.request_timeout_seconds,
-                args.shutdown_timeout_seconds,
+        provider_context = prepare_backend_provider(args, distribution)
+        if (
+            tuple(
+                (profile.storage_backend, profile.connection_mode)
+                for profile in provider_context.profiles
             )
-            cells.append(cell)
-            durations.append(duration)
-            cell_roots.append(root)
-        for boundary in BOUNDARIES:
-            cell, duration, root = await action_cell(
-                boundary,
-                counter,
-                args.daemon_bin,
-                args.startup_timeout_seconds,
-                args.request_timeout_seconds,
-                args.shutdown_timeout_seconds,
+            != BACKEND_PROFILES
+        ):
+            raise EvidenceFailure("backend provider profile inventory was not frozen")
+        for profile in provider_context.profiles:
+            profile_cells, profile_durations, overdue = await run_profile(
+                profile, args, templates, cell_roots
             )
-            cells.append(cell)
-            durations.append(duration)
-            cell_roots.append(root)
-
-        # All Timer and Activation precondition clones start before the same
-        # public 30-second Heist deadline. This avoids turning an already-due
-        # closed snapshot into an artificial startup condition while keeping
-        # every cell on its own disposable store.
-        heist = await prepare_heist_template(
-            args.daemon_bin, args.startup_timeout_seconds, args.shutdown_timeout_seconds
-        )
-        templates.append(heist.root)
-        timer_and_activation = await asyncio.gather(
-            *(
-                timer_cell(
-                    boundary,
-                    heist,
-                    args.daemon_bin,
-                    args.startup_timeout_seconds,
-                    args.request_timeout_seconds,
-                    args.shutdown_timeout_seconds,
-                )
-                for boundary in BOUNDARIES
-            ),
-            prepare_activation_template(
-                heist,
-                args.daemon_bin,
-                args.startup_timeout_seconds,
-                args.shutdown_timeout_seconds,
-            ),
-        )
-        for cell, duration, root in timer_and_activation[: len(BOUNDARIES)]:
-            cells.append(cell)
-            durations.append(duration)
-            cell_roots.append(root)
-        activation_template = timer_and_activation[-1]
-        if not isinstance(activation_template, pathlib.Path):
-            raise EvidenceFailure("activation template result was invalid")
-        templates.append(activation_template)
-        overdue_restart, overdue_root = await verify_overdue_timer_restart(
-            heist,
-            args.daemon_bin,
-            args.startup_timeout_seconds,
-            args.shutdown_timeout_seconds,
-        )
-        templates.append(overdue_root)
-        for boundary in BOUNDARIES:
-            cell, duration, root = await activation_cell(
-                boundary,
-                activation_template,
-                heist,
-                args.daemon_bin,
-                args.startup_timeout_seconds,
-                args.request_timeout_seconds,
-                args.shutdown_timeout_seconds,
-            )
-            cells.append(cell)
-            durations.append(duration)
-            cell_roots.append(root)
+            cells.extend(profile_cells)
+            durations.extend(profile_durations)
+            overdue_profiles.append(overdue)
 
         expected_cells = {
-            (operation, boundary)
+            (storage_backend, connection_mode, operation, boundary)
+            for storage_backend, connection_mode in BACKEND_PROFILES
             for operation in ("room_create", "action", "timer", "activation_lease")
             for boundary in BOUNDARIES
         }
-        observed_cells = {(cell["operation"], cell["name"]) for cell in cells}
-        if len(cells) != 12 or observed_cells != expected_cells:
-            raise EvidenceFailure(
-                "process kill matrix did not produce the exact frozen cells"
+        observed_cells = {
+            (
+                cell["storage_backend"],
+                cell["connection_mode"],
+                cell["operation"],
+                cell["name"],
             )
-        secret_scan = scan_daemon_logs(cell_roots + templates)
+            for cell in cells
+        }
+        if len(cells) != EXPECTED_CELL_COUNT or observed_cells != expected_cells:
+            raise EvidenceFailure(
+                "process kill matrix did not produce the exact frozen 36 cells"
+            )
+        if provider_context.cleanup() != "pass":
+            raise EvidenceFailure("PostgreSQL provider cleanup failed closed")
+        secret_scan = scan_daemon_logs(
+            cell_roots + templates, provider_context.privacy_capture.sentinels
+        )
+        backend_provider = provider_context.evidence()
+        profiles = [
+            {
+                "storage_backend": storage_backend,
+                "connection_mode": connection_mode,
+                "cell_count": 12,
+                "overdue_timer_restart": "passed",
+            }
+            for storage_backend, connection_mode in BACKEND_PROFILES
+        ]
         report = {
             "schema": SCHEMA,
             "status": "passed",
@@ -1635,6 +2175,12 @@ async def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                 "release_gate": True,
                 "release_evidence": False,
                 "handoff_status": "eligible_input_after_strict_producer_validation",
+            },
+            "backend_matrix": {
+                "status": "covered",
+                "storage_backend_and_connection_mode_separate": True,
+                "profiles": profiles,
+                "postgres_provider": backend_provider,
             },
             "operation": {
                 "status": "committed_or_verified_absent_per_boundary",
@@ -1653,7 +2199,10 @@ async def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                 "same_data_directory": True,
                 "health_observed": True,
             },
-            "overdue_timer_restart_regression": overdue_restart,
+            "overdue_timer_restart_regression": {
+                "status": "passed",
+                "profiles": overdue_profiles,
+            },
             "privacy": {"status": "pass", "secret_scan": secret_scan},
             "comparison": {
                 "status": "passed",
@@ -1672,14 +2221,31 @@ async def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             },
             "limits": [
                 "This is SIGKILL process evidence, not a physical power-loss claim.",
-                "Each precondition store was created through public APIs and copied only while closed.",
+                "Precondition stores are created through public APIs and cloned only while closed.",
+                "PostgreSQL migration, cloning, and observation use the direct-admin path.",
                 "Release promotion remains owned by the strict detached failure/soak producer.",
             ],
         }
         return report, safe_log(cells, durations)
+    except POSTGRES_HARNESS.LaneFailure as error:
+        raise EvidenceFailure("PostgreSQL provider operation failed closed") from error
     finally:
+        if (
+            provider_context is not None
+            and provider_context.cleanup_status == "not_started"
+        ):
+            try:
+                provider_context.cleanup()
+            except (
+                POSTGRES_HARNESS.LaneFailure,
+                OSError,
+                subprocess.SubprocessError,
+            ):
+                POSTGRES_HARNESS.ACTIVE_PRIVACY_CAPTURE = None
         for root in cell_roots + templates:
             shutil.rmtree(root, ignore_errors=True)
+        if provider_context is not None:
+            shutil.rmtree(provider_context.root, ignore_errors=True)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1691,6 +2257,8 @@ def parser() -> argparse.ArgumentParser:
     )
     command.add_argument("--package-archive", type=pathlib.Path)
     command.add_argument("--package-report", type=pathlib.Path)
+    command.add_argument("--docker", default=shutil.which("docker"))
+    command.add_argument("--psql", default=shutil.which("psql"))
     command.add_argument("--startup-timeout-seconds", type=float, default=30)
     command.add_argument("--request-timeout-seconds", type=float, default=20)
     command.add_argument("--shutdown-timeout-seconds", type=float, default=10)
@@ -1722,7 +2290,7 @@ def main() -> int:
         if args.log_output is not None:
             atomic_write(args.log_output, log)
         sys.stdout.write(encoded)
-        print("kill-point matrix: exact 12-cell SIGKILL matrix passed", file=sys.stderr)
+        print("kill-point matrix: exact 36-cell SIGKILL matrix passed", file=sys.stderr)
         return 0
     except (EvidenceFailure, ProtocolError, OSError, TimeoutError, ValueError) as error:
         report = {

@@ -575,7 +575,7 @@ def test_source_archive_is_built_from_clean_checkout_before_tools_or_downloads()
     assert "--source-dir ." in source_step
     assert "$RUNNER_TEMP/worldstream-clean-source-payload" in source_step
     assert "release-inputs" not in source_step
-    assert release.count("--target source") == 1
+    assert source_step.count("--target source") == 2
 
 
 def test_workflow_download_layout_matches_every_typed_source_map():
@@ -624,9 +624,15 @@ def test_workflow_sequences_pre_sign_supply_chain_without_a_source_cycle():
         encoding="utf-8"
     )
     release = workflow[workflow.index("  release-evidence:") :]
-    adapt = release.index("python3 scripts/release-evidence-produce.py")
-    supply = release.index("python3 scripts/release-supply-chain.py")
-    collect = release.index("python3 scripts/release-evidence-collect.py")
+    adapt = release.index(
+        '"$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-evidence-produce.py'
+    )
+    supply = release.index(
+        '"$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py'
+    )
+    collect = release.index(
+        '"$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-evidence-collect.py'
+    )
     assert adapt < supply < collect
     adapter_step = release[adapt:supply]
     assert "--missing supply-chain=" in adapter_step

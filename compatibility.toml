@@ -517,10 +517,10 @@ digest_location = "release-manifest.json"
 [[release_artifacts]]
 id = "sigstore-bundle"
 profile = "all"
-digest_algorithm = "sha256"
+digest_algorithm = ""
 digest = ""
-status = "detached"
-digest_location = "release-manifest.json"
+status = "verification_material"
+verification_material_location = "release-manifest.json#verification_material.sigstore-bundle.path"
 
 [[release_artifacts]]
 id = "spdx-sbom"
@@ -574,7 +574,7 @@ artifact_digest = ""
 artifact_digest_location = "release-manifest.json"
 
 [[evidence]]
-id = "backend-native-isolated-restore-and-full-semantic-verifier"
+id = "backend-native-isolated-restore-and-bounded-semantic-verifier"
 release_gate = true
 status = "detached"
 artifact_digest = ""

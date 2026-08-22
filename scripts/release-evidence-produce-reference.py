@@ -17,6 +17,7 @@ import json
 import os
 import stat
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -26,15 +27,17 @@ ADAPTER_PATH = ROOT / "scripts/release-evidence-produce.py"
 AGGREGATOR_PATH = ROOT / "scripts/reference-evidence.py"
 PACKAGED_ACCEPTANCE_PATH = ROOT / "scripts/postgres-packaged-acceptance.py"
 PROJECTOR_PATH = ROOT / "scripts/reference-evidence-project.py"
+REFERENCE_TARGET_RUNNER_PATH = ROOT / "scripts/reference-target-workload.py"
 SOURCE_ID = "reference-performance"
 EVIDENCE_ID = "reference-performance-per-backend"
-EXPECTED_KINDS = frozenset({"counter", "heist", "sqlite", "postgres", "soak"})
+EXPECTED_KINDS = frozenset({"counter", "heist", "sqlite", "postgres", "soak", "target"})
 EXPECTED_COVERAGE = {
     "counter": {"latency_ms", "load", "fan_out"},
     "heist": {"latency_ms", "load", "fan_out"},
     "sqlite": {"latency_ms", "memory", "database_growth", "recovery"},
     "postgres": {"latency_ms", "memory", "database_growth", "recovery"},
     "soak": {"latency_ms", "memory", "database_growth"},
+    "target": {"reference_targets"},
 }
 EXPECTED_MEASUREMENT_SOURCES = {
     "latency_ms": EXPECTED_KINDS,
@@ -43,8 +46,38 @@ EXPECTED_MEASUREMENT_SOURCES = {
     "memory": frozenset({"sqlite", "postgres", "soak"}),
     "database_growth": frozenset({"sqlite", "postgres", "soak"}),
     "recovery": frozenset({"sqlite", "postgres"}),
+    "reference_targets": frozenset({"target"}),
 }
 SHA256_PREFIX = "sha256:"
+REFERENCE_TARGET_SCHEMA = "worldstream/reference-target-workload/v1"
+REFERENCE_TARGET_PROJECTION_SCHEMA = "worldstream/reference-target-projection/v1"
+REFERENCE_TARGET_PROFILE_SCHEMA = "worldstream/reference-target-profile/v1"
+REFERENCE_TARGET_DIMENSIONS = (
+    "stored_passivated_rooms",
+    "simultaneously_loaded_rooms",
+    "mostly_idle_websocket_sessions",
+    "sustained_accepted_transition_rate",
+    "commit_to_ack_latency",
+    "one_hour_bounded_soak",
+    "snapshot_tail_recovery",
+    "repeated_forced_termination_no_acknowledged_loss",
+)
+FROZEN_REFERENCE_PROFILE = {
+    "schema": REFERENCE_TARGET_PROFILE_SCHEMA,
+    "name": "frozen_release",
+    "publishable_candidate": True,
+    "stored_room_target": 10_000,
+    "loaded_room_target": 100,
+    "idle_websocket_target": 1_000,
+    "sustained_transition_rate_target_per_second": 100,
+    "sustained_transition_window_seconds": 1_800,
+    "commit_to_ack_p95_target_ms": 100,
+    "history_room_transition_target": 100_000,
+    "snapshot_maximum_lag_transitions": 250,
+    "snapshot_tail_recovery_target_ms": 5_000,
+    "one_hour_soak_target_seconds": 3_600,
+    "forced_termination_minimum_count": 2,
+}
 
 
 def load_adapter():
@@ -124,10 +157,12 @@ def read_json(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
     regular_file(path, label)
     try:
         raw = path.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except OSError as error:
         raise ReferenceError(f"{label} is not valid UTF-8 JSON: {error}") from error
-    require(isinstance(value, dict), f"{label} must be a JSON object")
+    try:
+        value = ADAPTER.COLLECTOR.strict_json_object(raw, label)
+    except ADAPTER.COLLECTOR.CollectionError as error:
+        raise ReferenceError(str(error)) from error
     return value, raw
 
 
@@ -296,6 +331,145 @@ def positive_story_fan_out(value: object, label: str) -> None:
     )
 
 
+def verify_packaged_channel_classes(value: object, channel_names: set[str]) -> None:
+    expected_classes = list(PACKAGED_ACCEPTANCE.REQUIRED_PRIVACY_CHANNEL_CLASSES)
+    require(
+        isinstance(value, dict)
+        and set(value) == {"schema", "status", "required", "classes"}
+        and value.get("schema") == PACKAGED_ACCEPTANCE.PRIVACY_CHANNEL_CLASS_SCHEMA
+        and value.get("status") == "complete"
+        and value.get("required") == expected_classes
+        and isinstance(value.get("classes"), list)
+        and len(value["classes"]) == len(expected_classes),
+        "packaged backend acceptance privacy channel-class contract is invalid",
+    )
+    assigned_channels: set[str] = set()
+    for expected_class, row in zip(expected_classes, value["classes"], strict=True):
+        observed_channels = row.get("channels") if isinstance(row, dict) else None
+        require(
+            isinstance(row, dict)
+            and set(row) == {"class", "channel_count", "channels"}
+            and row.get("class") == expected_class
+            and type(row.get("channel_count")) is int
+            and isinstance(observed_channels, list)
+            and 0 < len(observed_channels) <= len(channel_names)
+            and row["channel_count"] == len(observed_channels)
+            and all(isinstance(name, str) for name in observed_channels)
+            and observed_channels == sorted(observed_channels)
+            and len(set(observed_channels)) == len(observed_channels)
+            and all(name in channel_names for name in observed_channels)
+            and not assigned_channels.intersection(observed_channels),
+            "packaged backend acceptance privacy channel-class mapping is invalid",
+        )
+        assigned_channels.update(observed_channels)
+    require(
+        assigned_channels == channel_names,
+        "packaged backend acceptance privacy channel classes do not exactly cover scanned channels",
+    )
+
+
+def verify_packaged_privacy(value: object) -> None:
+    require(
+        isinstance(value, dict)
+        and set(value) == {"status", "channel_contract", "secret_scan"}
+        and value.get("status") == "pass"
+        and value.get("channel_contract")
+        == PACKAGED_ACCEPTANCE.PRIVACY_CHANNEL_CONTRACT,
+        "packaged backend acceptance privacy evidence is incomplete",
+    )
+    scan = value["secret_scan"]
+    require(
+        isinstance(scan, dict)
+        and set(scan)
+        == {
+            "schema",
+            "status",
+            "secrets_emitted",
+            "encodings_scanned",
+            "sentinels",
+            "channels",
+            "channel_class_inventory",
+        }
+        and scan.get("schema") == PACKAGED_ACCEPTANCE.SECRET_SCAN.MATRIX_SCHEMA
+        and scan.get("status") == "pass"
+        and scan.get("secrets_emitted") is False
+        and scan.get("encodings_scanned") == ["base64", "base64url", "hex", "raw"],
+        "packaged backend acceptance privacy scan matrix is invalid",
+    )
+    channels = scan["channels"]
+    require(
+        isinstance(channels, list)
+        and 0 < len(channels) <= PACKAGED_ACCEPTANCE.SECRET_SCAN.MAX_CHANNELS
+        and all(isinstance(item, dict) for item in channels)
+        and channels == sorted(channels, key=lambda item: item.get("channel", "")),
+        "packaged backend acceptance privacy channel inventory is invalid",
+    )
+    channel_names: set[str] = set()
+    total_channel_bytes = 0
+    for channel in channels:
+        require(
+            isinstance(channel, dict)
+            and set(channel) == {"channel", "sha256", "size_bytes"}
+            and isinstance(channel.get("channel"), str)
+            and bool(channel["channel"])
+            and channel["channel"].replace("-", "").isalnum()
+            and channel["channel"] not in channel_names
+            and type(channel.get("size_bytes")) is int
+            and 0
+            <= channel["size_bytes"]
+            <= PACKAGED_ACCEPTANCE.SECRET_SCAN.MAX_CHANNEL_BYTES,
+            "packaged backend acceptance privacy channel record is invalid",
+        )
+        sha256_reference(channel.get("sha256"), "privacy channel")
+        channel_names.add(channel["channel"])
+        total_channel_bytes += channel["size_bytes"]
+    require(
+        total_channel_bytes > 0,
+        "packaged backend acceptance privacy channels contain no retained bytes",
+    )
+    verify_packaged_channel_classes(scan["channel_class_inventory"], channel_names)
+
+    sentinels = scan["sentinels"]
+    require(
+        isinstance(sentinels, list)
+        and 0 < len(sentinels) <= PACKAGED_ACCEPTANCE.SECRET_SCAN.MAX_SENTINELS
+        and all(isinstance(item, dict) for item in sentinels)
+        and sentinels == sorted(sentinels, key=lambda item: item.get("name", "")),
+        "packaged backend acceptance privacy sentinel inventory is invalid",
+    )
+    sentinel_names: set[str] = set()
+    for sentinel in sentinels:
+        require(
+            isinstance(sentinel, dict)
+            and set(sentinel) == {"name", "sha256", "size_bytes"}
+            and isinstance(sentinel.get("name"), str)
+            and bool(sentinel["name"])
+            and sentinel["name"].replace("-", "").isalnum()
+            and sentinel["name"] not in sentinel_names
+            and type(sentinel.get("size_bytes")) is int
+            and 16
+            <= sentinel["size_bytes"]
+            <= PACKAGED_ACCEPTANCE.SECRET_SCAN.MAX_SENTINEL_BYTES,
+            "packaged backend acceptance privacy sentinel record is invalid",
+        )
+        sha256_reference(sentinel.get("sha256"), "privacy sentinel")
+        sentinel_names.add(sentinel["name"])
+    require(
+        all(
+            any(name.startswith(prefix) for name in sentinel_names)
+            for prefix in (
+                "authority-secret-",
+                "operator-capability-",
+                "postgres-admin-password-",
+                "postgres-runtime-password-",
+                "postgres-admin-dsn-",
+                "postgres-runtime-dsn-",
+            )
+        ),
+        "packaged backend acceptance privacy sentinel classes are incomplete",
+    )
+
+
 def verify_packaged_acceptance(
     path: Path,
     distribution: dict[str, Any],
@@ -318,6 +492,7 @@ def verify_packaged_acceptance(
             "package_binding",
             "performance",
             "cleanup",
+            "privacy",
         }
         and report.get("schema") == PACKAGED_ACCEPTANCE.SCHEMA
         and report.get("canonical_encoding") == "utf8-sorted-key-compact-json-lf"
@@ -327,6 +502,7 @@ def verify_packaged_acceptance(
         and report.get("cleanup") == "pass",
         "packaged backend acceptance is not a complete releasable six-cell report",
     )
+    verify_packaged_privacy(report.get("privacy"))
     require(
         report.get("provider")
         == {
@@ -359,32 +535,17 @@ def verify_packaged_acceptance(
         "packaged backend acceptance package/report/binary/manifest identity mismatch",
     )
     environment = report.get("reference_environment")
-    platform_value = (
-        environment.get("platform") if isinstance(environment, dict) else None
-    )
-    hardware = environment.get("hardware") if isinstance(environment, dict) else None
-    filesystem = (
-        environment.get("filesystem") if isinstance(environment, dict) else None
-    )
     engines = environment.get("engines") if isinstance(environment, dict) else None
+    try:
+        AGGREGATOR._validate_reference_environment(
+            "packaged-acceptance", {"reference_environment": environment}
+        )
+    except AGGREGATOR.EvidenceError as error:
+        raise ReferenceError(
+            f"packaged backend acceptance reference host is not certified: {error}"
+        ) from error
     require(
         isinstance(environment, dict)
-        and environment.get("schema") == "worldstream/reference-environment/v1"
-        and isinstance(platform_value, dict)
-        and platform_value.get("system") == "Linux"
-        and platform_value.get("machine") in {"x86_64", "amd64"}
-        and isinstance(platform_value.get("release"), str)
-        and bool(platform_value["release"])
-        and isinstance(hardware, dict)
-        and type(hardware.get("logical_cpus")) is int
-        and hardware["logical_cpus"] > 0
-        and type(hardware.get("physical_memory_bytes")) is int
-        and hardware["physical_memory_bytes"] > 0
-        and isinstance(filesystem, dict)
-        and all(
-            isinstance(filesystem.get(name), str) and bool(filesystem[name])
-            for name in ("repository", "temporary")
-        )
         and isinstance(engines, dict)
         and engines.get("postgresql")
         == {
@@ -393,18 +554,14 @@ def verify_packaged_acceptance(
                 "server_version_num": "170011",
                 "synchronous_commit": "on",
                 "transaction_isolation": "read committed",
+                **PACKAGED_ACCEPTANCE.POSTGRESQL_CONTRACT_SETTINGS,
             },
             "connection_mode": "direct_and_transaction_pooler",
-        }
-        and engines.get("pgbouncer")
-        == {
-            "image": PACKAGED_ACCEPTANCE.PGBOUNCER_IMAGE,
-            "pool_mode": "transaction",
         }
         and engines.get("sqlite")
         == {
             "version": "3.53.4",
-            "settings": {"journal_mode": "wal", "synchronous": "full"},
+            "settings": PACKAGED_ACCEPTANCE.SQLITE_REFERENCE_SETTINGS,
             "connection_mode": "embedded",
         },
         "packaged backend acceptance environment disclosure is incomplete",
@@ -589,6 +746,556 @@ def measured_resources(value: object, label: str, field: str) -> None:
     )
 
 
+def exact_binding(raw: bytes, schema: str) -> dict[str, Any]:
+    return {
+        "sha256": SHA256_PREFIX + hashlib.sha256(raw).hexdigest(),
+        "size_bytes": len(raw),
+        "schema": schema,
+    }
+
+
+def file_binding(path: Path, schema: str) -> dict[str, Any]:
+    regular_file(path, f"{schema} binding input")
+    return {
+        "sha256": sha256(path),
+        "size_bytes": path.stat().st_size,
+        "schema": schema,
+    }
+
+
+def packaged_sdk_identity(archive: Path) -> dict[str, Any]:
+    """Digest the exact Python SDK inputs retained in the verified native archive."""
+
+    suffixes = {
+        "pyproject_sha256": "/sdk/python/pyproject.toml",
+        "lock_sha256": "/sdk/python/uv.lock",
+        "module_init_sha256": "/sdk/python/src/worldstream_sdk/__init__.py",
+        "client_module_sha256": "/sdk/python/src/worldstream_sdk/client.py",
+        "compatibility_identity_sha256": (
+            "/sdk/python/src/worldstream_sdk/compatibility_identity.json"
+        ),
+    }
+    observed: dict[str, Any] = {}
+    try:
+        with tarfile.open(archive, "r:gz") as package:
+            members = package.getmembers()
+            for field, suffix in suffixes.items():
+                matches = [
+                    member
+                    for member in members
+                    if member.name.endswith(suffix) and member.isfile()
+                ]
+                require(len(matches) == 1, f"archive must contain one exact {suffix}")
+                source = package.extractfile(matches[0])
+                require(source is not None, f"archive {suffix} could not be read")
+                raw = source.read(16 * 1024 * 1024 + 1)
+                require(
+                    0 < len(raw) <= 16 * 1024 * 1024,
+                    f"archive {suffix} exceeded its byte bound",
+                )
+                observed[field] = SHA256_PREFIX + hashlib.sha256(raw).hexdigest()
+                observed[field.replace("_sha256", "_size_bytes")] = len(raw)
+    except (OSError, tarfile.TarError) as error:
+        raise ReferenceError("packaged SDK identity could not be read") from error
+    return {
+        "source": "verified_native_archive",
+        **observed,
+        "runtime_module_under_packaged_sdk_root": True,
+    }
+
+
+def validate_reference_target(
+    report: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    distribution: dict[str, Any],
+    packaged_acceptance_sha256: str,
+    expected_bindings: dict[str, dict[str, Any]],
+    expected_external_sources: dict[str, dict[str, Any]],
+    expected_packaged_sdk: dict[str, Any],
+    kill_cell_count: int,
+    soak_elapsed_seconds: float,
+) -> dict[str, Any]:
+    """Validate the exact real frozen-target attempt, including honest misses."""
+
+    require(
+        set(report)
+        == {
+            "schema",
+            "status",
+            "release_evidence",
+            "performance_class",
+            "execution",
+            "profile",
+            "identity",
+            "reference_environment",
+            "reference_workload",
+            "runtime_observation",
+            "bindings",
+            "bound_external_sources",
+            "dimensions",
+            "correctness",
+            "measurements",
+            "limitations",
+        }
+        and report.get("schema") == REFERENCE_TARGET_SCHEMA
+        and report.get("status") == "completed"
+        and report.get("release_evidence") is False
+        and report.get("performance_class") == "reference_non_release",
+        "frozen reference-target report is incomplete",
+    )
+    execution = report.get("execution")
+    runner_digest = sha256(REFERENCE_TARGET_RUNNER_PATH)
+    require(
+        isinstance(execution, dict)
+        and set(execution)
+        == {
+            "mode",
+            "workload_source",
+            "storage_profile",
+            "connection_mode",
+            "public_api_only",
+            "simulated",
+            "scaled",
+            "profile_args_locked",
+            "runner_sha256",
+        }
+        and execution.get("mode") == "package_bound_linux_reference"
+        and execution.get("workload_source") == "packaged_worldstreamd_public_api"
+        and execution.get("storage_profile") == "sqlite-bundled"
+        and execution.get("connection_mode") == "embedded"
+        and execution.get("public_api_only") is True
+        and execution.get("simulated") is False
+        and execution.get("scaled") is False
+        and execution.get("profile_args_locked") is True
+        and execution.get("runner_sha256") == runner_digest,
+        "reference target was scaled, simulated, or not run by the bound runner",
+    )
+    require(
+        report.get("profile") == FROZEN_REFERENCE_PROFILE,
+        "reference target did not use the exact frozen release profile",
+    )
+    identity = report.get("identity")
+    require(
+        isinstance(identity, dict)
+        and set(identity)
+        == {
+            "product",
+            "profile",
+            "version",
+            "artifact_sha256",
+            "binary_sha256",
+            "manifest_json_sha256",
+            "manifest_toml_sha256",
+            "packaged_acceptance_sha256",
+            "packaged_sdk",
+        }
+        and identity.get("product") == "worldstream"
+        and identity.get("profile") == "linux-reference"
+        and identity.get("version") == manifest["release_candidate"]
+        and identity.get("artifact_sha256") == distribution["archive_sha256"]
+        and identity.get("binary_sha256") == distribution["binary_sha256"]
+        and identity.get("manifest_json_sha256") == distribution["manifest_json_sha256"]
+        and identity.get("manifest_toml_sha256") == distribution["manifest_toml_sha256"]
+        and identity.get("packaged_acceptance_sha256") == packaged_acceptance_sha256,
+        "reference target package/manifest identity is not exact",
+    )
+    require(
+        identity.get("packaged_sdk") == expected_packaged_sdk,
+        "reference target did not execute the SDK bytes in the verified native archive",
+    )
+    try:
+        AGGREGATOR._validate_reference_environment(
+            "target", {"reference_environment": report.get("reference_environment")}
+        )
+        AGGREGATOR._validate_reference_workload(
+            "target", {"reference_workload": report.get("reference_workload")}
+        )
+    except AGGREGATOR.EvidenceError as error:
+        raise ReferenceError(
+            f"reference target disclosure is invalid: {error}"
+        ) from error
+    runtime_observation = report.get("runtime_observation")
+    sqlite_runtime = (
+        runtime_observation.get("sqlite")
+        if isinstance(runtime_observation, dict)
+        else None
+    )
+    require(
+        isinstance(runtime_observation, dict)
+        and set(runtime_observation) == {"sqlite", "postgresql"}
+        and isinstance(sqlite_runtime, dict)
+        and set(sqlite_runtime) == {"status", "profile", "exact_identity"}
+        and sqlite_runtime.get("status") == "observed_runtime_verified"
+        and sqlite_runtime.get("profile") == "sqlite-bundled"
+        and isinstance(sqlite_runtime.get("exact_identity"), str)
+        and sqlite_runtime["exact_identity"].startswith("sqlite/3.53.4;")
+        and runtime_observation.get("postgresql")
+        == {"status": "not_observed_by_sqlite_target_workload"},
+        "reference target runtime-engine observation is incomplete",
+    )
+    require(
+        report.get("bindings") == expected_bindings,
+        "reference target raw byte bindings differ from release inputs",
+    )
+    require(
+        report.get("bound_external_sources") == expected_external_sources,
+        "reference target merged or mislabeled external-source facts",
+    )
+    dimensions = report.get("dimensions")
+    require(
+        isinstance(dimensions, list)
+        and len(dimensions) == len(REFERENCE_TARGET_DIMENSIONS),
+        "reference target dimension inventory is incomplete",
+    )
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in dimensions:
+        require(
+            isinstance(row, dict)
+            and set(row)
+            == {
+                "id",
+                "classification",
+                "attempted",
+                "completed",
+                "observed",
+                "target",
+                "target_met",
+                "outcome",
+                "method",
+            }
+            and row.get("id") in REFERENCE_TARGET_DIMENSIONS
+            and row.get("id") not in by_id
+            and row.get("classification")
+            in {"measured_non_sla_performance", "bound_hard_gate"}
+            and row.get("attempted") is True
+            and type(row.get("completed")) is bool
+            and isinstance(row.get("observed"), dict)
+            and isinstance(row.get("target"), dict)
+            and type(row.get("target_met")) is bool
+            and row.get("outcome") == ("met" if row.get("target_met") else "missed")
+            and isinstance(row.get("method"), str)
+            and row["method"],
+            "reference target contains a malformed, duplicate, or unattempted dimension",
+        )
+        by_id[row["id"]] = row
+    require(
+        tuple(row["id"] for row in dimensions) == REFERENCE_TARGET_DIMENSIONS,
+        "reference target dimensions are reordered or substituted",
+    )
+    for identifier, row in by_id.items():
+        expected_classification = (
+            "bound_hard_gate"
+            if identifier
+            in {
+                "one_hour_bounded_soak",
+                "repeated_forced_termination_no_acknowledged_loss",
+            }
+            else "measured_non_sla_performance"
+        )
+        require(
+            row["classification"] == expected_classification
+            and row["completed"] is (identifier != "snapshot_tail_recovery"),
+            f"{identifier} completion/classification is inconsistent",
+        )
+
+    def integer_field(value: Any, name: str) -> int:
+        require(type(value) is int and value >= 0, f"{name} must be non-negative")
+        return value
+
+    stored = by_id["stored_passivated_rooms"]
+    require(
+        stored["target"] == {"minimum_room_count": 10_000}
+        and set(stored["observed"])
+        == {"create_attempt_count", "created_room_count", "offline_stored_room_count"}
+        and integer_field(
+            stored["observed"].get("create_attempt_count"), "Room create attempts"
+        )
+        == 10_000
+        and integer_field(stored["observed"].get("created_room_count"), "created Rooms")
+        == integer_field(
+            stored["observed"].get("offline_stored_room_count"), "stored Rooms"
+        )
+        and stored["target_met"]
+        is (stored["observed"]["offline_stored_room_count"] >= 10_000),
+        "stored/passivated Room target measurement is invalid",
+    )
+    loaded = by_id["simultaneously_loaded_rooms"]
+    require(
+        loaded["target"] == {"minimum_loaded_room_count": 100}
+        and set(loaded["observed"])
+        == {"open_attempt_count", "peak_simultaneously_loaded_room_count"}
+        and integer_field(
+            loaded["observed"].get("open_attempt_count"), "loaded Room attempts"
+        )
+        >= 100
+        and integer_field(
+            loaded["observed"].get("peak_simultaneously_loaded_room_count"),
+            "loaded Rooms",
+        )
+        <= loaded["observed"]["open_attempt_count"]
+        and loaded["target_met"]
+        is (loaded["observed"]["peak_simultaneously_loaded_room_count"] >= 100),
+        "simultaneously loaded Room target measurement is invalid",
+    )
+    idle = by_id["mostly_idle_websocket_sessions"]
+    require(
+        idle["target"] == {"minimum_session_count": 1_000}
+        and set(idle["observed"])
+        == {
+            "open_attempt_count",
+            "peak_connected_idle_session_count",
+            "observation_window_seconds",
+        }
+        and integer_field(
+            idle["observed"].get("open_attempt_count"), "idle Session attempts"
+        )
+        == 1_000
+        and integer_field(
+            idle["observed"].get("peak_connected_idle_session_count"),
+            "idle Sessions",
+        )
+        <= 1_000
+        and type(idle["observed"].get("observation_window_seconds")) in {int, float}
+        and idle["observed"]["observation_window_seconds"] >= 0
+        and idle["target_met"]
+        is (idle["observed"]["peak_connected_idle_session_count"] >= 1_000),
+        "mostly-idle WebSocket target measurement is invalid",
+    )
+    rate = by_id["sustained_accepted_transition_rate"]
+    rate_observed = rate["observed"]
+    require(
+        rate["target"]
+        == {"minimum_per_second": 100, "continuous_window_seconds": 1_800}
+        and set(rate_observed)
+        == {
+            "configured_window_seconds",
+            "bucket_definition",
+            "window_start_basis",
+            "elapsed_seconds",
+            "full_second_bucket_count",
+            "dispatch_attempt_count",
+            "dispatch_queue_full_count",
+            "action_attempt_count",
+            "unconsumed_token_count",
+            "minimum_accepted_per_full_second",
+            "accepted_transition_count",
+            "late_accepted_transition_count",
+            "aggregate_accepted_per_second",
+        }
+        and rate_observed.get("configured_window_seconds") == 1_800
+        and rate_observed.get("bucket_definition")
+        == "1800 contiguous half-open one-second buckets from a monotonic start boundary"
+        and rate_observed.get("window_start_basis")
+        == "monotonic_after_worker_readiness"
+        and type(rate_observed.get("elapsed_seconds")) in {int, float}
+        and rate_observed["elapsed_seconds"] >= 1_800
+        and integer_field(rate_observed.get("full_second_bucket_count"), "rate buckets")
+        == 1_800
+        and integer_field(
+            rate_observed.get("dispatch_attempt_count"), "dispatch attempts"
+        )
+        >= integer_field(rate_observed.get("action_attempt_count"), "Action attempts")
+        and integer_field(
+            rate_observed.get("dispatch_queue_full_count"), "full dispatch queue"
+        )
+        <= rate_observed["dispatch_attempt_count"]
+        and integer_field(
+            rate_observed.get("unconsumed_token_count"), "unconsumed tokens"
+        )
+        <= 512
+        and rate_observed["dispatch_attempt_count"]
+        - rate_observed["dispatch_queue_full_count"]
+        == rate_observed["action_attempt_count"]
+        + rate_observed["unconsumed_token_count"]
+        and integer_field(
+            rate_observed.get("minimum_accepted_per_full_second"), "minimum rate"
+        )
+        >= 0
+        and integer_field(
+            rate_observed.get("accepted_transition_count"), "accepted transitions"
+        )
+        >= 0
+        and integer_field(
+            rate_observed.get("late_accepted_transition_count"),
+            "late accepted transitions",
+        )
+        >= 0
+        and rate_observed["action_attempt_count"]
+        == rate_observed["accepted_transition_count"]
+        + rate_observed["late_accepted_transition_count"]
+        and rate_observed["accepted_transition_count"]
+        >= rate_observed["minimum_accepted_per_full_second"] * 1_800
+        and type(rate_observed.get("aggregate_accepted_per_second")) in {int, float}
+        and rate_observed["aggregate_accepted_per_second"]
+        == round(rate_observed["accepted_transition_count"] / 1_800, 3)
+        and rate["target_met"]
+        is (
+            rate["completed"]
+            and rate_observed["full_second_bucket_count"] == 1_800
+            and rate_observed["minimum_accepted_per_full_second"] >= 100
+        ),
+        "sustained transition-rate measurement is invalid",
+    )
+    latency = by_id["commit_to_ack_latency"]
+    latency_observed = latency["observed"]
+    require(
+        latency["target"] == {"maximum_p95_ms_exclusive": 100}
+        and set(latency_observed)
+        == {"definition", "sample_count", "p50_ms", "p95_ms", "p99_ms"},
+        "commit-to-ack latency shape is invalid",
+    )
+    triplet(latency_observed, "reference target commit-to-ack latency")
+    require(
+        latency_observed["sample_count"] == rate_observed["accepted_transition_count"]
+        and latency["target_met"] is (latency_observed["p95_ms"] < 100),
+        "commit-to-ack p95 target result is inconsistent",
+    )
+    soak = by_id["one_hour_bounded_soak"]
+    require(
+        soak["classification"] == "bound_hard_gate"
+        and soak["completed"] is True
+        and soak["target"] == {"minimum_elapsed_seconds": 3_600}
+        and soak["observed"]
+        == {
+            "elapsed_seconds": soak_elapsed_seconds,
+            "window_completed": True,
+            "report_sha256": expected_bindings["one_hour_soak"]["sha256"],
+            "source_attribution": "bound_external_source",
+        }
+        and soak["target_met"] is True,
+        "one-hour bounded soak is not exactly bound",
+    )
+    history = by_id["snapshot_tail_recovery"]
+    require(
+        history["target"]
+        == {
+            "minimum_room_transition_count": 100_000,
+            "maximum_snapshot_lag_transitions": 250,
+            "maximum_recovery_ms": 5_000,
+        },
+        "snapshot-tail recovery target drifted",
+    )
+    history_observed = history["observed"]
+    frozen_pack_miss = history["completed"] is False and history_observed == {
+        "requested_transition_count": 100_000,
+        "action_attempt_count": 33,
+        "accepted_transition_count": 32,
+        "newest_snapshot_room_seq": None,
+        "snapshot_lag_transitions": None,
+        "recovery_ms": None,
+        "projection_hash_equal": None,
+        "pack": {
+            "id": "worldstream.counter",
+            "version": "2.0.0",
+            "digest": "blake3:1c5f75068220f65f9017a062dbe40203c540108b572284d9446a329914008a92",
+            "configuration": {"initial_value": 0, "maximum_value": 16},
+            "accepted_action_sequence": {
+                "increment": 16,
+                "private_ack": 16,
+            },
+        },
+        "terminal_rejection_code": "counter_limit_reached",
+        "recovery_measurement_status": ("not_reachable_due_to_frozen_pack_semantics"),
+    }
+    require(
+        frozen_pack_miss,
+        "snapshot-tail recovery is not the exact public frozen-Counter limit attempt",
+    )
+    require(
+        history["target_met"] is False,
+        "frozen Counter semantic ceiling cannot be reported as target met",
+    )
+    forced = by_id["repeated_forced_termination_no_acknowledged_loss"]
+    require(
+        forced["classification"] == "bound_hard_gate"
+        and forced["completed"] is True
+        and forced["target"]
+        == {"minimum_forced_termination_count": 2, "maximum_acknowledged_loss_count": 0}
+        and forced["observed"]
+        == {
+            "forced_termination_count": kill_cell_count,
+            "acknowledged_loss_count": 0,
+            "kill_report_sha256": expected_bindings["kill_point"]["sha256"],
+            "source_attribution": "bound_external_source",
+        }
+        and kill_cell_count >= 2
+        and forced["target_met"] is True,
+        "forced-termination no-acknowledged-loss result is not exactly bound",
+    )
+    correctness = report.get("correctness")
+    require(
+        correctness
+        == {
+            "status": "passed",
+            "acknowledged_transition_ids_unique": True,
+            "acknowledged_transition_receipts_verified": True,
+            "acknowledged_loss_count": 0,
+            "hard_gate_inputs_validated": True,
+        },
+        "reference target contains a correctness or acknowledged-loss failure",
+    )
+    measurements = report.get("measurements")
+    require(
+        isinstance(measurements, dict)
+        and set(measurements)
+        == {"commit_to_ack_latency", "transition_rate", "resource_observation"}
+        and measurements.get("commit_to_ack_latency") == latency_observed
+        and measurements.get("transition_rate") == rate_observed
+        and isinstance(measurements.get("resource_observation"), dict)
+        and set(measurements["resource_observation"])
+        == {
+            "peak_process_tree_rss_bytes",
+            "process_tree_rss_sample_count",
+            "database_bytes_after_workload",
+        }
+        and integer_field(
+            measurements["resource_observation"].get("peak_process_tree_rss_bytes"),
+            "reference target peak RSS",
+        )
+        > 0
+        and integer_field(
+            measurements["resource_observation"].get("process_tree_rss_sample_count"),
+            "reference target RSS samples",
+        )
+        > 0
+        and integer_field(
+            measurements["resource_observation"].get("database_bytes_after_workload"),
+            "reference target database bytes",
+        )
+        > 0,
+        "reference target retained measurements are incomplete",
+    )
+    limitations = report.get("limitations")
+    require(
+        isinstance(limitations, list)
+        and limitations
+        == (
+            [
+                {
+                    "code": "frozen_counter_v2_semantic_ceiling",
+                    "dimension": "snapshot_tail_recovery",
+                    "publishable_non_sla_target_miss": True,
+                }
+            ]
+            if frozen_pack_miss
+            else []
+        ),
+        "reference target limitation disclosure is incomplete or fabricated",
+    )
+    return {
+        "status": "completed",
+        "profile": FROZEN_REFERENCE_PROFILE,
+        "dimensions": dimensions,
+        "target_miss_ids": [
+            row["id"] for row in dimensions if row["target_met"] is False
+        ],
+        "measurements": measurements,
+        "environment": report["reference_environment"],
+        "workload": report["reference_workload"],
+    }
+
+
 def validate_report(
     report: dict[str, Any],
     manifest: dict[str, Any],
@@ -606,7 +1313,7 @@ def validate_report(
             "input_sha256_inventory",
             "sources",
             "identity",
-            "reference_environment",
+            "reference_environments",
             "workloads",
             "coverage",
             "measurements",
@@ -634,15 +1341,25 @@ def validate_report(
         and identity.get("version") == manifest["release_candidate"],
         "reference report product/profile/version identity mismatch",
     )
-    environment = report.get("reference_environment")
-    try:
-        AGGREGATOR._validate_reference_environment(
-            "aggregate", {"reference_environment": environment}
+    environments = report.get("reference_environments")
+    require(
+        isinstance(environments, dict) and set(environments) == EXPECTED_KINDS,
+        "reference report per-source environment disclosures are incomplete",
+    )
+    for kind, environment in environments.items():
+        try:
+            AGGREGATOR._validate_reference_environment(
+                kind, {"reference_environment": environment}
+            )
+        except AGGREGATOR.EvidenceError as error:
+            raise ReferenceError(
+                f"{kind} reference environment disclosure is invalid: {error}"
+            ) from error
+        require(
+            ("storage_bindings" in environment)
+            is (kind in {"counter", "heist", "postgres"}),
+            f"{kind} storage facts were merged across evidence sources",
         )
-    except AGGREGATOR.EvidenceError as error:
-        raise ReferenceError(
-            f"reference environment disclosure is invalid: {error}"
-        ) from error
     workloads = report.get("workloads")
     require(
         isinstance(workloads, dict) and set(workloads) == EXPECTED_KINDS,
@@ -659,7 +1376,7 @@ def validate_report(
             ) from error
 
     inputs = report.get("inputs")
-    require(isinstance(inputs, list) and len(inputs) == 5, "five inputs are required")
+    require(isinstance(inputs, list) and len(inputs) == 6, "six inputs are required")
     by_kind: dict[str, dict[str, Any]] = {}
     for item in inputs:
         require(
@@ -686,7 +1403,7 @@ def validate_report(
         isinstance(inventory, dict)
         and set(inventory) == {"definition", "sha256", "items"}
         and inventory.get("items") == expected_items,
-        "reference report byte inventory does not match the five named inputs",
+        "reference report byte inventory does not match the six named inputs",
     )
     inventory_digest = (
         SHA256_PREFIX + hashlib.sha256(canonical_compact(expected_items)).hexdigest()
@@ -718,7 +1435,7 @@ def validate_report(
             }
             and source.get("schema") == by_kind[kind]["schema"]
             and source.get("status") == by_kind[kind]["status"]
-            and source.get("reference_environment") == environment
+            and source.get("reference_environment") == environments[kind]
             and source.get("reference_workload") == workloads[kind]
             and isinstance(source_identity, dict)
             and source_identity.get("product") == "worldstream"
@@ -797,6 +1514,27 @@ def validate_report(
         measured_resources(value, f"{kind} memory", "peak_rss_bytes")
     for kind, value in measurements["database_growth"]["sources"].items():
         measured_resources(value, f"{kind} database growth", "growth_bytes")
+    targets = measurements["reference_targets"]["sources"]["target"]
+    require(
+        isinstance(targets, dict)
+        and set(targets)
+        == {
+            "schema",
+            "profile",
+            "dimensions",
+            "target_miss_ids",
+            "raw_report_sha256",
+        }
+        and targets.get("schema") == REFERENCE_TARGET_PROFILE_SCHEMA
+        and targets.get("profile") == FROZEN_REFERENCE_PROFILE
+        and isinstance(targets.get("dimensions"), list)
+        and tuple(row.get("id") for row in targets["dimensions"])
+        == REFERENCE_TARGET_DIMENSIONS
+        and isinstance(targets.get("target_miss_ids"), list)
+        and "snapshot_tail_recovery" in targets["target_miss_ids"],
+        "frozen reference-target projection is incomplete",
+    )
+    sha256_reference(targets.get("raw_report_sha256"), "raw reference target")
     return {
         "artifact_sha256": next(iter(artifact_identities)),
         "input_inventory_sha256": inventory_digest,
@@ -819,13 +1557,15 @@ def independently_project_raw_sources(
     *,
     packaged_acceptance_path: Path,
     soak_path: Path,
+    kill_point_path: Path,
+    target_path: Path,
     package_archive: Path,
     package_report_path: Path,
     daemon_bin: Path,
     manifest_toml: Path,
     manifest_json: Path,
-) -> tuple[dict[str, bytes], bytes, bytes]:
-    """Re-run the owning projection from raw acceptance and soak bytes."""
+) -> tuple[dict[str, bytes], bytes, bytes, bytes, bytes]:
+    """Re-run the owning projection from all exact raw source bytes."""
 
     spec = importlib.util.spec_from_file_location(
         "worldstream_reference_release_independent_projector", PROJECTOR_PATH
@@ -843,6 +1583,8 @@ def independently_project_raw_sources(
             arguments = argparse.Namespace(
                 packaged_acceptance_report=packaged_acceptance_path,
                 soak_report=soak_path,
+                kill_point_report=kill_point_path,
+                target_report=target_path,
                 package_archive=package_archive,
                 package_report=package_report_path,
                 daemon_bin=daemon_bin,
@@ -867,7 +1609,9 @@ def independently_project_raw_sources(
             f"cannot independently project raw reference sources: {error}"
         ) from error
     _soak, soak_raw = read_json(soak_path, "raw one-hour process soak report")
-    return projected, aggregate, soak_raw
+    _kill, kill_raw = read_json(kill_point_path, "raw kill-point matrix report")
+    _target, target_raw = read_json(target_path, "raw reference-target report")
+    return projected, aggregate, soak_raw, kill_raw, target_raw
 
 
 def produce(
@@ -879,13 +1623,15 @@ def produce(
     package_report_path: Path,
     daemon_bin: Path,
     packaged_acceptance_path: Path,
-    soak_path: Path,
+    raw_soak_path: Path,
+    kill_point_path: Path,
+    raw_target_path: Path,
     manifest_toml: Path,
     manifest_json: Path,
 ) -> None:
     require(
         set(input_paths) == EXPECTED_KINDS,
-        "reference producer requires all five exact named input reports",
+        "reference producer requires all six exact named input reports",
     )
     all_inputs = {
         report_path.resolve(),
@@ -893,7 +1639,9 @@ def produce(
         package_report_path.resolve(),
         daemon_bin.resolve(),
         packaged_acceptance_path.resolve(),
-        soak_path.resolve(),
+        raw_soak_path.resolve(),
+        kill_point_path.resolve(),
+        raw_target_path.resolve(),
         manifest_toml.resolve(),
         manifest_json.resolve(),
         *(path.resolve() for path in input_paths.values()),
@@ -924,9 +1672,17 @@ def produce(
             package_binding,
         )
     )
-    projected_inputs, projected_aggregate, soak_raw = independently_project_raw_sources(
+    (
+        projected_inputs,
+        projected_aggregate,
+        soak_raw,
+        kill_raw,
+        target_raw,
+    ) = independently_project_raw_sources(
         packaged_acceptance_path=packaged_acceptance_path,
-        soak_path=soak_path,
+        soak_path=raw_soak_path,
+        kill_point_path=kill_point_path,
+        target_path=raw_target_path,
         package_archive=package_archive,
         package_report_path=package_report_path,
         daemon_bin=daemon_bin,
@@ -937,16 +1693,16 @@ def produce(
         _value, raw = read_json(path, f"{kind} reference input")
         require(
             raw == projected_inputs[kind],
-            f"{kind} reference input is not the exact projection of raw acceptance/soak bytes",
+            f"{kind} reference input is not the exact projection of all raw source bytes",
         )
     require(
         report_raw == projected_aggregate,
-        "reference aggregate is not the exact independent projection of raw acceptance/soak bytes",
+        "reference aggregate is not the exact independent projection of all raw source bytes",
     )
     recomputed = recompute_report(input_paths)
     require(
         recomputed == report,
-        "reference report does not exactly match recomputation from the five named input bytes",
+        "reference report does not exactly match recomputation from the six named input bytes",
     )
     validated = validate_report(
         report,
@@ -977,7 +1733,7 @@ def produce(
         "platform": spec.platform,
         "contract": manifest["contracts"],
         "distribution": distribution,
-        "reference_environment": report["reference_environment"],
+        "reference_environments": report["reference_environments"],
         "workloads": report["workloads"],
         "aggregate_report": {
             "sha256": SHA256_PREFIX + hashlib.sha256(report_raw).hexdigest(),
@@ -1002,10 +1758,26 @@ def produce(
             "content_base64": base64.b64encode(soak_raw).decode("ascii"),
             "schema": "worldstream/soak-evidence/v1",
         },
+        "raw_kill_point_report": {
+            "sha256": SHA256_PREFIX + hashlib.sha256(kill_raw).hexdigest(),
+            "size_bytes": len(kill_raw),
+            "content_base64": base64.b64encode(kill_raw).decode("ascii"),
+            "schema": "worldstream/kill-point-evidence/v1",
+        },
+        "raw_reference_target_report": {
+            "sha256": SHA256_PREFIX + hashlib.sha256(target_raw).hexdigest(),
+            "size_bytes": len(target_raw),
+            "content_base64": base64.b64encode(target_raw).decode("ascii"),
+            "schema": REFERENCE_TARGET_SCHEMA,
+        },
         "projection": {
-            "definition": "exact independent projection from signed raw acceptance and one-hour soak bytes",
+            "definition": "exact independent projection from raw acceptance, soak, kill, and target bytes",
             "packaged_acceptance_sha256": packaged_acceptance_sha256,
             "raw_soak_sha256": SHA256_PREFIX + hashlib.sha256(soak_raw).hexdigest(),
+            "raw_kill_point_sha256": SHA256_PREFIX
+            + hashlib.sha256(kill_raw).hexdigest(),
+            "raw_reference_target_sha256": SHA256_PREFIX
+            + hashlib.sha256(target_raw).hexdigest(),
             "aggregate_sha256": SHA256_PREFIX
             + hashlib.sha256(projected_aggregate).hexdigest(),
             "input_sha256": {
@@ -1043,7 +1815,7 @@ def produce(
         ),
         "non_sla_publication": (
             "performance_class=reference_non_release;profile=linux-reference;"
-            "no threshold or SLA comparison performed"
+            "target comparisons are measured non-SLA;target misses remain publishable"
         ),
     }
     typed = {
@@ -1093,7 +1865,9 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--package-report", type=Path, required=True)
     command.add_argument("--daemon-bin", type=Path, required=True)
     command.add_argument("--packaged-acceptance-report", type=Path, required=True)
-    command.add_argument("--soak-report", type=Path, required=True)
+    command.add_argument("--raw-soak-report", type=Path, required=True)
+    command.add_argument("--kill-point-report", type=Path, required=True)
+    command.add_argument("--raw-target-report", type=Path, required=True)
     command.add_argument(
         "--manifest-toml", type=Path, default=ADAPTER.COLLECTOR.DEFAULT_MANIFEST_TOML
     )
@@ -1115,7 +1889,9 @@ def main(argv: list[str] | None = None) -> int:
             args.package_report,
             args.daemon_bin,
             args.packaged_acceptance_report,
-            args.soak_report,
+            args.raw_soak_report,
+            args.kill_point_report,
+            args.raw_target_report,
             args.manifest_toml,
             args.manifest_json,
         )

@@ -14,12 +14,16 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
         $PackageArgs.Add($args[$Index])
     }
 }
-$Python = Get-Command py -ErrorAction SilentlyContinue
-if ($null -ne $Python) {
-    & $Python.Source -3 "$WorkspaceDir/scripts/package.py" package @PackageArgs
-} else {
-    & python "$WorkspaceDir/scripts/package.py" package @PackageArgs
+$Python = $env:WORLDSTREAM_RELEASE_PYTHON
+if ([string]::IsNullOrWhiteSpace($Python) -or -not (Test-Path -LiteralPath $Python -PathType Leaf)) {
+    throw 'release packaging requires an executable WORLDSTREAM_RELEASE_PYTHON'
 }
+$ExpectedPython = (Get-Content "$WorkspaceDir/.python-version" -Raw).Trim()
+$ActualPython = (& $Python -I -c 'import platform; print(platform.python_version())').Trim()
+if ($LASTEXITCODE -ne 0 -or $ActualPython -ne $ExpectedPython) {
+    throw "release packaging requires Python $ExpectedPython, observed $ActualPython"
+}
+& $Python -I "$WorkspaceDir/scripts/package.py" package @PackageArgs
 if ($LASTEXITCODE -ne 0) { throw "release packaging failed with exit code $LASTEXITCODE" }
 if ($PackageArgs -contains '--dry-run') { exit 0 }
 $Target = $null
@@ -47,9 +51,5 @@ if ($null -ne $ReportPath) {
     $ReportArgs.Add('--report')
     $ReportArgs.Add($ReportPath)
 }
-if ($null -ne $Python) {
-    & $Python.Source -3 "$WorkspaceDir/scripts/package.py" @ReportArgs
-} else {
-    & python "$WorkspaceDir/scripts/package.py" @ReportArgs
-}
+& $Python -I "$WorkspaceDir/scripts/package.py" @ReportArgs
 if ($LASTEXITCODE -ne 0) { throw "release archive report/verification failed with exit code $LASTEXITCODE" }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import pathlib
 import sys
@@ -25,6 +26,150 @@ def load_soak():
 
 def main() -> None:
     soak = load_soak()
+    binary_sha256 = "sha256:" + "1" * 64
+    disk_full = {
+        "schema": soak.DISK_FULL_SCHEMA,
+        "status": "pass",
+        "release_evidence": False,
+        "scenario": soak.DISK_FULL_SCENARIO,
+        "evidence_class": soak.DISK_FULL_EVIDENCE_CLASS,
+        "platform": {
+            "system": "Linux",
+            "machine": "x86_64",
+            "filesystem": "ext4",
+        },
+        "container": {
+            "image": soak.DISK_FULL_CONTAINER_IMAGE,
+            "platform": "linux/amd64",
+            "privileged": True,
+            "network": "none",
+            "root_filesystem_read_only": True,
+            "daemon_mount_read_only": True,
+            "observed_elapsed_ms": 500.0,
+            "captured_output_bytes": 1024,
+        },
+        "bounds": {
+            "filesystem_image_bytes": soak.DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+            "attempted_write_bytes": soak.DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "max_daemon_seconds": soak.DISK_FULL_MAX_DAEMON_SECONDS,
+            "max_container_seconds": soak.DISK_FULL_MAX_CONTAINER_SECONDS,
+            "max_log_bytes": soak.DISK_FULL_MAX_LOG_BYTES,
+            "max_capture_bytes": soak.DISK_FULL_MAX_CAPTURE_BYTES,
+        },
+        "filesystem": {
+            "type": "ext4",
+            "mount_source_class": "loop_device",
+            "image_size_bytes": soak.DISK_FULL_FILESYSTEM_IMAGE_BYTES,
+            "block_size_bytes": soak.DISK_FULL_BLOCK_SIZE_BYTES,
+            "available_kib_after_fill": 0,
+            "database_file_type": "regular",
+            "database_file_mode": "0600",
+            "fill_bytes_written": 55_988_224,
+        },
+        "fault": {
+            "errno_number": 28,
+            "errno_name": "ENOSPC",
+            "attempted_write_bytes": soak.DISK_FULL_ATTEMPTED_WRITE_BYTES,
+            "write_returned_bytes": 0,
+            "database_size_before_bytes": 0,
+            "database_size_after_bytes": 0,
+        },
+        "daemon": {
+            "binary_sha256": binary_sha256,
+            "started": True,
+            "exit_observed": True,
+            "exit_code": 1,
+            "ready_http_200_observed": False,
+            "public_mutation_available": False,
+            "storage_failure_observed": True,
+            "elapsed_ms": 100.0,
+            "diagnostic_bytes": 128,
+            "diagnostic_sha256": "sha256:" + "2" * 64,
+        },
+        "cleanup": {
+            "internal_unmount_observed": True,
+            "container_remove_requested": True,
+            "container_absent_after_run": True,
+        },
+        "limitations": {
+            "runtime_disk_exhaustion_recovery_observed": False,
+            "physical_power_loss_observed": False,
+        },
+    }
+    assert (
+        soak.validate_disk_full_evidence(disk_full, binary_sha256=binary_sha256)
+        == disk_full
+    )
+    for field, value in (
+        (("fault", "errno_name"), "EIO"),
+        (("filesystem", "available_kib_after_fill"), 1),
+        (("container", "image"), "docker@sha256:" + "0" * 64),
+        (("daemon", "ready_http_200_observed"), True),
+        (("daemon", "binary_sha256"), "sha256:" + "3" * 64),
+        (("cleanup", "container_absent_after_run"), False),
+    ):
+        malformed = copy.deepcopy(disk_full)
+        malformed[field[0]][field[1]] = value
+        try:
+            soak.validate_disk_full_evidence(malformed, binary_sha256=binary_sha256)
+        except soak.SoakFailure as error:
+            assert "disk-full evidence was incomplete" in str(error)
+        else:
+            raise AssertionError(f"malformed disk-full field {field} was accepted")
+
+    marker_values = {
+        "filesystem_type": "ext4",
+        "mount_source_class": "loop_device",
+        "image_size_bytes": "67108864",
+        "block_size_bytes": "4096",
+        "available_kib_after_fill": "0",
+        "database_file_type": "regular",
+        "database_file_mode": "0600",
+        "fill_bytes_written": "55988224",
+        "fault_errno_name": "ENOSPC",
+        "fault_attempted_write_bytes": "4096",
+        "fault_write_returned_bytes": "0",
+        "database_size_before_bytes": "0",
+        "database_size_after_bytes": "0",
+        "daemon_exit_code": "1",
+        "daemon_ready_http_200_observed": "0",
+        "daemon_storage_failure_observed": "1",
+        "daemon_uptime_start_seconds": "10.00",
+        "daemon_uptime_end_seconds": "10.15",
+        "diagnostic_bytes": "128",
+        "diagnostic_sha256": "2" * 64,
+        "internal_unmount_observed": "1",
+    }
+
+    def marker_output(values: dict[str, str]) -> bytes:
+        return "".join(
+            f"WORLDSTREAM_ENOSPC_V1 {name}={value}\n" for name, value in values.items()
+        ).encode("ascii")
+
+    assert soak.parse_disk_full_container_output(marker_output(marker_values)) == (
+        marker_values
+    )
+    malformed_outputs = (
+        marker_output(
+            {
+                name: value
+                for name, value in marker_values.items()
+                if name != "filesystem_type"
+            }
+        ),
+        marker_output(marker_values) + b"WORLDSTREAM_ENOSPC_V1 filesystem_type=ext4\n",
+        marker_output(marker_values) + b"WORLDSTREAM_ENOSPC_V1 unexpected=value\n",
+        marker_output(marker_values) + b"not-a-witness\n",
+        marker_output(marker_values) + b"\xff",
+    )
+    for malformed in malformed_outputs:
+        try:
+            soak.parse_disk_full_container_output(malformed)
+        except soak.SoakFailure:
+            pass
+        else:
+            raise AssertionError("malformed disk-full container output was accepted")
+
     with tempfile.TemporaryDirectory(prefix="worldstream-host-observation-") as value:
         root = pathlib.Path(value)
         os_release = root / "os-release"

@@ -35,7 +35,8 @@ bash scripts/cross-platform-evidence.sh
 
 The script writes the exact commands and outputs to
 `/tmp/luna-cross-platform-report.txt`. It probes Docker Buildx, pulls a pinned
-`alpine:3.22.1` image for `linux/amd64`, builds a disposable amd64 image with
+`alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1`
+image for `linux/amd64`, builds a disposable amd64 image with
 `docker buildx build --platform linux/amd64 --load`, inspects its architecture
 and image identity, and runs it. It also exercises the existing package dry
 runs and static/OCI boundary checks. The disposable probe is not a WorldStream

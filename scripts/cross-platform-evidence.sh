@@ -9,6 +9,7 @@ readonly EXIT_UNAVAILABLE=10
 readonly EXIT_CONFIGURATION=12
 readonly EXIT_INCOMPLETE=13
 readonly EXIT_RUNTIME=14
+readonly ALPINE_AMD64_REF="alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 report_path="/tmp/luna-cross-platform-report.txt"
@@ -94,7 +95,8 @@ run_and_record package_static_smoke python3 "$workspace_dir/tests/package_smoke.
 run_and_record oci_static_smoke python3 "$workspace_dir/tests/oci_runtime_smoke.py" || status=1
 echo "manifest_claims=native_linux_x86_64_and_native_windows_x64_release_profiles;_oci_linux_amd64_is_separate"
 echo "release_inventory_boundary=embedded_contract_only;finished_digests=release-manifest.json"
-echo "detached_artifact_rows=status_detached,digest_empty,digest_location_release-manifest.json"
+echo "signed_artifact_rows=status_detached,digest_empty,digest_location_release-manifest.json"
+echo "sigstore_artifact_row=status_verification_material,path_only_release-manifest.json"
 echo "native_linux_status=$linux_native_status"
 echo "native_linux_reason=$linux_reason"
 echo "windows_status=$windows_status"
@@ -168,7 +170,7 @@ fi
 probe_dir="$(mktemp -d /tmp/worldstream-cross-platform.XXXXXX)"
 echo "probe_dir=$probe_dir"
 echo "-- pinned amd64 probe image --"
-run_and_record pull_alpine docker pull --platform linux/amd64 alpine:3.22.1 || {
+run_and_record pull_alpine docker pull --platform linux/amd64 "$ALPINE_AMD64_REF" || {
   echo "docker_status=UNAVAILABLE"
   echo "docker_reason=amd64_base_image_pull_failed"
   echo "linux_amd64_emulation_status=UNAVAILABLE"
@@ -179,11 +181,19 @@ run_and_record pull_alpine docker pull --platform linux/amd64 alpine:3.22.1 || {
   echo "status=UNAVAILABLE"
   exit "$EXIT_UNAVAILABLE"
 }
-base_ref="$(docker image inspect alpine:3.22.1 --format '{{index .RepoDigests 0}}')"
+base_ref="$(docker image inspect "$ALPINE_AMD64_REF" --format '{{index .RepoDigests 0}}')"
 base_digest="${base_ref##*@}"
+expected_base_digest="${ALPINE_AMD64_REF##*@}"
+if [[ "$base_digest" != "$expected_base_digest" ]]; then
+  echo "docker_status=FAIL"
+  echo "docker_reason=amd64_base_image_digest_mismatch"
+  echo "release_evidence=false"
+  echo "status=FAIL"
+  exit "$EXIT_RUNTIME"
+fi
 echo "base_image_ref=$base_ref"
 echo "base_image_digest=$base_digest"
-docker image inspect alpine:3.22.1 --format 'base_image_os={{.Os}} base_image_arch={{.Architecture}} base_image_id={{.Id}}'
+docker image inspect "$ALPINE_AMD64_REF" --format 'base_image_os={{.Os}} base_image_arch={{.Architecture}} base_image_id={{.Id}}'
 
 cat > "$probe_dir/Dockerfile" <<EOF
 FROM $base_ref
