@@ -360,12 +360,25 @@ run_db_admin_sql() {
   printf '%s\n' "$1" | PGPASSWORD="$admin_password" "$psql_bin" "$admin_psql_dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1
 }
 
-if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT" || ! run_admin_sql "CREATE DATABASE worldstream_transfer OWNER admin"; then
+if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS" || ! run_admin_sql "CREATE DATABASE worldstream_transfer OWNER admin"; then
   overall_status="unavailable"; overall_reason="role_or_transfer_database_setup_failed"; add_error "role_or_transfer_database_setup_failed"; finish "$EXIT_UNAVAILABLE"
 fi
+
+# Establish the complete owner-managed schema before granting the runtime role
+# access. Granting default table privileges before migration would also grant
+# DML on the migration ledger, which the reviewed runtime-role contract must
+# reject. The owner-only DSN files keep credentials out of argv and logs.
 for database in worldstream worldstream_transfer; do
+  database_admin_dsn_file="$temp_root/$database-admin.dsn"
+  printf '%s\n' "host=127.0.0.1 port=$postgres_port dbname=$database user=admin password=$admin_password" >"$database_admin_dsn_file"
+  chmod 600 "$database_admin_dsn_file"
+  if ! "$cargo_bin" run --quiet --locked -p worldstream-server --bin worldstreamctl -- \
+    postgres migrate --dsn-file "$database_admin_dsn_file" \
+    >"$temp_root/$database-admin-migrate.log" 2>&1; then
+    overall_status="incomplete"; overall_reason="admin_pre_migration_failed"; add_error "admin_pre_migration_failed"; finish "$EXIT_INCOMPLETE"
+  fi
   dsn="host=127.0.0.1 port=$postgres_port dbname=$database user=admin"
-  if ! printf '%s\n' "REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT CONNECT ON DATABASE $database TO runtime; GRANT USAGE ON SCHEMA public TO runtime; ALTER DEFAULT PRIVILEGES FOR ROLE admin IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO runtime; ALTER DEFAULT PRIVILEGES FOR ROLE admin IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO runtime;" | PGPASSWORD="$admin_password" "$psql_bin" "$dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1; then
+  if ! printf '%s\n' "REVOKE CREATE ON SCHEMA public FROM PUBLIC; REVOKE CREATE ON DATABASE $database FROM runtime; GRANT CONNECT ON DATABASE $database TO runtime; GRANT USAGE ON SCHEMA public TO runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations FROM runtime;" | PGPASSWORD="$admin_password" "$psql_bin" "$dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1; then
     overall_status="unavailable"; overall_reason="runtime_role_setup_failed"; add_error "runtime_role_setup_failed"; finish "$EXIT_UNAVAILABLE"
   fi
 done
@@ -422,7 +435,8 @@ if [[ "$pooler_status" == "not_started" ]]; then
 fi
 
 # The feature-gated test is the strongest direct/provider conformance vector.
-# It runs before the wrapper harness so it can establish the migration schema.
+# It reruns the already-established migration idempotently before exercising
+# both direct and transaction-pooled runtime paths.
 adapter_log="$temp_root/live-adapter.log"
 if [[ "$pooler_status" == "pass" ]]; then
   if WORLDSTREAM_POSTGRES_TEST_ADMIN_DSN="$admin_dsn" WORLDSTREAM_POSTGRES_TEST_RUNTIME_DSN="$runtime_dsn" WORLDSTREAM_POSTGRES_TEST_POOLER_DSN="$pooler_dsn" "$cargo_bin" test --locked -p worldstream-postgres --features conformance-tracer --test postgres_commit live_direct_runtime_and_optional_pooler_conformance -- --nocapture >"$adapter_log" 2>&1; then
@@ -459,10 +473,10 @@ else
   add_error "pooler_conformance_marker_missing"
 fi
 
-# Leave the schema/migration ledger intact but remove the adapter's durable
-# vector so the redacted harness has a fresh logical Room state. Then enforce
-# the least-privileged runtime ledger boundary before it verifies the path.
-truncate_sql="DO \$\$ DECLARE t text; BEGIN FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name <> 'worldstream_schema_migrations' LOOP EXECUTE 'TRUNCATE TABLE public.' || quote_ident(t) || ' CASCADE'; END LOOP; END \$\$; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations FROM runtime;"
+# Leave the migration ledger and required authority singleton intact, but
+# remove durable Room and authority facts so each acceptance vector starts
+# from fresh logical state. Then reassert the runtime ledger boundary.
+truncate_sql="DO \$\$ DECLARE t text; BEGIN FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name NOT IN ('worldstream_schema_migrations', 'worldstream_authority_state') LOOP EXECUTE 'TRUNCATE TABLE public.' || quote_ident(t) || ' CASCADE'; END LOOP; END \$\$; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations FROM runtime;"
 if [[ "$live_adapter_status" == "pass" ]]; then
   if ! run_db_admin_sql "$truncate_sql"; then
     add_error "logical_state_reset_or_ledger_revoke_failed"
@@ -481,7 +495,7 @@ if [[ "$live_adapter_status" == "pass" ]]; then
     "$cargo_bin" test --locked -p worldstream-server --lib \
       live_postgres_gateway_counter_workflow_uses_production_backend -- --nocapture \
       >"$gateway_log" 2>&1 \
-    && grep -Fq 'LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+action+live+ack+restart' "$gateway_log"; then
+    && grep -Fq 'LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart' "$gateway_log"; then
     gateway_status="pass"
   else
     gateway_status="failed"

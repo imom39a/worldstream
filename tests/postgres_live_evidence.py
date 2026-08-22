@@ -122,11 +122,37 @@ class PostgreSQLLiveEvidenceBoundaryTests(unittest.TestCase):
         )
         self.assertIn(
             "LIVE_POSTGRES_GATEWAY=PASS "
-            "create+duplicate+conflict+projection+replay+attach+sync+action+live+ack+restart",
+            "create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart",
             script,
         )
         self.assertIn('gateway_status="failed"', script)
         self.assertIn('add_error "production_gateway_workflow_failed"', script)
+
+    def test_runtime_grants_follow_migration_and_exclude_the_ledger(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        pre_migration = script.index(
+            'postgres migrate --dsn-file "$database_admin_dsn_file"'
+        )
+        runtime_grants = script.index(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public "
+            "TO runtime"
+        )
+        adapter = script.index('adapter_log="$temp_root/live-adapter.log"')
+
+        self.assertLess(pre_migration, runtime_grants)
+        self.assertLess(runtime_grants, adapter)
+        self.assertNotIn("ALTER DEFAULT PRIVILEGES", script)
+        self.assertIn(
+            "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE "
+            "public.worldstream_schema_migrations FROM runtime",
+            script,
+        )
+        self.assertIn(
+            "table_name NOT IN ('worldstream_schema_migrations', "
+            "'worldstream_authority_state')",
+            script,
+        )
+        self.assertIn("NOREPLICATION NOBYPASSRLS", script)
 
 
 if __name__ == "__main__":

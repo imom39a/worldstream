@@ -233,7 +233,7 @@ def one(index: int) -> int:
 with ThreadPoolExecutor(max_workers=32) as executor:
     statuses = list(executor.map(one, range(384)))
 
-assert all(status == 400 or status == 403 for status in statuses), sorted(set(statuses))
+assert all(status in {400, 403, 429} for status in statuses), sorted(set(statuses))
 (root / "pressure.json").write_text(
     json.dumps({"request_count": len(statuses), "statuses": sorted(set(statuses))}),
     encoding="utf-8",

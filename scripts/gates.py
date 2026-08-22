@@ -1401,7 +1401,15 @@ def sdk_and_ui_checks(runner: GateRunner) -> None:
         )
         runner.command(
             "python-sdk-tests",
-            ["uv", "run", "--project", "sdk/python", "--locked", "pytest"],
+            [
+                "uv",
+                "run",
+                "--project",
+                "sdk/python",
+                "--locked",
+                "pytest",
+                "sdk/python/tests",
+            ],
         )
     else:
         runner.skip("python-sdk-tools", "uv unavailable")

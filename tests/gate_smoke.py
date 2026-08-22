@@ -884,6 +884,29 @@ def test_root_python_gate_uses_explicit_sorted_test_inventory(monkeypatch):
     )
 
 
+def test_sdk_gate_scopes_pytest_to_the_sdk_tree(monkeypatch):
+    gates = load_gates()
+    monkeypatch.setattr(gates.shutil, "which", lambda name: f"/usr/bin/{name}")
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    commands = []
+    monkeypatch.setattr(
+        runner,
+        "command",
+        lambda name, argv, **_kwargs: commands.append((name, argv)) or True,
+    )
+
+    gates.sdk_and_ui_checks(runner)
+
+    test_command = next(argv for name, argv in commands if name == "python-sdk-tests")
+    assert test_command[-2:] == ["pytest", "sdk/python/tests"]
+
+
+def test_telemetry_pressure_accepts_explicit_rate_limit_backpressure():
+    script = (ROOT / "scripts/telemetry-failure-smoke.sh").read_text(encoding="utf-8")
+
+    assert "status in {400, 403, 429}" in script
+
+
 def test_posix_gate_launcher_falls_back_to_pinned_uv_python():
     script = (ROOT / "scripts/gates.sh").read_text(encoding="utf-8")
     assert "uv run --python 3.14.7 --no-project python" in script
