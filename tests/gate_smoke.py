@@ -183,6 +183,37 @@ def test_workflow_bootstraps_exact_gate_python_before_running_offline_gate():
     )
 
 
+def test_build_type_contract_gate_validates_example_and_fails_closed(monkeypatch):
+    gates = load_gates()
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+
+    gates.build_type_contract_gate(runner)
+
+    assert runner.outcomes[-1].name == "release-build-type-contract"
+    assert runner.outcomes[-1].status == "PASS"
+
+    identity = gates.release_build_identity_verifier()
+    original_regular_bytes = identity.regular_bytes
+
+    def tampered_regular_bytes(path, label, maximum=None):
+        content = original_regular_bytes(path, label, maximum)
+        if path == gates.ROOT / identity.BUILD_TYPE_EXAMPLE_PATH:
+            value = identity.strict_json(content, label)
+            value["predicate"]["unknown"] = True
+            return identity.canonical_json(value)
+        return content
+
+    monkeypatch.setattr(identity, "regular_bytes", tampered_regular_bytes)
+    monkeypatch.setattr(gates, "release_build_identity_verifier", lambda: identity)
+    rejected = gates.GateRunner(strict=True, offline=True, ci=False)
+
+    gates.build_type_contract_gate(rejected)
+
+    assert rejected.outcomes[-1].name == "release-build-type-contract"
+    assert rejected.outcomes[-1].status == "FAIL"
+    assert "illustrative graph" in rejected.outcomes[-1].detail
+
+
 def test_workflow_keeps_native_postgres_provisioning_pinned_and_platform_specific():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "postgres:17.11-alpine@sha256:" in workflow

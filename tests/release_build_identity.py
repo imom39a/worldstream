@@ -395,6 +395,182 @@ def test_uv_is_an_exact_pinned_material_and_toolchain():
     assert module.BUILD_TYPE_PATH in value["materials"]
 
 
+def test_build_type_v3_example_is_canonical_complete_and_non_recursive():
+    module = load_module()
+    entries = source_entries(module)
+    raw = module.regular_bytes(
+        ROOT / module.BUILD_TYPE_EXAMPLE_PATH, "build-type v3 example"
+    )
+    example = module.strict_json(raw, "build-type v3 example")
+
+    module.validate_build_type_v3_example(example, entries)
+    assert raw == module.canonical_json(example)
+    assert module.BUILD_TYPE == (
+        "https://github.com/imom39a/worldstream/blob/"
+        "9a130028c0631e1eaff2f57037e2c8b3b0659ac8/"
+        "docs/build-types/pre-sign-subject-aggregation-v3.md"
+    )
+    assert example["predicate"]["buildDefinition"]["buildType"] == module.BUILD_TYPE
+    assert len(example["subject"]) == 17
+    assert example["subject"] == sorted(example["subject"], key=lambda row: row["name"])
+
+    definition = example["predicate"]["buildDefinition"]
+    material_uris = {
+        dependency["uri"] for dependency in definition["resolvedDependencies"]
+    }
+    assert f"file:{module.BUILD_TYPE_PATH}" in material_uris
+    assert f"file:{module.BUILD_TYPE_EXAMPLE_PATH}" not in material_uris
+    assert module.BUILD_TYPE_EXAMPLE_PATH not in module.PINNED_MATERIAL_PATHS
+
+    byproducts = example["predicate"]["runDetails"]["byproducts"]
+    assert [item["name"] for item in byproducts] == [
+        "worldstream-runner-identity.json",
+        "worldstream-release-aggregation-v1.json",
+    ]
+    aggregation = json.loads(base64.b64decode(byproducts[1]["content"], validate=True))
+    assert aggregation["subject_count"] == 17
+    assert len(aggregation["payload_producers"]) == 4
+    assert len(aggregation["evidence_producers"]) == 13
+
+    payloads = {row["artifact_id"]: row for row in aggregation["payload_producers"]}
+    assert set(payloads) == set(module.PAYLOAD_TARGETS)
+    assert payloads["source-archive"]["observed_build_environment"] == {
+        "runner": payloads["source-archive"]["observed_build_environment"]["runner"],
+        "rustc": None,
+        "bundled_sqlite": None,
+        "final_linker": None,
+    }
+    for artifact_id in (
+        "native-linux-x86_64-archive",
+        "native-windows-x64-archive",
+        "oci-linux-amd64-image",
+    ):
+        observed = payloads[artifact_id]["observed_build_environment"]
+        assert set(observed["bundled_sqlite"]) == {"archiver", "c_compiler"}
+        assert observed["bundled_sqlite"]["archiver"]["path"]
+        assert observed["bundled_sqlite"]["c_compiler"]["path"]
+        assert observed["final_linker"]["path"]
+
+
+def test_withdrawn_build_type_v2_has_only_a_canonical_non_statement_tombstone():
+    module = load_module()
+    raw = module.regular_bytes(
+        ROOT / module.WITHDRAWN_BUILD_TYPE_V2_EXAMPLE_PATH,
+        "withdrawn build-type v2 tombstone",
+    )
+    tombstone = module.strict_json(raw, "withdrawn build-type v2 tombstone")
+
+    module.validate_build_type_v2_tombstone(tombstone)
+    assert raw == module.canonical_json(tombstone)
+    assert tombstone["buildType"] == module.WITHDRAWN_BUILD_TYPE_V2
+    assert tombstone["statementEmitted"] is False
+    assert tombstone["statementAccepted"] is False
+    assert tombstone["supersededBy"] == module.BUILD_TYPE
+    assert not {"_type", "subject", "predicateType", "predicate"} & set(tombstone)
+    assert module.BUILD_TYPE != module.WITHDRAWN_BUILD_TYPE_V2
+
+
+def test_build_type_contract_rejects_unknown_fields_missing_archiver_and_v2_reuse(
+    monkeypatch,
+):
+    module = load_module()
+    entries = source_entries(module)
+    example = module.build_type_v3_example(entries)
+
+    unknown = copy.deepcopy(example)
+    unknown["predicate"]["unknown"] = True
+    with pytest.raises(module.IdentityError, match="illustrative graph"):
+        module.validate_build_type_v3_example(unknown, entries)
+
+    missing_archiver = copy.deepcopy(example)
+    aggregation_descriptor = missing_archiver["predicate"]["runDetails"]["byproducts"][
+        1
+    ]
+    aggregation = json.loads(
+        base64.b64decode(aggregation_descriptor["content"], validate=True)
+    )
+    native = next(
+        row
+        for row in aggregation["payload_producers"]
+        if row["artifact_id"] == "native-linux-x86_64-archive"
+    )
+    native["observed_build_environment"]["bundled_sqlite"].pop("archiver")
+    aggregation_descriptor["content"] = base64.b64encode(
+        module.canonical_json(aggregation)
+    ).decode("ascii")
+    aggregation_descriptor["digest"]["sha256"] = hashlib.sha256(
+        module.canonical_json(aggregation)
+    ).hexdigest()
+    with pytest.raises(module.IdentityError, match="illustrative graph"):
+        module.validate_build_type_v3_example(missing_archiver, entries)
+
+    monkeypatch.setattr(module, "BUILD_TYPE", module.WITHDRAWN_BUILD_TYPE_V2)
+    with pytest.raises(module.IdentityError, match="withdrawn v2"):
+        module.validate_build_type_v3_example(
+            module.build_type_v3_example(entries), entries
+        )
+
+
+def test_release_provenance_closed_statement_shapes_fail_before_payload_io(tmp_path):
+    module = load_module()
+    base = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {
+                "buildType": module.BUILD_TYPE,
+                "externalParameters": {},
+                "internalParameters": {},
+                "resolvedDependencies": [],
+            },
+            "runDetails": {},
+        },
+    }
+
+    mutations = []
+    unknown_statement = copy.deepcopy(base)
+    unknown_statement["unknown"] = True
+    mutations.append((unknown_statement, "Statement has unknown"))
+    unknown_predicate = copy.deepcopy(base)
+    unknown_predicate["predicate"]["unknown"] = True
+    mutations.append((unknown_predicate, "predicate has unknown"))
+    unknown_definition = copy.deepcopy(base)
+    unknown_definition["predicate"]["buildDefinition"]["unknown"] = True
+    mutations.append((unknown_definition, "buildDefinition has unknown"))
+
+    for mutation, error in mutations:
+        with pytest.raises(module.IdentityError, match=error):
+            module.validate_identity_documents(
+                spdx={},
+                provenance=mutation,
+                version="0.1.0",
+                subjects_by_relative={},
+                payloads_by_id={},
+                require_github=True,
+            )
+
+    subject_path = tmp_path / "subject.json"
+    subject_path.write_bytes(b"subject")
+    unknown_subject = copy.deepcopy(base)
+    unknown_subject["subject"] = [
+        {
+            "name": "subject.json",
+            "digest": {"sha256": hashlib.sha256(b"subject").hexdigest()},
+            "size": 7,
+        }
+    ]
+    with pytest.raises(module.IdentityError, match="exact sorted release subject"):
+        module.validate_identity_documents(
+            spdx={},
+            provenance=unknown_subject,
+            version="0.1.0",
+            subjects_by_relative={"subject.json": subject_path},
+            payloads_by_id={},
+            require_github=True,
+        )
+
+
 def test_every_repo_local_pre_sign_dynamic_import_is_a_pinned_material():
     module = load_module()
     expected = {

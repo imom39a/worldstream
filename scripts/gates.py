@@ -139,6 +139,75 @@ def release_build_identity_verifier():
     return module
 
 
+def release_evidence_collector_contract():
+    """Load the code-owned typed release-evidence inventory."""
+
+    path = ROOT / "scripts/release-evidence-collect.py"
+    name = "worldstream_gate_release_evidence_collector_contract"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load release evidence collector: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_type_contract_gate(runner: GateRunner) -> None:
+    """Validate the active immutable build type, example, and v2 tombstone."""
+
+    identity = release_build_identity_verifier()
+    try:
+        entries = identity.source_entries_from_root(ROOT)
+        example_bytes = identity.regular_bytes(
+            ROOT / identity.BUILD_TYPE_EXAMPLE_PATH, "build-type v3 example"
+        )
+        example = identity.strict_json(example_bytes, "build-type v3 example")
+        identity.validate_build_type_v3_example(example, entries)
+        if example_bytes != identity.canonical_json(example):
+            raise identity.IdentityError("build-type v3 example is not canonical JSON")
+
+        collector = release_evidence_collector_contract()
+        expected_evidence = {
+            spec.source_id: {
+                "source_id": spec.source_id,
+                "evidence_id": spec.evidence_id,
+                "producer_id": collector.EXPECTED_PRODUCER_IDS[spec.source_id],
+                "platform": spec.platform,
+                "checks": sorted(spec.checks),
+            }
+            for spec in collector.SOURCE_SPECS
+            if spec.source_id != "supply-chain"
+        }
+        declared_evidence = {
+            row["source_id"]: row for row in identity.BUILD_TYPE_EXAMPLE_EVIDENCE
+        }
+        if declared_evidence != expected_evidence:
+            raise identity.IdentityError(
+                "build-type v3 example evidence inventory differs from the typed collector contract"
+            )
+
+        tombstone_bytes = identity.regular_bytes(
+            ROOT / identity.WITHDRAWN_BUILD_TYPE_V2_EXAMPLE_PATH,
+            "withdrawn build-type v2 tombstone",
+        )
+        tombstone = identity.strict_json(
+            tombstone_bytes, "withdrawn build-type v2 tombstone"
+        )
+        identity.validate_build_type_v2_tombstone(tombstone)
+        if tombstone_bytes != identity.canonical_json(tombstone):
+            raise identity.IdentityError(
+                "withdrawn build-type v2 tombstone is not canonical JSON"
+            )
+    except identity.IdentityError as error:
+        runner.fail("release-build-type-contract", str(error))
+    else:
+        runner.pass_(
+            "release-build-type-contract",
+            "immutable v3 definition, complete example, and withdrawn v2 tombstone verified",
+        )
+
+
 # The workflow consumes this exact route object from --format matrix.  Keep
 # platform selection explicit: a new/typoed platform must stop matrix
 # generation rather than silently running on an Ubuntu worker.
@@ -976,6 +1045,7 @@ def run_python(
 def manifest_gate(
     runner: GateRunner, manifest: dict[str, Any], *, release: bool
 ) -> None:
+    build_type_contract_gate(runner)
     if manifest.get("validation_policy") != "fail_closed":
         runner.fail("manifest-policy", "validation_policy is not fail_closed")
         return

@@ -1,0 +1,9 @@
+{
+  "buildType": "https://github.com/imom39a/worldstream/blob/ceae0cb85578f3ec202605032ca09aa05849bd18/docs/build-types/pre-sign-subject-aggregation-v2.md",
+  "reason": "v2 omitted the static archiver/librarian identity required by the final native payload build graph and was superseded before activation",
+  "schema": "worldstream/build-type-example-tombstone/v1",
+  "statementAccepted": false,
+  "statementEmitted": false,
+  "status": "withdrawn-before-use",
+  "supersededBy": "https://github.com/imom39a/worldstream/blob/9a130028c0631e1eaff2f57037e2c8b3b0659ac8/docs/build-types/pre-sign-subject-aggregation-v3.md"
+}

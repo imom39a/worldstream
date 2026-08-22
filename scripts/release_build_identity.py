@@ -25,11 +25,21 @@ import tomllib
 BUILD_IDENTITY_SCHEMA = "worldstream/release-build-identity/v2"
 REPOSITORY = "https://github.com/imom39a/worldstream"
 WORKFLOW_PATH = ".github/workflows/compatibility-gates.yml"
-BUILD_TYPE_PATH = "docs/build-types/pre-sign-subject-aggregation-v1.md"
-BUILD_TYPE_EXAMPLE_PATH = "docs/release-build-type-v1.example.json"
-BUILD_TYPE = (
-    f"{REPOSITORY}/blob/79c79e9626a1dac192053b2830487a6763557f1c/{BUILD_TYPE_PATH}"
+BUILD_TYPE_PATH = "docs/build-types/pre-sign-subject-aggregation-v3.md"
+BUILD_TYPE_EXAMPLE_PATH = (
+    "docs/build-types/pre-sign-subject-aggregation-v3.example.json"
 )
+BUILD_TYPE = (
+    f"{REPOSITORY}/blob/9a130028c0631e1eaff2f57037e2c8b3b0659ac8/{BUILD_TYPE_PATH}"
+)
+WITHDRAWN_BUILD_TYPE_V2 = (
+    f"{REPOSITORY}/blob/ceae0cb85578f3ec202605032ca09aa05849bd18/"
+    "docs/build-types/pre-sign-subject-aggregation-v2.md"
+)
+WITHDRAWN_BUILD_TYPE_V2_EXAMPLE_PATH = (
+    "docs/build-types/pre-sign-subject-aggregation-v2.example.json"
+)
+BUILD_TYPE_TOMBSTONE_SCHEMA = "worldstream/build-type-example-tombstone/v1"
 RELEASE_AGGREGATION_SCHEMA = "worldstream/release-aggregation/v1"
 SOURCE_REVISION_FILE = ".worldstream-source-revision"
 BUILD_METADATA_PATH = "metadata/build.json"
@@ -232,6 +242,150 @@ PAYLOAD_UPSTREAM_JOBS = {
     "native-windows-x64-archive": ("native", "windows-2025-vs2026"),
     "oci-linux-amd64-image": ("native", "ubuntu-24.04"),
 }
+BUILD_TYPE_EXAMPLE_EVIDENCE = (
+    {
+        "source_id": "manifest-contract",
+        "evidence_id": "manifest-syntax-parity",
+        "producer_id": "conformance/manifest-contract/v1",
+        "platform": "all-supported-platforms",
+        "checks": [
+            "canonical_json_mirror",
+            "release_contract_complete",
+            "toml_json_semantic_equal",
+        ],
+    },
+    {
+        "source_id": "sqlite-conformance",
+        "evidence_id": "sqlite-conformance-migration-backup-restore-crash",
+        "producer_id": "conformance/sqlite-conformance/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "backup_restore",
+            "canonical_hash_parity",
+            "crash_recovery",
+            "migration_history",
+        ],
+    },
+    {
+        "source_id": "postgres-conformance",
+        "evidence_id": "postgresql-direct-and-transaction-pooler-conformance",
+        "producer_id": "conformance/postgres-conformance/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "adapter_conformance",
+            "direct_runtime",
+            "postgres_version",
+            "transaction_pooler",
+        ],
+    },
+    {
+        "source_id": "migration-history",
+        "evidence_id": "all-prior-forward-migrations-both-backends",
+        "producer_id": "conformance/migration-history/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "migration_checksums",
+            "postgresql_forward_history",
+            "sqlite_forward_history",
+        ],
+    },
+    {
+        "source_id": "transfer",
+        "evidence_id": "sqlite-postgresql-transfer-byte-parity-and-epoch-fencing",
+        "producer_id": "conformance/transfer/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "byte_parity",
+            "checkpoint_resume",
+            "epoch_fencing",
+            "finalization",
+        ],
+    },
+    {
+        "source_id": "restore",
+        "evidence_id": "backend-native-isolated-restore-and-bounded-semantic-verifier",
+        "producer_id": "conformance/restore/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "bounded_fixture_semantic_verifier",
+            "postgresql_isolated_restore",
+            "sqlite_isolated_restore",
+        ],
+    },
+    {
+        "source_id": "native-linux",
+        "evidence_id": "native-linux-release-profile",
+        "producer_id": "platform-security/native-linux/v1",
+        "platform": "native-linux-x86_64",
+        "checks": ["archive_identity", "filesystem_policy", "runtime_smoke"],
+    },
+    {
+        "source_id": "native-windows",
+        "evidence_id": "native-windows-release-profile",
+        "producer_id": "platform-security/native-windows/v1",
+        "platform": "native-windows-x64",
+        "checks": [
+            "archive_identity",
+            "runtime_smoke",
+            "windows_acl_and_reparse_policy",
+        ],
+    },
+    {
+        "source_id": "oci-linux",
+        "evidence_id": "oci-linux-amd64-release-profile",
+        "producer_id": "platform-security/oci-linux/v1",
+        "platform": "oci-linux-amd64",
+        "checks": [
+            "filesystem_policy",
+            "image_digest",
+            "pinned_base_image",
+            "runtime_smoke",
+        ],
+    },
+    {
+        "source_id": "macos-source",
+        "evidence_id": "macos-source-quickstart",
+        "producer_id": "platform-security/macos-source/v1",
+        "platform": "macos-source",
+        "checks": ["pinned_toolchain", "quickstart", "source_build"],
+    },
+    {
+        "source_id": "security-observability",
+        "evidence_id": "config-secrets-probes-observability-security",
+        "producer_id": "platform-security/security-observability/v1",
+        "platform": "all-supported-platforms",
+        "checks": [
+            "config_validation",
+            "observability_bounds",
+            "secret_redaction",
+            "security_probes",
+        ],
+    },
+    {
+        "source_id": "failure-soak",
+        "evidence_id": "failure-fuzz-resource-and-one-hour-sqlite-soak",
+        "producer_id": "linux-failure-soak-release-v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "failure_matrix",
+            "one_hour_soak",
+            "resource_bounds",
+            "retained_logs",
+        ],
+    },
+    {
+        "source_id": "reference-performance",
+        "evidence_id": "reference-performance-per-backend",
+        "producer_id": "reference-performance-publication/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "non_sla_publication",
+            "packaged_workload_identity",
+            "postgresql_measurements",
+            "sqlite_measurements",
+        ],
+    },
+)
 ACTION_TOKEN = re.compile(
     r"(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"
     r"(?:/[A-Za-z0-9_.-]+)*@(?P<commit>[0-9a-f]{40})\Z"
@@ -3476,6 +3630,423 @@ def runner_byproduct(identity: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_type_example_digest(label: str) -> str:
+    """Return a stable illustrative digest that cannot be mistaken for a build."""
+
+    return "sha256:" + sha256_bytes(
+        f"worldstream-build-type-v3-example:{label}".encode()
+    )
+
+
+def _build_type_example_environment(
+    target: str, *, rustc_version: str
+) -> dict[str, Any]:
+    runner = {
+        "provider": "github-actions",
+        **HOSTED_RUNNER_FACTS[target],
+        "image_version": "20990101.1.0",
+    }
+    if target == "source":
+        return {
+            "runner": runner,
+            "rustc": None,
+            "bundled_sqlite": None,
+            "final_linker": None,
+        }
+    windows = target == "windows-x64"
+    root = (
+        "C:\\hostedtoolcache\\worldstream"
+        if windows
+        else "/opt/hostedtoolcache/worldstream"
+    )
+    suffix = ".exe" if windows else ""
+    reported = (
+        {
+            "rustc": "x86_64-pc-windows-msvc",
+            "archiver": "x64-coff-library",
+            "c_compiler": "x64",
+            "linker": "x64",
+        }
+        if windows
+        else {
+            "rustc": "x86_64-unknown-linux-gnu",
+            "archiver": "gnu-archive",
+            "c_compiler": "x86_64-unknown-linux-musl",
+            "linker": "elf_x86_64",
+        }
+    )
+
+    def tool(path: str, version: str, reported_target: str) -> dict[str, str]:
+        return {
+            "path": path,
+            "version": version,
+            "target": TARGET_TRIPLES[target],
+            "reported_target": reported_target,
+        }
+
+    environment = {
+        "runner": runner,
+        "rustc": tool(
+            f"{root}/rustc{suffix}" if not windows else f"{root}\\rustc.exe",
+            f"rustc {rustc_version} (illustrative)",
+            reported["rustc"],
+        ),
+        "bundled_sqlite": {
+            "archiver": tool(
+                f"{root}\\Hostx64\\x64\\lib.exe" if windows else f"{root}/zig-musl-ar",
+                "illustrative archiver 1.0",
+                reported["archiver"],
+            ),
+            "c_compiler": tool(
+                f"{root}\\cl.exe" if windows else f"{root}/zig-musl-cc",
+                "illustrative C compiler 1.0",
+                reported["c_compiler"],
+            ),
+        },
+        "final_linker": tool(
+            f"{root}\\Hostx64\\x64\\link.exe" if windows else f"{root}/rust-lld",
+            "illustrative linker 1.0",
+            reported["linker"],
+        ),
+    }
+    validate_observed_build_environment(
+        environment,
+        target=target,
+        expected_rustc_version=rustc_version,
+        require_hosted=True,
+    )
+    return environment
+
+
+def _build_type_example_identity(
+    target: str,
+    *,
+    source_entries: dict[str, bytes],
+    revision: str,
+    source_date_epoch: int,
+    manifest_sha256: str,
+) -> dict[str, Any]:
+    toolchains = json.loads(json.dumps(toolchains_from_materials(source_entries)))
+    if target in {"linux-x86_64", "oci-linux-amd64"}:
+        toolchains["zig"] = expected_zig_toolchain(source_entries)
+    if target == "oci-linux-amd64":
+        toolchains["buildx"] = {
+            "version": expected_buildx_version(source_entries),
+            "pin": f"{WORKFLOW_PATH}#native.setup-buildx.version",
+        }
+    environment = _build_type_example_environment(
+        target, rustc_version=toolchains["rustc"]["version"]
+    )
+    materials = {
+        relative: _build_type_example_digest(f"material:{relative}")
+        for relative in PINNED_MATERIAL_PATHS
+    }
+    compiler = (
+        None
+        if target == "source"
+        else {
+            "arguments": cargo_arguments(target),
+            "name": "rustc",
+            "target_triple": TARGET_TRIPLES[target],
+            "version": toolchains["rustc"]["version"],
+        }
+    )
+    if target == "oci-linux-amd64":
+        base_image = expected_base_image(source_entries)
+        oci: dict[str, Any] | None = {
+            "base_image": base_image,
+            "buildkit_image": expected_buildkit_image(source_entries),
+            "dockerfile_frontend": expected_dockerfile_frontend(source_entries),
+            "build_arguments": {
+                "MANIFEST_SHA256": manifest_sha256,
+                "SOURCE_DATE_EPOCH": str(source_date_epoch),
+                "SOURCE_REVISION": revision,
+                "VERSION": _product_version(source_entries),
+                "WORLDSTREAM_BASE_IMAGE": base_image,
+                "BUILD_ENVIRONMENT_BASE64": observed_build_environment_label(
+                    environment
+                ),
+            },
+            "platform": "linux/amd64",
+        }
+    else:
+        oci = None
+    identity = {
+        "schema": BUILD_IDENTITY_SCHEMA,
+        "source": {"repository": REPOSITORY, "revision": revision},
+        "target": {
+            "profile": target,
+            "runner": TARGET_RUNNERS[target],
+            "triple": TARGET_TRIPLES[target],
+        },
+        "observed_build_environment": environment,
+        "toolchains": toolchains,
+        "compiler": compiler,
+        "arguments": {
+            "cargo": cargo_arguments(target),
+            "package": package_arguments(target, source_date_epoch),
+        },
+        "materials": materials,
+        "manifest_sha256": "sha256:" + manifest_sha256,
+        "source_date_epoch": source_date_epoch,
+        "oci": oci,
+    }
+    validate_build_identity_shape(
+        identity,
+        target=target,
+        manifest_sha256=manifest_sha256,
+        source_date_epoch=source_date_epoch,
+    )
+    return identity
+
+
+def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
+    """Build the complete deterministic documentation example for build type v3."""
+
+    revision = "0123456789abcdef0123456789abcdef01234567"
+    version = _product_version(source_entries)
+    source_date_epoch = 0
+    manifest_sha256 = _build_type_example_digest("manifest").removeprefix("sha256:")
+    identities = {
+        artifact_id: _build_type_example_identity(
+            target,
+            source_entries=source_entries,
+            revision=revision,
+            source_date_epoch=source_date_epoch,
+            manifest_sha256=manifest_sha256,
+        )
+        for artifact_id, target in PAYLOAD_TARGETS.items()
+    }
+    payload_names = {
+        "source-archive": f"worldstream-{version}-source.tar.gz",
+        "native-linux-x86_64-archive": (f"worldstream-{version}-linux-x86_64.tar.gz"),
+        "native-windows-x64-archive": f"worldstream-{version}-windows-x64.zip",
+        "oci-linux-amd64-image": (f"worldstream-{version}-oci-linux-amd64.oci.tar"),
+    }
+    payload_rows: list[dict[str, Any]] = []
+    for artifact_id in PAYLOAD_TARGETS:
+        identity = identities[artifact_id]
+        subject = payload_names[artifact_id]
+        subject_sha256 = _build_type_example_digest(f"subject:{subject}")
+        upstream_job, configured_runner = PAYLOAD_UPSTREAM_JOBS[artifact_id]
+        payload_rows.append(
+            {
+                "artifact_id": artifact_id,
+                "subject": subject,
+                "subject_sha256": subject_sha256,
+                "input_uri": f"file:release-inputs/payload/{subject}",
+                "build_identity_sha256": build_identity_digest(identity),
+                "source": identity["source"],
+                "materials": identity["materials"],
+                "target": identity["target"],
+                "observed_build_environment": identity["observed_build_environment"],
+                "upstream_job": upstream_job,
+                "configured_runner": configured_runner,
+                "aggregation_job": "release-evidence",
+                "aggregation_runner": "ubuntu-24.04",
+                "toolchains": identity["toolchains"],
+                "compiler": identity["compiler"],
+                "arguments": identity["arguments"],
+                "ui_commands": payload_ui_commands(artifact_id),
+                "oci": identity["oci"],
+                "derived_build_arguments": (
+                    {
+                        "BUILD_IDENTITY_SHA256": build_identity_digest(identity),
+                        "BUILD_ENVIRONMENT_BASE64": (
+                            observed_build_environment_label(
+                                identity["observed_build_environment"]
+                            )
+                        ),
+                    }
+                    if artifact_id == "oci-linux-amd64-image"
+                    else {}
+                ),
+            }
+        )
+    evidence_rows: list[dict[str, Any]] = []
+    for spec in BUILD_TYPE_EXAMPLE_EVIDENCE:
+        source_id = spec["source_id"]
+        evidence_id = spec["evidence_id"]
+        upstream_job, configured_runners = EVIDENCE_UPSTREAM_JOBS[source_id]
+        subject = f"supply-chain/subjects/{evidence_id}.json"
+        evidence_rows.append(
+            {
+                **spec,
+                "subject": subject,
+                "subject_sha256": _build_type_example_digest(f"subject:{subject}"),
+                "input_uri": (f"file:release-inputs/source-reports/{evidence_id}.json"),
+                "upstream_job": upstream_job,
+                "configured_runners": list(configured_runners),
+                "aggregation_job": "release-evidence",
+                "aggregation_runner": "ubuntu-24.04",
+            }
+        )
+    evidence_rows.sort(key=lambda row: row["subject"])
+    if {row["source_id"] for row in evidence_rows} != set(EVIDENCE_UPSTREAM_JOBS):
+        reject("build-type example evidence inventory drifted")
+
+    dependencies = [
+        {
+            "uri": f"git+{REPOSITORY}",
+            "digest": {"gitCommit": revision},
+        },
+        *pinned_toolchain_dependencies(),
+        *(
+            {
+                "uri": f"file:{relative}",
+                "digest": {"sha256": digest.removeprefix("sha256:")},
+            }
+            for relative, digest in sorted(
+                identities["source-archive"]["materials"].items()
+            )
+        ),
+        *workflow_action_dependencies(source_entries),
+    ]
+    for image in (
+        expected_base_image(source_entries),
+        expected_buildkit_image(source_entries),
+        expected_dockerfile_frontend(source_entries),
+    ):
+        dependencies.append(
+            {
+                "uri": "oci://" + docker_repository_url(image.split("@", 1)[0]),
+                "digest": {"sha256": image.rsplit("sha256:", 1)[1]},
+            }
+        )
+    dependencies.extend(
+        {
+            "uri": row["input_uri"],
+            "digest": {"sha256": row["subject_sha256"].removeprefix("sha256:")},
+        }
+        for row in [*payload_rows, *evidence_rows]
+    )
+    dependencies.sort(
+        key=lambda item: (
+            item["uri"],
+            json.dumps(item["digest"], sort_keys=True, separators=(",", ":")),
+        )
+    )
+    components, _relationships = component_packages(source_entries, version)
+    components.extend(apk_component_packages(source_entries))
+    components.sort(key=lambda item: item["SPDXID"])
+    aggregation = {
+        "schema": RELEASE_AGGREGATION_SCHEMA,
+        "operation": "validate-and-copy",
+        "product": version,
+        "source_revision": revision,
+        "subject_count": 17,
+        "component_graph_sha256": "sha256:" + sha256_bytes(canonical_json(components)),
+        "evidence_producers": evidence_rows,
+        "payload_producers": payload_rows,
+        "source_date_epoch": source_date_epoch,
+        "toolchains": identities["source-archive"]["toolchains"],
+    }
+    subject_rows = [
+        {
+            "name": row["subject"],
+            "digest": {"sha256": row["subject_sha256"].removeprefix("sha256:")},
+        }
+        for row in [*payload_rows, *evidence_rows]
+    ]
+    subject_rows.sort(key=lambda row: row["name"])
+    runner = {
+        "provider": "github-actions",
+        "os": "Linux",
+        "architecture": "X64",
+        "image": "ubuntu24",
+        "image_version": "20990101.1.0",
+    }
+    return {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": subject_rows,
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {
+                "buildType": BUILD_TYPE,
+                "externalParameters": {
+                    "trigger": {
+                        "event": "workflow_dispatch",
+                        "ref": "refs/heads/main",
+                        "inputs": {"release": True},
+                    },
+                    "source": {
+                        "repository": REPOSITORY,
+                        "ref": "refs/heads/main",
+                    },
+                    "manifest_inputs": [
+                        "file:compatibility.toml",
+                        "file:compatibility.json",
+                    ],
+                    "payload_inputs": [
+                        {"artifact_id": row["artifact_id"], "uri": row["input_uri"]}
+                        for row in sorted(
+                            payload_rows, key=lambda item: item["artifact_id"]
+                        )
+                    ],
+                    "evidence_inputs": [
+                        {"source_id": row["source_id"], "uri": row["input_uri"]}
+                        for row in sorted(
+                            evidence_rows, key=lambda item: item["source_id"]
+                        )
+                    ],
+                },
+                "internalParameters": {},
+                "resolvedDependencies": dependencies,
+            },
+            "runDetails": {
+                "builder": {"id": f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main"},
+                "metadata": {"invocationId": f"{REPOSITORY}/actions/runs/1/attempts/1"},
+                "byproducts": [
+                    runner_byproduct(runner),
+                    aggregation_byproduct(aggregation),
+                ],
+            },
+        },
+    }
+
+
+def validate_build_type_v3_example(
+    value: object, source_entries: dict[str, bytes]
+) -> None:
+    """Require the checked-in example to be the exact complete v3 graph."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "_type",
+        "subject",
+        "predicateType",
+        "predicate",
+    }:
+        reject("build-type v3 example is not a closed in-toto Statement")
+    if value != build_type_v3_example(source_entries):
+        reject("build-type v3 example differs from the canonical illustrative graph")
+    if BUILD_TYPE == WITHDRAWN_BUILD_TYPE_V2:
+        reject("active build type must not equal the withdrawn v2 URI")
+
+
+def build_type_v2_tombstone() -> dict[str, Any]:
+    return {
+        "schema": BUILD_TYPE_TOMBSTONE_SCHEMA,
+        "status": "withdrawn-before-use",
+        "buildType": WITHDRAWN_BUILD_TYPE_V2,
+        "statementEmitted": False,
+        "statementAccepted": False,
+        "reason": (
+            "v2 omitted the static archiver/librarian identity required by the "
+            "final native payload build graph and was superseded before activation"
+        ),
+        "supersededBy": BUILD_TYPE,
+    }
+
+
+def validate_build_type_v2_tombstone(value: object) -> None:
+    if not isinstance(value, dict) or value != build_type_v2_tombstone():
+        reject("build-type v2 tombstone is incomplete or not canonical")
+    if any(
+        field in value for field in ("_type", "subject", "predicateType", "predicate")
+    ):
+        reject("build-type v2 tombstone must not be an in-toto Statement")
+
+
 def local_invocation_parameters() -> dict[str, Any]:
     """Return an explicit non-release invocation used only by structural tests."""
 
@@ -3691,6 +4262,38 @@ def validate_identity_documents(
     payloads_by_id: dict[str, Path],
     require_github: bool,
 ) -> None:
+    if set(provenance) != {"_type", "subject", "predicateType", "predicate"}:
+        reject("SLSA provenance Statement has unknown or missing fields")
+    if (
+        provenance.get("_type") != "https://in-toto.io/Statement/v1"
+        or provenance.get("predicateType") != "https://slsa.dev/provenance/v1"
+    ):
+        reject("SLSA provenance Statement type is not canonical")
+    expected_subjects = [
+        {
+            "name": relative,
+            "digest": {"sha256": sha256_path(path)},
+        }
+        for relative, path in sorted(subjects_by_relative.items())
+    ]
+    if provenance.get("subject") != expected_subjects:
+        reject(
+            "SLSA provenance subjects differ from the exact sorted release subject bytes"
+        )
+    predicate = provenance.get("predicate")
+    if not isinstance(predicate, dict) or set(predicate) != {
+        "buildDefinition",
+        "runDetails",
+    }:
+        reject("SLSA predicate has unknown or missing fields")
+    definition = predicate.get("buildDefinition")
+    if not isinstance(definition, dict) or set(definition) != {
+        "buildType",
+        "externalParameters",
+        "internalParameters",
+        "resolvedDependencies",
+    }:
+        reject("SLSA buildDefinition has unknown or missing fields")
     identities, source_entries = release_payload_identities(payloads_by_id, version)
     revision = identities["source-archive"]["source"]["revision"]
     expected_packages, expected_relationships, expected_describes = spdx_graph(
@@ -3753,12 +4356,6 @@ def validate_identity_documents(
                 and identifier not in element_ids
             ):
                 reject("SPDX relationship contains a dangling element identifier")
-    predicate = provenance.get("predicate")
-    definition = (
-        predicate.get("buildDefinition") if isinstance(predicate, dict) else None
-    )
-    if not isinstance(definition, dict):
-        reject("SLSA buildDefinition is missing")
     external = definition.get("externalParameters")
     invocation_parameters = (
         {

@@ -51,6 +51,15 @@ The portable `SQLite` contract records the exact reviewed bundled source
 inventory digest. Per-platform compiled binary identities, compiler arguments,
 and source-to-artifact relationships are recorded in SBOM and provenance.
 
+The release aggregation build type is versioned by immutable Git blob URL.
+Version 2 was frozen as a definition but was withdrawn before use when final
+review found that its payload-producer graph omitted the separately observed
+static archiver/librarian used for bundled SQLite. No v2 statement was emitted
+or accepted. Its former example path contains a canonical non-statement
+tombstone recording that fact. Version 3 supersedes it and closes each native
+payload identity over the Rust compiler, bundled-SQLite C compiler, static
+archiver/librarian, and final linker as distinct observed tools.
+
 ## Consequences
 
 - Published archive and image hashes are exact and non-self-referential.
@@ -59,5 +68,8 @@ and source-to-artifact relationships are recorded in SBOM and provenance.
 - Missing, extra, substituted, or stale artifact/evidence subjects fail the
   release verifier even when the embedded contract is otherwise valid.
 - Fixture manifests and structural-only checks cannot acquire release status.
+- The checked-in v3 illustrative statement and v2 tombstone are executable
+  gate inputs; graph drift, accidental v2 reuse, or a recursive example
+  material fails every compatibility-gate tier.
 - ADR 0011 remains authoritative for supported platforms, recovery, and hard
   gates; this ADR replaces only its in-band artifact/evidence digest placement.
