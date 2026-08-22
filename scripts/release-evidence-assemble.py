@@ -608,9 +608,8 @@ def validate_release_payloads(
 ) -> None:
     """Deep-verify every payload and bind platform claims to its exact bytes."""
 
-    if (
-        len(expected_manifest_sha256) != 64
-        or any(character not in HEX_DIGEST for character in expected_manifest_sha256)
+    if len(expected_manifest_sha256) != 64 or any(
+        character not in HEX_DIGEST for character in expected_manifest_sha256
     ):
         fail("expected release manifest SHA-256 is invalid")
     if set(payload_paths) != set(PAYLOAD_ARTIFACT_IDS):
