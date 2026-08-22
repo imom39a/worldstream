@@ -425,6 +425,29 @@ def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
     assert len((release / "SHA256SUMS").read_text().splitlines()) == 17
 
 
+def test_spdx_namespace_is_unique_for_each_exact_document_version(tmp_path):
+    supply_chain = load_module("release_supply_chain_namespace", SUPPLY_CHAIN)
+    subject = tmp_path / "subject.bin"
+    subject.write_bytes(b"first subject version\n")
+    subjects = {"payload/subject.bin": subject}
+    first = supply_chain.spdx_document_namespace(
+        "0.1.0", "a" * 64, subjects, "2026-08-22T00:00:00Z"
+    )
+
+    assert first == supply_chain.spdx_document_namespace(
+        "0.1.0", "a" * 64, subjects, "2026-08-22T00:00:00Z"
+    )
+    assert first != supply_chain.spdx_document_namespace(
+        "0.1.0", "a" * 64, subjects, "2026-08-22T00:00:01Z"
+    )
+    subject.write_bytes(b"second subject version\n")
+    assert first != supply_chain.spdx_document_namespace(
+        "0.1.0", "a" * 64, subjects, "2026-08-22T00:00:00Z"
+    )
+    assert first.startswith("https://github.com/imom39a/worldstream/spdx/0.1.0/")
+    assert "#" not in first
+
+
 def test_two_level_supply_chain_binds_inventory_and_verifies_both_signatures(tmp_path):
     _payload, reports, release, _evidence_ids = assembled_release(tmp_path)
     inventory = json.loads(

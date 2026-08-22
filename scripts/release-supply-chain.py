@@ -186,6 +186,34 @@ def inventory_value(
     }
 
 
+def spdx_document_namespace(
+    version: str,
+    mirror_digest: str,
+    subjects: dict[str, Path],
+    created: str,
+) -> str:
+    """Return a unique, reproducible URI for this exact SPDX document version."""
+    # SPDX 2.3 section 6.5 requires a new namespace when a document is
+    # updated. Product version plus manifest identity is insufficient because
+    # release subjects and creation time can change between attempts.
+    namespace_seed = {
+        "schema": "worldstream/spdx-document-namespace/v1",
+        "product": version,
+        "manifest_sha256": mirror_digest,
+        "created": created,
+        "subjects": [
+            {
+                "path": relative,
+                "sha256": "sha256:" + ASSEMBLER.sha256_file(path),
+                "size_bytes": path.stat().st_size,
+            }
+            for relative, path in sorted(subjects.items())
+        ],
+    }
+    document_version = ASSEMBLER.sha256_bytes(ASSEMBLER.canonical_json(namespace_seed))
+    return f"https://github.com/imom39a/worldstream/spdx/{version}/{document_version}"
+
+
 def generate_spdx(
     version: str,
     mirror_digest: str,
@@ -228,7 +256,9 @@ def generate_spdx(
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": f"WorldStream {version} pre-sign release subjects",
         "dataLicense": "CC0-1.0",
-        "documentNamespace": f"https://github.com/imom39a/worldstream/spdx/{version}/{mirror_digest}",
+        "documentNamespace": spdx_document_namespace(
+            version, mirror_digest, subjects, created
+        ),
         "creationInfo": {
             "created": created,
             "creators": ["Tool: WorldStream release-supply-chain.py"],
