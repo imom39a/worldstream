@@ -17,6 +17,8 @@ import math
 import os
 import shutil
 import sqlite3
+import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -33,6 +35,10 @@ PRODUCER_PATH = ROOT / "scripts/release-evidence-produce-reference.py"
 FAILURE_PRODUCER_PATH = ROOT / "scripts/release-evidence-produce-failure-soak.py"
 COMMON_PATH = ROOT / "scripts/kill-point-matrix.py"
 HOST_PATH = ROOT / "scripts/reference_host_environment.py"
+SNAPSHOT_FIXTURE_SOURCE_PATH = (
+    ROOT / "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs"
+)
+SNAPSHOT_FIXTURE_SCHEMA = "worldstream/reference-snapshot-tail-fixture/v1"
 COUNTER_PACK = {
     "id": "worldstream.counter",
     "version": "2.0.0",
@@ -51,9 +57,15 @@ SQLITE_ENGINE = {
     "connection_mode": "embedded",
 }
 MAX_HTTP_BYTES = 64 * 1024
+MAX_FIXTURE_REPORT_BYTES = 64 * 1024
 ACTION_WORKERS = 128
 DISPATCH_RATE_PER_SECOND = 125
 TOKEN_QUEUE_BOUND = 512
+REFERENCE_JOB_HARD_SECONDS = 14_400
+REFERENCE_JOB_MINIMUM_RESERVE_SECONDS = 1_800
+FROZEN_FIXTURE_SETUP_TIMEOUT_SECONDS = 10_800.0
+FROZEN_STARTUP_TIMEOUT_SECONDS = 30.0
+FROZEN_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 
 
 class TargetFailure(RuntimeError):
@@ -106,6 +118,43 @@ def reduced_profile() -> dict[str, Any]:
     }
 
 
+def validate_timeout_contract(
+    args: argparse.Namespace, profile: dict[str, Any]
+) -> None:
+    """Keep the frozen workload within the exact four-hour workflow boundary."""
+
+    timeouts = (
+        args.startup_timeout_seconds,
+        args.shutdown_timeout_seconds,
+        args.fixture_setup_timeout_seconds,
+    )
+    require(
+        all(
+            type(value) in {int, float} and math.isfinite(value) and value > 0
+            for value in timeouts
+        ),
+        "reference target timeouts must be positive finite seconds",
+    )
+    if profile["publishable_candidate"] is not True:
+        return
+    require(
+        timeouts
+        == (
+            FROZEN_STARTUP_TIMEOUT_SECONDS,
+            FROZEN_SHUTDOWN_TIMEOUT_SECONDS,
+            FROZEN_FIXTURE_SETUP_TIMEOUT_SECONDS,
+        ),
+        "frozen reference timeout arguments drifted",
+    )
+    require(
+        FROZEN_FIXTURE_SETUP_TIMEOUT_SECONDS
+        + profile["sustained_transition_window_seconds"]
+        + REFERENCE_JOB_MINIMUM_RESERVE_SECONDS
+        <= REFERENCE_JOB_HARD_SECONDS,
+        "frozen reference workload exceeds the four-hour job boundary",
+    )
+
+
 def nearest_rank(values: list[float], fraction: float) -> float:
     require(bool(values), "latency percentile requires an accepted sample")
     ordered = sorted(values)
@@ -143,25 +192,6 @@ def dimension(
         "target_met": met,
         "outcome": "met" if met else "missed",
         "method": method,
-    }
-
-
-def history_limit_observation() -> dict[str, Any]:
-    return {
-        "requested_transition_count": 100_000,
-        "action_attempt_count": 33,
-        "accepted_transition_count": 32,
-        "newest_snapshot_room_seq": None,
-        "snapshot_lag_transitions": None,
-        "recovery_ms": None,
-        "projection_hash_equal": None,
-        "pack": {
-            **COUNTER_PACK,
-            "configuration": COUNTER_CONFIGURATION,
-            "accepted_action_sequence": {"increment": 16, "private_ack": 16},
-        },
-        "terminal_rejection_code": "counter_limit_reached",
-        "recovery_measurement_status": ("not_reachable_due_to_frozen_pack_semantics"),
     }
 
 
@@ -385,29 +415,244 @@ def verify_accepted(result: dict[str, Any], seen: set[str]) -> None:
     seen.add(transition_id)
 
 
-async def attempt_frozen_history(
-    daemon: Any, record: RoomRecord, seen: set[str]
-) -> dict[str, Any]:
-    room = await open_room(daemon, record)
+def fixture_transition_count(profile: dict[str, Any]) -> int:
+    """Keep local process tests bounded while the frozen path attempts all 100k."""
+
+    return 100_000 if profile["publishable_candidate"] is True else 20
+
+
+def stable_fixture_report_bytes(path: Path) -> bytes:
+    """Read one regular report through one no-follow, mutation-checked descriptor."""
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    require(
+        isinstance(no_follow, int) and no_follow != 0,
+        "snapshot-tail fixture report requires no-follow file admission",
+    )
+    flags = os.O_RDONLY | no_follow
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
     try:
-        for action_type, count in (("increment", 16), ("private_ack", 16)):
-            for _ in range(count):
-                result = await room.act(
-                    action_type, {}, action_id=COMMON.new_ulid(), timeout=15
-                )
-                verify_accepted(result, seen)
-        rejected = await room.act(
-            "private_ack", {}, action_id=COMMON.new_ulid(), timeout=15
-        )
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise TargetFailure(
+            "snapshot-tail fixture report was unavailable or unsafe"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
         require(
-            rejected.get("code") == "counter_limit_reached"
-            and rejected.get("duplicate") is False
-            and "transition_id" not in rejected,
-            "frozen Counter did not reach its exact public semantic ceiling",
+            stat.S_ISREG(before.st_mode)
+            and 0 < before.st_size <= MAX_FIXTURE_REPORT_BYTES,
+            "snapshot-tail fixture report was unavailable or unbounded",
         )
-        return history_limit_observation()
+        chunks: list[bytes] = []
+        remaining = MAX_FIXTURE_REPORT_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+    except OSError as error:
+        raise TargetFailure("snapshot-tail fixture report read failed") from error
     finally:
-        await room.close()
+        os.close(descriptor)
+    raw = b"".join(chunks)
+    stable_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size")
+    stable_timestamps = ("st_mtime_ns", "st_ctime_ns")
+    require(
+        len(raw) == before.st_size
+        and len(raw) <= MAX_FIXTURE_REPORT_BYTES
+        and all(
+            getattr(before, field) == getattr(after, field) for field in stable_fields
+        )
+        and all(
+            getattr(before, field) == getattr(after, field)
+            for field in stable_timestamps
+        ),
+        "snapshot-tail fixture report changed while being read",
+    )
+    return raw
+
+
+def _run_snapshot_fixture(
+    fixture_bin: Path,
+    daemon: Any,
+    record: RoomRecord,
+    transition_count: int,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], str]:
+    output = daemon.root / "snapshot-tail-fixture.json"
+    try:
+        result = subprocess.run(
+            [
+                str(fixture_bin),
+                "--database",
+                str(daemon.database_path),
+                "--authority-secret-file",
+                str(daemon.root / "authority.secret"),
+                "--output",
+                str(output),
+                "--room-id",
+                record.room_id,
+                "--member-id",
+                record.member_id,
+                "--transition-count",
+                str(transition_count),
+            ],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TargetFailure(
+            "snapshot-tail fixture generator exceeded its setup bound"
+        ) from error
+    require(result.returncode == 0, "snapshot-tail fixture generator failed")
+    raw = stable_fixture_report_bytes(output)
+    try:
+        report = PRODUCER.ADAPTER.COLLECTOR.strict_json_object(
+            raw, "snapshot-tail fixture report"
+        )
+    except PRODUCER.ADAPTER.COLLECTOR.CollectionError as error:
+        raise TargetFailure(
+            "snapshot-tail fixture report was not strict JSON"
+        ) from error
+    return report, "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+async def measure_snapshot_tail_recovery(
+    args: argparse.Namespace,
+    profile: dict[str, Any],
+    expected_binary_sha256: str,
+    expected_source_revision: str,
+) -> dict[str, Any]:
+    """Set up history outside the stopwatch, then time exact packaged recovery."""
+
+    fixture_bin = args.snapshot_fixture_bin
+    require(
+        fixture_bin.is_file()
+        and not fixture_bin.is_symlink()
+        and os.access(fixture_bin, os.X_OK),
+        "snapshot-tail fixture generator is not an executable regular file",
+    )
+    root = COMMON.private_root("worldstream-reference-target-recovery-")
+    daemon = COMMON.Daemon(
+        root,
+        args.daemon_bin,
+        startup_timeout=args.startup_timeout_seconds,
+        shutdown_timeout=args.shutdown_timeout_seconds,
+    )
+    try:
+        daemon.start()
+        version = public_json(daemon.base_url, "/version")
+        product_build = version.get("product_build")
+        require(
+            isinstance(product_build, dict)
+            and product_build.get("binary") == "worldstreamd"
+            and product_build.get("source_revision") == expected_source_revision,
+            "packaged daemon source revision differs from the verified archive",
+        )
+        operator = Client(daemon.base_url, daemon.operator_bearer)
+        rooms, failures = await create_rooms(operator, 1, concurrency=1)
+        require(
+            len(rooms) == 1 and failures == 0, "recovery fixture Room create failed"
+        )
+        record = rooms[0]
+        member_bearer = await asyncio.to_thread(
+            COMMON.issue_member_capability,
+            daemon.base_url,
+            daemon.operator_bearer,
+            record.room_id,
+            record.member_id,
+            record.principal_id,
+        )
+        daemon.stop()
+
+        transition_count = fixture_transition_count(profile)
+        fixture, fixture_report_sha256 = await asyncio.to_thread(
+            _run_snapshot_fixture,
+            fixture_bin,
+            daemon,
+            record,
+            transition_count,
+            args.fixture_setup_timeout_seconds,
+        )
+        expected_fixture = {
+            "schema": SNAPSHOT_FIXTURE_SCHEMA,
+            "source_revision": product_build["source_revision"],
+            "transition_kind": "alternating_authorized_membership_suspend_resume",
+            "requested_transition_count": transition_count,
+            "accepted_transition_count": transition_count,
+            "setup_elapsed_ms": fixture.get("setup_elapsed_ms"),
+            "head_room_seq": transition_count,
+            "newest_snapshot_room_seq": transition_count - 2,
+            "snapshot_lag_transitions": 2,
+            "complete_head": fixture.get("complete_head"),
+            "projection_hash": fixture.get("projection_hash"),
+            "final_membership_standing": "enabled",
+        }
+        require(fixture == expected_fixture, "snapshot-tail fixture report drifted")
+        require(
+            type(fixture["setup_elapsed_ms"]) is int
+            and fixture["setup_elapsed_ms"] >= 0
+            and isinstance(fixture["complete_head"], dict)
+            and fixture["complete_head"].get("room_seq") == transition_count
+            and isinstance(fixture["projection_hash"], str),
+            "snapshot-tail fixture observations were incomplete",
+        )
+
+        recovery_started = time.monotonic()
+        daemon.start()
+        after = await Client(daemon.base_url, member_bearer).projection(record.room_id)
+        recovery_ms = round((time.monotonic() - recovery_started) * 1_000, 3)
+        before_head_sha256 = canonical_digest(fixture["complete_head"])
+        after_head_sha256 = canonical_digest(after.get("room_head"))
+        head_equal = fixture["complete_head"] == after.get("room_head")
+        projection_equal = fixture["projection_hash"] == after.get("projection_hash")
+        require(
+            head_equal and projection_equal,
+            "fresh packaged recovery changed the verified Head or Projection",
+        )
+        return {
+            "requested_transition_count": 100_000,
+            "accepted_transition_count": transition_count,
+            "setup": {
+                "boundary": "excluded_before_recovery_stopwatch",
+                "mode": "source_bound_deterministic_production_core_commits",
+                "source_revision": product_build["source_revision"],
+                "generator_source_sha256": PRODUCER.sha256(
+                    SNAPSHOT_FIXTURE_SOURCE_PATH
+                ),
+                "generator_binary_sha256": PRODUCER.sha256(fixture_bin),
+                "generator_report_sha256": fixture_report_sha256,
+                "transition_kind": fixture["transition_kind"],
+                "setup_elapsed_ms": fixture["setup_elapsed_ms"],
+            },
+            "snapshot": {
+                "head_room_seq": fixture["head_room_seq"],
+                "newest_snapshot_room_seq": fixture["newest_snapshot_room_seq"],
+                "snapshot_lag_transitions": fixture["snapshot_lag_transitions"],
+            },
+            "recovery": {
+                "boundary": "fresh_packaged_daemon_process_start_through_verified_current_projection",
+                "daemon_binary_sha256": expected_binary_sha256,
+                "recovery_ms": recovery_ms,
+                "before_complete_head_sha256": before_head_sha256,
+                "after_complete_head_sha256": after_head_sha256,
+                "complete_head_equal": head_equal,
+                "before_projection_hash": fixture["projection_hash"],
+                "after_projection_hash": after["projection_hash"],
+                "projection_hash_equal": projection_equal,
+            },
+        }
+    finally:
+        daemon.stop()
+        remove_owned_root(root)
 
 
 async def open_idle_sessions(
@@ -634,6 +879,7 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
         if args.nonpublishable_reduced_test_profile
         else frozen_profile()
     )
+    validate_timeout_contract(args, profile)
     manifest = PRODUCER.ADAPTER.COLLECTOR.load_manifest(
         args.manifest_toml, args.manifest_json
     )
@@ -695,6 +941,14 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             args.manifest_toml, "worldstream/storage-compatibility-manifest/toml"
         ),
         "manifest_json": PRODUCER.file_binding(args.manifest_json, manifest["schema"]),
+        "snapshot_fixture_binary": PRODUCER.file_binding(
+            args.snapshot_fixture_bin,
+            "worldstream/reference-snapshot-tail-fixture-elf/v1",
+        ),
+        "snapshot_fixture_source": PRODUCER.file_binding(
+            SNAPSHOT_FIXTURE_SOURCE_PATH,
+            "worldstream/reference-snapshot-tail-fixture-source/v1",
+        ),
     }
     external_sources = {
         "packaged_acceptance": {
@@ -713,6 +967,13 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             "source_environment": {"platform": kill["platform"]},
         },
     }
+
+    history = await measure_snapshot_tail_recovery(
+        args,
+        profile,
+        distribution["binary_sha256"],
+        distribution["source_revision"],
+    )
 
     root = COMMON.private_root("worldstream-reference-target-")
     daemon = COMMON.Daemon(
@@ -760,7 +1021,6 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             "Room create attempt accounting was incomplete",
         )
         require(bool(rooms), "reference workload created no Room")
-        history = await attempt_frozen_history(daemon, rooms[0], seen)
         idle_target = min(profile["idle_websocket_target"], max(0, len(rooms) - 1))
         idle_records = rooms[1 : 1 + idle_target]
         idle_rooms, idle_tasks = await open_idle_sessions(daemon, idle_records)
@@ -797,6 +1057,16 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             >= profile["sustained_transition_rate_target_per_second"]
         )
         latency_met = latency["p95_ms"] < profile["commit_to_ack_p95_target_ms"]
+        history_met = (
+            history["accepted_transition_count"]
+            >= profile["history_room_transition_target"]
+            and history["snapshot"]["snapshot_lag_transitions"]
+            <= profile["snapshot_maximum_lag_transitions"]
+            and history["recovery"]["recovery_ms"]
+            <= profile["snapshot_tail_recovery_target_ms"]
+            and history["recovery"]["complete_head_equal"] is True
+            and history["recovery"]["projection_hash_equal"] is True
+        )
         dimensions = [
             dimension(
                 "stored_passivated_rooms",
@@ -882,15 +1152,18 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             dimension(
                 "snapshot_tail_recovery",
                 classification="measured_non_sla_performance",
-                completed=False,
+                completed=True,
                 observed=history,
                 target={
                     "minimum_room_transition_count": 100_000,
                     "maximum_snapshot_lag_transitions": 250,
                     "maximum_recovery_ms": 5_000,
                 },
-                met=False,
-                method="genuine public Counter v2 Actions through exact semantic limit",
+                met=history_met,
+                method=(
+                    "source-bound production Core fixture setup followed by fresh exact "
+                    "packaged-daemon recovery through a verified current Projection"
+                ),
             ),
             dimension(
                 "repeated_forced_termination_no_acknowledged_loss",
@@ -917,10 +1190,12 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             "performance_class": "reference_non_release",
             "execution": {
                 "mode": "package_bound_linux_reference",
-                "workload_source": "packaged_worldstreamd_public_api",
+                "workload_source": (
+                    "packaged_worldstreamd_public_api_plus_source_bound_fixture_setup"
+                ),
                 "storage_profile": "sqlite-bundled",
                 "connection_mode": "embedded",
-                "public_api_only": True,
+                "public_api_only": False,
                 "simulated": False,
                 "scaled": args.nonpublishable_reduced_test_profile,
                 "profile_args_locked": not args.nonpublishable_reduced_test_profile,
@@ -973,13 +1248,17 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
                     "database_bytes_after_workload": retained_database_bytes,
                 },
             },
-            "limitations": [
-                {
-                    "code": "frozen_counter_v2_semantic_ceiling",
-                    "dimension": "snapshot_tail_recovery",
-                    "publishable_non_sla_target_miss": True,
-                }
-            ],
+            "limitations": (
+                []
+                if history_met
+                else [
+                    {
+                        "code": "snapshot_tail_recovery_target_missed",
+                        "dimension": "snapshot_tail_recovery",
+                        "publishable_non_sla_target_miss": True,
+                    }
+                ]
+            ),
         }
         if not args.nonpublishable_reduced_test_profile:
             PRODUCER.validate_reference_target(
@@ -1034,8 +1313,22 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--packaged-sdk-root", type=Path, required=True)
     command.add_argument("--soak-report", type=Path, required=True)
     command.add_argument("--kill-point-report", type=Path, required=True)
-    command.add_argument("--startup-timeout-seconds", type=float, default=30.0)
-    command.add_argument("--shutdown-timeout-seconds", type=float, default=15.0)
+    command.add_argument("--snapshot-fixture-bin", type=Path, required=True)
+    command.add_argument(
+        "--startup-timeout-seconds",
+        type=float,
+        default=FROZEN_STARTUP_TIMEOUT_SECONDS,
+    )
+    command.add_argument(
+        "--shutdown-timeout-seconds",
+        type=float,
+        default=FROZEN_SHUTDOWN_TIMEOUT_SECONDS,
+    )
+    command.add_argument(
+        "--fixture-setup-timeout-seconds",
+        type=float,
+        default=FROZEN_FIXTURE_SETUP_TIMEOUT_SECONDS,
+    )
     command.add_argument(
         "--nonpublishable-reduced-test-profile",
         action="store_true",

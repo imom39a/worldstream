@@ -48,7 +48,8 @@ use worldstream_protocol::{
     ClientMode, CreateRoomRequest, CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
     ObservationAck, ObservationDeliver, ProjectionReset, ProjectionResponse, ProtocolEnvelope,
     ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome,
-    TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope, decode_envelope,
+    TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
+    decode_envelope,
 };
 use worldstream_runtime::{
     CompatibilitySummary, EffectiveConfig, ManifestError, StorageProfile, embedded_manifest,
@@ -2358,6 +2359,7 @@ async fn room_stream(
 ) -> Result<impl IntoResponse, ResponseError> {
     let correlation = traceparent_correlation(&headers);
     let origin = websocket_origin(&headers)?;
+    let upgrade = require_websocket_subprotocol(upgrade)?;
     let telemetry = state.telemetry.clone();
     let pending = state
         .rate_limiter
@@ -2420,6 +2422,7 @@ async fn runner_stream(
 ) -> Result<impl IntoResponse, ResponseError> {
     let correlation = traceparent_correlation(&headers);
     let origin = websocket_origin(&headers)?;
+    let upgrade = require_websocket_subprotocol(upgrade)?;
     let telemetry = state.telemetry.clone();
     let pending = state
         .rate_limiter
@@ -2472,6 +2475,22 @@ async fn runner_stream(
             correlation,
         )
     }))
+}
+
+fn require_websocket_subprotocol(
+    upgrade: WebSocketUpgrade,
+) -> Result<WebSocketUpgrade, ResponseError> {
+    if !upgrade
+        .requested_protocols()
+        .any(|protocol| protocol.as_bytes() == WEBSOCKET_SUBPROTOCOL.as_bytes())
+    {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    let upgrade = upgrade.protocols([WEBSOCKET_SUBPROTOCOL]);
+    if upgrade.selected_protocol().is_none() {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    Ok(upgrade)
 }
 
 fn websocket_origin(headers: &HeaderMap) -> Result<Option<String>, ResponseError> {
@@ -4317,6 +4336,8 @@ pub enum ServerError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
     use std::str::FromStr;
     use std::sync::{
         Arc, Mutex,
@@ -7077,6 +7098,88 @@ mod tests {
                 .unwrap_or_else(|error| unreachable!("header origin: {error:?}"))
                 .is_none()
         );
+    }
+
+    async fn websocket_handshake(path: &'static str, protocol: Option<&'static str>) -> String {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("operator state: {error}")),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| unreachable!("listener: {error}"));
+        let address = listener
+            .local_addr()
+            .unwrap_or_else(|error| unreachable!("listener address: {error}"));
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+        });
+        let response = tokio::task::spawn_blocking(move || {
+            let mut stream = TcpStream::connect(address)
+                .unwrap_or_else(|error| unreachable!("handshake connect: {error}"));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap_or_else(|error| unreachable!("handshake timeout: {error}"));
+            let protocol_header = protocol
+                .map(|value| format!("Sec-WebSocket-Protocol: {value}\r\n"))
+                .unwrap_or_default();
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n{protocol_header}\r\n"
+            );
+            stream
+                .write_all(request.as_bytes())
+                .unwrap_or_else(|error| unreachable!("handshake write: {error}"));
+            let mut response = Vec::with_capacity(2048);
+            let mut chunk = [0_u8; 1024];
+            while !response.windows(4).any(|value| value == b"\r\n\r\n") {
+                assert!(response.len() <= 16 * 1024, "handshake response is bounded");
+                let count = stream
+                    .read(&mut chunk)
+                    .unwrap_or_else(|error| unreachable!("handshake read: {error}"));
+                assert!(count > 0, "handshake response ended before its headers");
+                response.extend_from_slice(&chunk[..count]);
+            }
+            String::from_utf8(response)
+                .unwrap_or_else(|error| unreachable!("handshake response encoding: {error}"))
+        })
+        .await
+        .unwrap_or_else(|error| unreachable!("handshake task: {error}"));
+        server.abort();
+        let _ = server.await;
+        response
+    }
+
+    #[tokio::test]
+    async fn websocket_routes_require_and_echo_the_exact_wire_subprotocol() {
+        assert_eq!(
+            worldstream_protocol::WEBSOCKET_SUBPROTOCOL,
+            format!(
+                "worldstream.json.v{}",
+                worldstream_protocol::PROTOCOL_VERSION
+            )
+        );
+        for path in ["/v1/stream", "/v1/runner/stream"] {
+            let accepted =
+                websocket_handshake(path, Some(worldstream_protocol::WEBSOCKET_SUBPROTOCOL)).await;
+            assert!(accepted.starts_with("HTTP/1.1 101 "), "{accepted}");
+            assert!(
+                accepted.contains(&format!(
+                    "\r\nsec-websocket-protocol: {}\r\n",
+                    worldstream_protocol::WEBSOCKET_SUBPROTOCOL
+                )),
+                "{accepted}"
+            );
+
+            for unsupported in [None, Some("worldstream.json.v9.9")] {
+                let rejected = websocket_handshake(path, unsupported).await;
+                assert!(rejected.starts_with("HTTP/1.1 400 "), "{rejected}");
+                assert!(!rejected.contains("sec-websocket-protocol"));
+            }
+        }
     }
 
     #[tokio::test]

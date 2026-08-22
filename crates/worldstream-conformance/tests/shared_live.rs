@@ -1579,6 +1579,19 @@ impl KernelConformanceAdapter for PostgresAdapter {
         self.admin
             .rebuild_snapshot_cache(&plan.room_id)
             .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
+        let corrupted = self
+            .admin
+            .corrupt_snapshot_cache_for_conformance(&plan.room_id)
+            .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
+        if corrupted != 1 || self.store.verify_room(&plan.room_id).is_ok() {
+            return Err(AdapterError::new(
+                "postgres-recovery",
+                "malformed disposable snapshot did not fail closed before repair",
+            ));
+        }
+        self.admin
+            .rebuild_snapshot_cache(&plan.room_id)
+            .map_err(|error| AdapterError::new("postgres-recovery", error.to_string()))?;
         let after = self
             .store
             .verify_room(&plan.room_id)

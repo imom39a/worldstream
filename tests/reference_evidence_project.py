@@ -101,6 +101,7 @@ def fixture(tmp_path: Path, monkeypatch):
         + hashlib.sha256(manifest_toml.read_bytes()).hexdigest(),
         "target": "linux-x86_64",
         "version": version,
+        "source_revision": "1" * 40,
         "control_binary_sha256": "sha256:" + "4" * 64,
         "control_binary_size_bytes": 100,
     }
@@ -291,6 +292,7 @@ def fixture(tmp_path: Path, monkeypatch):
         package_archive=package_archive,
         package_report=package_report,
         daemon_bin=daemon,
+        snapshot_fixture_bin=daemon,
         output_dir=tmp_path / "normalized",
         aggregate_report=tmp_path / "aggregate.json",
         manifest_toml=manifest_toml,

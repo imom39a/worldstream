@@ -200,6 +200,7 @@
     },
     "pre_push": {
       "cold_target_seconds": 900,
+      "hard_seconds": 1200,
       "local_postgresql_skip": "visible_incomplete",
       "remote_ci_skip_allowed": false,
       "scope": [
@@ -353,6 +354,12 @@
         "status": "implementation_verified"
       },
       {
+        "id": "0010-transfer-recovery-completeness-v1",
+        "postgresql_checksum": "blake3:b588bfcf04a87427dc6d49ca2a795230eb740a43e7cecdeb536f3233786b97dd",
+        "sqlite_checksum": "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1",
+        "status": "implementation_verified"
+      },
+      {
         "id": "0003-kernel-conformance-v1",
         "postgresql_checksum": "blake3:150c9c7049ad4b6dc4889f536f5418388afdc888fb2819b2506881d9d163b9e4",
         "sqlite_checksum": "",
@@ -400,7 +407,7 @@
     "old_binary_after_migration_supported": false,
     "postgresql_production_mode": "explicit_offline_direct_admin",
     "rollback": "restore_preupgrade_backend_and_previous_binary",
-    "schema_contract_fingerprint": "blake3:a54fde7bc01d6456997705771be8c6152db2cef407e43bd8b708ac2b9bd87574",
+    "schema_contract_fingerprint": "blake3:c8435cbb21df9aa98518245d14caa0a70416cf5369cc95d7ab2edc40261d119f",
     "schema_contract_fingerprint_status": "implementation_verified",
     "sqlite_production_mode": "exclusive_startup_after_verified_backup"
   },

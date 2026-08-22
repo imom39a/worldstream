@@ -276,7 +276,7 @@ async def drive(args: argparse.Namespace) -> dict[str, Any]:
         final_activity = activity(final)
         result = {
             "status": "completed",
-            "evidence_class": "real_cmux_browser_plus_public_sdk_http_websocket",
+            "evidence_class": "real_browser_dom_plus_public_sdk_http_websocket",
             "live_evidence": True,
             "phase_path": [
                 "Briefing",

@@ -59,11 +59,11 @@ fn real_migration_failure_emits_closed_failed_fact_without_unwinding() {
         [
             PostgresTelemetryEventV1::Migration {
                 phase: PostgresMigrationPhaseV1::Started,
-                schema_version: 9,
+                schema_version: 10,
             },
             PostgresTelemetryEventV1::Migration {
                 phase: PostgresMigrationPhaseV1::Failed,
-                schema_version: 9,
+                schema_version: 10,
             },
         ]
     );
@@ -164,28 +164,28 @@ fn live_admin_migration_and_current_schema_emit_terminal_facts() {
         events[0],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::Started,
-            schema_version: 9,
+            schema_version: 10,
         }
     );
     assert!(matches!(
         events[1],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::Applied | PostgresMigrationPhaseV1::AlreadyCurrent,
-            schema_version: 9,
+            schema_version: 10,
         }
     ));
     assert_eq!(
         events[2],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::Started,
-            schema_version: 9,
+            schema_version: 10,
         }
     );
     assert_eq!(
         events[3],
         PostgresTelemetryEventV1::Migration {
             phase: PostgresMigrationPhaseV1::AlreadyCurrent,
-            schema_version: 9,
+            schema_version: 10,
         }
     );
 }

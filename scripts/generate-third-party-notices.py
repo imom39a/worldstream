@@ -88,7 +88,8 @@ def normalized_notice(content: bytes, label: str) -> bytes:
         text = content.decode("utf-8-sig")
     except UnicodeError as error:
         raise NoticeError(f"notice is not UTF-8: {label}") from error
-    text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip() + "\n"
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "\n".join(line.rstrip(" \t") for line in text.split("\n")).rstrip() + "\n"
     if "===== BEGIN NOTICE " in text or "===== END NOTICE " in text:
         fail(f"notice contains a reserved delimiter: {label}")
     return text.encode()
@@ -530,7 +531,7 @@ def render_notices(sections: dict[str, bytes]) -> bytes:
         output.extend(f"===== BEGIN NOTICE {identifier} =====\n".encode())
         output.extend(content)
         output.extend(f"===== END NOTICE {identifier} =====\n\n".encode())
-    return bytes(output)
+    return bytes(output).rstrip(b"\n") + b"\n"
 
 
 def write_atomic(path: Path, content: bytes) -> None:

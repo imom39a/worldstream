@@ -63,6 +63,13 @@ def _package_fixture(root: Path, *, unsafe_link: bool = False) -> tuple[Path, Pa
         "manifest/compatibility.toml": manifest_toml,
         "manifest/compatibility.json": manifest_json,
         "metadata/release.json": metadata,
+        "ui/index.html": b"<!doctype html><main id='root'></main>\n",
+        "ui/compatibility-identity.json": b"{}\n",
+        "sdk/python/src/worldstream_sdk/__init__.py": b"__all__ = []\n",
+        "examples/heist/wave10_live/seed_browser_room.py": b"# fixture\n",
+        "examples/heist/wave10_live/run_browser_story.py": b"# fixture\n",
+        "examples/heist/wave10_live/run_absent_broker_live.py": b"# fixture\n",
+        "examples/heist/wave10_live/browser_trace_init.js": b"// fixture\n",
     }
     checksums = "".join(
         f"{hashlib.sha256(value).hexdigest()}  {path}\n"
@@ -172,6 +179,115 @@ def _valid_absent_broker_report() -> dict:
         "timers": [
             {"transition_id_present": True, "duplicate": False} for _ in range(5)
         ],
+    }
+
+
+def _valid_browser_story(module, binding: dict) -> dict:
+    digest = "sha256:" + "1" * 64
+    assets = binding["runtime_assets"]
+    binary = binding["binaries"]["worldstreamd"]
+    return {
+        "schema": module.BROWSER_STORY_SCHEMA,
+        "canonical_encoding": "utf8-sorted-key-compact-json-lf",
+        "status": "pass",
+        "release_evidence": True,
+        "source_mode": "package-extracted",
+        "elapsed_ms": 1234,
+        "browser": module.PINNED_BROWSER_IDENTITY,
+        "tools": {
+            "adapter": {
+                "name": "worldstream-cdp-browser",
+                "protocol": "Chrome DevTools Protocol",
+                "sha256": "sha256:"
+                + module._sha256_file(module.ROOT / "scripts/cdp-browser.py"),
+                "size_bytes": (module.ROOT / "scripts/cdp-browser.py").stat().st_size,
+            },
+            "python": {"implementation": "cpython", "version": "3.14.7"},
+        },
+        "runtime": {
+            "worldstreamd": {
+                "sha256": binary["sha256"],
+                "size_bytes": binary["size_bytes"],
+                "origin": "package:bin/worldstreamd",
+            },
+            "ui": {**assets["ui"], "origin": "package:ui"},
+            "sdk": {
+                **assets["sdk_python_source"],
+                "origin": "package:sdk/python/src",
+            },
+            "heist_reference_clients": {
+                **assets["heist_reference_clients"],
+                "origin": "package:examples/heist",
+            },
+        },
+        "story": {
+            "phase_path": [
+                "Briefing",
+                "Negotiation",
+                "Commitment",
+                "Resolution",
+                "Result",
+                "Complete",
+            ],
+            "public_projection": {
+                "broker_present": True,
+                "commitment_count": 2,
+                "aggregate_outcome_present": True,
+            },
+            "final_replay": {"verified": True, "hash_parity": {"verified": True}},
+        },
+        "dom_evidence": {
+            key: digest
+            for key in (
+                "stale_rejection",
+                "precomplete_reveal",
+                "public_final",
+                "participant_final",
+                "operator_final",
+                "replay_final",
+                "briefing",
+                "negotiation",
+                "commitment",
+                "result",
+                "complete",
+                "resync",
+                "browser_diagnostics",
+            )
+        },
+        "typed_actions": {
+            key: digest
+            for key in (
+                "inspect_clue",
+                "publish_clue",
+                "propose_plan",
+                "commit_move",
+                "acknowledge_result",
+            )
+        },
+        "checks": {
+            key: True
+            for key in (
+                "browser_identity_verified",
+                "catch_up_or_reset_installed",
+                "embedded_ui_loaded",
+                "final_reveal_dom_visible",
+                "new_session_resynchronized",
+                "package_bound_reference_clients",
+                "package_bound_runtime",
+                "precomplete_reveal_locked",
+                "privacy_negative_dom_and_browser_channels",
+                "replay_hashes_verified",
+                "six_phase_story_complete",
+                "stale_head_rejected",
+                "typed_actions_accepted_in_dom",
+            )
+        },
+        "privacy": {
+            "status": "pass",
+            "private_canary_absent": True,
+            "credentials_absent": True,
+            "private_claim_absent_from_retained_evidence": True,
+        },
     }
 
 
@@ -875,6 +991,57 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
                 binding["identity"]["manifest_json_sha256"],
             )
             self.assertTrue(binding["archive"]["checksums_exact"])
+            self.assertTrue((root / "extracted/ui/index.html").is_file())
+            self.assertTrue(
+                (
+                    root / "extracted/sdk/python/src/worldstream_sdk/__init__.py"
+                ).is_file()
+            )
+            self.assertTrue(
+                (
+                    root / "extracted/examples/heist/wave10_live/run_browser_story.py"
+                ).is_file()
+            )
+            self.assertEqual(
+                set(binding["runtime_assets"]),
+                {"ui", "sdk_python_source", "heist_reference_clients"},
+            )
+
+    def test_browser_story_is_exactly_bound_and_adversarial_drift_is_rejected(
+        self,
+    ) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-browser-bind-") as name:
+            root = Path(name)
+            archive, package_report = _package_fixture(root)
+            _daemon, _ctl, binding = module._bind_package(
+                archive, package_report, root / "extracted"
+            )
+            valid = _valid_browser_story(module, binding)
+            module._validate_browser_story(
+                valid, binding, module.PINNED_BROWSER_IDENTITY
+            )
+            mutations = {
+                "browser": ("browser", "sha256", "sha256:" + "0" * 64),
+                "ui": ("runtime", "ui", "tree_sha256", "sha256:" + "0" * 64),
+                "privacy": (
+                    "privacy",
+                    "private_canary_absent",
+                    False,
+                ),
+                "stale": ("checks", "stale_head_rejected", False),
+            }
+            for label, mutation in mutations.items():
+                with self.subTest(label=label):
+                    changed = json.loads(json.dumps(valid))
+                    target = changed
+                    for key in mutation[:-2]:
+                        target = target[key]
+                    target[mutation[-2]] = mutation[-1]
+                    with self.assertRaises(module.LaneFailure):
+                        module._validate_browser_story(
+                            changed, binding, module.PINNED_BROWSER_IDENTITY
+                        )
 
     def test_linked_archive_member_is_rejected_before_extraction(self) -> None:
         module = _module()

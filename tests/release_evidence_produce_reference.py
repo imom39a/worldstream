@@ -164,6 +164,26 @@ def write_json(path: Path, value: object) -> Path:
     return path
 
 
+def fixture_build_identity(manifest_json: bytes) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema": "worldstream/release-build-identity/v2",
+                "source": {
+                    "repository": "https://github.com/imom39a/worldstream",
+                    "revision": "1" * 40,
+                },
+                "target": {"profile": "linux-x86_64"},
+                "observed_build_environment": {"fixture": "reference-target"},
+                "manifest_sha256": "sha256:"
+                + hashlib.sha256(manifest_json).hexdigest(),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+
+
 def build_archive(
     path: Path,
     daemon_bytes: bytes,
@@ -207,8 +227,22 @@ def build_archive(
         ).read_bytes(),
         "manifest/compatibility.toml": manifest_toml,
         "manifest/compatibility.json": manifest_json,
+        "metadata/build.json": fixture_build_identity(manifest_json),
         "metadata/release.json": metadata,
+        "ui/index.html": (ROOT / "web/console/dist/index.html").read_bytes(),
+        "ui/compatibility-identity.json": (
+            ROOT / "web/console/dist/compatibility-identity.json"
+        ).read_bytes(),
     }
+    for name in (
+        "seed_browser_room.py",
+        "run_browser_story.py",
+        "run_absent_broker_live.py",
+        "browser_trace_init.js",
+    ):
+        files[f"examples/heist/wave10_live/{name}"] = (
+            ROOT / "examples/heist/wave10_live" / name
+        ).read_bytes()
     files["checksums.sha256"] = "".join(
         f"{hashlib.sha256(content).hexdigest()}  {name}\n"
         for name, content in sorted(files.items())
@@ -329,6 +363,116 @@ def story_report(story: str, backend: str) -> dict:
         "activation": {},
         "measurements": measurements,
         "reference_workload": disclosure,
+    }
+
+
+def packaged_browser_story(module, package_binding: dict) -> dict:
+    packaged = module.PACKAGED_ACCEPTANCE
+    digest = "sha256:" + "a" * 64
+    assets = package_binding["runtime_assets"]
+    binary = package_binding["binaries"]["worldstreamd"]
+    return {
+        "schema": packaged.BROWSER_STORY_SCHEMA,
+        "canonical_encoding": "utf8-sorted-key-compact-json-lf",
+        "status": "pass",
+        "release_evidence": True,
+        "source_mode": "package-extracted",
+        "elapsed_ms": 1000,
+        "browser": packaged.PINNED_BROWSER_IDENTITY,
+        "tools": {
+            "adapter": {
+                "name": "worldstream-cdp-browser",
+                "protocol": "Chrome DevTools Protocol",
+                "sha256": "sha256:"
+                + packaged._sha256_file(ROOT / "scripts/cdp-browser.py"),
+                "size_bytes": (ROOT / "scripts/cdp-browser.py").stat().st_size,
+            },
+            "python": {"implementation": "cpython", "version": "3.14.7"},
+        },
+        "runtime": {
+            "worldstreamd": {
+                "sha256": binary["sha256"],
+                "size_bytes": binary["size_bytes"],
+                "origin": "package:bin/worldstreamd",
+            },
+            "ui": {**assets["ui"], "origin": "package:ui"},
+            "sdk": {
+                **assets["sdk_python_source"],
+                "origin": "package:sdk/python/src",
+            },
+            "heist_reference_clients": {
+                **assets["heist_reference_clients"],
+                "origin": "package:examples/heist",
+            },
+        },
+        "story": {
+            "phase_path": [
+                "Briefing",
+                "Negotiation",
+                "Commitment",
+                "Resolution",
+                "Result",
+                "Complete",
+            ],
+            "public_projection": {
+                "broker_present": True,
+                "commitment_count": 2,
+                "aggregate_outcome_present": True,
+            },
+            "final_replay": {"verified": True, "hash_parity": {"verified": True}},
+        },
+        "dom_evidence": {
+            key: digest
+            for key in (
+                "stale_rejection",
+                "precomplete_reveal",
+                "public_final",
+                "participant_final",
+                "operator_final",
+                "replay_final",
+                "briefing",
+                "negotiation",
+                "commitment",
+                "result",
+                "complete",
+                "resync",
+                "browser_diagnostics",
+            )
+        },
+        "typed_actions": {
+            key: digest
+            for key in (
+                "inspect_clue",
+                "publish_clue",
+                "propose_plan",
+                "commit_move",
+                "acknowledge_result",
+            )
+        },
+        "checks": {
+            key: True
+            for key in (
+                "browser_identity_verified",
+                "catch_up_or_reset_installed",
+                "embedded_ui_loaded",
+                "final_reveal_dom_visible",
+                "new_session_resynchronized",
+                "package_bound_reference_clients",
+                "package_bound_runtime",
+                "precomplete_reveal_locked",
+                "privacy_negative_dom_and_browser_channels",
+                "replay_hashes_verified",
+                "six_phase_story_complete",
+                "stale_head_rejected",
+                "typed_actions_accepted_in_dom",
+            )
+        },
+        "privacy": {
+            "status": "pass",
+            "private_canary_absent": True,
+            "credentials_absent": True,
+            "private_claim_absent_from_retained_evidence": True,
+        },
     }
 
 
@@ -482,6 +626,7 @@ def packaged_acceptance_report(module, package_binding: dict) -> dict:
         "cells": cells,
         "comparison": comparisons,
         "package_binding": package_binding,
+        "browser_story": packaged_browser_story(module, package_binding),
         "performance": top_performance,
         "privacy": {
             "status": "pass",
@@ -570,6 +715,12 @@ def fixture(tmp_path: Path, monkeypatch):
                 "manifest_toml_sha256": hashlib.sha256(
                     manifest_toml.read_bytes()
                 ).hexdigest(),
+                "source_revision": "1" * 40,
+                "build_identity_sha256": "sha256:"
+                + hashlib.sha256(
+                    fixture_build_identity(manifest_json.read_bytes())
+                ).hexdigest(),
+                "observed_build_environment": {"fixture": "reference-target"},
             },
         },
     )
@@ -1081,6 +1232,7 @@ def fixture(tmp_path: Path, monkeypatch):
             package_archive=archive,
             package_report=package_report,
             daemon_bin=daemon,
+            snapshot_fixture_bin=daemon,
             output_dir=normalized_dir,
             aggregate_report=aggregate,
             manifest_toml=manifest_toml,
@@ -1117,6 +1269,7 @@ def produce(value: dict) -> tuple[dict, dict]:
         value["inputs"],
         value["archive"],
         value["package_report"],
+        value["daemon"],
         value["daemon"],
         value["packaged_acceptance"],
         value["soak"],
@@ -1160,6 +1313,8 @@ def test_cli_parser_keeps_normalized_and_raw_soak_reports_distinct():
             "package.json",
             "--daemon-bin",
             "worldstreamd",
+            "--snapshot-fixture-bin",
+            "snapshot-fixture",
             "--packaged-acceptance-report",
             "acceptance.json",
             "--raw-soak-report",
@@ -1197,6 +1352,7 @@ def test_complete_measurements_emit_closed_byte_bound_non_sla_publication(fixtur
     assert bundle["distribution"]["archive_sha256"] == fixture["module"].sha256(
         fixture["archive"]
     )
+    assert bundle["distribution"]["source_revision"] == "1" * 40
     assert {item["kind"] for item in bundle["input_reports"]} == set(fixture["inputs"])
     assert all(item["content_base64"] for item in bundle["input_reports"])
     assert bundle["packaged_acceptance_report"]["sha256"] == fixture["module"].sha256(
@@ -1224,6 +1380,54 @@ def test_fresh_archive_report_and_extracted_binary_are_verified(fixture):
     fixture["daemon"].write_bytes(b"different-extracted-binary\n")
     with pytest.raises(fixture["module"].ReferenceError, match="daemon bytes differ"):
         produce(fixture)
+
+
+def test_package_report_revision_must_match_archived_build_identity(fixture):
+    package = json.loads(fixture["package_report"].read_text(encoding="utf-8"))
+    package["identity"]["source_revision"] = "2" * 40
+    write_json(fixture["package_report"], package)
+
+    with pytest.raises(
+        fixture["module"].ReferenceError,
+        match="source revision or build identity is not exactly bound",
+    ):
+        produce(fixture)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("browser_story", "checks", "stale_head_rejected"), False),
+        (("browser_story", "privacy", "credentials_absent"), False),
+        (
+            ("browser_story", "browser", "sha256"),
+            "sha256:" + "0" * 64,
+        ),
+    ],
+)
+def test_packaged_browser_story_drift_is_not_promoted(fixture, path, value):
+    acceptance = json.loads(fixture["packaged_acceptance"].read_text())
+    target = acceptance
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    write_json(fixture["packaged_acceptance"], acceptance)
+    module = fixture["module"]
+    manifest = module.ADAPTER.COLLECTOR.load_manifest(
+        fixture["manifest_toml"], fixture["manifest_json"]
+    )
+    distribution, _package, _raw, binding = module.verify_packaged_distribution(
+        fixture["archive"],
+        fixture["package_report"],
+        fixture["daemon"],
+        fixture["manifest_toml"],
+        fixture["manifest_json"],
+        manifest,
+    )
+    with pytest.raises(fixture["module"].ReferenceError, match="browser story"):
+        module.verify_packaged_acceptance(
+            fixture["packaged_acceptance"], distribution, binding
+        )
 
     fixture["daemon"].write_bytes(b"packaged-worldstreamd-fixture\n")
     package = json.loads(fixture["package_report"].read_text())
@@ -1398,6 +1602,7 @@ def test_reference_projector_rejects_incomplete_channel_class_inventory(fixture)
                 package_archive=fixture["archive"],
                 package_report=fixture["package_report"],
                 daemon_bin=fixture["daemon"],
+                snapshot_fixture_bin=fixture["daemon"],
                 output_dir=fixture["root"] / "rejected-normalized",
                 aggregate_report=fixture["root"] / "rejected-reference.json",
                 manifest_toml=fixture["manifest_toml"],
@@ -1585,7 +1790,8 @@ def validate_raw_target(fixture: dict, report: dict) -> dict:
         ("rate_bucket_coherence", "transition-rate measurement"),
         ("external_source", "external-source facts"),
         ("sdk_client", "SDK bytes"),
-        ("history_substitution", "frozen-Counter limit attempt"),
+        ("history_substitution", "exact recent non-empty tail"),
+        ("history_source_revision", "source identity is incomplete"),
         ("target_host_attribution", "disclosure is invalid"),
         ("rss_samples", "retained measurements"),
         ("scaled", "scaled, simulated"),
@@ -1619,7 +1825,11 @@ def test_frozen_target_proof_boundaries_fail_closed(fixture, case, message):
             "sha256:" + "0" * 64
         )
     elif case == "history_substitution":
-        report["dimensions"][6]["observed"]["terminal_rejection_code"] = "limit_reached"
+        report["dimensions"][6]["observed"]["snapshot"]["newest_snapshot_room_seq"] = (
+            99_999
+        )
+    elif case == "history_source_revision":
+        report["dimensions"][6]["observed"]["setup"]["source_revision"] = "2" * 40
     elif case == "target_host_attribution":
         report["reference_environment"]["engines"]["postgresql"]["status"] = (
             "not_observed_by_sqlite_process_soak"
@@ -1658,4 +1868,22 @@ def test_honest_frozen_performance_miss_remains_publishable(fixture):
     validated = validate_raw_target(fixture, report)
 
     assert "sustained_accepted_transition_rate" in validated["target_miss_ids"]
+    assert "snapshot_tail_recovery" not in validated["target_miss_ids"]
+
+
+def test_snapshot_recovery_duration_miss_is_computed_and_publishable(fixture):
+    report = json.loads(fixture["target"].read_text(encoding="utf-8"))
+    history = report["dimensions"][6]
+    history["observed"]["recovery"]["recovery_ms"] = 5_001.0
+    history.update({"target_met": False, "outcome": "missed"})
+    report["limitations"] = [
+        {
+            "code": "snapshot_tail_recovery_target_missed",
+            "dimension": "snapshot_tail_recovery",
+            "publishable_non_sla_target_miss": True,
+        }
+    ]
+
+    validated = validate_raw_target(fixture, report)
+
     assert "snapshot_tail_recovery" in validated["target_miss_ids"]

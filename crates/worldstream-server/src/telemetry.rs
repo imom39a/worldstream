@@ -1219,6 +1219,12 @@ fn connect_stream(authority: &str, default_port: u16) -> Result<TcpStream, Expor
 
 fn resolve_addresses(authority: &str, default_port: u16) -> Result<Vec<SocketAddr>, ExportError> {
     let connect_target = authority_connect_target(authority, default_port);
+    // Numeric endpoints need no resolver capacity. Besides avoiding needless
+    // work, this keeps loopback health/export traffic independent from bounded
+    // DNS backpressure when unrelated hostname lookups are saturated.
+    if let Ok(address) = connect_target.parse::<SocketAddr>() {
+        return Ok(vec![address]);
+    }
     DNS_RESOLVER_POOL
         .get_or_init(|| DnsResolverPool::new().ok())
         .as_ref()
@@ -1227,26 +1233,10 @@ fn resolve_addresses(authority: &str, default_port: u16) -> Result<Vec<SocketAdd
 }
 
 fn authority_connect_target(authority: &str, default_port: u16) -> String {
-    let port = authority_port(authority).unwrap_or(default_port);
-    if authority.starts_with('[') {
-        authority.split_once(']').map_or_else(
-            || authority.to_owned(),
-            |(_, suffix)| {
-                format!(
-                    "{}:{}",
-                    authority,
-                    suffix.strip_prefix(':').unwrap_or(if default_port == 443 {
-                        "443"
-                    } else {
-                        "80"
-                    })
-                )
-            },
-        )
-    } else if authority.contains(':') {
+    if authority_port(authority).is_some() {
         authority.to_owned()
     } else {
-        format!("{authority}:{port}")
+        format!("{authority}:{default_port}")
     }
 }
 
@@ -2503,6 +2493,21 @@ mod tests {
             TlsHttpOtlpTransport::default().send("https://127.0.0.1:1/v1/logs", &body),
             Err(ExportError::PayloadTooLarge)
         );
+    }
+
+    #[test]
+    fn numeric_transport_targets_bypass_dns_and_preserve_ipv6_ports() {
+        let ipv4: SocketAddr = "127.0.0.1:4318"
+            .parse()
+            .unwrap_or_else(|_| unreachable!("literal IPv4 socket"));
+        let ipv6: SocketAddr = "[::1]:4318"
+            .parse()
+            .unwrap_or_else(|_| unreachable!("literal IPv6 socket"));
+
+        assert_eq!(resolve_addresses("127.0.0.1:4318", 80), Ok(vec![ipv4]));
+        assert_eq!(resolve_addresses("[::1]:4318", 443), Ok(vec![ipv6]));
+        assert_eq!(authority_connect_target("[::1]:4318", 443), "[::1]:4318");
+        assert_eq!(authority_connect_target("[::1]", 443), "[::1]:443");
     }
 
     #[test]

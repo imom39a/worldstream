@@ -94,6 +94,7 @@ use worldstream_core::{
 };
 use worldstream_transfer::{
     DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceIdentityV1, ResourceKindV1,
+    ResourcePayloadV1,
 };
 
 /// Frozen `SQLite` engine selected by the authored compatibility manifest.
@@ -120,6 +121,7 @@ const SNAPSHOT_MIGRATION_ID: &str = "0005-paired-snapshots-v1";
 const CANONICAL_EXPORT_MIGRATION_ID: &str = "0006-canonical-export-metadata-v1";
 const MIGRATION_CHECKSUMS_MIGRATION_ID: &str = "0008-sqlite-migration-checksums-v1";
 const DEPLOYMENT_IDENTITIES_MIGRATION_ID: &str = "0009-deployment-identities-v1";
+const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID: &str = "0010-transfer-recovery-completeness-v1";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const MIGRATION_BACKUP_PREFIX: &str = "worldstream-migration-backup";
@@ -558,6 +560,49 @@ BEFORE DELETE ON deployment_resource_identities BEGIN
 END;
 ";
 
+/// Adds the durable byte relations required by whole-deployment transfer and
+/// restore. Resource metadata remains the source-authoritative identity set;
+/// the child rows retain the exact content it names. Integrity incidents are
+/// append-only evidence and are deliberately distinct from the current Room
+/// integrity disposition.
+const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_SCHEMA: &str = r"
+CREATE TABLE deployment_resource_blobs (
+    resource_kind TEXT NOT NULL CHECK (resource_kind IN ('artifact', 'codec', 'schema')),
+    resource_identity TEXT NOT NULL,
+    resource_bytes BLOB NOT NULL CHECK (length(resource_bytes) <= 16777216),
+    resource_digest BLOB NOT NULL CHECK (length(resource_digest) = 32),
+    PRIMARY KEY (resource_kind, resource_identity),
+    FOREIGN KEY (resource_kind, resource_identity)
+        REFERENCES deployment_resource_identities(resource_kind, resource_identity)
+        ON DELETE RESTRICT
+) STRICT;
+CREATE TABLE integrity_incidents (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    incident_seq INTEGER NOT NULL CHECK (incident_seq BETWEEN 1 AND 9007199254740991),
+    generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 9007199254740991),
+    status TEXT NOT NULL CHECK (status IN ('healthy', 'faulted', 'quarantined')),
+    reason_code TEXT NOT NULL,
+    details_bytes BLOB,
+    PRIMARY KEY (room_id, incident_seq)
+) STRICT;
+CREATE TRIGGER deployment_resource_blob_immutable_update
+BEFORE UPDATE ON deployment_resource_blobs BEGIN
+    SELECT RAISE(ABORT, 'deployment resource bytes are immutable');
+END;
+CREATE TRIGGER deployment_resource_blob_immutable_delete
+BEFORE DELETE ON deployment_resource_blobs BEGIN
+    SELECT RAISE(ABORT, 'deployment resource bytes are immutable');
+END;
+CREATE TRIGGER integrity_incident_immutable_update
+BEFORE UPDATE ON integrity_incidents BEGIN
+    SELECT RAISE(ABORT, 'integrity incident is immutable');
+END;
+CREATE TRIGGER integrity_incident_immutable_delete
+BEFORE DELETE ON integrity_incidents BEGIN
+    SELECT RAISE(ABORT, 'integrity incident is immutable');
+END;
+";
+
 const INITIAL_MIGRATION_SCHEMA: &str = r"
 CREATE TABLE authority_fences (
     witness_id TEXT PRIMARY KEY,
@@ -854,9 +899,11 @@ pub struct SqliteRoomStore {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SqliteCanonicalRecordKindV1 {
     RoomGenesis,
+    RoomTransition,
     RoomHead,
     CoreMaterialization,
     ActivityMaterialization,
+    PackRevisionLock,
 }
 
 /// One exact canonical Room record read from `SQLite`.
@@ -891,6 +938,7 @@ pub struct SqliteCanonicalExportV1 {
     deployment_lineage: String,
     storage_epoch: u64,
     deployment_identity: DeploymentIdentityV1,
+    resource_payloads: Vec<ResourcePayloadV1>,
     isolated_rooms: Vec<String>,
     records: Vec<SqliteCanonicalRecordV1>,
 }
@@ -913,8 +961,16 @@ impl SqliteCanonicalExportV1 {
         &self.deployment_identity
     }
 
-    /// Rooms whose durable integrity state is faulted or quarantined and were
-    /// deliberately isolated from the healthy canonical export.
+    /// Returns every exact resource payload named by the deployment identity,
+    /// in the identity's canonical order.
+    #[must_use]
+    pub fn resource_payloads(&self) -> &[ResourcePayloadV1] {
+        &self.resource_payloads
+    }
+
+    /// Rooms whose durable integrity state is faulted or quarantined and are
+    /// deliberately isolated from semantic validation. Their exact canonical
+    /// bytes remain in [`Self::records`] for non-promoting transfer.
     #[must_use]
     pub fn isolated_rooms(&self) -> &[String] {
         &self.isolated_rooms
@@ -2395,6 +2451,7 @@ enum WriterCommand {
     },
     InitializeDeploymentIdentity {
         identity: DeploymentIdentityV1,
+        resources: Vec<ResourcePayloadV1>,
         reply: mpsc::Sender<
             Result<SqliteDeploymentIdentityInitializationV1, SqliteDeploymentIdentityErrorV1>,
         >,
@@ -2834,8 +2891,8 @@ fn read_canonical_export_rooms(
 ) -> Result<(Vec<String>, Vec<SqliteCanonicalRecordV1>), SqliteCanonicalExportErrorV1> {
     let mut statement = connection
         .prepare(
-            "SELECT r.room_id, i.status, g.genesis_bytes, r.complete_head_bytes, \
-                    m.core_state_bytes, m.activity_state_bytes \
+            "SELECT r.room_id, i.status, g.pack_revision_lock_bytes, g.genesis_bytes, \
+                    r.complete_head_bytes, m.core_state_bytes, m.activity_state_bytes \
              FROM rooms r \
              JOIN room_integrity i ON i.room_id = r.room_id \
              LEFT JOIN room_genesis g ON g.room_id = r.room_id \
@@ -2852,6 +2909,7 @@ fn read_canonical_export_rooms(
                 row.get::<_, Option<Vec<u8>>>(3)?,
                 row.get::<_, Option<Vec<u8>>>(4)?,
                 row.get::<_, Option<Vec<u8>>>(5)?,
+                row.get::<_, Option<Vec<u8>>>(6)?,
             ))
         })
         .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?;
@@ -2859,40 +2917,70 @@ fn read_canonical_export_rooms(
     let mut isolated_rooms = Vec::new();
     let mut records = Vec::new();
     for row in rows {
-        let (room_id, status, genesis, head, core, activity) =
+        let (room_id, status, pack_revision_lock, genesis, head, core, activity) =
             row.map_err(|_| SqliteCanonicalExportErrorV1::Corrupt)?;
         if matches!(status.as_str(), "faulted" | "quarantined") {
-            isolated_rooms.push(room_id);
-            continue;
-        }
-        if status != "healthy" {
+            isolated_rooms.push(room_id.clone());
+        } else if status != "healthy" {
             return Err(SqliteCanonicalExportErrorV1::Corrupt);
         }
-        let values = [
-            (SqliteCanonicalRecordKindV1::RoomGenesis, "genesis", genesis),
-            (SqliteCanonicalRecordKindV1::RoomHead, "head", head),
-            (
-                SqliteCanonicalRecordKindV1::CoreMaterialization,
-                "core",
-                core,
-            ),
-            (
-                SqliteCanonicalRecordKindV1::ActivityMaterialization,
-                "activity",
-                activity,
-            ),
-        ];
-        for (kind, suffix, bytes) in values {
-            let bytes = bytes.ok_or_else(|| SqliteCanonicalExportErrorV1::RoomIncomplete {
+        let required = |bytes: Option<Vec<u8>>, what| {
+            bytes.ok_or_else(|| SqliteCanonicalExportErrorV1::RoomIncomplete {
                 room_id: room_id.clone(),
-                what: suffix,
-            })?;
+                what,
+            })
+        };
+        records.push(SqliteCanonicalRecordV1 {
+            kind: SqliteCanonicalRecordKindV1::RoomGenesis,
+            identity: format!("room/{room_id}/genesis"),
+            bytes: required(genesis, "genesis")?,
+        });
+        let mut transition_statement = connection
+            .prepare(
+                "SELECT room_seq, transition_bytes FROM transitions \
+                 WHERE room_id = ?1 ORDER BY room_seq",
+            )
+            .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?;
+        let transition_rows = transition_statement
+            .query_map([&room_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?;
+        for transition in transition_rows {
+            let (room_seq, bytes) =
+                transition.map_err(|_| SqliteCanonicalExportErrorV1::Corrupt)?;
+            let room_seq = u64::try_from(room_seq)
+                .ok()
+                .filter(|sequence| *sequence > 0)
+                .ok_or(SqliteCanonicalExportErrorV1::Corrupt)?;
             records.push(SqliteCanonicalRecordV1 {
-                kind,
-                identity: format!("room/{room_id}/{suffix}"),
+                kind: SqliteCanonicalRecordKindV1::RoomTransition,
+                identity: format!("room/{room_id}/transition/{room_seq}"),
                 bytes,
             });
         }
+        records.extend([
+            SqliteCanonicalRecordV1 {
+                kind: SqliteCanonicalRecordKindV1::RoomHead,
+                identity: format!("room/{room_id}/head"),
+                bytes: required(head, "head")?,
+            },
+            SqliteCanonicalRecordV1 {
+                kind: SqliteCanonicalRecordKindV1::CoreMaterialization,
+                identity: format!("room/{room_id}/core"),
+                bytes: required(core, "core")?,
+            },
+            SqliteCanonicalRecordV1 {
+                kind: SqliteCanonicalRecordKindV1::ActivityMaterialization,
+                identity: format!("room/{room_id}/activity"),
+                bytes: required(activity, "activity")?,
+            },
+            SqliteCanonicalRecordV1 {
+                kind: SqliteCanonicalRecordKindV1::PackRevisionLock,
+                identity: format!("room/{room_id}/pack-revision-lock"),
+                bytes: required(pack_revision_lock, "pack revision lock")?,
+            },
+        ]);
     }
     Ok((isolated_rooms, records))
 }
@@ -3050,10 +3138,38 @@ impl SqliteRoomStore {
         &self,
         identity: DeploymentIdentityV1,
     ) -> Result<SqliteDeploymentIdentityInitializationV1, SqliteDeploymentIdentityErrorV1> {
+        if !identity.resources().is_empty() {
+            return Err(SqliteDeploymentIdentityErrorV1::Invalid(
+                worldstream_transfer::TransferError::InvalidValue {
+                    what: "resource payload set",
+                },
+            ));
+        }
+        self.initialize_deployment_identity_with_resources(identity, Vec::new())
+    }
+
+    /// Atomically persists the complete deployment identity and every exact
+    /// resource byte stream named by it. Metadata without bytes, bytes without
+    /// metadata, duplicates, and digest/length mismatches fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-identity error when the resource payload set is not
+    /// exactly equal to the identity set, or the same conflict/storage errors
+    /// as [`Self::initialize_deployment_identity`].
+    pub fn initialize_deployment_identity_with_resources(
+        &self,
+        identity: DeploymentIdentityV1,
+        resources: Vec<ResourcePayloadV1>,
+    ) -> Result<SqliteDeploymentIdentityInitializationV1, SqliteDeploymentIdentityErrorV1> {
         let (reply, receive) = mpsc::channel();
         self.writer
             .commands
-            .send(WriterCommand::InitializeDeploymentIdentity { identity, reply })
+            .send(WriterCommand::InitializeDeploymentIdentity {
+                identity,
+                resources,
+                reply,
+            })
             .map_err(|_| SqliteDeploymentIdentityErrorV1::StorageUnavailable)?;
         receive
             .recv()
@@ -3061,15 +3177,15 @@ impl SqliteRoomStore {
     }
 
     /// Reads the source-side canonical transfer evidence without using the
-    /// writer connection. Metadata and every healthy Room record are copied
+    /// writer connection. Metadata and every Room record are copied
     /// exactly as stored; no canonical payload is decoded, synthesized, or
-    /// re-encoded. Faulted and quarantined Rooms are reported as isolated and
-    /// omitted from the healthy record set.
+    /// re-encoded. Faulted and quarantined Rooms are reported as isolated but
+    /// their bytes remain present for exact, non-promoting transfer.
     ///
     /// # Errors
     ///
     /// Returns a closed error when explicit deployment metadata is absent or
-    /// malformed, the source cannot be read, or a healthy Room lacks one of
+    /// malformed, the source cannot be read, or a Room lacks one of
     /// its immutable Genesis, Head, Core, or Activity records.
     pub fn export_canonical_evidence(
         &self,
@@ -3111,6 +3227,19 @@ impl SqliteRoomStore {
                     SqliteCanonicalExportErrorV1::MetadataCorrupt
                 }
             })?;
+        let resource_payloads =
+            read_deployment_resource_payloads(&connection, &deployment_identity).map_err(
+                |error| match error {
+                    SqliteDeploymentIdentityErrorV1::StorageUnavailable => {
+                        SqliteCanonicalExportErrorV1::StorageUnavailable
+                    }
+                    SqliteDeploymentIdentityErrorV1::Invalid(_)
+                    | SqliteDeploymentIdentityErrorV1::Conflict
+                    | SqliteDeploymentIdentityErrorV1::Corrupt => {
+                        SqliteCanonicalExportErrorV1::MetadataCorrupt
+                    }
+                },
+            )?;
 
         let (isolated_rooms, records) = read_canonical_export_rooms(&connection)?;
 
@@ -3118,6 +3247,7 @@ impl SqliteRoomStore {
             deployment_lineage: metadata.0,
             storage_epoch,
             deployment_identity,
+            resource_payloads,
             isolated_rooms,
             records,
         })
@@ -7645,10 +7775,97 @@ fn read_deployment_identity(
     Ok(identity)
 }
 
+fn read_deployment_resource_payloads(
+    connection: &Connection,
+    identity: &DeploymentIdentityV1,
+) -> Result<Vec<ResourcePayloadV1>, SqliteDeploymentIdentityErrorV1> {
+    let mut statement = connection
+        .prepare(
+            "SELECT resource_kind, resource_identity, resource_bytes, resource_digest \
+             FROM deployment_resource_blobs ORDER BY resource_kind, resource_identity",
+        )
+        .map_err(|_| SqliteDeploymentIdentityErrorV1::StorageUnavailable)?;
+    let rows = statement
+        .query_map((), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })
+        .map_err(|_| SqliteDeploymentIdentityErrorV1::StorageUnavailable)?;
+    let mut payloads = Vec::new();
+    for row in rows {
+        let (kind, resource_identity, bytes, stored_digest) =
+            row.map_err(|_| SqliteDeploymentIdentityErrorV1::Corrupt)?;
+        let kind = parse_resource_kind(&kind)?;
+        let Some(expected) = identity
+            .resources()
+            .iter()
+            .find(|resource| resource.kind() == kind && resource.identity() == resource_identity)
+        else {
+            return Err(SqliteDeploymentIdentityErrorV1::Corrupt);
+        };
+        if stored_digest != expected.digest().as_bytes() {
+            return Err(SqliteDeploymentIdentityErrorV1::Corrupt);
+        }
+        payloads.push(
+            ResourcePayloadV1::from_identity(expected.clone(), &bytes)
+                .map_err(SqliteDeploymentIdentityErrorV1::Invalid)?,
+        );
+    }
+    payloads.sort_by(|left, right| {
+        (left.identity().kind(), left.identity().identity())
+            .cmp(&(right.identity().kind(), right.identity().identity()))
+    });
+    if payloads.len() != identity.resources().len()
+        || payloads
+            .iter()
+            .map(ResourcePayloadV1::identity)
+            .ne(identity.resources().iter())
+    {
+        return Err(SqliteDeploymentIdentityErrorV1::Corrupt);
+    }
+    Ok(payloads)
+}
+
+fn validate_deployment_resource_payloads(
+    identity: &DeploymentIdentityV1,
+    resources: &[ResourcePayloadV1],
+) -> Result<Vec<ResourcePayloadV1>, SqliteDeploymentIdentityErrorV1> {
+    let mut resources = resources.to_vec();
+    resources.sort_by(|left, right| {
+        (left.identity().kind(), left.identity().identity())
+            .cmp(&(right.identity().kind(), right.identity().identity()))
+    });
+    if resources.len() != identity.resources().len()
+        || resources
+            .iter()
+            .map(ResourcePayloadV1::identity)
+            .ne(identity.resources().iter())
+    {
+        return Err(SqliteDeploymentIdentityErrorV1::Invalid(
+            worldstream_transfer::TransferError::InvalidValue {
+                what: "resource payload set",
+            },
+        ));
+    }
+    for resource in &resources {
+        resource
+            .identity()
+            .verify_bytes(resource.bytes())
+            .map_err(SqliteDeploymentIdentityErrorV1::Invalid)?;
+    }
+    Ok(resources)
+}
+
 fn initialize_deployment_identity(
     connection: &mut Connection,
     identity: &DeploymentIdentityV1,
+    resources: &[ResourcePayloadV1],
 ) -> Result<SqliteDeploymentIdentityInitializationV1, SqliteDeploymentIdentityErrorV1> {
+    let resources = validate_deployment_resource_payloads(identity, resources)?;
     let canonical_bytes = identity
         .canonical_bytes()
         .map_err(SqliteDeploymentIdentityErrorV1::Invalid)?;
@@ -7668,7 +7885,8 @@ fn initialize_deployment_identity(
             .commit()
             .map_err(|_| SqliteDeploymentIdentityErrorV1::StorageUnavailable)?;
         let persisted = read_deployment_identity(connection)?;
-        return if &persisted == identity {
+        let persisted_resources = read_deployment_resource_payloads(connection, &persisted)?;
+        return if &persisted == identity && persisted_resources == resources {
             Ok(SqliteDeploymentIdentityInitializationV1::AlreadyInitialized)
         } else {
             Err(SqliteDeploymentIdentityErrorV1::Conflict)
@@ -7705,6 +7923,21 @@ fn initialize_deployment_identity(
                     resource.identity(),
                     size_bytes,
                     resource.digest().as_bytes().as_slice()
+                ],
+            )
+            .map_err(|_| SqliteDeploymentIdentityErrorV1::StorageUnavailable)?;
+    }
+    for resource in &resources {
+        transaction
+            .execute(
+                "INSERT INTO deployment_resource_blobs \
+                 (resource_kind, resource_identity, resource_bytes, resource_digest) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    resource_kind_name(resource.identity().kind()),
+                    resource.identity().identity(),
+                    resource.bytes(),
+                    resource.identity().digest().as_bytes().as_slice(),
                 ],
             )
             .map_err(|_| SqliteDeploymentIdentityErrorV1::StorageUnavailable)?;
@@ -7788,8 +8021,16 @@ fn writer_main(
                     storage_epoch,
                 ));
             }
-            WriterCommand::InitializeDeploymentIdentity { identity, reply } => {
-                let _ = reply.send(initialize_deployment_identity(&mut connection, &identity));
+            WriterCommand::InitializeDeploymentIdentity {
+                identity,
+                resources,
+                reply,
+            } => {
+                let _ = reply.send(initialize_deployment_identity(
+                    &mut connection,
+                    &identity,
+                    &resources,
+                ));
             }
             WriterCommand::ApplyAuthorityBootstrap(bootstrap, reply) => {
                 let result = apply_authority_bootstrap(&mut connection, &bootstrap, clock);
@@ -9903,6 +10144,7 @@ enum MigrationFailpoint {
     CanonicalExport,
     MigrationChecksums,
     DeploymentIdentities,
+    TransferRecoveryCompleteness,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -10088,6 +10330,13 @@ fn migrate_with_failpoint_and_telemetry(
         fail_migration_at(failpoint, MigrationFailpoint::DeploymentIdentities)?;
         insert_migration(&transaction, history[7], has_checksum_column)?;
     }
+    if migrations.len() < 9 {
+        transaction
+            .execute_batch(history[8].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        fail_migration_at(failpoint, MigrationFailpoint::TransferRecoveryCompleteness)?;
+        insert_migration(&transaction, history[8], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -10216,6 +10465,9 @@ fn fail_migration_at(
             MigrationFailpoint::CanonicalExport => "after-canonical-export-schema",
             MigrationFailpoint::MigrationChecksums => "after-migration-checksum-schema",
             MigrationFailpoint::DeploymentIdentities => "after-deployment-identities-schema",
+            MigrationFailpoint::TransferRecoveryCompleteness => {
+                "after-transfer-recovery-completeness-schema"
+            }
         };
         return Err(SqliteStoreOpenError::MigrationInterrupted { boundary });
     }
@@ -14739,7 +14991,9 @@ mod tests {
         counter_v2_runtime_fault_registry_for_conformance,
         counter_v2_semantic_mismatch_registry_for_conformance, recover_room_from_storage,
     };
-    use worldstream_transfer::{DeploymentIdentityV1, DigestV1, PackIdentityV1};
+    use worldstream_transfer::{
+        DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceKindV1, ResourcePayloadV1,
+    };
 
     use super::{
         ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID, CANONICAL_EXPORT_MIGRATION_ID,
@@ -14750,19 +15004,21 @@ mod tests {
         SqliteAuthorizedReplayErrorV1, SqliteAuthorizedReplayOutcomeV1,
         SqliteAuthorizedReplayProjectionV1, SqliteCanonicalExportErrorV1,
         SqliteCanonicalMetadataInitializationErrorV1, SqliteCanonicalMetadataInitializationV1,
-        SqliteCanonicalRecordKindV1, SqliteCanonicalRecordV1, SqliteGatewayErrorV1,
-        SqliteMigrationPhaseV1, SqliteObservationDeliveryV1, SqliteObservationErrorV1,
-        SqliteObservationFrameV1, SqliteObservationPositionsV1, SqliteObservationResetReasonV1,
-        SqliteRecoveryPhaseV1, SqliteRoomDiagnosticRecordKindV1, SqliteRoomRecoveryV1,
-        SqliteRoomRuntimeStateV1, SqliteRoomStore, SqliteTelemetryEventV1, SqliteTelemetrySink,
-        SqliteTimerStateV1, StoredPairedSnapshotRow, TestAuthorityClock, WriteBoundary,
-        arm_guarded_commit_pause, arm_recovery_install_pause, arm_replay_projection_pause,
-        arm_writer_queue_pause, canonical_history_digest, clear_replay_slice_row_budget,
-        expire_deferred_replay_sessions, load_current_paired_snapshot_materializations,
-        lookup_activation_receipt, migrate_with_failpoint, migration_history,
-        native_migration_witness, publish_verified_migration_backup, read_migration_rows,
-        release_guarded_commit, release_recovery_install, release_replay_projection,
-        release_writer_queue, restore_verified_migration_backup, retire_activation_context,
+        SqliteCanonicalRecordKindV1, SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
+        SqliteDeploymentIdentityInitializationV1, SqliteGatewayErrorV1, SqliteMigrationPhaseV1,
+        SqliteObservationDeliveryV1, SqliteObservationErrorV1, SqliteObservationFrameV1,
+        SqliteObservationPositionsV1, SqliteObservationResetReasonV1, SqliteRecoveryPhaseV1,
+        SqliteRoomDiagnosticRecordKindV1, SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1,
+        SqliteRoomStore, SqliteTelemetryEventV1, SqliteTelemetrySink, SqliteTimerStateV1,
+        StoredPairedSnapshotRow, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TestAuthorityClock,
+        WriteBoundary, arm_guarded_commit_pause, arm_recovery_install_pause,
+        arm_replay_projection_pause, arm_writer_queue_pause, canonical_history_digest,
+        clear_replay_slice_row_budget, expire_deferred_replay_sessions,
+        load_current_paired_snapshot_materializations, lookup_activation_receipt,
+        migrate_with_failpoint, migration_history, native_migration_witness,
+        publish_verified_migration_backup, read_migration_rows, release_guarded_commit,
+        release_recovery_install, release_replay_projection, release_writer_queue,
+        restore_verified_migration_backup, retire_activation_context,
         serialize_replay_projection_test, set_replay_slice_row_budget, verify_migration_prefix,
         verify_migration_records, wait_until_authority_change_enqueued,
         wait_until_guarded_commit_pauses, wait_until_recovery_install_pauses,
@@ -17279,7 +17535,7 @@ mod tests {
         let history = migration_history();
         assert_eq!(
             history.map(|migration| migration.version),
-            [1, 2, 3, 4, 5, 6, 7, 8]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9]
         );
         assert_eq!(
             history.map(|migration| migration.id),
@@ -17292,6 +17548,7 @@ mod tests {
                 CANONICAL_EXPORT_MIGRATION_ID,
                 MIGRATION_CHECKSUMS_MIGRATION_ID,
                 DEPLOYMENT_IDENTITIES_MIGRATION_ID,
+                TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -17303,6 +17560,7 @@ mod tests {
             "blake3:60de4825b3796865acff18f836dfa475640324b71d168350a8ea20c2e06206d5",
             "blake3:ed00960ddbbfbb6a6cb8fde52ce44631ce41c3e0b7dd2e46968552f7538eb33a",
             "blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb",
+            "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1",
         ];
         for (migration, expected) in history.iter().zip(expected_checksums) {
             assert_eq!(migration.checksum().to_string(), expected);
@@ -18832,6 +19090,7 @@ mod tests {
                 (6, CANONICAL_EXPORT_MIGRATION_ID.to_owned()),
                 (7, MIGRATION_CHECKSUMS_MIGRATION_ID.to_owned()),
                 (8, DEPLOYMENT_IDENTITIES_MIGRATION_ID.to_owned()),
+                (9, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID.to_owned()),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection
@@ -18971,7 +19230,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("read restarted migration ledger: {error}"));
-        assert_eq!(migration_count, 8);
+        assert_eq!(migration_count, 9);
     }
 
     #[test]
@@ -19024,7 +19283,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("restored migration ledger: {error}"));
-        assert_eq!(restored_migrations, 8);
+        assert_eq!(restored_migrations, 9);
 
         let startup_dir = tempdir().unwrap_or_else(|error| panic!("startup directory: {error}"));
         let startup = startup_dir.path().join("startup.sqlite3");
@@ -27449,6 +27708,60 @@ mod tests {
         .unwrap_or_else(|error| panic!("fixture identity: {error}"))
     }
 
+    #[test]
+    fn deployment_resources_require_and_export_exact_immutable_bytes() {
+        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp file: {error}"));
+        let store =
+            SqliteRoomStore::open(file.path()).unwrap_or_else(|error| panic!("open: {error}"));
+        store
+            .initialize_canonical_metadata("deployment/resources", 1)
+            .unwrap_or_else(|error| panic!("metadata: {error}"));
+        let payload = ResourcePayloadV1::from_bytes(
+            ResourceKindV1::Artifact,
+            "counter-executor",
+            b"exact-executor-bytes\0v1",
+        )
+        .unwrap_or_else(|error| panic!("payload: {error}"));
+        let identity = DeploymentIdentityV1::new(
+            vec![
+                PackIdentityV1::new("worldstream.fixture", "r1", DigestV1::hash(b"pack-r1"))
+                    .unwrap_or_else(|error| panic!("pack: {error}")),
+            ],
+            vec![payload.identity().clone()],
+        )
+        .unwrap_or_else(|error| panic!("identity: {error}"));
+        assert!(matches!(
+            store.initialize_deployment_identity(identity.clone()),
+            Err(SqliteDeploymentIdentityErrorV1::Invalid(_))
+        ));
+        assert_eq!(
+            store.initialize_deployment_identity_with_resources(
+                identity.clone(),
+                vec![payload.clone()],
+            ),
+            Ok(SqliteDeploymentIdentityInitializationV1::Initialized)
+        );
+        assert_eq!(
+            store.initialize_deployment_identity_with_resources(identity, vec![payload.clone()]),
+            Ok(SqliteDeploymentIdentityInitializationV1::AlreadyInitialized)
+        );
+        let export = store
+            .export_canonical_evidence()
+            .unwrap_or_else(|error| panic!("export: {error}"));
+        assert_eq!(export.resource_payloads(), &[payload]);
+        drop(store);
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("tamper connection: {error}"));
+        assert!(
+            connection
+                .execute(
+                    "UPDATE deployment_resource_blobs SET resource_bytes = x'00'",
+                    (),
+                )
+                .is_err()
+        );
+    }
+
     fn seed_canonical_export_fixture(path: &Path, status: &str) {
         let store =
             SqliteRoomStore::open(path).unwrap_or_else(|error| panic!("open fixture: {error}"));
@@ -27468,16 +27781,14 @@ mod tests {
                 [status],
             )
             .unwrap_or_else(|error| panic!("integrity: {error}"));
-        if status == "healthy" {
-            connection.execute(
-                "INSERT INTO room_genesis(room_id, pack_revision_lock_bytes, genesis_bytes) VALUES ('room-a', ?1, ?2)",
-                params![b"lock".as_slice(), b"genesis-bytes\0preserved".as_slice()],
-            ).unwrap_or_else(|error| panic!("genesis: {error}"));
-            connection.execute(
-                "INSERT INTO room_materializations(room_id, core_state_bytes, activity_state_bytes) VALUES ('room-a', ?1, ?2)",
-                params![b"core-bytes\0preserved".as_slice(), b"activity-bytes\0preserved".as_slice()],
-            ).unwrap_or_else(|error| panic!("materializations: {error}"));
-        }
+        connection.execute(
+            "INSERT INTO room_genesis(room_id, pack_revision_lock_bytes, genesis_bytes) VALUES ('room-a', ?1, ?2)",
+            params![b"lock".as_slice(), b"genesis-bytes\0preserved".as_slice()],
+        ).unwrap_or_else(|error| panic!("genesis: {error}"));
+        connection.execute(
+            "INSERT INTO room_materializations(room_id, core_state_bytes, activity_state_bytes) VALUES ('room-a', ?1, ?2)",
+            params![b"core-bytes\0preserved".as_slice(), b"activity-bytes\0preserved".as_slice()],
+        ).unwrap_or_else(|error| panic!("materializations: {error}"));
         drop(connection);
         let store =
             SqliteRoomStore::open(path).unwrap_or_else(|error| panic!("reopen identity: {error}"));
@@ -27618,12 +27929,14 @@ mod tests {
                 SqliteCanonicalRecordKindV1::RoomHead,
                 SqliteCanonicalRecordKindV1::CoreMaterialization,
                 SqliteCanonicalRecordKindV1::ActivityMaterialization,
+                SqliteCanonicalRecordKindV1::PackRevisionLock,
             ]
         );
         assert_eq!(export.records()[0].bytes(), b"genesis-bytes\0preserved");
         assert_eq!(export.records()[1].bytes(), b"head-bytes\0preserved");
         assert_eq!(export.records()[2].bytes(), b"core-bytes\0preserved");
         assert_eq!(export.records()[3].bytes(), b"activity-bytes\0preserved");
+        assert_eq!(export.records()[4].bytes(), b"lock");
     }
 
     #[test]
@@ -27636,7 +27949,8 @@ mod tests {
             .export_canonical_evidence()
             .unwrap_or_else(|error| panic!("export: {error}"));
         assert_eq!(export.isolated_rooms(), &["room-a".to_owned()]);
-        assert!(export.records().is_empty());
+        assert_eq!(export.records().len(), 5);
+        assert_eq!(export.records()[0].bytes(), b"genesis-bytes\0preserved");
     }
 
     #[test]
@@ -27700,11 +28014,11 @@ mod tests {
             vec![
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 8,
+                    schema_version: 9,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Applied,
-                    schema_version: 8,
+                    schema_version: 9,
                 },
             ]
         );
@@ -27744,16 +28058,16 @@ mod tests {
             [
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 8,
+                    schema_version: 9,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::AlreadyCurrent,
-                    schema_version: 8,
+                    schema_version: 9,
                 },
             ]
         );
         assert!(final_events.iter().all(|event| match event {
-            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 8,
+            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 9,
             SqliteTelemetryEventV1::Recovery { .. }
             | SqliteTelemetryEventV1::Integrity { .. }
             | SqliteTelemetryEventV1::StorageDiagnostic { .. } => true,

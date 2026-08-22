@@ -302,8 +302,24 @@ def https_report(module) -> dict:
 
 
 def macos_report(module, architecture: str) -> dict:
+    sha = "sha256:" + "a" * 64
+    browser_checks = {
+        "browser_identity_verified": True,
+        "catch_up_or_reset_installed": True,
+        "embedded_ui_loaded": True,
+        "final_reveal_dom_visible": True,
+        "new_session_resynchronized": True,
+        "package_bound_reference_clients": False,
+        "package_bound_runtime": False,
+        "precomplete_reveal_locked": True,
+        "privacy_negative_dom_and_browser_channels": True,
+        "replay_hashes_verified": True,
+        "six_phase_story_complete": True,
+        "stale_head_rejected": True,
+        "typed_actions_accepted_in_dom": True,
+    }
     return {
-        "schema": "worldstream/macos-source-quickstart/v1",
+        "schema": "worldstream/macos-source-quickstart/v2",
         "status": "passed",
         "release_evidence": False,
         "signed_or_notarized_binary": False,
@@ -318,10 +334,117 @@ def macos_report(module, architecture: str) -> dict:
             **module.pinned_macos_toolchains(),
         },
         "source_revision": "1" * 40,
+        "elapsed_seconds": 500,
+        "browser_story": {
+            "schema": "worldstream/package-browser-heist/v1",
+            "canonical_encoding": "utf8-sorted-key-compact-json-lf",
+            "status": "pass",
+            "release_evidence": False,
+            "source_mode": "source-build",
+            "elapsed_ms": 12_000,
+            "browser": module.MACOS_BROWSER_IDENTITIES.get(
+                architecture, module.MACOS_BROWSER_IDENTITIES["arm64"]
+            ),
+            "tools": {
+                "adapter": {
+                    "name": "worldstream-cdp-browser",
+                    "protocol": "Chrome DevTools Protocol",
+                    "sha256": module.digest(ROOT / "scripts/cdp-browser.py"),
+                    "size_bytes": (ROOT / "scripts/cdp-browser.py").stat().st_size,
+                },
+                "python": {"implementation": "cpython", "version": "3.14.7"},
+            },
+            "checks": browser_checks,
+            "runtime": {
+                "worldstreamd": {
+                    "origin": "source-build:target/debug/worldstreamd",
+                    "sha256": sha,
+                    "size_bytes": 10,
+                },
+                "ui": {
+                    "origin": "source-build:web/console/dist",
+                    "tree_sha256": sha,
+                    "index_sha256": sha,
+                    "file_count": 2,
+                    "total_bytes": 10,
+                },
+                "sdk": {
+                    "origin": "source:sdk/python/src",
+                    "tree_sha256": sha,
+                    "file_count": 2,
+                    "total_bytes": 10,
+                },
+                "heist_reference_clients": {
+                    "origin": "source:examples/heist",
+                    "tree_sha256": sha,
+                    "file_count": 4,
+                    "total_bytes": 10,
+                },
+            },
+            "story": {
+                "phase_path": [
+                    "Briefing",
+                    "Negotiation",
+                    "Commitment",
+                    "Resolution",
+                    "Result",
+                    "Complete",
+                ],
+                "public_projection": {
+                    "broker_present": True,
+                    "commitment_count": 2,
+                    "aggregate_outcome_present": True,
+                },
+                "final_replay": {
+                    "verified": True,
+                    "hash_parity": {"verified": True},
+                },
+            },
+            "dom_evidence": {
+                key: sha
+                for key in (
+                    "stale_rejection",
+                    "precomplete_reveal",
+                    "public_final",
+                    "participant_final",
+                    "operator_final",
+                    "replay_final",
+                    "briefing",
+                    "negotiation",
+                    "commitment",
+                    "result",
+                    "complete",
+                    "resync",
+                    "browser_diagnostics",
+                )
+            },
+            "typed_actions": {
+                key: sha
+                for key in (
+                    "inspect_clue",
+                    "publish_clue",
+                    "propose_plan",
+                    "commit_move",
+                    "acknowledge_result",
+                )
+            },
+            "privacy": {
+                "status": "pass",
+                "private_canary_absent": True,
+                "credentials_absent": True,
+                "private_claim_absent_from_retained_evidence": True,
+            },
+        },
         "checks": {
+            "complete_heist": True,
+            "embedded_ui": True,
             "pinned_toolchain": True,
+            "privacy": True,
+            "real_browser": True,
+            "replay": True,
             "source_revision": True,
             "source_build": True,
+            "stale_resync": True,
             "quickstart": True,
         },
     }
@@ -399,6 +522,30 @@ def test_macos_diagnostic_rejects_every_noncanonical_toolchain_pin(tmp_path, too
     write_json(report_path, report)
 
     with pytest.raises(module.DiagnosticError, match="incomplete"):
+        module.emit_macos(args)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("browser_story", "checks", "stale_head_rejected"), False),
+        (("browser_story", "checks", "package_bound_runtime"), True),
+        (("browser_story", "browser", "sha256"), "sha256:" + "0" * 64),
+        (("elapsed_seconds",), 600),
+    ],
+)
+def test_macos_diagnostic_rejects_incomplete_browser_story(tmp_path, path, value):
+    module = load_module()
+    args = macos_args(tmp_path, module, ["arm64", "x86_64"])
+    report_path = args.quickstart_report[0]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    target = report
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    write_json(report_path, report)
+
+    with pytest.raises(module.DiagnosticError):
         module.emit_macos(args)
 
 

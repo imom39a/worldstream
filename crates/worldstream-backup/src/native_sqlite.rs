@@ -31,6 +31,15 @@ const REQUIRED_TABLES: &[&str] = &[
     "activation_intents",
     "activation_operation_receipts",
     "canonical_export_metadata",
+    "capabilities",
+    "capability_scopes",
+    "authority_audit",
+    "authority_change_receipts",
+    "deployment_identity_metadata",
+    "deployment_pack_identities",
+    "deployment_resource_blobs",
+    "deployment_resource_identities",
+    "integrity_incidents",
     "observation_consequences",
     "observation_frames",
     "room_genesis",
@@ -39,6 +48,10 @@ const REQUIRED_TABLES: &[&str] = &[
     "room_members",
     "room_snapshots",
     "rooms",
+    "principals",
+    "retired_authority_fences_v1",
+    "runner_capability_memberships",
+    "runners",
     "schema_migrations",
     "semantic_receipts",
     "timers",
@@ -52,6 +65,8 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0005-paired-snapshots-v1",
     "0006-canonical-export-metadata-v1",
     "0008-sqlite-migration-checksums-v1",
+    "0009-deployment-identities-v1",
+    "0010-transfer-recovery-completeness-v1",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -61,6 +76,8 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:385af50337813e01ce0a97894fcb82868e130d69e671f64712f6701c0e9ddb23",
     "blake3:60de4825b3796865acff18f836dfa475640324b71d168350a8ea20c2e06206d5",
     "blake3:ed00960ddbbfbb6a6cb8fde52ce44631ce41c3e0b7dd2e46968552f7538eb33a",
+    "blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb",
+    "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1",
 ];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
@@ -104,13 +121,9 @@ pub struct NativeSqliteRowV1 {
 }
 
 /// Bounded, lossless extraction of the operational rows represented by the
-/// backup contract.
-///
-/// This is deliberately a native row seam rather than a fake `BackupImageV1`:
-/// the `SQLite` schema stores request hashes without request bytes and does not
-/// store content-addressed resource blobs. An integration adapter can use the
-/// exact rows to populate those higher-level models when it has the missing
-/// source-side evidence.
+/// backup contract. Resource payloads are exposed separately by
+/// [`NativeSqliteRestoreEvidenceV1::resource_metadata`] because they are
+/// canonical deployment bytes rather than provider-native operational rows.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeSqliteOperationalRowsV1 {
     /// Rows grouped by stable table name and ordered by the table query.
@@ -119,9 +132,9 @@ pub struct NativeSqliteOperationalRowsV1 {
 
 /// Exact canonical bytes and integrity evidence extracted from the modeled
 /// `SQLite` tables.  Optional fields are intentional: the current `SQLite`
-/// schema does not persist deployment epoch, pack/resource blobs, or an
-/// authoritative materialization, so an adapter must carry that absence to
-/// the provider-neutral restore verifier instead of inventing values.
+/// schema does not persist a separately named authoritative materialization,
+/// so an adapter must carry that absence to the provider-neutral restore
+/// verifier instead of inventing values.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeSqliteRestoreEvidenceV1 {
     /// Bounded native row extraction, including every operational ledger.
@@ -869,6 +882,35 @@ impl Default for NativeSqliteTransferOptions {
 
 const OPERATIONAL_QUERIES: &[(&str, &str)] = &[
     (
+        "retired_authority_fences_v1",
+        "SELECT * FROM retired_authority_fences_v1 ORDER BY witness_id",
+    ),
+    (
+        "principals",
+        "SELECT * FROM principals ORDER BY principal_id",
+    ),
+    ("runners", "SELECT * FROM runners ORDER BY runner_id"),
+    (
+        "capabilities",
+        "SELECT * FROM capabilities ORDER BY capability_id",
+    ),
+    (
+        "capability_scopes",
+        "SELECT * FROM capability_scopes ORDER BY capability_id, scope",
+    ),
+    (
+        "runner_capability_memberships",
+        "SELECT * FROM runner_capability_memberships ORDER BY capability_id, room_id, member_id",
+    ),
+    (
+        "authority_change_receipts",
+        "SELECT * FROM authority_change_receipts ORDER BY change_id",
+    ),
+    (
+        "authority_audit",
+        "SELECT * FROM authority_audit ORDER BY audit_seq",
+    ),
+    (
         "room_integrity",
         "SELECT * FROM room_integrity ORDER BY room_id",
     ),
@@ -903,6 +945,10 @@ const OPERATIONAL_QUERIES: &[(&str, &str)] = &[
     (
         "semantic_receipts",
         "SELECT * FROM semantic_receipts ORDER BY operation_kind, operation_identity_bytes",
+    ),
+    (
+        "integrity_incidents",
+        "SELECT * FROM integrity_incidents ORDER BY room_id, incident_seq",
     ),
 ];
 
@@ -1068,6 +1114,93 @@ pub fn extract_restore_evidence(
         } else {
             None
         }
+    } else {
+        None
+    };
+
+    let identity_witness_present = if actual_tables.contains("deployment_identity_metadata") {
+        let rows = native_rows(
+            path,
+            "SELECT metadata_id, pack_set_digest, resource_set_digest, canonical_bytes FROM deployment_identity_metadata WHERE metadata_id = 1 LIMIT 2;",
+            limits,
+        )?;
+        rows.len() == 1
+            && native_integer(&rows[0], 0, "deployment identity witness").ok() == Some(1)
+            && native_blob(&rows[0], 1, "deployment pack-set digest")
+                .is_ok_and(|value| value.len() == 32)
+            && native_blob(&rows[0], 2, "deployment resource-set digest")
+                .is_ok_and(|value| value.len() == 32)
+            && native_blob(&rows[0], 3, "deployment identity bytes")
+                .is_ok_and(|value| !value.is_empty())
+    } else {
+        false
+    };
+    let pack_metadata =
+        if identity_witness_present && actual_tables.contains("deployment_pack_identities") {
+            let rows = native_rows(
+                path,
+                &format!(
+                    "SELECT pack_id, revision, pack_digest \
+                     FROM deployment_pack_identities ORDER BY pack_id, revision LIMIT {};",
+                    bounded_limit(limits.max_rows)?
+                ),
+                limits,
+            )?;
+            (!rows.is_empty()).then(|| {
+                rows.into_iter()
+                    .map(|values| NativeSqliteRowV1 {
+                        table: "deployment_pack_identities".to_owned(),
+                        values,
+                    })
+                    .collect()
+            })
+        } else {
+            None
+        };
+    let resource_metadata = if identity_witness_present
+        && actual_tables.contains("deployment_resource_identities")
+        && actual_tables.contains("deployment_resource_blobs")
+    {
+        let rows = native_rows(
+            path,
+            &format!(
+                "SELECT i.resource_kind, i.resource_identity, i.size_bytes, i.resource_digest, \
+                        b.resource_bytes, b.resource_digest \
+                 FROM deployment_resource_identities i \
+                 LEFT JOIN deployment_resource_blobs b \
+                   ON b.resource_kind = i.resource_kind \
+                  AND b.resource_identity = i.resource_identity \
+                 ORDER BY i.resource_kind, i.resource_identity LIMIT {};",
+                bounded_limit(limits.max_rows)?
+            ),
+            limits,
+        )?;
+        for row in &rows {
+            let size = usize::try_from(native_integer(row, 2, "resource size")?).map_err(|_| {
+                NativeSqliteError::InvalidRow {
+                    what: "resource size",
+                }
+            })?;
+            let identity_digest = native_blob(row, 3, "resource identity digest")?;
+            let bytes = native_blob(row, 4, "resource bytes")?;
+            let payload_digest = native_blob(row, 5, "resource payload digest")?;
+            if size != bytes.len()
+                || identity_digest != payload_digest
+                || identity_digest != blake3::hash(bytes).as_bytes()
+            {
+                return Err(NativeSqliteError::InvalidRow {
+                    what: "resource payload identity",
+                });
+            }
+        }
+        Some(
+            rows.into_iter()
+                .map(|values| NativeSqliteRowV1 {
+                    table: "deployment_resources".to_owned(),
+                    values,
+                })
+                .collect(),
+        )
     } else {
         None
     };
@@ -1297,8 +1430,8 @@ pub fn extract_restore_evidence(
         deployment_lineage,
         storage_epoch,
         migration_metadata,
-        pack_metadata: None,
-        resource_metadata: None,
+        pack_metadata,
+        resource_metadata,
         backend: None,
         native_point: None,
         room_membership: None,
@@ -3303,6 +3436,19 @@ mod tests {
                  core_state_hash TEXT, activity_state_hash TEXT, authoritative_state_hash TEXT,\
                  complete_head_bytes BLOB, core_state_bytes BLOB, activity_state_bytes BLOB);\
                  CREATE TABLE canonical_export_metadata(metadata_id INTEGER PRIMARY KEY, deployment_lineage TEXT, storage_epoch INTEGER);\
+                 CREATE TABLE retired_authority_fences_v1(witness_id TEXT, authenticated_principal TEXT, generation INTEGER, scope_revocation_bytes BLOB, scope_revocation_hash BLOB, active INTEGER);\
+                 CREATE TABLE principals(principal_id TEXT, principal_kind TEXT, authority_status TEXT, principal_generation INTEGER);\
+                 CREATE TABLE runners(runner_id TEXT, owner_principal_id TEXT, authority_status TEXT, runner_generation INTEGER);\
+                 CREATE TABLE capabilities(capability_id TEXT, token_hash BLOB, principal_id TEXT, profile_kind TEXT, target_room_id TEXT, target_member_id TEXT, runner_id TEXT, authority_generation INTEGER, expires_at TEXT, revoked_at TEXT);\
+                 CREATE TABLE capability_scopes(capability_id TEXT, scope TEXT);\
+                 CREATE TABLE runner_capability_memberships(capability_id TEXT, room_id TEXT, member_id TEXT);\
+                 CREATE TABLE authority_change_receipts(change_id TEXT, authenticated_principal TEXT, request_hash BLOB, result_kind TEXT, target_kind TEXT, target_id TEXT, secondary_target_id TEXT, resulting_generation INTEGER, checked_at TEXT);\
+                 CREATE TABLE authority_audit(audit_seq INTEGER, change_id TEXT, actor_principal_id TEXT, target_kind TEXT, target_id TEXT, secondary_target_id TEXT, change_kind TEXT, prior_generation INTEGER, resulting_generation INTEGER, checked_at TEXT, reason_code TEXT, request_hash BLOB);\
+                 CREATE TABLE integrity_incidents(room_id TEXT, incident_seq INTEGER, generation INTEGER, status TEXT, reason_code TEXT, details_bytes BLOB);\
+                 CREATE TABLE deployment_identity_metadata(metadata_id INTEGER, pack_set_digest BLOB, resource_set_digest BLOB, canonical_bytes BLOB);\
+                 CREATE TABLE deployment_pack_identities(pack_id TEXT, revision TEXT, pack_digest BLOB);\
+                 CREATE TABLE deployment_resource_identities(resource_kind TEXT, resource_identity TEXT, size_bytes INTEGER, resource_digest BLOB);\
+                 CREATE TABLE deployment_resource_blobs(resource_kind TEXT, resource_identity TEXT, resource_bytes BLOB, resource_digest BLOB);\
                  INSERT INTO schema_migrations VALUES\
                  (1, '0001-initial-storage-schema', 'blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763'),\
                  (2, '0002-operational-authority-v1', 'blake3:237088a0f888ef9f91a1010efd95e38a40170b0fc968229b886881937af805b0'),\
@@ -3310,7 +3456,9 @@ mod tests {
                  (4, '0004-activation-work-v1', 'blake3:dbe807e620fc77594e871b1ad90e89379498060fd025fbbaa318396158557d2b'),\
                  (5, '0005-paired-snapshots-v1', 'blake3:385af50337813e01ce0a97894fcb82868e130d69e671f64712f6701c0e9ddb23'),\
                  (6, '0006-canonical-export-metadata-v1', 'blake3:60de4825b3796865acff18f836dfa475640324b71d168350a8ea20c2e06206d5'),\
-                 (7, '0008-sqlite-migration-checksums-v1', 'blake3:ed00960ddbbfbb6a6cb8fde52ce44631ce41c3e0b7dd2e46968552f7538eb33a');\
+                 (7, '0008-sqlite-migration-checksums-v1', 'blake3:ed00960ddbbfbb6a6cb8fde52ce44631ce41c3e0b7dd2e46968552f7538eb33a'),\
+                 (8, '0009-deployment-identities-v1', 'blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb'),\
+                 (9, '0010-transfer-recovery-completeness-v1', 'blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1');\
                  INSERT INTO canonical_export_metadata VALUES (1, 'deployment/fixture', 7);",
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "fixture" })?;
@@ -3709,7 +3857,7 @@ mod tests {
             migration_contract: MigrationContractV1 {
                 logical_history_id: "worldstream-storage-v1".to_owned(),
                 schema_contract_fingerprint: DigestV1::parse(
-                    "a54fde7bc01d6456997705771be8c6152db2cef407e43bd8b708ac2b9bd87574".to_owned(),
+                    "c8435cbb21df9aa98518245d14caa0a70416cf5369cc95d7ab2edc40261d119f".to_owned(),
                 )
                 .unwrap(),
                 records,
@@ -3754,20 +3902,10 @@ mod tests {
             evidence_digest: native_evidence_digest(restored).unwrap(),
             membership_digest: native_membership_digest(&restored.operational).unwrap(),
         };
-        let tables = [
-            "room_integrity",
-            "room_members",
-            "timers",
-            "observation_frames",
-            "observation_consequences",
-            "activation_decisions",
-            "activation_intents",
-            "activation_operation_receipts",
-            "semantic_receipts",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+        let tables = OPERATIONAL_QUERIES
+            .iter()
+            .map(|(table, _)| (*table).to_owned())
+            .collect();
         NativeSqliteBackupEnvelopeV1 {
             schema: NATIVE_SQLITE_BACKUP_ENVELOPE_SCHEMA_V1.to_owned(),
             origin: NativeSqliteEnvelopeOriginV1 {
@@ -4230,7 +4368,7 @@ mod tests {
         assert!(TransitionV1::from_canonical_bytes(&records[1].bytes).is_ok());
         assert_eq!(evidence.newest_valid_snapshots.len(), 1);
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(7));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(9));
         assert_eq!(evidence.pack_metadata, None);
         assert_eq!(evidence.resource_metadata, None);
         let _ = fs::remove_file(path);
@@ -4465,7 +4603,7 @@ mod tests {
         let path = create_fixture("restore-evidence-absent-metadata")?;
         let evidence = extract_restore_evidence(&path, NativeSqliteLimits::default())?;
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(7));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(9));
         assert!(evidence.pack_metadata.is_none());
         assert!(evidence.resource_metadata.is_none());
         let readiness = assess_restore_readiness(&evidence);

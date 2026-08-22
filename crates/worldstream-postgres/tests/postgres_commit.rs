@@ -670,7 +670,7 @@ fn interrupted_migration_restarts_without_duplicate_history() {
 
 #[test]
 fn kernel_conformance_migration_is_reviewed_and_forward_only() {
-    assert_eq!(migration_history().len(), 9);
+    assert_eq!(migration_history().len(), 10);
     assert_eq!(
         migration_history()[2].id,
         worldstream_postgres::KERNEL_CONFORMANCE_MIGRATION_ID
@@ -688,6 +688,13 @@ fn kernel_conformance_migration_is_reviewed_and_forward_only() {
     assert!(worldstream_postgres::MIGRATION_0006_SQL.contains("worldstream_transfer_target_fence"));
     assert!(worldstream_postgres::MIGRATION_0007_SQL.contains("worldstream_deployment_metadata"));
     assert!(worldstream_postgres::MIGRATION_0009_SQL.contains("worldstream_authority_principals"));
+    assert!(
+        worldstream_postgres::MIGRATION_0010_SQL.contains("worldstream_deployment_resource_blobs")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0010_SQL
+            .contains("worldstream_retired_authority_fences_v1")
+    );
 }
 
 #[cfg(feature = "conformance-tracer")]

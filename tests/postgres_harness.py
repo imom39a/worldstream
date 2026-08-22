@@ -103,8 +103,8 @@ class PostgreSQLHarnessBoundaryTests(unittest.TestCase):
                     ;;
                   "SELECT rolsuper::text"*) printf '%s\\n' 'false|false|false' ;;
                   "SELECT has_schema_privilege"*) printf '%s\\n' false ;;
-                  "SELECT count(*)::text FROM worldstream_schema_migrations") printf '%s\\n' 9 ;;
-                  "SELECT CASE WHEN count(*) = 9 AND min(version) = 1"*) printf '%s\\n' '{migration_shape}' ;;
+                  "SELECT count(*)::text FROM worldstream_schema_migrations") printf '%s\\n' 10 ;;
+                  "SELECT CASE WHEN count(*) = 10 AND min(version) = 1"*) printf '%s\\n' '{migration_shape}' ;;
                   "SELECT (has_table_privilege"*) printf '%s\\n' '{migration_ledger_privilege}' ;;
                   "SELECT 1") printf '%s\\n' 1 ;;
                   "SELECT count(*)::text FROM information_schema.tables"*) printf '%s\\n' 21 ;;

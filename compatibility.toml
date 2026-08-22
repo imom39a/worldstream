@@ -102,7 +102,7 @@ release_verified_patches_status = "resolved"
 
 [migrations]
 logical_history_id = "worldstream-storage-v1"
-schema_contract_fingerprint = "blake3:a54fde7bc01d6456997705771be8c6152db2cef407e43bd8b708ac2b9bd87574"
+schema_contract_fingerprint = "blake3:c8435cbb21df9aa98518245d14caa0a70416cf5369cc95d7ab2edc40261d119f"
 schema_contract_fingerprint_status = "implementation_verified"
 direction = "forward_only"
 backend_specific_execution = true
@@ -159,6 +159,12 @@ status = "implementation_verified"
 id = "0009-deployment-identities-v1"
 sqlite_checksum = "blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb"
 postgresql_checksum = ""
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0010-transfer-recovery-completeness-v1"
+sqlite_checksum = "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1"
+postgresql_checksum = "blake3:b588bfcf04a87427dc6d49ca2a795230eb740a43e7cecdeb536f3233786b97dd"
 status = "implementation_verified"
 
 [[migrations.entries]]
@@ -314,6 +320,7 @@ scope = ["changed_format", "config", "schema", "golden", "secret"]
 [evidence_tiers.pre_push]
 warm_target_seconds = 360
 cold_target_seconds = 900
+hard_seconds = 1200
 scope = ["lint", "unit", "sqlite", "sdk", "ui", "protocol", "hash", "local_postgresql_smoke"]
 local_postgresql_skip = "visible_incomplete"
 remote_ci_skip_allowed = false

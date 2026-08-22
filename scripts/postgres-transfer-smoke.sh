@@ -33,6 +33,7 @@ build_source=0
 requested_mode="${WORLDSTREAM_PG_TRANSFER_MODE:-docker}"
 admin_dsn="${WORLDSTREAM_PG_TRANSFER_ADMIN_DSN:-}"
 runtime_dsn="${WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN:-}"
+runtime_role="${WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE:-}"
 docker_bin="${WORLDSTREAM_PG_TRANSFER_DOCKER:-}"
 cargo_bin="${WORLDSTREAM_PG_TRANSFER_CARGO:-}"
 python_bin="${WORLDSTREAM_PG_TRANSFER_PYTHON:-}"
@@ -327,15 +328,22 @@ worldstream-transfer = { path = "$workspace_dir/crates/worldstream-transfer" }
 EOF
 
 cat >"$helper_source" <<'RS'
+#![recursion_limit = "256"]
+
 use std::{collections::{BTreeMap, BTreeSet}, env, path::Path};
 
 use postgres::{Client, NoTls};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{Value, json};
 use worldstream_core::{
-    builtin_counter_registry, AccessModeV1, CanonicalJsonV1, CompleteHeadV1, CoreTraceV1,
-    MembershipStandingV1, PackDigestV1, PackGenesisRequestV1, PackRevisionLockV1,
-    ParticipantActionV1, PrincipalKindV1, RecordedStimulusV1, CORE_SCHEMA_VERSION,
+    agent_heist_digest, builtin_counter_registry, builtin_worldstream_registry, AccessModeV1,
+    CanonicalJsonV1, CompleteHeadV1, CoreRoomStateV1, CoreTraceV1, IntegrityGenerationV1,
+    MembershipStandingV1, MembershipV1, OperationIdentityV1, PackDigestV1,
+    PackGenesisRequestV1, PackRevisionLockV1, ParticipantActionV1,
+    PreparedAuthorityWitnessV1, PreparedExistingIntentV1, PreparedRoomCommitV1,
+    PreparedTimerMutationKindV1, PrincipalKindV1, RecordedStimulusV1,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TransitionV1,
+    CORE_SCHEMA_VERSION,
 };
 use worldstream_backup::native_sqlite::{
     canonical_activity_materialization_hash, canonical_core_materialization_hash,
@@ -352,7 +360,7 @@ use worldstream_sqlite::{SqliteCanonicalRecordKindV1, SqliteRoomStore};
 use worldstream_transfer::{
     BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DigestV1,
     NativeSqliteTransferAdapterV1, NativeSqliteTransferSpecV1, PackIdentityV1,
-    SessionStatePolicyV1, TargetFingerprintV1, RecordKindV1,
+    ResourceKindV1, ResourcePayloadV1, SessionStatePolicyV1, TargetFingerprintV1, RecordKindV1,
     TransferChunkV1, TransferDestinationV1, TransferImportSessionV1, TransferStateV1,
 };
 
@@ -378,11 +386,12 @@ struct RoomEvidenceRow {
 
 struct SourceCanonicalEvidence {
     canonical_records: Vec<worldstream_transfer::LogicalRecordV1>,
-    pack: Option<PackIdentityV1>,
+    packs: Vec<PackIdentityV1>,
     deployment_identity: Option<worldstream_transfer::DeploymentIdentityV1>,
     lineage_id: Option<String>,
     source_epoch: Option<u64>,
     resources: Vec<worldstream_transfer::ResourceIdentityV1>,
+    resource_payloads: Vec<ResourcePayloadV1>,
     rooms: Vec<Value>,
     canonical_rooms: BTreeMap<String, CanonicalRoomEvidence>,
     transition_count: usize,
@@ -399,6 +408,32 @@ struct CanonicalRoomEvidence {
     _core_state_bytes: Vec<u8>,
     _activity_state_bytes: Vec<u8>,
     transition_bytes: Vec<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct SeedTimer {
+    timer_id: String,
+    generation: u64,
+    scheduled_for: String,
+    payload_bytes: Vec<u8>,
+    state: &'static str,
+}
+
+#[derive(Clone)]
+struct SeedRoom {
+    room_id: String,
+    head: CompleteHeadV1,
+    head_bytes: Vec<u8>,
+    pack_lock_bytes: Vec<u8>,
+    genesis_bytes: Vec<u8>,
+    core_bytes: Vec<u8>,
+    activity_bytes: Vec<u8>,
+    transitions: Vec<(String, Vec<u8>)>,
+    memberships: Vec<MembershipV1>,
+    timers: Vec<SeedTimer>,
+    receipt: Option<StoredSemanticResultV1>,
+    integrity_status: &'static str,
+    integrity_generation: u64,
 }
 
 fn redacted_subject(value: &str) -> String {
@@ -481,6 +516,10 @@ fn extract_source_evidence(
     let deployment_identity = api_export
         .as_ref()
         .map(|export| export.deployment_identity().clone());
+    let resource_payloads = api_export
+        .as_ref()
+        .map(|export| export.resource_payloads().to_vec())
+        .unwrap_or_default();
     let restore_evidence = extract_restore_evidence(source, NativeSqliteLimits::default()).ok();
     let mut metadata_missing = Vec::new();
     if let Some(restore_evidence) = &restore_evidence {
@@ -650,7 +689,7 @@ fn extract_source_evidence(
     let mut rooms = Vec::new();
     let mut canonical_rooms = BTreeMap::new();
     let mut transition_count = 0_usize;
-    let mut pack: Option<PackIdentityV1> = None;
+    let mut packs = Vec::<PackIdentityV1>::new();
     let mut stored_bytes = 0usize;
     for row in rows {
         if !seen_rooms.insert(row.room_id.clone()) {
@@ -706,17 +745,8 @@ fn extract_source_evidence(
                 "the persisted pack revision lock is absent or does not verify against rooms.pack_digest",
             ));
         } else if let Some(candidate) = parsed_pack {
-            if let Some(existing) = &pack {
-                if existing != &candidate {
-                    missing.push(missing_evidence(
-                        "pack_identity_conflict",
-                        "deployment",
-                        None,
-                        "Rooms do not share one persisted pack identity required by the transfer contract",
-                    ));
-                }
-            } else {
-                pack = Some(candidate);
+            if !packs.contains(&candidate) {
+                packs.push(candidate);
             }
         }
 
@@ -755,27 +785,33 @@ fn extract_source_evidence(
             .genesis_bytes
             .as_deref()
             .is_some_and(|bytes| canonical_genesis_hash(bytes).is_some());
-        let room_complete = !isolated && pack_lock_valid && head_valid && core_valid && activity_valid && genesis_valid;
-        if isolated {
-            // Isolated Rooms are retained only as operational evidence. Their
-            // canonical bytes must never be fed into the healthy publication
-            // path, even if the bytes happen to decode successfully.
-        } else if row.genesis_bytes.is_none() {
-            missing.push(missing_evidence(
-                "room_genesis_bytes_absent",
-                "room",
-                Some(&row.room_id),
-                "the Room Genesis bytes are not persisted",
-            ));
-        } else if !genesis_valid {
-            missing.push(missing_evidence(
-                "room_genesis_bytes_unverifiable",
-                "room",
-                Some(&row.room_id),
-                "the persisted Room Genesis bytes do not verify as typed canonical evidence",
-            ));
+        let raw_complete = row.pack_revision_lock_bytes.is_some()
+            && row.genesis_bytes.is_some()
+            && row.core_bytes.is_some()
+            && row.activity_bytes.is_some();
+        let room_complete = if isolated {
+            raw_complete
+        } else {
+            pack_lock_valid && head_valid && core_valid && activity_valid && genesis_valid
+        };
+        if !isolated {
+            if row.genesis_bytes.is_none() {
+                missing.push(missing_evidence(
+                    "room_genesis_bytes_absent",
+                    "room",
+                    Some(&row.room_id),
+                    "the Room Genesis bytes are not persisted",
+                ));
+            } else if !genesis_valid {
+                missing.push(missing_evidence(
+                    "room_genesis_bytes_unverifiable",
+                    "room",
+                    Some(&row.room_id),
+                    "the persisted Room Genesis bytes do not verify as typed canonical evidence",
+                ));
+            }
         }
-        if !head_valid {
+        if !isolated && !head_valid {
             missing.push(missing_evidence(
                 "room_head_bytes_unverifiable",
                 "room",
@@ -783,7 +819,7 @@ fn extract_source_evidence(
                 "the persisted Complete Head bytes do not verify against the Room root and lineage",
             ));
         }
-        if !core_valid {
+        if !isolated && !core_valid {
             missing.push(missing_evidence(
                 "room_core_bytes_unverifiable",
                 "room",
@@ -791,7 +827,7 @@ fn extract_source_evidence(
                 "the persisted Core bytes are absent or do not match rooms.core_state_hash",
             ));
         }
-        if !activity_valid {
+        if !isolated && !activity_valid {
             missing.push(missing_evidence(
                 "room_activity_bytes_unverifiable",
                 "room",
@@ -866,7 +902,7 @@ fn extract_source_evidence(
     } else {
         0
     };
-    if let Some(export) = api_export {
+    if let Some(ref export) = api_export {
         let exported_isolated = export.isolated_rooms().iter().cloned().collect::<BTreeSet<_>>();
         if exported_isolated != isolated_rooms {
             missing.push(missing_evidence(
@@ -886,40 +922,42 @@ fn extract_source_evidence(
                 "the SQLite canonical export API disagrees with the direct metadata witness",
             ));
         }
-        if export.deployment_identity().packs().len() != 1 {
+        if export.deployment_identity().packs().is_empty() {
             missing.push(missing_evidence(
-                "deployment_pack_identity_not_projectable",
+                "deployment_pack_identity_absent",
                 "deployment",
                 None,
-                "the v0.1 transfer header requires exactly one primary pack identity",
+                "the authoritative deployment identity has no retained Pack",
             ));
-        } else if pack.as_ref() != export.deployment_identity().packs().first() {
+        } else if export
+            .deployment_identity()
+            .packs()
+            .iter()
+            .any(|expected| !packs.contains(expected))
+        {
             missing.push(missing_evidence(
                 "deployment_pack_identity_mismatch",
                 "deployment",
                 None,
-                "the authoritative deployment identity disagrees with Room pack locks",
+                "a retained Pack has no exact persisted Room revision lock",
             ));
         } else {
-            pack = export.deployment_identity().packs().first().cloned();
-        }
-        if !isolated_rooms.is_empty() {
-            missing.push(missing_evidence(
-                "isolated_rooms_present",
-                "room",
-                None,
-                "the PostgreSQL publication seam cannot prove isolated Room preservation without canonical promotion",
-            ));
+            packs = export.deployment_identity().packs().to_vec();
         }
         let raw_room_records = canonical_records[deployment_record_count..]
             .iter()
-            .filter(|record| record.kind() != RecordKindV1::Canonical(CanonicalRecordKindV1::ArtifactMetadata))
-            .collect::<Vec<_>>();
-        if raw_room_records.len() != export.records().len()
-            || raw_room_records
-                .iter()
-                .zip(export.records())
-                .any(|(raw, api)| raw.identity() != api.identity() || raw.bytes() != api.bytes())
+            .map(|record| (record.identity(), record.bytes()))
+            .collect::<BTreeMap<_, _>>();
+        let api_room_records = export
+            .records()
+            .iter()
+            .map(|record| (record.identity(), record.bytes()))
+            .collect::<BTreeMap<_, _>>();
+        if raw_room_records
+            .iter()
+            .any(|(identity, bytes)| api_room_records.get(identity).copied() != Some(*bytes))
+            || raw_room_records.len().saturating_add(source_report.transition_count)
+                != export.records().len()
         {
             missing.push(missing_evidence(
                 "canonical_export_byte_mismatch",
@@ -934,12 +972,18 @@ fn extract_source_evidence(
                     SqliteCanonicalRecordKindV1::RoomGenesis => {
                         CanonicalRecordKindV1::RoomGenesis
                     }
+                    SqliteCanonicalRecordKindV1::RoomTransition => {
+                        CanonicalRecordKindV1::RoomTransition
+                    }
                     SqliteCanonicalRecordKindV1::RoomHead => CanonicalRecordKindV1::RoomHead,
                     SqliteCanonicalRecordKindV1::CoreMaterialization => {
                         CanonicalRecordKindV1::CoreMaterialization
                     }
                     SqliteCanonicalRecordKindV1::ActivityMaterialization => {
                         CanonicalRecordKindV1::ActivityMaterialization
+                    }
+                    SqliteCanonicalRecordKindV1::PackRevisionLock => {
+                        CanonicalRecordKindV1::ArtifactMetadata
                     }
                 };
                 api_records.push(
@@ -953,18 +997,6 @@ fn extract_source_evidence(
                 );
             }
             canonical_records = api_records;
-            for (room_id, room) in &canonical_rooms {
-                let identity = format!("room/{room_id}/pack-revision-lock");
-                canonical_records.push(
-                    worldstream_transfer::LogicalRecordV1::canonical(
-                        canonical_records.len() as u64,
-                        CanonicalRecordKindV1::ArtifactMetadata,
-                        &identity,
-                        &room.pack_revision_lock_bytes,
-                    )
-                    .map_err(|_| ())?,
-                );
-            }
         }
     } else {
         missing.push(missing_evidence(
@@ -984,31 +1016,10 @@ fn extract_source_evidence(
     }
     if let Some(restore_evidence) = restore_evidence {
         for (room_id, records) in restore_evidence.canonical_records {
-            if isolated_rooms.contains(&room_id) {
-                if records.iter().any(|record| record.room_seq > 0) {
-                    missing.push(missing_evidence(
-                        "isolated_transition_evidence_not_publishable",
-                        "room",
-                        Some(&room_id),
-                        "isolated Room Transitions are retained in source evidence but the target seam cannot publish them safely",
-                    ));
-                }
-                continue;
-            }
             let Some(room) = canonical_rooms.get_mut(&room_id) else {
                 continue;
             };
             for record in records.into_iter().filter(|record| record.room_seq > 0) {
-                let identity = format!("room/{room_id}/transition/{}", record.room_seq);
-                canonical_records.push(
-                    worldstream_transfer::LogicalRecordV1::canonical(
-                        canonical_records.len() as u64,
-                        CanonicalRecordKindV1::RoomTransition,
-                        &identity,
-                        &record.bytes,
-                    )
-                    .map_err(|_| ())?,
-                );
                 room.transition_bytes.push(record.bytes);
                 transition_count = transition_count.saturating_add(1);
             }
@@ -1034,10 +1045,9 @@ fn extract_source_evidence(
     // SQLite canonical export plus the exact operational-row extractor; keep
     // the independent backup readiness result visible in evidence without
     // treating that unrelated verifier as a source mutation or authority.
-    let expected_canonical_count = canonical_rooms
-        .len()
-        .saturating_mul(5)
-        .saturating_add(transition_count)
+    let expected_canonical_count = api_export
+        .as_ref()
+        .map_or(0, |export| export.records().len())
         .saturating_add(deployment_record_count);
     if canonical_records.is_empty() || canonical_records.len() != expected_canonical_count {
         missing.push(missing_evidence(
@@ -1050,7 +1060,7 @@ fn extract_source_evidence(
     transaction.commit().map_err(|_| ())?;
     Ok(SourceCanonicalEvidence {
         canonical_records,
-        pack,
+        packs,
         deployment_identity: deployment_identity.clone(),
         lineage_id,
         source_epoch,
@@ -1058,6 +1068,7 @@ fn extract_source_evidence(
             .as_ref()
             .map(|identity| identity.resources().to_vec())
             .unwrap_or_default(),
+        resource_payloads,
         rooms,
         canonical_rooms,
         transition_count,
@@ -1125,27 +1136,311 @@ fn wrong_version(mode: &str, version: &str, mut value: Value) -> ! {
     emit(value, EXIT_WRONG_VERSION)
 }
 
-fn build_disposable_source(path: &Path) -> Result<(), ()> {
-    let store = SqliteRoomStore::open(path).map_err(|_| ())?;
-    store
-        .initialize_canonical_metadata("deployment/live-transfer", 7)
-        .map_err(|_| ())?;
+fn membership_bytes(membership: &MembershipV1) -> Result<Vec<u8>, ()> {
+    CanonicalJsonV1::parse(&serde_json::to_vec(membership).map_err(|_| ())?)
+        .and_then(|value| value.to_bytes())
+        .map_err(|_| ())
+}
 
-    let room_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
-    let member_id = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
+fn seed_room_from_trace(
+    room_id: &str,
+    trace: &CoreTraceV1,
+    transition_ids: &[&str],
+    timers: Vec<SeedTimer>,
+    receipt: Option<StoredSemanticResultV1>,
+) -> Result<SeedRoom, ()> {
+    if trace.transitions().len() != transition_ids.len() {
+        return Err(());
+    }
+    Ok(SeedRoom {
+        room_id: room_id.to_owned(),
+        head: trace.head().clone(),
+        head_bytes: trace.head().canonical_bytes().map_err(|_| ())?,
+        pack_lock_bytes: trace
+            .retained_pack()
+            .ok_or(())?
+            .revision_lock()
+            .canonical_bytes()
+            .map_err(|_| ())?,
+        genesis_bytes: trace.genesis_bytes().map_err(|_| ())?,
+        core_bytes: trace.core_state().canonical_bytes().map_err(|_| ())?,
+        activity_bytes: trace.activity_state().to_bytes().map_err(|_| ())?,
+        transitions: trace
+            .transitions()
+            .iter()
+            .zip(transition_ids)
+            .map(|(transition, id)| {
+                transition
+                    .canonical_bytes()
+                    .map(|bytes| ((*id).to_owned(), bytes))
+                    .map_err(|_| ())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        memberships: trace.core_state().memberships().values().cloned().collect(),
+        timers,
+        receipt,
+        integrity_status: "healthy",
+        integrity_generation: 1,
+    })
+}
+
+fn pack_identity(room: &SeedRoom) -> Result<PackIdentityV1, ()> {
+    let lock = PackRevisionLockV1::from_canonical_bytes(
+        &room.pack_lock_bytes,
+        room.head.pack_digest(),
+    )
+    .map_err(|_| ())?;
+    PackIdentityV1::new(
+        lock.pack_id,
+        lock.revision_lock_id,
+        DigestV1::from_bytes(room.head.pack_digest().digest().as_bytes()).map_err(|_| ())?,
+    )
+    .map_err(|_| ())
+}
+
+fn seed_room(connection: &Connection, room: &SeedRoom) -> Result<(), ()> {
+    let head = &room.head;
+    let room_seq = i64::try_from(head.room_seq().get()).map_err(|_| ())?;
+    connection
+        .execute(
+            "INSERT INTO rooms(room_id, room_status, room_seq, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes) VALUES (?1, 'active', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                room.room_id,
+                room_seq,
+                head.genesis_or_transition_hash().to_string(),
+                head.core_schema_version(),
+                head.pack_digest().to_string(),
+                head.core_state_hash().to_string(),
+                head.activity_state_hash().to_string(),
+                head.authoritative_state_hash().to_string(),
+                room.head_bytes,
+            ],
+        )
+        .map_err(|_| ())?;
+    connection
+        .execute(
+            "INSERT INTO room_genesis(room_id, pack_revision_lock_bytes, genesis_bytes) VALUES (?1, ?2, ?3)",
+            rusqlite::params![room.room_id, room.pack_lock_bytes, room.genesis_bytes],
+        )
+        .map_err(|_| ())?;
+    connection
+        .execute(
+            "INSERT INTO room_materializations(room_id, core_state_bytes, activity_state_bytes) VALUES (?1, ?2, ?3)",
+            rusqlite::params![room.room_id, room.core_bytes, room.activity_bytes],
+        )
+        .map_err(|_| ())?;
+    for membership in &room.memberships {
+        let principal_kind = match membership.principal_kind() {
+            PrincipalKindV1::Human => "human",
+            PrincipalKindV1::Agent => "agent",
+        };
+        let standing = match membership.standing() {
+            MembershipStandingV1::Enabled => "enabled",
+            MembershipStandingV1::Suspended => "suspended",
+            MembershipStandingV1::Departed => "departed",
+        };
+        let access_mode = match membership.access_mode() {
+            AccessModeV1::Participant => "participant",
+            AccessModeV1::Spectator => "spectator",
+            AccessModeV1::Operator => "operator",
+        };
+        connection
+            .execute(
+                "INSERT INTO room_members(room_id, member_id, principal_id, principal_kind, standing, access_mode, role, membership_bytes, membership_generation, frame_head) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 0)",
+                rusqlite::params![
+                    room.room_id,
+                    membership.member_id().to_string(),
+                    membership.principal_id().to_string(),
+                    principal_kind,
+                    standing,
+                    access_mode,
+                    membership.role(),
+                    membership_bytes(membership)?,
+                ],
+            )
+            .map_err(|_| ())?;
+    }
+    connection
+        .execute(
+            "INSERT INTO room_integrity(room_id, status, generation) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                room.room_id,
+                room.integrity_status,
+                i64::try_from(room.integrity_generation).map_err(|_| ())?,
+            ],
+        )
+        .map_err(|_| ())?;
+    for (transition_id, transition_bytes) in &room.transitions {
+        let transition = TransitionV1::from_canonical_bytes(transition_bytes).map_err(|_| ())?;
+        let transition_head = transition.complete_head();
+        connection
+            .execute(
+                "INSERT INTO transitions(room_id, transition_id, room_seq, transition_hash, previous_lineage_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, transition_bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    room.room_id,
+                    transition_id,
+                    i64::try_from(transition.room_seq().get()).map_err(|_| ())?,
+                    transition.transition_hash().to_string(),
+                    transition.previous_lineage_hash().to_string(),
+                    transition_head.core_schema_version(),
+                    transition_head.pack_digest().to_string(),
+                    transition_head.core_state_hash().to_string(),
+                    transition_head.activity_state_hash().to_string(),
+                    transition_head.authoritative_state_hash().to_string(),
+                    transition_bytes,
+                ],
+            )
+            .map_err(|_| ())?;
+    }
+    for timer in &room.timers {
+        connection
+            .execute(
+                "INSERT INTO timers(room_id, timer_id, generation, scheduled_for, payload_bytes, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    room.room_id,
+                    timer.timer_id,
+                    i64::try_from(timer.generation).map_err(|_| ())?,
+                    timer.scheduled_for,
+                    timer.payload_bytes,
+                    timer.state,
+                ],
+            )
+            .map_err(|_| ())?;
+    }
+    if let Some(receipt) = &room.receipt {
+        let identity_bytes = receipt
+            .operation_identity()
+            .canonical_bytes()
+            .map_err(|_| ())?;
+        let semantic_input_bytes = receipt
+            .semantic_input()
+            .canonical_bytes()
+            .map_err(|_| ())?;
+        let semantic_time_bytes = receipt.canonical_semantic_time_bytes().map_err(|_| ())?;
+        let basis_bytes = receipt.canonical_basis_head_bytes().map_err(|_| ())?;
+        let transition_seq = receipt
+            .transition_seq()
+            .map(|sequence| i64::try_from(sequence.get()).map_err(|_| ()))
+            .transpose()?;
+        connection
+            .execute(
+                "INSERT INTO semantic_receipts(room_id, operation_kind, operation_identity_bytes, codec_id, canonical_request_hash, basis_complete_head_bytes, semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, stored_resolution_bytes) VALUES (?1, ?2, ?3, 'worldstream/operation-receipt/v1', ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    room.room_id,
+                    receipt.operation_identity().operation_kind(),
+                    identity_bytes,
+                    receipt.canonical_request_hash().as_bytes().as_slice(),
+                    basis_bytes,
+                    semantic_input_bytes,
+                    semantic_time_bytes,
+                    receipt.resolution_kind(),
+                    transition_seq,
+                    receipt.canonical_receipt_bytes(),
+                ],
+            )
+            .map_err(|_| ())?;
+    }
+    connection
+        .execute(
+            "INSERT INTO room_snapshots(room_id, room_seq, snapshot_schema_version, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, core_state_bytes, activity_state_bytes) VALUES (?1, ?2, 'worldstream/paired-snapshot/v1', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                room.room_id,
+                room_seq,
+                head.genesis_or_transition_hash().to_string(),
+                head.core_schema_version(),
+                head.pack_digest().to_string(),
+                head.core_state_hash().to_string(),
+                head.activity_state_hash().to_string(),
+                head.authoritative_state_hash().to_string(),
+                room.head_bytes,
+                room.core_bytes,
+                room.activity_bytes,
+            ],
+        )
+        .map_err(|_| ())?;
+    if room.integrity_status != "healthy" {
+        connection
+            .execute(
+                "INSERT INTO integrity_incidents(room_id, incident_seq, generation, status, reason_code, details_bytes) VALUES (?1, 1, ?2, ?3, 'transfer_smoke_preexisting_isolation', ?4)",
+                rusqlite::params![
+                    room.room_id,
+                    i64::try_from(room.integrity_generation).map_err(|_| ())?,
+                    room.integrity_status,
+                    br#"{"fixture":"isolated_raw_bytes"}"#.as_slice(),
+                ],
+            )
+            .map_err(|_| ())?;
+    }
+    Ok(())
+}
+
+fn seed_global_authority(connection: &Connection, room_id: &str, member_id: &str) -> Result<(), ()> {
     let principal_id = "01ARZ3NDEKTSV4RRFFQ69G5FD0";
-    let registry = builtin_counter_registry().map_err(|_| ())?;
-    let membership = worldstream_core::MembershipV1::new(
-        member_id.parse().map_err(|_| ())?,
-        principal_id.parse().map_err(|_| ())?,
+    let runner_id = "01ARZ3NDEKTSV4RRFFQ69G5FH0";
+    let member_capability = "01ARZ3NDEKTSV4RRFFQ69G5FF0";
+    let host_capability = "01ARZ3NDEKTSV4RRFFQ69G5FF1";
+    let runner_capability = "01ARZ3NDEKTSV4RRFFQ69G5FF2";
+    connection.execute(
+        "INSERT INTO principals(principal_id, principal_kind, authority_status, principal_generation) VALUES (?1, 'human', 'enabled', 1)",
+        [principal_id],
+    ).map_err(|_| ())?;
+    connection.execute(
+        "INSERT INTO runners(runner_id, owner_principal_id, authority_status, runner_generation) VALUES (?1, ?2, 'enabled', 1)",
+        [runner_id, principal_id],
+    ).map_err(|_| ())?;
+    for (capability_id, token, profile, target_room, target_member, runner) in [
+        (member_capability, vec![0x11_u8; 32], "room_member", Some(room_id), Some(member_id), None),
+        (host_capability, vec![0x22_u8; 32], "host_operator", Some(room_id), None, None),
+        (runner_capability, vec![0x33_u8; 32], "runner_control", None, None, Some(runner_id)),
+    ] {
+        connection.execute(
+            "INSERT INTO capabilities(capability_id, token_hash, principal_id, profile_kind, target_room_id, target_member_id, runner_id, authority_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+            rusqlite::params![capability_id, token, principal_id, profile, target_room, target_member, runner],
+        ).map_err(|_| ())?;
+    }
+    for (capability_id, scope) in [
+        (member_capability, "room:act"),
+        (host_capability, "operator:backup"),
+        (runner_capability, "activation:claim"),
+    ] {
+        connection.execute(
+            "INSERT INTO capability_scopes(capability_id, scope) VALUES (?1, ?2)",
+            [capability_id, scope],
+        ).map_err(|_| ())?;
+    }
+    connection.execute(
+        "INSERT INTO runner_capability_memberships(capability_id, room_id, member_id) VALUES (?1, ?2, ?3)",
+        [runner_capability, room_id, member_id],
+    ).map_err(|_| ())?;
+    let change_id = "01ARZ3NDEKTSV4RRFFQ69G5FK0";
+    let request_hash = vec![0x44_u8; 32];
+    connection.execute(
+        "INSERT INTO authority_change_receipts(change_id, authenticated_principal, request_hash, result_kind, target_kind, target_id, secondary_target_id, resulting_generation, checked_at) VALUES (?1, ?2, ?3, 'principal_created', 'principal', ?2, NULL, 1, '2026-08-21T12:00:00Z')",
+        rusqlite::params![change_id, principal_id, request_hash],
+    ).map_err(|_| ())?;
+    connection.execute(
+        "INSERT INTO authority_audit(audit_seq, change_id, actor_principal_id, target_kind, target_id, secondary_target_id, change_kind, prior_generation, resulting_generation, checked_at, reason_code, request_hash) VALUES (1, ?1, ?2, 'principal', ?2, NULL, 'create_principal', NULL, 1, '2026-08-21T12:00:00Z', NULL, ?3)",
+        rusqlite::params![change_id, principal_id, request_hash],
+    ).map_err(|_| ())?;
+    Ok(())
+}
+
+fn build_disposable_source(path: &Path) -> Result<(), ()> {
+    let counter_room_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let counter_member_id = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
+    let counter_principal_id = "01ARZ3NDEKTSV4RRFFQ69G5FD0";
+    let counter_registry = builtin_counter_registry().map_err(|_| ())?;
+    let counter_membership = MembershipV1::new(
+        counter_member_id.parse().map_err(|_| ())?,
+        counter_principal_id.parse().map_err(|_| ())?,
         PrincipalKindV1::Human,
         MembershipStandingV1::Enabled,
         AccessModeV1::Participant,
         Some("counter".to_owned()),
     )
     .map_err(|_| ())?;
-    let request = PackGenesisRequestV1 {
-        room_id: room_id.parse().map_err(|_| ())?,
+    let counter_request = PackGenesisRequestV1 {
+        room_id: counter_room_id.parse().map_err(|_| ())?,
         pack_digest: worldstream_core::counter_v2_digest(),
         configuration: CanonicalJsonV1::parse(br#"{"initial_value":0,"maximum_value":4}"#)
             .map_err(|_| ())?,
@@ -1153,12 +1448,15 @@ fn build_disposable_source(path: &Path) -> Result<(), ()> {
             .parse()
             .map_err(|_| ())?,
         created_at: "2026-08-21T12:00:00Z".parse().map_err(|_| ())?,
-        initial_core_state:
-            worldstream_core::CoreRoomStateV1::active([membership]).map_err(|_| ())?,
+        initial_core_state: CoreRoomStateV1::active([counter_membership]).map_err(|_| ())?,
     };
-    let prepared = registry.prepare_genesis_for_new_room(&request).map_err(|_| ())?;
-    let mut trace = CoreTraceV1::create_from_retained_for_conformance(prepared).map_err(|_| ())?;
-    let action_definition = trace
+    let mut counter_trace = CoreTraceV1::create_from_retained_for_conformance(
+        counter_registry
+            .prepare_genesis_for_new_room(&counter_request)
+            .map_err(|_| ())?,
+    )
+    .map_err(|_| ())?;
+    let action_definition = counter_trace
         .retained_pack()
         .ok_or(())?
         .descriptor()
@@ -1166,139 +1464,225 @@ fn build_disposable_source(path: &Path) -> Result<(), ()> {
         .iter()
         .find(|action| action.action_type == "increment")
         .ok_or(())?;
-    let action = RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
-        member_id: member_id.parse().map_err(|_| ())?,
-        action_id: "01ARZ3NDEKTSV4RRFFQ69G5FE0".parse().map_err(|_| ())?,
-        action_type: "increment".to_owned(),
-        payload_schema_digest: action_definition.payload_schema.schema_digest.clone(),
-        canonical_payload: CanonicalJsonV1::parse(br"{}").map_err(|_| ())?,
-        exact_basis_head: trace.head().clone(),
-        admitted_at: "2026-08-21T12:00:01Z".parse().map_err(|_| ())?,
-    });
-    trace.advance_for_conformance(action).map_err(|_| ())?;
-
-    let head = trace.head();
-    let transition = trace.transitions().first().ok_or(())?;
-    let head_bytes = head.canonical_bytes().map_err(|_| ())?;
-    let genesis_bytes = trace.genesis_bytes().map_err(|_| ())?;
-    let transition_bytes = transition.canonical_bytes().map_err(|_| ())?;
-    let core_bytes = trace.core_state().canonical_bytes().map_err(|_| ())?;
-    let activity_bytes = trace.activity_state().to_bytes().map_err(|_| ())?;
-    let pack_lock_bytes = trace
-        .retained_pack()
-        .ok_or(())?
-        .revision_lock()
-        .canonical_bytes()
+    counter_trace
+        .advance_for_conformance(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+            member_id: counter_member_id.parse().map_err(|_| ())?,
+            action_id: "01ARZ3NDEKTSV4RRFFQ69G5FE0".parse().map_err(|_| ())?,
+            action_type: "increment".to_owned(),
+            payload_schema_digest: action_definition.payload_schema.schema_digest.clone(),
+            canonical_payload: CanonicalJsonV1::parse(br"{}").map_err(|_| ())?,
+            exact_basis_head: counter_trace.head().clone(),
+            admitted_at: "2026-08-21T12:00:01Z".parse().map_err(|_| ())?,
+        }))
         .map_err(|_| ())?;
-    let pack_lock = PackRevisionLockV1::from_canonical_bytes(
-        &pack_lock_bytes,
-        &head.pack_digest(),
+    let counter_room = seed_room_from_trace(
+        counter_room_id,
+        &counter_trace,
+        &["01ARZ3NDEKTSV4RRFFQ69G5FE0"],
+        Vec::new(),
+        None,
+    )?;
+
+    let heist_room_id = "01ARZ3NDEKTSV4RRFFQ69G5FC5";
+    let heist_members = [
+        ("01ARZ3NDEKTSV4RRFFQ69G5FC1", "01ARZ3NDEKTSV4RRFFQ69G5FD1", "navigator"),
+        ("01ARZ3NDEKTSV4RRFFQ69G5FC2", "01ARZ3NDEKTSV4RRFFQ69G5FD2", "insider"),
+        ("01ARZ3NDEKTSV4RRFFQ69G5FC3", "01ARZ3NDEKTSV4RRFFQ69G5FD3", "broker"),
+    ]
+    .into_iter()
+    .map(|(member, principal, role)| {
+        MembershipV1::new(
+            member.parse().map_err(|_| ())?,
+            principal.parse().map_err(|_| ())?,
+            PrincipalKindV1::Agent,
+            MembershipStandingV1::Enabled,
+            AccessModeV1::Participant,
+            Some(role.to_owned()),
+        )
+        .map_err(|_| ())
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+    let heist_registry = builtin_worldstream_registry().map_err(|_| ())?;
+    let heist_request = PackGenesisRequestV1 {
+        room_id: heist_room_id.parse().map_err(|_| ())?,
+        pack_digest: agent_heist_digest(),
+        configuration: CanonicalJsonV1::parse(br#"{"briefing_duration_seconds":30,"commitment_duration_seconds":30,"commitment_reminder_seconds_before_deadline":10,"maximum_open_offers_per_role":4,"maximum_plans":12,"negotiation_duration_seconds":90,"pack_id":"worldstream.agent-heist","pack_schema":1,"result_duration_seconds":20,"roles":["navigator","insider","broker"]}"#).map_err(|_| ())?,
+        room_seed: "hex:101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+            .parse()
+            .map_err(|_| ())?,
+        created_at: "2026-08-21T12:00:00Z".parse().map_err(|_| ())?,
+        initial_core_state: CoreRoomStateV1::active(heist_members).map_err(|_| ())?,
+    };
+    let mut heist_trace = CoreTraceV1::create_from_retained_for_conformance(
+        heist_registry
+            .prepare_genesis_for_new_room(&heist_request)
+            .map_err(|_| ())?,
+    )
+    .map_err(|_| ())?;
+    let initial_timer = heist_trace
+        .genesis()
+        .initial_timers()
+        .first()
+        .cloned()
+        .ok_or(())?;
+    let timer_request = TimerFiredRequestV1::new(
+        heist_room_id.parse().map_err(|_| ())?,
+        initial_timer.timer_id.clone(),
+        initial_timer.generation,
+        initial_timer.scheduled_for.clone(),
+        initial_timer.canonical_payload.clone(),
+    );
+    let timer_stimulus = RecordedStimulusV1::TimerFired(TimerFiredV1 {
+        timer_id: initial_timer.timer_id.clone(),
+        generation: initial_timer.generation,
+        scheduled_for: initial_timer.scheduled_for.clone(),
+        canonical_payload: initial_timer.canonical_payload.clone(),
+    });
+    let prepared_transition = heist_trace.prepare(timer_stimulus.clone()).map_err(|_| ())?;
+    let authority = PreparedAuthorityWitnessV1::mint_for_conformance(
+        "transfer-smoke-heist-timer",
+        "01ARZ3NDEKTSV4RRFFQ69G5FD1".parse().map_err(|_| ())?,
+        1,
+        &CanonicalJsonV1::parse(br#"{"revoked":false,"scope":"timer_fired"}"#)
+            .map_err(|_| ())?,
+    )
+    .map_err(|_| ())?;
+    let frame_heads = heist_trace
+        .core_state()
+        .memberships()
+        .keys()
+        .cloned()
+        .map(|member| (member, 0_u64))
+        .collect::<BTreeMap<_, _>>();
+    let plan = PreparedRoomCommitV1::for_timer_fired_for_conformance(
+        &heist_trace,
+        &timer_request,
+        prepared_transition,
+        "01ARZ3NDEKTSV4RRFFQ69G5FG1".parse().map_err(|_| ())?,
+        IntegrityGenerationV1::new(1).map_err(|_| ())?,
+        authority,
+        &frame_heads,
+    )
+    .map_err(|_| ())?;
+    let mut timers = heist_trace
+        .genesis()
+        .initial_timers()
+        .iter()
+        .map(|timer| {
+            Ok(SeedTimer {
+                timer_id: timer.timer_id.to_string(),
+                generation: timer.generation.get(),
+                scheduled_for: timer.scheduled_for.as_str().to_owned(),
+                payload_bytes: timer.canonical_payload.to_bytes().map_err(|_| ())?,
+                state: if timer.timer_id == initial_timer.timer_id
+                    && timer.generation == initial_timer.generation
+                {
+                    "fired"
+                } else {
+                    "scheduled"
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    let PreparedExistingIntentV1::Advance(advance) = plan.intent() else {
+        return Err(());
+    };
+    for mutation in &advance.timer_changes {
+        match mutation.kind() {
+            PreparedTimerMutationKindV1::Schedule {
+                timer_id,
+                generation,
+                scheduled_for,
+                canonical_payload_bytes,
+            } => timers.push(SeedTimer {
+                timer_id: timer_id.to_string(),
+                generation: generation.get(),
+                scheduled_for: scheduled_for.as_str().to_owned(),
+                payload_bytes: canonical_payload_bytes.to_vec(),
+                state: "scheduled",
+            }),
+            PreparedTimerMutationKindV1::Cancel { timer_id, generation } => {
+                timers
+                    .iter_mut()
+                    .find(|timer| {
+                        timer.timer_id == timer_id.to_string()
+                            && timer.generation == generation.get()
+                    })
+                    .ok_or(())?
+                    .state = "cancelled";
+            }
+            PreparedTimerMutationKindV1::Reschedule {
+                timer_id,
+                previous_generation,
+                generation,
+                scheduled_for,
+                canonical_payload_bytes,
+            } => {
+                timers
+                    .iter_mut()
+                    .find(|timer| {
+                        timer.timer_id == timer_id.to_string()
+                            && timer.generation == previous_generation.get()
+                    })
+                    .ok_or(())?
+                    .state = "cancelled";
+                timers.push(SeedTimer {
+                    timer_id: timer_id.to_string(),
+                    generation: generation.get(),
+                    scheduled_for: scheduled_for.as_str().to_owned(),
+                    payload_bytes: canonical_payload_bytes.to_vec(),
+                    state: "scheduled",
+                });
+            }
+        }
+    }
+    let timer_receipt = plan.semantic_result().clone();
+    heist_trace
+        .advance_for_conformance(timer_stimulus)
+        .map_err(|_| ())?;
+    let heist_room = seed_room_from_trace(
+        heist_room_id,
+        &heist_trace,
+        &["01ARZ3NDEKTSV4RRFFQ69G5FG1"],
+        timers,
+        Some(timer_receipt),
+    )?;
+
+    let resource = ResourcePayloadV1::from_bytes(
+        ResourceKindV1::Artifact,
+        "worldstream.transfer-smoke.fixture",
+        b"worldstream exact transfer and restore resource bytes v1\n",
     )
     .map_err(|_| ())?;
     let deployment_identity = worldstream_transfer::DeploymentIdentityV1::new(
-        vec![PackIdentityV1::new(
-            pack_lock.pack_id,
-            pack_lock.revision_lock_id,
-            DigestV1::from_bytes(head.pack_digest().digest().as_bytes()).map_err(|_| ())?,
-        )
-        .map_err(|_| ())?],
-        Vec::new(),
+        vec![pack_identity(&counter_room)?, pack_identity(&heist_room)?],
+        vec![resource.identity().clone()],
     )
     .map_err(|_| ())?;
+    let store = SqliteRoomStore::open(path).map_err(|_| ())?;
     store
-        .initialize_deployment_identity(deployment_identity)
+        .initialize_canonical_metadata("deployment/live-transfer", 7)
+        .map_err(|_| ())?;
+    store
+        .initialize_deployment_identity_with_resources(deployment_identity, vec![resource])
         .map_err(|_| ())?;
     drop(store);
-    let member = trace
-        .core_state()
-        .memberships()
-        .values()
-        .next()
-        .ok_or(())?;
-    let membership_json = serde_json::to_vec(member).map_err(|_| ())?;
-    let membership_bytes = CanonicalJsonV1::parse(&membership_json)
-        .and_then(|value| value.to_bytes())
-        .map_err(|_| ())?;
-    let room_seq = i64::try_from(head.room_seq().get()).map_err(|_| ())?;
-    let transition_seq = i64::try_from(transition.room_seq().get()).map_err(|_| ())?;
 
     let connection = Connection::open(path).map_err(|_| ())?;
-    connection
-        .execute(
-            "INSERT INTO rooms(room_id, room_status, room_seq, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes) VALUES (?1, 'active', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                room_id,
-                room_seq,
-                head.genesis_or_transition_hash().to_string(),
-                head.core_schema_version(),
-                head.pack_digest().to_string(),
-                head.core_state_hash().to_string(),
-                head.activity_state_hash().to_string(),
-                head.authoritative_state_hash().to_string(),
-                head_bytes,
-            ],
-        )
-        .map_err(|_| ())?;
-    connection
-        .execute(
-            "INSERT INTO room_genesis(room_id, pack_revision_lock_bytes, genesis_bytes) VALUES (?1, ?2, ?3)",
-            rusqlite::params![room_id, pack_lock_bytes, genesis_bytes],
-        )
-        .map_err(|_| ())?;
-    connection
-        .execute(
-            "INSERT INTO room_materializations(room_id, core_state_bytes, activity_state_bytes) VALUES (?1, ?2, ?3)",
-            rusqlite::params![room_id, core_bytes, activity_bytes],
-        )
-        .map_err(|_| ())?;
-    connection
-        .execute(
-            "INSERT INTO room_members(room_id, member_id, principal_id, principal_kind, standing, access_mode, role, membership_bytes, membership_generation, frame_head) VALUES (?1, ?2, ?3, 'human', 'enabled', 'participant', 'counter', ?4, 1, 0)",
-            rusqlite::params![room_id, member_id, principal_id, membership_bytes],
-        )
-        .map_err(|_| ())?;
-    connection
-        .execute(
-            "INSERT INTO room_integrity(room_id, status, generation) VALUES (?1, 'healthy', 1)",
-            [room_id],
-        )
-        .map_err(|_| ())?;
-    connection
-        .execute(
-            "INSERT INTO transitions(room_id, transition_id, room_seq, transition_hash, previous_lineage_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, transition_bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            rusqlite::params![
-                room_id,
-                format!("transition-{transition_seq}"),
-                transition_seq,
-                transition.transition_hash().to_string(),
-                transition.previous_lineage_hash().to_string(),
-                head.core_schema_version(),
-                head.pack_digest().to_string(),
-                head.core_state_hash().to_string(),
-                head.activity_state_hash().to_string(),
-                head.authoritative_state_hash().to_string(),
-                transition_bytes,
-            ],
-        )
-        .map_err(|_| ())?;
-    connection
-        .execute(
-            "INSERT INTO room_snapshots(room_id, room_seq, snapshot_schema_version, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, core_state_bytes, activity_state_bytes) VALUES (?1, ?2, 'worldstream/paired-snapshot/v1', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            rusqlite::params![
-                room_id,
-                room_seq,
-                head.genesis_or_transition_hash().to_string(),
-                head.core_schema_version(),
-                head.pack_digest().to_string(),
-                head.core_state_hash().to_string(),
-                head.activity_state_hash().to_string(),
-                head.authoritative_state_hash().to_string(),
-                head_bytes,
-                core_bytes,
-                activity_bytes,
-            ],
-        )
-        .map_err(|_| ())?;
+    seed_room(&connection, &counter_room)?;
+    seed_room(&connection, &heist_room)?;
+    let mut isolated_room = counter_room.clone();
+    isolated_room.room_id = "01ARZ3NDEKTSV4RRFFQ69G5FQ0".to_owned();
+    isolated_room.transitions = vec![(
+        "01ARZ3NDEKTSV4RRFFQ69G5FQ1".to_owned(),
+        isolated_room.transitions.first().ok_or(())?.1.clone(),
+    )];
+    isolated_room.receipt = None;
+    isolated_room.timers.clear();
+    isolated_room.integrity_status = "quarantined";
+    isolated_room.integrity_generation = 2;
+    seed_room(&connection, &isolated_room)?;
+    seed_global_authority(&connection, counter_room_id, counter_member_id)?;
     Ok(())
 }
 
@@ -1307,10 +1691,11 @@ fn main() {
     let source = env::var("WORLDSTREAM_PG_TRANSFER_SQLITE").unwrap_or_default();
     let admin_dsn = env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN").unwrap_or_default();
     let runtime_dsn = env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default();
+    let built_generalized_fixture =
+        env::var("WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE").as_deref() == Ok("1");
     let mut evidence = base(&mode);
 
-    if env::var("WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE").as_deref() == Ok("1")
-        && build_disposable_source(Path::new(&source)).is_err()
+    if built_generalized_fixture && build_disposable_source(Path::new(&source)).is_err()
     {
         incomplete(&mode, "disposable_sqlite_source_build_failed", evidence);
     }
@@ -1371,9 +1756,9 @@ fn main() {
         "resources": {
             "status": if source_evidence.deployment_identity.is_some() { "complete" } else { "missing" },
             "count": source_evidence.resources.len(),
-            "bytes_verified": source_evidence.deployment_identity.is_some(),
+            "bytes_verified": source_evidence.resource_payloads.len() == source_evidence.resources.len(),
         },
-        "room_pack_lock_identity_observed": source_evidence.pack.is_some(),
+        "room_pack_lock_identity_observed": source_evidence.packs.len(),
         "canonical_transition_count": source_evidence.transition_count,
         "isolated_room_count": source_evidence.isolated_rooms.len(),
         "isolated_room_subjects": source_evidence
@@ -1450,8 +1835,10 @@ fn main() {
         .as_ref()
         .map_or(0, |identity| identity.resources().len());
     let source_identity_witness = source_evidence.deployment_identity.is_some()
-        && source_evidence.pack.is_some()
-        && source_identity_pack_count == 1;
+        && source_identity_pack_count >= 2
+        && source_evidence.packs.len() == source_identity_pack_count
+        && source_identity_resource_count > 0
+        && source_evidence.resource_payloads.len() == source_identity_resource_count;
     let source_membership_witness = source_membership_row_count > 0;
     if !source_identity_witness {
         incomplete(&mode, "source_authoritative_deployment_identity_missing", evidence);
@@ -1500,13 +1887,14 @@ fn main() {
     if deployment_identity.packs().is_empty() {
         incomplete(&mode, "source_deployment_pack_identity_missing", evidence);
     }
-    let spec = NativeSqliteTransferSpecV1::new_with_deployment_identity(
+    let spec = NativeSqliteTransferSpecV1::new_with_deployment_resources(
         "live-whole-deployment-transfer",
         lineage_id,
         source_epoch,
         source_backend,
         target_backend,
         deployment_identity,
+        source_evidence.resource_payloads.clone(),
         SessionStatePolicyV1::InvalidateAndRebuild,
     );
     let bundle = match NativeSqliteTransferAdapterV1::from_operational_rows_with_canonical_records(
@@ -1534,8 +1922,41 @@ fn main() {
         Ok(admin) => admin,
         Err(_) => provider_failure(&mode, "admin_profile_rejected", evidence),
     };
-    if admin.migrate().is_err() {
+    if let Err(error) = admin.migrate() {
+        if env::var("WORLDSTREAM_PG_TRANSFER_DEBUG").as_deref() == Ok("1") {
+            eprintln!("postgres_admin_migration_error: {error:?}");
+        }
         provider_failure(&mode, "postgres_admin_migration_failed", evidence);
+    }
+    let runtime_migration_privilege_role = if mode == "docker" {
+        Some("runtime".to_owned())
+    } else {
+        env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE")
+            .ok()
+            .filter(|role| !role.is_empty())
+    };
+    if let Some(runtime_role) = runtime_migration_privilege_role {
+        if !runtime_role
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            provider_failure(&mode, "postgres_runtime_role_identifier_rejected", evidence);
+        }
+        let mut privilege_client = match Client::connect(
+            &env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN").unwrap_or_default(),
+            NoTls,
+        ) {
+            Ok(client) => client,
+            Err(_) => provider_failure(&mode, "postgres_privilege_connection_failed", evidence),
+        };
+        if privilege_client
+            .batch_execute(&format!(
+                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE worldstream_schema_migrations FROM {runtime_role}",
+            ))
+            .is_err()
+        {
+            provider_failure(&mode, "postgres_runtime_migration_privilege_revoke_failed", evidence);
+        }
     }
     if admin.verify_schema().is_err() {
         provider_failure(&mode, "postgres_admin_read_only_verification_failed", evidence);
@@ -1551,7 +1972,10 @@ fn main() {
         Ok(store) => store,
         Err(_) => provider_failure(&mode, "runtime_profile_rejected", evidence),
     };
-    if store.verify_schema().is_err() {
+    if let Err(error) = store.verify_schema() {
+        if env::var("WORLDSTREAM_PG_TRANSFER_DEBUG").as_deref() == Ok("1") {
+            eprintln!("runtime_read_only_schema_error: {error:?}");
+        }
         provider_failure(&mode, "runtime_read_only_schema_verification_failed", evidence);
     }
     let mut destination = match PostgresTransferDestination::new(&store, &bundle, target.clone()) {
@@ -1685,13 +2109,59 @@ fn main() {
     // Transition sequence must round-trip after the authority transition.
     let target_room_count = source_evidence.canonical_rooms.len();
     let mut verified_room_count = 0usize;
+    let mut read_client = match Client::connect(
+        &env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default(),
+        NoTls,
+    ) {
+        Ok(client) => client,
+        Err(_) => provider_failure(&mode, "runtime_read_only_connection_failed", evidence),
+    };
     for room_id in source_evidence.canonical_rooms.keys() {
+        let Some(source_room) = source_evidence.canonical_rooms.get(room_id) else {
+            provider_failure(&mode, "source_room_readback_index_failed", evidence);
+        };
+        if source_evidence.isolated_rooms.contains(room_id) {
+            let row = match read_client.query_one(
+                "SELECT g.pack_revision_lock_bytes, g.genesis_bytes, r.head_bytes, m.core_state_bytes, m.activity_state_bytes, r.integrity_status FROM worldstream_room_roots r JOIN worldstream_genesis g ON g.room_id = r.room_id JOIN worldstream_materializations m ON m.room_id = r.room_id WHERE r.room_id = $1",
+                &[room_id],
+            ) {
+                Ok(row) => row,
+                Err(_) => provider_failure(&mode, "postgres_isolated_room_readback_failed", evidence),
+            };
+            let transitions = match read_client.query(
+                "SELECT transition_bytes FROM worldstream_transitions WHERE room_id = $1 ORDER BY room_seq",
+                &[room_id],
+            ) {
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|row| row.try_get::<_, Vec<u8>>(0).map_err(|_| ()))
+                    .collect::<Result<Vec<_>, _>>(),
+                Err(_) => Err(()),
+            };
+            let exact = row.try_get::<_, Vec<u8>>(0).ok().as_deref()
+                == Some(source_room.pack_revision_lock_bytes.as_slice())
+                && row.try_get::<_, Vec<u8>>(1).ok().as_deref()
+                    == Some(source_room._genesis_bytes.as_slice())
+                && row.try_get::<_, Vec<u8>>(2).ok().as_deref()
+                    == Some(source_room._head_bytes.as_slice())
+                && row.try_get::<_, Vec<u8>>(3).ok().as_deref()
+                    == Some(source_room._core_state_bytes.as_slice())
+                && row.try_get::<_, Vec<u8>>(4).ok().as_deref()
+                    == Some(source_room._activity_state_bytes.as_slice())
+                && row
+                    .try_get::<_, String>(5)
+                    .ok()
+                    .is_some_and(|status| status != "healthy")
+                && transitions.as_ref().is_ok_and(|bytes| bytes == &source_room.transition_bytes);
+            if !exact {
+                provider_failure(&mode, "postgres_isolated_room_byte_parity_failed", evidence);
+            }
+            verified_room_count = verified_room_count.saturating_add(1);
+            continue;
+        }
         let verification = match store.verify_room(room_id) {
             Ok(value) => value,
             Err(_) => provider_failure(&mode, "postgres_room_readback_failed", evidence),
-        };
-        let Some(source_room) = source_evidence.canonical_rooms.get(room_id) else {
-            provider_failure(&mode, "source_room_readback_index_failed", evidence);
         };
         if verification.pack_revision_lock_bytes != source_room.pack_revision_lock_bytes
             || verification.genesis_bytes != source_room._genesis_bytes
@@ -1706,13 +2176,6 @@ fn main() {
     }
 
     let bundle_bytes = bundle_hash.as_bytes();
-    let mut read_client = match Client::connect(
-        &env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default(),
-        NoTls,
-    ) {
-        Ok(client) => client,
-        Err(_) => provider_failure(&mode, "runtime_read_only_connection_failed", evidence),
-    };
     let state: String = match read_client.query_one(
         "SELECT state FROM worldstream_transfer_imports WHERE bundle_hash = $1",
         &[&bundle_bytes.as_slice()],
@@ -1768,11 +2231,136 @@ fn main() {
         .unwrap_or(-1);
     let target_membership_witness = source_membership_witness
         && target_membership_count == source_membership_row_count as i64;
+    let resource_blob_count: i64 = read_client
+        .query_one(
+            "SELECT count(*)::bigint FROM worldstream_deployment_resource_blobs",
+            &[],
+        )
+        .ok()
+        .and_then(|row| row.try_get(0).ok())
+        .unwrap_or(-1);
+    let resource_bytes_verified = resource_blob_count == source_evidence.resource_payloads.len() as i64
+        && source_evidence.resource_payloads.iter().all(|payload| {
+            let kind = match payload.identity().kind() {
+                ResourceKindV1::Artifact => "artifact",
+                ResourceKindV1::Codec => "codec",
+                ResourceKindV1::Schema => "schema",
+            };
+            read_client
+                .query_opt(
+                    "SELECT resource_bytes, resource_digest FROM worldstream_deployment_resource_blobs WHERE resource_kind = $1 AND resource_identity = $2",
+                    &[&kind, &payload.identity().identity()],
+                )
+                .ok()
+                .flatten()
+                .is_some_and(|row| {
+                    row.try_get::<_, Vec<u8>>(0).ok().as_deref() == Some(payload.bytes())
+                        && row.try_get::<_, Vec<u8>>(1).ok().as_deref()
+                            == Some(payload.identity().digest().as_bytes().as_slice())
+                })
+        });
+    let authority_domains = [
+        ("principals", "worldstream_authority_principals"),
+        ("runners", "worldstream_authority_runners"),
+        ("capabilities", "worldstream_authority_capabilities"),
+        ("capability_scopes", "worldstream_authority_capability_scopes"),
+        (
+            "runner_capability_memberships",
+            "worldstream_authority_runner_capability_memberships",
+        ),
+        (
+            "authority_change_receipts",
+            "worldstream_authority_change_receipts",
+        ),
+        ("authority_audit", "worldstream_authority_audit"),
+    ];
+    let global_authority_verified = authority_domains.iter().all(|(source_table, target_table)| {
+        let source_count = rows.tables.get(*source_table).map_or(0, Vec::len);
+        if source_count == 0 {
+            return false;
+        }
+        read_client
+            .query_one(&format!("SELECT count(*)::bigint FROM {target_table}"), &[])
+            .ok()
+            .and_then(|row| row.try_get::<_, i64>(0).ok())
+            == i64::try_from(source_count).ok()
+    });
+    let fired_receipts = read_client
+        .query(
+            "SELECT receipt_bytes FROM worldstream_semantic_receipts WHERE operation_kind = 'timer_fired' ORDER BY identity_bytes",
+            &[],
+        )
+        .ok()
+        .and_then(|rows| {
+            rows.into_iter()
+                .map(|row| {
+                    let bytes = row.try_get::<_, Vec<u8>>(0).map_err(|_| ())?;
+                    let stored = StoredSemanticResultV1::from_canonical_receipt_bytes(&bytes)
+                        .map_err(|_| ())?;
+                    let OperationIdentityV1::TimerFired(identity) = stored.operation_identity()
+                    else {
+                        return Err(());
+                    };
+                    if stored.transition_seq().is_none() {
+                        return Err(());
+                    }
+                    Ok((
+                        identity.room_id.to_string(),
+                        identity.timer_id.to_string(),
+                        identity.generation.get(),
+                        identity.scheduled_for.as_str().to_owned(),
+                    ))
+                })
+                .collect::<Result<BTreeSet<_>, _>>()
+                .ok()
+        })
+        .unwrap_or_default();
+    let fired_timers = read_client
+        .query(
+            "SELECT room_id, timer_id, generation, scheduled_for FROM worldstream_timers WHERE state = 'fired' ORDER BY room_id, timer_id, generation",
+            &[],
+        )
+        .ok()
+        .and_then(|rows| {
+            rows.into_iter()
+                .map(|row| {
+                    Ok::<_, ()>((
+                        row.try_get::<_, String>(0).map_err(|_| ())?,
+                        row.try_get::<_, String>(1).map_err(|_| ())?,
+                        u64::try_from(row.try_get::<_, i64>(2).map_err(|_| ())?)
+                            .map_err(|_| ())?,
+                        row.try_get::<_, String>(3).map_err(|_| ())?,
+                    ))
+                })
+                .collect::<Result<BTreeSet<_>, _>>()
+                .ok()
+        })
+        .unwrap_or_default();
+    let fired_timer_linkage_verified = !fired_timers.is_empty() && fired_timers == fired_receipts;
+    let isolated_integrity_incident_count: i64 = read_client
+        .query_one(
+            "SELECT count(*)::bigint FROM worldstream_integrity_incidents i JOIN worldstream_room_roots r ON r.room_id = i.room_id WHERE r.integrity_status <> 'healthy'",
+            &[],
+        )
+        .ok()
+        .and_then(|row| row.try_get(0).ok())
+        .unwrap_or(-1);
+    let generalized_path_verified = target_room_count >= 3
+        && source_evidence.isolated_rooms.len() == 1
+        && verified_room_count == target_room_count
+        && identity_pack_count >= 2
+        && resource_bytes_verified
+        && global_authority_verified
+        && fired_timer_linkage_verified
+        && isolated_integrity_incident_count > 0;
     if !target_identity_witness {
         provider_failure(&mode, "runtime_read_only_identity_witness_mismatch", evidence);
     }
     if !target_membership_witness {
         provider_failure(&mode, "runtime_read_only_membership_witness_mismatch", evidence);
+    }
+    if built_generalized_fixture && !generalized_path_verified {
+        provider_failure(&mode, "runtime_generalized_deployment_witness_mismatch", evidence);
     }
     if store.verify_schema().is_err() {
         provider_failure(&mode, "runtime_post_transfer_schema_verification_failed", evidence);
@@ -1820,13 +2408,19 @@ fn main() {
         "target_membership_witness": if target_membership_witness { "pass" } else { "fail" },
         "target_epoch_fence": "verified",
         "whole_deployment_acceptance": "pass",
-        "global_pack_resource_evidence": "pass",
+        "global_pack_resource_evidence": if generalized_path_verified { "pass" } else { "not_covered_by_supplied_source" },
+        "general_deployment_support_verified": generalized_path_verified,
         "identity_metadata": identity_metadata_present,
         "identity_pack_count": identity_pack_count,
         "identity_resource_count": identity_resource_count,
-        "empty_resource_set_witness": identity_resource_count == 0,
+        "resource_blob_count": resource_blob_count,
+        "resource_bytes_verified": resource_bytes_verified,
+        "global_authority_verified": global_authority_verified,
+        "fired_timer_count": fired_timers.len(),
+        "fired_timer_receipt_linkage_verified": fired_timer_linkage_verified,
+        "isolated_integrity_incident_count": isolated_integrity_incident_count,
         "target_membership_count": target_membership_count,
-        "isolated_room_evidence": if source_evidence.isolated_rooms.is_empty() { "none_observed" } else { "preserved_as_isolated_source_evidence" }
+        "isolated_room_evidence": if source_evidence.isolated_rooms.is_empty() { "none_observed" } else { "raw_bytes_preserved_without_semantic_replay" }
     });
     evidence["cleanup"] = json!({"status": "target_retained_as_authoritative_import"});
     evidence["limitations"] = json!([
@@ -1845,6 +2439,10 @@ fn main() {
         "membership_witness": "pass",
         "room_head_and_canonical_bytes": "pass",
         "operational_ledgers": "pass",
+        "resource_payload_bytes": if resource_bytes_verified { "pass" } else { "not_covered" },
+        "global_authority": if global_authority_verified { "pass" } else { "not_covered" },
+        "fired_timer_linkage": if fired_timer_linkage_verified { "pass" } else { "not_covered" },
+        "mixed_healthy_isolated_rooms": if generalized_path_verified { "pass" } else { "not_covered" },
         "pre_authority_verifier": "pass",
         "rollback_and_conflict_guards": "pass",
         "restart_replay": "pass"
@@ -1863,6 +2461,7 @@ helper_env=(
   "WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE=$build_source"
   "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN=$admin_dsn"
   "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN=$runtime_dsn"
+  "WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE=$runtime_role"
 )
 
 set +e
@@ -1923,7 +2522,7 @@ fi
 
 if [[ -z "$helper_json" ]] || ! "$python_bin" - \
   "$helper_json" "$evidence_file" "$helper_code" \
-  "$POSTGRES_IMAGE" "$POSTGRES_REPOSITORY_DIGEST" <<'PY'
+  "$POSTGRES_IMAGE" "$POSTGRES_REPOSITORY_DIGEST" "$build_source" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1995,6 +2594,33 @@ if status == "pass":
         raise SystemExit("pass evidence is missing independent backup diagnostic")
     if backup.get("authoritative_for_transfer") is not False or backup.get("required_for_transfer") is not False:
         raise SystemExit("backup diagnostic incorrectly masks transfer authority")
+    if sys.argv[6] == "1":
+        generalized = {
+            "general_deployment_support_verified": True,
+            "resource_bytes_verified": True,
+            "global_authority_verified": True,
+            "fired_timer_receipt_linkage_verified": True,
+            "isolated_room_evidence": "raw_bytes_preserved_without_semantic_replay",
+        }
+        if any(transfer.get(key) != expected for key, expected in generalized.items()):
+            raise SystemExit("generalized transfer evidence is incomplete")
+        if transfer.get("identity_pack_count", 0) < 2:
+            raise SystemExit("generalized transfer evidence lacks multiple Packs")
+        if transfer.get("identity_resource_count", 0) < 1 or transfer.get("resource_blob_count", 0) < 1:
+            raise SystemExit("generalized transfer evidence lacks exact resource bytes")
+        if transfer.get("fired_timer_count", 0) < 1:
+            raise SystemExit("generalized transfer evidence lacks a fired Timer")
+        if transfer.get("isolated_integrity_incident_count", 0) < 1:
+            raise SystemExit("generalized transfer evidence lacks isolated incident durability")
+        acceptance = value.get("acceptance")
+        for key in (
+            "resource_payload_bytes",
+            "global_authority",
+            "fired_timer_linkage",
+            "mixed_healthy_isolated_rooms",
+        ):
+            if not isinstance(acceptance, dict) or acceptance.get(key) != "pass":
+                raise SystemExit("generalized transfer acceptance is incomplete")
 encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
 if len(sys.argv) > 2 and sys.argv[2]:
     destination = Path(sys.argv[2])

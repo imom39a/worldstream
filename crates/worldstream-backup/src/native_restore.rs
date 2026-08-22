@@ -21,7 +21,7 @@ use crate::{
 
 /// Fixed provider-neutral durable domains required for a `PostgreSQL` native
 /// restore to qualify as full semantic evidence.
-pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomainV1; 31] = [
+pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomainV1; 33] = [
     NativeRestoreDurableDomainV1::SchemaMigrations,
     NativeRestoreDurableDomainV1::OperationGuards,
     NativeRestoreDurableDomainV1::RoomRoots,
@@ -38,6 +38,7 @@ pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomai
     NativeRestoreDurableDomainV1::SemanticReceipts,
     NativeRestoreDurableDomainV1::IntegrityIncidents,
     NativeRestoreDurableDomainV1::AuthorityFences,
+    NativeRestoreDurableDomainV1::RetiredAuthorityFences,
     NativeRestoreDurableDomainV1::AuthorityState,
     NativeRestoreDurableDomainV1::AuthorityPrincipals,
     NativeRestoreDurableDomainV1::AuthorityRunners,
@@ -53,6 +54,7 @@ pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomai
     NativeRestoreDurableDomainV1::DeploymentIdentityMetadata,
     NativeRestoreDurableDomainV1::DeploymentPackIdentities,
     NativeRestoreDurableDomainV1::DeploymentResourceIdentities,
+    NativeRestoreDurableDomainV1::DeploymentResourceBlobs,
 ];
 
 /// One exact durable ledger domain captured on both sides of a native restore.
@@ -91,6 +93,8 @@ pub enum NativeRestoreDurableDomainV1 {
     IntegrityIncidents,
     /// Core authority witnesses and their active generation fences.
     AuthorityFences,
+    /// Exact archived source authority fences retained across migration.
+    RetiredAuthorityFences,
     /// Singleton authority initialization state.
     AuthorityState,
     /// Durable principals, statuses, and generations.
@@ -121,6 +125,8 @@ pub enum NativeRestoreDurableDomainV1 {
     DeploymentPackIdentities,
     /// Exact installed resource identity rows.
     DeploymentResourceIdentities,
+    /// Exact content-addressed resource payload bytes and their digests.
+    DeploymentResourceBlobs,
 }
 
 impl NativeRestoreDurableDomainV1 {
@@ -144,6 +150,7 @@ impl NativeRestoreDurableDomainV1 {
             Self::SemanticReceipts => "semantic_receipts",
             Self::IntegrityIncidents => "integrity_incidents",
             Self::AuthorityFences => "authority_fences",
+            Self::RetiredAuthorityFences => "retired_authority_fences",
             Self::AuthorityState => "authority_state",
             Self::AuthorityPrincipals => "authority_principals",
             Self::AuthorityRunners => "authority_runners",
@@ -159,6 +166,7 @@ impl NativeRestoreDurableDomainV1 {
             Self::DeploymentIdentityMetadata => "deployment_identity_metadata",
             Self::DeploymentPackIdentities => "deployment_pack_identities",
             Self::DeploymentResourceIdentities => "deployment_resource_identities",
+            Self::DeploymentResourceBlobs => "deployment_resource_blobs",
         }
     }
 }
@@ -1053,6 +1061,14 @@ fn check_exact_canonical_evidence(
     limits: VerifierLimits,
 ) {
     for room in &evidence.image.rooms {
+        if report.rooms.get(&room.room_id) == Some(&RoomDispositionV1::IsolatedPreExisting) {
+            // The base verifier already bound an isolated Room's source and
+            // restored raw-byte digests plus its exact integrity generation.
+            // Decoding synthetic canonical records here would contradict the
+            // isolation contract and could turn preserved corruption into a
+            // deployment-wide readiness failure.
+            continue;
+        }
         if !exact_canonical_evidence(room, limits) {
             block(
                 report,
@@ -1568,6 +1584,27 @@ mod tests {
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.disposition == crate::DiagnosticDispositionV1::PermittedPreExistingIsolation
         }));
+    }
+
+    #[test]
+    fn isolated_raw_bytes_do_not_require_semantic_canonical_records() {
+        let mut isolated = room("old-isolated", IntegrityStatusV1::Quarantined);
+        isolated.records.clear();
+        isolated.materialization.core_state_bytes.clear();
+        isolated.materialization.activity_state_bytes.clear();
+        isolated.materialization.authoritative_state_bytes.clear();
+        let evidence = evidence(vec![room("healthy", IntegrityStatusV1::Healthy), isolated]);
+        let report = verify_native_restore(&evidence, VerifierLimits::default());
+        assert!(report.is_ready());
+        assert_eq!(
+            report.rooms.get("old-isolated"),
+            Some(&crate::RoomDispositionV1::IsolatedPreExisting)
+        );
+        assert!(
+            !report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "native_restore_canonical_evidence_mismatch"
+            })
+        );
     }
 
     #[test]

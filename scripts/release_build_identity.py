@@ -26,6 +26,7 @@ BUILD_IDENTITY_SCHEMA = "worldstream/release-build-identity/v2"
 REPOSITORY = "https://github.com/imom39a/worldstream"
 WORKFLOW_PATH = ".github/workflows/compatibility-gates.yml"
 BUILD_TYPE_PATH = "docs/build-types/pre-sign-subject-aggregation-v3.md"
+BUILD_TYPE_SHA256 = "578384b30ac3e5de2fd62f1054f276585406bf305f79fc6a1d7ad2bc2c1ab089"
 BUILD_TYPE_EXAMPLE_PATH = (
     "docs/build-types/pre-sign-subject-aggregation-v3.example.json"
 )
@@ -121,7 +122,43 @@ PINNED_MATERIAL_PATHS = (
     "packaging/oci/Dockerfile",
     "packaging/oci/entrypoint.sh",
 )
-PROVENANCE_MATERIAL_PATHS: tuple[str, ...] = ()
+PROVENANCE_MATERIAL_PATHS = (
+    "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs",
+    "examples/heist/wave10_live/browser_trace_init.js",
+    "examples/heist/wave10_live/run_absent_broker_live.py",
+    "examples/heist/wave10_live/run_browser_story.py",
+    "examples/heist/wave10_live/seed_browser_room.py",
+    "scripts/cdp-browser.py",
+    "scripts/daemon-transition-soak.py",
+    "scripts/daemon-transition-soak.sh",
+    "scripts/gates-install-postgres.ps1",
+    "scripts/gates-install-tools.ps1",
+    "scripts/gates-install-tools.sh",
+    "scripts/install-pinned-browser.py",
+    "scripts/kill-point-matrix.py",
+    "scripts/kill-point-smoke.sh",
+    "scripts/macos-source-quickstart.sh",
+    "scripts/manifest-evidence-wave6.py",
+    "scripts/native-package-smoke.py",
+    "scripts/oci-runtime-smoke.sh",
+    "scripts/postgres-harness.sh",
+    "scripts/postgres-live-evidence.sh",
+    "scripts/postgres-native-restore-smoke.sh",
+    "scripts/postgres-packaged-acceptance.py",
+    "scripts/postgres-transfer-smoke.sh",
+    "scripts/reference-evidence-project.py",
+    "scripts/reference-evidence.py",
+    "scripts/reference-target-workload.py",
+    "scripts/release-evidence-produce-conformance.py",
+    "scripts/release-evidence-produce-failure-soak.py",
+    "scripts/release-evidence-produce-platform.py",
+    "scripts/release-evidence-produce-reference.py",
+    "scripts/release-package-extract.py",
+    "scripts/release-platform-diagnostic.py",
+    "scripts/soak-smoke.sh",
+    "scripts/verify-secret-absence.py",
+    "web/console/live-browser-story.sh",
+)
 SOURCE_ENTRY_PATHS = tuple(
     dict.fromkeys((*PINNED_MATERIAL_PATHS, *PROVENANCE_MATERIAL_PATHS))
 )
@@ -189,29 +226,93 @@ TOOL_ENVIRONMENT = {
 }
 PAYLOAD_STEP_CONTRACTS = {
     ("native", "Build Linux release archive"): {
-        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}",
+        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}",
         "shell": "bash",
-        "sha256": "78d5b2d0e9156a69177d70b5af47f6a5412a864e5f3b5d27c4dc1ff54732a650",
+        "sha256": "a6ead5dc8ff3ae176450e1b988c0007fdbc623e20314d5a420b0269d09b09a68",
     },
     ("native", "Build Windows release archive"): {
-        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}",
+        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}",
         "shell": "pwsh",
-        "sha256": "a4ab2d5a7cfbdbe001c5470bff67cc23feec96e79e4b8abf57841d71ab37e4b9",
+        "sha256": "5a5beebefc6903e2af00692392e5aeacb4d1c14250cb431e41a4e62113d55dd2",
     },
     ("native", "Build and test OCI release image"): {
-        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}",
+        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}",
         "shell": "bash",
-        "sha256": "0f7414d82c193fd98ffdbb24c2d781dcd759c08542b37a50242e19fe328948dd",
+        "sha256": "ef79203eaf2918373a2e6b02864a4f6931cd5672c513385449a5415d52f4e0a6",
     },
     ("release-evidence", "Build and verify source archive from the clean checkout"): {
-        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}",
+        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}",
         "shell": "bash",
-        "sha256": "497edf59383271a810fc657264a7b0dda3645f70667697e9a585534a5c81179f",
+        "sha256": "8866c226189412847dc9bda17156ab7dfb7826d89b6686f85cc23714fd6b0a47",
     },
 }
 OCI_SETUP_STEP_SHA256 = (
-    "3b9c521d50676c35c381996bf93439fbae58e8c7764f33c38f5513c1e6fbe587"
+    "cdb0942efb3e5fe8953c93c031a215c0469e99342c679d1494cfa497591f59bd"
 )
+RELEASE_SIGNING_JOB_SHA256 = (
+    "c0973cf5130c29448b45e1e7ed51d35095fea1bbe72dff0024bbc7ce76d2f375"
+)
+RELEASE_MANIFEST_SIGNING_JOB_SHA256 = (
+    "a4d5b0b347e13e1d9700d4e01d15cacb90a754679b5bcff23af9d0e67841b13c"
+)
+SLSA_EXECUTION_STEP_CONTRACTS = {
+    (
+        "native",
+        "Enable pinned pnpm",
+    ): "04a8bddfb902bae0c34c6012ad5be6aa500c60d6b17b06ba3fb1b96247aca020",
+    (
+        "native",
+        "Build release UI inputs",
+    ): "6e5c4173e78a1ee766f5df0ac9e8cd45a195244a22d5817a02bd8cd519398411",
+    (
+        "macos-source",
+        "Enable pinned pnpm",
+    ): "caa94e3d0e4d39bb6a61e39b7b431f3327eb30a481288e7796b3c42a4cc76260",
+    (
+        "macos-source",
+        "Install exact path-safe Chrome for Testing",
+    ): "e4ce4cee07cd45eba37c93c793848721ced5a8d84c8bd55e83f76529e796a6c6",
+    (
+        "macos-source",
+        "Run source-only quickstart",
+    ): "cb42abaff32a131b2b838c069f5ffa08cd9a62032048b755c645460cc683aa79",
+    (
+        "macos-source-release",
+        "Produce typed dual-architecture macOS source evidence",
+    ): "5e1f734c1d9b30be7f3b546276aa9c10afdbf51bc38254fe2684523a8a39ab72",
+    (
+        "packaged-backend-release",
+        "Install exact path-safe Chrome for Testing",
+    ): "3881fea4e9c08835f712f376d6c683856ba89ef5b444af57b46fffc9501038b1",
+    (
+        "packaged-backend-release",
+        "Run package-bound browser Heist plus six backend cells",
+    ): "07e831c71a0190d0caf723b9445dba2ace9c09948168509e4fce45547b39b452",
+    (
+        "reference-performance-release",
+        "Build the source-bound snapshot-tail fixture generator",
+    ): "059382dd81d73fbb11cbe363d1033ce546d1ded4ff0d17d6c5026adc21e76e6f",
+    (
+        "reference-performance-release",
+        "Run the exact frozen packaged reference-target workload",
+    ): "7ef0a5d04b77cd3301b1fd10c1900b6a568ea50a667497a0b0706e8d52a4fa93",
+    (
+        "reference-performance-release",
+        "Project exact raw measurements into six normalized reports",
+    ): "74375313dd9ee2d37eac7fd9e07fa8d102bcb656657a4e370e5c3f031889747e",
+    (
+        "reference-performance-release",
+        "Produce typed measured non-SLA reference evidence",
+    ): "a968f4d1315b4f08683e4bac17aed09482987203a4e705af59d7496bbf52e34b",
+    (
+        "release-evidence",
+        "Produce and verify unsigned subject inventory, SPDX SBOM, and SLSA provenance",
+    ): "46002e396c56b9b92b80f156c0db290160018bd0f63ef1f6ff42cd339a064b25",
+    (
+        "release-verify",
+        "Enable pinned pnpm and install byte-pinned scanners",
+    ): "3979a4f348b8c7575668d02937f5ac690ba1a7cec7979301fec84d5680fd22d2",
+}
 EVIDENCE_UPSTREAM_JOBS = {
     "manifest-contract": ("conformance-release", ("ubuntu-24.04",)),
     "sqlite-conformance": ("conformance-release", ("ubuntu-24.04",)),
@@ -622,6 +723,7 @@ def pinned_materials_from_root(root: Path) -> dict[str, str]:
 
 
 def pinned_materials_from_source(entries: dict[str, bytes]) -> dict[str, str]:
+    validate_build_type_material(entries)
     materials: dict[str, str] = {}
     for relative in PINNED_MATERIAL_PATHS:
         content = entries.get(relative)
@@ -629,6 +731,16 @@ def pinned_materials_from_source(entries: dict[str, bytes]) -> dict[str, str]:
             reject(f"source archive is missing pinned build material {relative}")
         materials[relative] = "sha256:" + sha256_bytes(content)
     return materials
+
+
+def validate_build_type_material(entries: dict[str, bytes]) -> None:
+    """Require the active immutable build-type definition's exact published bytes."""
+
+    content = entries.get(BUILD_TYPE_PATH)
+    if not isinstance(content, bytes) or sha256_bytes(content) != BUILD_TYPE_SHA256:
+        reject(
+            "active build-type definition differs from its immutable published bytes"
+        )
 
 
 def toolchains_from_materials(entries: dict[str, bytes]) -> dict[str, dict[str, str]]:
@@ -1294,6 +1406,7 @@ def build_identity(
             "release build identity is missing pinned source materials: "
             + ", ".join(missing_materials or ["empty material"])
         )
+    validate_build_type_material(source_entries)
     materials = {
         relative: "sha256:" + sha256_bytes(source_entries[relative])
         for relative in PINNED_MATERIAL_PATHS
@@ -2015,7 +2128,7 @@ def _third_party_notice_sections(content: bytes) -> set[str]:
     pattern = re.compile(
         rb"===== BEGIN NOTICE (sha256:[0-9a-f]{64}) =====\n"
         rb"(.*?)"
-        rb"===== END NOTICE \1 =====\n\n",
+        rb"===== END NOTICE \1 =====\n(?:(?=\Z)|\n)",
         re.DOTALL,
     )
     cursor = len(prefix)
@@ -2949,6 +3062,23 @@ def workflow_named_step(job_block: str, name: str) -> str:
     return matches[0]
 
 
+def workflow_job_mapping_lines(job_block: str, key: str) -> list[str]:
+    """Return one exact job-level mapping without accepting duplicate aliases."""
+
+    marker = f"    {key}:"
+    lines = job_block.splitlines()
+    positions = [index for index, line in enumerate(lines) if line == marker]
+    if len(positions) != 1:
+        reject(f"release workflow job mapping {key!r} is missing or duplicated")
+    result = [marker]
+    for line in lines[positions[0] + 1 :]:
+        if line.strip() and len(line) - len(line.lstrip()) <= 4:
+            break
+        if line.strip() and not line.lstrip().startswith("#"):
+            result.append(line)
+    return result
+
+
 def validate_payload_step_contracts(blocks: dict[str, str]) -> None:
     """Bind complete payload producer steps, including control-flow structure."""
 
@@ -2980,13 +3110,22 @@ def validate_payload_step_contracts(blocks: dict[str, str]) -> None:
     if (
         setup_top_level
         != [
-            "        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}",
+            "        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}",
             "        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0",
             "        with:",
         ]
         or sha256_bytes(setup.strip().encode("utf-8")) != OCI_SETUP_STEP_SHA256
     ):
         reject("release workflow OCI setup step full block drifted")
+
+
+def validate_slsa_execution_step_contracts(blocks: dict[str, str]) -> None:
+    """Bind steps whose execution and tool inputs are asserted by provenance."""
+
+    for (job, name), expected_sha256 in SLSA_EXECUTION_STEP_CONTRACTS.items():
+        step = workflow_named_step(blocks[job], name)
+        if sha256_bytes(step.strip().encode("utf-8")) != expected_sha256:
+            reject(f"release workflow provenance execution step {name!r} drifted")
 
 
 def workflow_literal_block(step: str, key: str) -> list[str]:
@@ -3083,9 +3222,14 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         "failure-soak-release": self_hosted,
         "reference-performance-release": self_hosted,
         "release-evidence": "runs-on: ubuntu-24.04",
+        "release-signing": "runs-on: ubuntu-24.04",
+        "release-finalize": "runs-on: ubuntu-24.04",
+        "release-manifest-signing": "runs-on: ubuntu-24.04",
+        "release-verify": "runs-on: ubuntu-24.04",
     }
     blocks = {job: workflow_job_block(workflow, job) for job in expected_routes}
     validate_payload_step_contracts(blocks)
+    validate_slsa_execution_step_contracts(blocks)
     for job, route in expected_routes.items():
         expected_line = f"    {route}"
         observed = [
@@ -3095,7 +3239,7 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
             reject(f"release workflow producer route drifted for job {job}")
     release_condition = (
         "    if: ${{ github.event_name == 'workflow_dispatch' "
-        "&& inputs.release == true }}"
+        "&& inputs.release == true && github.ref == 'refs/heads/main' }}"
     )
     for job in (
         "macos-source-release",
@@ -3104,9 +3248,61 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         "failure-soak-release",
         "reference-performance-release",
         "release-evidence",
+        "release-signing",
+        "release-finalize",
+        "release-manifest-signing",
+        "release-verify",
     ):
         if blocks[job].splitlines().count(release_condition) != 1:
             reject(f"release workflow producer condition drifted for job {job}")
+    for line in workflow.splitlines():
+        if (
+            "${{" in line
+            and "inputs.release" in line
+            and line.strip() != "WORLDSTREAM_RELEASE_INPUT: ${{ inputs.release }}"
+            and "github.ref == 'refs/heads/main'" not in line
+        ):
+            reject("release workflow release-only expression is not main-ref bound")
+    for job in (
+        "packaged-backend-release",
+        "failure-soak-release",
+        "reference-performance-release",
+        "release-signing",
+        "release-manifest-signing",
+    ):
+        if blocks[job].splitlines().count("    environment: worldstream-release") != 1:
+            reject(f"release workflow protected environment drifted for job {job}")
+    expected_permissions = {
+        "release-evidence": ["    permissions:", "      contents: read"],
+        "release-signing": [
+            "    permissions:",
+            "      contents: read",
+            "      id-token: write",
+        ],
+        "release-finalize": ["    permissions:", "      contents: read"],
+        "release-manifest-signing": [
+            "    permissions:",
+            "      contents: read",
+            "      id-token: write",
+        ],
+        "release-verify": ["    permissions:", "      contents: read"],
+    }
+    for job, expected in expected_permissions.items():
+        if workflow_job_mapping_lines(blocks[job], "permissions") != expected:
+            reject(f"release workflow permissions drifted for job {job}")
+    id_token_lines = [
+        line.strip()
+        for line in workflow.splitlines()
+        if re.fullmatch(r"\s*id-token\s*:.*", line)
+    ]
+    if id_token_lines != ["id-token: write", "id-token: write"]:
+        reject("release workflow OIDC capability is not exclusive to both signers")
+    for job, expected_sha256 in (
+        ("release-signing", RELEASE_SIGNING_JOB_SHA256),
+        ("release-manifest-signing", RELEASE_MANIFEST_SIGNING_JOB_SHA256),
+    ):
+        if sha256_bytes(blocks[job].strip().encode("utf-8")) != expected_sha256:
+            reject(f"release workflow minimal signing job drifted for {job}")
     release_lines_exact = blocks["release-evidence"].splitlines()
     if (
         release_lines_exact.count("    env:") != 1
@@ -3270,6 +3466,7 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         ("SOURCE_DATE_EPOCH=0 scripts/package-release.sh", True, 1),
         ("--target source", True, 2),
         ('"$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py', True, 1),
+        ("--prepare-unsigned", True, 1),
     ):
         observed = sum(
             line == command or (allow_arguments and line.startswith(command + " "))
@@ -3296,6 +3493,35 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
     ):
         reject("release workflow provenance interpreter route drifted")
 
+    finalize_lines = workflow_run_lines(blocks["release-finalize"])
+    finalize_runs = "\n".join(finalize_lines)
+    for command, count in (
+        ('"$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py', 1),
+        ('"$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-evidence-collect.py', 1),
+        ("scripts/release-evidence-assemble.sh", 2),
+    ):
+        if sum(line.startswith(command) for line in finalize_lines) != count:
+            reject(f"release workflow final assembly command drifted: {command}")
+    for flag in (
+        "--finalize-signed",
+        "--check-inputs",
+        "--output dist/release-manifest.json",
+    ):
+        if finalize_runs.count(flag) != 1:
+            reject(f"release workflow final assembly flag drifted: {flag}")
+    verify_lines = workflow_run_lines(blocks["release-verify"])
+    if (
+        verify_lines.count("scripts/verify-release.sh dist") != 1
+        or sum(
+            line.startswith(
+                "uv run --python 3.14.7 --no-project python scripts/gates.py release"
+            )
+            for line in verify_lines
+        )
+        != 1
+    ):
+        reject("release workflow final no-OIDC verification route drifted")
+
     producer_jobs = (
         "native",
         "macos-source",
@@ -3305,6 +3531,8 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         "failure-soak-release",
         "reference-performance-release",
         "release-evidence",
+        "release-finalize",
+        "release-verify",
     )
     producer_run_lines: list[str] = []
     for job in producer_jobs:
@@ -3900,6 +4128,17 @@ def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
                 identities["source-archive"]["materials"].items()
             )
         ),
+        *(
+            {
+                "uri": f"file:{relative}",
+                "digest": {
+                    "sha256": _build_type_example_digest(
+                        f"provenance-material:{relative}"
+                    ).removeprefix("sha256:")
+                },
+            }
+            for relative in PROVENANCE_MATERIAL_PATHS
+        ),
         *workflow_action_dependencies(source_entries),
     ]
     for image in (
@@ -4010,6 +4249,7 @@ def validate_build_type_v3_example(
 ) -> None:
     """Require the checked-in example to be the exact complete v3 graph."""
 
+    validate_build_type_material(source_entries)
     if not isinstance(value, dict) or set(value) != {
         "_type",
         "subject",

@@ -15,7 +15,7 @@ pub use bearer::{
 };
 pub use envelope::{
     EnvelopeError, MAX_ACTION_PAYLOAD_BYTES, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, ProtocolEnvelope,
-    VersionedEnvelope, decode_envelope,
+    VersionedEnvelope, WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 pub use error::{ErrorBody, ErrorCode, ErrorEnvelope, ProtocolErrorBody};
 pub use id::{IdParseError, RequestId, UlidString};

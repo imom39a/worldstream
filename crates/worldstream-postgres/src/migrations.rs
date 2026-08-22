@@ -31,6 +31,10 @@ pub const DEPLOYMENT_METADATA_MIGRATION_ID: &str = "0007-deployment-metadata-v1"
 pub const DEPLOYMENT_IDENTITY_MIGRATION_ID: &str = "0008-deployment-identities-v1";
 /// The forward migration that installs the production Core authority facts.
 pub const AUTHORITY_FACTS_MIGRATION_ID: &str = "0009-authority-facts-v1";
+/// The forward migration that retains exact resource bytes and archived
+/// source authority-fence evidence for complete transfer/restore parity.
+pub const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID: &str =
+    "0010-transfer-recovery-completeness-v1";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,6 +187,12 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "worldstream_deployment_resource_identities(",
     "resource_kind:text:NO,resource_identity:text:NO,size_bytes:bigint:NO,",
     "resource_digest:bytea:NO);",
+    "worldstream_deployment_resource_blobs(",
+    "resource_kind:text:NO,resource_identity:text:NO,resource_bytes:bytea:NO,",
+    "resource_digest:bytea:NO);",
+    "worldstream_retired_authority_fences_v1(",
+    "witness_id:text:NO,authenticated_principal:text:NO,generation:bigint:NO,",
+    "scope_revocation_bytes:bytea:NO,scope_revocation_hash:bytea:NO,active:boolean:NO);",
 );
 
 /// Computes the release-published schema fingerprint.
@@ -193,7 +203,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 9] {
+pub fn migration_history() -> [MigrationDescriptor; 10] {
     [
         MigrationDescriptor {
             version: 1,
@@ -239,6 +249,11 @@ pub fn migration_history() -> [MigrationDescriptor; 9] {
             version: 9,
             id: AUTHORITY_FACTS_MIGRATION_ID,
             sql: MIGRATION_0009_SQL,
+        },
+        MigrationDescriptor {
+            version: 10,
+            id: TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
+            sql: MIGRATION_0010_SQL,
         },
     ]
 }
@@ -568,6 +583,36 @@ CREATE TRIGGER worldstream_authority_receipts_immutable_update
     FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
 CREATE TRIGGER worldstream_authority_audit_immutable_update
     BEFORE UPDATE OR DELETE ON worldstream_authority_audit
+    FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
+";
+
+/// Retains exact content-addressed deployment bytes and the legacy authority
+/// fence rows that remain durable in a migrated SQLite source. These are
+/// immutable transfer/restore facts, not mutable runtime authority state.
+pub const MIGRATION_0010_SQL: &str = r"
+CREATE TABLE worldstream_deployment_resource_blobs (
+    resource_kind text NOT NULL CHECK (resource_kind IN ('artifact', 'codec', 'schema')),
+    resource_identity text NOT NULL,
+    resource_bytes bytea NOT NULL CHECK (octet_length(resource_bytes) <= 16777216),
+    resource_digest bytea NOT NULL CHECK (octet_length(resource_digest) = 32),
+    PRIMARY KEY (resource_kind, resource_identity),
+    FOREIGN KEY (resource_kind, resource_identity)
+        REFERENCES worldstream_deployment_resource_identities(resource_kind, resource_identity)
+        ON DELETE RESTRICT
+);
+CREATE TABLE worldstream_retired_authority_fences_v1 (
+    witness_id text PRIMARY KEY,
+    authenticated_principal text NOT NULL,
+    generation bigint NOT NULL CHECK (generation BETWEEN 1 AND 9007199254740991),
+    scope_revocation_bytes bytea NOT NULL,
+    scope_revocation_hash bytea NOT NULL CHECK (octet_length(scope_revocation_hash) = 32),
+    active boolean NOT NULL
+);
+CREATE TRIGGER worldstream_deployment_resource_blobs_immutable
+    BEFORE UPDATE OR DELETE ON worldstream_deployment_resource_blobs
+    FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
+CREATE TRIGGER worldstream_retired_authority_fences_immutable
+    BEFORE UPDATE OR DELETE ON worldstream_retired_authority_fences_v1
     FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
 ";
 

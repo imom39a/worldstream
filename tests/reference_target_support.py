@@ -106,6 +106,14 @@ def target_report(
             manifest_toml, "worldstream/storage-compatibility-manifest/toml"
         ),
         "manifest_json": producer.file_binding(manifest_json, manifest["schema"]),
+        "snapshot_fixture_binary": producer.file_binding(
+            daemon, "worldstream/reference-snapshot-tail-fixture-elf/v1"
+        ),
+        "snapshot_fixture_source": producer.file_binding(
+            ROOT
+            / "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs",
+            "worldstream/reference-snapshot-tail-fixture-source/v1",
+        ),
     }
     target_environment = {
         "platform": {
@@ -256,34 +264,47 @@ def target_report(
             "snapshot_tail_recovery",
             {
                 "requested_transition_count": 100_000,
-                "action_attempt_count": 33,
-                "accepted_transition_count": 32,
-                "newest_snapshot_room_seq": None,
-                "snapshot_lag_transitions": None,
-                "recovery_ms": None,
-                "projection_hash_equal": None,
-                "pack": {
-                    "id": "worldstream.counter",
-                    "version": "2.0.0",
-                    "digest": "blake3:1c5f75068220f65f9017a062dbe40203c540108b572284d9446a329914008a92",
-                    "configuration": {"initial_value": 0, "maximum_value": 16},
-                    "accepted_action_sequence": {
-                        "increment": 16,
-                        "private_ack": 16,
-                    },
+                "accepted_transition_count": 100_000,
+                "setup": {
+                    "boundary": "excluded_before_recovery_stopwatch",
+                    "mode": "source_bound_deterministic_production_core_commits",
+                    "source_revision": "1" * 40,
+                    "generator_source_sha256": bindings["snapshot_fixture_source"][
+                        "sha256"
+                    ],
+                    "generator_binary_sha256": bindings["snapshot_fixture_binary"][
+                        "sha256"
+                    ],
+                    "generator_report_sha256": "sha256:" + "2" * 64,
+                    "transition_kind": (
+                        "alternating_authorized_membership_suspend_resume"
+                    ),
+                    "setup_elapsed_ms": 123_456,
                 },
-                "terminal_rejection_code": "counter_limit_reached",
-                "recovery_measurement_status": (
-                    "not_reachable_due_to_frozen_pack_semantics"
-                ),
+                "snapshot": {
+                    "head_room_seq": 100_000,
+                    "newest_snapshot_room_seq": 99_998,
+                    "snapshot_lag_transitions": 2,
+                },
+                "recovery": {
+                    "boundary": (
+                        "fresh_packaged_daemon_process_start_through_verified_current_projection"
+                    ),
+                    "daemon_binary_sha256": distribution["binary_sha256"],
+                    "recovery_ms": 4_250.0,
+                    "before_complete_head_sha256": "sha256:" + "3" * 64,
+                    "after_complete_head_sha256": "sha256:" + "3" * 64,
+                    "complete_head_equal": True,
+                    "before_projection_hash": "blake3:" + "4" * 64,
+                    "after_projection_hash": "blake3:" + "4" * 64,
+                    "projection_hash_equal": True,
+                },
             },
             {
                 "minimum_room_transition_count": 100_000,
                 "maximum_snapshot_lag_transitions": 250,
                 "maximum_recovery_ms": 5_000,
             },
-            completed=False,
-            met=False,
         ),
         row(
             "repeated_forced_termination_no_acknowledged_loss",
@@ -307,10 +328,12 @@ def target_report(
         "performance_class": "reference_non_release",
         "execution": {
             "mode": "package_bound_linux_reference",
-            "workload_source": "packaged_worldstreamd_public_api",
+            "workload_source": (
+                "packaged_worldstreamd_public_api_plus_source_bound_fixture_setup"
+            ),
             "storage_profile": "sqlite-bundled",
             "connection_mode": "embedded",
-            "public_api_only": True,
+            "public_api_only": False,
             "simulated": False,
             "scaled": False,
             "profile_args_locked": True,
@@ -363,11 +386,5 @@ def target_report(
                 "database_bytes_after_workload": 64 * 1024**2,
             },
         },
-        "limitations": [
-            {
-                "code": "frozen_counter_v2_semantic_ceiling",
-                "dimension": "snapshot_tail_recovery",
-                "publishable_non_sla_target_miss": True,
-            }
-        ],
+        "limitations": [],
     }

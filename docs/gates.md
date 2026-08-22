@@ -18,7 +18,8 @@ PowerShell uses `scripts/gates.ps1` with the same arguments. `fast` is intended
 for the local hook and checks manifest/source drift, formatting, focused Rust
 lint and tests (including goldens), lock resolution, and tracked-file secret
 patterns. `pre-push` adds the full Rust, Python SDK, UI, operator smoke, and
-bundled-SQLite checks. `--strict` turns incomplete optional checks into
+bundled-SQLite checks; it has a 1,200-second hard deadline in addition to its
+360-second warm and 900-second cold targets. `--strict` turns incomplete optional checks into
 failures; without it, a missing optional dependency is printed as
 `SKIP_INCOMPLETE`.
 
@@ -80,13 +81,15 @@ and absent-Broker Heist across SQLite and pinned PostgreSQL. The separately
 certified reference job then runs the archive's Python SDK against the packaged
 SQLite daemon for the frozen 10,000-Room, 1,000-WebSocket, 1,800-second target
 attempt. It binds—but never relabels as same-host—the independently produced
-acceptance, soak, and kill reports. The finite Counter v2 history attempt is
-published honestly as a measured non-SLA miss after 32 accepted Actions and the
-33rd `counter_limit_reached` rejection; it is not substituted with simulated or
-scaled data. The release job downloads the resulting typed producer artifacts
-by exact path, generates the reviewed checksums/SBOM/provenance, assembles the
-detached manifest, installs a commit-pinned official Cosign installer,
-keyless-signs with the release job's OIDC token, and runs `verify-release`. If
+acceptance, soak, and kill reports. A source-bound production-Core fixture sets
+up one Room with exactly 100,000 Transitions and a two-Transition snapshot tail;
+only fresh packaged-daemon restart and verified Projection recovery are timed.
+The unsigned aggregation job downloads the resulting typed producer artifacts
+by exact path and generates the reviewed checksums/SBOM/provenance. A
+checkout-free protected signer uses OIDC only to sign that closed inventory; a
+no-OIDC finalizer assembles the detached manifest, a second checkout-free
+protected signer signs only that manifest, and a no-OIDC verifier runs
+`verify-release`. If
 any producer or byte binding is absent, its required job or collector stops;
 package reports and generic exit codes never become release evidence. The macOS
 job remains source-only quickstart evidence on both Apple Silicon and Intel.

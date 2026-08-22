@@ -125,12 +125,16 @@ The PowerShell 7.4+ equivalents are `scripts/verify-local.ps1` and `scripts/inst
 [`compatibility.toml`](compatibility.toml) and its deterministic JSON mirror agree.
 
 On macOS 15+ with APFS and the pinned toolchain active, the source-only
-quickstart builds and tests the workspace, launches an ephemeral loopback
-`sqlite-bundled` daemon, verifies health, readiness, and version, and then
-stops it:
+quickstart builds and tests the workspace, then drives the complete six-phase
+Heist reference-client story through the source-built `worldstreamd` and
+production UI in an exact Chrome-for-Testing browser. It verifies stale-Head
+rejection/resync, typed actions, privacy, replay, and the final DOM reveal in
+under ten minutes. The bootstrap workflow safely extracts and supplies the
+architecture-specific pinned browser; use the command help to see the same
+explicit local identity inputs:
 
 ```sh
-scripts/macos-source-quickstart.sh
+scripts/macos-source-quickstart.sh --help
 ```
 
 It creates no macOS release archive and makes no signing or notarization

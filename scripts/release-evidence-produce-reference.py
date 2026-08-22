@@ -28,6 +28,9 @@ AGGREGATOR_PATH = ROOT / "scripts/reference-evidence.py"
 PACKAGED_ACCEPTANCE_PATH = ROOT / "scripts/postgres-packaged-acceptance.py"
 PROJECTOR_PATH = ROOT / "scripts/reference-evidence-project.py"
 REFERENCE_TARGET_RUNNER_PATH = ROOT / "scripts/reference-target-workload.py"
+REFERENCE_TARGET_FIXTURE_SOURCE_PATH = (
+    ROOT / "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs"
+)
 SOURCE_ID = "reference-performance"
 EVIDENCE_ID = "reference-performance-per-backend"
 EXPECTED_KINDS = frozenset({"counter", "heist", "sqlite", "postgres", "soak", "target"})
@@ -244,6 +247,9 @@ def verify_packaged_distribution(
             "manifest_sha256",
             "manifest_json_sha256",
             "manifest_toml_sha256",
+            "source_revision",
+            "build_identity_sha256",
+            "observed_build_environment",
         }
         and report_identity.get("target") == "linux-x86_64"
         and report_identity.get("version") == manifest["release_candidate"],
@@ -274,6 +280,26 @@ def verify_packaged_distribution(
             )
             archived_daemon = verified_daemon.read_bytes()
             archived_control = verified_control.read_bytes()
+            with tarfile.open(archive, "r:gz") as package:
+                build_member_name = (
+                    f"{package_binding['archive_root']}/"
+                    f"{PACKAGED_ACCEPTANCE.BUILD_IDENTITY.BUILD_METADATA_PATH}"
+                )
+                build_members = [
+                    member
+                    for member in package.getmembers()
+                    if member.name == build_member_name and member.isfile()
+                ]
+                require(
+                    len(build_members) == 1,
+                    "fresh package must contain one exact build identity",
+                )
+                archived_build_raw = PACKAGED_ACCEPTANCE._member_bytes(
+                    package, build_members[0]
+                )
+                archived_build = PACKAGED_ACCEPTANCE._strict_json(
+                    archived_build_raw, "package_build_identity_invalid"
+                )
     except (PACKAGED_ACCEPTANCE.LaneFailure, OSError) as error:
         raise ReferenceError(
             f"cannot independently verify fresh package archive: {error}"
@@ -285,6 +311,11 @@ def verify_packaged_distribution(
     )
     daemon_digest = SHA256_PREFIX + hashlib.sha256(daemon_bytes).hexdigest()
     control_digest = SHA256_PREFIX + hashlib.sha256(archived_control).hexdigest()
+    build_source = archived_build.get("source")
+    build_target = archived_build.get("target")
+    build_revision = (
+        build_source.get("revision") if isinstance(build_source, dict) else None
+    )
     require(
         package_binding.get("identity", {}).get("manifest_json_sha256")
         == expected_manifest_json
@@ -292,11 +323,35 @@ def verify_packaged_distribution(
         == expected_manifest_toml,
         "archived compatibility pair differs from the verified root manifests",
     )
+    require(
+        archived_build.get("schema")
+        == PACKAGED_ACCEPTANCE.BUILD_IDENTITY.BUILD_IDENTITY_SCHEMA
+        and build_source
+        == {
+            "repository": PACKAGED_ACCEPTANCE.BUILD_IDENTITY.REPOSITORY,
+            "revision": build_revision,
+        }
+        and isinstance(build_revision, str)
+        and len(build_revision) == 40
+        and all(character in "0123456789abcdef" for character in build_revision)
+        and isinstance(build_target, dict)
+        and build_target.get("profile") == "linux-x86_64"
+        and archived_build.get("manifest_sha256")
+        == SHA256_PREFIX + expected_manifest_json
+        and isinstance(archived_build.get("observed_build_environment"), dict)
+        and report_identity.get("source_revision") == build_revision
+        and report_identity.get("build_identity_sha256")
+        == SHA256_PREFIX + hashlib.sha256(archived_build_raw).hexdigest()
+        and report_identity.get("observed_build_environment")
+        == archived_build["observed_build_environment"],
+        "fresh package source revision or build identity is not exactly bound",
+    )
     distribution = {
         "packaged_artifact_bound": True,
         "reference_class": "fresh_packaged_linux_x86_64",
         "target": "linux-x86_64",
         "version": manifest["release_candidate"],
+        "source_revision": build_revision,
         "archive_sha256": archive_digest,
         "archive_size_bytes": archive.stat().st_size,
         "package_report_sha256": sha256(package_report_path),
@@ -490,6 +545,7 @@ def verify_packaged_acceptance(
             "cells",
             "comparison",
             "package_binding",
+            "browser_story",
             "performance",
             "cleanup",
             "privacy",
@@ -500,8 +556,23 @@ def verify_packaged_acceptance(
         and report.get("release_evidence") is True
         and report.get("secrets_emitted") is False
         and report.get("cleanup") == "pass",
-        "packaged backend acceptance is not a complete releasable six-cell report",
+        "packaged backend acceptance is not a complete releasable six-cell plus browser report",
     )
+    browser_story = report.get("browser_story")
+    require(
+        isinstance(browser_story, dict),
+        "packaged backend acceptance browser story is missing",
+    )
+    try:
+        PACKAGED_ACCEPTANCE._validate_browser_story(
+            browser_story,
+            expected_binding,
+            PACKAGED_ACCEPTANCE.PINNED_BROWSER_IDENTITY,
+        )
+    except PACKAGED_ACCEPTANCE.LaneFailure as error:
+        raise ReferenceError(
+            f"packaged backend acceptance browser story failed validation: {error}"
+        ) from error
     verify_packaged_privacy(report.get("privacy"))
     require(
         report.get("provider")
@@ -861,10 +932,11 @@ def validate_reference_target(
             "runner_sha256",
         }
         and execution.get("mode") == "package_bound_linux_reference"
-        and execution.get("workload_source") == "packaged_worldstreamd_public_api"
+        and execution.get("workload_source")
+        == "packaged_worldstreamd_public_api_plus_source_bound_fixture_setup"
         and execution.get("storage_profile") == "sqlite-bundled"
         and execution.get("connection_mode") == "embedded"
-        and execution.get("public_api_only") is True
+        and execution.get("public_api_only") is False
         and execution.get("simulated") is False
         and execution.get("scaled") is False
         and execution.get("profile_args_locked") is True
@@ -995,7 +1067,7 @@ def validate_reference_target(
         )
         require(
             row["classification"] == expected_classification
-            and row["completed"] is (identifier != "snapshot_tail_recovery"),
+            and row["completed"] is True,
             f"{identifier} completion/classification is inconsistent",
         )
 
@@ -1177,34 +1249,115 @@ def validate_reference_target(
         "snapshot-tail recovery target drifted",
     )
     history_observed = history["observed"]
-    frozen_pack_miss = history["completed"] is False and history_observed == {
-        "requested_transition_count": 100_000,
-        "action_attempt_count": 33,
-        "accepted_transition_count": 32,
-        "newest_snapshot_room_seq": None,
-        "snapshot_lag_transitions": None,
-        "recovery_ms": None,
-        "projection_hash_equal": None,
-        "pack": {
-            "id": "worldstream.counter",
-            "version": "2.0.0",
-            "digest": "blake3:1c5f75068220f65f9017a062dbe40203c540108b572284d9446a329914008a92",
-            "configuration": {"initial_value": 0, "maximum_value": 16},
-            "accepted_action_sequence": {
-                "increment": 16,
-                "private_ack": 16,
-            },
-        },
-        "terminal_rejection_code": "counter_limit_reached",
-        "recovery_measurement_status": ("not_reachable_due_to_frozen_pack_semantics"),
-    }
     require(
-        frozen_pack_miss,
-        "snapshot-tail recovery is not the exact public frozen-Counter limit attempt",
+        set(history_observed)
+        == {
+            "requested_transition_count",
+            "accepted_transition_count",
+            "setup",
+            "snapshot",
+            "recovery",
+        }
+        and history_observed.get("requested_transition_count") == 100_000
+        and history_observed.get("accepted_transition_count") == 100_000,
+        "snapshot-tail recovery did not complete exactly 100,000 Transitions",
+    )
+    setup = history_observed["setup"]
+    require(
+        isinstance(setup, dict)
+        and set(setup)
+        == {
+            "boundary",
+            "mode",
+            "source_revision",
+            "generator_source_sha256",
+            "generator_binary_sha256",
+            "generator_report_sha256",
+            "transition_kind",
+            "setup_elapsed_ms",
+        }
+        and setup.get("boundary") == "excluded_before_recovery_stopwatch"
+        and setup.get("mode") == "source_bound_deterministic_production_core_commits"
+        and setup.get("source_revision") == distribution.get("source_revision")
+        and setup.get("transition_kind")
+        == "alternating_authorized_membership_suspend_resume"
+        and type(setup.get("setup_elapsed_ms")) is int
+        and setup["setup_elapsed_ms"] >= 0,
+        "snapshot-tail setup boundary or source identity is incomplete",
+    )
+    for field in (
+        "generator_source_sha256",
+        "generator_binary_sha256",
+        "generator_report_sha256",
+    ):
+        sha256_reference(setup.get(field), f"snapshot fixture {field}")
+    require(
+        setup["generator_source_sha256"]
+        == expected_bindings["snapshot_fixture_source"]["sha256"]
+        and setup["generator_binary_sha256"]
+        == expected_bindings["snapshot_fixture_binary"]["sha256"],
+        "snapshot fixture source or executable differs from its exact binding",
+    )
+    snapshot = history_observed["snapshot"]
+    require(
+        snapshot
+        == {
+            "head_room_seq": 100_000,
+            "newest_snapshot_room_seq": 99_998,
+            "snapshot_lag_transitions": 2,
+        },
+        "snapshot-tail fixture did not retain the exact recent non-empty tail",
+    )
+    recovery = history_observed["recovery"]
+    require(
+        isinstance(recovery, dict)
+        and set(recovery)
+        == {
+            "boundary",
+            "daemon_binary_sha256",
+            "recovery_ms",
+            "before_complete_head_sha256",
+            "after_complete_head_sha256",
+            "complete_head_equal",
+            "before_projection_hash",
+            "after_projection_hash",
+            "projection_hash_equal",
+        }
+        and recovery.get("boundary")
+        == "fresh_packaged_daemon_process_start_through_verified_current_projection"
+        and recovery.get("daemon_binary_sha256") == distribution["binary_sha256"]
+        and type(recovery.get("recovery_ms")) in {int, float}
+        and recovery["recovery_ms"] >= 0
+        and recovery.get("complete_head_equal") is True
+        and recovery.get("projection_hash_equal") is True
+        and recovery.get("before_complete_head_sha256")
+        == recovery.get("after_complete_head_sha256")
+        and recovery.get("before_projection_hash")
+        == recovery.get("after_projection_hash"),
+        "fresh packaged recovery did not preserve the exact Head and Projection",
+    )
+    sha256_reference(
+        recovery.get("before_complete_head_sha256"), "pre-recovery complete Head"
     )
     require(
-        history["target_met"] is False,
-        "frozen Counter semantic ceiling cannot be reported as target met",
+        all(
+            isinstance(recovery.get(field), str)
+            and recovery[field].startswith("blake3:")
+            and len(recovery[field]) == len("blake3:") + 64
+            for field in ("before_projection_hash", "after_projection_hash")
+        ),
+        "snapshot-tail Projection hashes are malformed",
+    )
+    expected_history_met = (
+        history_observed["accepted_transition_count"] >= 100_000
+        and snapshot["snapshot_lag_transitions"] <= 250
+        and recovery["recovery_ms"] <= 5_000
+        and recovery["complete_head_equal"] is True
+        and recovery["projection_hash_equal"] is True
+    )
+    require(
+        history["target_met"] is expected_history_met,
+        "snapshot-tail target result was not computed from the observation",
     )
     forced = by_id["repeated_forced_termination_no_acknowledged_loss"]
     require(
@@ -1271,15 +1424,15 @@ def validate_reference_target(
         isinstance(limitations, list)
         and limitations
         == (
-            [
+            []
+            if expected_history_met
+            else [
                 {
-                    "code": "frozen_counter_v2_semantic_ceiling",
+                    "code": "snapshot_tail_recovery_target_missed",
                     "dimension": "snapshot_tail_recovery",
                     "publishable_non_sla_target_miss": True,
                 }
             ]
-            if frozen_pack_miss
-            else []
         ),
         "reference target limitation disclosure is incomplete or fabricated",
     )
@@ -1531,7 +1684,10 @@ def validate_report(
         and tuple(row.get("id") for row in targets["dimensions"])
         == REFERENCE_TARGET_DIMENSIONS
         and isinstance(targets.get("target_miss_ids"), list)
-        and "snapshot_tail_recovery" in targets["target_miss_ids"],
+        and targets["target_miss_ids"]
+        == [
+            row["id"] for row in targets["dimensions"] if row.get("target_met") is False
+        ],
         "frozen reference-target projection is incomplete",
     )
     sha256_reference(targets.get("raw_report_sha256"), "raw reference target")
@@ -1562,6 +1718,7 @@ def independently_project_raw_sources(
     package_archive: Path,
     package_report_path: Path,
     daemon_bin: Path,
+    snapshot_fixture_bin: Path,
     manifest_toml: Path,
     manifest_json: Path,
 ) -> tuple[dict[str, bytes], bytes, bytes, bytes, bytes]:
@@ -1588,6 +1745,7 @@ def independently_project_raw_sources(
                 package_archive=package_archive,
                 package_report=package_report_path,
                 daemon_bin=daemon_bin,
+                snapshot_fixture_bin=snapshot_fixture_bin,
                 output_dir=root / "normalized",
                 aggregate_report=root / "aggregate.json",
                 manifest_toml=manifest_toml,
@@ -1622,6 +1780,7 @@ def produce(
     package_archive: Path,
     package_report_path: Path,
     daemon_bin: Path,
+    snapshot_fixture_bin: Path,
     packaged_acceptance_path: Path,
     raw_soak_path: Path,
     kill_point_path: Path,
@@ -1638,6 +1797,7 @@ def produce(
         package_archive.resolve(),
         package_report_path.resolve(),
         daemon_bin.resolve(),
+        snapshot_fixture_bin.resolve(),
         packaged_acceptance_path.resolve(),
         raw_soak_path.resolve(),
         kill_point_path.resolve(),
@@ -1686,6 +1846,7 @@ def produce(
         package_archive=package_archive,
         package_report_path=package_report_path,
         daemon_bin=daemon_bin,
+        snapshot_fixture_bin=snapshot_fixture_bin,
         manifest_toml=manifest_toml,
         manifest_json=manifest_json,
     )
@@ -1864,6 +2025,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--package-archive", type=Path, required=True)
     command.add_argument("--package-report", type=Path, required=True)
     command.add_argument("--daemon-bin", type=Path, required=True)
+    command.add_argument("--snapshot-fixture-bin", type=Path, required=True)
     command.add_argument("--packaged-acceptance-report", type=Path, required=True)
     command.add_argument("--raw-soak-report", type=Path, required=True)
     command.add_argument("--kill-point-report", type=Path, required=True)
@@ -1888,6 +2050,7 @@ def main(argv: list[str] | None = None) -> int:
             args.package_archive,
             args.package_report,
             args.daemon_bin,
+            args.snapshot_fixture_bin,
             args.packaged_acceptance_report,
             args.raw_soak_report,
             args.kill_point_report,

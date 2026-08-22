@@ -475,6 +475,31 @@ def verify_supply_chain(release: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_unsigned_aggregation_and_finalization_reject_oidc_capability(
+    tmp_path, monkeypatch
+):
+    supply = load_module("release_supply_chain_oidc_boundary", SUPPLY_CHAIN)
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.invalid/oidc")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "fixture-token")
+
+    with pytest.raises(supply.ASSEMBLER.AssemblyError, match="without.*OIDC"):
+        supply.prepare_unsigned(
+            tmp_path / "release",
+            tmp_path / "payload",
+            {},
+            ROOT / "compatibility.toml",
+            ROOT / "compatibility.json",
+        )
+    with pytest.raises(supply.ASSEMBLER.AssemblyError, match="without.*OIDC"):
+        supply.finalize_signed(
+            tmp_path / "release",
+            tmp_path / "producer.json",
+            tmp_path / "source.json",
+            ROOT / "compatibility.toml",
+            ROOT / "compatibility.json",
+        )
+
+
 def test_assembly_parser_rejects_duplicate_signed_security_keys(tmp_path):
     assembler = load_module("strict_release_assembly", ASSEMBLE)
     document = tmp_path / "provenance.json"

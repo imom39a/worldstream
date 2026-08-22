@@ -525,6 +525,18 @@ pub struct ResourceIdentityV1 {
     digest: DigestV1,
 }
 
+/// One source-authenticated deployment resource together with its exact
+/// retained bytes.
+///
+/// Keeping the identity and payload in one validated value prevents transfer
+/// adapters from treating metadata presence as evidence that the referenced
+/// artifact, codec, or schema bytes were actually retained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourcePayloadV1 {
+    identity: ResourceIdentityV1,
+    bytes: Vec<u8>,
+}
+
 /// The complete, source-authoritative deployment identity used by a whole
 /// deployment transfer.
 ///
@@ -753,6 +765,46 @@ impl ResourceIdentityV1 {
             });
         }
         Ok(())
+    }
+}
+
+impl ResourcePayloadV1 {
+    /// Builds a payload from exact bytes and derives its content identity.
+    pub fn from_bytes(
+        kind: ResourceKindV1,
+        identity: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<Self, TransferError> {
+        let identity = ResourceIdentityV1::from_bytes(kind, identity, bytes)?;
+        Ok(Self {
+            identity,
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    /// Pairs a persisted identity with exact bytes, rejecting any size or
+    /// digest mismatch before the value reaches a provider adapter.
+    pub fn from_identity(
+        identity: ResourceIdentityV1,
+        bytes: &[u8],
+    ) -> Result<Self, TransferError> {
+        identity.verify_bytes(bytes)?;
+        Ok(Self {
+            identity,
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    /// Returns the exact resource identity and content digest.
+    #[must_use]
+    pub const fn identity(&self) -> &ResourceIdentityV1 {
+        &self.identity
+    }
+
+    /// Returns the exact retained bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 }
 

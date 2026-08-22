@@ -106,13 +106,13 @@ jobs:
         shell: pwsh
         run: scripts/gates-install-tools.ps1
       - name: Build release UI inputs
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
         shell: ${{ matrix.shell }}
         run: |
           pnpm install --frozen-lockfile
           pnpm --dir web/console build
       - name: Build Linux release archive
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
         shell: bash
         run: |
           export WORLDSTREAM_RELEASE_PYTHON="$(uv python find 3.14.7)"
@@ -153,7 +153,7 @@ jobs:
           scripts/verify-release.sh \
             dist/linux/worldstream-$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')-linux-x86_64.tar.gz
       - name: Build Windows release archive
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -179,7 +179,7 @@ jobs:
           & scripts/package-release.ps1 --target windows-x64 --binary-dir target/x86_64-pc-windows-msvc/release --ui-dir web/console/dist --sdk-dir sdk/python --examples-dir examples --licenses-dir licenses --build-environment reports/native-windows-build-environment.json --output dist/windows --report $report
           & scripts/verify-release.ps1 $archive
       - name: Configure pinned docker-container Buildx for OCI export
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver: docker-container
@@ -187,7 +187,7 @@ jobs:
             image=moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
           version: v0.36.1
       - name: Build and test OCI release image
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}
         shell: bash
         run: |
           export WORLDSTREAM_RELEASE_PYTHON="$(uv python find 3.14.7)"
@@ -295,10 +295,10 @@ jobs:
       - name: Run manifest platform cell
         shell: ${{ matrix.shell }}
         env:
-          WORLDSTREAM_TELEMETRY_HTTPS_REPORT: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' && 'reports/telemetry-https.json' || '' }}
+          WORLDSTREAM_TELEMETRY_HTTPS_REPORT: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' && 'reports/telemetry-https.json' || '' }}
         run: uv run --python 3.14.7 --no-project python scripts/gates.py minimal-ci --ci --cell ${{ matrix.cell }} --report reports/${{ matrix.cell }}.json
       - name: Run packaged Linux binaries against SQLite and PostgreSQL
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -310,7 +310,7 @@ jobs:
             --admin-dsn-file "$WORLDSTREAM_POSTGRES_DSN_FILE" \
             --report reports/native-linux-package-runtime.json
       - name: Run packaged Windows binaries against SQLite and PostgreSQL
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
         shell: pwsh
         run: |
           $version = ([regex]::Match((Get-Content compatibility.toml -Raw), '(?m)^product\s*=\s*"([^"]+)"')).Groups[1].Value
@@ -321,7 +321,7 @@ jobs:
             --report reports/native-windows-package-runtime.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Produce typed Linux platform evidence
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -343,7 +343,7 @@ jobs:
             --report native-linux/filesystem=reports/platform-diagnostics/native-linux-filesystem.json \
             --artifact native-linux/linux-release-profile="$archive"
       - name: Produce typed Windows platform evidence
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
         shell: pwsh
         run: |
           $version = ([regex]::Match((Get-Content compatibility.toml -Raw), '(?m)^product\s*=\s*"([^"]+)"')).Groups[1].Value
@@ -366,7 +366,7 @@ jobs:
             --artifact native-windows/windows-release-profile=$archive
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Produce typed OCI platform evidence
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -393,35 +393,35 @@ jobs:
           path: reports/${{ matrix.cell }}.json
           if-no-files-found: warn
       - name: Upload Linux release archive
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-native-linux
           path: dist/linux/*
           if-no-files-found: error
       - name: Upload Linux package identity report
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-linux-package-report
           path: reports/native-linux-package.json
           if-no-files-found: error
       - name: Upload Windows release archive
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-native-windows
           path: dist/windows/*
           if-no-files-found: error
       - name: Upload OCI release image
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-oci-linux-amd64
           path: dist/worldstream-*-oci-linux-amd64.oci.tar
           if-no-files-found: error
       - name: Upload OCI release evidence
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-oci-evidence
@@ -430,7 +430,7 @@ jobs:
             reports/oci-runtime-smoke.json
           if-no-files-found: error
       - name: Upload typed platform release producers
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-platform-producer-${{ matrix.cell }}
@@ -472,6 +472,54 @@ jobs:
           enable-cache: true
       - name: Install pinned Python
         run: uv python install 3.14.7
+      - name: Install exact path-safe Chrome for Testing
+        env:
+          MACOS_SOURCE_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          case "$MACOS_SOURCE_ARCHITECTURE" in
+            arm64)
+              browser_platform=mac-arm64
+              archive_sha256=ef5d61434f13d9d2d9bdc7c9ab4bff92225979e196458cf846640862b25f127d
+              archive_size=98034515
+              binary_sha256=4e0c165ef2f0d7265fb1e6b3df2d03d1d6581fb72cdfcebeac19c09760571df6
+              binary_size=167333040
+              ;;
+            x86_64)
+              browser_platform=mac-x64
+              archive_sha256=a50c716727adf9e4af5b8861d19da23b672b4687a0d631ec4beebb3009d6db97
+              archive_size=102893170
+              binary_sha256=49b6e6bdc4a9a14a160a2fcb08576ec3acef1d360cfa61bdc79a400a27a16d99
+              binary_size=182459908
+              ;;
+            *) exit 2 ;;
+          esac
+          browser_version=152.0.7977.54
+          browser_url="https://storage.googleapis.com/chrome-for-testing-public/${browser_version}/${browser_platform}/chrome-headless-shell-${browser_platform}.zip"
+          browser_archive="$RUNNER_TEMP/worldstream-chrome-for-testing.zip"
+          browser_install="$RUNNER_TEMP/worldstream-chrome-for-testing"
+          test ! -e "$browser_archive" && test ! -e "$browser_install"
+          curl --fail --location --proto '=https' --tlsv1.2 --max-filesize 110000000 \
+            "$browser_url" --output "$browser_archive"
+          uv run --python 3.14.7 --no-project python scripts/install-pinned-browser.py \
+            --archive "$browser_archive" \
+            --archive-size "$archive_size" \
+            --archive-sha256 "$archive_sha256" \
+            --output "$browser_install" \
+            --binary-relative "chrome-headless-shell-${browser_platform}/chrome-headless-shell" \
+            --binary-size "$binary_size" \
+            --binary-sha256 "$binary_sha256" \
+            > reports/pinned-browser-install.json
+          {
+            echo "WORLDSTREAM_PINNED_BROWSER=$browser_install/chrome-headless-shell-${browser_platform}/chrome-headless-shell"
+            echo "WORLDSTREAM_PINNED_BROWSER_VERSION=$browser_version"
+            echo "WORLDSTREAM_PINNED_BROWSER_SHA256=$binary_sha256"
+            echo "WORLDSTREAM_PINNED_BROWSER_SIZE=$binary_size"
+            echo "WORLDSTREAM_PINNED_BROWSER_ARCHIVE_URL=$browser_url"
+            echo "WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SHA256=$archive_sha256"
+            echo "WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SIZE=$archive_size"
+          } >> "$GITHUB_ENV"
       - name: Run source-only quickstart
         env:
           MACOS_SOURCE_ARCHITECTURE: ${{ matrix.architecture }}
@@ -480,9 +528,16 @@ jobs:
           test "$(uname -m)" = "$MACOS_SOURCE_ARCHITECTURE"
           mkdir -p reports
           scripts/macos-source-quickstart.sh \
+            --browser "$WORLDSTREAM_PINNED_BROWSER" \
+            --browser-version "$WORLDSTREAM_PINNED_BROWSER_VERSION" \
+            --browser-sha256 "$WORLDSTREAM_PINNED_BROWSER_SHA256" \
+            --browser-size-bytes "$WORLDSTREAM_PINNED_BROWSER_SIZE" \
+            --browser-archive-url "$WORLDSTREAM_PINNED_BROWSER_ARCHIVE_URL" \
+            --browser-archive-sha256 "$WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SHA256" \
+            --browser-archive-size-bytes "$WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SIZE" \
             --report "reports/macos-source-${MACOS_SOURCE_ARCHITECTURE}.json"
       - name: Upload architecture-specific macOS source report
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.release == true }}
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-macos-source-raw-${{ matrix.architecture }}
@@ -491,7 +546,7 @@ jobs:
 
   macos-source-release:
     name: Typed dual-architecture macOS source evidence
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     needs: [macos-source]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -535,7 +590,7 @@ jobs:
 
   conformance-release:
     name: Typed release conformance producers
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -593,8 +648,9 @@ jobs:
 
   packaged-backend-release:
     name: Fresh packaged Counter and absent-Broker backend parity
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     needs: native
+    environment: worldstream-release
     runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
     timeout-minutes: 150
     steps:
@@ -609,6 +665,35 @@ jobs:
           uv sync --project sdk/python --locked
           command -v docker
           command -v psql
+      - name: Install exact path-safe Chrome for Testing
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          browser_version=152.0.7977.54
+          browser_url="https://storage.googleapis.com/chrome-for-testing-public/${browser_version}/linux64/chrome-headless-shell-linux64.zip"
+          browser_archive="$RUNNER_TEMP/worldstream-chrome-for-testing.zip"
+          browser_install="$RUNNER_TEMP/worldstream-chrome-for-testing"
+          test ! -e "$browser_archive" && test ! -e "$browser_install"
+          curl --fail --location --proto '=https' --tlsv1.2 --max-filesize 120000000 \
+            "$browser_url" --output "$browser_archive"
+          uv run --python 3.14.7 --no-project python scripts/install-pinned-browser.py \
+            --archive "$browser_archive" \
+            --archive-size 119570919 \
+            --archive-sha256 11cedb5568cd374a76eb738e40bd434cd0c9956820fb406b8bd9edca53428d3e \
+            --output "$browser_install" \
+            --binary-relative chrome-headless-shell-linux64/chrome-headless-shell \
+            --binary-size 195435856 \
+            --binary-sha256 8a3f72f9676736c45e94ae3279b4e2e6a1e323187f9a5e73c9a760e8cc1296ea \
+            > reports/pinned-browser-install.json
+          {
+            echo "WORLDSTREAM_PINNED_BROWSER=$browser_install/chrome-headless-shell-linux64/chrome-headless-shell"
+            echo "WORLDSTREAM_PINNED_BROWSER_VERSION=$browser_version"
+            echo "WORLDSTREAM_PINNED_BROWSER_SHA256=8a3f72f9676736c45e94ae3279b4e2e6a1e323187f9a5e73c9a760e8cc1296ea"
+            echo "WORLDSTREAM_PINNED_BROWSER_SIZE=195435856"
+            echo "WORLDSTREAM_PINNED_BROWSER_ARCHIVE_URL=$browser_url"
+            echo "WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SHA256=11cedb5568cd374a76eb738e40bd434cd0c9956820fb406b8bd9edca53428d3e"
+            echo "WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SIZE=119570919"
+          } >> "$GITHUB_ENV"
       - name: Download fresh Linux release archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -619,7 +704,7 @@ jobs:
         with:
           name: release-linux-package-report
           path: package-input
-      - name: Run six package-bound SQLite, PostgreSQL, and PgBouncer cells
+      - name: Run package-bound browser Heist plus six backend cells
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -630,6 +715,13 @@ jobs:
             scripts/postgres-packaged-acceptance.py \
             --package-archive "${archives[0]}" \
             --package-report "${reports[0]}" \
+            --browser "$WORLDSTREAM_PINNED_BROWSER" \
+            --browser-version "$WORLDSTREAM_PINNED_BROWSER_VERSION" \
+            --browser-sha256 "$WORLDSTREAM_PINNED_BROWSER_SHA256" \
+            --browser-size-bytes "$WORLDSTREAM_PINNED_BROWSER_SIZE" \
+            --browser-archive-url "$WORLDSTREAM_PINNED_BROWSER_ARCHIVE_URL" \
+            --browser-archive-sha256 "$WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SHA256" \
+            --browser-archive-size-bytes "$WORLDSTREAM_PINNED_BROWSER_ARCHIVE_SIZE" \
             --report reports/postgres-packaged-acceptance.json
       - name: Upload package-bound backend parity report
         if: ${{ always() }}
@@ -641,8 +733,9 @@ jobs:
 
   failure-soak-release:
     name: Packaged Linux SIGKILL and one-hour soak evidence
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     needs: [native, packaged-backend-release]
+    environment: worldstream-release
     runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
     timeout-minutes: 150
     steps:
@@ -758,10 +851,11 @@ jobs:
 
   reference-performance-release:
     name: Frozen-host packaged reference performance evidence
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     needs: [native, packaged-backend-release, failure-soak-release]
+    environment: worldstream-release
     runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -772,6 +866,16 @@ jobs:
         run: |
           uv python install 3.14.7
           uv sync --project sdk/python --locked
+      - name: Build the source-bound snapshot-tail fixture generator
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup override set 1.97.1
+          cargo build --locked --release -p worldstream-sqlite \
+            --example reference_snapshot_tail_fixture
+          fixture=target/release/examples/reference_snapshot_tail_fixture
+          [[ -f "$fixture" && ! -L "$fixture" && -x "$fixture" ]]
+          printf 'snapshot_fixture=%s\n' "$(realpath "$fixture")" >> "$GITHUB_ENV"
       - name: Download fresh Linux release archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -846,6 +950,7 @@ jobs:
             --packaged-sdk-root '${{ steps.reference_package.outputs.sdk }}' \
             --soak-report '${{ steps.reference_package.outputs.soak }}' \
             --kill-point-report '${{ steps.reference_package.outputs.kill }}' \
+            --snapshot-fixture-bin "$snapshot_fixture" \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json
       - name: Project exact raw measurements into six normalized reports
@@ -859,6 +964,7 @@ jobs:
             --package-archive '${{ steps.reference_package.outputs.archive }}' \
             --package-report '${{ steps.reference_package.outputs.report }}' \
             --daemon-bin '${{ steps.reference_package.outputs.daemon }}' \
+            --snapshot-fixture-bin "$snapshot_fixture" \
             --output-dir reference-inputs/normalized \
             --aggregate-report reference-inputs/reference-performance.json \
             --manifest-toml compatibility.toml \
@@ -879,6 +985,7 @@ jobs:
             --package-archive '${{ steps.reference_package.outputs.archive }}' \
             --package-report '${{ steps.reference_package.outputs.report }}' \
             --daemon-bin '${{ steps.reference_package.outputs.daemon }}' \
+            --snapshot-fixture-bin "$snapshot_fixture" \
             --packaged-acceptance-report '${{ steps.reference_package.outputs.acceptance }}' \
             --raw-soak-report '${{ steps.reference_package.outputs.soak }}' \
             --kill-point-report '${{ steps.reference_package.outputs.kill }}' \
@@ -902,18 +1009,20 @@ jobs:
           if-no-files-found: error
 
   release-evidence:
-    name: Release evidence (manual)
+    name: Unsigned release subject aggregation
     needs: [fast, native, macos-source-release, conformance-release, packaged-backend-release, failure-soak-release, reference-performance-release]
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      inventory_sha256: ${{ steps.unsigned_inventory.outputs.inventory_sha256 }}
+      inventory_size_bytes: ${{ steps.unsigned_inventory.outputs.inventory_size_bytes }}
+      layout_sha256: ${{ steps.unsigned_inventory.outputs.layout_sha256 }}
+      product_version: ${{ steps.unsigned_inventory.outputs.product_version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
       WORLDSTREAM_RELEASE_INPUT: ${{ inputs.release }}
-      COSIGN_CERTIFICATE_IDENTITY: https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main
-      COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -928,7 +1037,7 @@ jobs:
           test "$("$release_python" -I -c 'import platform; print(platform.python_version())')" = 3.14.7
           printf 'WORLDSTREAM_RELEASE_PYTHON=%s\n' "$release_python" >> "$GITHUB_ENV"
       - name: Build and verify source archive from the clean checkout
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -948,26 +1057,6 @@ jobs:
           version=$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
           scripts/verify-release.sh \
             "$source_payload/worldstream-${version}-source.tar.gz"
-      - name: Install pinned Rust
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
-          rustup override set 1.97.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .node-version
-      - name: Enable pinned pnpm
-        run: |
-          corepack enable
-          corepack install
-          pnpm install --frozen-lockfile
-      - name: Install byte-pinned hosted security scanners
-        run: scripts/gates-install-tools.sh
-      - name: Install pinned cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          cosign-release: v3.1.3
-      - name: Prime locked Rust dependencies
-        run: cargo fetch --locked
       - name: Download native and OCI release artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -1083,15 +1172,15 @@ jobs:
             --artifact reference-performance/reference-performance=release-inputs/reference/artifacts/reference-performance.json \
             || producer_status=$?
           printf 'typed producer adapter exit=%s; only the pre-sign supply-chain input remains intentionally absent in this phase\n' "$producer_status"
-      - name: Produce and sign pre-sign subject inventory, SPDX SBOM, and SLSA provenance
+      - name: Produce and verify unsigned subject inventory, SPDX SBOM, and SLSA provenance
         run: |
           set -euo pipefail
-          supply_status=0
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
           "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py \
+            --prepare-unsigned \
             --release-dir dist \
             --payload-dir release-inputs/payload \
-            --producer-output release-inputs/pre-sign/supply-chain-producer.json \
-            --source-output release-inputs/source-reports/checksums-signature-sbom-provenance.json \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json \
             --source manifest-contract=release-inputs/source-reports/manifest-syntax-parity.json \
@@ -1106,9 +1195,172 @@ jobs:
             --source macos-source=release-inputs/source-reports/macos-source-quickstart.json \
             --source security-observability=release-inputs/source-reports/config-secrets-probes-observability-security.json \
             --source failure-soak=release-inputs/source-reports/failure-fuzz-resource-and-one-hour-sqlite-soak.json \
-            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json \
-            || supply_status=$?
-          printf 'pre-sign supply-chain producer exit=%s; collector will enforce fail-closed inputs\n' "$supply_status"
+            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json
+      - id: unsigned_inventory
+        name: Bind exact unsigned signing inputs
+        run: |
+          set -euo pipefail
+          inventory=dist/supply-chain/subject-inventory.json
+          test -f "$inventory" && test ! -L "$inventory"
+          test ! -e dist/supply-chain/subject-inventory.bundle.json
+          test ! -e dist/sigstore.bundle.json
+          test "$(find dist -type f | wc -l)" -eq 21
+          test "$(wc -l < dist/SHA256SUMS)" -eq 17
+          (cd dist && sha256sum --strict --check SHA256SUMS)
+          version=$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          printf 'inventory_sha256=%s\n' "$(sha256sum "$inventory" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'inventory_size_bytes=%s\n' "$(stat -c %s "$inventory")" >> "$GITHUB_OUTPUT"
+          printf 'layout_sha256=%s\n' "$(cd dist && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'product_version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Upload exact unsigned subject aggregation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-unsigned-subjects-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release-signing:
+    name: Sign exact pre-sign subject inventory
+    needs: [release-evidence]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
+    environment: worldstream-release
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      bundle_sha256: ${{ steps.sign_inventory.outputs.bundle_sha256 }}
+      bundle_size_bytes: ${{ steps.sign_inventory.outputs.bundle_size_bytes }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COSIGN_CERTIFICATE_IDENTITY: https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main
+      COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+      EXPECTED_INVENTORY_SHA256: ${{ needs.release-evidence.outputs.inventory_sha256 }}
+      EXPECTED_INVENTORY_SIZE_BYTES: ${{ needs.release-evidence.outputs.inventory_size_bytes }}
+      EXPECTED_LAYOUT_SHA256: ${{ needs.release-evidence.outputs.layout_sha256 }}
+    steps:
+      - name: Download exact unsigned subject aggregation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-unsigned-subjects-${{ github.sha }}-${{ github.run_attempt }}
+          path: signing-input
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - id: sign_inventory
+        name: Verify exact inventory and sign only its bytes
+        shell: bash
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          inventory=signing-input/supply-chain/subject-inventory.json
+          test -f "$inventory" && test ! -L "$inventory"
+          test ! -e signing-input/supply-chain/subject-inventory.bundle.json
+          test ! -e signing-input/sigstore.bundle.json
+          test "$(find signing-input -type l | wc -l)" -eq 0
+          test "$(find signing-input -type f | wc -l)" -eq 21
+          test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 13
+          test "$(wc -l < signing-input/SHA256SUMS)" -eq 17
+          test "$(sha256sum "$inventory" | cut -d ' ' -f 1)" = "$EXPECTED_INVENTORY_SHA256"
+          test "$(stat -c %s "$inventory")" = "$EXPECTED_INVENTORY_SIZE_BYTES"
+          test "$(cd signing-input && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "$EXPECTED_LAYOUT_SHA256"
+          (cd signing-input && sha256sum --strict --check SHA256SUMS)
+          test "$COSIGN_CERTIFICATE_IDENTITY" = "https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main"
+          test "$COSIGN_CERTIFICATE_OIDC_ISSUER" = "https://token.actions.githubusercontent.com"
+          mkdir signing-output
+          bundle=signing-output/subject-inventory.bundle.json
+          cosign sign-blob --yes --bundle "$bundle" "$inventory" >/dev/null
+          test -s "$bundle" && test ! -L "$bundle"
+          cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-identity "$COSIGN_CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$COSIGN_CERTIFICATE_OIDC_ISSUER" \
+            "$inventory" >/dev/null
+          test "$(find signing-output -type f | wc -l)" -eq 1
+          printf 'bundle_sha256=%s\n' "$(sha256sum "$bundle" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'bundle_size_bytes=%s\n' "$(stat -c %s "$bundle")" >> "$GITHUB_OUTPUT"
+      - name: Upload exact subject inventory signature
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-subject-signature-${{ github.sha }}-${{ github.run_attempt }}
+          path: signing-output/subject-inventory.bundle.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release-finalize:
+    name: Assemble exact unsigned final manifest
+    needs: [release-evidence, release-signing]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.final_manifest.outputs.manifest_sha256 }}
+      manifest_size_bytes: ${{ steps.final_manifest.outputs.manifest_size_bytes }}
+      layout_sha256: ${{ steps.final_manifest.outputs.layout_sha256 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COSIGN_CERTIFICATE_IDENTITY: https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main
+      COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned final-assembly dependencies
+        run: |
+          set -euo pipefail
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+          release_python="$(uv python find 3.14.7)"
+          test "$("$release_python" -I -c 'import platform; print(platform.python_version())')" = 3.14.7
+          printf 'WORLDSTREAM_RELEASE_PYTHON=%s\n' "$release_python" >> "$GITHUB_ENV"
+      - name: Install pinned cosign for verification only
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Download exact unsigned subject aggregation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-unsigned-subjects-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist
+      - name: Download exact subject inventory signature
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-subject-signature-${{ github.sha }}-${{ github.run_attempt }}
+          path: signed-input
+      - name: Bind signed inventory into the final release layout
+        run: |
+          set -euo pipefail
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          bundle=signed-input/subject-inventory.bundle.json
+          test -f "$bundle" && test ! -L "$bundle"
+          test "$(find signed-input -type f | wc -l)" -eq 1
+          test "$(sha256sum "$bundle" | cut -d ' ' -f 1)" = "${{ needs.release-signing.outputs.bundle_sha256 }}"
+          test "$(stat -c %s "$bundle")" = "${{ needs.release-signing.outputs.bundle_size_bytes }}"
+          test ! -e dist/supply-chain/subject-inventory.bundle.json
+          test ! -e dist/sigstore.bundle.json
+          cp --no-clobber "$bundle" dist/supply-chain/subject-inventory.bundle.json
+      - name: Verify the signed inventory and produce its typed source report
+        run: |
+          set -euo pipefail
+          "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py \
+            --finalize-signed \
+            --release-dir dist \
+            --producer-output release-inputs/pre-sign/supply-chain-producer.json \
+            --source-output release-inputs/source-reports/checksums-signature-sbom-provenance.json \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json
       - name: Collect exact release evidence sources
         run: |
           set -euo pipefail
@@ -1116,23 +1368,29 @@ jobs:
             --output-dir release-inputs/reports \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json \
-            --source manifest-contract=release-inputs/source-reports/manifest-syntax-parity.json \
-            --source sqlite-conformance=release-inputs/source-reports/sqlite-conformance-migration-backup-restore-crash.json \
-            --source postgres-conformance=release-inputs/source-reports/postgresql-direct-and-transaction-pooler-conformance.json \
-            --source migration-history=release-inputs/source-reports/all-prior-forward-migrations-both-backends.json \
-            --source transfer=release-inputs/source-reports/sqlite-postgresql-transfer-byte-parity-and-epoch-fencing.json \
-            --source restore=release-inputs/source-reports/backend-native-isolated-restore-and-bounded-semantic-verifier.json \
-            --source native-linux=release-inputs/source-reports/native-linux-release-profile.json \
-            --source native-windows=release-inputs/source-reports/native-windows-release-profile.json \
-            --source oci-linux=release-inputs/source-reports/oci-linux-amd64-release-profile.json \
-            --source macos-source=release-inputs/source-reports/macos-source-quickstart.json \
-            --source security-observability=release-inputs/source-reports/config-secrets-probes-observability-security.json \
+            --source manifest-contract=dist/supply-chain/subjects/manifest-syntax-parity.json \
+            --source sqlite-conformance=dist/supply-chain/subjects/sqlite-conformance-migration-backup-restore-crash.json \
+            --source postgres-conformance=dist/supply-chain/subjects/postgresql-direct-and-transaction-pooler-conformance.json \
+            --source migration-history=dist/supply-chain/subjects/all-prior-forward-migrations-both-backends.json \
+            --source transfer=dist/supply-chain/subjects/sqlite-postgresql-transfer-byte-parity-and-epoch-fencing.json \
+            --source restore=dist/supply-chain/subjects/backend-native-isolated-restore-and-bounded-semantic-verifier.json \
+            --source native-linux=dist/supply-chain/subjects/native-linux-release-profile.json \
+            --source native-windows=dist/supply-chain/subjects/native-windows-release-profile.json \
+            --source oci-linux=dist/supply-chain/subjects/oci-linux-amd64-release-profile.json \
+            --source macos-source=dist/supply-chain/subjects/macos-source-quickstart.json \
+            --source security-observability=dist/supply-chain/subjects/config-secrets-probes-observability-security.json \
             --source supply-chain=release-inputs/source-reports/checksums-signature-sbom-provenance.json \
-            --source failure-soak=release-inputs/source-reports/failure-fuzz-resource-and-one-hour-sqlite-soak.json \
-            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json
+            --source failure-soak=dist/supply-chain/subjects/failure-fuzz-resource-and-one-hour-sqlite-soak.json \
+            --source reference-performance=dist/supply-chain/subjects/reference-performance-per-backend.json
+          version='${{ needs.release-evidence.outputs.product_version }}'
+          mkdir -p final-inputs/payload
+          cp --no-clobber "dist/worldstream-${version}-source.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-linux-x86_64.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-windows-x64.zip" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-oci-linux-amd64.oci.tar" final-inputs/payload/
           scripts/release-evidence-assemble.sh \
             --release-dir dist \
-            --payload-dir release-inputs/payload \
+            --payload-dir final-inputs/payload \
             --reports-dir release-inputs/reports \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json \
@@ -1141,26 +1399,189 @@ jobs:
         run: |
           scripts/release-evidence-assemble.sh \
             --release-dir dist \
-            --payload-dir release-inputs/payload \
+            --payload-dir final-inputs/payload \
             --reports-dir release-inputs/reports \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json \
             --output dist/release-manifest.json
-      - name: Keyless-sign detached release manifest
+      - id: final_manifest
+        name: Bind exact final-manifest signing inputs
+        run: |
+          set -euo pipefail
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          manifest=dist/release-manifest.json
+          test -f "$manifest" && test ! -L "$manifest"
+          test -f dist/supply-chain/subject-inventory.bundle.json
+          test ! -e dist/sigstore.bundle.json
+          test "$(find dist -type l | wc -l)" -eq 0
+          test "$(find dist -type f | wc -l)" -eq 37
+          test "$(find dist/evidence -maxdepth 1 -type f | wc -l)" -eq 14
+          test "$(find dist/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 13
+          (cd dist && sha256sum --strict --check SHA256SUMS)
+          printf 'manifest_sha256=%s\n' "$(sha256sum "$manifest" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'manifest_size_bytes=%s\n' "$(stat -c %s "$manifest")" >> "$GITHUB_OUTPUT"
+          printf 'layout_sha256=%s\n' "$(cd dist && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Upload exact unsigned final-manifest layout
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-final-manifest-inputs-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release-manifest-signing:
+    name: Sign exact detached final manifest
+    needs: [release-evidence, release-signing, release-finalize]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
+    environment: worldstream-release
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      bundle_sha256: ${{ steps.sign_manifest.outputs.bundle_sha256 }}
+      bundle_size_bytes: ${{ steps.sign_manifest.outputs.bundle_size_bytes }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COSIGN_CERTIFICATE_IDENTITY: https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main
+      COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+      EXPECTED_INVENTORY_SHA256: ${{ needs.release-evidence.outputs.inventory_sha256 }}
+      EXPECTED_MANIFEST_SHA256: ${{ needs.release-finalize.outputs.manifest_sha256 }}
+      EXPECTED_MANIFEST_SIZE_BYTES: ${{ needs.release-finalize.outputs.manifest_size_bytes }}
+      EXPECTED_LAYOUT_SHA256: ${{ needs.release-finalize.outputs.layout_sha256 }}
+    steps:
+      - name: Download exact unsigned final-manifest layout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-final-manifest-inputs-${{ github.sha }}-${{ github.run_attempt }}
+          path: signing-input
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - id: sign_manifest
+        name: Verify exact final layout and sign only manifest bytes
+        shell: bash
         env:
           COSIGN_YES: 'true'
         run: |
-          test "$COSIGN_CERTIFICATE_IDENTITY" = "https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main"
-          test "$COSIGN_CERTIFICATE_OIDC_ISSUER" = "https://token.actions.githubusercontent.com"
-          test -f dist/release-manifest.json
+          set -euo pipefail
+          manifest=signing-input/release-manifest.json
+          inventory=signing-input/supply-chain/subject-inventory.json
+          inventory_bundle=signing-input/supply-chain/subject-inventory.bundle.json
+          test -f "$manifest" && test ! -L "$manifest"
+          test -f "$inventory" && test ! -L "$inventory"
+          test -f "$inventory_bundle" && test ! -L "$inventory_bundle"
+          test ! -e signing-input/sigstore.bundle.json
+          test "$(find signing-input -type l | wc -l)" -eq 0
+          test "$(find signing-input -type f | wc -l)" -eq 37
+          test "$(find signing-input/evidence -maxdepth 1 -type f | wc -l)" -eq 14
+          test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 13
+          test "$(sha256sum "$inventory" | cut -d ' ' -f 1)" = "$EXPECTED_INVENTORY_SHA256"
+          test "$(sha256sum "$manifest" | cut -d ' ' -f 1)" = "$EXPECTED_MANIFEST_SHA256"
+          test "$(stat -c %s "$manifest")" = "$EXPECTED_MANIFEST_SIZE_BYTES"
+          test "$(cd signing-input && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "$EXPECTED_LAYOUT_SHA256"
+          (cd signing-input && sha256sum --strict --check SHA256SUMS)
+          cosign verify-blob \
+            --bundle "$inventory_bundle" \
+            --certificate-identity "$COSIGN_CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$COSIGN_CERTIFICATE_OIDC_ISSUER" \
+            "$inventory" >/dev/null
+          mkdir signing-output
+          bundle=signing-output/sigstore.bundle.json
+          cosign sign-blob --yes --bundle "$bundle" "$manifest" >/dev/null
+          test -s "$bundle" && test ! -L "$bundle"
+          cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-identity "$COSIGN_CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$COSIGN_CERTIFICATE_OIDC_ISSUER" \
+            "$manifest" >/dev/null
+          test "$(find signing-output -type f | wc -l)" -eq 1
+          printf 'bundle_sha256=%s\n' "$(sha256sum "$bundle" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'bundle_size_bytes=%s\n' "$(stat -c %s "$bundle")" >> "$GITHUB_OUTPUT"
+      - name: Upload exact detached final-manifest signature
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-final-manifest-signature-${{ github.sha }}-${{ github.run_attempt }}
+          path: signing-output/sigstore.bundle.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release-verify:
+    name: Verify and upload immutable release bundle
+    needs: [release-evidence, release-finalize, release-manifest-signing]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      COSIGN_CERTIFICATE_IDENTITY: https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main
+      COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned final-verification dependencies
+        run: |
+          set -euo pipefail
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+          release_python="$(uv python find 3.14.7)"
+          test "$("$release_python" -I -c 'import platform; print(platform.python_version())')" = 3.14.7
+          printf 'WORLDSTREAM_RELEASE_PYTHON=%s\n' "$release_python" >> "$GITHUB_ENV"
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.97.1
+          cargo fetch --locked
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm and install byte-pinned scanners
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
+          scripts/gates-install-tools.sh
+      - name: Install pinned cosign for verification only
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Download exact unsigned final-manifest layout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-final-manifest-inputs-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist
+      - name: Download exact detached final-manifest signature
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-final-manifest-signature-${{ github.sha }}-${{ github.run_attempt }}
+          path: signed-input
+      - name: Bind exact detached signature into the final release layout
+        run: |
+          set -euo pipefail
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          bundle=signed-input/sigstore.bundle.json
+          test -f "$bundle" && test ! -L "$bundle"
+          test "$(find signed-input -type f | wc -l)" -eq 1
+          test "$(cd dist && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "${{ needs.release-finalize.outputs.layout_sha256 }}"
+          test "$(sha256sum "$bundle" | cut -d ' ' -f 1)" = "${{ needs.release-manifest-signing.outputs.bundle_sha256 }}"
+          test "$(stat -c %s "$bundle")" = "${{ needs.release-manifest-signing.outputs.bundle_size_bytes }}"
           test ! -e dist/sigstore.bundle.json
-          cosign sign-blob --yes \
-            --bundle dist/sigstore.bundle.json \
-            dist/release-manifest.json >/dev/null
-          test -s dist/sigstore.bundle.json
-      - name: Post-sign verify detached release bundle and supply chain
+          cp --no-clobber "$bundle" dist/sigstore.bundle.json
+          test "$(find dist -type l | wc -l)" -eq 0
+          test "$(find dist -type f | wc -l)" -eq 38
+      - name: Verify both detached release signatures and all subjects
         run: scripts/verify-release.sh dist
-      - name: Run final post-sign release gate
+      - name: Run final release gate without OIDC
         run: uv run --python 3.14.7 --no-project python scripts/gates.py release --ci --strict --report reports/release-gate.json --handoff reports/release-evidence-handoff.json
       - name: Upload immutable verified release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

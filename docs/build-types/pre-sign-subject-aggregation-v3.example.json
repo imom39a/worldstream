@@ -144,9 +144,39 @@
         },
         {
           "digest": {
+            "sha256": "116027abdbf52cf8cefbebf7aa52eb2f4f5f6956d55f52a916e52f842273fb82"
+          },
+          "uri": "file:crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs"
+        },
+        {
+          "digest": {
             "sha256": "b5d60ad4e8fadb903b140e743f43bd35ce099fabcde0ff2e3d6719edd85aa001"
           },
           "uri": "file:docs/build-types/pre-sign-subject-aggregation-v3.md"
+        },
+        {
+          "digest": {
+            "sha256": "886e1ec9ff28f5a5bc854982d5f1a35c65ec78f5e9947ec4266b29fb43974553"
+          },
+          "uri": "file:examples/heist/wave10_live/browser_trace_init.js"
+        },
+        {
+          "digest": {
+            "sha256": "c546af4e3b44852663d8baa1b348f4a7001436d87b541d60df8019bd17cd5de6"
+          },
+          "uri": "file:examples/heist/wave10_live/run_absent_broker_live.py"
+        },
+        {
+          "digest": {
+            "sha256": "c18617ed86b02754221b0d42293d485ea428a6948b0c0c03bc7e0fb60732db13"
+          },
+          "uri": "file:examples/heist/wave10_live/run_browser_story.py"
+        },
+        {
+          "digest": {
+            "sha256": "f8be2e0ff1bcfd5aca39480b40bba0b06958fd5c7b6a1a130ab103efbbad9e44"
+          },
+          "uri": "file:examples/heist/wave10_live/seed_browser_room.py"
         },
         {
           "digest": {
@@ -306,6 +336,42 @@
         },
         {
           "digest": {
+            "sha256": "75fe2a31e566bb23c5cb1396bb518fd39a98eb204c10d3b3560eb680fabb4d5a"
+          },
+          "uri": "file:scripts/cdp-browser.py"
+        },
+        {
+          "digest": {
+            "sha256": "e6016d3ddd03e9b664e3a38a4ba69b2550306deada01e2b47c4e0b63c820fbe1"
+          },
+          "uri": "file:scripts/daemon-transition-soak.py"
+        },
+        {
+          "digest": {
+            "sha256": "74c951122af599499916d3d9e715b534bd90298bd3aa6349f704e754ee2d7835"
+          },
+          "uri": "file:scripts/daemon-transition-soak.sh"
+        },
+        {
+          "digest": {
+            "sha256": "b2fc4f0b7502f71c049d190c949ef62b3db6e12ff37d4b5fea706ef52df59a0d"
+          },
+          "uri": "file:scripts/gates-install-postgres.ps1"
+        },
+        {
+          "digest": {
+            "sha256": "7d15e5a368d7e349e49bd3a381335c4904f666c6bbd868d0d54c467c790ff24c"
+          },
+          "uri": "file:scripts/gates-install-tools.ps1"
+        },
+        {
+          "digest": {
+            "sha256": "59cd10c679cdbd3e33fedaecd22e6b72c716e23898579280db3a0f9add27a430"
+          },
+          "uri": "file:scripts/gates-install-tools.sh"
+        },
+        {
+          "digest": {
             "sha256": "0f1fcf30c56c58fe8e4523dc9e6ba3f72590aa3ca9041c59ad525f979ee0342d"
           },
           "uri": "file:scripts/gates.py"
@@ -315,6 +381,48 @@
             "sha256": "2ae4e01a7aa8e3053e02b334f684c0507bff5b764c073fe2d71e071f36a6f2ab"
           },
           "uri": "file:scripts/generate-third-party-notices.py"
+        },
+        {
+          "digest": {
+            "sha256": "32a7d6d94866270a5b481ba88a34721aac5dca9f95e9d8cde9cd3ad4b9511c10"
+          },
+          "uri": "file:scripts/install-pinned-browser.py"
+        },
+        {
+          "digest": {
+            "sha256": "a4b1d97a05640bd49e3093550bbba843bb6665ac085cd1218ac09ef70258cd9b"
+          },
+          "uri": "file:scripts/kill-point-matrix.py"
+        },
+        {
+          "digest": {
+            "sha256": "f798ce01ee244f210be5df32d71c4e213a099fea825bb6a004672112457b5166"
+          },
+          "uri": "file:scripts/kill-point-smoke.sh"
+        },
+        {
+          "digest": {
+            "sha256": "9612589c92c67f947f1a5f5f41f67a446a65dc50365ba3537141f3d3399468e3"
+          },
+          "uri": "file:scripts/macos-source-quickstart.sh"
+        },
+        {
+          "digest": {
+            "sha256": "98423d8f68591048b49ce77f2c958d2571199b58786a1cccd80f269126668315"
+          },
+          "uri": "file:scripts/manifest-evidence-wave6.py"
+        },
+        {
+          "digest": {
+            "sha256": "8d46171168b5766201a86f150bd866a8eb26680b4db8ed26e7c9cfd14adc40a9"
+          },
+          "uri": "file:scripts/native-package-smoke.py"
+        },
+        {
+          "digest": {
+            "sha256": "d14ae5187aaa58b414c7d7d305b007c5f1b52025c72ac5d9559ff4db5c00fe8a"
+          },
+          "uri": "file:scripts/oci-runtime-smoke.sh"
         },
         {
           "digest": {
@@ -348,6 +456,54 @@
         },
         {
           "digest": {
+            "sha256": "ace72cec3dd0340b5bd558f0836421beb603383e1ec4cf220a5184ca6132bdfe"
+          },
+          "uri": "file:scripts/postgres-harness.sh"
+        },
+        {
+          "digest": {
+            "sha256": "12488d59eea471ef3083169360fa50f901d4d58c4076da02f8edb47c612ed090"
+          },
+          "uri": "file:scripts/postgres-live-evidence.sh"
+        },
+        {
+          "digest": {
+            "sha256": "508ee27d611b78c92891ad85dfb80fc6c4fbec869d165f96bb075cd1a4932a34"
+          },
+          "uri": "file:scripts/postgres-native-restore-smoke.sh"
+        },
+        {
+          "digest": {
+            "sha256": "d2f96f076c7f1a2e02cf9d7e9c49f7750777ce11053d71bf3a8a42b64679cf98"
+          },
+          "uri": "file:scripts/postgres-packaged-acceptance.py"
+        },
+        {
+          "digest": {
+            "sha256": "6f99b56bcb34945056827c48ac48af81256ae93a251f1eca17e7717d09bf1420"
+          },
+          "uri": "file:scripts/postgres-transfer-smoke.sh"
+        },
+        {
+          "digest": {
+            "sha256": "326d91cd6274d753019c1f769d0bcbbf8439fb52adf210be5ec7b14f4d4679ad"
+          },
+          "uri": "file:scripts/reference-evidence-project.py"
+        },
+        {
+          "digest": {
+            "sha256": "925a424936d8819200aee9fb9a482e75794d66eeaf915508a4250639eea48619"
+          },
+          "uri": "file:scripts/reference-evidence.py"
+        },
+        {
+          "digest": {
+            "sha256": "83f65e44a12f78c9281ae4845738a0c89795b93ffa4def583d34204f1a84c4ff"
+          },
+          "uri": "file:scripts/reference-target-workload.py"
+        },
+        {
+          "digest": {
             "sha256": "585d874c3877dfbb2d11ff2faac46f5dc69364b8fc9ecca8098db0fe745b60b3"
           },
           "uri": "file:scripts/reference_host_environment.py"
@@ -372,9 +528,45 @@
         },
         {
           "digest": {
+            "sha256": "0b94815e3081d9b1b3b33663855ddba5e48c3ccc4602946a48653a3844333c89"
+          },
+          "uri": "file:scripts/release-evidence-produce-conformance.py"
+        },
+        {
+          "digest": {
+            "sha256": "8355a9856333c7d5128d92283f2708a129d7869f76c9681462073c638eefb7f6"
+          },
+          "uri": "file:scripts/release-evidence-produce-failure-soak.py"
+        },
+        {
+          "digest": {
+            "sha256": "2528c8ca373c4235b3c3883f3a99d300a34d832d202d821278a710f4b5c13a1b"
+          },
+          "uri": "file:scripts/release-evidence-produce-platform.py"
+        },
+        {
+          "digest": {
+            "sha256": "b77cab0eb45ce7ef0971148687b9afece54700652ba4ba88a554ee8f77951b18"
+          },
+          "uri": "file:scripts/release-evidence-produce-reference.py"
+        },
+        {
+          "digest": {
             "sha256": "67fa2dd2de453d2b133f53c51038f8383ff01ef36c7476d01689b9d9e3faaa36"
           },
           "uri": "file:scripts/release-evidence-produce.py"
+        },
+        {
+          "digest": {
+            "sha256": "51b94046f4aace029eba8755f3e2bb3cfa4b034ce0d489809e7b77030c33c2e2"
+          },
+          "uri": "file:scripts/release-package-extract.py"
+        },
+        {
+          "digest": {
+            "sha256": "1eb26886182ccf8b032d0810a040bec358d16975cd9803bbd65f5890b507241b"
+          },
+          "uri": "file:scripts/release-platform-diagnostic.py"
         },
         {
           "digest": {
@@ -396,6 +588,12 @@
         },
         {
           "digest": {
+            "sha256": "c8cbebc069dd4f9033d61eb0a20ec6b8fe2b1378e8cea67647311a140a73dfe2"
+          },
+          "uri": "file:scripts/soak-smoke.sh"
+        },
+        {
+          "digest": {
             "sha256": "7ed6bd10d888b5f090f10adf5af7c0d00eb010725a92dc29a9151aa6109d28d1"
           },
           "uri": "file:scripts/verify-oci-layout.py"
@@ -411,6 +609,12 @@
             "sha256": "d3497d9e2ee7ad33a75ea9c72c3b89da3d5027c7f574ad27a4f34ab087bb5159"
           },
           "uri": "file:scripts/verify-release.sh"
+        },
+        {
+          "digest": {
+            "sha256": "b2e2396d36ecbce8daa0de65d3ed9ca1db289e28e36a6d2c2f8765d42b687c29"
+          },
+          "uri": "file:scripts/verify-secret-absence.py"
         },
         {
           "digest": {
@@ -435,6 +639,12 @@
             "sha256": "c5d58a935e5f22ffaa616fbb128a476e606365ac6eb21635730517f2fdda8429"
           },
           "uri": "file:sdk/python/uv.lock"
+        },
+        {
+          "digest": {
+            "sha256": "51b8ef668f418aeeea6a9b26d1589d1269880cebd6250b892e56403ad16a6bf9"
+          },
+          "uri": "file:web/console/live-browser-story.sh"
         },
         {
           "digest": {

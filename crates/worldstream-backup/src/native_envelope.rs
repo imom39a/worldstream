@@ -32,7 +32,15 @@ pub const NATIVE_SQLITE_BACKUP_ENVELOPE_SCHEMA_V1: &str =
     "worldstream/native-sqlite-backup-envelope/v1";
 
 const MAX_ENVELOPE_TEXT: usize = 512;
-const REQUIRED_COVERAGE_TABLES: [&str; 9] = [
+const REQUIRED_COVERAGE_TABLES: [&str; 18] = [
+    "retired_authority_fences_v1",
+    "principals",
+    "runners",
+    "capabilities",
+    "capability_scopes",
+    "runner_capability_memberships",
+    "authority_change_receipts",
+    "authority_audit",
     "room_integrity",
     "room_members",
     "timers",
@@ -42,10 +50,11 @@ const REQUIRED_COVERAGE_TABLES: [&str; 9] = [
     "activation_intents",
     "activation_operation_receipts",
     "semantic_receipts",
+    "integrity_incidents",
 ];
 
 const TRUSTED_COMPATIBILITY_JSON_DIGEST: &str =
-    "69c44216a2f2815a3af012b179a83b67ee9bd15d46c0f7d3f7858012acb4d1ec";
+    "3aa82c4c1c0c95040f0f70f2115bea62242d35be1b7a577e4ac75a261ea60ab7";
 
 type RequestKey = (NativeSqliteRequestLedgerV1, Vec<u8>);
 type RequestMap = BTreeMap<RequestKey, Vec<u8>>;

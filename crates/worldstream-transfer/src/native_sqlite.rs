@@ -17,7 +17,8 @@ use worldstream_backup::native_sqlite::{
 
 use crate::{
     BackendFingerprintV1, CanonicalRecordKindV1, DeploymentIdentityV1, DigestV1, LogicalRecordV1,
-    PackIdentityV1, ResourceIdentityV1, SessionStatePolicyV1, TransferBundleV1, TransferError,
+    PackIdentityV1, ResourceIdentityV1, ResourceKindV1, ResourcePayloadV1, SessionStatePolicyV1,
+    TransferBundleV1, TransferError,
 };
 
 const MANIFEST_MAGIC: &[u8; 8] = b"WSNSMF01";
@@ -28,6 +29,14 @@ const DEPLOYMENT_IDENTITY: &str = "deployment/identity";
 const ROW_IDENTITY_PREFIX: &str = "native-sqlite/row/";
 
 const TABLES: &[(&str, usize)] = &[
+    ("retired_authority_fences_v1", 6),
+    ("principals", 4),
+    ("runners", 4),
+    ("capabilities", 10),
+    ("capability_scopes", 2),
+    ("runner_capability_memberships", 3),
+    ("authority_change_receipts", 9),
+    ("authority_audit", 12),
     ("activation_decisions", 5),
     ("activation_intents", 19),
     ("activation_operation_receipts", 9),
@@ -37,6 +46,7 @@ const TABLES: &[(&str, usize)] = &[
     ("room_members", 13),
     ("semantic_receipts", 12),
     ("timers", 6),
+    ("integrity_incidents", 6),
 ];
 
 /// The immutable inputs needed to build an operational-row transfer bundle.
@@ -56,6 +66,9 @@ pub struct NativeSqliteTransferSpecV1 {
     pub pack: PackIdentityV1,
     /// Content-addressed resources bound to the transfer.
     pub resources: Vec<ResourceIdentityV1>,
+    /// Exact resource payloads corresponding one-for-one with `resources`.
+    /// An empty vector is authoritative only when `resources` is empty.
+    pub resource_payloads: Vec<ResourcePayloadV1>,
     /// Session state policy carried by the transfer contract.
     pub session_state: SessionStatePolicyV1,
     /// Complete source-authenticated pack/resource identity set. Its
@@ -85,6 +98,7 @@ impl NativeSqliteTransferSpecV1 {
             target_backend,
             pack: pack.clone(),
             resources: resources.clone(),
+            resource_payloads: Vec::new(),
             session_state,
             deployment_identity: DeploymentIdentityV1::new(vec![pack], resources).ok(),
         }
@@ -116,9 +130,36 @@ impl NativeSqliteTransferSpecV1 {
             target_backend,
             pack,
             resources: deployment_identity.resources().to_vec(),
+            resource_payloads: Vec::new(),
             session_state,
             deployment_identity: Some(deployment_identity),
         }
+    }
+
+    /// Builds a source-authenticated specification with the complete identity
+    /// set and every exact resource payload it names.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_deployment_resources(
+        bundle_id: impl Into<String>,
+        lineage_id: impl Into<String>,
+        source_epoch: u64,
+        source_backend: BackendFingerprintV1,
+        target_backend: BackendFingerprintV1,
+        deployment_identity: DeploymentIdentityV1,
+        resource_payloads: Vec<ResourcePayloadV1>,
+        session_state: SessionStatePolicyV1,
+    ) -> Self {
+        let mut spec = Self::new_with_deployment_identity(
+            bundle_id,
+            lineage_id,
+            source_epoch,
+            source_backend,
+            target_backend,
+            deployment_identity,
+            session_state,
+        );
+        spec.resource_payloads = resource_payloads;
+        spec
     }
 
     /// Returns the complete source identity set that must be carried by a
@@ -237,7 +278,7 @@ pub enum NativeSqliteTransferError {
 struct PreparedRow {
     table: &'static str,
     identity: String,
-    room_id: String,
+    room_id: Option<String>,
     values: Vec<NativeSqliteValueV1>,
     bytes: Vec<u8>,
 }
@@ -420,7 +461,14 @@ impl NativeSqliteTransferAdapterV1 {
                     });
                 }
             };
-            if room_policies.insert(row.room_id.clone(), policy).is_some() {
+            let room_id = row
+                .room_id
+                .clone()
+                .ok_or(NativeSqliteTransferError::InvalidRow {
+                    table: row.table,
+                    what: "Room identity",
+                })?;
+            if room_policies.insert(room_id, policy).is_some() {
                 return Err(NativeSqliteTransferError::DuplicateRow {
                     table: row.table,
                     subject: subject(&row.identity),
@@ -470,6 +518,34 @@ impl NativeSqliteTransferAdapterV1 {
                 })?
                 .canonical_bytes()?,
         ));
+        let deployment_identity = spec.deployment_identity.as_ref().ok_or(
+            NativeSqliteTransferError::CanonicalEvidence {
+                what: "missing complete deployment identity",
+            },
+        )?;
+        let mut payloads = spec.resource_payloads.iter().collect::<Vec<_>>();
+        payloads.sort_by(|left, right| {
+            (left.identity().kind(), left.identity().identity())
+                .cmp(&(right.identity().kind(), right.identity().identity()))
+        });
+        if payloads.len() != deployment_identity.resources().len()
+            || payloads
+                .iter()
+                .map(|payload| payload.identity())
+                .ne(deployment_identity.resources().iter())
+        {
+            return Err(NativeSqliteTransferError::CanonicalEvidence {
+                what: "resource payload set",
+            });
+        }
+        for payload in payloads {
+            payload.identity().verify_bytes(payload.bytes())?;
+            records.push((
+                CanonicalRecordKindV1::ArtifactBytes,
+                resource_record_identity(payload.identity()),
+                payload.bytes().to_vec(),
+            ));
+        }
         records.push((
             CanonicalRecordKindV1::SchemaManifest,
             MANIFEST_IDENTITY.to_owned(),
@@ -520,7 +596,8 @@ fn validate_canonical_records(
     let mut seen = BTreeSet::new();
     let mut deployment_lineage = 0usize;
     let mut storage_epoch = 0usize;
-    let mut deployment_identity = 0usize;
+    let mut deployment_identity = None;
+    let mut resource_payloads = BTreeMap::<String, &[u8]>::new();
     let mut room_kinds = BTreeMap::<String, BTreeSet<CanonicalRecordKindV1>>::new();
 
     for record in records {
@@ -547,23 +624,25 @@ fn validate_canonical_records(
             CanonicalRecordKindV1::DeploymentLineage => deployment_lineage += 1,
             CanonicalRecordKindV1::StorageEpoch => storage_epoch += 1,
             CanonicalRecordKindV1::ArtifactMetadata if record.identity() == DEPLOYMENT_IDENTITY => {
-                deployment_identity += 1;
-                DeploymentIdentityV1::from_canonical_bytes(record.bytes()).map_err(|_| {
-                    NativeSqliteTransferError::CanonicalEvidence {
-                        what: "deployment identity encoding",
-                    }
-                })?;
+                let identity =
+                    DeploymentIdentityV1::from_canonical_bytes(record.bytes()).map_err(|_| {
+                        NativeSqliteTransferError::CanonicalEvidence {
+                            what: "deployment identity encoding",
+                        }
+                    })?;
+                if deployment_identity.replace(identity).is_some() {
+                    return Err(NativeSqliteTransferError::CanonicalEvidence {
+                        what: "deployment identity cardinality",
+                    });
+                }
+            }
+            CanonicalRecordKindV1::ArtifactBytes => {
+                resource_payloads.insert(record.identity().to_owned(), record.bytes());
             }
             _ => {
                 if let Some(room_id) = canonical_room_id(record.identity())? {
                     if !summary.room_policies.contains_key(&room_id) {
                         return relation("canonical evidence", "canonical Room is absent");
-                    }
-                    if summary.room_policies[&room_id] == NativeSqliteRoomPolicyV1::IsolatedCorrupt
-                    {
-                        return Err(NativeSqliteTransferError::CanonicalEvidence {
-                            what: "isolated Room canonical promotion",
-                        });
                     }
                     room_kinds.entry(room_id).or_default().insert(kind);
                 }
@@ -573,9 +652,15 @@ fn validate_canonical_records(
 
     if deployment_lineage == 0
         && storage_epoch == 0
-        && deployment_identity == 1
+        && deployment_identity.is_some()
         && room_kinds.is_empty()
     {
+        verify_resource_payload_records(
+            deployment_identity
+                .as_ref()
+                .unwrap_or_else(|| unreachable!()),
+            &resource_payloads,
+        )?;
         return Ok(());
     }
     if deployment_lineage != 1 {
@@ -588,25 +673,21 @@ fn validate_canonical_records(
             what: "storage epoch cardinality",
         });
     }
-    if deployment_identity > 1 {
+    if let Some(identity) = &deployment_identity {
+        verify_resource_payload_records(identity, &resource_payloads)?;
+    } else if !resource_payloads.is_empty() {
         return Err(NativeSqliteTransferError::CanonicalEvidence {
-            what: "deployment identity cardinality",
+            what: "resource payloads without deployment identity",
         });
     }
     for room_id in summary.room_policies.keys() {
-        // An explicitly pre-existing isolated Room is carried by its exact
-        // operational rows and integrity witness. It must not be promoted to
-        // healthy canonical serving state merely because the source bundle
-        // contains unrelated healthy Rooms.
-        if summary.room_policies[room_id] == NativeSqliteRoomPolicyV1::IsolatedCorrupt {
-            continue;
-        }
         let kinds = room_kinds.get(room_id);
         for kind in [
             CanonicalRecordKindV1::RoomGenesis,
             CanonicalRecordKindV1::RoomHead,
             CanonicalRecordKindV1::CoreMaterialization,
             CanonicalRecordKindV1::ActivityMaterialization,
+            CanonicalRecordKindV1::ArtifactMetadata,
         ] {
             if !kinds.is_some_and(|kinds| kinds.contains(&kind)) {
                 return Err(NativeSqliteTransferError::MissingCanonicalRecord { kind });
@@ -614,6 +695,41 @@ fn validate_canonical_records(
         }
     }
     Ok(())
+}
+
+fn verify_resource_payload_records(
+    identity: &DeploymentIdentityV1,
+    payloads: &BTreeMap<String, &[u8]>,
+) -> Result<(), NativeSqliteTransferError> {
+    if payloads.len() != identity.resources().len() {
+        return Err(NativeSqliteTransferError::CanonicalEvidence {
+            what: "resource payload cardinality",
+        });
+    }
+    for resource in identity.resources() {
+        let record_identity = resource_record_identity(resource);
+        let bytes =
+            payloads
+                .get(&record_identity)
+                .ok_or(NativeSqliteTransferError::CanonicalEvidence {
+                    what: "resource payload absent",
+                })?;
+        resource
+            .verify_bytes(bytes)
+            .map_err(|_| NativeSqliteTransferError::CanonicalEvidence {
+                what: "resource payload identity mismatch",
+            })?;
+    }
+    Ok(())
+}
+
+fn resource_record_identity(resource: &ResourceIdentityV1) -> String {
+    let kind = match resource.kind() {
+        ResourceKindV1::Artifact => "artifact",
+        ResourceKindV1::Codec => "codec",
+        ResourceKindV1::Schema => "schema",
+    };
+    format!("deployment/resource/{kind}/{}", resource.identity())
 }
 
 fn validate_canonical_identity(
@@ -759,7 +875,7 @@ fn validate_relations(
         .filter(|row| row.table == "room_members")
         .map(|row| {
             Ok::<_, NativeSqliteTransferError>((
-                row.room_id.clone(),
+                required_room_id(row)?.to_owned(),
                 text(&row.values, 1, row.table)?.to_owned(),
             ))
         })
@@ -769,7 +885,7 @@ fn validate_relations(
         .filter(|row| row.table == "activation_decisions")
         .map(|row| {
             Ok::<_, NativeSqliteTransferError>((
-                row.room_id.clone(),
+                required_room_id(row)?.to_owned(),
                 integer(&row.values, 1, row.table)?,
                 text(&row.values, 2, row.table)?.to_owned(),
             ))
@@ -780,22 +896,301 @@ fn validate_relations(
         .filter(|row| row.table == "activation_intents")
         .map(|row| text(&row.values, 0, row.table).map(str::to_owned))
         .collect::<Result<BTreeSet<_>, _>>()?;
+    let principals = rows
+        .iter()
+        .filter(|row| row.table == "principals")
+        .map(|row| text(&row.values, 0, row.table).map(str::to_owned))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let runners = rows
+        .iter()
+        .filter(|row| row.table == "runners")
+        .map(|row| text(&row.values, 0, row.table).map(str::to_owned))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let capabilities = rows
+        .iter()
+        .filter(|row| row.table == "capabilities")
+        .map(|row| text(&row.values, 0, row.table).map(str::to_owned))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let capability_profiles = rows
+        .iter()
+        .filter(|row| row.table == "capabilities")
+        .map(|row| {
+            Ok::<_, NativeSqliteTransferError>((
+                text(&row.values, 0, row.table)?.to_owned(),
+                text(&row.values, 3, row.table)?.to_owned(),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let capability_owners = rows
+        .iter()
+        .filter(|row| row.table == "capabilities")
+        .map(|row| {
+            Ok::<_, NativeSqliteTransferError>((
+                text(&row.values, 0, row.table)?.to_owned(),
+                text(&row.values, 2, row.table)?.to_owned(),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let mut authority_receipts = BTreeMap::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.table == "authority_change_receipts")
+    {
+        let change_id = text(&row.values, 0, row.table)?.to_owned();
+        if authority_receipts.insert(change_id, row).is_some() {
+            return relation(row.table, "unique authority change Receipt");
+        }
+    }
+    let mut authority_audits = BTreeMap::new();
+    for row in rows.iter().filter(|row| row.table == "authority_audit") {
+        let change_id = text(&row.values, 1, row.table)?.to_owned();
+        if authority_audits.insert(change_id, row).is_some() {
+            return relation(row.table, "unique audit for authority change Receipt");
+        }
+    }
+    if authority_receipts.keys().ne(authority_audits.keys()) {
+        return relation(
+            "authority_audit",
+            "one-to-one authority change Receipt audit pairing",
+        );
+    }
+    let authority_target_exists =
+        |target_kind: &str, target_id: &str, secondary_target: Option<&str>| match target_kind {
+            "bootstrap" => secondary_target.is_some_and(|capability_id| {
+                principals.contains(target_id)
+                    && capabilities.contains(capability_id)
+                    && capability_owners.get(capability_id).map(String::as_str) == Some(target_id)
+            }),
+            "principal" => secondary_target.is_none() && principals.contains(target_id),
+            "capability" => secondary_target.is_none() && capabilities.contains(target_id),
+            "runner" => secondary_target.is_none() && runners.contains(target_id),
+            _ => false,
+        };
 
     for row in rows {
-        let Some(policy) = room_policies.get(&row.room_id) else {
-            return Err(NativeSqliteTransferError::MissingRelation {
-                relation: "room_integrity for operational Room",
-            });
-        };
-        let isolated = *policy == NativeSqliteRoomPolicyV1::IsolatedCorrupt;
+        let policy =
+            if let Some(room_id) = row.room_id.as_deref() {
+                Some(room_policies.get(room_id).ok_or(
+                    NativeSqliteTransferError::MissingRelation {
+                        relation: "room_integrity for operational Room",
+                    },
+                )?)
+            } else {
+                None
+            };
+        let isolated =
+            policy.is_some_and(|policy| *policy == NativeSqliteRoomPolicyV1::IsolatedCorrupt);
         match row.table {
+            "retired_authority_fences_v1" => {
+                if integer(&row.values, 2, row.table)? <= 0
+                    || blob(&row.values, 4, row.table)?.len() != 32
+                    || !matches!(integer(&row.values, 5, row.table)?, 0 | 1)
+                {
+                    return invalid(row.table, "authority fence");
+                }
+                let _ = text(&row.values, 0, row.table)?;
+                let _ = text(&row.values, 1, row.table)?;
+                let _ = blob(&row.values, 3, row.table)?;
+            }
+            "principals" => {
+                if !matches!(text(&row.values, 1, row.table)?, "human" | "agent")
+                    || !matches!(text(&row.values, 2, row.table)?, "enabled" | "disabled")
+                    || integer(&row.values, 3, row.table)? <= 0
+                {
+                    return invalid(row.table, "Principal authority fact");
+                }
+            }
+            "runners" => {
+                if !principals.contains(text(&row.values, 1, row.table)?)
+                    || !matches!(text(&row.values, 2, row.table)?, "enabled" | "revoked")
+                    || integer(&row.values, 3, row.table)? <= 0
+                {
+                    return relation(row.table, "Runner owner Principal");
+                }
+            }
+            "capabilities" => {
+                let profile = text(&row.values, 3, row.table)?;
+                let target_room = optional_text(&row.values, 4, row.table)?;
+                let target_member = optional_text(&row.values, 5, row.table)?;
+                let runner = optional_text(&row.values, 6, row.table)?;
+                if blob(&row.values, 1, row.table)?.len() != 32
+                    || !principals.contains(text(&row.values, 2, row.table)?)
+                    || !matches!(profile, "room_member" | "host_operator" | "runner_control")
+                    || integer(&row.values, 7, row.table)? <= 0
+                {
+                    return relation(row.table, "Capability authority fact");
+                }
+                let profile_relation_valid = match profile {
+                    "room_member" => {
+                        target_room
+                            .zip(target_member)
+                            .is_some_and(|(room_id, member_id)| {
+                                runner.is_none()
+                                    && room_policies.contains_key(room_id)
+                                    && members.contains(&(room_id.to_owned(), member_id.to_owned()))
+                            })
+                    }
+                    "host_operator" => {
+                        target_member.is_none()
+                            && runner.is_none()
+                            && target_room.is_none_or(|room_id| room_policies.contains_key(room_id))
+                    }
+                    "runner_control" => {
+                        target_room.is_none()
+                            && target_member.is_none()
+                            && runner.is_some_and(|runner_id| runners.contains(runner_id))
+                    }
+                    _ => false,
+                };
+                if !profile_relation_valid {
+                    return relation(row.table, "Capability target relation");
+                }
+                let _ = optional_text(&row.values, 8, row.table)?;
+                let _ = optional_text(&row.values, 9, row.table)?;
+            }
+            "capability_scopes" => {
+                if !capabilities.contains(text(&row.values, 0, row.table)?)
+                    || !matches!(
+                        text(&row.values, 1, row.table)?,
+                        "room:attach"
+                            | "room:act"
+                            | "room:observe_public"
+                            | "room:observe_member"
+                            | "room:replay"
+                            | "activation:offer_receive"
+                            | "activation:claim"
+                            | "activation:complete"
+                            | "operator:room_admin"
+                            | "operator:backup"
+                    )
+                {
+                    return relation(row.table, "Capability scope owner");
+                }
+            }
+            "runner_capability_memberships" => {
+                let capability_id = text(&row.values, 0, row.table)?;
+                let room_id = text(&row.values, 1, row.table)?;
+                let member_id = text(&row.values, 2, row.table)?;
+                if !capabilities.contains(capability_id)
+                    || capability_profiles.get(capability_id).map(String::as_str)
+                        != Some("runner_control")
+                    || !room_policies.contains_key(room_id)
+                    || !members.contains(&(room_id.to_owned(), member_id.to_owned()))
+                {
+                    return relation(row.table, "Runner Capability Membership");
+                }
+            }
+            "authority_change_receipts" => {
+                let actor = optional_text(&row.values, 1, row.table)?;
+                let result_kind = text(&row.values, 3, row.table)?;
+                let target_kind = text(&row.values, 4, row.table)?;
+                let target_id = text(&row.values, 5, row.table)?;
+                let secondary_target = optional_text(&row.values, 6, row.table)?;
+                let generation = integer(&row.values, 7, row.table)?;
+                if blob(&row.values, 2, row.table)?.len() != 32
+                    || !matches!(
+                        result_kind,
+                        "authority_bootstrapped"
+                            | "principal_created"
+                            | "capability_registered"
+                            | "capability_narrowed"
+                            | "capability_revoked"
+                            | "principal_status_changed"
+                            | "runner_registered"
+                            | "runner_revoked"
+                    )
+                    || !matches!(
+                        target_kind,
+                        "bootstrap" | "principal" | "capability" | "runner"
+                    )
+                    || generation <= 0
+                    || if result_kind == "authority_bootstrapped" {
+                        actor.is_some()
+                            || target_kind != "bootstrap"
+                            || secondary_target.is_none()
+                            || generation != 1
+                    } else {
+                        actor.is_none_or(|actor| !principals.contains(actor))
+                            || target_kind == "bootstrap"
+                            || secondary_target.is_some()
+                    }
+                {
+                    return invalid(row.table, "authority change Receipt");
+                }
+                if !authority_target_exists(target_kind, target_id, secondary_target) {
+                    return relation(row.table, "authority change target entity");
+                }
+                let _ = text(&row.values, 8, row.table)?;
+            }
+            "authority_audit" => {
+                let actor = optional_text(&row.values, 2, row.table)?;
+                let target_kind = text(&row.values, 3, row.table)?;
+                let target_id = text(&row.values, 4, row.table)?;
+                let secondary_target = optional_text(&row.values, 5, row.table)?;
+                let change_kind = text(&row.values, 6, row.table)?;
+                let prior_generation = optional_integer(&row.values, 7, row.table)?;
+                let resulting_generation = integer(&row.values, 8, row.table)?;
+                if integer(&row.values, 0, row.table)? <= 0
+                    || !matches!(
+                        target_kind,
+                        "bootstrap" | "principal" | "capability" | "runner"
+                    )
+                    || !authority_target_exists(target_kind, target_id, secondary_target)
+                    || !matches!(
+                        change_kind,
+                        "bootstrap_authority"
+                            | "create_principal"
+                            | "register_capability"
+                            | "register_runner"
+                            | "narrow_capability"
+                            | "revoke_capability"
+                            | "revoke_runner"
+                            | "set_principal_status"
+                    )
+                    || !match prior_generation {
+                        None => resulting_generation == 1,
+                        Some(prior) => prior > 0 && resulting_generation == prior + 1,
+                    }
+                    || if change_kind == "bootstrap_authority" {
+                        actor.is_some() || target_kind != "bootstrap" || secondary_target.is_none()
+                    } else {
+                        actor.is_none_or(|actor| !principals.contains(actor))
+                            || target_kind == "bootstrap"
+                            || secondary_target.is_some()
+                    }
+                    || blob(&row.values, 11, row.table)?.len() != 32
+                {
+                    return relation(row.table, "authority audit Receipt");
+                }
+                let _ = text(&row.values, 9, row.table)?;
+                let _ = optional_text(&row.values, 10, row.table)?;
+            }
             "room_integrity" => {}
             "room_members" => {
                 let frame_head = integer(&row.values, 8, row.table)?;
-                if frame_head < 0 {
+                let membership_generation = integer(&row.values, 9, row.table)?;
+                let retained_frame_floor = integer(&row.values, 10, row.table)?;
+                let last_ack = optional_integer(&row.values, 11, row.table)?;
+                let reset_required = optional_integer(&row.values, 12, row.table)?;
+                let access_mode = text(&row.values, 5, row.table)?;
+                let role = optional_text(&row.values, 6, row.table)?;
+                if !matches!(text(&row.values, 3, row.table)?, "human" | "agent")
+                    || !matches!(
+                        text(&row.values, 4, row.table)?,
+                        "enabled" | "suspended" | "departed"
+                    )
+                    || !matches!(access_mode, "participant" | "spectator" | "operator")
+                    || (access_mode == "participant") != role.is_some()
+                    || !matches!(row.values.get(7), Some(NativeSqliteValueV1::Blob(_)))
+                    || frame_head < 0
+                    || membership_generation <= 0
+                    || retained_frame_floor <= 0
+                    || last_ack.is_some_and(|value| value <= 0)
+                    || reset_required.is_some_and(|value| value < 0)
+                {
                     return Err(NativeSqliteTransferError::InvalidRow {
                         table: row.table,
-                        what: "negative frame head",
+                        what: "Membership authority/delivery shape",
                     });
                 }
             }
@@ -812,7 +1207,7 @@ fn validate_relations(
             }
             "observation_frames" => {
                 let member = text(&row.values, 1, row.table)?;
-                if !members.contains(&(row.room_id.clone(), member.to_owned())) {
+                if !members.contains(&(required_room_id(row)?.to_owned(), member.to_owned())) {
                     return relation(row.table, "frame Membership");
                 }
                 let cause = integer(&row.values, 3, row.table)?;
@@ -829,7 +1224,7 @@ fn validate_relations(
             }
             "observation_consequences" => {
                 let member = text(&row.values, 1, row.table)?;
-                if !members.contains(&(row.room_id.clone(), member.to_owned())) {
+                if !members.contains(&(required_room_id(row)?.to_owned(), member.to_owned())) {
                     return relation(row.table, "consequence Membership");
                 }
                 if integer(&row.values, 2, row.table)? <= 0 {
@@ -843,7 +1238,7 @@ fn validate_relations(
                     return invalid(row.table, "Activation decision");
                 }
                 if let Some(target) = optional_text(&row.values, 3, row.table)?
-                    && !members.contains(&(row.room_id.clone(), target.to_owned()))
+                    && !members.contains(&(required_room_id(row)?.to_owned(), target.to_owned()))
                 {
                     return relation(row.table, "decision target Membership");
                 }
@@ -852,7 +1247,11 @@ fn validate_relations(
                 let cause = integer(&row.values, 2, row.table)?;
                 let decision = text(&row.values, 3, row.table)?;
                 if !isolated
-                    && !decisions.contains(&(row.room_id.clone(), cause, decision.to_owned()))
+                    && !decisions.contains(&(
+                        required_room_id(row)?.to_owned(),
+                        cause,
+                        decision.to_owned(),
+                    ))
                 {
                     return relation(row.table, "Activation decision");
                 }
@@ -875,7 +1274,103 @@ fn validate_relations(
                     validate_semantic_receipt(row)?;
                 }
             }
+            "integrity_incidents" => {
+                if integer(&row.values, 1, row.table)? <= 0
+                    || integer(&row.values, 2, row.table)? <= 0
+                    || !matches!(
+                        text(&row.values, 3, row.table)?,
+                        "healthy" | "faulted" | "quarantined"
+                    )
+                {
+                    return invalid(row.table, "integrity incident");
+                }
+                let _ = text(&row.values, 4, row.table)?;
+                let _ = optional_blob(&row.values, 5, row.table)?;
+            }
             _ => return Err(NativeSqliteTransferError::RowTableMismatch),
+        }
+    }
+
+    for (change_id, receipt) in authority_receipts {
+        let audit =
+            authority_audits
+                .get(&change_id)
+                .ok_or(NativeSqliteTransferError::InvalidRelation {
+                    table: "authority_audit",
+                    what: "authority change Receipt audit pairing",
+                })?;
+        let receipt_actor = optional_text(&receipt.values, 1, receipt.table)?;
+        let receipt_request_hash = blob(&receipt.values, 2, receipt.table)?;
+        let result_kind = text(&receipt.values, 3, receipt.table)?;
+        let receipt_target_kind = text(&receipt.values, 4, receipt.table)?;
+        let receipt_target_id = text(&receipt.values, 5, receipt.table)?;
+        let receipt_secondary = optional_text(&receipt.values, 6, receipt.table)?;
+        let receipt_generation = integer(&receipt.values, 7, receipt.table)?;
+        let receipt_checked_at = text(&receipt.values, 8, receipt.table)?;
+        let audit_actor = optional_text(&audit.values, 2, audit.table)?;
+        let audit_target_kind = text(&audit.values, 3, audit.table)?;
+        let audit_target_id = text(&audit.values, 4, audit.table)?;
+        let audit_secondary = optional_text(&audit.values, 5, audit.table)?;
+        let change_kind = text(&audit.values, 6, audit.table)?;
+        let audit_prior_generation = optional_integer(&audit.values, 7, audit.table)?;
+        let audit_generation = integer(&audit.values, 8, audit.table)?;
+        let audit_checked_at = text(&audit.values, 9, audit.table)?;
+        let audit_reason = optional_text(&audit.values, 10, audit.table)?;
+        let audit_request_hash = blob(&audit.values, 11, audit.table)?;
+        if receipt_actor != audit_actor
+            || receipt_request_hash != audit_request_hash
+            || receipt_target_kind != audit_target_kind
+            || receipt_target_id != audit_target_id
+            || receipt_secondary != audit_secondary
+            || receipt_generation != audit_generation
+            || receipt_checked_at != audit_checked_at
+        {
+            return relation(
+                "authority_audit",
+                "authority change Receipt audit field agreement",
+            );
+        }
+        let expected = match result_kind {
+            "authority_bootstrapped" => ("bootstrap", "bootstrap_authority", None, false),
+            "principal_created" => ("principal", "create_principal", None, false),
+            "capability_registered" => ("capability", "register_capability", None, false),
+            "runner_registered" => ("runner", "register_runner", None, false),
+            "capability_narrowed" => (
+                "capability",
+                "narrow_capability",
+                receipt_generation.checked_sub(1),
+                true,
+            ),
+            "capability_revoked" => (
+                "capability",
+                "revoke_capability",
+                receipt_generation.checked_sub(1),
+                true,
+            ),
+            "principal_status_changed" => (
+                "principal",
+                "set_principal_status",
+                receipt_generation.checked_sub(1),
+                true,
+            ),
+            "runner_revoked" => (
+                "runner",
+                "revoke_runner",
+                receipt_generation.checked_sub(1),
+                true,
+            ),
+            _ => return invalid(receipt.table, "authority change Receipt result"),
+        };
+        if receipt_target_kind != expected.0
+            || change_kind != expected.1
+            || audit_prior_generation != expected.2
+            || audit_reason.is_some() != expected.3
+            || (expected.2.is_none() && receipt_generation != 1)
+        {
+            return relation(
+                "authority_audit",
+                "authority change result and audit change mapping",
+            );
         }
     }
     Ok(())
@@ -960,6 +1455,27 @@ fn row_identity(
     values: &[NativeSqliteValueV1],
 ) -> Result<String, NativeSqliteTransferError> {
     let key = match table {
+        "retired_authority_fences_v1" => {
+            format!("authority/fence/{}", text(values, 0, table)?)
+        }
+        "principals" => format!("authority/principal/{}", text(values, 0, table)?),
+        "runners" => format!("authority/runner/{}", text(values, 0, table)?),
+        "capabilities" => format!("authority/capability/{}", text(values, 0, table)?),
+        "capability_scopes" => format!(
+            "authority/capability/{}/scope/{}",
+            text(values, 0, table)?,
+            text(values, 1, table)?
+        ),
+        "runner_capability_memberships" => format!(
+            "authority/capability/{}/membership/{}/{}",
+            text(values, 0, table)?,
+            text(values, 1, table)?,
+            text(values, 2, table)?
+        ),
+        "authority_change_receipts" => {
+            format!("authority/change/{}", text(values, 0, table)?)
+        }
+        "authority_audit" => format!("authority/audit/{}", integer(values, 0, table)?),
         "room_integrity" => format!("room/{}", text(values, 0, table)?),
         "room_members" => format!(
             "room/{}/member/{}",
@@ -1005,6 +1521,11 @@ fn row_identity(
             text(values, 0, table)?,
             hex(blob(values, 2, table)?)
         ),
+        "integrity_incidents" => format!(
+            "room/{}/integrity-incident/{}",
+            text(values, 0, table)?,
+            integer(values, 1, table)?
+        ),
         _ => return Err(NativeSqliteTransferError::RowTableMismatch),
     };
     if key.split('/').any(str::is_empty) {
@@ -1016,9 +1537,40 @@ fn row_identity(
 fn room_id(
     table: &'static str,
     values: &[NativeSqliteValueV1],
-) -> Result<String, NativeSqliteTransferError> {
-    let index = usize::from(table == "activation_intents");
-    Ok(text(values, index, table)?.to_owned())
+) -> Result<Option<String>, NativeSqliteTransferError> {
+    let index = match table {
+        "activation_intents" => Some(1),
+        "room_integrity"
+        | "room_members"
+        | "timers"
+        | "observation_frames"
+        | "observation_consequences"
+        | "activation_decisions"
+        | "activation_operation_receipts"
+        | "semantic_receipts"
+        | "integrity_incidents" => Some(0),
+        "retired_authority_fences_v1"
+        | "principals"
+        | "runners"
+        | "capabilities"
+        | "capability_scopes"
+        | "runner_capability_memberships"
+        | "authority_change_receipts"
+        | "authority_audit" => None,
+        _ => return Err(NativeSqliteTransferError::RowTableMismatch),
+    };
+    index
+        .map(|index| text(values, index, table).map(str::to_owned))
+        .transpose()
+}
+
+fn required_room_id(row: &PreparedRow) -> Result<&str, NativeSqliteTransferError> {
+    row.room_id
+        .as_deref()
+        .ok_or(NativeSqliteTransferError::InvalidRow {
+            table: row.table,
+            what: "Room identity",
+        })
 }
 
 fn encode_row(
@@ -1235,6 +1787,18 @@ fn integer(
     match values.get(index) {
         Some(NativeSqliteValueV1::Integer(value)) => Ok(*value),
         _ => invalid(table, "integer value"),
+    }
+}
+
+fn optional_integer(
+    values: &[NativeSqliteValueV1],
+    index: usize,
+    table: &'static str,
+) -> Result<Option<i64>, NativeSqliteTransferError> {
+    match values.get(index) {
+        Some(NativeSqliteValueV1::Integer(value)) => Ok(Some(*value)),
+        Some(NativeSqliteValueV1::Null) => Ok(None),
+        _ => invalid(table, "optional integer value"),
     }
 }
 
@@ -1463,10 +2027,10 @@ mod tests {
                     Value::Text("room-1".to_owned()),
                     Value::Text("member-1".to_owned()),
                     Value::Text("principal-1".to_owned()),
-                    Value::Text("user".to_owned()),
-                    Value::Text("active".to_owned()),
-                    Value::Text("read".to_owned()),
+                    Value::Text("human".to_owned()),
+                    Value::Text("enabled".to_owned()),
                     Value::Text("participant".to_owned()),
+                    Value::Text("counter".to_owned()),
                     Value::Blob(b"membership".to_vec()),
                     Value::Integer(1),
                     Value::Integer(1),
@@ -1595,7 +2159,92 @@ mod tests {
                 ],
             )],
         );
+        for table in [
+            "retired_authority_fences_v1",
+            "principals",
+            "runners",
+            "capabilities",
+            "capability_scopes",
+            "runner_capability_memberships",
+            "authority_change_receipts",
+            "authority_audit",
+            "integrity_incidents",
+        ] {
+            tables.insert(table.to_owned(), Vec::new());
+        }
         NativeSqliteOperationalRowsV1 { tables }
+    }
+
+    fn authority_rows() -> NativeSqliteOperationalRowsV1 {
+        let mut rows = healthy_rows();
+        rows.tables.insert(
+            "principals".to_owned(),
+            vec![row(
+                "principals",
+                vec![
+                    Value::Text("principal-1".to_owned()),
+                    Value::Text("human".to_owned()),
+                    Value::Text("enabled".to_owned()),
+                    Value::Integer(1),
+                ],
+            )],
+        );
+        rows.tables.insert(
+            "capabilities".to_owned(),
+            vec![row(
+                "capabilities",
+                vec![
+                    Value::Text("capability-1".to_owned()),
+                    Value::Blob(vec![7; 32]),
+                    Value::Text("principal-1".to_owned()),
+                    Value::Text("host_operator".to_owned()),
+                    Value::Text("room-1".to_owned()),
+                    Value::Null,
+                    Value::Null,
+                    Value::Integer(1),
+                    Value::Null,
+                    Value::Null,
+                ],
+            )],
+        );
+        rows.tables.insert(
+            "authority_change_receipts".to_owned(),
+            vec![row(
+                "authority_change_receipts",
+                vec![
+                    Value::Text("change-bootstrap".to_owned()),
+                    Value::Null,
+                    Value::Blob(vec![8; 32]),
+                    Value::Text("authority_bootstrapped".to_owned()),
+                    Value::Text("bootstrap".to_owned()),
+                    Value::Text("principal-1".to_owned()),
+                    Value::Text("capability-1".to_owned()),
+                    Value::Integer(1),
+                    Value::Text("2026-01-01T00:00:00Z".to_owned()),
+                ],
+            )],
+        );
+        rows.tables.insert(
+            "authority_audit".to_owned(),
+            vec![row(
+                "authority_audit",
+                vec![
+                    Value::Integer(1),
+                    Value::Text("change-bootstrap".to_owned()),
+                    Value::Null,
+                    Value::Text("bootstrap".to_owned()),
+                    Value::Text("principal-1".to_owned()),
+                    Value::Text("capability-1".to_owned()),
+                    Value::Text("bootstrap_authority".to_owned()),
+                    Value::Null,
+                    Value::Integer(1),
+                    Value::Text("2026-01-01T00:00:00Z".to_owned()),
+                    Value::Null,
+                    Value::Blob(vec![8; 32]),
+                ],
+            )],
+        );
+        rows
     }
 
     fn fixture_spec() -> NativeSqliteTransferSpecV1 {
@@ -1645,6 +2294,10 @@ mod tests {
             (
                 CanonicalRecordKindV1::ActivityMaterialization,
                 "room/room-1/activity-materialization",
+            ),
+            (
+                CanonicalRecordKindV1::ArtifactMetadata,
+                "room/room-1/pack-revision-lock",
             ),
         ]
         .into_iter()
@@ -1717,6 +2370,153 @@ mod tests {
             Err(NativeSqliteTransferError::ConflictingRow {
                 table: "timers",
                 ..
+            })
+        ));
+    }
+
+    #[test]
+    fn authority_receipt_and_audit_are_exactly_relation_bound() {
+        NativeSqliteTransferAdapterV1::summary_from_rows(&authority_rows())
+            .expect("valid bootstrap receipt/audit pair");
+
+        let mut missing_target = authority_rows();
+        missing_target
+            .tables
+            .get_mut("authority_change_receipts")
+            .expect("receipts")[0]
+            .values[5] = Value::Text("principal-missing".to_owned());
+        missing_target
+            .tables
+            .get_mut("authority_audit")
+            .expect("audit")[0]
+            .values[4] = Value::Text("principal-missing".to_owned());
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&missing_target),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "authority_change_receipts",
+                what: "authority change target entity"
+            })
+        ));
+
+        let mut unpaired = authority_rows();
+        unpaired
+            .tables
+            .get_mut("authority_audit")
+            .expect("audit")
+            .clear();
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&unpaired),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "authority_audit",
+                what: "one-to-one authority change Receipt audit pairing"
+            })
+        ));
+
+        let mut duplicate_audit = authority_rows();
+        let mut second = duplicate_audit.tables["authority_audit"][0].clone();
+        second.values[0] = Value::Integer(2);
+        duplicate_audit
+            .tables
+            .get_mut("authority_audit")
+            .expect("audit")
+            .push(second);
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&duplicate_audit),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "authority_audit",
+                what: "unique audit for authority change Receipt"
+            })
+        ));
+
+        let mut mismatched_fields = authority_rows();
+        mismatched_fields
+            .tables
+            .get_mut("authority_audit")
+            .expect("audit")[0]
+            .values[11] = Value::Blob(vec![9; 32]);
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&mismatched_fields),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "authority_audit",
+                what: "authority change Receipt audit field agreement"
+            })
+        ));
+
+        let mut incoherent_mapping = authority_rows();
+        let receipt = &mut incoherent_mapping
+            .tables
+            .get_mut("authority_change_receipts")
+            .expect("receipts")[0]
+            .values;
+        receipt[1] = Value::Text("principal-1".to_owned());
+        receipt[3] = Value::Text("capability_narrowed".to_owned());
+        receipt[4] = Value::Text("capability".to_owned());
+        receipt[5] = Value::Text("capability-1".to_owned());
+        receipt[6] = Value::Null;
+        receipt[7] = Value::Integer(2);
+        let audit = &mut incoherent_mapping
+            .tables
+            .get_mut("authority_audit")
+            .expect("audit")[0]
+            .values;
+        audit[2] = Value::Text("principal-1".to_owned());
+        audit[3] = Value::Text("capability".to_owned());
+        audit[4] = Value::Text("capability-1".to_owned());
+        audit[5] = Value::Null;
+        audit[6] = Value::Text("register_capability".to_owned());
+        audit[7] = Value::Integer(1);
+        audit[8] = Value::Integer(2);
+        audit[10] = Value::Text("reason".to_owned());
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&incoherent_mapping),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "authority_audit",
+                what: "authority change result and audit change mapping"
+            })
+        ));
+
+        let mut incoherent_target_kind = incoherent_mapping;
+        incoherent_target_kind
+            .tables
+            .get_mut("authority_change_receipts")
+            .expect("receipts")[0]
+            .values[3] = Value::Text("principal_status_changed".to_owned());
+        incoherent_target_kind
+            .tables
+            .get_mut("authority_audit")
+            .expect("audit")[0]
+            .values[6] = Value::Text("set_principal_status".to_owned());
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&incoherent_target_kind),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "authority_audit",
+                what: "authority change result and audit change mapping"
+            })
+        ));
+    }
+
+    #[test]
+    fn authority_bootstrap_capability_must_belong_to_bootstrap_principal() {
+        let mut rows = authority_rows();
+        rows.tables
+            .get_mut("principals")
+            .expect("principals")
+            .push(row(
+                "principals",
+                vec![
+                    Value::Text("principal-2".to_owned()),
+                    Value::Text("human".to_owned()),
+                    Value::Text("enabled".to_owned()),
+                    Value::Integer(1),
+                ],
+            ));
+        rows.tables.get_mut("capabilities").expect("capabilities")[0].values[2] =
+            Value::Text("principal-2".to_owned());
+        assert!(matches!(
+            NativeSqliteTransferAdapterV1::summary_from_rows(&rows),
+            Err(NativeSqliteTransferError::InvalidRelation {
+                table: "authority_change_receipts",
+                what: "authority change target entity"
             })
         ));
     }
@@ -1846,22 +2646,11 @@ mod tests {
     }
 
     #[test]
-    fn isolated_room_can_be_carried_without_canonical_promotion() {
+    fn isolated_room_carries_exact_canonical_bytes_without_semantic_promotion() {
         let mut rows = healthy_rows();
         rows.tables.get_mut("room_integrity").expect("integrity")[0].values[1] =
             Value::Text("quarantined".to_owned());
-        let canonical = canonical_records()
-            .into_iter()
-            .filter(|record| {
-                matches!(
-                    record.kind(),
-                    crate::RecordKindV1::Canonical(
-                        CanonicalRecordKindV1::DeploymentLineage
-                            | CanonicalRecordKindV1::StorageEpoch
-                    )
-                )
-            })
-            .collect::<Vec<_>>();
+        let canonical = canonical_records();
         let bundle = NativeSqliteTransferAdapterV1::from_operational_rows_with_canonical_records(
             &rows,
             &fixture_spec(),
@@ -1870,39 +2659,39 @@ mod tests {
         .expect("isolated operational evidence remains transferable");
         let summary = NativeSqliteTransferAdapterV1::validate_bundle(&bundle).expect("valid");
         assert!(summary.has_isolated_room());
+        for source in canonical
+            .iter()
+            .filter(|record| record.identity().starts_with("room/room-1/"))
+        {
+            let carried = bundle
+                .records()
+                .iter()
+                .find(|record| {
+                    record.kind() == source.kind() && record.identity() == source.identity()
+                })
+                .expect("isolated canonical bytes carried");
+            assert_eq!(carried.bytes(), source.bytes());
+            assert_eq!(carried.digest(), source.digest());
+        }
     }
 
     #[test]
-    fn adapter_rejects_isolated_room_canonical_promotion() {
+    fn adapter_rejects_incomplete_isolated_room_canonical_bytes() {
         let mut rows = healthy_rows();
         rows.tables.get_mut("room_integrity").expect("integrity")[0].values[1] =
             Value::Text("quarantined".to_owned());
         let mut canonical = canonical_records();
         canonical.retain(|record| {
-            matches!(
-                record.kind(),
-                crate::RecordKindV1::Canonical(
-                    CanonicalRecordKindV1::DeploymentLineage | CanonicalRecordKindV1::StorageEpoch
-                )
-            )
+            record.kind() != crate::RecordKindV1::Canonical(CanonicalRecordKindV1::RoomHead)
         });
-        canonical.push(
-            LogicalRecordV1::canonical(
-                99,
-                CanonicalRecordKindV1::RoomHead,
-                "room/room-1/head",
-                b"isolated head",
-            )
-            .expect("isolated canonical fixture"),
-        );
         assert!(matches!(
             NativeSqliteTransferAdapterV1::from_operational_rows_with_canonical_records(
                 &rows,
                 &fixture_spec(),
                 &canonical,
             ),
-            Err(NativeSqliteTransferError::CanonicalEvidence {
-                what: "isolated Room canonical promotion"
+            Err(NativeSqliteTransferError::MissingCanonicalRecord {
+                kind: CanonicalRecordKindV1::RoomHead
             })
         ));
     }

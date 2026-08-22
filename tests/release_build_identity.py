@@ -15,11 +15,23 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/release_build_identity.py"
+NOTICE_GENERATOR = ROOT / "scripts/generate-third-party-notices.py"
 
 
 def load_module():
     spec = importlib.util.spec_from_file_location(
         "worldstream_release_build_identity", SCRIPT
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_notice_generator():
+    spec = importlib.util.spec_from_file_location(
+        "worldstream_notice_generator", NOTICE_GENERATOR
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -189,6 +201,12 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
     assert manifest["components"]["oci_base"]["installed_database_sha256"].startswith(
         "sha256:"
     )
+    assert all(
+        line == line.rstrip(b" \t")
+        for line in entries[module.THIRD_PARTY_NOTICE_TEXT_PATH].splitlines()
+    )
+    assert entries[module.THIRD_PARTY_NOTICE_TEXT_PATH].endswith(b"\n")
+    assert not entries[module.THIRD_PARTY_NOTICE_TEXT_PATH].endswith(b"\n\n")
     assert any(
         row["declared_license"] == "MIT/Apache-2.0"
         for row in manifest["components"]["cargo"]
@@ -218,6 +236,15 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
     )
     with pytest.raises(module.IdentityError, match="npm notice coverage"):
         module.validate_third_party_notices(drifted_inventory)
+
+
+def test_notice_normalization_removes_per_line_ascii_trailing_whitespace():
+    generator = load_notice_generator()
+
+    assert (
+        generator.normalized_notice(b"first  \r\nsecond\t\r\n\r\n", "synthetic")
+        == b"first\nsecond\n"
+    )
 
 
 def test_spdx_preserves_legacy_license_text_and_models_every_apk_package():
@@ -404,6 +431,9 @@ def test_build_type_v3_example_is_canonical_complete_and_non_recursive():
     example = module.strict_json(raw, "build-type v3 example")
 
     module.validate_build_type_v3_example(example, entries)
+    assert hashlib.sha256(entries[module.BUILD_TYPE_PATH]).hexdigest() == (
+        module.BUILD_TYPE_SHA256
+    )
     assert raw == module.canonical_json(example)
     assert module.BUILD_TYPE == (
         "https://github.com/imom39a/worldstream/blob/"
@@ -421,6 +451,9 @@ def test_build_type_v3_example_is_canonical_complete_and_non_recursive():
     assert f"file:{module.BUILD_TYPE_PATH}" in material_uris
     assert f"file:{module.BUILD_TYPE_EXAMPLE_PATH}" not in material_uris
     assert module.BUILD_TYPE_EXAMPLE_PATH not in module.PINNED_MATERIAL_PATHS
+    assert {
+        f"file:{path}" for path in module.PROVENANCE_MATERIAL_PATHS
+    } <= material_uris
 
     byproducts = example["predicate"]["runDetails"]["byproducts"]
     assert [item["name"] for item in byproducts] == [
@@ -450,6 +483,74 @@ def test_build_type_v3_example_is_canonical_complete_and_non_recursive():
         assert observed["bundled_sqlite"]["archiver"]["path"]
         assert observed["bundled_sqlite"]["c_compiler"]["path"]
         assert observed["final_linker"]["path"]
+
+
+def test_provenance_materials_bind_release_evidence_execution_sources():
+    module = load_module()
+    entries = source_entries(module)
+    expected = {
+        "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs",
+        "examples/heist/wave10_live/browser_trace_init.js",
+        "examples/heist/wave10_live/run_absent_broker_live.py",
+        "examples/heist/wave10_live/run_browser_story.py",
+        "examples/heist/wave10_live/seed_browser_room.py",
+        "scripts/cdp-browser.py",
+        "scripts/install-pinned-browser.py",
+        "scripts/macos-source-quickstart.sh",
+        "scripts/postgres-native-restore-smoke.sh",
+        "scripts/postgres-packaged-acceptance.py",
+        "scripts/postgres-transfer-smoke.sh",
+        "scripts/reference-evidence-project.py",
+        "scripts/reference-target-workload.py",
+        "scripts/release-evidence-produce-reference.py",
+        "web/console/live-browser-story.sh",
+    }
+
+    assert expected <= set(module.PROVENANCE_MATERIAL_PATHS)
+    assert not set(module.PROVENANCE_MATERIAL_PATHS) & set(module.PINNED_MATERIAL_PATHS)
+    assert all(entries[path] for path in module.PROVENANCE_MATERIAL_PATHS)
+    assert {
+        ("macos-source", "Install exact path-safe Chrome for Testing"),
+        ("macos-source", "Run source-only quickstart"),
+        (
+            "macos-source-release",
+            "Produce typed dual-architecture macOS source evidence",
+        ),
+        ("packaged-backend-release", "Install exact path-safe Chrome for Testing"),
+        (
+            "packaged-backend-release",
+            "Run package-bound browser Heist plus six backend cells",
+        ),
+        (
+            "reference-performance-release",
+            "Build the source-bound snapshot-tail fixture generator",
+        ),
+        (
+            "reference-performance-release",
+            "Run the exact frozen packaged reference-target workload",
+        ),
+        (
+            "reference-performance-release",
+            "Project exact raw measurements into six normalized reports",
+        ),
+        (
+            "reference-performance-release",
+            "Produce typed measured non-SLA reference evidence",
+        ),
+    } <= set(module.SLSA_EXECUTION_STEP_CONTRACTS)
+
+
+def test_immutable_build_type_bytes_are_required_by_identity_and_example():
+    module = load_module()
+    entries = source_entries(module)
+    example = module.build_type_v3_example(entries)
+    drifted = dict(entries)
+    drifted[module.BUILD_TYPE_PATH] += b"\n"
+
+    with pytest.raises(module.IdentityError, match="immutable published bytes"):
+        source_identity(module, drifted)
+    with pytest.raises(module.IdentityError, match="immutable published bytes"):
+        module.validate_build_type_v3_example(example, drifted)
 
 
 def test_withdrawn_build_type_v2_has_only_a_canonical_non_statement_tombstone():
@@ -653,7 +754,7 @@ def test_pnpm_tarball_integrity_is_bound_in_identity_spdx_slsa_and_workflow():
     ].replace(
         b"          corepack install\n", b"          corepack install pnpm@11.19.0\n", 1
     )
-    with pytest.raises(module.IdentityError, match="pnpm integrity-pinned"):
+    with pytest.raises(module.IdentityError, match="provenance execution step"):
         module.validate_workflow_producer_contract(drifted_workflow)
 
 
@@ -822,7 +923,7 @@ def test_payload_step_control_flow_cannot_be_disabled_or_spoofed():
     mutations = []
 
     disabled = workflow.replace(
-        b"        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}\n        shell: bash\n",
+        b"        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}\n        shell: bash\n",
         b"        if: ${{ false }}\n        shell: bash\n",
         1,
     )
@@ -834,8 +935,8 @@ def test_payload_step_control_flow_cannot_be_disabled_or_spoofed():
     )
     mutations.append(renamed)
     wrong_shell = workflow.replace(
-        b"      - name: Build and test OCI release image\n        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}\n        shell: bash\n",
-        b"      - name: Build and test OCI release image\n        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}\n        shell: pwsh\n",
+        b"      - name: Build and test OCI release image\n        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}\n        shell: bash\n",
+        b"      - name: Build and test OCI release image\n        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}\n        shell: pwsh\n",
         1,
     )
     mutations.append(wrong_shell)
@@ -846,7 +947,7 @@ def test_payload_step_control_flow_cannot_be_disabled_or_spoofed():
     )
     mutations.append(dead_code)
     disabled_setup = workflow.replace(
-        b"      - name: Configure pinned docker-container Buildx for OCI export\n        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}\n",
+        b"      - name: Configure pinned docker-container Buildx for OCI export\n        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}\n",
         b"      - name: Configure pinned docker-container Buildx for OCI export\n        if: ${{ false }}\n",
         1,
     )
@@ -866,6 +967,75 @@ def test_payload_step_control_flow_cannot_be_disabled_or_spoofed():
         drifted = dict(entries)
         drifted[module.WORKFLOW_PATH] = mutation
         with pytest.raises(module.IdentityError, match="payload step|OCI setup step"):
+            module.validate_workflow_producer_contract(drifted)
+
+
+def test_provenance_execution_steps_cannot_be_made_inert():
+    module = load_module()
+    entries = source_entries(module)
+    workflow = entries[module.WORKFLOW_PATH]
+
+    ui_inert = workflow.replace(
+        b"          pnpm install --frozen-lockfile\n"
+        b"          pnpm --dir web/console build\n",
+        b"          if false; then\n"
+        b"            pnpm install --frozen-lockfile\n"
+        b"            pnpm --dir web/console build\n"
+        b"          fi\n",
+        1,
+    )
+    corepack_inert = workflow.replace(
+        b"          corepack enable\n          corepack install\n",
+        b"          if false; then\n"
+        b"            corepack enable\n"
+        b"            corepack install\n"
+        b"          fi\n",
+        1,
+    )
+    aggregation_inert = workflow.replace(
+        b'          "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py \\\n',
+        b"          if false; then\n"
+        b'            "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py \\\n',
+        1,
+    ).replace(
+        b"            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json\n",
+        b"            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json\n"
+        b"          fi\n",
+        1,
+    )
+    for mutation in (ui_inert, corepack_inert, aggregation_inert):
+        assert mutation != workflow
+        drifted = dict(entries)
+        drifted[module.WORKFLOW_PATH] = mutation
+        with pytest.raises(module.IdentityError, match="provenance execution step"):
+            module.validate_workflow_producer_contract(drifted)
+
+
+def test_release_jobs_are_main_bound_environment_gated_and_oidc_minimal():
+    module = load_module()
+    entries = source_entries(module)
+    workflow = entries[module.WORKFLOW_PATH]
+    mutations = (
+        workflow.replace(
+            b"    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}\n"
+            b"    permissions:\n",
+            b"    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}\n"
+            b"    permissions:\n",
+            1,
+        ),
+        workflow.replace(b"    environment: worldstream-release\n", b"", 1),
+        workflow.replace(b"      id-token: write\n", b"      id-token: read\n", 1),
+        workflow.replace(
+            b"  release-signing:\n",
+            b"  release-signing:\n    # injected signer drift\n",
+            1,
+        ),
+    )
+    for mutation in mutations:
+        assert mutation != workflow
+        drifted = dict(entries)
+        drifted[module.WORKFLOW_PATH] = mutation
+        with pytest.raises(module.IdentityError):
             module.validate_workflow_producer_contract(drifted)
 
 

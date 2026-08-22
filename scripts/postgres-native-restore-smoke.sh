@@ -193,6 +193,16 @@ if [[ -z "$source_host" || -z "$source_port" || -z "$target_host" || -z "$target
       sleep 1
     done
   done
+  runtime_role="worldstream_native_runtime"
+  runtime_password="${password}_runtime"
+  runtime_setup_sql="CREATE ROLE $runtime_role LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION; ALTER DEFAULT PRIVILEGES FOR ROLE $source_user IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO $runtime_role; ALTER DEFAULT PRIVILEGES FOR ROLE $source_user IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO $runtime_role; GRANT USAGE ON SCHEMA public TO $runtime_role;"
+  if ! "$docker_bin" exec --env PGPASSFILE=/run/secrets/worldstream-pgpass "$source_container" \
+    psql --no-password --host 127.0.0.1 --port 5432 --dbname "$source_db" \
+    --username "$source_user" --quiet --set ON_ERROR_STOP=1 --command "$runtime_setup_sql" \
+    >"$temp_root/runtime-role.stdout" 2>"$temp_root/runtime-role.stderr"; then
+    write_static incomplete native_source_runtime_role_setup_failed "$EXIT_INCOMPLETE"
+    exit "$EXIT_INCOMPLETE"
+  fi
   seed_stdout="$temp_root/source-seed.stdout"
   seed_stderr="$temp_root/source-seed.stderr"
   set +e
@@ -201,7 +211,8 @@ if [[ -z "$source_host" || -z "$source_port" || -z "$target_host" || -z "$target
     WORLDSTREAM_PG_TRANSFER_CARGO="$cargo_bin" \
     WORLDSTREAM_PG_TRANSFER_PYTHON="$(command -v python3)" \
     WORLDSTREAM_PG_TRANSFER_ADMIN_DSN="host=$source_host port=$source_port user=$source_user password=$password dbname=$source_db" \
-    WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN="host=$source_host port=$source_port user=$source_user password=$password dbname=$source_db" \
+    WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN="host=$source_host port=$source_port user=$runtime_role password=$runtime_password dbname=$source_db" \
+    WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE="$runtime_role" \
     scripts/postgres-transfer-smoke.sh --build-source >"$seed_stdout" 2>"$seed_stderr"
   seed_code=$?
   set -e

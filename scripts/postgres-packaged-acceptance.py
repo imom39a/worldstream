@@ -56,6 +56,19 @@ PGBOUNCER_DIGEST = (
 EXPECTED_ENGINE = "postgresql/17.11; server_version_num=170011"
 PACKAGE_REPORT_SCHEMA = "worldstream/package-report/v1"
 PACKAGE_BINDING_SCHEMA = "worldstream/package-binding/v1"
+BROWSER_STORY_SCHEMA = "worldstream/package-browser-heist/v1"
+PINNED_BROWSER_IDENTITY = {
+    "product": "chrome-for-testing-headless-shell",
+    "version": "152.0.7977.54",
+    "sha256": "sha256:8a3f72f9676736c45e94ae3279b4e2e6a1e323187f9a5e73c9a760e8cc1296ea",
+    "size_bytes": 195_435_856,
+    "version_output": "Google Chrome for Testing 152.0.7977.54",
+    "distribution": {
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.54/linux64/chrome-headless-shell-linux64.zip",
+        "sha256": "sha256:11cedb5568cd374a76eb738e40bd434cd0c9956820fb406b8bd9edca53428d3e",
+        "size_bytes": 119_570_919,
+    },
+}
 STORAGE_BINDING_SCHEMA = "worldstream/packaged-storage-bindings/v1"
 FROZEN_STORAGE_PROFILE = "frozen_local_ext4"
 POSTGRES_DATA_DESTINATION = "/var/lib/postgresql/data"
@@ -316,12 +329,74 @@ def _extract_binary(
     }
 
 
+def _extract_tree(
+    archive: tarfile.TarFile,
+    relative: dict[str, tarfile.TarInfo],
+    *,
+    prefix: str,
+    output: pathlib.Path,
+    required: set[str],
+) -> dict[str, Any]:
+    selected = {
+        path.removeprefix(prefix + "/"): member
+        for path, member in relative.items()
+        if path.startswith(prefix + "/")
+    }
+    if not selected or not required.issubset(selected):
+        raise LaneFailure("package_browser_asset_tree_incomplete")
+    records: list[dict[str, Any]] = []
+    for path in sorted(selected):
+        member = selected[path]
+        pure = pathlib.PurePosixPath(path)
+        destination = output.joinpath(*pure.parts)
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        source = archive.extractfile(member)
+        if source is None:
+            raise LaneFailure("package_browser_asset_unreadable")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(destination, flags, 0o600)
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with os.fdopen(descriptor, "wb") as target:
+                while chunk := source.read(1024 * 1024):
+                    target.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
+        finally:
+            source.close()
+        if size != member.size:
+            destination.unlink(missing_ok=True)
+            raise LaneFailure("package_browser_asset_size_mismatch")
+        records.append(
+            {
+                "path": path,
+                "sha256": SHA256_PREFIX + digest.hexdigest(),
+                "size_bytes": size,
+            }
+        )
+    canonical = (
+        json.dumps(records, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    return {
+        "tree_sha256": SHA256_PREFIX + hashlib.sha256(canonical).hexdigest(),
+        "file_count": len(records),
+        "total_bytes": sum(record["size_bytes"] for record in records),
+    }
+
+
 def _bind_package(
     archive_path: pathlib.Path,
     report_path: pathlib.Path,
     extraction_root: pathlib.Path,
 ) -> tuple[pathlib.Path, pathlib.Path, dict[str, Any]]:
-    """Validate exact archive/report identity and extract only both binaries."""
+    """Validate exact identity and extract only the accepted runtime surface."""
 
     archive_path = _regular_file(archive_path, "package_archive_invalid")
     package_report = _parse_package_report(report_path)
@@ -442,6 +517,33 @@ def _bind_package(
                 archive, relative["bin/worldstreamd"], daemon
             )
             ctl_record = _extract_binary(archive, relative["bin/worldstreamctl"], ctl)
+            ui_record = _extract_tree(
+                archive,
+                relative,
+                prefix="ui",
+                output=extraction_root / "ui",
+                required={"index.html", "compatibility-identity.json"},
+            )
+            ui_record["index_sha256"] = SHA256_PREFIX + checksums["ui/index.html"]
+            sdk_record = _extract_tree(
+                archive,
+                relative,
+                prefix="sdk/python/src",
+                output=extraction_root / "sdk/python/src",
+                required={"worldstream_sdk/__init__.py"},
+            )
+            heist_record = _extract_tree(
+                archive,
+                relative,
+                prefix="examples/heist",
+                output=extraction_root / "examples/heist",
+                required={
+                    "wave10_live/seed_browser_room.py",
+                    "wave10_live/run_browser_story.py",
+                    "wave10_live/run_absent_broker_live.py",
+                    "wave10_live/browser_trace_init.js",
+                },
+            )
     except (OSError, tarfile.TarError) as error:
         raise LaneFailure("package_archive_unreadable") from error
 
@@ -473,6 +575,11 @@ def _bind_package(
         "binaries": {
             "worldstreamd": daemon_record,
             "worldstreamctl": ctl_record,
+        },
+        "runtime_assets": {
+            "ui": ui_record,
+            "sdk_python_source": sdk_record,
+            "heist_reference_clients": heist_record,
         },
     }
     return daemon, ctl, binding
@@ -2230,6 +2337,231 @@ def _run_cell(
     return {**measurement, "report": report}
 
 
+def _sha256_reference(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
+
+
+def _validate_browser_story(
+    value: dict[str, Any], binding: dict[str, Any], browser: dict[str, Any]
+) -> None:
+    if set(value) != {
+        "schema",
+        "canonical_encoding",
+        "status",
+        "release_evidence",
+        "source_mode",
+        "elapsed_ms",
+        "browser",
+        "tools",
+        "runtime",
+        "story",
+        "dom_evidence",
+        "typed_actions",
+        "checks",
+        "privacy",
+    } or not (
+        value.get("schema") == BROWSER_STORY_SCHEMA
+        and value.get("canonical_encoding") == "utf8-sorted-key-compact-json-lf"
+        and value.get("status") == "pass"
+        and value.get("release_evidence") is True
+        and value.get("source_mode") == "package-extracted"
+        and type(value.get("elapsed_ms")) is int
+        and 0 < value["elapsed_ms"] <= 600_000
+        and value.get("browser") == browser
+    ):
+        raise LaneFailure("package_browser_story_identity_invalid")
+    expected_checks = {
+        "browser_identity_verified",
+        "catch_up_or_reset_installed",
+        "embedded_ui_loaded",
+        "final_reveal_dom_visible",
+        "new_session_resynchronized",
+        "package_bound_reference_clients",
+        "package_bound_runtime",
+        "precomplete_reveal_locked",
+        "privacy_negative_dom_and_browser_channels",
+        "replay_hashes_verified",
+        "six_phase_story_complete",
+        "stale_head_rejected",
+        "typed_actions_accepted_in_dom",
+    }
+    checks = value.get("checks")
+    if not (
+        isinstance(checks, dict)
+        and set(checks) == expected_checks
+        and all(checks[item] is True for item in expected_checks)
+    ):
+        raise LaneFailure("package_browser_story_check_incomplete")
+    runtime = value.get("runtime")
+    assets = binding.get("runtime_assets")
+    binaries = binding.get("binaries")
+    if not (
+        isinstance(runtime, dict)
+        and isinstance(assets, dict)
+        and isinstance(binaries, dict)
+    ):
+        raise LaneFailure("package_browser_story_runtime_invalid")
+    expected_runtime = {
+        "worldstreamd": {
+            "sha256": binaries["worldstreamd"]["sha256"],
+            "size_bytes": binaries["worldstreamd"]["size_bytes"],
+            "origin": "package:bin/worldstreamd",
+        },
+        "ui": {
+            **assets["ui"],
+            "origin": "package:ui",
+        },
+        "sdk": {
+            **assets["sdk_python_source"],
+            "origin": "package:sdk/python/src",
+        },
+        "heist_reference_clients": {
+            **assets["heist_reference_clients"],
+            "origin": "package:examples/heist",
+        },
+    }
+    if runtime != expected_runtime:
+        raise LaneFailure("package_browser_story_runtime_mismatch")
+    story = value.get("story")
+    if not (
+        isinstance(story, dict)
+        and set(story) == {"phase_path", "public_projection", "final_replay"}
+        and story.get("phase_path")
+        == ["Briefing", "Negotiation", "Commitment", "Resolution", "Result", "Complete"]
+        and story.get("public_projection", {}).get("broker_present") is True
+        and story.get("public_projection", {}).get("commitment_count") == 2
+        and story.get("public_projection", {}).get("aggregate_outcome_present") is True
+        and story.get("final_replay", {}).get("verified") is True
+        and story.get("final_replay", {}).get("hash_parity", {}).get("verified") is True
+    ):
+        raise LaneFailure("package_browser_story_result_invalid")
+    dom = value.get("dom_evidence")
+    actions = value.get("typed_actions")
+    if not (
+        isinstance(dom, dict)
+        and set(dom)
+        == {
+            "stale_rejection",
+            "precomplete_reveal",
+            "public_final",
+            "participant_final",
+            "operator_final",
+            "replay_final",
+            "briefing",
+            "negotiation",
+            "commitment",
+            "result",
+            "complete",
+            "resync",
+            "browser_diagnostics",
+        }
+        and all(_sha256_reference(item) for item in dom.values())
+        and isinstance(actions, dict)
+        and set(actions)
+        == {
+            "inspect_clue",
+            "publish_clue",
+            "propose_plan",
+            "commit_move",
+            "acknowledge_result",
+        }
+        and all(_sha256_reference(item) for item in actions.values())
+        and value.get("privacy")
+        == {
+            "status": "pass",
+            "private_canary_absent": True,
+            "credentials_absent": True,
+            "private_claim_absent_from_retained_evidence": True,
+        }
+    ):
+        raise LaneFailure("package_browser_story_dom_or_privacy_invalid")
+    tools = value.get("tools")
+    adapter = tools.get("adapter") if isinstance(tools, dict) else None
+    python_identity = tools.get("python") if isinstance(tools, dict) else None
+    if not (
+        isinstance(adapter, dict)
+        and set(adapter) == {"name", "protocol", "sha256", "size_bytes"}
+        and adapter.get("name") == "worldstream-cdp-browser"
+        and adapter.get("protocol") == "Chrome DevTools Protocol"
+        and adapter.get("sha256")
+        == SHA256_PREFIX + _sha256_file(ROOT / "scripts/cdp-browser.py")
+        and adapter.get("size_bytes")
+        == (ROOT / "scripts/cdp-browser.py").stat().st_size
+        and isinstance(python_identity, dict)
+        and python_identity.get("implementation") == "cpython"
+        and re.fullmatch(r"3\.[0-9]+\.[0-9]+", str(python_identity.get("version")))
+        is not None
+    ):
+        raise LaneFailure("package_browser_tool_identity_invalid")
+
+
+def _run_browser_story(
+    *,
+    python: pathlib.Path,
+    repository: pathlib.Path,
+    package_root: pathlib.Path,
+    daemon: pathlib.Path,
+    binding: dict[str, Any],
+    browser_path: pathlib.Path,
+    browser: dict[str, Any],
+    report_path: pathlib.Path,
+    workspace: pathlib.Path,
+    timeout: float,
+) -> dict[str, Any]:
+    cdp_state = workspace / "cdp-state"
+    cdp_state.mkdir(mode=0o700)
+    environment = {
+        **os.environ,
+        "TMPDIR": str(workspace),
+        "WORLDSTREAM_PYTHON": str(python),
+        "WORLDSTREAM_BROWSER_MODE": "cdp",
+        "WORLDSTREAM_BROWSER_PACKAGE_MODE": "1",
+        "WORLDSTREAM_BROWSER_PACKAGE_ROOT": str(package_root),
+        "WORLDSTREAM_BROWSER_WORLDSTREAMD": str(daemon),
+        "WORLDSTREAM_BROWSER_UI_DIR": str(package_root / "ui"),
+        "WORLDSTREAM_BROWSER_SDK_SRC": str(package_root / "sdk/python/src"),
+        "WORLDSTREAM_BROWSER_HEIST_DIR": str(package_root / "examples/heist"),
+        "WORLDSTREAM_BROWSER_REPORT": str(report_path),
+        "WORLDSTREAM_BROWSER_STORY_TIMEOUT": str(max(1, round(timeout - 30))),
+        "WORLDSTREAM_CDP_ADAPTER": str(repository / "scripts/cdp-browser.py"),
+        "WORLDSTREAM_CDP_STATE_DIR": str(cdp_state),
+        "WORLDSTREAM_BROWSER_BINARY": str(browser_path),
+        "WORLDSTREAM_BROWSER_VERSION": browser["version"],
+        "WORLDSTREAM_BROWSER_SHA256": browser["sha256"].removeprefix(SHA256_PREFIX),
+        "WORLDSTREAM_BROWSER_SIZE_BYTES": str(browser["size_bytes"]),
+        "WORLDSTREAM_BROWSER_ARCHIVE_URL": browser["distribution"]["url"],
+        "WORLDSTREAM_BROWSER_ARCHIVE_SHA256": browser["distribution"][
+            "sha256"
+        ].removeprefix(SHA256_PREFIX),
+        "WORLDSTREAM_BROWSER_ARCHIVE_SIZE_BYTES": str(
+            browser["distribution"]["size_bytes"]
+        ),
+    }
+    measurement = _measured_process(
+        ["bash", str(repository / "web/console/live-browser-story.sh")],
+        cwd=repository,
+        environment=environment,
+        timeout=timeout,
+        privacy_workspace=workspace,
+        privacy_label="package-browser-heist",
+    )
+    content = _regular_file(report_path, "package_browser_report_invalid").read_bytes()
+    if len(content) > MAX_CONTROL_FILE_BYTES:
+        raise LaneFailure("package_browser_report_invalid")
+    report = _strict_json(content, "package_browser_report_invalid")
+    _validate_browser_story(report, binding, browser)
+    if measurement["exit_code"] != 0:
+        raise LaneFailure("package_browser_story_process_failed")
+    if ACTIVE_PRIVACY_CAPTURE is not None:
+        ACTIVE_PRIVACY_CAPTURE.add_report(
+            "package-browser-heist-report", report_path, channel_class="report.cell"
+        )
+    return report
+
+
 def _write_report(path: pathlib.Path, report: dict[str, Any]) -> None:
     encoded = json.dumps(report, sort_keys=True, separators=(",", ":"))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2269,6 +2601,14 @@ def main() -> int:
     parser.add_argument("--cell-timeout", type=float, default=420.0)
     parser.add_argument("--timer-timeout", type=float, default=240.0)
     parser.add_argument("--offer-timeout", type=float, default=30.0)
+    parser.add_argument("--browser", type=pathlib.Path)
+    parser.add_argument("--browser-version")
+    parser.add_argument("--browser-sha256")
+    parser.add_argument("--browser-size-bytes", type=int)
+    parser.add_argument("--browser-archive-url")
+    parser.add_argument("--browser-archive-sha256")
+    parser.add_argument("--browser-archive-size-bytes", type=int)
+    parser.add_argument("--browser-timeout", type=float, default=420.0)
     args = parser.parse_args()
 
     repository = args.repository.resolve()
@@ -2295,6 +2635,7 @@ def main() -> int:
         "cells": {"counter": {}, "heist": {}},
         "comparison": {},
         "package_binding": {"status": "not_verified"},
+        "browser_story": {"status": "not_run"},
         "performance": {
             "classification": "measured_non_sla",
             "percentile_definition": "nearest-rank",
@@ -2313,9 +2654,46 @@ def main() -> int:
         and args.package_report is not None
         and args.worldstreamd is None
         and args.worldstreamctl is None
+        and args.browser is not None
+        and isinstance(args.browser_version, str)
+        and re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", args.browser_version) is not None
+        and isinstance(args.browser_sha256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", args.browser_sha256) is not None
+        and type(args.browser_size_bytes) is int
+        and 0 < args.browser_size_bytes <= 1024 * 1024 * 1024
+        and isinstance(args.browser_archive_url, str)
+        and args.browser_archive_url.startswith(
+            "https://storage.googleapis.com/chrome-for-testing-public/"
+        )
+        and isinstance(args.browser_archive_sha256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", args.browser_archive_sha256) is not None
+        and type(args.browser_archive_size_bytes) is int
+        and 0 < args.browser_archive_size_bytes <= 1024 * 1024 * 1024
+        and 30 <= args.browser_timeout <= 600
+        and {
+            "product": "chrome-for-testing-headless-shell",
+            "version": args.browser_version,
+            "sha256": SHA256_PREFIX + args.browser_sha256,
+            "size_bytes": args.browser_size_bytes,
+            "version_output": f"Google Chrome for Testing {args.browser_version}",
+            "distribution": {
+                "url": args.browser_archive_url,
+                "sha256": SHA256_PREFIX + args.browser_archive_sha256,
+                "size_bytes": args.browser_archive_size_bytes,
+            },
+        }
+        == PINNED_BROWSER_IDENTITY
     )
     diagnostic_inputs_valid = (
-        args.package_archive is None and args.package_report is None
+        args.package_archive is None
+        and args.package_report is None
+        and args.browser is None
+        and args.browser_version is None
+        and args.browser_sha256 is None
+        and args.browser_size_bytes is None
+        and args.browser_archive_url is None
+        and args.browser_archive_sha256 is None
+        and args.browser_archive_size_bytes is None
     )
     if (package_mode and not package_inputs_valid) or (
         not package_mode and not diagnostic_inputs_valid
@@ -2335,10 +2713,11 @@ def main() -> int:
             _write_report(args.report, report)
             return 10
         try:
+            package_root = root / "verified-package"
             daemon, ctl, binding = _bind_package(
                 args.package_archive,
                 args.package_report,
-                root / "verified-package",
+                package_root,
             )
         except LaneFailure as error:
             report["reason_code"] = error.code
@@ -2346,6 +2725,8 @@ def main() -> int:
             _write_report(args.report, report)
             return 10
         report["package_binding"] = binding
+        browser_path = pathlib.Path(os.path.abspath(args.browser))
+        browser_identity = PINNED_BROWSER_IDENTITY
     else:
         daemon_input = args.worldstreamd or pathlib.Path("target/debug/worldstreamd")
         ctl_input = args.worldstreamctl or pathlib.Path("target/debug/worldstreamctl")
@@ -2364,14 +2745,19 @@ def main() -> int:
             "status": "diagnostic_source_tree",
             "release_eligible": False,
         }
+        browser_path = pathlib.Path()
+        browser_identity = {}
 
     prerequisites = [daemon, ctl, python, counter_runner, heist_runner]
+    if package_mode:
+        prerequisites.append(browser_path)
     if (
         os.name != "posix"
         or not args.docker
         or not args.psql
         or any(not path.is_file() for path in prerequisites)
         or any(not os.access(path, os.X_OK) for path in (daemon, ctl, python))
+        or (package_mode and not os.access(browser_path, os.X_OK))
     ):
         report["reason_code"] = "packaged_acceptance_prerequisite_missing"
         shutil.rmtree(root, ignore_errors=True)
@@ -2431,6 +2817,38 @@ def main() -> int:
             ),
         ]
         failures: list[str] = []
+        if package_mode:
+            print(
+                "packaged parity: running package-bound real-browser Heist story",
+                file=sys.stderr,
+                flush=True,
+            )
+            browser_workspace = root / "browser-story-temporary"
+            browser_workspace.mkdir(mode=0o700)
+            try:
+                report["browser_story"] = _run_browser_story(
+                    python=python,
+                    repository=repository,
+                    package_root=package_root,
+                    daemon=daemon,
+                    binding=binding,
+                    browser_path=browser_path,
+                    browser=browser_identity,
+                    report_path=root / "package-browser-heist.json",
+                    workspace=browser_workspace,
+                    timeout=args.browser_timeout,
+                )
+            except LaneFailure as error:
+                report["browser_story"] = {
+                    "status": "failed",
+                    "reason_code": error.code,
+                }
+                failures.append(error.code)
+        else:
+            report["browser_story"] = {
+                "status": "not_applicable",
+                "release_evidence": False,
+            }
         for story, backend, dsn_file, database in sequence:
             print(
                 f"packaged parity: running {story}.{backend}",

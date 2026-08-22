@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -83,6 +84,77 @@ PRE_SIGN_SUPPLY_CHAIN_FILES = frozenset(
         "supply-chain/subject-inventory.bundle.json",
     }
 )
+MAX_RELEASE_PAYLOAD_BYTES = 8 * 1024 * 1024 * 1024
+MAX_RELEASE_CONTROL_BYTES = 64 * 1024 * 1024
+RELEASE_HASH_CHUNK_BYTES = 1024 * 1024
+ReleaseDigestKey = tuple[int, int, int, int, int, int]
+ReleaseDigestCache = dict[ReleaseDigestKey, str]
+
+
+class ReleaseHashError(RuntimeError):
+    """A release file cannot be hashed within its closed byte boundary."""
+
+
+def _release_digest_key(metadata: os.stat_result) -> ReleaseDigestKey:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def bounded_release_sha256(
+    path: Path, *, maximum: int, cache: ReleaseDigestCache
+) -> str:
+    """Stream one stable regular file once and cache its observed identity."""
+
+    if maximum <= 0:
+        raise ReleaseHashError("release hash byte limit is invalid")
+    try:
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or not (0 < metadata.st_size <= maximum)
+        ):
+            raise ReleaseHashError(
+                f"release file is not regular and bounded to {maximum} bytes: {path}"
+            )
+        key = _release_digest_key(metadata)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+        digest = hashlib.sha256()
+        total = 0
+        with path.open("rb", buffering=0) as stream:
+            opened = os.fstat(stream.fileno())
+            if _release_digest_key(opened) != key:
+                raise ReleaseHashError(f"release file changed before hashing: {path}")
+            while chunk := stream.read(RELEASE_HASH_CHUNK_BYTES):
+                total += len(chunk)
+                if total > maximum:
+                    raise ReleaseHashError(
+                        f"release file exceeded its {maximum}-byte hash limit: {path}"
+                    )
+                digest.update(chunk)
+            finished = os.fstat(stream.fileno())
+        final_path = path.lstat()
+        if (
+            total != metadata.st_size
+            or _release_digest_key(finished) != key
+            or _release_digest_key(final_path) != key
+        ):
+            raise ReleaseHashError(f"release file changed while hashing: {path}")
+    except OSError as error:
+        raise ReleaseHashError(f"cannot hash release file {path}: {error}") from error
+
+    value = digest.hexdigest()
+    cache[key] = value
+    return value
 
 
 def path_only_sigstore_declaration(row: object) -> bool:
@@ -713,6 +785,57 @@ class GateRunner:
         self.report_path = report_path
         self.handoff_path = handoff_path
         self.outcomes: list[Outcome] = []
+        self.started_monotonic = time.monotonic()
+        self.hard_seconds: int | None = None
+        self.deadline_monotonic: float | None = None
+        self.deadline_recorded = False
+
+    def configure_deadline(self, manifest: dict[str, Any], tier: str) -> None:
+        """Bind execution to the frozen hard limit for deadline-bearing tiers."""
+
+        tiers = manifest.get("evidence_tiers")
+        manifest_tier = tier.replace("-", "_")
+        row = tiers.get(manifest_tier) if isinstance(tiers, dict) else None
+        hard = row.get("hard_seconds") if isinstance(row, dict) else None
+        if hard is None and tier not in {"fast", "pre-push", "minimal-ci", "release"}:
+            return
+        if type(hard) is not int or hard <= 0:
+            self.fail(
+                "tier-hard-deadline",
+                f"{tier} has no positive integer hard_seconds contract",
+            )
+            self.deadline_recorded = True
+            return
+        self.hard_seconds = hard
+        self.deadline_monotonic = self.started_monotonic + hard
+
+    def subprocess_timeout(self, name: str) -> float | None:
+        """Return the remaining tier budget, failing once it is exhausted."""
+
+        if self.deadline_monotonic is None:
+            return None
+        remaining = self.deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            self.fail(name, "tier hard deadline was exhausted before command start")
+            return 0.0
+        return remaining
+
+    def bounded_process(
+        self, name: str, argv: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[Any] | None:
+        """Run a subprocess within the remaining frozen tier budget."""
+
+        timeout = self.subprocess_timeout(name)
+        if timeout == 0.0:
+            return None
+        kwargs.pop("check", None)
+        try:
+            return subprocess.run(argv, timeout=timeout, check=False, **kwargs)
+        except subprocess.TimeoutExpired:
+            self.fail(name, "command exhausted the tier hard deadline")
+        except OSError as error:
+            self.fail(name, f"could not start {argv[0]}: {error}")
+        return None
 
     def record(
         self,
@@ -780,6 +903,9 @@ class GateRunner:
         if env:
             command_env.update(env)
         quiet = argv[0] == "cargo" and "metadata" in argv
+        timeout = self.subprocess_timeout(name)
+        if timeout == 0.0:
+            return False
         try:
             result = subprocess.run(
                 argv,
@@ -788,7 +914,11 @@ class GateRunner:
                 check=False,
                 capture_output=quiet,
                 text=quiet,
+                timeout=timeout,
             )
+        except subprocess.TimeoutExpired:
+            self.fail(name, "command exhausted the tier hard deadline")
+            return False
         except OSError as error:
             detail = f"could not start {argv[0]}: {error}"
             if required:
@@ -813,6 +943,19 @@ class GateRunner:
         manifest: dict[str, Any] | None = None,
         tier: str | None = None,
     ) -> int:
+        elapsed_seconds = time.monotonic() - self.started_monotonic
+        if self.hard_seconds is not None and not self.deadline_recorded:
+            if elapsed_seconds <= self.hard_seconds:
+                self.pass_(
+                    "tier-hard-deadline",
+                    f"completed within {self.hard_seconds} seconds",
+                )
+            else:
+                self.fail(
+                    "tier-hard-deadline",
+                    f"elapsed time exceeded {self.hard_seconds} seconds",
+                )
+            self.deadline_recorded = True
         failures = [outcome for outcome in self.outcomes if outcome.status == "FAIL"]
         skipped = [
             outcome for outcome in self.outcomes if outcome.status == "SKIP_INCOMPLETE"
@@ -850,6 +993,11 @@ class GateRunner:
                 "strict": self.strict,
                 "status": report_status,
                 "fail_closed": report_status != "passed",
+                "timing": {
+                    "elapsed_seconds": round(elapsed_seconds, 3),
+                    "hard_seconds": self.hard_seconds,
+                    "hard_deadline_enforced": self.hard_seconds is not None,
+                },
                 "summary": {
                     "checks": len(self.outcomes),
                     "failures": len(failures),
@@ -1208,42 +1356,60 @@ def version_and_source_drift(runner: GateRunner, manifest: dict[str, Any]) -> No
 def toolchain_pins(runner: GateRunner, manifest: dict[str, Any]) -> None:
     pins = manifest.get("toolchains", {})
     if shutil.which("rustc"):
-        actual = subprocess.run(
-            ["rustc", "--version"], capture_output=True, text=True, check=False
+        actual = runner.bounded_process(
+            "rust-toolchain-pin",
+            ["rustc", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        found = (
-            actual.stdout.split()[1] if len(actual.stdout.split()) > 1 else "unknown"
-        )
-        if found == pins.get("rust"):
-            runner.pass_("rust-toolchain-pin", f"rustc {found}")
-        else:
-            runner.fail("rust-toolchain-pin", f"need {pins.get('rust')}, found {found}")
+        if actual is not None:
+            found = (
+                actual.stdout.split()[1]
+                if len(actual.stdout.split()) > 1
+                else "unknown"
+            )
+            if found == pins.get("rust"):
+                runner.pass_("rust-toolchain-pin", f"rustc {found}")
+            else:
+                runner.fail(
+                    "rust-toolchain-pin", f"need {pins.get('rust')}, found {found}"
+                )
     else:
         runner.fail("rust-toolchain-pin", "rustc unavailable")
     if shutil.which("node"):
-        actual = subprocess.run(
+        actual = runner.bounded_process(
+            "node-toolchain-pin",
             ["node", "-p", "process.versions.node"],
             capture_output=True,
             text=True,
             check=False,
         )
-        found = actual.stdout.strip()
-        if found == pins.get("node"):
-            runner.pass_("node-toolchain-pin", f"node {found}")
-        else:
-            runner.fail("node-toolchain-pin", f"need {pins.get('node')}, found {found}")
+        if actual is not None:
+            found = actual.stdout.strip()
+            if found == pins.get("node"):
+                runner.pass_("node-toolchain-pin", f"node {found}")
+            else:
+                runner.fail(
+                    "node-toolchain-pin", f"need {pins.get('node')}, found {found}"
+                )
     else:
         runner.skip("node-toolchain-pin", "node unavailable")
     if shutil.which("pnpm"):
-        actual = subprocess.run(
-            ["pnpm", "--version"], capture_output=True, text=True, check=False
+        actual = runner.bounded_process(
+            "pnpm-toolchain-pin",
+            ["pnpm", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        found = actual.stdout.strip()
-        expected = "11.19.0"
-        if found == expected:
-            runner.pass_("pnpm-toolchain-pin", f"pnpm {found}")
-        else:
-            runner.fail("pnpm-toolchain-pin", f"need {expected}, found {found}")
+        if actual is not None:
+            found = actual.stdout.strip()
+            expected = "11.19.0"
+            if found == expected:
+                runner.pass_("pnpm-toolchain-pin", f"pnpm {found}")
+            else:
+                runner.fail("pnpm-toolchain-pin", f"need {expected}, found {found}")
     else:
         runner.skip("pnpm-toolchain-pin", "pnpm unavailable")
 
@@ -1262,16 +1428,15 @@ def verify_required_tool_version(
     runner: GateRunner, tool: str, argv: list[str]
 ) -> None:
     expected = HOSTED_REQUIRED_TOOL_VERSIONS[tool]
-    try:
-        result = subprocess.run(
-            argv,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as error:
-        runner.fail(f"{tool}-version", f"cannot inspect required tool: {error}")
+    result = runner.bounded_process(
+        f"{tool}-version",
+        argv,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result is None:
         return
     observed = (result.stdout + "\n" + result.stderr).strip()
     version = re.search(r"(?<![0-9])([0-9]+\.[0-9]+\.[0-9]+)(?![0-9])", observed)
@@ -1285,7 +1450,8 @@ def verify_required_tool_version(
 
 
 def secret_scan(runner: GateRunner, *, release: bool = False) -> None:
-    result = subprocess.run(
+    result = runner.bounded_process(
+        "secret-scan",
         [
             "git",
             "ls-files",
@@ -1298,6 +1464,8 @@ def secret_scan(runner: GateRunner, *, release: bool = False) -> None:
         capture_output=True,
         check=False,
     )
+    if result is None:
+        return
     if result.returncode != 0:
         runner.fail("secret-scan", "git candidate-file inventory failed")
         return
@@ -1530,18 +1698,12 @@ def sdk_and_ui_checks(runner: GateRunner) -> None:
         runner.skip("ui-tools", "pnpm unavailable")
 
 
-def root_python_checks(runner: GateRunner) -> None:
-    """Run the repository-owned Python gate and producer suite explicitly.
-
-    The root files intentionally use descriptive ``*_smoke.py`` names, so a
-    bare ``pytest tests`` command collects none of them under pytest's default
-    discovery rules.  Keep the sorted file inventory mechanical and visible.
-    """
-
+def root_python_static_checks(runner: GateRunner) -> list[str] | None:
+    """Run the bounded root Python formatting and lint checks."""
     uv = shutil.which("uv")
     if uv is None:
         runner.skip("root-python-tools", "uv unavailable")
-        return
+        return None
     prefix = [uv, "run", "--project", "sdk/python", "--locked"]
     runner.command(
         "root-python-format",
@@ -1551,6 +1713,20 @@ def root_python_checks(runner: GateRunner) -> None:
         "root-python-lint",
         [*prefix, "ruff", "check", "scripts", "tests"],
     )
+    return prefix
+
+
+def root_python_checks(runner: GateRunner) -> None:
+    """Run the repository-owned Python gate and producer suite explicitly.
+
+    The root files intentionally use descriptive ``*_smoke.py`` names, so a
+    bare ``pytest tests`` command collects none of them under pytest's default
+    discovery rules.  Keep the sorted file inventory mechanical and visible.
+    """
+
+    prefix = root_python_static_checks(runner)
+    if prefix is None:
+        return
     if not ROOT_PYTHON_TESTS:
         runner.fail("root-python-tests", "no tests/*.py files were discovered")
         return
@@ -1593,7 +1769,8 @@ def cargo_test_evidence(
         if runner.offline:
             argv.append("--offline")
         argv.extend(["-p", package, "--lib", "--", test_filter])
-        result = subprocess.run(
+        result = runner.bounded_process(
+            name,
             argv,
             cwd=ROOT,
             env={
@@ -1612,6 +1789,8 @@ def cargo_test_evidence(
             text=True,
             check=False,
         )
+        if result is None:
+            return
         output = result.stdout + result.stderr
         summaries = re.findall(r"test result: ok\. (\d+) passed;", output)
         if result.returncode != 0:
@@ -1799,7 +1978,8 @@ def postgres_live_contract(runner: GateRunner, *, required: bool) -> None:
 
     with tempfile.TemporaryDirectory(prefix="worldstream-gate-pg-live-") as directory:
         evidence_path = Path(directory) / "postgres-live.json"
-        result = subprocess.run(
+        result = runner.bounded_process(
+            "postgres-live-contract",
             [str(script), "--evidence", str(evidence_path)],
             cwd=ROOT,
             env=os.environ.copy(),
@@ -1807,6 +1987,8 @@ def postgres_live_contract(runner: GateRunner, *, required: bool) -> None:
             text=True,
             check=False,
         )
+        if result is None:
+            return
         try:
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -2731,6 +2913,8 @@ def parse_release_checksums(
     release_dir: Path,
     checksums_path: Path,
     expected_paths: set[str],
+    byte_limits: dict[str, int],
+    digest_cache: ReleaseDigestCache,
 ) -> dict[str, str] | None:
     try:
         text = checksums_path.read_text(encoding="utf-8")
@@ -2759,11 +2943,17 @@ def parse_release_checksums(
         if candidate is None or not candidate.is_file() or candidate.is_symlink():
             malformed.append(line)
             continue
+        maximum = byte_limits.get(relative)
+        if maximum is None:
+            malformed.append(line)
+            continue
         actual[relative] = digest
         try:
-            observed = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        except OSError:
-            malformed.append(line)
+            observed = bounded_release_sha256(
+                candidate, maximum=maximum, cache=digest_cache
+            )
+        except ReleaseHashError as error:
+            malformed.append(f"{relative}: {error}")
             continue
         if observed != digest:
             malformed.append(line)
@@ -3029,6 +3219,7 @@ def detached_release_inventory(
 def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> None:
     configured_dir = os.environ.get("WORLDSTREAM_RELEASE_DIR")
     release_dir = Path(configured_dir) if configured_dir else ROOT / "dist"
+    digest_cache: ReleaseDigestCache = {}
     if release_dir.is_symlink():
         runner.fail(
             "release-artifact-directory",
@@ -3249,7 +3440,18 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
                 f"artifact digest identity is malformed: observed={expected_digest!r}",
             )
             continue
-        observed_digest = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+        maximum = (
+            MAX_RELEASE_PAYLOAD_BYTES
+            if artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+            else MAX_RELEASE_CONTROL_BYTES
+        )
+        try:
+            observed_digest = "sha256:" + bounded_release_sha256(
+                artifact, maximum=maximum, cache=digest_cache
+            )
+        except ReleaseHashError as error:
+            runner.fail("release-artifact-" + artifact_id, str(error))
+            continue
         if expected_digest != observed_digest:
             runner.fail(
                 "release-artifact-" + artifact_id,
@@ -3320,7 +3522,15 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
                 f"detached evidence digest is malformed: observed={expected_digest!r}",
             )
             continue
-        observed_digest = "sha256:" + hashlib.sha256(evidence.read_bytes()).hexdigest()
+        try:
+            observed_digest = "sha256:" + bounded_release_sha256(
+                evidence,
+                maximum=MAX_RELEASE_CONTROL_BYTES,
+                cache=digest_cache,
+            )
+        except ReleaseHashError as error:
+            runner.fail("release-evidence-" + evidence_id, str(error))
+            continue
         if observed_digest != expected_digest:
             runner.fail(
                 "release-evidence-" + evidence_id,
@@ -3410,6 +3620,26 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
         )
 
     checksums_relative = artifact_paths.get("checksums")
+    payload_subject_relatives = {
+        artifact_paths[artifact_id]
+        for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+        if artifact_id in artifact_paths
+    }
+    evidence_subject_relatives = {
+        f"{PRE_SIGN_SUBJECT_DIRECTORY}/{evidence_id}.json"
+        for evidence_id in evidence_relative_paths
+        if evidence_id != "checksums-signature-sbom-provenance"
+    }
+    subject_byte_limits = {
+        **{
+            relative: MAX_RELEASE_PAYLOAD_BYTES
+            for relative in payload_subject_relatives
+        },
+        **{
+            relative: MAX_RELEASE_CONTROL_BYTES
+            for relative in evidence_subject_relatives
+        },
+    }
     if checksums_relative != "SHA256SUMS":
         runner.fail("release-checksums", "checksums artifact must be named SHA256SUMS")
         checksums = None
@@ -3422,16 +3652,9 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
                 runner,
                 release_dir,
                 checksums_path,
-                {
-                    artifact_paths[artifact_id]
-                    for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
-                    if artifact_id in artifact_paths
-                }
-                | {
-                    f"{PRE_SIGN_SUBJECT_DIRECTORY}/{evidence_id}.json"
-                    for evidence_id in evidence_relative_paths
-                    if evidence_id != "checksums-signature-sbom-provenance"
-                },
+                set(subject_byte_limits),
+                subject_byte_limits,
+                digest_cache,
             )
             if checksums_path is not None
             and checksums_path.is_file()
@@ -3451,22 +3674,19 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
         "release-provenance": artifact_paths.get("slsa-provenance"),
     }
     subject_paths: dict[str, str] = {}
-    subject_relatives = {
-        artifact_paths[artifact_id]
-        for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
-        if artifact_id in artifact_paths
-    } | {
-        f"{PRE_SIGN_SUBJECT_DIRECTORY}/{evidence_id}.json"
-        for evidence_id in evidence_relative_paths
-        if evidence_id != "checksums-signature-sbom-provenance"
-    }
+    subject_relatives = set(subject_byte_limits)
     for relative in subject_relatives:
         path = safe_release_file(runner, release_dir, relative, "release-subject")
         if path is None or not path.is_file() or path.is_symlink():
             continue
-        subject_paths[relative] = (
-            "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-        )
+        try:
+            subject_paths[relative] = "sha256:" + bounded_release_sha256(
+                path,
+                maximum=subject_byte_limits[relative],
+                cache=digest_cache,
+            )
+        except ReleaseHashError as error:
+            runner.fail("release-subject", str(error))
     documents: dict[str, dict[str, Any]] = {}
     for name, relative in document_specs.items():
         if not isinstance(relative, str):
@@ -3545,11 +3765,21 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
                 path = safe_release_file(
                     runner, release_dir, relative, "release-provenance"
                 )
-                if (
-                    path is None
-                    or not path.is_file()
-                    or hashlib.sha256(path.read_bytes()).hexdigest() != digest
-                ):
+                try:
+                    observed = (
+                        bounded_release_sha256(
+                            path,
+                            maximum=subject_byte_limits[relative],
+                            cache=digest_cache,
+                        )
+                        if path is not None
+                        and path.is_file()
+                        and relative in subject_byte_limits
+                        else None
+                    )
+                except ReleaseHashError:
+                    observed = None
+                if observed != digest:
                     mismatches.append(relative)
             if mismatches:
                 runner.fail(
@@ -3665,6 +3895,7 @@ def provider_smoke(runner: GateRunner) -> None:
 def run_tier(
     runner: GateRunner, manifest: dict[str, Any], tier: str, cell: str | None
 ) -> int:
+    runner.configure_deadline(manifest, tier)
     release = tier == "release"
     if tier == "provider-smoke":
         provider_smoke(runner)
@@ -3703,8 +3934,11 @@ def run_tier(
         toolchain_pins(runner, manifest)
     version_and_source_drift(runner, manifest)
     secret_scan(runner)
-    dependency_scan(runner, release=False, include_ecosystems=tier != "fast")
-    if tier in {"fast", "pre-push"}:
+    if tier != "fast":
+        dependency_scan(runner, release=False, include_ecosystems=True)
+    if tier == "fast":
+        root_python_static_checks(runner)
+    elif tier == "pre-push":
         root_python_checks(runner)
     rust_checks(runner, full=tier != "fast")
     critical_contract_matrix(runner)

@@ -31,10 +31,9 @@ the following exact dimensions:
   acknowledged loss.
 
 Every dimension records `attempted`, `completed`, its bounded aggregate
-observation, the exact target, `target_met`, and `outcome`. Stored, loaded,
-idle, rate, latency, soak, and forced-termination dimensions must complete.
-Snapshot-tail recovery is the sole permitted incomplete dimension, and only
-for the exact frozen Counter v2 semantic ceiling described below.
+observation, the exact target, `target_met`, and `outcome`. Every dimension
+must complete. Performance targets remain non-SLA: a completed snapshot-tail
+measurement may publish an honestly computed duration miss.
 
 The sustained-rate proof uses exactly 1,800 contiguous, half-open, one-second
 buckets from a monotonic start boundary. It retains only aggregate counts and
@@ -43,22 +42,24 @@ or latency samples. Dispatch, queue-full, action-attempt, unconsumed-token,
 late-acceptance, and in-window acceptance counts must satisfy the producer's
 exact arithmetic, including the fixed 512-token queue bound.
 
-## Honest 100,000-transition target miss
+## Exact 100,000-transition recovery boundary
 
-The frozen `worldstream.counter` v2 pack accepts at most 16 `increment` and 16
-`private_ack` participant Actions. The runner genuinely submits those 32
-Actions and then the 33rd Action. The expected public result is
-`counter_limit_reached`, so the 100,000-transition snapshot/recovery target is
-not reachable with the frozen pack.
+Setup uses a dedicated one-Room SQLite database. A source-bound fixture binary
+alternates authorized Membership suspend/resume administration operations
+through the production Core authorization and commit APIs until the Room has
+exactly 100,000 Transitions. It then removes only the disposable current
+materialization and the newest two snapshots, leaving the newest valid paired
+snapshot at sequence 99,998. This setup duration is recorded but excluded from
+the recovery stopwatch.
 
-The raw report binds the exact Counter pack version, digest, configuration,
-accepted Action sequence, terminal rejection code, and
-`not_reachable_due_to_frozen_pack_semantics`. It reports an attempted but
-incomplete non-SLA target miss; it must not invent a benchmark pack, fabricate
-snapshot/recovery observations, or convert the product limitation into a
-correctness failure. The producer rejects any other incomplete history result
-and does not accept a fabricated completed-history substitute for this frozen
-pack.
+The measured boundary starts a fresh process from the exact extracted release
+`worldstreamd` and ends only after a current participant Projection has been
+returned and verified. The before/after complete Head and Projection hashes
+must be equal. The report binds the fixture source and executable bytes, its
+strict bounded setup report, the package source revision, and the exact daemon
+binary. Missing setup, fewer than 100,000 accepted Transitions, a substituted
+revision, an empty tail, or hash drift fails closed; only a completed recovery
+duration above 5,000 ms becomes a publishable non-SLA target miss.
 
 ## Package and source binding
 
@@ -70,10 +71,12 @@ the packaged SDK's `pyproject.toml`, `uv.lock`, `worldstream_sdk/__init__.py`,
 must equal the two exact source paths beneath the supplied packaged SDK root;
 a checkout copy or an installed copy under `.venv/site-packages` is rejected.
 
-The runner also binds the exact archive, package report, daemon, manifests,
-packaged acceptance, one-hour soak, and kill-point report bytes. Inputs are
-strict, bounded JSON or bounded regular files; duplicate keys, non-finite
-numbers, symlinks, oversized inputs, and digest substitutions fail closed.
+The runner also binds the exact archive, package report, daemon, snapshot-tail
+fixture binary and source, manifests, packaged acceptance, one-hour soak, and
+kill-point report bytes. The fixture's compiled revision must equal the source
+revision in the checksum-bound archived build identity. Inputs are strict,
+bounded JSON or bounded regular files; duplicate keys, non-finite numbers,
+symlinks, oversized inputs, and digest substitutions fail closed.
 
 Packaged acceptance, one-hour soak, kill-point evidence, and target workload
 may be produced by separate jobs and separate hosts. The target report retains
@@ -98,7 +101,8 @@ uv run --python 3.14.7 --project "$packaged_sdk_root" --locked python \
   --packaged-acceptance-report "$acceptance_report" \
   --packaged-sdk-root "$packaged_sdk_root" \
   --soak-report "$one_hour_soak_report" \
-  --kill-point-report "$kill_point_report"
+  --kill-point-report "$kill_point_report" \
+  --snapshot-fixture-bin "$snapshot_fixture_bin"
 ```
 
 Project the raw inputs and aggregate all six mandatory normalized reports:
@@ -113,6 +117,7 @@ uv run --python 3.14.7 --project sdk/python --locked python \
   --package-archive "$native_archive" \
   --package-report "$package_report" \
   --daemon-bin "$packaged_daemon" \
+  --snapshot-fixture-bin "$snapshot_fixture_bin" \
   --output-dir reference-inputs/normalized \
   --aggregate-report reference-inputs/reference-summary.json
 ```
@@ -137,6 +142,7 @@ uv run --python 3.14.7 --project sdk/python --locked python \
   --package-archive "$native_archive" \
   --package-report "$package_report" \
   --daemon-bin "$packaged_daemon" \
+  --snapshot-fixture-bin "$snapshot_fixture_bin" \
   --packaged-acceptance-report "$acceptance_report" \
   --raw-soak-report "$one_hour_soak_report" \
   --kill-point-report "$kill_point_report" \

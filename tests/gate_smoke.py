@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 GATES_PATH = ROOT / "scripts/gates.py"
 WORKFLOW_PATH = ROOT / ".github/workflows/compatibility-gates.yml"
@@ -212,6 +214,87 @@ def test_build_type_contract_gate_validates_example_and_fails_closed(monkeypatch
     assert rejected.outcomes[-1].name == "release-build-type-contract"
     assert rejected.outcomes[-1].status == "FAIL"
     assert "illustrative graph" in rejected.outcomes[-1].detail
+
+
+def test_release_digest_streams_large_sparse_files_enforces_bounds_and_reuses_cache(
+    tmp_path, monkeypatch
+):
+    gates = load_gates()
+    payload = tmp_path / "large-sparse-payload.oci.tar"
+    with payload.open("wb") as stream:
+        stream.seek(gates.MAX_RELEASE_CONTROL_BYTES)
+        stream.write(b"\0")
+
+    def reject_read_bytes(_path):
+        raise AssertionError("release hashing must never materialize whole files")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_read_bytes)
+    cache = {}
+    digest = gates.bounded_release_sha256(
+        payload, maximum=gates.MAX_RELEASE_PAYLOAD_BYTES, cache=cache
+    )
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert len(cache) == 1
+
+    def reject_second_open(*_args, **_kwargs):
+        raise AssertionError("an unchanged release file must reuse its cached digest")
+
+    monkeypatch.setattr(Path, "open", reject_second_open)
+    assert (
+        gates.bounded_release_sha256(
+            payload, maximum=gates.MAX_RELEASE_PAYLOAD_BYTES, cache=cache
+        )
+        == digest
+    )
+    try:
+        gates.bounded_release_sha256(
+            payload, maximum=gates.MAX_RELEASE_CONTROL_BYTES, cache=cache
+        )
+    except gates.ReleaseHashError as error:
+        assert "not regular and bounded" in str(error)
+    else:  # pragma: no cover - fail-closed regression guard
+        raise AssertionError("oversized release control file was accepted")
+
+
+def test_release_digest_rejects_path_replacement_during_hashing(tmp_path, monkeypatch):
+    gates = load_gates()
+    payload = tmp_path / "payload.tar"
+    replacement = tmp_path / "replacement.tar"
+    payload.write_bytes(b"original")
+    replacement.write_bytes(b"tampered")
+    original_open = Path.open
+    replaced = False
+
+    class ReplacingStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, *args, **kwargs):
+            nonlocal replaced
+            if not replaced:
+                replaced = True
+                replacement.replace(payload)
+            return self.stream.read(*args, **kwargs)
+
+    def replace_path_after_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        return ReplacingStream(stream) if path == payload else stream
+
+    monkeypatch.setattr(Path, "open", replace_path_after_open)
+    with pytest.raises(gates.ReleaseHashError, match="changed while hashing"):
+        gates.bounded_release_sha256(
+            payload, maximum=gates.MAX_RELEASE_CONTROL_BYTES, cache={}
+        )
 
 
 def test_workflow_keeps_native_postgres_provisioning_pinned_and_platform_specific():
@@ -501,6 +584,109 @@ def test_command_start_failure_is_classified_as_gate_failure(monkeypatch):
     assert "could not start" in runner.outcomes[0].detail
 
 
+def test_gate_runner_enforces_manifest_deadline_on_commands_and_finish(monkeypatch):
+    gates = load_gates()
+    clock = [100.0]
+    monkeypatch.setattr(gates.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(gates.shutil, "which", lambda _name: "/usr/bin/tool")
+    observed = {}
+
+    def complete(argv, **kwargs):
+        observed["argv"] = argv
+        observed["timeout"] = kwargs["timeout"]
+        return gates.subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(gates.subprocess, "run", complete)
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    runner.configure_deadline({"evidence_tiers": {"fast": {"hard_seconds": 2}}}, "fast")
+
+    assert runner.command("bounded", ["tool"])
+    assert observed == {"argv": ["tool"], "timeout": 2.0}
+    clock[0] = 102.1
+    assert runner.finish() == 1
+    deadline = [row for row in runner.outcomes if row.name == "tier-hard-deadline"]
+    assert len(deadline) == 1
+    assert deadline[0].status == "FAIL"
+    assert "exceeded 2 seconds" in deadline[0].detail
+
+
+def test_gate_runner_terminates_a_command_at_the_tier_deadline(monkeypatch):
+    gates = load_gates()
+    clock = [200.0]
+    monkeypatch.setattr(gates.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(gates.shutil, "which", lambda _name: "/usr/bin/tool")
+
+    def time_out(argv, **kwargs):
+        raise gates.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(gates.subprocess, "run", time_out)
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    runner.configure_deadline(
+        {"evidence_tiers": {"minimal_ci": {"hard_seconds": 1}}}, "minimal-ci"
+    )
+
+    assert not runner.command("bounded", ["tool"])
+    assert runner.outcomes[-1].status == "FAIL"
+    assert "exhausted the tier hard deadline" in runner.outcomes[-1].detail
+
+
+def test_pre_push_requires_a_positive_hard_deadline():
+    gates = load_gates()
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+
+    runner.configure_deadline({"evidence_tiers": {"pre_push": {}}}, "pre-push")
+
+    assert runner.deadline_recorded
+    assert runner.outcomes[-1].name == "tier-hard-deadline"
+    assert runner.outcomes[-1].status == "FAIL"
+    assert "pre-push has no positive integer" in runner.outcomes[-1].detail
+
+
+def test_fast_tier_uses_static_python_checks_without_network_or_full_suite(
+    monkeypatch,
+):
+    gates = load_gates()
+    calls = []
+
+    def record(name):
+        return lambda *_args, **_kwargs: calls.append(name)
+
+    for name in (
+        "manifest_gate",
+        "version_and_source_drift",
+        "secret_scan",
+        "root_python_static_checks",
+        "rust_checks",
+        "critical_contract_matrix",
+    ):
+        monkeypatch.setattr(gates, name, record(name))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("fast tier crossed its declared bounded scope")
+
+    monkeypatch.setattr(gates, "dependency_scan", forbidden)
+    monkeypatch.setattr(gates, "root_python_checks", forbidden)
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+
+    assert (
+        gates.run_tier(
+            runner,
+            {"evidence_tiers": {"fast": {"hard_seconds": 60}}},
+            "fast",
+            None,
+        )
+        == 0
+    )
+    assert calls == [
+        "manifest_gate",
+        "version_and_source_drift",
+        "secret_scan",
+        "root_python_static_checks",
+        "rust_checks",
+        "critical_contract_matrix",
+    ]
+
+
 def test_gate_report_summarizes_blocking_and_incomplete_outcomes(tmp_path, monkeypatch):
     gates = load_gates()
     report_path = tmp_path / "gate-report.json"
@@ -683,6 +869,15 @@ def test_macos_quickstart_is_locked_and_reports_missing_tooling():
     assert "uv run --project sdk/python --locked pytest -q" in script
     assert "pnpm install --frozen-lockfile" in script
     assert "pnpm --dir web/console test" in script
+    assert "WORLDSTREAM_BROWSER_MODE=cdp" in script
+    assert "web/console/live-browser-story.sh" in script
+    assert "quickstart_elapsed_seconds >= 600" in script
+    assert 'getattr(os, "O_NOFOLLOW", 0)' in script
+    assert "source.read(maximum_browser_story_bytes + 1)" in script
+    assert "browser story input changed during bounded read" in script
+    assert script.index("if not isinstance(browser_story, dict):") < script.index(
+        'browser_story.get("schema")'
+    )
     checked = subprocess.run(
         ["bash", "-n", str(ROOT / "scripts/macos-source-quickstart.sh")],
         check=False,
@@ -837,7 +1032,8 @@ def test_release_workflow_builds_only_supported_distribution_surfaces():
     assert "sigstore/cosign-installer@" in release
     assert "cosign-release: v3.1.3" in release
     assert "cosign sign-blob --yes" in release
-    assert "--bundle dist/sigstore.bundle.json" in release
+    assert "bundle=signing-output/sigstore.bundle.json" in release
+    assert 'cp --no-clobber "$bundle" dist/sigstore.bundle.json' in release
     assert "dist/release-manifest.json" in release
 
 
@@ -990,6 +1186,7 @@ def test_telemetry_pressure_accepts_explicit_rate_limit_backpressure():
 def test_posix_gate_launcher_falls_back_to_pinned_uv_python():
     script = (ROOT / "scripts/gates.sh").read_text(encoding="utf-8")
     assert "uv run --python 3.14.7 --no-project python" in script
+    assert "sys.version_info[:3] == (3, 14, 7)" in script
     checked = subprocess.run(
         ["bash", "-n", str(ROOT / "scripts/gates.sh")],
         check=False,

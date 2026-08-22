@@ -66,6 +66,23 @@ inventory, and exactly the fourteenth supply-chain report. The supply-chain
 report is not a subject of the inventory or the pre-sign sidecars, so no
 attestation contains a digest of itself or of a signature over itself.
 
+The GitHub workflow enforces that boundary as five dependent jobs. The
+`release-evidence` job performs only unsigned aggregation and uploads its exact
+inventory bytes; a checkout-free signer downloads and verifies that closed
+set before signing only the inventory. A no-OIDC finalizer verifies that
+signature, emits the fourteenth report, and assembles the detached manifest. A
+second checkout-free signer downloads the exact assembled layout and signs
+only that manifest. The last no-OIDC job binds the detached bundle, verifies
+both signature levels and every digest, and uploads the finished release. All
+five jobs are restricted to a manual release from `refs/heads/main`; only the
+two minimal signing jobs have `id-token: write`.
+
+Persistent self-hosted release jobs and both signing jobs declare the
+`worldstream-release` GitHub environment. That declaration is not proof that a
+repository administrator configured environment approval rules or a protected
+self-hosted runner group. Those repository-side controls remain an explicit
+deployment prerequisite and release blocker until independently verified.
+
 The native package command also checks the release identity before writing an
 archive: the daemon's Cargo package, Python SDK `pyproject.toml`, and console
 `package.json` must all use the manifest `contracts.product` version. Archive
@@ -362,13 +379,13 @@ directory instead of an archive:
 scripts/verify-release.sh dist
 ```
 
-It requires `release-manifest.json`, `SHA256SUMS`, a Sigstore bundle,
-`sbom.spdx.json`, and `provenance.json`; validates declared paths, exact SHA-256
+It requires `release-manifest.json`, `SHA256SUMS`, both detached Sigstore
+bundles, `sbom.spdx.json`, and `provenance.json`; validates declared paths, exact SHA-256
 coverage, the exact non-empty SPDX component/relationship and SLSA
 source/material/build graphs, the GitHub Actions builder/runner identity, and
-Sigstore document shape, and then runs `cosign verify-blob`
-over `release-manifest.json` with `COSIGN_CERTIFICATE_IDENTITY` and
-`COSIGN_CERTIFICATE_OIDC_ISSUER`. The signed manifest hashes every payload and
+Sigstore document shape, and then runs `cosign verify-blob` over both the
+pre-sign subject inventory and `release-manifest.json` with
+`COSIGN_CERTIFICATE_IDENTITY` and `COSIGN_CERTIFICATE_OIDC_ISSUER`. The signed manifest hashes every payload and
 supply-chain sidecar except the Sigstore bundle that proves its signature; this
 avoids self-reference while authenticating the complete subject inventory.
 Missing cosign, identity, issuer, artifacts, or live evidence is a hard failure.
@@ -388,14 +405,27 @@ The evidence verifier requires HTTP-independent release documents plus
 cryptographic Sigstore verification. It never turns a document-shape check
 into a signing claim.
 
+The persistent Linux package-acceptance job verifies every checksum in the
+fresh native archive and extracts the exact `bin/worldstreamd`, `ui/`, Python
+SDK source, and Heist reference-client trees into an owner-only directory. A
+path-safe, digest/size/version-pinned Chrome-for-Testing browser then completes
+the real-DOM Heist story exclusively from those extracted paths; `cmux`,
+`target/debug`, and source-tree console assets are rejected. That mandatory
+sub-report is embedded in the closed packaged-acceptance report consumed by
+both reference-performance and failure/soak evidence producers.
+
 ## macOS
 
 macOS is source-only. `scripts/macos-source-quickstart.sh` verifies macOS 15+
 and APFS, checks that `cargo`, `node`, `pnpm`, `uv`, and Python are available
 before starting, then runs the locked source build, SDK tests, frozen UI
-install, UI tests/build, and manifest verification. Finally it starts the
-source-built daemon on loopback with the explicit `sqlite-bundled` profile and
-an ephemeral owner-only data directory/secret, checks `/healthz`, `/readyz`,
-and the manifest-backed `/version`, and shuts the daemon down. The quickstart
-deletes its temporary runtime state, does not create a macOS binary archive,
-and makes no signing or notarization claim.
+install, UI tests/build, and manifest verification. The workflow downloads an
+architecture-specific Chrome-for-Testing archive by immutable URL, verifies
+its exact archive size/SHA-256, extracts it without links or path traversal,
+and verifies the executed binary size/SHA-256/version. The quickstart then
+uses the source-built daemon, frozen Heist reference clients, and production
+UI to finish the six-phase story in a real DOM, including stale/resync,
+catch-up/reset, typed actions, privacy, replay hashes, and the locked/final
+reveal transition. The complete run must finish in under ten minutes. It
+deletes temporary runtime/browser state, creates no macOS binary archive, and
+makes no signing or notarization claim.

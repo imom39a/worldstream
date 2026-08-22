@@ -4,6 +4,8 @@ use crate::UlidString;
 
 /// The only wire version implemented by this workspace.
 pub const PROTOCOL_VERSION: &str = "0.1";
+/// The exact `RFC 6455` subprotocol negotiated by every `WorldStream` socket.
+pub const WEBSOCKET_SUBPROTOCOL: &str = "worldstream.json.v0.1";
 /// Maximum encoded WebSocket message accepted by the gateway.
 pub const MAX_MESSAGE_BYTES: usize = 512 * 1024;
 /// Maximum encoded Action payload accepted before admission.

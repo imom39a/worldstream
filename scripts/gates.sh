@@ -17,7 +17,7 @@ if [[ -n "$python_command" ]]; then
 fi
 
 if command -v uv >/dev/null 2>&1 \
-  && uv run --python 3.14.7 --no-project python -c 'import sys; raise SystemExit(0 if sys.version_info == (3, 14, 7) else 1)' >/dev/null 2>&1; then
+  && uv run --python 3.14.7 --no-project python -c 'import sys; raise SystemExit(0 if sys.version_info[:3] == (3, 14, 7) else 1)' >/dev/null 2>&1; then
   exec uv run --python 3.14.7 --no-project python scripts/gates.py "$@"
 fi
 

@@ -32,11 +32,12 @@ use worldstream_backup::{
 };
 use worldstream_core::{
     ActivationOperationResultV1, CanonicalJsonV1, CompleteHeadV1 as CoreCompleteHeadV1, GenesisV1,
-    StoredSemanticResultV1, TransitionV1,
+    OperationIdentityV1, StoredSemanticResultV1, TransitionV1,
 };
 use worldstream_transfer::{
     DeploymentIdentityV1 as TransferDeploymentIdentityV1, DigestV1 as TransferDigestV1,
-    PackIdentityV1 as TransferPackIdentityV1,
+    PackIdentityV1 as TransferPackIdentityV1, ResourceIdentityV1 as TransferResourceIdentityV1,
+    ResourceKindV1 as TransferResourceKindV1,
 };
 
 use crate::{
@@ -288,17 +289,13 @@ pub struct NativePostgresDurableDomainReportV1 {
     pub restored_digest: String,
 }
 
-/// Honest bounds on the PostgreSQL-to-provider-neutral semantic projection.
-///
-/// All durable PostgreSQL rows are still compared exactly through
-/// `durable_domain_inventory`. These limits describe only the richer typed
-/// projection needed by the current provider-neutral verifier: PostgreSQL does
-/// not persist immutable resource bytes or a fired-Timer-to-transition
-/// relation, and the current adapter derives Pack executor/schema/codec
-/// identities from the one Pack lock exercised by the release fixture.
+/// Exact scope of the PostgreSQL-to-provider-neutral semantic projection.
+/// All durable PostgreSQL rows and every healthy Room are verified without
+/// sampling; pre-existing unhealthy Rooms are raw-byte compared and retained
+/// as isolated.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativePostgresVerifierScopeV1 {
-    /// Stable bounded fixture profile.
+    /// Stable verifier profile.
     pub profile: String,
     /// Exact source deployment Pack count.
     pub source_pack_identity_count: usize,
@@ -312,7 +309,7 @@ pub struct NativePostgresVerifierScopeV1 {
     pub source_fired_timer_count: usize,
     /// Fired Timers admitted by the restored typed projection.
     pub restored_fired_timer_count: usize,
-    /// This bounded result must never be promoted as general deployment support.
+    /// True only when complete multi-Pack/resource/fired-Timer support ran.
     pub general_deployment_support_verified: bool,
 }
 
@@ -325,8 +322,10 @@ pub struct NativePostgresRestoreOutcome {
     pub witness: Option<NativePostgresTrustedWitnessV1>,
 }
 
-/// Rebuilds the reviewed disposable snapshot cache for every seeded source
-/// Room using the existing PostgreSQL adapter recovery path.
+/// Rebuilds the reviewed disposable snapshot cache for every healthy seeded
+/// source Room using the existing PostgreSQL adapter recovery path. Existing
+/// faulted or quarantined Rooms remain byte-preserved and isolated: their
+/// disposable snapshots are deliberately not decoded or rewritten.
 ///
 /// # Errors
 ///
@@ -340,7 +339,8 @@ pub fn rebuild_native_snapshot_cache(
     let mut client = connect(endpoint, &password)?;
     let room_ids = client
         .query(
-            "SELECT room_id FROM worldstream_room_roots ORDER BY room_id",
+            "SELECT room_id, integrity_generation, integrity_status \
+             FROM worldstream_room_roots ORDER BY room_id",
             &[],
         )
         .map_err(|_| NativePostgresError::Database)?;
@@ -354,6 +354,23 @@ pub fn rebuild_native_snapshot_cache(
         let room_id: String = row
             .try_get(0)
             .map_err(|_| NativePostgresError::MalformedRow)?;
+        let integrity_generation: i64 = row
+            .try_get(1)
+            .map_err(|_| NativePostgresError::MalformedRow)?;
+        let integrity_status: String = row
+            .try_get(2)
+            .map_err(|_| NativePostgresError::MalformedRow)?;
+        if integrity_generation <= 0
+            || !matches!(
+                integrity_status.as_str(),
+                "healthy" | "faulted" | "quarantined"
+            )
+        {
+            return Err(NativePostgresError::MalformedRow);
+        }
+        if integrity_status != "healthy" {
+            continue;
+        }
         rebuilt += admin
             .rebuild_snapshot_cache(&room_id)
             .map_err(|_| NativePostgresError::Database)?;
@@ -413,6 +430,7 @@ struct RoomCapture {
 /// Returns an error for unavailable/malformed provider operations. A valid
 /// provider operation with incomplete semantic evidence returns an incomplete
 /// outcome and never mints a witness.
+#[allow(clippy::too_many_lines)]
 pub fn run_native_postgres_restore(
     config: &NativePostgresRestoreConfig,
 ) -> Result<NativePostgresRestoreOutcome, NativePostgresError> {
@@ -488,14 +506,22 @@ pub fn run_native_postgres_restore(
             durable_domains_verified: source_after_dump.durable_domains
                 == restored_before_disposal.durable_domains,
             verifier_scope: NativePostgresVerifierScopeV1 {
-                profile: "single_pack_no_resources_no_fired_timers".to_owned(),
+                profile: "full_deployment_all_durable_domains".to_owned(),
                 source_pack_identity_count: source_after_dump.packs.len(),
                 restored_pack_identity_count: restored_before_disposal.packs.len(),
                 source_resource_identity_count: source_after_dump.resources.len(),
                 restored_resource_identity_count: restored_before_disposal.resources.len(),
-                source_fired_timer_count: 0,
-                restored_fired_timer_count: 0,
-                general_deployment_support_verified: false,
+                source_fired_timer_count: fired_timer_count(&source_after_dump),
+                restored_fired_timer_count: fired_timer_count(&restored_before_disposal),
+                general_deployment_support_verified: ready
+                    && source_after_dump.packs.len() >= 2
+                    && source_after_dump.packs == restored_before_disposal.packs
+                    && !source_after_dump.resources.is_empty()
+                    && source_after_dump.resources == restored_before_disposal.resources
+                    && source_after_dump.resource_blobs == restored_before_disposal.resource_blobs
+                    && fired_timer_count(&source_after_dump) > 0
+                    && fired_timer_count(&source_after_dump)
+                        == fired_timer_count(&restored_before_disposal),
             },
             source_durable_domains_digest: durable_domains_digest(
                 &source_after_dump.durable_domains,
@@ -559,8 +585,11 @@ fn dispose_snapshots(
     restored: &Capture,
     eligible: bool,
 ) -> Result<(bool, usize), NativePostgresError> {
-    if !eligible || restored.snapshot_count == 0 {
+    if !eligible {
         return Ok((false, restored.snapshot_count));
+    }
+    if restored.snapshot_count == 0 {
+        return Ok((true, 0));
     }
     let password = password_for(&config.target, &config.passfile)?;
     let target_admin = PostgresAdmin::new(
@@ -702,6 +731,7 @@ fn native_durable_domain_evidence(
         .collect()
 }
 
+#[allow(clippy::too_many_lines)]
 fn capture(
     config: &NativePostgresRestoreConfig,
     endpoint: &NativePostgresEndpointV1,
@@ -728,7 +758,8 @@ fn capture(
         u64::try_from(metadata.get::<_, i64>(1)).map_err(|_| NativePostgresError::MalformedRow)?;
     let room_ids = client
         .query(
-            "SELECT room_id FROM worldstream_room_roots ORDER BY room_id",
+            "SELECT room_id, integrity_generation, integrity_status \
+             FROM worldstream_room_roots ORDER BY room_id",
             &[],
         )
         .map_err(|_| NativePostgresError::Database)?;
@@ -748,16 +779,34 @@ fn capture(
         let room_id: String = row
             .try_get(0)
             .map_err(|_| NativePostgresError::MalformedRow)?;
-        let verification = store
-            .verify_room(&room_id)
-            .map_err(|_| NativePostgresError::Database)?;
-        rooms.push(room_capture(&mut client, &verification)?);
+        let generation = u64::try_from(
+            row.try_get::<_, i64>(1)
+                .map_err(|_| NativePostgresError::MalformedRow)?,
+        )
+        .map_err(|_| NativePostgresError::MalformedRow)?;
+        let status: String = row
+            .try_get(2)
+            .map_err(|_| NativePostgresError::MalformedRow)?;
+        if status == "healthy" {
+            let verification = store
+                .verify_room(&room_id)
+                .map_err(|_| NativePostgresError::Database)?;
+            rooms.push(room_capture(&mut client, &verification)?);
+        } else {
+            rooms.push(isolated_room_capture(
+                &mut client,
+                &room_id,
+                generation,
+                &status,
+            )?);
+        }
     }
-    let (packs, resources, resource_blobs, global_digest) = identities(&mut client, &rooms)?;
+    let (packs, resources, resource_blobs, _identity_digest) = identities(&mut client)?;
     let receipts = semantic_receipts(&mut client)?;
     let activations = activation_intents(&mut client)?;
     let activation_receipts = activation_operation_receipts(&mut client, &activations)?;
     let durable_domains = durable_domains(&mut client)?;
+    let global_digest = durable_domains_digest(&durable_domains);
     let durable_digest = durable_digest(&DurableDigestInput {
         lineage: &deployment_lineage,
         epoch: storage_epoch,
@@ -789,6 +838,160 @@ fn capture(
         durable_digest,
         snapshot_count,
     })
+}
+
+fn isolated_room_capture(
+    client: &mut Client,
+    room_id: &str,
+    generation: u64,
+    status: &str,
+) -> Result<RoomCapture, NativePostgresError> {
+    let integrity_status = integrity_status(status)?;
+    if integrity_status == IntegrityStatusV1::Healthy {
+        return Err(NativePostgresError::MalformedRow);
+    }
+    let fingerprint = isolated_room_bytes_digest(client, room_id)?;
+    let empty_digest = DigestV1::hash(&[]);
+    let snapshot_count = usize::try_from(
+        client
+            .query_one(
+                "SELECT count(*) FROM worldstream_room_snapshots WHERE room_id = $1",
+                &[&room_id],
+            )
+            .map_err(|_| NativePostgresError::Database)?
+            .try_get::<_, i64>(0)
+            .map_err(|_| NativePostgresError::MalformedRow)?,
+    )
+    .map_err(|_| NativePostgresError::MalformedRow)?;
+    Ok(RoomCapture {
+        room: RoomImageV1 {
+            room_id: room_id.to_owned(),
+            integrity: IntegrityWitnessV1 {
+                source_status: integrity_status,
+                restored_status: integrity_status,
+                source_generation: generation,
+                restored_generation: generation,
+                source_isolated: true,
+                restored_isolated: true,
+            },
+            head: CompleteHeadV1 {
+                room_id: room_id.to_owned(),
+                room_seq: 0,
+                lineage_digest: empty_digest.clone(),
+                core_schema_version: "isolated/raw".to_owned(),
+                pack_revision_digest: empty_digest.clone(),
+                core_state_digest: empty_digest.clone(),
+                activity_state_digest: empty_digest.clone(),
+                authoritative_state_digest: empty_digest,
+            },
+            records: Vec::new(),
+            materialization: MaterializationV1 {
+                core_state_bytes: Vec::new(),
+                activity_state_bytes: Vec::new(),
+                authoritative_state_bytes: Vec::new(),
+            },
+            source_bytes_digest: fingerprint.clone(),
+            restored_bytes_digest: fingerprint,
+        },
+        timers: Vec::new(),
+        frames: Vec::new(),
+        snapshot_count,
+    })
+}
+
+fn isolated_room_bytes_digest(
+    client: &mut Client,
+    room_id: &str,
+) -> Result<DigestV1, NativePostgresError> {
+    const QUERIES: &[(&str, &str)] = &[
+        (
+            "operation_guards",
+            "SELECT jsonb_build_array(identity_bytes, request_hash, room_id, receipt_bytes)::text FROM worldstream_operation_guards WHERE room_id = $1 ORDER BY identity_bytes",
+        ),
+        (
+            "room_roots",
+            "SELECT jsonb_build_array(room_id, head_bytes, integrity_generation, integrity_status)::text FROM worldstream_room_roots WHERE room_id = $1 ORDER BY room_id",
+        ),
+        (
+            "genesis",
+            "SELECT jsonb_build_array(room_id, pack_revision_lock_bytes, genesis_bytes)::text FROM worldstream_genesis WHERE room_id = $1 ORDER BY room_id",
+        ),
+        (
+            "materializations",
+            "SELECT jsonb_build_array(room_id, core_state_bytes, activity_state_bytes)::text FROM worldstream_materializations WHERE room_id = $1 ORDER BY room_id",
+        ),
+        (
+            "members",
+            "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through)::text FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
+        ),
+        (
+            "timers",
+            "SELECT jsonb_build_array(room_id, timer_id, generation, scheduled_for, payload_bytes, state)::text FROM worldstream_timers WHERE room_id = $1 ORDER BY timer_id, generation",
+        ),
+        (
+            "transitions",
+            "SELECT jsonb_build_array(room_id, room_seq, transition_bytes)::text FROM worldstream_transitions WHERE room_id = $1 ORDER BY room_seq",
+        ),
+        (
+            "frames",
+            "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash)::text FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
+        ),
+        (
+            "observation_consequences",
+            "SELECT jsonb_build_array(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash)::text FROM worldstream_observation_consequences WHERE room_id = $1 ORDER BY member_id, cause_room_seq",
+        ),
+        (
+            "activation_decisions",
+            "SELECT jsonb_build_array(room_id, cause_room_seq, decision_id, target_member_id, decision_bytes)::text FROM worldstream_activation_decisions WHERE room_id = $1 ORDER BY cause_room_seq, decision_id",
+        ),
+        (
+            "activation_intents",
+            "SELECT jsonb_build_array(activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code, deduplication_key, priority, semantic_deadline, policy_revision, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired)::text FROM worldstream_activation_intents WHERE room_id = $1 ORDER BY activation_id",
+        ),
+        (
+            "activation_receipts",
+            "SELECT jsonb_build_array(room_id, operation_id, operation_kind, canonical_request_hash, activation_id, result_code, result_bytes, context_hash, context_bytes)::text FROM worldstream_activation_operation_receipts WHERE room_id = $1 ORDER BY operation_id",
+        ),
+        (
+            "semantic_receipts",
+            "SELECT jsonb_build_array(identity_bytes, operation_kind, canonical_request_hash, basis_complete_head_bytes, semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, receipt_bytes, room_id)::text FROM worldstream_semantic_receipts WHERE room_id = $1 ORDER BY identity_bytes",
+        ),
+        (
+            "integrity_incidents",
+            "SELECT jsonb_build_array(room_id, incident_seq, generation, status, reason_code, details_bytes)::text FROM worldstream_integrity_incidents WHERE room_id = $1 ORDER BY incident_seq",
+        ),
+    ];
+    let limits = VerifierLimits::default();
+    let mut bytes = b"worldstream/isolated-room-raw/v1\0".to_vec();
+    let mut count = 0usize;
+    for (domain, query) in QUERIES {
+        bytes.extend_from_slice(domain.as_bytes());
+        bytes.push(0);
+        let rows = client
+            .query(*query, &[&room_id])
+            .map_err(|_| NativePostgresError::Database)?;
+        count = count
+            .checked_add(rows.len())
+            .ok_or(NativePostgresError::Incomplete)?;
+        if count > limits.max_ledger_rows {
+            return Err(NativePostgresError::Incomplete);
+        }
+        bytes.extend_from_slice(&(rows.len() as u64).to_be_bytes());
+        for row in rows {
+            let text: String = row
+                .try_get(0)
+                .map_err(|_| NativePostgresError::MalformedRow)?;
+            let canonical = CanonicalJsonV1::parse(text.as_bytes())
+                .and_then(|value| value.to_bytes())
+                .map_err(|_| NativePostgresError::MalformedRow)?;
+            if canonical.len() > limits.max_object_bytes {
+                return Err(NativePostgresError::Incomplete);
+            }
+            bytes.extend_from_slice(&(canonical.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(&canonical);
+        }
+    }
+    Ok(DigestV1::hash(&bytes))
 }
 
 fn room_capture(
@@ -852,11 +1055,43 @@ fn room_capture(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn operational_rows(
     client: &mut Client,
     verification: &crate::PostgresRoomVerification,
     room_id: &str,
 ) -> Result<(Vec<TimerV1>, Vec<FrameV1>), NativePostgresError> {
+    let fired_receipts = client
+        .query(
+            "SELECT receipt_bytes FROM worldstream_semantic_receipts \
+             WHERE room_id = $1 AND operation_kind = 'timer_fired' ORDER BY identity_bytes",
+            &[&room_id],
+        )
+        .map_err(|_| NativePostgresError::Database)?
+        .into_iter()
+        .map(|row| {
+            let bytes: Vec<u8> = row
+                .try_get(0)
+                .map_err(|_| NativePostgresError::MalformedRow)?;
+            let receipt = StoredSemanticResultV1::from_canonical_receipt_bytes(&bytes)
+                .map_err(|_| NativePostgresError::MalformedRow)?;
+            let OperationIdentityV1::TimerFired(identity) = receipt.operation_identity() else {
+                return Err(NativePostgresError::MalformedRow);
+            };
+            let transition_seq = receipt
+                .transition_seq()
+                .map(worldstream_core::RoomSequenceV1::get)
+                .ok_or(NativePostgresError::Incomplete)?;
+            Ok((
+                (
+                    identity.timer_id.to_string(),
+                    identity.generation.get(),
+                    identity.scheduled_for.as_str().to_owned(),
+                ),
+                transition_seq,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, NativePostgresError>>()?;
     let member_rows = client
         .query(
             "SELECT member_id, frame_head, last_ack_frame_seq FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
@@ -880,12 +1115,24 @@ fn operational_rows(
         .timers
         .iter()
         .map(|timer| {
-            let state = match timer.state.as_str() {
-                "scheduled" => TimerStateV1::Scheduled,
-                "cancelled" => TimerStateV1::Cancelled,
-                // The provider schema does not retain the consuming transition on
-                // a fired timer, so projecting one would weaken the verifier.
-                "fired" => return Err(NativePostgresError::Incomplete),
+            let (state, fired_transition_seq) = match timer.state.as_str() {
+                "scheduled" => (TimerStateV1::Scheduled, None),
+                "cancelled" => (TimerStateV1::Cancelled, None),
+                "fired" => {
+                    let key = (
+                        timer.timer_id.clone(),
+                        timer.generation,
+                        timer.scheduled_for.clone(),
+                    );
+                    (
+                        TimerStateV1::Fired,
+                        Some(
+                            *fired_receipts
+                                .get(&key)
+                                .ok_or(NativePostgresError::Incomplete)?,
+                        ),
+                    )
+                }
                 _ => return Err(NativePostgresError::MalformedRow),
             };
             Ok(TimerV1 {
@@ -896,7 +1143,7 @@ fn operational_rows(
                 payload_digest: DigestV1::hash(&timer.payload_bytes),
                 payload_bytes: timer.payload_bytes.clone(),
                 state,
-                fired_transition_seq: None,
+                fired_transition_seq,
             })
         })
         .collect::<Result<Vec<_>, NativePostgresError>>()?;
@@ -925,9 +1172,9 @@ fn operational_rows(
     Ok((timers, frames))
 }
 
+#[allow(clippy::too_many_lines)]
 fn identities(
     client: &mut Client,
-    rooms: &[RoomCapture],
 ) -> Result<
     (
         Vec<PackIdentityV1>,
@@ -943,12 +1190,6 @@ fn identities(
     let resource_rows = client
         .query("SELECT resource_kind, resource_identity, size_bytes, resource_digest FROM worldstream_deployment_resource_identities ORDER BY resource_kind, resource_identity", &[])
         .map_err(|_| NativePostgresError::Database)?;
-    let Some(room) = rooms.first() else {
-        return Err(NativePostgresError::Incomplete);
-    };
-    if pack_rows.len() != 1 || !resource_rows.is_empty() {
-        return Err(NativePostgresError::Incomplete);
-    }
     let identity_rows = client
         .query(
             "SELECT identity_digest, pack_set_digest, resource_set_digest, canonical_bytes FROM worldstream_deployment_identity_metadata WHERE target_id = true",
@@ -959,27 +1200,45 @@ fn identities(
         return Err(NativePostgresError::Incomplete);
     }
     let identity_row = &identity_rows[0];
-    let transfer_pack_digest = TransferDigestV1::from_bytes(&pack_rows[0].get::<_, Vec<u8>>(2))
-        .map_err(|_| NativePostgresError::MalformedRow)?;
-    if DigestV1::parse(transfer_pack_digest.to_string())
-        .map_err(|_| NativePostgresError::MalformedRow)?
-        != room.room.head.pack_revision_digest
-    {
-        return Err(NativePostgresError::Incomplete);
-    }
-    let transfer_pack = TransferPackIdentityV1::new(
-        pack_rows[0].get::<_, String>(0),
-        pack_rows[0].get::<_, String>(1),
-        transfer_pack_digest,
-    )
-    .map_err(|_| NativePostgresError::MalformedRow)?;
-    let transfer_identity = TransferDeploymentIdentityV1::new(vec![transfer_pack], Vec::new())
+    let transfer_packs = pack_rows
+        .iter()
+        .map(|row| {
+            TransferPackIdentityV1::new(
+                row.get::<_, String>(0),
+                row.get::<_, String>(1),
+                TransferDigestV1::from_bytes(&row.get::<_, Vec<u8>>(2))
+                    .map_err(|_| NativePostgresError::MalformedRow)?,
+            )
+            .map_err(|_| NativePostgresError::MalformedRow)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let transfer_resources = resource_rows
+        .iter()
+        .map(|row| {
+            let kind = match row.get::<_, String>(0).as_str() {
+                "artifact" => TransferResourceKindV1::Artifact,
+                "codec" => TransferResourceKindV1::Codec,
+                "schema" => TransferResourceKindV1::Schema,
+                _ => return Err(NativePostgresError::MalformedRow),
+            };
+            TransferResourceIdentityV1::from_persisted_parts(
+                kind,
+                row.get::<_, String>(1),
+                u64::try_from(row.get::<_, i64>(2))
+                    .map_err(|_| NativePostgresError::MalformedRow)?,
+                TransferDigestV1::from_bytes(&row.get::<_, Vec<u8>>(3))
+                    .map_err(|_| NativePostgresError::MalformedRow)?,
+            )
+            .map_err(|_| NativePostgresError::MalformedRow)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let transfer_identity = TransferDeploymentIdentityV1::new(transfer_packs, transfer_resources)
         .map_err(|_| NativePostgresError::MalformedRow)?;
     let canonical_identity = transfer_identity
         .canonical_bytes()
         .map_err(|_| NativePostgresError::MalformedRow)?;
     let pack_set_digest = transfer_pack_set_digest(&transfer_identity);
-    let resource_set_digest = TransferDigestV1::hash(b"worldstream/deployment-resource-set/v1");
+    let resource_set_digest = transfer_resource_set_digest(&transfer_identity);
     if identity_row.get::<_, Vec<u8>>(0) != transfer_identity.digest().as_bytes().to_vec()
         || identity_row.get::<_, Vec<u8>>(1) != pack_set_digest.as_bytes().to_vec()
         || identity_row.get::<_, Vec<u8>>(2) != resource_set_digest.as_bytes().to_vec()
@@ -987,38 +1246,171 @@ fn identities(
     {
         return Err(NativePostgresError::Incomplete);
     }
-    let pack_lock_bytes = client
-        .query_one(
-            "SELECT pack_revision_lock_bytes FROM worldstream_genesis WHERE room_id = $1",
-            &[&room.room.room_id],
+    let blob_rows = client
+        .query(
+            "SELECT resource_kind, resource_identity, resource_bytes, resource_digest FROM worldstream_deployment_resource_blobs ORDER BY resource_kind, resource_identity",
+            &[],
         )
-        .map_err(|_| NativePostgresError::Database)?
-        .get::<_, Vec<u8>>(0);
-    let expected_pack_digest = worldstream_core::PackDigestV1::from_str(&format!(
-        "blake3:{}",
-        room.room.head.pack_revision_digest.as_str()
-    ))
-    .map_err(|_| NativePostgresError::MalformedRow)?;
-    let lock = worldstream_core::PackRevisionLockV1::from_canonical_bytes(
-        &pack_lock_bytes,
-        &expected_pack_digest,
-    )
-    .map_err(|_| NativePostgresError::MalformedRow)?;
-    let packs = vec![PackIdentityV1 {
-        pack_id: pack_rows[0].get(0),
-        revision_digest: room.room.head.pack_revision_digest.clone(),
-        executor_digest: core_digest(&lock.rule_source_digest)?,
-        schema_bundle_digest: core_digest(&lock.schema_bundle_digest)?,
-        codec_bundle_digest: core_digest(&lock.codec_bundle_digest)?,
-        resource_ids: Vec::new(),
-    }];
+        .map_err(|_| NativePostgresError::Database)?;
+    if blob_rows.len() != transfer_identity.resources().len() {
+        return Err(NativePostgresError::Incomplete);
+    }
+    let mut resources = Vec::with_capacity(blob_rows.len());
+    let mut resource_blobs = Vec::with_capacity(blob_rows.len());
+    for (row, expected) in blob_rows.iter().zip(transfer_identity.resources()) {
+        let kind: String = row.get(0);
+        let resource_id: String = row.get(1);
+        let bytes: Vec<u8> = row.get(2);
+        let digest_bytes: Vec<u8> = row.get(3);
+        let expected_kind = match expected.kind() {
+            TransferResourceKindV1::Artifact => "artifact",
+            TransferResourceKindV1::Codec => "codec",
+            TransferResourceKindV1::Schema => "schema",
+        };
+        if kind != expected_kind
+            || resource_id != expected.identity()
+            || digest_bytes != expected.digest().as_bytes()
+            || expected.verify_bytes(&bytes).is_err()
+        {
+            return Err(NativePostgresError::Incomplete);
+        }
+        resources.push(ResourceIdentityV1 {
+            resource_id: resource_id.clone(),
+            kind,
+            byte_len: u64::try_from(bytes.len()).map_err(|_| NativePostgresError::Incomplete)?,
+            digest: DigestV1::hash(&bytes),
+        });
+        resource_blobs.push(ResourceBlobV1 { resource_id, bytes });
+    }
+    // Pack component identities come from the exact persisted revision lock,
+    // not from semantic replay. That makes an isolated-only retained Pack
+    // recoverable without decoding or serving the isolated Room, while a
+    // missing/malformed lock still fails readiness closed.
+    let pack_lock_rows = client
+        .query(
+            "SELECT room_id, pack_revision_lock_bytes FROM worldstream_genesis ORDER BY room_id",
+            &[],
+        )
+        .map_err(|_| NativePostgresError::Database)?;
+    let pack_lock_bytes = pack_lock_rows
+        .iter()
+        .map(|row| {
+            row.try_get::<_, Vec<u8>>(1)
+                .map_err(|_| NativePostgresError::MalformedRow)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let retained_locks = retained_pack_locks(&transfer_identity, &pack_lock_bytes)?;
+    let mut packs = Vec::with_capacity(retained_locks.len());
+    for (transfer_pack, lock) in transfer_identity.packs().iter().zip(retained_locks) {
+        let revision_digest = DigestV1::parse(transfer_pack.digest().to_string())
+            .map_err(|_| NativePostgresError::MalformedRow)?;
+        let executor_digest = core_digest(&lock.rule_source_digest)?;
+        let schema_bundle_digest = core_digest(&lock.schema_bundle_digest)?;
+        let codec_bundle_digest = core_digest(&lock.codec_bundle_digest)?;
+        let resource_ids = resources
+            .iter()
+            .filter(|resource| {
+                resource.digest == executor_digest
+                    || resource.digest == schema_bundle_digest
+                    || resource.digest == codec_bundle_digest
+            })
+            .map(|resource| resource.resource_id.clone())
+            .collect();
+        packs.push(PackIdentityV1 {
+            pack_id: transfer_pack.pack_id().to_owned(),
+            revision_digest,
+            executor_digest,
+            schema_bundle_digest,
+            codec_bundle_digest,
+            resource_ids,
+        });
+    }
     Ok((
         packs,
-        Vec::new(),
-        Vec::new(),
+        resources,
+        resource_blobs,
         DigestV1::parse(transfer_identity.digest().to_string())
             .map_err(|_| NativePostgresError::MalformedRow)?,
     ))
+}
+
+/// Resolves every retained Pack from exact persisted revision-lock bytes.
+///
+/// Every Genesis row must itself be a valid lock for exactly one published
+/// deployment Pack. This is intentionally stronger than finding one usable
+/// lock per Pack: a malformed lock owned only by an isolated Room is durable
+/// corruption and must fail restore readiness rather than being ignored when
+/// another Room happens to use the same Pack.
+fn retained_pack_locks(
+    identity: &TransferDeploymentIdentityV1,
+    lock_rows: &[Vec<u8>],
+) -> Result<Vec<worldstream_core::PackRevisionLockV1>, NativePostgresError> {
+    let expected = identity
+        .packs()
+        .iter()
+        .map(|pack| {
+            let digest = DigestV1::parse(pack.digest().to_string())
+                .map_err(|_| NativePostgresError::MalformedRow)?;
+            let pack_digest =
+                worldstream_core::PackDigestV1::from_str(&format!("blake3:{}", digest.as_str()))
+                    .map_err(|_| NativePostgresError::MalformedRow)?;
+            Ok((pack, pack_digest))
+        })
+        .collect::<Result<Vec<_>, NativePostgresError>>()?;
+    let mut observed = BTreeMap::<(String, String), worldstream_core::PackRevisionLockV1>::new();
+    for bytes in lock_rows {
+        let mut matches = expected.iter().filter_map(|(pack, digest)| {
+            let lock =
+                worldstream_core::PackRevisionLockV1::from_canonical_bytes(bytes, digest).ok()?;
+            (lock.pack_id == pack.pack_id() && lock.revision_lock_id == pack.revision())
+                .then_some((pack, lock))
+        });
+        let Some((pack, lock)) = matches.next() else {
+            return Err(NativePostgresError::Incomplete);
+        };
+        if matches.next().is_some() {
+            return Err(NativePostgresError::Incomplete);
+        }
+        let key = (pack.pack_id().to_owned(), pack.revision().to_owned());
+        if let Some(prior) = observed.get(&key) {
+            if prior
+                .canonical_bytes()
+                .map_err(|_| NativePostgresError::MalformedRow)?
+                != lock
+                    .canonical_bytes()
+                    .map_err(|_| NativePostgresError::MalformedRow)?
+            {
+                return Err(NativePostgresError::Incomplete);
+            }
+        } else {
+            observed.insert(key, lock);
+        }
+    }
+    identity
+        .packs()
+        .iter()
+        .map(|pack| {
+            observed
+                .remove(&(pack.pack_id().to_owned(), pack.revision().to_owned()))
+                .ok_or(NativePostgresError::Incomplete)
+        })
+        .collect()
+}
+
+fn transfer_resource_set_digest(identity: &TransferDeploymentIdentityV1) -> TransferDigestV1 {
+    let mut bytes = b"worldstream/deployment-resource-set/v1".to_vec();
+    for resource in identity.resources() {
+        bytes.push(match resource.kind() {
+            TransferResourceKindV1::Artifact => 1,
+            TransferResourceKindV1::Codec => 2,
+            TransferResourceKindV1::Schema => 3,
+        });
+        bytes.extend_from_slice(resource.identity().as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&resource.size_bytes().to_le_bytes());
+        bytes.extend_from_slice(&resource.digest().as_bytes());
+    }
+    TransferDigestV1::hash(&bytes)
 }
 
 fn transfer_pack_set_digest(identity: &TransferDeploymentIdentityV1) -> TransferDigestV1 {
@@ -1041,7 +1433,7 @@ fn digest_from_bytes(bytes: &[u8]) -> Result<DigestV1, NativePostgresError> {
     DigestV1::parse(text).map_err(|_| NativePostgresError::MalformedRow)
 }
 
-const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 31] = [
+const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 33] = [
     (
         NativeRestoreDurableDomainV1::SchemaMigrations,
         "SELECT jsonb_build_array(version, migration_id, checksum, logical_history_id, schema_contract_fingerprint)::text FROM worldstream_schema_migrations ORDER BY version",
@@ -1107,6 +1499,10 @@ const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 31] = [
         "SELECT jsonb_build_array(witness_id, authenticated_principal, generation, scope_revocation_hash, active)::text FROM worldstream_authority_fences ORDER BY witness_id",
     ),
     (
+        NativeRestoreDurableDomainV1::RetiredAuthorityFences,
+        "SELECT jsonb_build_array(witness_id, authenticated_principal, generation, scope_revocation_bytes, scope_revocation_hash, active)::text FROM worldstream_retired_authority_fences_v1 ORDER BY witness_id",
+    ),
+    (
         NativeRestoreDurableDomainV1::AuthorityState,
         "SELECT jsonb_build_array(authority_id)::text FROM worldstream_authority_state ORDER BY authority_id",
     ),
@@ -1166,6 +1562,10 @@ const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 31] = [
         NativeRestoreDurableDomainV1::DeploymentResourceIdentities,
         "SELECT jsonb_build_array(resource_kind, resource_identity, size_bytes, resource_digest)::text FROM worldstream_deployment_resource_identities ORDER BY resource_kind, resource_identity",
     ),
+    (
+        NativeRestoreDurableDomainV1::DeploymentResourceBlobs,
+        "SELECT jsonb_build_array(resource_kind, resource_identity, resource_bytes, resource_digest)::text FROM worldstream_deployment_resource_blobs ORDER BY resource_kind, resource_identity",
+    ),
 ];
 
 fn durable_domains(
@@ -1220,7 +1620,10 @@ fn activation_intents(client: &mut Client) -> Result<Vec<ActivationV1>, NativePo
         .map_err(|_| NativePostgresError::Incomplete)?;
     let rows = client
         .query(
-            "SELECT activation_id, room_id, cause_room_seq, target_member_id, state, intent_generation, lease_generation, runner_id, claim_id, lease_until, context_hash, context_bytes, context_retired FROM worldstream_activation_intents ORDER BY activation_id LIMIT $1",
+            "SELECT a.activation_id, a.room_id, a.cause_room_seq, a.target_member_id, a.state, a.intent_generation, a.lease_generation, a.runner_id, a.claim_id, a.lease_until, a.context_hash, a.context_bytes, a.context_retired \
+             FROM worldstream_activation_intents a \
+             JOIN worldstream_room_roots r ON r.room_id = a.room_id \
+             WHERE r.integrity_status = 'healthy' ORDER BY a.activation_id LIMIT $1",
             &[&row_limit],
         )
         .map_err(|_| NativePostgresError::Database)?;
@@ -1317,7 +1720,10 @@ fn activation_operation_receipts(
         .map_err(|_| NativePostgresError::Incomplete)?;
     let rows = client
         .query(
-            "SELECT room_id, operation_id, operation_kind, canonical_request_hash, activation_id, result_code, result_bytes, context_hash, context_bytes FROM worldstream_activation_operation_receipts ORDER BY room_id, operation_id LIMIT $1",
+            "SELECT a.room_id, a.operation_id, a.operation_kind, a.canonical_request_hash, a.activation_id, a.result_code, a.result_bytes, a.context_hash, a.context_bytes \
+             FROM worldstream_activation_operation_receipts a \
+             JOIN worldstream_room_roots r ON r.room_id = a.room_id \
+             WHERE r.integrity_status = 'healthy' ORDER BY a.room_id, a.operation_id LIMIT $1",
             &[&row_limit],
         )
         .map_err(|_| NativePostgresError::Database)?;
@@ -1426,12 +1832,22 @@ fn durable_domains_digest(
     DigestV1::hash(&bytes)
 }
 
+fn fired_timer_count(capture: &Capture) -> usize {
+    capture
+        .rooms
+        .iter()
+        .flat_map(|room| &room.timers)
+        .filter(|timer| timer.state == TimerStateV1::Fired)
+        .count()
+}
+
 fn authority_domains_equal(
     source: &BTreeMap<NativeRestoreDurableDomainV1, Vec<NativeRestoreCanonicalRowV1>>,
     restored: &BTreeMap<NativeRestoreDurableDomainV1, Vec<NativeRestoreCanonicalRowV1>>,
 ) -> bool {
-    const AUTHORITY_DOMAINS: [NativeRestoreDurableDomainV1; 10] = [
+    const AUTHORITY_DOMAINS: [NativeRestoreDurableDomainV1; 11] = [
         NativeRestoreDurableDomainV1::AuthorityFences,
+        NativeRestoreDurableDomainV1::RetiredAuthorityFences,
         NativeRestoreDurableDomainV1::AuthorityState,
         NativeRestoreDurableDomainV1::AuthorityPrincipals,
         NativeRestoreDurableDomainV1::AuthorityRunners,
@@ -1468,7 +1884,10 @@ fn activation_operation_receipt_identity(
 
 fn semantic_receipts(client: &mut Client) -> Result<Vec<ReceiptV1>, NativePostgresError> {
     let rows = client
-        .query("SELECT identity_bytes, operation_kind, canonical_request_hash, basis_complete_head_bytes, semantic_input_bytes, semantic_time_bytes, resolution_kind, transition_seq, receipt_bytes, room_id FROM worldstream_semantic_receipts ORDER BY identity_bytes", &[])
+        .query("SELECT s.identity_bytes, s.operation_kind, s.canonical_request_hash, s.basis_complete_head_bytes, s.semantic_input_bytes, s.semantic_time_bytes, s.resolution_kind, s.transition_seq, s.receipt_bytes, s.room_id \
+                FROM worldstream_semantic_receipts s \
+                JOIN worldstream_room_roots r ON r.room_id = s.room_id \
+                WHERE r.integrity_status = 'healthy' ORDER BY s.identity_bytes", &[])
         .map_err(|_| NativePostgresError::Database)?;
     rows.iter().map(receipt).collect()
 }
@@ -1784,6 +2203,62 @@ fn dsn_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn counter_identity_and_lock()
+    -> Result<(TransferDeploymentIdentityV1, Vec<u8>), NativePostgresError> {
+        let digest = worldstream_core::counter_v2_digest();
+        let registry = worldstream_core::builtin_counter_registry()
+            .map_err(|_| NativePostgresError::Incomplete)?;
+        let lock = registry
+            .load_retained(&digest)
+            .map_err(|_| NativePostgresError::Incomplete)?
+            .revision_lock()
+            .clone();
+        let identity = TransferDeploymentIdentityV1::new(
+            vec![
+                TransferPackIdentityV1::new(
+                    lock.pack_id.clone(),
+                    lock.revision_lock_id.clone(),
+                    TransferDigestV1::from_bytes(digest.digest().as_bytes())
+                        .map_err(|_| NativePostgresError::Incomplete)?,
+                )
+                .map_err(|_| NativePostgresError::Incomplete)?,
+            ],
+            Vec::new(),
+        )
+        .map_err(|_| NativePostgresError::Incomplete)?;
+        Ok((
+            identity,
+            lock.canonical_bytes()
+                .map_err(|_| NativePostgresError::Incomplete)?,
+        ))
+    }
+
+    #[test]
+    fn isolated_only_pack_lock_can_supply_retained_executor_identity()
+    -> Result<(), NativePostgresError> {
+        let (identity, lock) = counter_identity_and_lock()?;
+
+        let locks = retained_pack_locks(&identity, &[lock.clone(), lock])?;
+
+        assert_eq!(locks.len(), 1);
+        assert_eq!(locks[0].pack_id, identity.packs()[0].pack_id());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_isolated_pack_lock_fails_even_when_another_room_lock_is_valid()
+    -> Result<(), NativePostgresError> {
+        let (identity, lock) = counter_identity_and_lock()?;
+        let mut malformed = lock.clone();
+        malformed[0] ^= 0xff;
+
+        assert!(matches!(
+            retained_pack_locks(&identity, &[lock, malformed]),
+            Err(NativePostgresError::Incomplete)
+        ));
+        Ok(())
+    }
 
     #[test]
     fn dsn_and_debug_boundary_is_explicit() {

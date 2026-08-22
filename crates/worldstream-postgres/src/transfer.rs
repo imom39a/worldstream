@@ -528,8 +528,81 @@ impl<'a> PostgresTransferDestination<'a> {
             .map_err(|_| PostgresTransferError::DeploymentIdentity("identity encoding"))?;
         Self::persist_identity_metadata(transaction, &identity, &canonical_bytes)?;
         Self::persist_identity_rows(transaction, &identity)?;
+        self.persist_resource_payloads(transaction, &identity)?;
         Self::verify_persisted_identity(transaction, &identity)?;
         Ok(Some(identity))
+    }
+
+    fn persist_resource_payloads(
+        &self,
+        transaction: &mut Transaction<'_>,
+        identity: &DeploymentIdentityV1,
+    ) -> Result<(), PostgresTransferError> {
+        let mut seen = BTreeSet::new();
+        for resource in identity.resources() {
+            let record_identity = resource_record_identity(resource);
+            let record = self
+                .bundle
+                .records()
+                .iter()
+                .find(|record| {
+                    record.kind() == RecordKindV1::Canonical(CanonicalRecordKindV1::ArtifactBytes)
+                        && record.identity() == record_identity
+                })
+                .ok_or(PostgresTransferError::DeploymentIdentity(
+                    "resource payload is absent",
+                ))?;
+            if !seen.insert(record_identity) {
+                return Err(PostgresTransferError::DeploymentIdentity(
+                    "duplicate resource payload",
+                ));
+            }
+            resource.verify_bytes(record.bytes()).map_err(|_| {
+                PostgresTransferError::DeploymentIdentity("resource payload identity mismatch")
+            })?;
+            let kind = resource_kind_name(resource.kind());
+            let digest = resource.digest().as_bytes();
+            if let Some(row) = transaction
+                .query_opt(
+                    "SELECT resource_bytes, resource_digest FROM worldstream_deployment_resource_blobs WHERE resource_kind = $1 AND resource_identity = $2 FOR UPDATE",
+                    &[&kind, &resource.identity()],
+                )
+                .map_err(PostgresTransferError::Sql)?
+            {
+                let bytes: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+                let stored_digest: Vec<u8> =
+                    row.try_get(1).map_err(PostgresTransferError::Sql)?;
+                if bytes != record.bytes() || stored_digest != digest {
+                    return Err(PostgresTransferError::DeploymentIdentity(
+                        "persisted resource payload mismatch",
+                    ));
+                }
+            } else {
+                transaction
+                    .execute(
+                        "INSERT INTO worldstream_deployment_resource_blobs(resource_kind, resource_identity, resource_bytes, resource_digest) VALUES ($1, $2, $3, $4)",
+                        &[&kind, &resource.identity(), &record.bytes(), &digest.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+            }
+        }
+        let stored_count = usize::try_from(
+            transaction
+                .query_one(
+                    "SELECT count(*) FROM worldstream_deployment_resource_blobs",
+                    &[],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .try_get::<_, i64>(0)
+                .map_err(PostgresTransferError::Sql)?,
+        )
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("resource payload count"))?;
+        if stored_count != identity.resources().len() {
+            return Err(PostgresTransferError::DeploymentIdentity(
+                "persisted resource payload cardinality",
+            ));
+        }
+        Ok(())
     }
 
     fn commit_transaction(transaction: Transaction<'_>) -> Result<(), PostgresTransferError> {
@@ -677,6 +750,9 @@ impl<'a> PostgresTransferDestination<'a> {
                     "isolated Room disposition mismatch",
                 ));
             }
+        }
+        if let Some(summary) = summary {
+            verify_native_row_cardinalities(transaction, summary)?;
         }
         Ok(())
     }
@@ -901,33 +977,65 @@ impl<'a> PostgresTransferDestination<'a> {
         created_roots: &BTreeSet<String>,
         mode: NativePublicationMode,
     ) -> Result<(), PostgresTransferError> {
+        let mut rows = Vec::new();
         for record in self.bundle.records() {
             if record.kind() != RecordKindV1::Canonical(CanonicalRecordKindV1::NativeOperationalRow)
             {
                 continue;
             }
-            let row = decode_native_operational_row(record.bytes())?;
-            if mode.requires_existing_row() {
-                ensure_native_operational_row_present(transaction, &row)?;
-            }
-            match row.table.as_str() {
-                "room_integrity" => publish_room_integrity(transaction, &row, created_roots)?,
-                "room_members" => publish_room_member(transaction, &row)?,
-                "timers" => publish_timer(transaction, &row)?,
-                "observation_frames" => publish_observation_frame(transaction, &row)?,
-                "observation_consequences" => publish_observation_consequence(transaction, &row)?,
-                "activation_decisions" => publish_activation_decision(transaction, &row)?,
-                "activation_intents" => publish_activation_intent(transaction, &row)?,
-                "activation_operation_receipts" => {
-                    publish_activation_receipt(transaction, &row)?;
+            rows.push(decode_native_operational_row(record.bytes())?);
+        }
+        for table in PUBLICATION_ORDER {
+            for row in rows.iter().filter(|row| row.table == *table) {
+                if mode.requires_existing_row() {
+                    ensure_native_operational_row_present(transaction, row)?;
                 }
-                "semantic_receipts" => publish_semantic_receipt(transaction, &row)?,
-                _ => {
-                    return Err(PostgresTransferError::Canonical(
-                        "unknown operational table",
-                    ));
+                match row.table.as_str() {
+                    "retired_authority_fences_v1" => {
+                        publish_retired_authority_fence(transaction, row)?;
+                    }
+                    "principals" => publish_authority_principal(transaction, row)?,
+                    "runners" => publish_authority_runner(transaction, row)?,
+                    "capabilities" => publish_authority_capability(transaction, row)?,
+                    "capability_scopes" => publish_authority_capability_scope(transaction, row)?,
+                    "runner_capability_memberships" => {
+                        publish_runner_capability_membership(transaction, row)?;
+                    }
+                    "authority_change_receipts" => {
+                        publish_authority_change_receipt(transaction, row)?;
+                    }
+                    "authority_audit" => publish_authority_audit(transaction, row)?,
+                    "room_integrity" => publish_room_integrity(transaction, row, created_roots)?,
+                    "room_members" => publish_room_member(transaction, row)?,
+                    "timers" => publish_timer(transaction, row)?,
+                    "observation_frames" => publish_observation_frame(transaction, row)?,
+                    "observation_consequences" => {
+                        publish_observation_consequence(transaction, row)?;
+                    }
+                    "activation_decisions" => publish_activation_decision(transaction, row)?,
+                    "activation_intents" => publish_activation_intent(transaction, row)?,
+                    "activation_operation_receipts" => {
+                        publish_activation_receipt(transaction, row)?;
+                    }
+                    "semantic_receipts" => publish_semantic_receipt(transaction, row)?,
+                    "integrity_incidents" => publish_integrity_incident(transaction, row)?,
+                    _ => {
+                        return Err(PostgresTransferError::Canonical(
+                            "unknown operational table",
+                        ));
+                    }
                 }
             }
+        }
+        if rows.len()
+            != PUBLICATION_ORDER
+                .iter()
+                .map(|table| rows.iter().filter(|row| row.table == *table).count())
+                .sum::<usize>()
+        {
+            return Err(PostgresTransferError::Canonical(
+                "unknown operational table",
+            ));
         }
         Ok(())
     }
@@ -944,11 +1052,129 @@ impl<'a> PostgresTransferDestination<'a> {
     }
 }
 
+fn verify_native_row_cardinalities(
+    transaction: &mut Transaction<'_>,
+    summary: &NativeSqliteBundleSummaryV1,
+) -> Result<(), PostgresTransferError> {
+    const COUNTS: &[(&str, &str)] = &[
+        (
+            "retired_authority_fences_v1",
+            "SELECT count(*) FROM worldstream_retired_authority_fences_v1",
+        ),
+        (
+            "principals",
+            "SELECT count(*) FROM worldstream_authority_principals",
+        ),
+        (
+            "runners",
+            "SELECT count(*) FROM worldstream_authority_runners",
+        ),
+        (
+            "capabilities",
+            "SELECT count(*) FROM worldstream_authority_capabilities",
+        ),
+        (
+            "capability_scopes",
+            "SELECT count(*) FROM worldstream_authority_capability_scopes",
+        ),
+        (
+            "runner_capability_memberships",
+            "SELECT count(*) FROM worldstream_authority_runner_capability_memberships",
+        ),
+        (
+            "authority_change_receipts",
+            "SELECT count(*) FROM worldstream_authority_change_receipts",
+        ),
+        (
+            "authority_audit",
+            "SELECT count(*) FROM worldstream_authority_audit",
+        ),
+        (
+            "room_integrity",
+            "SELECT count(*) FROM worldstream_room_roots",
+        ),
+        ("room_members", "SELECT count(*) FROM worldstream_members"),
+        ("timers", "SELECT count(*) FROM worldstream_timers"),
+        (
+            "observation_frames",
+            "SELECT count(*) FROM worldstream_frames",
+        ),
+        (
+            "observation_consequences",
+            "SELECT count(*) FROM worldstream_observation_consequences",
+        ),
+        (
+            "activation_decisions",
+            "SELECT count(*) FROM worldstream_activation_decisions",
+        ),
+        (
+            "activation_intents",
+            "SELECT count(*) FROM worldstream_activation_intents",
+        ),
+        (
+            "activation_operation_receipts",
+            "SELECT count(*) FROM worldstream_activation_operation_receipts",
+        ),
+        (
+            "semantic_receipts",
+            "SELECT count(*) FROM worldstream_semantic_receipts",
+        ),
+        (
+            "integrity_incidents",
+            "SELECT count(*) FROM worldstream_integrity_incidents",
+        ),
+    ];
+    for (source_table, query) in COUNTS {
+        let expected =
+            *summary
+                .table_counts()
+                .get(*source_table)
+                .ok_or(PostgresTransferError::Canonical(
+                    "native table count is absent",
+                ))?;
+        let actual = usize::try_from(
+            transaction
+                .query_one(*query, &[])
+                .map_err(PostgresTransferError::Sql)?
+                .try_get::<_, i64>(0)
+                .map_err(PostgresTransferError::Sql)?,
+        )
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("native table count"))?;
+        if actual != expected {
+            return Err(PostgresTransferError::Canonical(
+                "native table cardinality mismatch",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativePublicationMode {
     Hydrate,
     VerifyOnly,
 }
+
+const PUBLICATION_ORDER: &[&str] = &[
+    "retired_authority_fences_v1",
+    "principals",
+    "runners",
+    "capabilities",
+    "capability_scopes",
+    "runner_capability_memberships",
+    "authority_change_receipts",
+    "authority_audit",
+    "room_integrity",
+    "room_members",
+    "timers",
+    "observation_frames",
+    "observation_consequences",
+    "activation_decisions",
+    "activation_intents",
+    "activation_operation_receipts",
+    "semantic_receipts",
+    "integrity_incidents",
+];
 
 impl NativePublicationMode {
     const fn requires_existing_row(self) -> bool {
@@ -992,15 +1218,14 @@ fn verify_bundle_deployment_identity(
     bundle: &TransferBundleV1,
     identity: &DeploymentIdentityV1,
 ) -> Result<(), PostgresTransferError> {
-    // The v0.1 bundle header has one primary PackIdentity slot. A complete
-    // source witness may still contain many packs, but this adapter refuses
-    // to silently project a multi-pack witness into that narrower header.
+    // The bundle header carries the canonical primary pack while the bound
+    // deployment identity record carries the complete ordered pack set.
     let Some(bundle_pack) = bundle.pack() else {
         return Err(PostgresTransferError::DeploymentIdentity(
             "whole-deployment pack header is absent",
         ));
     };
-    if identity.packs().len() != 1 || identity.packs().first() != Some(bundle_pack) {
+    if identity.packs().first() != Some(bundle_pack) {
         return Err(PostgresTransferError::DeploymentIdentity(
             "pack identity differs from bundle header",
         ));
@@ -1011,6 +1236,14 @@ fn verify_bundle_deployment_identity(
         ));
     }
     Ok(())
+}
+
+fn resource_record_identity(resource: &ResourceIdentityV1) -> String {
+    format!(
+        "deployment/resource/{}/{}",
+        resource_kind_name(resource.kind()),
+        resource.identity()
+    )
 }
 
 fn resource_kind_name(kind: ResourceKindV1) -> &'static str {
@@ -1167,13 +1400,20 @@ fn decode_native_operational_row(bytes: &[u8]) -> Result<NativeRow, PostgresTran
     }
     let table = reader.string()?;
     let expected = match table.as_str() {
+        "principals" | "runners" => 4,
+        "capabilities" => 10,
+        "capability_scopes" => 2,
+        "runner_capability_memberships" | "room_integrity" => 3,
+        "authority_change_receipts" | "activation_operation_receipts" => 9,
+        "authority_audit" | "semantic_receipts" => 12,
         "activation_decisions" => 5,
         "activation_intents" => 19,
-        "activation_operation_receipts" => 9,
-        "observation_consequences" | "observation_frames" | "timers" => 6,
-        "room_integrity" => 3,
+        "retired_authority_fences_v1"
+        | "observation_consequences"
+        | "observation_frames"
+        | "timers"
+        | "integrity_incidents" => 6,
         "room_members" => 13,
-        "semantic_receipts" => 12,
         _ => {
             return Err(PostgresTransferError::Canonical(
                 "unknown operational table",
@@ -1282,6 +1522,89 @@ fn ensure_native_operational_row_present(
     row: &NativeRow,
 ) -> Result<(), PostgresTransferError> {
     let present = match row.table.as_str() {
+        "retired_authority_fences_v1" => {
+            let witness_id = native_text(row, 0)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_retired_authority_fences_v1 WHERE witness_id = $1",
+                    &[&witness_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "principals" => {
+            let principal_id = native_text(row, 0)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_authority_principals WHERE principal_id = $1",
+                    &[&principal_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "runners" => {
+            let runner_id = native_text(row, 0)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_authority_runners WHERE runner_id = $1",
+                    &[&runner_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "capabilities" => {
+            let capability_id = native_text(row, 0)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_authority_capabilities WHERE capability_id = $1",
+                    &[&capability_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "capability_scopes" => {
+            let capability_id = native_text(row, 0)?;
+            let scope = native_text(row, 1)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_authority_capability_scopes WHERE capability_id = $1 AND scope = $2",
+                    &[&capability_id, &scope],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "runner_capability_memberships" => {
+            let capability_id = native_text(row, 0)?;
+            let room_id = native_text(row, 1)?;
+            let member_id = native_text(row, 2)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_authority_runner_capability_memberships WHERE capability_id = $1 AND room_id = $2 AND member_id = $3",
+                    &[&capability_id, &room_id, &member_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "authority_change_receipts" => {
+            let change_id = native_text(row, 0)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_authority_change_receipts WHERE change_id = $1",
+                    &[&change_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
+        "authority_audit" => {
+            let audit_seq = native_integer(row, 0)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_authority_audit WHERE audit_seq = $1",
+                    &[&audit_seq],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
         "room_integrity" => {
             let room_id = native_text(row, 0)?;
             transaction
@@ -1382,6 +1705,17 @@ fn ensure_native_operational_row_present(
                 .map_err(PostgresTransferError::Sql)?
                 .is_some()
         }
+        "integrity_incidents" => {
+            let room_id = native_text(row, 0)?;
+            let incident_seq = native_integer(row, 1)?;
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_integrity_incidents WHERE room_id = $1 AND incident_seq = $2",
+                    &[&room_id, &incident_seq],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_some()
+        }
         _ => {
             return Err(PostgresTransferError::Canonical(
                 "unknown operational table",
@@ -1391,6 +1725,430 @@ fn ensure_native_operational_row_present(
     if !present {
         return Err(PostgresTransferError::Canonical(
             "authoritative native row is missing",
+        ));
+    }
+    Ok(())
+}
+
+fn publish_retired_authority_fence(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let witness_id = native_text(row, 0)?;
+    let principal = native_text(row, 1)?;
+    let generation = native_integer(row, 2)?;
+    let revocation_bytes = native_blob(row, 3)?;
+    let revocation_hash = native_blob(row, 4)?;
+    let active = native_integer(row, 5)? != 0;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_retired_authority_fences_v1(witness_id, authenticated_principal, generation, scope_revocation_bytes, scope_revocation_hash, active) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (witness_id) DO NOTHING",
+            &[&witness_id, &principal, &generation, &revocation_bytes, &revocation_hash, &active],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT authenticated_principal, generation, scope_revocation_bytes, scope_revocation_hash, active FROM worldstream_retired_authority_fences_v1 WHERE witness_id = $1",
+            &[&witness_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if (
+        stored
+            .try_get::<_, String>(0)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, i64>(1)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Vec<u8>>(2)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Vec<u8>>(3)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, bool>(4)
+            .map_err(PostgresTransferError::Sql)?,
+    ) != (
+        principal,
+        generation,
+        revocation_bytes,
+        revocation_hash,
+        active,
+    ) {
+        return Err(PostgresTransferError::Canonical("authority fence mismatch"));
+    }
+    Ok(())
+}
+
+fn publish_authority_principal(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let principal_id = native_text(row, 0)?;
+    let kind = native_text(row, 1)?;
+    let status = native_text(row, 2)?;
+    let generation = native_integer(row, 3)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_authority_principals(principal_id, principal_kind, authority_status, principal_generation) VALUES ($1, $2, $3, $4) ON CONFLICT (principal_id) DO NOTHING",
+            &[&principal_id, &kind, &status, &generation],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT principal_kind, authority_status, principal_generation FROM worldstream_authority_principals WHERE principal_id = $1",
+            &[&principal_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if (
+        stored
+            .try_get::<_, String>(0)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(1)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, i64>(2)
+            .map_err(PostgresTransferError::Sql)?,
+    ) != (kind, status, generation)
+    {
+        return Err(PostgresTransferError::Canonical("Principal mismatch"));
+    }
+    Ok(())
+}
+
+fn publish_authority_runner(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let runner_id = native_text(row, 0)?;
+    let owner = native_text(row, 1)?;
+    let status = native_text(row, 2)?;
+    let generation = native_integer(row, 3)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_authority_runners(runner_id, owner_principal_id, authority_status, runner_generation) VALUES ($1, $2, $3, $4) ON CONFLICT (runner_id) DO NOTHING",
+            &[&runner_id, &owner, &status, &generation],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT owner_principal_id, authority_status, runner_generation FROM worldstream_authority_runners WHERE runner_id = $1",
+            &[&runner_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if (
+        stored
+            .try_get::<_, String>(0)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(1)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, i64>(2)
+            .map_err(PostgresTransferError::Sql)?,
+    ) != (owner, status, generation)
+    {
+        return Err(PostgresTransferError::Canonical("Runner mismatch"));
+    }
+    Ok(())
+}
+
+fn publish_authority_capability(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let capability_id = native_text(row, 0)?;
+    let token_hash = native_blob(row, 1)?;
+    let principal_id = native_text(row, 2)?;
+    let profile = native_text(row, 3)?;
+    let target_room = native_optional_text(row, 4)?;
+    let target_member = native_optional_text(row, 5)?;
+    let runner = native_optional_text(row, 6)?;
+    let generation = native_integer(row, 7)?;
+    let expires_at = native_optional_text(row, 8)?;
+    let revoked_at = native_optional_text(row, 9)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_authority_capabilities(capability_id, token_hash, principal_id, profile_kind, target_room_id, target_member_id, runner_id, authority_generation, expires_at, revoked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (capability_id) DO NOTHING",
+            &[&capability_id, &token_hash, &principal_id, &profile, &target_room, &target_member, &runner, &generation, &expires_at, &revoked_at],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT token_hash, principal_id, profile_kind, target_room_id, target_member_id, runner_id, authority_generation, expires_at, revoked_at FROM worldstream_authority_capabilities WHERE capability_id = $1",
+            &[&capability_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if (
+        stored
+            .try_get::<_, Vec<u8>>(0)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(1)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(2)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(3)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(4)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(5)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, i64>(6)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(7)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(8)
+            .map_err(PostgresTransferError::Sql)?,
+    ) != (
+        token_hash,
+        principal_id,
+        profile,
+        target_room,
+        target_member,
+        runner,
+        generation,
+        expires_at,
+        revoked_at,
+    ) {
+        return Err(PostgresTransferError::Canonical("Capability mismatch"));
+    }
+    Ok(())
+}
+
+fn publish_authority_capability_scope(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let capability_id = native_text(row, 0)?;
+    let scope = native_text(row, 1)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_authority_capability_scopes(capability_id, scope) VALUES ($1, $2) ON CONFLICT (capability_id, scope) DO NOTHING",
+            &[&capability_id, &scope],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    Ok(())
+}
+
+fn publish_runner_capability_membership(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let capability_id = native_text(row, 0)?;
+    let room_id = native_text(row, 1)?;
+    let member_id = native_text(row, 2)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_authority_runner_capability_memberships(capability_id, room_id, member_id) VALUES ($1, $2, $3) ON CONFLICT (capability_id, room_id, member_id) DO NOTHING",
+            &[&capability_id, &room_id, &member_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    Ok(())
+}
+
+fn publish_authority_change_receipt(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let change_id = native_text(row, 0)?;
+    let authenticated = native_optional_text(row, 1)?;
+    let request_hash = native_blob(row, 2)?;
+    let result_kind = native_text(row, 3)?;
+    let target_kind = native_text(row, 4)?;
+    let target_id = native_text(row, 5)?;
+    let secondary = native_optional_text(row, 6)?;
+    let generation = native_integer(row, 7)?;
+    let checked_at = native_text(row, 8)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_authority_change_receipts(change_id, authenticated_principal, request_hash, result_kind, target_kind, target_id, secondary_target_id, resulting_generation, checked_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (change_id) DO NOTHING",
+            &[&change_id, &authenticated, &request_hash, &result_kind, &target_kind, &target_id, &secondary, &generation, &checked_at],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT authenticated_principal, request_hash, result_kind, target_kind, target_id, secondary_target_id, resulting_generation, checked_at FROM worldstream_authority_change_receipts WHERE change_id = $1",
+            &[&change_id],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if (
+        stored
+            .try_get::<_, Option<String>>(0)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Vec<u8>>(1)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(2)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(3)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(4)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(5)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, i64>(6)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(7)
+            .map_err(PostgresTransferError::Sql)?,
+    ) != (
+        authenticated,
+        request_hash,
+        result_kind,
+        target_kind,
+        target_id,
+        secondary,
+        generation,
+        checked_at,
+    ) {
+        return Err(PostgresTransferError::Canonical(
+            "authority Receipt mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn publish_authority_audit(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let audit_seq = native_integer(row, 0)?;
+    let change_id = native_text(row, 1)?;
+    let actor = native_optional_text(row, 2)?;
+    let target_kind = native_text(row, 3)?;
+    let target_id = native_text(row, 4)?;
+    let secondary = native_optional_text(row, 5)?;
+    let change_kind = native_text(row, 6)?;
+    let prior = match row.values.get(7) {
+        Some(NativeValue::Integer(value)) => Some(*value),
+        Some(NativeValue::Null) => None,
+        _ => {
+            return Err(PostgresTransferError::Canonical(
+                "authority audit generation",
+            ));
+        }
+    };
+    let resulting = native_integer(row, 8)?;
+    let checked_at = native_text(row, 9)?;
+    let reason = native_optional_text(row, 10)?;
+    let request_hash = native_blob(row, 11)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_authority_audit(audit_seq, change_id, actor_principal_id, target_kind, target_id, secondary_target_id, change_kind, prior_generation, resulting_generation, checked_at, reason_code, request_hash) OVERRIDING SYSTEM VALUE VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (audit_seq) DO NOTHING",
+            &[&audit_seq, &change_id, &actor, &target_kind, &target_id, &secondary, &change_kind, &prior, &resulting, &checked_at, &reason, &request_hash],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT change_id, actor_principal_id, target_kind, target_id, secondary_target_id, change_kind, prior_generation, resulting_generation, checked_at, reason_code, request_hash FROM worldstream_authority_audit WHERE audit_seq = $1",
+            &[&audit_seq],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if (
+        stored
+            .try_get::<_, String>(0)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(1)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(2)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(3)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(4)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(5)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<i64>>(6)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, i64>(7)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(8)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<String>>(9)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Vec<u8>>(10)
+            .map_err(PostgresTransferError::Sql)?,
+    ) != (
+        change_id,
+        actor,
+        target_kind,
+        target_id,
+        secondary,
+        change_kind,
+        prior,
+        resulting,
+        checked_at,
+        reason,
+        request_hash,
+    ) {
+        return Err(PostgresTransferError::Canonical("authority audit mismatch"));
+    }
+    Ok(())
+}
+
+fn publish_integrity_incident(
+    transaction: &mut Transaction<'_>,
+    row: &NativeRow,
+) -> Result<(), PostgresTransferError> {
+    let room_id = native_text(row, 0)?;
+    let incident_seq = native_integer(row, 1)?;
+    let generation = native_integer(row, 2)?;
+    let status = native_text(row, 3)?;
+    let reason = native_text(row, 4)?;
+    let details = native_optional_blob(row, 5)?;
+    transaction
+        .execute(
+            "INSERT INTO worldstream_integrity_incidents(room_id, incident_seq, generation, status, reason_code, details_bytes) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (room_id, incident_seq) DO NOTHING",
+            &[&room_id, &incident_seq, &generation, &status, &reason, &details],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    let stored = transaction
+        .query_one(
+            "SELECT generation, status, reason_code, details_bytes FROM worldstream_integrity_incidents WHERE room_id = $1 AND incident_seq = $2",
+            &[&room_id, &incident_seq],
+        )
+        .map_err(PostgresTransferError::Sql)?;
+    if (
+        stored
+            .try_get::<_, i64>(0)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(1)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, String>(2)
+            .map_err(PostgresTransferError::Sql)?,
+        stored
+            .try_get::<_, Option<Vec<u8>>>(3)
+            .map_err(PostgresTransferError::Sql)?,
+    ) != (generation, status, reason, details)
+    {
+        return Err(PostgresTransferError::Canonical(
+            "integrity incident mismatch",
         ));
     }
     Ok(())
@@ -2413,7 +3171,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 9);
+        assert_eq!(fingerprint.schema().migrations().len(), 10);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
         Ok(())
     }

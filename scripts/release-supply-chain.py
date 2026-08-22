@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
-"""Produce and verify the non-circular two-level release supply chain.
+"""Produce and verify the non-circular release supply chain.
 
-Phase one signs a canonical inventory over the four payloads and exactly the
-thirteen non-supply-chain typed source reports. SHA256SUMS, SPDX, and SLSA are generated
-and validated over that same closed set. Only after the inventory signature
-has verified does this command emit the typed fourteenth producer report,
-bound to the inventory, its detached signature bundle, and all three
-sidecars.
-
-The collector then normalizes all fourteen reports and the assembler creates
-and separately signs the final release manifest. Verification checks both
-signatures and cross-checks the final artifact/evidence maps against the
-signed subject inventory plus exactly the supply-chain report. Neither
-signature covers an attestation that contains its own digest.
+The unsigned aggregation phase copies four payloads and exactly thirteen
+non-supply-chain typed source reports into a canonical inventory, then creates
+and validates SHA256SUMS, SPDX, and SLSA over that closed set. A separate,
+minimal OIDC job signs only that exact inventory. A later no-OIDC phase
+identity-verifies the signature and emits the typed fourteenth producer report
+before final deterministic assembly. A second minimal OIDC job signs that exact
+manifest, and a final no-OIDC phase verifies both detached signature levels.
 """
 
 from __future__ import annotations
@@ -70,6 +65,17 @@ ARTIFACT_PATHS = {
     "spdx-sbom": ASSEMBLER.SIDECAR_PATHS["spdx-sbom"],
     "slsa-provenance": ASSEMBLER.SIDECAR_PATHS["slsa-provenance"],
 }
+OIDC_ENVIRONMENT_KEYS = (
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+)
+
+
+def reject_oidc_environment(label: str) -> None:
+    """Fail if a phase that must be unprivileged can request an OIDC token."""
+
+    if any(os.environ.get(name) for name in OIDC_ENVIRONMENT_KEYS):
+        ASSEMBLER.fail(f"{label} must run without an Actions OIDC capability")
 
 
 def now_iso() -> str:
@@ -389,15 +395,86 @@ def typed_producer(
     }
 
 
-def produce(
+def validate_prepared_material(
+    release_dir: Path,
+    manifest_toml: Path,
+    manifest_json: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Recompute the complete unsigned subject graph from assembled bytes."""
+
+    manifest, _authored, mirror_bytes = ASSEMBLER.load_manifest(
+        manifest_toml, manifest_json
+    )
+    version, evidence_ids = ASSEMBLER.validate_release_contract(manifest)
+    ASSEMBLER.validate_existing_release_dir(release_dir, version, evidence_ids)
+    payload_paths = {
+        artifact_id: ASSEMBLER.regular_file(
+            release_dir / relative, f"prepared payload {artifact_id}"
+        )
+        for artifact_id, relative in ASSEMBLER.payload_names(version).items()
+    }
+    source_paths = {
+        spec.evidence_id: ASSEMBLER.regular_file(
+            release_dir
+            / ASSEMBLER.PRE_SIGN_SUBJECT_DIRECTORY
+            / f"{spec.evidence_id}.json",
+            f"prepared source report {spec.source_id}",
+        )
+        for spec in source_specs()
+    }
+    ASSEMBLER.validate_release_payloads(
+        payload_paths, source_paths, ASSEMBLER.sha256_bytes(mirror_bytes)
+    )
+    expected_inventory = inventory_value(
+        version, payload_paths, source_paths, release_dir
+    )
+    inventory_path = release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH
+    inventory = ASSEMBLER.json_object(inventory_path, "pre-sign subject inventory")
+    if inventory != expected_inventory:
+        ASSEMBLER.fail(
+            "pre-sign subject inventory differs from the exact assembled subjects"
+        )
+    subjects = {
+        item["path"]: release_dir / item["path"] for item in inventory["subjects"]
+    }
+    checksums_path = release_dir / ASSEMBLER.SIDECAR_PATHS["checksums"]
+    if ASSEMBLER.bounded_regular_bytes(
+        checksums_path, "prepared SHA256SUMS"
+    ) != ASSEMBLER.checksums_bytes(subjects):
+        ASSEMBLER.fail("prepared SHA256SUMS differs from the exact subject inventory")
+    spdx_path = release_dir / ASSEMBLER.SIDECAR_PATHS["spdx-sbom"]
+    provenance_path = release_dir / ASSEMBLER.SIDECAR_PATHS["slsa-provenance"]
+    ASSEMBLER.validate_spdx_subjects(
+        spdx_path,
+        subjects,
+        version=version,
+        manifest_sha256=ASSEMBLER.sha256_bytes(mirror_bytes),
+    )
+    ASSEMBLER.validate_provenance_subjects(provenance_path, subjects)
+    try:
+        IDENTITY.validate_identity_documents(
+            spdx=ASSEMBLER.json_object(spdx_path, "SPDX SBOM"),
+            provenance=ASSEMBLER.json_object(provenance_path, "SLSA provenance"),
+            version=version,
+            subjects_by_relative=subjects,
+            payloads_by_id=payload_paths,
+            require_github=os.environ.get("GITHUB_ACTIONS") == "true",
+        )
+    except IDENTITY.IdentityError as error:
+        ASSEMBLER.fail(f"release supply-chain identity graph rejected: {error}")
+    return manifest, inventory
+
+
+def prepare_unsigned(
     release_dir: Path,
     payload_dir: Path,
     sources: dict[str, Path],
-    producer_output: Path,
-    source_output: Path,
     manifest_toml: Path,
     manifest_json: Path,
 ) -> None:
+    """Create and validate the exact pre-sign graph without an OIDC capability."""
+
+    reject_oidc_environment("unsigned release aggregation")
     manifest, _authored, mirror_bytes = ASSEMBLER.load_manifest(
         manifest_toml, manifest_json
     )
@@ -411,6 +488,12 @@ def produce(
         ASSEMBLER.fail(f"release directory must not be a symlink: {release_dir}")
     release_dir.mkdir(parents=True, exist_ok=True)
     ASSEMBLER.validate_existing_release_dir(release_dir, version, evidence_ids)
+    for relative in (
+        ASSEMBLER.PRE_SIGN_SIGNATURE_PATH,
+        ASSEMBLER.SIDECAR_PATHS["sigstore-bundle"],
+    ):
+        if (release_dir / relative).exists():
+            ASSEMBLER.fail("unsigned aggregation must not contain a signature bundle")
     payload_paths = copy_payloads(release_dir, payload_dir, version)
     source_paths = copy_source_reports(release_dir, sources, manifest)
     ASSEMBLER.validate_release_payloads(
@@ -478,9 +561,32 @@ def produce(
         )
     except IDENTITY.IdentityError as error:
         ASSEMBLER.fail(f"release supply-chain identity graph rejected: {error}")
-    identity, issuer = sign_and_verify(
-        inventory_path, release_dir / ASSEMBLER.PRE_SIGN_SIGNATURE_PATH
+    validate_prepared_material(release_dir, manifest_toml, manifest_json)
+
+
+def write_signed_reports(
+    release_dir: Path,
+    producer_output: Path,
+    source_output: Path,
+    manifest_toml: Path,
+    manifest_json: Path,
+) -> None:
+    """Verify the signed inventory and emit its deterministic typed reports."""
+
+    manifest, inventory = validate_prepared_material(
+        release_dir, manifest_toml, manifest_json
     )
+    inventory_path = release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH
+    signature_path = release_dir / ASSEMBLER.PRE_SIGN_SIGNATURE_PATH
+    ASSEMBLER.verify_sigstore_signature(
+        inventory_path, signature_path, "pre-sign subject inventory"
+    )
+    identity = os.environ.get("COSIGN_CERTIFICATE_IDENTITY", "").strip()
+    issuer = os.environ.get("COSIGN_CERTIFICATE_OIDC_ISSUER", "").strip()
+    if not identity or not issuer:
+        ASSEMBLER.fail(
+            "signed report emission requires the exact Sigstore identity policy"
+        )
     producer = typed_producer(manifest, inventory, release_dir, identity, issuer)
     producer_output.parent.mkdir(parents=True, exist_ok=True)
     ASSEMBLER.atomic_write_bytes(
@@ -510,6 +616,56 @@ def produce(
         source_output,
         PRODUCER.canonical_json(source_report),
         "typed supply-chain source report",
+    )
+
+
+def finalize_signed(
+    release_dir: Path,
+    producer_output: Path,
+    source_output: Path,
+    manifest_toml: Path,
+    manifest_json: Path,
+) -> None:
+    """Finalize the typed supply-chain report in a no-OIDC job."""
+
+    reject_oidc_environment("signed release finalization")
+    write_signed_reports(
+        release_dir,
+        producer_output,
+        source_output,
+        manifest_toml,
+        manifest_json,
+    )
+
+
+def produce(
+    release_dir: Path,
+    payload_dir: Path,
+    sources: dict[str, Path],
+    producer_output: Path,
+    source_output: Path,
+    manifest_toml: Path,
+    manifest_json: Path,
+) -> None:
+    """Compatibility helper for local tests; release workflow uses split phases."""
+
+    prepare_unsigned(
+        release_dir,
+        payload_dir,
+        sources,
+        manifest_toml,
+        manifest_json,
+    )
+    sign_and_verify(
+        release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH,
+        release_dir / ASSEMBLER.PRE_SIGN_SIGNATURE_PATH,
+    )
+    write_signed_reports(
+        release_dir,
+        producer_output,
+        source_output,
+        manifest_toml,
+        manifest_json,
     )
 
 
@@ -631,7 +787,10 @@ def parser() -> argparse.ArgumentParser:
     )
     command.add_argument("--producer-output", type=Path)
     command.add_argument("--source-output", type=Path)
-    command.add_argument("--verify", action="store_true")
+    phase = command.add_mutually_exclusive_group()
+    phase.add_argument("--prepare-unsigned", action="store_true")
+    phase.add_argument("--finalize-signed", action="store_true")
+    phase.add_argument("--verify", action="store_true")
     command.add_argument(
         "--manifest-toml", type=Path, default=ASSEMBLER.DEFAULT_MANIFEST_TOML
     )
@@ -646,6 +805,39 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verify:
             verify_final(args.release_dir, args.manifest_toml, args.manifest_json)
+        elif args.prepare_unsigned:
+            if not args.payload_dir or args.producer_output or args.source_output:
+                ASSEMBLER.fail(
+                    "unsigned preparation requires --payload-dir and forbids producer outputs"
+                )
+            sources = parse_sources(
+                args.source,
+                {spec.source_id for spec in source_specs()},
+            )
+            prepare_unsigned(
+                args.release_dir,
+                args.payload_dir,
+                sources,
+                args.manifest_toml,
+                args.manifest_json,
+            )
+        elif args.finalize_signed:
+            if (
+                args.payload_dir
+                or args.source
+                or not args.producer_output
+                or not args.source_output
+            ):
+                ASSEMBLER.fail(
+                    "signed finalization requires both producer outputs and no payload/source inputs"
+                )
+            finalize_signed(
+                args.release_dir,
+                args.producer_output,
+                args.source_output,
+                args.manifest_toml,
+                args.manifest_json,
+            )
         else:
             if (
                 not args.payload_dir

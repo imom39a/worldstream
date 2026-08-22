@@ -767,14 +767,14 @@ verify_admin_schema() {
     migration_contract_status="failed"
     fail "validation_failed" "$EXIT_VALIDATION" "admin_schema_probe_failed"
   fi
-  if [[ "$(compact_psql_value)" != "9" ]]; then
+  if [[ "$(compact_psql_value)" != "10" ]]; then
     admin_schema_status="failed"
     migration_contract_status="failed"
     fail "validation_failed" "$EXIT_VALIDATION" "migration_history_incomplete"
   fi
 
   if ! psql_query "$admin_dsn" "$admin_password" \
-    "SELECT CASE WHEN count(*) = 9 AND min(version) = 1 AND max(version) = 9 AND count(DISTINCT version) = 9 AND count(DISTINCT migration_id) = 9 AND count(*) FILTER (WHERE (version, migration_id) IN ((1, '0001-initial-storage-schema'), (2, '0002-operational-authority-v1'), (3, '0003-kernel-conformance-v1'), (4, '0004-kernel-parity-witnesses-v1'), (5, '0005-transfer-publication-v1'), (6, '0006-transfer-target-fence-v1'), (7, '0007-deployment-metadata-v1'), (8, '0008-deployment-identities-v1'), (9, '0009-authority-facts-v1'))) = 9 AND count(*) FILTER (WHERE octet_length(checksum) = 32) = 9 AND count(*) FILTER (WHERE logical_history_id = 'worldstream-storage-v1') = 9 AND count(*) FILTER (WHERE octet_length(schema_contract_fingerprint) = 32) = 9 THEN 'pass' ELSE 'fail' END FROM worldstream_schema_migrations"; then
+    "SELECT CASE WHEN count(*) = 10 AND min(version) = 1 AND max(version) = 10 AND count(DISTINCT version) = 10 AND count(DISTINCT migration_id) = 10 AND count(*) FILTER (WHERE (version, migration_id) IN ((1, '0001-initial-storage-schema'), (2, '0002-operational-authority-v1'), (3, '0003-kernel-conformance-v1'), (4, '0004-kernel-parity-witnesses-v1'), (5, '0005-transfer-publication-v1'), (6, '0006-transfer-target-fence-v1'), (7, '0007-deployment-metadata-v1'), (8, '0008-deployment-identities-v1'), (9, '0009-authority-facts-v1'), (10, '0010-transfer-recovery-completeness-v1'))) = 10 AND count(*) FILTER (WHERE octet_length(checksum) = 32) = 10 AND count(*) FILTER (WHERE logical_history_id = 'worldstream-storage-v1') = 10 AND count(*) FILTER (WHERE octet_length(schema_contract_fingerprint) = 32) = 10 THEN 'pass' ELSE 'fail' END FROM worldstream_schema_migrations"; then
     admin_schema_status="failed"
     migration_contract_status="failed"
     fail "validation_failed" "$EXIT_VALIDATION" "migration_history_shape_probe_failed"

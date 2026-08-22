@@ -32,9 +32,10 @@ pub use migrations::{
     KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
     MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
     MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
-    MigrationDescriptor, MigrationFailpoint, MigrationRecord, MigrationVerification,
-    MigrationVerificationError, SCHEMA_CONTRACT_ID, SCHEMA_FINGERPRINT_MATERIAL,
-    TRANSFER_PUBLICATION_MIGRATION_ID, migration_history, schema_contract_fingerprint,
+    MIGRATION_0010_SQL, MigrationDescriptor, MigrationFailpoint, MigrationRecord,
+    MigrationVerification, MigrationVerificationError, SCHEMA_CONTRACT_ID,
+    SCHEMA_FINGERPRINT_MATERIAL, TRANSFER_PUBLICATION_MIGRATION_ID,
+    TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, migration_history, schema_contract_fingerprint,
     verify_migration_prefix, verify_runtime_migration_history,
 };
 pub use telemetry::{
@@ -803,6 +804,30 @@ impl PostgresAdmin {
         Ok(count)
     }
 
+    /// Corrupts the newest disposable snapshot for live conformance coverage.
+    ///
+    /// This seam is unavailable in production builds. It proves that normal
+    /// maintenance can discard malformed cache bytes without weakening
+    /// verification of the authoritative Genesis and Transition lineage.
+    #[cfg(feature = "conformance-tracer")]
+    pub fn corrupt_snapshot_cache_for_conformance(
+        &self,
+        room_id: &str,
+    ) -> Result<u64, PostgresMaintenanceError> {
+        let mut client = Client::connect(&self.config.dsn, self.config.tls.clone())
+            .map_err(PostgresMaintenanceError::Connection)?;
+        let corrupt = [0xff_u8];
+        client
+            .execute(
+                "UPDATE worldstream_room_snapshots SET complete_head_bytes = $2 \
+                 WHERE room_id = $1 AND room_seq = ( \
+                    SELECT max(room_seq) FROM worldstream_room_snapshots WHERE room_id = $1 \
+                 )",
+                &[&room_id, &corrupt.as_slice()],
+            )
+            .map_err(PostgresMaintenanceError::Sql)
+    }
+
     /// Rebuilds every paired snapshot from the exact retained Genesis and
     /// Transition bytes, preserving revision order and all canonical fields.
     pub fn rebuild_snapshot_cache(&self, room_id: &str) -> Result<usize, PostgresMaintenanceError> {
@@ -813,6 +838,24 @@ impl PostgresAdmin {
             },
         );
         let result = self.rebuild_snapshot_cache_inner(room_id);
+        let diagnostic = match &result {
+            Err(PostgresMaintenanceError::Connection(_)) => {
+                Some(PostgresStorageDiagnosticKindV1::Connection)
+            }
+            Err(PostgresMaintenanceError::Sql(_)) => Some(PostgresStorageDiagnosticKindV1::Query),
+            Err(PostgresMaintenanceError::Corrupt | PostgresMaintenanceError::ConcurrentChange) => {
+                Some(PostgresStorageDiagnosticKindV1::Integrity)
+            }
+            // `verify_room` emits the exact connection/query/integrity class
+            // before its typed error is wrapped for maintenance.
+            Ok(_) | Err(PostgresMaintenanceError::Verification(_)) => None,
+        };
+        if let Some(kind) = diagnostic {
+            emit_postgres_telemetry(
+                self.telemetry.as_deref(),
+                PostgresTelemetryEventV1::StorageDiagnostic { kind },
+            );
+        }
         emit_postgres_telemetry(
             self.telemetry.as_deref(),
             PostgresTelemetryEventV1::Recovery {
@@ -830,6 +873,10 @@ impl PostgresAdmin {
         &self,
         room_id: &str,
     ) -> Result<usize, PostgresMaintenanceError> {
+        // Snapshot rows are disposable caches. Delete them before canonical
+        // verification so malformed cache bytes cannot prevent repair. The
+        // verifier still fails closed on every authoritative retained byte.
+        self.delete_snapshot_cache(room_id)?;
         let verification = self
             .verify_room(room_id)
             .map_err(PostgresMaintenanceError::Verification)?;
@@ -1882,6 +1929,11 @@ const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_transfer_chunks",
     "worldstream_transfer_target_fence",
     "worldstream_deployment_metadata",
+    "worldstream_deployment_identity_metadata",
+    "worldstream_deployment_pack_identities",
+    "worldstream_deployment_resource_identities",
+    "worldstream_deployment_resource_blobs",
+    "worldstream_retired_authority_fences_v1",
 ];
 
 fn schema_catalog_material<C: GenericClient>(client: &mut C) -> Result<String, postgres::Error> {
@@ -6286,6 +6338,16 @@ fn fixture_apply_witnesses(
 #[cfg(test)]
 mod native_hydration_tests {
     use super::*;
+
+    #[test]
+    fn catalog_probe_order_matches_the_frozen_fingerprint_material() {
+        let material_order = SCHEMA_FINGERPRINT_MATERIAL
+            .split(");")
+            .filter_map(|table| table.split_once('(').map(|(name, _)| name))
+            .collect::<Vec<_>>();
+
+        assert_eq!(material_order, SCHEMA_TABLE_ORDER);
+    }
 
     #[test]
     fn deployment_metadata_status_is_explicitly_absent_without_identity_rows() {

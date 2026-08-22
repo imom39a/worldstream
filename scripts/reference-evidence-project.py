@@ -355,6 +355,14 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
         "manifest_json": REFERENCE_PRODUCER.file_binding(
             args.manifest_json, manifest["schema"]
         ),
+        "snapshot_fixture_binary": REFERENCE_PRODUCER.file_binding(
+            args.snapshot_fixture_bin,
+            "worldstream/reference-snapshot-tail-fixture-elf/v1",
+        ),
+        "snapshot_fixture_source": REFERENCE_PRODUCER.file_binding(
+            REFERENCE_PRODUCER.REFERENCE_TARGET_FIXTURE_SOURCE_PATH,
+            "worldstream/reference-snapshot-tail-fixture-source/v1",
+        ),
     }
     expected_external_sources = {
         "packaged_acceptance": {
@@ -536,6 +544,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--package-archive", type=Path, required=True)
     command.add_argument("--package-report", type=Path, required=True)
     command.add_argument("--daemon-bin", type=Path, required=True)
+    command.add_argument("--snapshot-fixture-bin", type=Path, required=True)
     command.add_argument("--output-dir", type=Path, required=True)
     command.add_argument("--aggregate-report", type=Path, required=True)
     command.add_argument(

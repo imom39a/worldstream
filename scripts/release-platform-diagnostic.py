@@ -82,6 +82,32 @@ OCI_POSTGRES_IMAGE = (
 )
 OCI_POSTGRES_IDENTITY = "postgresql/17.11; server_version_num=170011"
 MACOS_ARCHITECTURES = ("arm64", "x86_64")
+MACOS_BROWSER_IDENTITIES = {
+    "arm64": {
+        "product": "chrome-for-testing-headless-shell",
+        "version": "152.0.7977.54",
+        "sha256": "sha256:4e0c165ef2f0d7265fb1e6b3df2d03d1d6581fb72cdfcebeac19c09760571df6",
+        "size_bytes": 167_333_040,
+        "version_output": "Google Chrome for Testing 152.0.7977.54",
+        "distribution": {
+            "url": "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.54/mac-arm64/chrome-headless-shell-mac-arm64.zip",
+            "sha256": "sha256:ef5d61434f13d9d2d9bdc7c9ab4bff92225979e196458cf846640862b25f127d",
+            "size_bytes": 98_034_515,
+        },
+    },
+    "x86_64": {
+        "product": "chrome-for-testing-headless-shell",
+        "version": "152.0.7977.54",
+        "sha256": "sha256:49b6e6bdc4a9a14a160a2fcb08576ec3acef1d360cfa61bdc79a400a27a16d99",
+        "size_bytes": 182_459_908,
+        "version_output": "Google Chrome for Testing 152.0.7977.54",
+        "distribution": {
+            "url": "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.54/mac-x64/chrome-headless-shell-mac-x64.zip",
+            "sha256": "sha256:a50c716727adf9e4af5b8861d19da23b672b4687a0d631ec4beebb3009d6db97",
+            "size_bytes": 102_893_170,
+        },
+    },
+}
 OCI_SECRET_SCAN_CHANNELS = {
     "image-config",
     "image-history",
@@ -856,6 +882,156 @@ def emit_oci(args: argparse.Namespace) -> None:
     )
 
 
+def verify_macos_browser_story(value: Any, architecture: str) -> None:
+    expected_checks = {
+        "browser_identity_verified": True,
+        "catch_up_or_reset_installed": True,
+        "embedded_ui_loaded": True,
+        "final_reveal_dom_visible": True,
+        "new_session_resynchronized": True,
+        "package_bound_reference_clients": False,
+        "package_bound_runtime": False,
+        "precomplete_reveal_locked": True,
+        "privacy_negative_dom_and_browser_channels": True,
+        "replay_hashes_verified": True,
+        "six_phase_story_complete": True,
+        "stale_head_rejected": True,
+        "typed_actions_accepted_in_dom": True,
+    }
+    require(
+        isinstance(value, dict)
+        and set(value)
+        == {
+            "schema",
+            "canonical_encoding",
+            "status",
+            "release_evidence",
+            "source_mode",
+            "elapsed_ms",
+            "browser",
+            "tools",
+            "runtime",
+            "story",
+            "dom_evidence",
+            "typed_actions",
+            "checks",
+            "privacy",
+        }
+        and value.get("schema") == "worldstream/package-browser-heist/v1"
+        and value.get("canonical_encoding") == "utf8-sorted-key-compact-json-lf"
+        and value.get("status") == "pass"
+        and value.get("release_evidence") is False
+        and value.get("source_mode") == "source-build"
+        and type(value.get("elapsed_ms")) is int
+        and 0 < value["elapsed_ms"] <= 600_000
+        and value.get("browser") == MACOS_BROWSER_IDENTITIES[architecture]
+        and value.get("checks") == expected_checks
+        and value.get("privacy")
+        == {
+            "status": "pass",
+            "private_canary_absent": True,
+            "credentials_absent": True,
+            "private_claim_absent_from_retained_evidence": True,
+        },
+        "macOS source quickstart browser story contract is incomplete",
+    )
+    dom = value["dom_evidence"]
+    actions = value["typed_actions"]
+    require(
+        isinstance(dom, dict)
+        and set(dom)
+        == {
+            "stale_rejection",
+            "precomplete_reveal",
+            "public_final",
+            "participant_final",
+            "operator_final",
+            "replay_final",
+            "briefing",
+            "negotiation",
+            "commitment",
+            "result",
+            "complete",
+            "resync",
+            "browser_diagnostics",
+        }
+        and all(re.fullmatch(r"sha256:[0-9a-f]{64}", item) for item in dom.values())
+        and isinstance(actions, dict)
+        and set(actions)
+        == {
+            "inspect_clue",
+            "publish_clue",
+            "propose_plan",
+            "commit_move",
+            "acknowledge_result",
+        }
+        and all(
+            re.fullmatch(r"sha256:[0-9a-f]{64}", item) for item in actions.values()
+        ),
+        "macOS source quickstart DOM/action evidence is incomplete",
+    )
+    story = value["story"]
+    require(
+        isinstance(story, dict)
+        and story.get("phase_path")
+        == ["Briefing", "Negotiation", "Commitment", "Resolution", "Result", "Complete"]
+        and story.get("public_projection", {}).get("broker_present") is True
+        and story.get("public_projection", {}).get("commitment_count") == 2
+        and story.get("public_projection", {}).get("aggregate_outcome_present") is True
+        and story.get("final_replay", {}).get("verified") is True
+        and story.get("final_replay", {}).get("hash_parity", {}).get("verified")
+        is True,
+        "macOS source quickstart story/replay evidence is incomplete",
+    )
+    runtime = value["runtime"]
+    require(
+        isinstance(runtime, dict)
+        and set(runtime) == {"worldstreamd", "ui", "sdk", "heist_reference_clients"}
+        and runtime.get("worldstreamd", {}).get("origin")
+        == "source-build:target/debug/worldstreamd"
+        and runtime.get("ui", {}).get("origin") == "source-build:web/console/dist"
+        and runtime.get("sdk", {}).get("origin") == "source:sdk/python/src"
+        and runtime.get("heist_reference_clients", {}).get("origin")
+        == "source:examples/heist"
+        and all(
+            re.fullmatch(r"sha256:[0-9a-f]{64}", str(record.get("sha256")))
+            and type(record.get("size_bytes")) is int
+            and record["size_bytes"] > 0
+            for record in (runtime["worldstreamd"],)
+        )
+        and all(
+            re.fullmatch(r"sha256:[0-9a-f]{64}", str(record.get("tree_sha256")))
+            and type(record.get("file_count")) is int
+            and record["file_count"] > 0
+            and type(record.get("total_bytes")) is int
+            and record["total_bytes"] > 0
+            for record in (
+                runtime["ui"],
+                runtime["sdk"],
+                runtime["heist_reference_clients"],
+            )
+        ),
+        "macOS source quickstart runtime identity is incomplete",
+    )
+    tools = value["tools"]
+    require(
+        isinstance(tools, dict)
+        and tools.get("adapter")
+        == {
+            "name": "worldstream-cdp-browser",
+            "protocol": "Chrome DevTools Protocol",
+            "sha256": digest(ROOT / "scripts/cdp-browser.py"),
+            "size_bytes": (ROOT / "scripts/cdp-browser.py").stat().st_size,
+        }
+        and tools.get("python")
+        == {
+            "implementation": "cpython",
+            "version": pinned_macos_toolchains()["python"],
+        },
+        "macOS source quickstart browser tool identity is incomplete",
+    )
+
+
 def emit_macos(args: argparse.Namespace) -> None:
     contract = manifest()
     require(
@@ -877,7 +1053,21 @@ def emit_macos(args: argparse.Namespace) -> None:
             f"duplicate macOS source quickstart architecture: {observed_architecture}",
         )
         require(
-            quickstart.get("schema") == "worldstream/macos-source-quickstart/v1"
+            set(quickstart)
+            == {
+                "schema",
+                "status",
+                "release_evidence",
+                "signed_or_notarized_binary",
+                "version",
+                "platform",
+                "toolchains",
+                "source_revision",
+                "elapsed_seconds",
+                "browser_story",
+                "checks",
+            }
+            and quickstart.get("schema") == "worldstream/macos-source-quickstart/v2"
             and quickstart.get("status") == "passed"
             and quickstart.get("release_evidence") is False
             and quickstart.get("signed_or_notarized_binary") is False
@@ -886,12 +1076,24 @@ def emit_macos(args: argparse.Namespace) -> None:
             and quickstart.get("version") == contract["release_candidate"]
             and quickstart.get("source_revision") == args.source_revision
             and quickstart.get("toolchains") == expected_toolchains
-            and quickstart.get("checks", {}).get("pinned_toolchain") is True
-            and quickstart.get("checks", {}).get("source_revision") is True
-            and quickstart.get("checks", {}).get("source_build") is True
-            and quickstart.get("checks", {}).get("quickstart") is True,
+            and type(quickstart.get("elapsed_seconds")) is int
+            and 0 < quickstart["elapsed_seconds"] < 600
+            and quickstart.get("checks")
+            == {
+                "complete_heist": True,
+                "embedded_ui": True,
+                "pinned_toolchain": True,
+                "privacy": True,
+                "quickstart": True,
+                "real_browser": True,
+                "replay": True,
+                "source_build": True,
+                "source_revision": True,
+                "stale_resync": True,
+            },
             "macOS source quickstart diagnostic is incomplete",
         )
+        verify_macos_browser_story(quickstart["browser_story"], observed_architecture)
         quickstarts[observed_architecture] = (report_path, quickstart)
     require(
         set(quickstarts) == set(MACOS_ARCHITECTURES),
@@ -929,7 +1131,7 @@ def emit_macos(args: argparse.Namespace) -> None:
                 "source_revision": args.source_revision,
                 "pinned_toolchain": expected_toolchains,
                 "source_build": "workspace, Python SDK, and UI source builds passed on arm64 and x86_64",
-                "quickstart": "loopback SQLite daemon probe and clean shutdown passed on arm64 and x86_64",
+                "quickstart": "pinned real browser completed the six-phase Heist reference-client story through the source-built daemon and embedded UI, including stale/resync, privacy, replay, and final reveal, in under ten minutes on arm64 and x86_64",
             },
             contract,
         ),

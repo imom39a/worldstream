@@ -2260,8 +2260,10 @@ digest_location = 'release-manifest.json'
             "macOS source quickstart requires macOS 15+",
             ".uv-version",
             "source_revision",
-            "--storage-profile sqlite-bundled",
-            "scripts/package.py probe",
+            "WORLDSTREAM_BROWSER_MODE=cdp",
+            "live-browser-story.sh",
+            "complete Heist browser story failed closed",
+            "quickstart_elapsed_seconds",
             "no signed or notarized binary was produced",
         ):
             assert marker in quickstart, f"macOS source quickstart is missing {marker}"

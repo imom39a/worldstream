@@ -104,9 +104,9 @@
         "declared_license": "BSD-2-Clause",
         "name": "arrayref",
         "notice_ids": [
+          "sha256:017b5ee48f680e82cba79141c7895a1f02b856df2512225f5c427fe36765ef0b",
           "sha256:0723608faf696baab548a105c345da370bdbc96dbe78cb4c14ca3c4c8de1791a",
-          "sha256:1bc7e6f475b3ec99b7e2643411950ae2368c250dd4c5c325f80f9811362a94a1",
-          "sha256:f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df"
+          "sha256:1bc7e6f475b3ec99b7e2643411950ae2368c250dd4c5c325f80f9811362a94a1"
         ],
         "source": "registry+https://github.com/rust-lang/crates.io-index",
         "version": "0.3.9"
@@ -1216,7 +1216,7 @@
         "name": "matchit",
         "notice_ids": [
           "sha256:162ce11ad71338d0a0c6ebaf5c48af72c6ae237b468859d3656fe2d9ed3f3a85",
-          "sha256:5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+          "sha256:3cf06aba3588c41c514f6946bb2d757b413ff6491647d474800f55edca75dcb4",
           "sha256:77569fec8e9afa709fc93ad1c1dd5789935b75ff596d125a8febb45430732c32",
           "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
           "sha256:de701d0618d694feb1af90f02181a1763d9b0bdeb70a3a592781e529077dba65"
@@ -1444,7 +1444,7 @@
         "declared_license": "MPL-2.0",
         "name": "option-ext",
         "notice_ids": [
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:c38747b5e8ca7ea20e854177755d7709252b215dac738f545d76bf85cc524f42"
         ],
         "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -2193,7 +2193,7 @@
         "declared_license": "BSD-3-Clause",
         "name": "subtle",
         "notice_ids": [
-          "sha256:5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+          "sha256:3cf06aba3588c41c514f6946bb2d757b413ff6491647d474800f55edca75dcb4",
           "sha256:9064d49fa52c95686935e03a297498223341af17cc19c0cd93325fb114dcdf52",
           "sha256:cc0332a88c2ea21d5f3c1298f966120f4c95196871c3f6bb4fcf615508b93fa1"
         ],
@@ -3220,13 +3220,13 @@
         "declared_license": "BSD-2-Clause OR Apache-2.0 OR MIT",
         "name": "zerocopy",
         "notice_ids": [
+          "sha256:017b5ee48f680e82cba79141c7895a1f02b856df2512225f5c427fe36765ef0b",
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
           "sha256:1520f0253bb05bbfc841b827fe6440172f0513b4a890f720c9de1665a07c21e8",
           "sha256:24fa231567ace7e0cdd96e5b2e649b0445d280710f7018d01ba6411e06aa641e",
           "sha256:3b95312f4b45158052f0e5d7918be1d53163fcd7e748ad952c16a603c7a22455",
           "sha256:83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32",
-          "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
-          "sha256:f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df"
+          "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
         ],
         "source": "registry+https://github.com/rust-lang/crates.io-index",
         "version": "0.8.56"
@@ -3236,13 +3236,13 @@
         "declared_license": "BSD-2-Clause OR Apache-2.0 OR MIT",
         "name": "zerocopy-derive",
         "notice_ids": [
+          "sha256:017b5ee48f680e82cba79141c7895a1f02b856df2512225f5c427fe36765ef0b",
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
           "sha256:1520f0253bb05bbfc841b827fe6440172f0513b4a890f720c9de1665a07c21e8",
           "sha256:24fa231567ace7e0cdd96e5b2e649b0445d280710f7018d01ba6411e06aa641e",
           "sha256:83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32",
           "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
-          "sha256:eab3f8441c6f3019b47cf046e193ac79f9ce6d8edc5a62636c4c02b8a1414e11",
-          "sha256:f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df"
+          "sha256:eab3f8441c6f3019b47cf046e193ac79f9ce6d8edc5a62636c4c02b8a1414e11"
         ],
         "source": "registry+https://github.com/rust-lang/crates.io-index",
         "version": "0.8.56"
@@ -3520,9 +3520,9 @@
         "name": "@typescript/typescript-aix-ppc64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
           "sha256:a4bbd855264597f5b219431f2193a9bc59fbe7943abe3090a18bcbaec9988ec7",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3532,9 +3532,9 @@
         "name": "@typescript/typescript-darwin-arm64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
           "sha256:28620bd0de786df4bde62a4317e5ae5cbcca28b48939e63e601a5792ebf4e54a",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3544,9 +3544,9 @@
         "name": "@typescript/typescript-darwin-x64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61",
-          "sha256:bc7bdde87d65954566c0d58f502c4b3f96d8f7bcb3273b7e2c796f7082503940"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:bc7bdde87d65954566c0d58f502c4b3f96d8f7bcb3273b7e2c796f7082503940",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3556,9 +3556,9 @@
         "name": "@typescript/typescript-freebsd-arm64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
           "sha256:26736a0af2d9899318fff3d6d4410ca3f57864c21041e583779d2ec63246e223",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3568,9 +3568,9 @@
         "name": "@typescript/typescript-freebsd-x64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
           "sha256:1c76fa665ae11103b0c7766d9ae1b041e79c435d567debbbceb4d29f0cea4bf2",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3580,9 +3580,9 @@
         "name": "@typescript/typescript-linux-arm",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
           "sha256:71f91ca8113cb3a4d5e76ecab53c54ca80b31149457859306d6511d82f7aaf63",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3592,9 +3592,9 @@
         "name": "@typescript/typescript-linux-arm64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
           "sha256:8a1570760ae9a707a506af76d164e0d948fc3a72a36cdb0ec5b879b1a202b31c",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3604,8 +3604,8 @@
         "name": "@typescript/typescript-linux-loong64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466",
           "sha256:ee8cd19f85abef4973175b8a24fd204620a42355eda264232400c58afb9577dd"
         ],
         "version": "7.0.2"
@@ -3617,8 +3617,8 @@
         "notice_ids": [
           "sha256:012320a53aa087c6665b8c80063381bee0fbcdac9f42273bf756d715d5504658",
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3628,9 +3628,9 @@
         "name": "@typescript/typescript-linux-ppc64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
           "sha256:90fe9025e59a683f9d5d446875679467392eea6cf56f883a91f9488c2e12f154",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3640,9 +3640,9 @@
         "name": "@typescript/typescript-linux-riscv64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
           "sha256:425c6069c7e619df029ce0af5da8b1384fac458cf57eabf3c8c608591e18b3fc",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3652,9 +3652,9 @@
         "name": "@typescript/typescript-linux-s390x",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61",
-          "sha256:b0919b161788a1d876b282ed7666b1e4181e320a4a9b0cf859d951b838cf7d4d"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:b0919b161788a1d876b282ed7666b1e4181e320a4a9b0cf859d951b838cf7d4d",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3665,8 +3665,8 @@
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
           "sha256:0d724b6ee90ddbf916b06a2e98c5856e56e48ce05b9bbdd5a33d11779ecf4ec1",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3676,8 +3676,8 @@
         "name": "@typescript/typescript-netbsd-arm64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466",
           "sha256:e7cd958c9f660b54e89055343355cd95750a877dc515192fcbac01e3496fd327"
         ],
         "version": "7.0.2"
@@ -3688,9 +3688,9 @@
         "name": "@typescript/typescript-netbsd-x64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
           "sha256:7f26bbd5016a4087f7d954b8b7b52c40c440f40a493f5ee46a86aef9d67a44fd",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3700,8 +3700,8 @@
         "name": "@typescript/typescript-openbsd-arm64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466",
           "sha256:d68cb6a2e7adaf530fae566305df733905fcfb553e4f9736c10d478a24d6f35e"
         ],
         "version": "7.0.2"
@@ -3712,9 +3712,9 @@
         "name": "@typescript/typescript-openbsd-x64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
           "sha256:710c9b32accbb1e54fe1dbdd9d15c5edf89576d64c4dda3187db71a7f7bc8a85",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3724,9 +3724,9 @@
         "name": "@typescript/typescript-sunos-x64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
           "sha256:29aa50a02ca49e16d1b2b8104076e11e56cdac17879a0c91dd21c09d6ab33b35",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3736,9 +3736,9 @@
         "name": "@typescript/typescript-win32-arm64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
           "sha256:3a1e4ae2538377b502e5c2acea1f8e327162bb1f32280f7562bd8f66ea636497",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -3748,8 +3748,8 @@
         "name": "@typescript/typescript-win32-x64",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61",
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466",
           "sha256:f3c8c4cf230bde85dff397ea136b5c03211f8d951d78d07e4b46b17b2138c005"
         ],
         "version": "7.0.2"
@@ -3858,7 +3858,7 @@
         "integrity": "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==",
         "name": "convert-source-map",
         "notice_ids": [
-          "sha256:1fa6ee8bb95a81ae3d73a5bd074a3ac380ffec13697051063ca1a601921b91db",
+          "sha256:0d22dfefcd138a157d8b68e1056e229ccdece6ca5a7153d38ee289983483c33d",
           "sha256:2ad9beddf015a3373c4d1070fcf29570d0867e27c673b853d090a3d5b46a2404",
           "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
         ],
@@ -3947,8 +3947,8 @@
         "name": "lightningcss",
         "notice_ids": [
           "sha256:21901bd2d54db0ef711f38384d27938b125d9c0fcaf1883fe9bf5f92a10ba1d5",
-          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
         ],
         "version": "1.33.0"
       },
@@ -3957,8 +3957,8 @@
         "integrity": "sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==",
         "name": "lightningcss-android-arm64",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
           "sha256:fb8b7a71d80232fb9db4bbf501225269093692b1dafa7acba7c702709210f32a"
         ],
         "version": "1.33.0"
@@ -3968,8 +3968,8 @@
         "integrity": "sha512-Sciaz8eenNTKn9b3t7+xr0ipTp9YxKQY4npwQ3mrRuL0BAVHBLyZxofhaKBAVtzmtRZ/zTyo0/to4B1uWG/Djg==",
         "name": "lightningcss-darwin-arm64",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
           "sha256:84bdf51ecd79f685b836f1e619a2288317e36f80a3841f56b9a4f958b0616fe9"
         ],
         "version": "1.33.0"
@@ -3980,8 +3980,8 @@
         "name": "lightningcss-darwin-x64",
         "notice_ids": [
           "sha256:3a575221528878bd61385b6531399149a8dd61873bfbfb4f70c4b0c7795943e9",
-          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
         ],
         "version": "1.33.0"
       },
@@ -3990,9 +3990,9 @@
         "integrity": "sha512-QQM/Ti/hQajJwCY+RiWuCZ9sdtI/XQk7nDK5vC8kkdwixezOlDgvDx7+RT+QjK6FcFT4MpsuoBnHIo/O3StRRg==",
         "name": "lightningcss-freebsd-x64",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:409a1e91cf4dcfca85d6ea755957f7393a8e43abfbe27e333b7d9a0402f5871d",
-          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
         ],
         "version": "1.33.0"
       },
@@ -4001,8 +4001,8 @@
         "integrity": "sha512-N7FVBe6iS24MlM6R/4RBTxGhQheZGs7tiQ9U32UtF75NzP5Q7xWPRqLBCKxlRQRk3rY1jCIPLzx7WzOhuUIRLQ==",
         "name": "lightningcss-linux-arm-gnueabihf",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
           "sha256:fc7300a894c3aa01b337b31fc2928fc2df8f7eea3a0e79a27d3b667e4e6c9fd7"
         ],
         "version": "1.33.0"
@@ -4013,8 +4013,8 @@
         "name": "lightningcss-linux-arm64-gnu",
         "notice_ids": [
           "sha256:30f476cbfe6e05b1232661ab0b1a6eab9a10b463b9aa1f0525d443f7b03661e8",
-          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
         ],
         "version": "1.33.0"
       },
@@ -4023,8 +4023,8 @@
         "integrity": "sha512-yiO5ROMuYQgXbC60yjZU5CYSFZGKXL0HFATXt9mHJn1+zW55oCtMI9NfcVhYLMFDL7gV7oBPon/EmMMGg2OvtQ==",
         "name": "lightningcss-linux-arm64-musl",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
           "sha256:9753aceb1322d07b40e7eaaa24dddd8da369f7fdaf696bcdad3f77c46671996f"
         ],
         "version": "1.33.0"
@@ -4034,8 +4034,8 @@
         "integrity": "sha512-ar+Ju7LmcN0Jo4FpL4hpFybwNG9/3A/Br5KW2n2jyODg3MEZXaDYADdemoNS+BDNfMgKvylJLj4S5tyRActuAg==",
         "name": "lightningcss-linux-x64-gnu",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
           "sha256:9b78bd48c873abbeb4f4cc9814c1d57bb833d11242465da2b644896f1c742c8b"
         ],
         "version": "1.33.0"
@@ -4046,8 +4046,8 @@
         "name": "lightningcss-linux-x64-musl",
         "notice_ids": [
           "sha256:2dd5d86bf764883379b2764d61def471459868eaee707b6bd5e0e6155b707276",
-          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
         ],
         "version": "1.33.0"
       },
@@ -4056,9 +4056,9 @@
         "integrity": "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA==",
         "name": "lightningcss-win32-arm64-msvc",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:522de37fce8e2f05fe6356083482a3f2b88f291370a31eb980284e4ae933d0fc",
-          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+          "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
         ],
         "version": "1.33.0"
       },
@@ -4067,8 +4067,8 @@
         "integrity": "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA==",
         "name": "lightningcss-win32-x64-msvc",
         "notice_ids": [
+          "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
           "sha256:5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
-          "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
           "sha256:a4f7f1362c6b76f2e7a2dba003a8bab2efa25af79d36ff61f53b0288b2ec8636"
         ],
         "version": "1.33.0"
@@ -4211,7 +4211,7 @@
         "name": "source-map-js",
         "notice_ids": [
           "sha256:079ae7fc72514b38ce0ab70888d3a796ca8c51fbd04782067bff09ffc6573da7",
-          "sha256:5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+          "sha256:3cf06aba3588c41c514f6946bb2d757b413ff6491647d474800f55edca75dcb4",
           "sha256:6cb0631f71c7749763fd3dd1d5bee52dd1070ec17f2edc1710079ad070bd2fbd"
         ],
         "version": "1.2.1"
@@ -4285,9 +4285,9 @@
         "name": "typescript",
         "notice_ids": [
           "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-          "sha256:1ad8b8066682f7e8366a873d322d14ce533db9f71466f9956e8c0cabe5f3f039",
           "sha256:20e40474ad1141f4a1ce9e0f39beac70213351a8d99d191a845c409ce197f740",
-          "sha256:a5e9f9b1575301c7a7a03508fdaa2e05a918cc17fd21c6e898096a96d6a34f61"
+          "sha256:527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
+          "sha256:be50140d7df427d80727a30ae6a2168f4db21f9569f58f3c09bdf08856893466"
         ],
         "version": "7.0.2"
       },
@@ -4296,7 +4296,7 @@
         "integrity": "sha512-EU/eS7BH3XROHh2YnBefjM6DBKA6ZeMZEYQbj7NLWg5wHYlhB8B/Mayd5XsgWq+NFYccDOTemRpdETWR6Ka/lw==",
         "name": "vite",
         "notice_ids": [
-          "sha256:387dd7baa307083401a27c58c362c30832f5ba1dba84f10cc22c33401523f45c",
+          "sha256:5c61a5bb6bf001c1a7a243b9782f95b1e7e960cf827ac838ce4ab84e21d8e65e",
           "sha256:63defe8d50cf5e792b0959874b3c65004b85cc8b91393cb06f8f0dd1cab440f9",
           "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
         ],
@@ -4411,7 +4411,7 @@
           "declared_license": "MPL-2.0 AND MIT",
           "name": "ca-certificates-bundle",
           "notice_ids": [
-            "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+            "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
             "sha256:a2f46e7b55f26b617d9f11d0f049a2b50f893bff213bee3c6db245e884a428b2",
             "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
           ],
@@ -4456,10 +4456,10 @@
           "declared_license": "MIT AND BSD-2-Clause AND GPL-2.0-or-later",
           "name": "musl-utils",
           "notice_ids": [
+            "sha256:017b5ee48f680e82cba79141c7895a1f02b856df2512225f5c427fe36765ef0b",
             "sha256:aa300d0e052166ed0394fff3c5dbc13bf18647a038ea504ec9503ddb836d8aa8",
             "sha256:aaf135472f81c5b4a0dca9367e5bb5e9750032b5bebe5442b36e4c0a47430df3",
-            "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
-            "sha256:f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df"
+            "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
           ],
           "source": "https://musl.libc.org/",
           "version": "1.2.5-r11"
@@ -4508,8 +4508,8 @@
   },
   "license_texts": {
     "Apache-2.0": "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
-    "BSD-2-Clause": "sha256:f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df",
-    "BSD-3-Clause": "sha256:5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+    "BSD-2-Clause": "sha256:017b5ee48f680e82cba79141c7895a1f02b856df2512225f5c427fe36765ef0b",
+    "BSD-3-Clause": "sha256:3cf06aba3588c41c514f6946bb2d757b413ff6491647d474800f55edca75dcb4",
     "BSL-1.0": "sha256:84c6ef3ea9e3254a54d0acf5d3e0c61ae011b8fef7dd6940591cf060e6380a8f",
     "CC0-1.0": "sha256:a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
     "CDLA-Permissive-2.0": "sha256:4531a67d443284d93ffed0803df5b10634aff21c3d77e381f2d48af01d875868",
@@ -4520,15 +4520,15 @@
     "LLVM-exception": "sha256:e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e",
     "MIT": "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
     "MIT-0": "sha256:59746d6285ffa44bfc7ecada352aa5d6a20dc8eab418a60ce091cc739012c135",
-    "MPL-2.0": "sha256:66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+    "MPL-2.0": "sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
     "Unicode-3.0": "sha256:f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1",
     "Unlicense": "sha256:0bdebfeda07d45dada625ae1317c6f833186e798b171d0db640bcf32e92a8240",
     "Zlib": "sha256:bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d"
   },
   "notices": {
     "path": "licenses/THIRD-PARTY-NOTICES.txt",
-    "sha256": "sha256:36932909d9ee909220ee4a34e7f221e981bc7c23890df9063933c2f5ed46b1db",
-    "size_bytes": 920944
+    "sha256": "sha256:1a8d5ac7b36c2f5de79416b199eb4c186397649d181b05b3bd47abc41af3a7e4",
+    "size_bytes": 920579
   },
   "schema": "worldstream/third-party-notices/v1"
 }

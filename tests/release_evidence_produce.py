@@ -395,8 +395,11 @@ def test_workflow_maps_typed_producers_and_exact_artifact_bindings():
         "COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com"
         in release
     )
-    assert "Produce and sign pre-sign subject inventory" in release
-    assert "Post-sign verify detached release bundle" in release
+    assert "Produce and verify unsigned subject inventory" in release
+    assert "Sign exact pre-sign subject inventory" in release
+    assert "Assemble exact unsigned final manifest" in release
+    assert "Sign exact detached final manifest" in release
+    assert "Verify both detached release signatures and all subjects" in release
     assert "supply-chain-pre-sign-typed-producer-not-uploaded" in release
     assert "supply-chain-producer-requires-final-subjects" not in release
 
@@ -551,6 +554,9 @@ def test_workflow_requires_both_macos_architectures_before_typed_release_evidenc
     assert "architecture: arm64" in raw
     assert "runner: macos-15-intel" in raw
     assert "architecture: x86_64" in raw
+    assert "timeout-minutes: 30" in raw
+    assert "scripts/install-pinned-browser.py" in raw
+    assert "--browser-archive-sha256" in raw
     assert "release-macos-source-raw-${{ matrix.architecture }}" in raw
     assert "needs: [macos-source]" in typed
     assert "pattern: release-macos-source-raw-*" in typed
@@ -568,10 +574,9 @@ def test_source_archive_is_built_from_clean_checkout_before_tools_or_downloads()
     release = workflow[workflow.index("  release-evidence:") :]
     checkout = release.index("actions/checkout@")
     source = release.index("Build and verify source archive from the clean checkout")
-    install = release.index("Install pinned Rust")
     download = release.index("Download native and OCI release artifacts")
-    assert checkout < source < install < download
-    source_step = release[source:install]
+    assert checkout < source < download
+    source_step = release[source:download]
     assert "--source-dir ." in source_step
     assert "$RUNNER_TEMP/worldstream-clean-source-payload" in source_step
     assert "release-inputs" not in source_step
@@ -647,11 +652,82 @@ def test_workflow_orders_pre_sign_inventory_before_collection_and_final_signing(
     workflow = (ROOT / ".github/workflows/compatibility-gates.yml").read_text(
         encoding="utf-8"
     )
-    release = workflow[workflow.index("  release-evidence:") :]
-    install = release.index("Install pinned cosign")
-    supply = release.index("Produce and sign pre-sign subject inventory")
-    collect = release.index("Collect exact release evidence sources")
-    assemble = release.index("Assemble detached v2 release manifest")
-    sign = release.index("Keyless-sign detached release manifest")
-    verify = release.index("Post-sign verify detached release bundle")
-    assert install < supply < collect < assemble < sign < verify
+    unsigned = workflow.index("  release-evidence:")
+    inventory_sign = workflow.index("  release-signing:")
+    assemble = workflow.index("  release-finalize:")
+    manifest_sign = workflow.index("  release-manifest-signing:")
+    verify = workflow.index("  release-verify:")
+    assert unsigned < inventory_sign < assemble < manifest_sign < verify
+
+    unsigned_block = workflow[unsigned:inventory_sign]
+    inventory_sign_block = workflow[inventory_sign:assemble]
+    assemble_block = workflow[assemble:manifest_sign]
+    manifest_sign_block = workflow[manifest_sign:verify]
+    verify_block = workflow[verify:]
+    assert "--prepare-unsigned" in unsigned_block
+    assert 'test "$(find dist -type f | wc -l)" -eq 21' in unsigned_block
+    assert "layout_sha256=" in unsigned_block
+    assert "cosign sign-blob" not in unsigned_block
+    assert "cosign sign-blob" in inventory_sign_block
+    assert '" = "$EXPECTED_LAYOUT_SHA256"' in inventory_sign_block
+    assert "--finalize-signed" in assemble_block
+    assert "Assemble detached v2 release manifest" in assemble_block
+    assert 'test "$(find dist -type f | wc -l)" -eq 37' in assemble_block
+    assert "layout_sha256=" in assemble_block
+    assert "cosign sign-blob" not in assemble_block
+    assert "cosign sign-blob" in manifest_sign_block
+    assert '" = "$EXPECTED_LAYOUT_SHA256"' in manifest_sign_block
+    assert "scripts/verify-release.sh dist" in verify_block
+    assert 'test "$(find dist -type f | wc -l)" -eq 38' in verify_block
+
+
+def test_workflow_confines_oidc_to_two_minimal_main_bound_signing_jobs():
+    workflow = (ROOT / ".github/workflows/compatibility-gates.yml").read_text(
+        encoding="utf-8"
+    )
+    boundaries = {
+        name: workflow.index(f"  {name}:")
+        for name in (
+            "release-evidence",
+            "release-signing",
+            "release-finalize",
+            "release-manifest-signing",
+            "release-verify",
+        )
+    }
+    ordered = sorted(boundaries, key=boundaries.get)
+    blocks = {}
+    for index, name in enumerate(ordered):
+        start = boundaries[name]
+        end = (
+            boundaries[ordered[index + 1]]
+            if index + 1 < len(ordered)
+            else len(workflow)
+        )
+        blocks[name] = workflow[start:end]
+
+    assert workflow.count("      id-token: write") == 2
+    for name in ("release-signing", "release-manifest-signing"):
+        block = blocks[name]
+        assert "    environment: worldstream-release" in block
+        assert "      id-token: write" in block
+        assert "actions/checkout@" not in block
+        assert "setup-uv@" not in block
+        assert "setup-node@" not in block
+        assert "cargo " not in block
+        assert "pnpm " not in block
+        assert "github.ref == 'refs/heads/main'" in block
+    for name in ("release-evidence", "release-finalize", "release-verify"):
+        block = blocks[name]
+        assert "id-token:" not in block
+        assert "github.ref == 'refs/heads/main'" in block
+    for name, next_name in (
+        ("packaged-backend-release", "failure-soak-release"),
+        ("failure-soak-release", "reference-performance-release"),
+        ("reference-performance-release", "release-evidence"),
+    ):
+        start = workflow.index(f"  {name}:")
+        end = workflow.index(f"  {next_name}:", start)
+        block = workflow[start:end]
+        assert "    environment: worldstream-release" in block
+        assert "github.ref == 'refs/heads/main'" in block
