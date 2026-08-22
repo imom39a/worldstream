@@ -85,7 +85,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [WorldStream domain context](CONTEXT.md) — canonical whole-product language and concept boundaries
 - [Frozen requirements](docs/requirements.md) — normative release scope and change control
 - [Canonical decision index](docs/decision-index.md) — frozen invariant, normative source, ADR, conformance evidence, and implementation ownership map
-- [Compatibility manifest specification](compatibility.toml) and [canonical JSON mirror](compatibility.json) — fail-closed authored profile; not release evidence while `release_ready = false`
+- [Compatibility manifest](compatibility.toml) and [canonical JSON mirror](compatibility.json) — complete embedded contract identity; final distribution evidence remains detached and signed
 - [Extended terminology](docs/glossary.md) — protocol, runtime, storage, UI, and lifecycle reference
 - [Product vision](docs/vision.md) — audience, value, and boundaries
 - [System architecture](docs/architecture.md) — stack, storage, filesystem, failure semantics, and scaling
@@ -95,6 +95,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [Context model](docs/context-and-memory.md) — Authoritative Room State versus Invocation Context
 - [UI architecture](docs/ui-architecture.md) — deliberately small first-party presentation layer
 - [Security model](docs/security.md) — trust boundary and required tests
+- [Automated compatibility gates](docs/gates.md) — local, native matrix, release, and credential-free provider-smoke tiers
 - [Delivery roadmap](docs/roadmap.md) — Agent Heist MVP followed by Investigation Room
 - [Architecture decisions](docs/adr/) — accepted product, Room sequencing, Core/integrity lineage, observation, Activation, retained pack, storage, portability, recovery, and release decisions
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
@@ -123,11 +124,25 @@ The PowerShell 7.4+ equivalents are `scripts/verify-local.ps1` and `scripts/inst
 `cargo run --locked -p xtask -- compat verify` independently proves that the authored
 [`compatibility.toml`](compatibility.toml) and its deterministic JSON mirror agree.
 
+On macOS 15+ with APFS and the pinned toolchain active, the source-only
+quickstart builds and tests the workspace, launches an ephemeral loopback
+`sqlite-bundled` daemon, verifies health, readiness, and version, and then
+stops it:
+
+```sh
+scripts/macos-source-quickstart.sh
+```
+
+It creates no macOS release archive and makes no signing or notarization
+claim. Native Linux/Windows archive and Linux/amd64 OCI packaging and
+verification are documented in [Release packaging](docs/release-packaging.md).
+
 The operator shell binds to loopback by default. `GET /healthz` reports process liveness,
-`GET /readyz` returns `503 storage_not_initialized` until a production Room store is wired and configured,
-and `GET /version` reports only embedded manifest/build facts. None of these endpoints is a Room
-or public client API, and the bootstrap does not claim release readiness.
+`GET /readyz` returns `200` only when the startup-selected Room store is verified and ready and
+otherwise fails closed with a stable `503` code, and `GET /version` reports the embedded
+manifest/build and exact selected-engine identity. The bootstrap does not by itself claim that a
+signed distribution exists.
 
 ## Status
 
-The reconciled canonical documentation set is implementation-ready as of 2026-08-15. The repository now contains the pinned workspace and operator shell, canonical Core/lineage implementation with storage-neutral commit, recovery, and operational authority contracts, retained Activity Pack host, executable Counter conformance revisions, and a substitutable bundled-SQLite Counter Room commit/recovery and authority adapter. The adapter is not yet wired into the server or gateway and does not claim the release storage profile. The repository still has no Agent Heist executor, public SDK/UI behavior, release artifact, or release conformance evidence. Counter is not a release Activity, and the compatibility manifest therefore remains `release_ready = false`. Performance figures are reference targets until a reproducible report exists and are never universal SLAs.
+The repository contains the pinned workspace and operator shell, canonical Core/lineage and operational-authority implementation, exact retained Counter and Agent Heist executors, the bundled-SQLite gateway, PostgreSQL storage/runtime adapters, a public Python SDK, and the first-party UI. The checked-in compatibility pair is semantically identical and has `release_ready = true`, meaning its portable implementation identities are complete and buildable. That flag is not distribution evidence: a release exists only after the final native/OCI artifacts, all required evidence reports, checksums, SBOM, provenance, and keyless signature verify through the detached `release-manifest.json`. Performance figures remain reference measurements, never universal SLAs.

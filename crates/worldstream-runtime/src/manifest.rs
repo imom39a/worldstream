@@ -19,7 +19,8 @@ pub struct CompatibilityManifest {
     pub manifest_revision: u32,
     /// Specification or release artifact kind.
     pub manifest_kind: String,
-    /// Whether all release gates have completed.
+    /// Whether the embedded compatibility contract is complete and buildable.
+    /// Final artifact/evidence verification is detached per ADR 0012.
     pub release_ready: bool,
     /// Release candidate version.
     pub release_candidate: String,
@@ -126,7 +127,8 @@ pub struct CompatibilitySummary {
     pub revision: u32,
     /// Specification/release artifact kind.
     pub kind: String,
-    /// False until release evidence is complete.
+    /// Whether the embedded contract is complete; detached release evidence is
+    /// verified separately and is not inferred by the running process.
     pub release_ready: bool,
     /// Canonical product and protocol contracts.
     pub contracts: CompatibilityContracts,
@@ -435,7 +437,7 @@ mod tests {
         let manifest = embedded_manifest();
         assert!(manifest.is_ok());
         let manifest = manifest.unwrap_or_else(|error| unreachable!("validated above: {error}"));
-        assert!(!manifest.release_ready);
+        assert!(manifest.release_ready);
         assert_eq!(manifest.contracts.config, 1);
     }
 
@@ -447,9 +449,9 @@ mod tests {
     }
 
     #[test]
-    fn resolved_counter_and_unresolved_release_pack_entries_are_exposed() {
+    fn all_retained_pack_entries_are_resolved_and_current_heist_is_selectable() {
         let summary = manifest().summary();
-        assert_eq!(summary.pack_executors.len(), 3);
+        assert_eq!(summary.pack_executors.len(), 4);
         let counter: Vec<_> = summary
             .pack_executors
             .iter()
@@ -462,13 +464,23 @@ mod tests {
                 && !entry.selectable_for_new_rooms
                 && entry.runnable_for_retained_rooms
         }));
-        let heist = summary
+        let heists: Vec<_> = summary
             .pack_executors
             .iter()
-            .find(|entry| entry.pack_id == super::AGENT_HEIST_PACK_ID)
-            .unwrap_or_else(|| unreachable!("Agent Heist specification row"));
-        assert_eq!(heist.status, "unresolved");
-        assert!(heist.revision_digest.is_empty());
+            .filter(|entry| entry.pack_id == super::AGENT_HEIST_PACK_ID)
+            .collect();
+        assert_eq!(heists.len(), 2);
+        assert!(heists.iter().all(|entry| {
+            entry.status == "resolved"
+                && !entry.revision_digest.is_empty()
+                && entry.runnable_for_retained_rooms
+        }));
+        assert!(heists.iter().any(|entry| {
+            entry.explanatory_version == "0.1.0" && entry.selectable_for_new_rooms
+        }));
+        assert!(heists.iter().any(|entry| {
+            entry.explanatory_version == "0.0.1" && !entry.selectable_for_new_rooms
+        }));
     }
 
     #[test]
@@ -501,11 +513,34 @@ mod tests {
     #[test]
     fn unresolved_entries_reject_release_manifests_or_partial_digests() {
         let mut release = manifest();
-        release.release_ready = true;
+        let unresolved = entry_mut(&mut release, super::AGENT_HEIST_PACK_ID, "0.1.0");
+        unresolved.status = "unresolved".to_owned();
+        for digest in [
+            &mut unresolved.revision_digest,
+            &mut unresolved.descriptor_digest,
+            &mut unresolved.executor_artifact_digest,
+            &mut unresolved.schema_bundle_digest,
+            &mut unresolved.codec_bundle_digest,
+            &mut unresolved.golden_corpus_digest,
+        ] {
+            digest.clear();
+        }
         assert!(release.validate().is_err());
 
         let mut partial = manifest();
-        entry_mut(&mut partial, super::AGENT_HEIST_PACK_ID, "0.1.0").revision_digest =
+        let partial_entry = entry_mut(&mut partial, super::AGENT_HEIST_PACK_ID, "0.1.0");
+        partial_entry.status = "unresolved".to_owned();
+        for digest in [
+            &mut partial_entry.revision_digest,
+            &mut partial_entry.descriptor_digest,
+            &mut partial_entry.executor_artifact_digest,
+            &mut partial_entry.schema_bundle_digest,
+            &mut partial_entry.codec_bundle_digest,
+            &mut partial_entry.golden_corpus_digest,
+        ] {
+            digest.clear();
+        }
+        partial_entry.revision_digest =
             "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
         assert!(partial.validate().is_err());
     }
@@ -574,19 +609,13 @@ mod tests {
     }
 
     #[test]
-    fn release_ready_manifest_rejects_unresolved_or_no_selectable_release_activity() {
-        let mut unresolved = manifest();
-        unresolved.release_ready = true;
-        assert!(unresolved.validate().is_err());
-
+    fn release_ready_manifest_rejects_no_selectable_release_activity() {
         let mut no_selectable_release_activity = manifest();
-        no_selectable_release_activity.release_ready = true;
         let heist = entry_mut(
             &mut no_selectable_release_activity,
             super::AGENT_HEIST_PACK_ID,
             "0.1.0",
         );
-        resolve(heist, 'b');
         heist.selectable_for_new_rooms = false;
         assert!(no_selectable_release_activity.validate().is_err());
     }
@@ -594,9 +623,7 @@ mod tests {
     #[test]
     fn release_ready_manifest_requires_selectable_agent_heist_not_an_arbitrary_pack() {
         let mut invalid = manifest();
-        invalid.release_ready = true;
         let heist = entry_mut(&mut invalid, super::AGENT_HEIST_PACK_ID, "0.1.0");
-        resolve(heist, 'b');
         heist.selectable_for_new_rooms = false;
 
         let mut substitute = invalid

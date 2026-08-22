@@ -200,6 +200,45 @@ Limit by:
 
 Backpressure is explicit. The server rejects room_busy or rate_limited and disconnects a slow consumer instead of allocating unbounded memory.
 
+The reference gateway enforces the architecture's fixed token-bucket table in
+one bounded in-memory limiter shared by HTTP and WebSocket traffic. Socket peer
+addresses, not `Forwarded` or `X-Forwarded-For`, select IP buckets; missing peer
+metadata shares one fail-closed bucket. Principal keys come from the selected
+backend's successful authority authentication; capability keys derive from the
+Core bearer's stable token hash, never its wire value. Session keys come from
+the server-generated connection Session ID, Membership keys combine Room and
+Member IDs, and Room keys are independent. Activation claim/lease keys combine
+verified Principal, capability, and a closed operation class rather than a
+client-supplied activation ID. Operator keys likewise combine verified
+Principal, capability, and a closed endpoint class, so one caller cannot create
+arbitrary keys or impose a shared global endpoint throttle. HTTP requests are
+IP-limited before routing and authenticated operations are limited again before
+backend work. Runner-Capability issuance consumes one operator admission rather
+than one admission per target. Every WebSocket message is limited before
+decoding/dispatch, with valid targeted envelopes receiving the additional
+Membership and Room checks.
+
+The limiter stores only process-keyed BLAKE3 fingerprints and bounds the live
+key count per scope. A target requires a verified Principal and an atomic,
+idle-expiring association; at most 256 distinct live targets belong to one
+Principal and at most 65,536 associations exist process-wide. Quota rejection
+refreshes existing presented associations, preventing an attacker from aging
+out ownership while preserving global target buckets. Ten-minute idle expiry
+reclaims key and association capacity.
+
+WebSocket lifetime is separately bounded by 256 pending permits, 4,096 active
+permits, 64 active permits per Principal, a 15-second browser-ticket deadline,
+a 10-second first-hello deadline, and a 90-second post-welcome inbound-idle
+deadline. Pending-to-active conversion and release are atomic RAII operations.
+Exhausted buckets, target or connection capacity exhaustion, invalid key
+material, poisoned state, and clock regression all fail closed with a generic
+retryable `rate_limited` response. A rejected message reaches no semantic
+backend operation, creates no receipt, and exposes neither the exhausted
+identity nor its private target. Prometheus labels are a closed scope
+vocabulary (`ip`, `principal`, `capability`, `session`, `membership`, `room`,
+`activation`, `operator`, and the fixed failure classes); bearer values and
+entity IDs never become labels.
+
 ### ID and replay confusion
 
 - room/member/action forms the action deduplication boundary;

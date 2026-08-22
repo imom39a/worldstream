@@ -2413,6 +2413,41 @@ fn typed_stimuli_have_only_variant_specific_semantic_time() {
     }
 }
 
+#[test]
+fn timer_identity_binds_the_exact_scheduled_generation_witness() {
+    let first = TimerFiredRequestV1::new(
+        parsed(ROOM),
+        parsed(TIMER),
+        TimerGenerationV1::new(1)
+            .unwrap_or_else(|error| unreachable!("generation failed: {error}")),
+        parsed("2026-08-15T12:30:00Z"),
+        json(r#"{"kind":"deadline"}"#),
+    );
+    let later = TimerFiredRequestV1::new(
+        parsed(ROOM),
+        parsed(TIMER),
+        TimerGenerationV1::new(1)
+            .unwrap_or_else(|error| unreachable!("generation failed: {error}")),
+        parsed("2026-08-15T12:31:00Z"),
+        json(r#"{"kind":"deadline"}"#),
+    );
+    let OperationIdentityV1::TimerFired(identity) = first.operation_identity() else {
+        unreachable!("Timer request did not produce Timer identity")
+    };
+    assert_eq!(identity.room_id, parsed(ROOM));
+    assert_eq!(identity.timer_id, parsed(TIMER));
+    assert_eq!(identity.generation.get(), 1);
+    assert_eq!(identity.scheduled_for.as_str(), "2026-08-15T12:30:00Z");
+    assert_ne!(
+        first
+            .canonical_request_hash()
+            .unwrap_or_else(|error| unreachable!("Timer hash failed: {error}")),
+        later
+            .canonical_request_hash()
+            .unwrap_or_else(|error| unreachable!("Timer hash failed: {error}"))
+    );
+}
+
 fn assert_transition_golden(transition: &TransitionV1, vector: &serde_json::Value) {
     assert_eq!(
         transition

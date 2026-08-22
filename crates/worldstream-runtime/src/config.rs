@@ -20,6 +20,9 @@ const CONFIG_VERSION: u32 = 1;
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 const ENV_PREFIX: &str = "WORLDSTREAM__";
 const ENV_CONFIG_PATH: &str = "WORLDSTREAM_CONFIG";
+const MAX_TELEMETRY_ENDPOINT_BYTES: usize = 256;
+const MAX_DEPLOYMENT_LINEAGE_BYTES: usize = 128;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// Startup storage profile. Selection is fixed until process termination.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -82,6 +85,61 @@ impl SecretSource {
             Self::InheritedHandle(_) => "inherited_handle",
         }
     }
+
+    /// Reads exactly one 256-bit secret without exposing its source or bytes
+    /// in diagnostics. The source is revalidated immediately before opening
+    /// a file or duplicating an inherited handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a pathless error when the source is unavailable, unreadable, or
+    /// does not contain exactly 32 bytes.
+    pub fn read_exact_256(&self) -> Result<[u8; 32], SecretValidationError> {
+        match self {
+            Self::File(path) => {
+                validate_owner_only_file(path).map_err(SecretValidationError::from)?;
+                let file =
+                    fs::File::open(path).map_err(|_| SecretValidationError::MaterialUnavailable)?;
+                read_exact_256_from(file)
+            }
+            Self::InheritedHandle(handle) => {
+                validate_inherited_secret_handle(*handle)?;
+                let descriptor = inherited_secret_descriptor(*handle)?;
+                let duplicate = FileDescriptor::dup(&descriptor)
+                    .map_err(|_| SecretValidationError::InheritedHandleNotOpen)?;
+                read_exact_256_from(duplicate)
+            }
+        }
+    }
+
+    /// Reads a non-empty secret payload up to the caller's explicit byte
+    /// bound. This is intended for variable-length process secrets such as a
+    /// database DSN; diagnostics never include the source or material.
+    ///
+    /// # Errors
+    ///
+    /// Returns a pathless error when the source is unavailable, unreadable,
+    /// empty, or larger than `maximum_bytes`.
+    pub fn read_bounded(&self, maximum_bytes: usize) -> Result<Vec<u8>, SecretValidationError> {
+        if maximum_bytes == 0 {
+            return Err(SecretValidationError::MaterialLength);
+        }
+        match self {
+            Self::File(path) => {
+                validate_owner_only_file(path).map_err(SecretValidationError::from)?;
+                let file =
+                    fs::File::open(path).map_err(|_| SecretValidationError::MaterialUnavailable)?;
+                read_bounded_from(file, maximum_bytes)
+            }
+            Self::InheritedHandle(handle) => {
+                validate_inherited_secret_handle(*handle)?;
+                let descriptor = inherited_secret_descriptor(*handle)?;
+                let duplicate = FileDescriptor::dup(&descriptor)
+                    .map_err(|_| SecretValidationError::InheritedHandleNotOpen)?;
+                read_bounded_from(duplicate, maximum_bytes)
+            }
+        }
+    }
 }
 
 impl fmt::Debug for SecretSource {
@@ -91,6 +149,79 @@ impl fmt::Debug for SecretSource {
             .field("kind", &self.kind())
             .field("value", &"[REDACTED]")
             .finish()
+    }
+}
+
+/// Operator-supplied deployment lineage used by canonical storage metadata.
+///
+/// The value is an opaque, bounded ASCII identity. It is intentionally not
+/// rendered by `Debug` or redacted configuration output because it may be
+/// high-cardinality deployment identity.
+#[derive(Clone, Eq, PartialEq)]
+pub struct DeploymentLineageV1(String);
+
+impl DeploymentLineageV1 {
+    /// Parses the bounded canonical lineage shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is empty, too long, non-ASCII, or
+    /// contains a character outside the canonical identity alphabet.
+    pub fn parse(value: &str) -> Result<Self, ConfigError> {
+        let bytes = value.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > MAX_DEPLOYMENT_LINEAGE_BYTES
+            || !bytes[0].is_ascii_alphanumeric()
+            || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            || bytes.iter().any(|byte| {
+                !(byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.' | b'/'))
+            })
+        {
+            return Err(ConfigError::InvalidDeploymentLineage);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for DeploymentLineageV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DeploymentLineageV1([REDACTED])")
+    }
+}
+
+/// Operator-supplied, nonzero JavaScript-safe storage epoch.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct StorageEpochV1(u64);
+
+impl StorageEpochV1 {
+    /// Constructs an epoch in the supported nonzero safe-integer range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for zero or a value above the JavaScript-safe integer
+    /// maximum.
+    pub const fn new(value: u64) -> Result<Self, ConfigError> {
+        if value == 0 || value > MAX_SAFE_INTEGER {
+            Err(ConfigError::InvalidStorageEpoch)
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Debug for StorageEpochV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StorageEpochV1([REDACTED])")
     }
 }
 
@@ -110,6 +241,98 @@ pub struct StorageConfig {
     pub data_dir: PathBuf,
     /// Runtime `PostgreSQL` DSN secret reference, present only for that profile.
     pub postgresql_dsn: Option<SecretSource>,
+    /// Explicit deployment lineage for canonical export metadata.
+    pub deployment_lineage: Option<DeploymentLineageV1>,
+    /// Explicit storage epoch for canonical export metadata.
+    pub storage_epoch: Option<StorageEpochV1>,
+}
+
+/// Startup authority configuration. The bearer is delivered out of band and
+/// is never represented as a TOML, CLI, environment, or effective-config
+/// value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityConfig {
+    /// Owner-readable secret source used only for the first host authority.
+    pub bootstrap_secret: Option<SecretSource>,
+}
+
+/// Optional, vendor-neutral OTLP/HTTP destination. The daemon may choose a
+/// transport for this endpoint; configuration validation never performs a
+/// network request and the endpoint is never rendered in redacted output.
+#[derive(Clone, Eq, PartialEq)]
+pub struct TelemetryEndpointV1(String);
+
+impl TelemetryEndpointV1 {
+    /// Validates an OTLP/HTTP endpoint without accepting credentials or
+    /// query/fragment material that could carry secrets.
+    pub fn parse(value: &str) -> Result<Self, ConfigError> {
+        if value.is_empty()
+            || value.len() > MAX_TELEMETRY_ENDPOINT_BYTES
+            || value
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+            || !(value.starts_with("http://") || value.starts_with("https://"))
+            || value.contains('?')
+            || value.contains('#')
+        {
+            return Err(ConfigError::InvalidTelemetryEndpoint);
+        }
+        let authority = value
+            .split_once("://")
+            .and_then(|(_, rest)| {
+                rest.split_once('/')
+                    .map_or(Some(rest), |(host, _)| Some(host))
+            })
+            .ok_or(ConfigError::InvalidTelemetryEndpoint)?;
+        if authority.is_empty()
+            || authority.contains('@')
+            || authority.contains('%')
+            || authority.contains('\\')
+        {
+            return Err(ConfigError::InvalidTelemetryEndpoint);
+        }
+        validate_telemetry_authority(authority)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for TelemetryEndpointV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TelemetryEndpointV1([REDACTED])")
+    }
+}
+
+/// A non-secret startup diagnostic for telemetry configuration.
+///
+/// Telemetry is deliberately best-effort: an invalid endpoint must select the
+/// bounded structured-log path rather than prevent the process from starting.
+/// The rejected value is never retained, rendered, or included in an error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TelemetryConfigDiagnosticV1 {
+    InvalidEndpoint,
+}
+
+impl TelemetryConfigDiagnosticV1 {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidEndpoint => "invalid_endpoint",
+        }
+    }
+}
+
+/// Startup telemetry options. An absent endpoint selects the local structured
+/// log path; this config object does not imply collector delivery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TelemetryConfig {
+    pub otlp_endpoint: Option<TelemetryEndpointV1>,
+    /// Safe diagnostic explaining why an optional exporter was not selected.
+    pub diagnostic: Option<TelemetryConfigDiagnosticV1>,
 }
 
 /// Fully layered, validated process configuration.
@@ -121,6 +344,10 @@ pub struct EffectiveConfig {
     pub server: ServerConfig,
     /// Startup-fixed storage configuration.
     pub storage: StorageConfig,
+    /// Startup authority configuration.
+    pub authority: AuthorityConfig,
+    /// Optional post-commit telemetry destination.
+    pub telemetry: TelemetryConfig,
 }
 
 impl Default for EffectiveConfig {
@@ -134,6 +361,15 @@ impl Default for EffectiveConfig {
                 profile: StorageProfile::SqliteBundled,
                 data_dir: default_data_directory(),
                 postgresql_dsn: None,
+                deployment_lineage: None,
+                storage_epoch: None,
+            },
+            authority: AuthorityConfig {
+                bootstrap_secret: None,
+            },
+            telemetry: TelemetryConfig {
+                otlp_endpoint: None,
+                diagnostic: None,
             },
         }
     }
@@ -173,6 +409,31 @@ impl EffectiveConfig {
                         value: "[REDACTED]",
                     }
                 }),
+                deployment_lineage: self
+                    .storage
+                    .deployment_lineage
+                    .as_ref()
+                    .map(|_| "[CONFIGURED]"),
+                storage_epoch: self.storage.storage_epoch.map(|_| "[CONFIGURED]"),
+            },
+            authority: RedactedAuthorityConfig {
+                bootstrap_secret: self.authority.bootstrap_secret.as_ref().map(|secret| {
+                    RedactedSecretSource {
+                        source: secret.kind(),
+                        value: "[REDACTED]",
+                    }
+                }),
+            },
+            telemetry: RedactedTelemetryConfig {
+                otlp_endpoint: self
+                    .telemetry
+                    .otlp_endpoint
+                    .as_ref()
+                    .map(|_| "[CONFIGURED]"),
+                diagnostic: self
+                    .telemetry
+                    .diagnostic
+                    .map(TelemetryConfigDiagnosticV1::code),
             },
         }
     }
@@ -213,8 +474,22 @@ impl EffectiveConfig {
                     "postgres-primary requires exactly one DSN secret file or inherited handle",
                 ));
             }
-            (StorageProfile::PostgresPrimary, Some(source)) => validate_secret(source)?,
+            (StorageProfile::PostgresPrimary, Some(source)) => {
+                validate_secret(source, "storage.postgresql.dsn_handle")?;
+            }
             (StorageProfile::SqliteBundled, None) => {}
+        }
+
+        match (
+            &self.storage.deployment_lineage,
+            &self.storage.storage_epoch,
+        ) {
+            (Some(_), Some(_)) | (None, None) => {}
+            _ => return Err(ConfigError::PartialDeploymentMetadata),
+        }
+
+        if let Some(source) = &self.authority.bootstrap_secret {
+            validate_bootstrap_secret(source, "authority.bootstrap.secret_handle")?;
         }
 
         Ok(())
@@ -230,6 +505,10 @@ pub struct RedactedConfig {
     pub server: RedactedServerConfig,
     /// Redacted storage section.
     pub storage: RedactedStorageConfig,
+    /// Redacted authority section.
+    pub authority: RedactedAuthorityConfig,
+    /// Redacted optional telemetry destination.
+    pub telemetry: RedactedTelemetryConfig,
 }
 
 /// Non-secret listener output.
@@ -249,6 +528,29 @@ pub struct RedactedStorageConfig {
     /// Redacted DSN source when `PostgreSQL` is selected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub postgresql_dsn: Option<RedactedSecretSource>,
+    /// Constant marker when an explicit deployment lineage was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_lineage: Option<&'static str>,
+    /// Constant marker when an explicit storage epoch was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_epoch: Option<&'static str>,
+}
+
+/// Authority output without the bootstrap path, handle, or bytes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RedactedAuthorityConfig {
+    /// Redacted first-host authority secret source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_secret: Option<RedactedSecretSource>,
+}
+
+/// Telemetry output without endpoint authority/path or credentials.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RedactedTelemetryConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub otlp_endpoint: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<&'static str>,
 }
 
 /// Redacted secret reference emitted by `config effective`.
@@ -302,6 +604,30 @@ impl fmt::Debug for ConfigLoader {
                     .environment
                     .contains_key("WORLDSTREAM__STORAGE__POSTGRESQL__DSN_HANDLE"),
             )
+            .field(
+                "environment_bootstrap_file_present",
+                &self
+                    .environment
+                    .contains_key("WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE"),
+            )
+            .field(
+                "environment_bootstrap_handle_present",
+                &self
+                    .environment
+                    .contains_key("WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_HANDLE"),
+            )
+            .field(
+                "environment_deployment_lineage_present",
+                &self
+                    .environment
+                    .contains_key("WORLDSTREAM__STORAGE__DEPLOYMENT_LINEAGE"),
+            )
+            .field(
+                "environment_storage_epoch_present",
+                &self
+                    .environment
+                    .contains_key("WORLDSTREAM__STORAGE__STORAGE_EPOCH"),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -342,8 +668,10 @@ impl ConfigLoader {
     ///
     /// # Errors
     ///
-    /// Returns an error for any unsupported, malformed, insecure, inactive,
-    /// missing, unknown, or out-of-range value.
+    /// Returns an error for any unsupported, insecure, inactive, missing,
+    /// unknown, or out-of-range value. Optional telemetry endpoint syntax is
+    /// intentionally a typed fallback diagnostic, because telemetry cannot
+    /// make the authoritative process fail to start.
     pub fn load(&self) -> Result<EffectiveConfig, ConfigError> {
         let mut effective = EffectiveConfig::default();
         if let Some(path) = self.selected_config_path()? {
@@ -379,6 +707,39 @@ struct FileConfig {
     server: Option<FileServerConfig>,
     #[serde(default)]
     storage: Option<FileStorageConfig>,
+    #[serde(default)]
+    authority: Option<FileAuthorityConfig>,
+    #[serde(default)]
+    telemetry: Option<FileTelemetryConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileTelemetryConfig {
+    #[serde(default)]
+    otlp: Option<FileOtlpConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileOtlpConfig {
+    endpoint: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileAuthorityConfig {
+    #[serde(default)]
+    bootstrap: Option<FileBootstrapConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileBootstrapConfig {
+    #[serde(default)]
+    secret_file: Option<PathBuf>,
+    #[serde(default)]
+    secret_handle: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -395,6 +756,10 @@ struct FileStorageConfig {
     profile: Option<StorageProfile>,
     #[serde(default)]
     data_dir: Option<PathBuf>,
+    #[serde(default)]
+    deployment_lineage: Option<String>,
+    #[serde(default)]
+    storage_epoch: Option<u64>,
     #[serde(default)]
     postgresql: Option<FilePostgresqlConfig>,
 }
@@ -438,6 +803,13 @@ fn apply_file(effective: &mut EffectiveConfig, path: &Path) -> Result<(), Config
         if let Some(data_dir) = storage.data_dir {
             effective.storage.data_dir = data_dir;
         }
+        if let Some(deployment_lineage) = storage.deployment_lineage {
+            effective.storage.deployment_lineage =
+                Some(DeploymentLineageV1::parse(&deployment_lineage)?);
+        }
+        if let Some(storage_epoch) = storage.storage_epoch {
+            effective.storage.storage_epoch = Some(StorageEpochV1::new(storage_epoch)?);
+        }
         if let Some(postgresql) = storage.postgresql {
             effective.storage.postgresql_dsn = secret_from_parts(
                 postgresql.dsn_file,
@@ -445,6 +817,22 @@ fn apply_file(effective: &mut EffectiveConfig, path: &Path) -> Result<(), Config
                 "storage.postgresql",
             )?;
         }
+    }
+    if let Some(authority) = file.authority
+        && let Some(bootstrap) = authority.bootstrap
+    {
+        effective.authority.bootstrap_secret = secret_from_parts(
+            bootstrap.secret_file,
+            bootstrap.secret_handle,
+            "authority.bootstrap",
+        )?;
+    }
+    if let Some(telemetry) = file.telemetry
+        && let Some(otlp) = telemetry.otlp
+    {
+        let (endpoint, diagnostic) = telemetry_config_value(&otlp.endpoint);
+        effective.telemetry.otlp_endpoint = endpoint;
+        effective.telemetry.diagnostic = diagnostic;
     }
     Ok(())
 }
@@ -456,6 +844,14 @@ fn apply_environment(
     let mut dsn_file = None;
     let mut dsn_handle = None;
     let mut touched_postgresql = false;
+    let mut bootstrap_file = None;
+    let mut bootstrap_handle = None;
+    let mut touched_bootstrap = false;
+    let mut telemetry_endpoint = None;
+    let mut telemetry_diagnostic = None;
+    let mut touched_telemetry = false;
+    let mut deployment_lineage = None;
+    let mut storage_epoch = None;
 
     for (key, value) in environment {
         match key.as_str() {
@@ -477,6 +873,12 @@ fn apply_environment(
                 }
                 effective.storage.data_dir = PathBuf::from(value);
             }
+            "WORLDSTREAM__STORAGE__DEPLOYMENT_LINEAGE" => {
+                deployment_lineage = Some(DeploymentLineageV1::parse(value)?);
+            }
+            "WORLDSTREAM__STORAGE__STORAGE_EPOCH" => {
+                storage_epoch = Some(StorageEpochV1::new(parse_environment(key, value)?)?);
+            }
             "WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE" => {
                 touched_postgresql = true;
                 if value.is_empty() {
@@ -491,6 +893,24 @@ fn apply_environment(
                 touched_postgresql = true;
                 dsn_handle = Some(parse_environment(key, value)?);
             }
+            "WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE" => {
+                touched_bootstrap = true;
+                if value.is_empty() {
+                    return Err(ConfigError::InvalidEnvironment {
+                        key: key.clone(),
+                        value: "empty".to_owned(),
+                    });
+                }
+                bootstrap_file = Some(PathBuf::from(value));
+            }
+            "WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_HANDLE" => {
+                touched_bootstrap = true;
+                bootstrap_handle = Some(parse_environment(key, value)?);
+            }
+            "WORLDSTREAM__TELEMETRY__OTLP__ENDPOINT" => {
+                touched_telemetry = true;
+                (telemetry_endpoint, telemetry_diagnostic) = telemetry_config_value(value);
+            }
             unknown if unknown.starts_with(ENV_PREFIX) => {
                 return Err(ConfigError::UnknownEnvironmentKey(unknown.to_owned()));
             }
@@ -502,7 +922,37 @@ fn apply_environment(
         effective.storage.postgresql_dsn =
             secret_from_parts(dsn_file, dsn_handle, "WORLDSTREAM__STORAGE__POSTGRESQL")?;
     }
+    if touched_bootstrap {
+        effective.authority.bootstrap_secret = secret_from_parts(
+            bootstrap_file,
+            bootstrap_handle,
+            "WORLDSTREAM__AUTHORITY__BOOTSTRAP",
+        )?;
+    }
+    if let Some(deployment_lineage) = deployment_lineage {
+        effective.storage.deployment_lineage = Some(deployment_lineage);
+    }
+    if let Some(storage_epoch) = storage_epoch {
+        effective.storage.storage_epoch = Some(storage_epoch);
+    }
+    if touched_telemetry {
+        effective.telemetry.otlp_endpoint = telemetry_endpoint;
+        effective.telemetry.diagnostic = telemetry_diagnostic;
+    }
     Ok(())
+}
+
+fn telemetry_config_value(
+    value: &str,
+) -> (
+    Option<TelemetryEndpointV1>,
+    Option<TelemetryConfigDiagnosticV1>,
+) {
+    if let Ok(endpoint) = TelemetryEndpointV1::parse(value) {
+        (Some(endpoint), None)
+    } else {
+        (None, Some(TelemetryConfigDiagnosticV1::InvalidEndpoint))
+    }
 }
 
 fn apply_cli(effective: &mut EffectiveConfig, cli: &CliOverrides) {
@@ -543,14 +993,52 @@ fn secret_from_parts(
     }
 }
 
-fn validate_secret(source: &SecretSource) -> Result<(), ConfigError> {
+fn validate_telemetry_authority(authority: &str) -> Result<(), ConfigError> {
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let (host, suffix) = rest
+            .split_once(']')
+            .ok_or(ConfigError::InvalidTelemetryEndpoint)?;
+        if host.is_empty() || !host.contains(':') {
+            return Err(ConfigError::InvalidTelemetryEndpoint);
+        }
+        let port = match suffix {
+            "" => None,
+            suffix => Some(
+                suffix
+                    .strip_prefix(':')
+                    .ok_or(ConfigError::InvalidTelemetryEndpoint)?,
+            ),
+        };
+        (host, port)
+    } else if authority.matches(':').count() > 1 {
+        return Err(ConfigError::InvalidTelemetryEndpoint);
+    } else {
+        authority
+            .split_once(':')
+            .map_or((authority, None), |(host, port)| (host, Some(port)))
+    };
+    if host.is_empty() || host.starts_with('.') || host.ends_with('.') {
+        return Err(ConfigError::InvalidTelemetryEndpoint);
+    }
+    if let Some(port) = port {
+        let port = port
+            .parse::<u16>()
+            .map_err(|_| ConfigError::InvalidTelemetryEndpoint)?;
+        if port == 0 {
+            return Err(ConfigError::InvalidTelemetryEndpoint);
+        }
+    }
+    Ok(())
+}
+
+fn validate_secret(source: &SecretSource, handle_key: &'static str) -> Result<(), ConfigError> {
     match source {
         SecretSource::File(path) => validate_owner_only_file(path)
             .map_err(SecretValidationError::from)
             .map_err(ConfigError::Secret)?,
         SecretSource::InheritedHandle(handle) if *handle < 3 => {
             return Err(ConfigError::OutOfRange {
-                key: "storage.postgresql.dsn_handle",
+                key: handle_key,
                 value: "reserved standard handle".to_owned(),
             });
         }
@@ -559,6 +1047,59 @@ fn validate_secret(source: &SecretSource) -> Result<(), ConfigError> {
         }
     }
     Ok(())
+}
+
+fn validate_bootstrap_secret(
+    source: &SecretSource,
+    handle_key: &'static str,
+) -> Result<(), ConfigError> {
+    validate_secret(source, handle_key)?;
+    source
+        .read_exact_256()
+        .map(|_| ())
+        .map_err(ConfigError::Secret)
+}
+
+fn read_exact_256_from(mut reader: impl Read) -> Result<[u8; 32], SecretValidationError> {
+    let mut bytes = [0_u8; 33];
+    let mut filled = 0;
+    while filled < bytes.len() {
+        match reader.read(&mut bytes[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(_) => {
+                bytes.fill(0);
+                return Err(SecretValidationError::MaterialUnavailable);
+            }
+        }
+    }
+    if filled != 32 {
+        bytes.fill(0);
+        return Err(SecretValidationError::MaterialLength);
+    }
+    let mut secret = [0_u8; 32];
+    secret.copy_from_slice(&bytes[..32]);
+    bytes.fill(0);
+    Ok(secret)
+}
+
+fn read_bounded_from(
+    reader: impl Read,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, SecretValidationError> {
+    let capacity = maximum_bytes
+        .checked_add(1)
+        .ok_or(SecretValidationError::MaterialLength)?;
+    let mut bytes = Vec::with_capacity(capacity.min(16 * 1024 + 1));
+    reader
+        .take(u64::try_from(capacity).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)
+        .map_err(|_| SecretValidationError::MaterialUnavailable)?;
+    if bytes.is_empty() || bytes.len() > maximum_bytes {
+        bytes.fill(0);
+        return Err(SecretValidationError::MaterialLength);
+    }
+    Ok(bytes)
 }
 
 struct InheritedSecretDescriptor(RawFileDescriptor);
@@ -647,9 +1188,21 @@ pub enum ConfigError {
     /// A key for an inactive backend was provided.
     #[error("inactive backend configuration: {0}")]
     InactiveBackend(&'static str),
+    /// The optional OTLP endpoint is not a safe HTTP(S) authority.
+    #[error("invalid telemetry OTLP endpoint")]
+    InvalidTelemetryEndpoint,
     /// A required value is absent.
     #[error("missing configuration: {0}")]
     Missing(&'static str),
+    /// Deployment lineage was not in the bounded canonical shape.
+    #[error("deployment lineage is not in the bounded canonical shape")]
+    InvalidDeploymentLineage,
+    /// Storage epoch was not a nonzero safe integer.
+    #[error("storage epoch must be between 1 and 9007199254740991")]
+    InvalidStorageEpoch,
+    /// Exactly one deployment metadata field was supplied.
+    #[error("deployment lineage and storage epoch must be supplied together")]
+    PartialDeploymentMetadata,
     /// A numeric or address value is outside its supported range.
     #[error("out-of-range value for {key}: {value}")]
     OutOfRange { key: &'static str, value: String },
@@ -666,7 +1219,7 @@ pub enum ConfigError {
     #[error("the explicit configuration path is empty")]
     EmptyConfigPath,
     /// Both allowed secret delivery mechanisms were selected.
-    #[error("{0} must select exactly one of dsn_file or dsn_handle")]
+    #[error("{0} must select exactly one secret file or inherited handle")]
     MutuallyExclusiveSecrets(&'static str),
     /// Secret source ownership, permission, or handle validation failed.
     #[error("secret source is not safely owner-readable: {0}")]
@@ -697,6 +1250,12 @@ pub enum SecretValidationError {
     /// The configured descriptor/handle cannot perform a zero-byte read probe.
     #[error("inherited secret handle is not readable")]
     InheritedHandleNotReadable,
+    /// The source could not be read without retaining source details.
+    #[error("secret material is unavailable or unreadable")]
+    MaterialUnavailable,
+    /// Bootstrap material must be exactly one 256-bit value.
+    #[error("secret material must contain exactly 32 bytes")]
+    MaterialLength,
     /// The platform has no fail-closed secret-source validation policy.
     #[error("secret-source validation is unsupported on this platform")]
     UnsupportedPlatform,
@@ -709,7 +1268,9 @@ impl From<FilesystemError> for SecretValidationError {
             FilesystemError::Symlink(_)
             | FilesystemError::ReparsePoint(_)
             | FilesystemError::WrongType { .. }
-            | FilesystemError::UnsafePath { .. } => Self::FileType,
+            | FilesystemError::UnsafePath { .. }
+            | FilesystemError::FilesystemIdentityUnavailable { .. }
+            | FilesystemError::UnsupportedFilesystem { .. } => Self::FileType,
             FilesystemError::Owner { .. } => Self::FileOwner,
             FilesystemError::Permissions { .. } | FilesystemError::WindowsAcl { .. } => {
                 Self::FilePermissions
@@ -782,7 +1343,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{CliOverrides, ConfigError, ConfigLoader, SecretValidationError, StorageProfile};
+    use super::{
+        CliOverrides, ConfigError, ConfigLoader, SecretSource, SecretValidationError,
+        StorageProfile, TelemetryConfigDiagnosticV1, TelemetryEndpointV1,
+    };
 
     fn environment(items: &[(&str, &str)]) -> BTreeMap<String, String> {
         items
@@ -822,6 +1386,224 @@ mod tests {
         let config = super::EffectiveConfig::default();
         assert!(config.server.bind.ip().is_loopback());
         assert_ne!(config.server.bind.port(), 0);
+        assert!(config.telemetry.otlp_endpoint.is_none());
+        assert!(config.storage.deployment_lineage.is_none());
+        assert!(config.storage.storage_epoch.is_none());
+    }
+
+    #[test]
+    fn deployment_metadata_layers_from_versioned_toml_and_environment() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let config_path = directory.path().join("deployment.toml");
+        fs::write(
+            &config_path,
+            "config_version = 1\n[storage]\ndeployment_lineage = \"deployment/from-file\"\nstorage_epoch = 7\n",
+        )
+        .unwrap_or_else(|error| unreachable!("write config: {error}"));
+        let config = ConfigLoader::with_environment(
+            Some(config_path),
+            CliOverrides::default(),
+            environment(&[(
+                "WORLDSTREAM__STORAGE__DEPLOYMENT_LINEAGE",
+                "deployment/from-environment",
+            )]),
+        )
+        .load()
+        .unwrap_or_else(|error| unreachable!("valid deployment metadata: {error}"));
+
+        assert_eq!(
+            config
+                .storage
+                .deployment_lineage
+                .as_ref()
+                .map(super::DeploymentLineageV1::as_str),
+            Some("deployment/from-environment")
+        );
+        assert_eq!(
+            config.storage.storage_epoch.map(super::StorageEpochV1::get),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn deployment_metadata_rejects_invalid_and_partial_values() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let config_path = directory.path().join("partial.toml");
+        fs::write(
+            &config_path,
+            "config_version = 1\n[storage]\ndeployment_lineage = \"deployment/only\"\n",
+        )
+        .unwrap_or_else(|error| unreachable!("write config: {error}"));
+        assert!(matches!(
+            ConfigLoader::with_environment(
+                Some(config_path),
+                CliOverrides::default(),
+                BTreeMap::new()
+            )
+            .load(),
+            Err(ConfigError::PartialDeploymentMetadata)
+        ));
+
+        let invalid_lineage = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[(
+                "WORLDSTREAM__STORAGE__DEPLOYMENT_LINEAGE",
+                "deployment with spaces",
+            )]),
+        )
+        .load();
+        assert!(matches!(
+            invalid_lineage,
+            Err(ConfigError::InvalidDeploymentLineage)
+        ));
+
+        let invalid_epoch = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[("WORLDSTREAM__STORAGE__STORAGE_EPOCH", "0")]),
+        )
+        .load();
+        assert!(matches!(
+            invalid_epoch,
+            Err(ConfigError::InvalidStorageEpoch)
+        ));
+    }
+
+    #[test]
+    fn deployment_metadata_debug_and_redacted_output_never_echo_identity() {
+        let lineage = "deployment/secret-high-cardinality-identity";
+        let config = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[
+                ("WORLDSTREAM__STORAGE__DEPLOYMENT_LINEAGE", lineage),
+                ("WORLDSTREAM__STORAGE__STORAGE_EPOCH", "9007199254740991"),
+            ]),
+        )
+        .load()
+        .unwrap_or_else(|error| unreachable!("valid deployment metadata: {error}"));
+
+        assert!(!format!("{config:?}").contains(lineage));
+        let redacted = serde_json::to_string(&config.redacted())
+            .unwrap_or_else(|error| unreachable!("redacted deployment metadata: {error}"));
+        assert!(redacted.contains("[CONFIGURED]"));
+        assert!(!redacted.contains(lineage));
+    }
+
+    #[test]
+    fn telemetry_endpoint_is_layered_and_redacted() {
+        let loader = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[(
+                "WORLDSTREAM__TELEMETRY__OTLP__ENDPOINT",
+                "http://127.0.0.1:4318/v1/logs",
+            )]),
+        );
+        let config = loader
+            .load()
+            .unwrap_or_else(|error| unreachable!("valid telemetry config: {error}"));
+        assert_eq!(
+            config
+                .telemetry
+                .otlp_endpoint
+                .as_ref()
+                .map(TelemetryEndpointV1::as_str),
+            Some("http://127.0.0.1:4318/v1/logs")
+        );
+        assert!(!format!("{config:?}").contains("v1/logs"));
+        let redacted = serde_json::to_string(&config.redacted())
+            .unwrap_or_else(|error| unreachable!("redacted telemetry config: {error}"));
+        assert!(redacted.contains("[CONFIGURED]"));
+        assert!(!redacted.contains("v1/logs"));
+    }
+
+    #[test]
+    fn telemetry_endpoint_rejects_credentials_queries_bad_ports_and_unsupported_schemes() {
+        for value in [
+            "ftp://collector:4318",
+            "http://user:password@collector:4318",
+            "http://collector:4318?token=secret",
+            "http://collector:0",
+            "http://collector:65536",
+            "http://::1:4318",
+        ] {
+            let config = ConfigLoader::with_environment(
+                None,
+                CliOverrides::default(),
+                environment(&[("WORLDSTREAM__TELEMETRY__OTLP__ENDPOINT", value)]),
+            )
+            .load()
+            .unwrap_or_else(|error| unreachable!("telemetry fallback must load: {error}"));
+            assert_eq!(config.telemetry.otlp_endpoint, None, "{value}");
+            assert_eq!(
+                config.telemetry.diagnostic,
+                Some(TelemetryConfigDiagnosticV1::InvalidEndpoint),
+                "{value}"
+            );
+            let redacted = serde_json::to_string(&config.redacted())
+                .unwrap_or_else(|error| unreachable!("redacted telemetry config: {error}"));
+            assert!(redacted.contains("invalid_endpoint"));
+            assert!(!redacted.contains(value));
+        }
+        assert!(TelemetryEndpointV1::parse("http://[::1]:4318/v1/logs").is_ok());
+    }
+
+    #[test]
+    fn malformed_file_telemetry_config_falls_back_without_retaining_endpoint() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let sentinel = "http://user:password@collector:4318/v1/logs?token=secret-marker";
+        let config_path = directory.path().join("malformed-telemetry.toml");
+        fs::write(
+            &config_path,
+            format!("config_version = 1\n[telemetry.otlp]\nendpoint = \"{sentinel}\"\n"),
+        )
+        .unwrap_or_else(|error| unreachable!("write malformed telemetry config: {error}"));
+        let config = ConfigLoader::with_environment(
+            Some(config_path),
+            CliOverrides::default(),
+            BTreeMap::new(),
+        )
+        .load()
+        .unwrap_or_else(|error| unreachable!("telemetry fallback must load: {error}"));
+        assert!(config.telemetry.otlp_endpoint.is_none());
+        assert_eq!(
+            config.telemetry.diagnostic,
+            Some(TelemetryConfigDiagnosticV1::InvalidEndpoint)
+        );
+        assert!(!format!("{config:?}").contains(sentinel));
+        let redacted = serde_json::to_string(&config.redacted())
+            .unwrap_or_else(|error| unreachable!("redacted telemetry config: {error}"));
+        assert!(redacted.contains("invalid_endpoint"));
+        assert!(!redacted.contains(sentinel));
+        assert!(!redacted.contains("password"));
+    }
+
+    #[test]
+    fn telemetry_endpoint_can_be_loaded_from_versioned_toml() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let config_path = directory.path().join("telemetry.toml");
+        fs::write(
+            &config_path,
+            "config_version = 1\n[telemetry.otlp]\nendpoint = \"http://collector:4318/v1/logs\"\n",
+        )
+        .unwrap_or_else(|error| unreachable!("write telemetry config: {error}"));
+        let config = ConfigLoader::with_environment(
+            Some(config_path),
+            CliOverrides::default(),
+            BTreeMap::new(),
+        )
+        .load()
+        .unwrap_or_else(|error| unreachable!("valid telemetry TOML: {error}"));
+        assert_eq!(
+            config
+                .telemetry
+                .otlp_endpoint
+                .as_ref()
+                .map(TelemetryEndpointV1::as_str),
+            Some("http://collector:4318/v1/logs")
+        );
     }
 
     #[test]
@@ -1008,6 +1790,100 @@ mod tests {
             "inherited_handle"
         );
         assert_eq!(redacted["storage"]["postgresql_dsn"]["value"], "[REDACTED]");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authority_bootstrap_source_is_redacted_and_reads_exact_material() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let path = directory.path().join("authority-bootstrap");
+        let path_text = path.to_string_lossy().into_owned();
+        fs::write(&path, [0x5a_u8; 32])
+            .unwrap_or_else(|error| unreachable!("authority secret: {error}"));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .unwrap_or_else(|error| unreachable!("authority permissions: {error}"));
+        let config = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[("WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE", &path_text)]),
+        )
+        .load()
+        .unwrap_or_else(|error| unreachable!("valid authority config: {error}"));
+        let source = config
+            .authority
+            .bootstrap_secret
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("authority source"));
+        assert_eq!(source.kind(), "owner_readable_secret_file");
+        assert_eq!(
+            source
+                .read_exact_256()
+                .unwrap_or_else(|error| unreachable!("authority secret: {error}")),
+            [0x5a_u8; 32]
+        );
+
+        let redacted = serde_json::to_string(&config.redacted())
+            .unwrap_or_else(|error| unreachable!("redacted config: {error}"));
+        assert!(redacted.contains("owner_readable_secret_file"));
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains(&path_text));
+        assert!(!redacted.contains("5a5a5a"));
+
+        let direct = SecretSource::File(path);
+        assert_eq!(direct.kind(), "owner_readable_secret_file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authority_bootstrap_inherited_handle_reads_exact_material() {
+        use std::os::fd::AsRawFd;
+
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let path = directory.path().join("authority-bootstrap-handle");
+        fs::write(&path, [0x6b_u8; 32])
+            .unwrap_or_else(|error| unreachable!("authority secret: {error}"));
+        let file = fs::File::open(&path)
+            .unwrap_or_else(|error| unreachable!("authority secret handle: {error}"));
+        let source = SecretSource::InheritedHandle(
+            u64::try_from(file.as_raw_fd())
+                .unwrap_or_else(|error| unreachable!("nonnegative file descriptor: {error}")),
+        );
+        assert_eq!(
+            source
+                .read_exact_256()
+                .unwrap_or_else(|error| unreachable!("authority secret: {error}")),
+            [0x6b_u8; 32]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_bootstrap_secret_with_wrong_material_length_at_config_load() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let path = directory.path().join("short-authority-bootstrap");
+        let path_text = path.to_string_lossy().into_owned();
+        fs::write(&path, [0x2a_u8; 31])
+            .unwrap_or_else(|error| unreachable!("authority secret: {error}"));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .unwrap_or_else(|error| unreachable!("authority permissions: {error}"));
+
+        let error = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[("WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE", &path_text)]),
+        )
+        .load()
+        .err()
+        .unwrap_or_else(|| unreachable!("wrong-length bootstrap secret must fail closed"));
+        assert!(matches!(
+            error,
+            ConfigError::Secret(SecretValidationError::MaterialLength)
+        ));
+        assert!(!error_chain(&error).contains(&path_text));
     }
 
     #[test]

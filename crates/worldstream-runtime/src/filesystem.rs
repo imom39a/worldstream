@@ -71,6 +71,230 @@ pub fn validate_owner_only_file(path: &Path) -> Result<(), FilesystemError> {
     }
 }
 
+/// Verifies that a prepared `SQLite` data directory uses the platform's
+/// frozen local durable-filesystem allowlist.
+///
+/// Linux accepts only an exact ext4 or XFS mount identity, Windows accepts
+/// only a fixed NTFS or `ReFS` volume, and the macOS source-development path
+/// accepts only APFS. Unknown or unobservable identities fail closed.
+///
+/// # Errors
+///
+/// Returns an error when the directory cannot be resolved, its filesystem
+/// identity cannot be observed, or that identity is outside the allowlist.
+pub fn validate_sqlite_data_filesystem(path: &Path) -> Result<(), FilesystemError> {
+    let canonical = fs::canonicalize(path).map_err(|source| FilesystemError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    #[cfg(target_os = "linux")]
+    {
+        validate_linux_sqlite_filesystem(&canonical)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        validate_macos_sqlite_filesystem(&canonical)
+    }
+
+    #[cfg(windows)]
+    {
+        validate_windows_sqlite_filesystem(&canonical)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = canonical;
+        Err(FilesystemError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_linux_sqlite_filesystem(path: &Path) -> Result<(), FilesystemError> {
+    const MOUNTINFO: &str = "/proc/self/mountinfo";
+    const MAX_MOUNTINFO_BYTES: u64 = 4 * 1024 * 1024;
+
+    let metadata =
+        fs::metadata(MOUNTINFO).map_err(|_| FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        })?;
+    if !metadata.is_file() || metadata.len() > MAX_MOUNTINFO_BYTES {
+        return Err(FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        });
+    }
+    let mountinfo = fs::read_to_string(MOUNTINFO).map_err(|_| {
+        FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        }
+    })?;
+    let filesystem = linux_mount_filesystem(path, &mountinfo).ok_or_else(|| {
+        FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        }
+    })?;
+    if matches!(filesystem.as_str(), "ext4" | "xfs") {
+        Ok(())
+    } else {
+        Err(FilesystemError::UnsupportedFilesystem {
+            path: path.to_path_buf(),
+            actual: filesystem,
+            expected: "ext4 or xfs",
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mount_filesystem(path: &Path, mountinfo: &str) -> Option<String> {
+    use std::os::unix::ffi::OsStringExt;
+
+    fn decode(value: &str) -> Option<PathBuf> {
+        let source = value.as_bytes();
+        let mut decoded = Vec::with_capacity(source.len());
+        let mut index = 0;
+        while index < source.len() {
+            if source[index] == b'\\' {
+                if index + 3 >= source.len()
+                    || !source[index + 1..=index + 3].iter().all(u8::is_ascii_digit)
+                {
+                    return None;
+                }
+                let octal =
+                    source[index + 1..=index + 3]
+                        .iter()
+                        .try_fold(0_u8, |value, digit| {
+                            if *digit > b'7' {
+                                None
+                            } else {
+                                value.checked_mul(8)?.checked_add(*digit - b'0')
+                            }
+                        })?;
+                decoded.push(octal);
+                index += 4;
+            } else {
+                decoded.push(source[index]);
+                index += 1;
+            }
+        }
+        Some(PathBuf::from(std::ffi::OsString::from_vec(decoded)))
+    }
+
+    let mut selected: Option<(usize, String)> = None;
+    for line in mountinfo.lines() {
+        let (left, right) = line.split_once(" - ")?;
+        let left_fields = left.split_ascii_whitespace().collect::<Vec<_>>();
+        let right_fields = right.split_ascii_whitespace().collect::<Vec<_>>();
+        if left_fields.len() < 6 || right_fields.len() < 3 {
+            return None;
+        }
+        let mount_point = decode(left_fields[4])?;
+        if !path.starts_with(&mount_point) {
+            continue;
+        }
+        let specificity = mount_point.components().count();
+        if selected
+            .as_ref()
+            .is_none_or(|(current, _)| specificity > *current)
+        {
+            selected = Some((specificity, right_fields[0].to_owned()));
+        }
+    }
+    selected.map(|(_, filesystem)| filesystem)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_macos_sqlite_filesystem(path: &Path) -> Result<(), FilesystemError> {
+    const MAX_MOUNT_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+    let completed = std::process::Command::new("/sbin/mount")
+        .output()
+        .map_err(|_| FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        })?;
+    let output = String::from_utf8(completed.stdout)
+        .ok()
+        .filter(|value| {
+            completed.status.success() && !value.is_empty() && value.len() <= MAX_MOUNT_OUTPUT_BYTES
+        })
+        .ok_or_else(|| FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        })?;
+    let filesystem = macos_mount_filesystem(path, &output).ok_or_else(|| {
+        FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        }
+    })?;
+    if filesystem == "apfs" {
+        Ok(())
+    } else {
+        Err(FilesystemError::UnsupportedFilesystem {
+            path: path.to_path_buf(),
+            actual: filesystem,
+            expected: "apfs (macOS source-development only)",
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_mount_filesystem(path: &Path, mount_output: &str) -> Option<String> {
+    let mut selected: Option<(usize, String)> = None;
+    for line in mount_output.lines() {
+        let (_, mounted) = line.rsplit_once(" on ")?;
+        let (mount_point, details) = mounted.split_once(" (")?;
+        let details = details.strip_suffix(')')?;
+        let filesystem = details.split(',').next()?.trim().to_ascii_lowercase();
+        if filesystem.is_empty() {
+            return None;
+        }
+        let mount_point = Path::new(mount_point);
+        if !path.starts_with(mount_point) {
+            continue;
+        }
+        let specificity = mount_point.components().count();
+        if selected
+            .as_ref()
+            .is_none_or(|(current, _)| specificity > *current)
+        {
+            selected = Some((specificity, filesystem));
+        }
+    }
+    selected.map(|(_, filesystem)| filesystem)
+}
+
+#[cfg(windows)]
+fn validate_windows_sqlite_filesystem(path: &Path) -> Result<(), FilesystemError> {
+    validate_windows_resolved_local_data_path(path)?;
+    let path_text =
+        path.to_str()
+            .ok_or_else(|| FilesystemError::FilesystemIdentityUnavailable {
+                path: path.to_path_buf(),
+            })?;
+    let volume = winsafe::GetVolumePathName(path_text).map_err(|_| {
+        FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        }
+    })?;
+    let mut filesystem = String::new();
+    winsafe::GetVolumeInformation(Some(&volume), None, None, None, None, Some(&mut filesystem))
+        .map_err(|_| FilesystemError::FilesystemIdentityUnavailable {
+            path: path.to_path_buf(),
+        })?;
+    if windows_sqlite_filesystem_is_supported(&filesystem) {
+        Ok(())
+    } else {
+        Err(FilesystemError::UnsupportedFilesystem {
+            path: path.to_path_buf(),
+            actual: filesystem.to_ascii_lowercase(),
+            expected: "ntfs or refs",
+        })
+    }
+}
+
+#[cfg(windows)]
+fn windows_sqlite_filesystem_is_supported(value: &str) -> bool {
+    value.eq_ignore_ascii_case("ntfs") || value.eq_ignore_ascii_case("refs")
+}
+
 #[cfg(unix)]
 fn prepare_data_directory_unix(path: &Path) -> Result<PathBuf, FilesystemError> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -82,6 +306,7 @@ fn prepare_data_directory_unix(path: &Path) -> Result<PathBuf, FilesystemError> 
             reason: "filesystem root cannot be a WorldStream data directory",
         });
     }
+    validate_unix_path_components(&absolute)?;
 
     match fs::symlink_metadata(&absolute) {
         Ok(metadata) => {
@@ -116,6 +341,7 @@ fn prepare_data_directory_unix(path: &Path) -> Result<PathBuf, FilesystemError> 
             });
         }
     }
+    validate_unix_path_components(&absolute)?;
 
     let canonical = fs::canonicalize(&absolute).map_err(|source| FilesystemError::Io {
         path: absolute,
@@ -127,6 +353,55 @@ fn prepare_data_directory_unix(path: &Path) -> Result<PathBuf, FilesystemError> 
     })?;
     validate_unix_directory_metadata(&canonical, &metadata)?;
     Ok(canonical)
+}
+
+#[cfg(unix)]
+fn validate_unix_path_components(path: &Path) -> Result<(), FilesystemError> {
+    let mut components = path.ancestors().collect::<Vec<_>>();
+    components.reverse();
+    for component in components {
+        match fs::symlink_metadata(component) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink()
+                    && !trusted_macos_system_alias(component, &metadata)
+                {
+                    return Err(FilesystemError::Symlink(component.to_path_buf()));
+                }
+                if component != path && !metadata.is_dir() && !metadata.file_type().is_symlink() {
+                    return Err(FilesystemError::WrongType {
+                        path: component.to_path_buf(),
+                        expected: "directory",
+                    });
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(FilesystemError::Io {
+                    path: component.to_path_buf(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+fn trusted_macos_system_alias(path: &Path, metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let expected = match path.to_str() {
+        Some("/etc") => Path::new("private/etc"),
+        Some("/tmp") => Path::new("private/tmp"),
+        Some("/var") => Path::new("private/var"),
+        _ => return false,
+    };
+    metadata.uid() == 0 && fs::read_link(path).is_ok_and(|target| target == expected)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn trusted_macos_system_alias(_path: &Path, _metadata: &fs::Metadata) -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -161,24 +436,26 @@ fn validate_unix_directory_metadata(
 fn validate_owner_only_file_unix(path: &Path) -> Result<(), FilesystemError> {
     use std::os::unix::fs::MetadataExt;
 
-    let metadata = fs::symlink_metadata(path).map_err(|source| FilesystemError::Io {
-        path: path.to_path_buf(),
+    let absolute = absolute_path(path)?;
+    validate_unix_path_components(&absolute)?;
+    let metadata = fs::symlink_metadata(&absolute).map_err(|source| FilesystemError::Io {
+        path: absolute.clone(),
         source,
     })?;
     if metadata.file_type().is_symlink() {
-        return Err(FilesystemError::Symlink(path.to_path_buf()));
+        return Err(FilesystemError::Symlink(absolute));
     }
     if !metadata.is_file() {
         return Err(FilesystemError::WrongType {
-            path: path.to_path_buf(),
+            path: absolute,
             expected: "regular file",
         });
     }
-    validate_unix_owner(path, metadata.uid())?;
+    validate_unix_owner(&absolute, metadata.uid())?;
     let mode = metadata.mode() & 0o777;
     if mode & 0o077 != 0 || mode & 0o400 == 0 {
         return Err(FilesystemError::Permissions {
-            path: path.to_path_buf(),
+            path: absolute,
             expected: "owner-readable with no group/other permissions",
             actual: mode,
         });
@@ -209,6 +486,7 @@ fn prepare_data_directory_windows(path: &Path) -> Result<PathBuf, FilesystemErro
             reason: "filesystem root cannot be a WorldStream data directory",
         });
     }
+    validate_windows_path_components(&absolute)?;
 
     let newly_created = match fs::symlink_metadata(&absolute) {
         Ok(metadata) => {
@@ -246,6 +524,7 @@ fn prepare_data_directory_windows(path: &Path) -> Result<PathBuf, FilesystemErro
         path: absolute.clone(),
         source,
     })?;
+    validate_windows_path_components(&absolute)?;
     validate_windows_path_type(&absolute, &metadata, true)?;
     let canonical = fs::canonicalize(&absolute).map_err(|source| FilesystemError::Io {
         path: absolute,
@@ -325,7 +604,8 @@ fn validate_windows_resolved_existing_ancestor(path: &Path) -> Result<(), Filesy
     let mut candidate = path.parent();
     while let Some(ancestor) = candidate {
         match fs::symlink_metadata(ancestor) {
-            Ok(_) => {
+            Ok(metadata) => {
+                validate_windows_path_type(ancestor, &metadata, true)?;
                 let canonical =
                     fs::canonicalize(ancestor).map_err(|source| FilesystemError::Io {
                         path: ancestor.to_path_buf(),
@@ -353,13 +633,45 @@ fn validate_windows_resolved_existing_ancestor(path: &Path) -> Result<(), Filesy
 
 #[cfg(windows)]
 fn validate_owner_only_file_windows(path: &Path) -> Result<(), FilesystemError> {
-    let metadata = fs::symlink_metadata(path).map_err(|source| FilesystemError::Io {
-        path: path.to_path_buf(),
+    let absolute = absolute_path(path)?;
+    validate_windows_path_components(&absolute)?;
+    let metadata = fs::symlink_metadata(&absolute).map_err(|source| FilesystemError::Io {
+        path: absolute.clone(),
         source,
     })?;
-    validate_windows_path_type(path, &metadata, false)?;
+    validate_windows_path_type(&absolute, &metadata, false)?;
     let current_sid = windows_current_identity_sid(None)?;
-    validate_windows_owner_only_acl(path, &current_sid, false)
+    validate_windows_owner_only_acl(&absolute, &current_sid, false)
+}
+
+#[cfg(windows)]
+fn validate_windows_path_components(path: &Path) -> Result<(), FilesystemError> {
+    for component in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        match fs::symlink_metadata(component) {
+            Ok(metadata) => {
+                use std::os::windows::fs::MetadataExt;
+                use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(FilesystemError::ReparsePoint(component.to_path_buf()));
+                }
+                if component != path && !metadata.is_dir() {
+                    return Err(FilesystemError::WrongType {
+                        path: component.to_path_buf(),
+                        expected: "directory",
+                    });
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(FilesystemError::Io {
+                    path: component.to_path_buf(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -680,6 +992,16 @@ pub enum FilesystemError {
     /// A Windows owner/DACL does not match the frozen allowlist.
     #[error("protected path {path} has an unsafe Windows DACL: {reason}")]
     WindowsAcl { path: PathBuf, reason: &'static str },
+    /// The host could not provide a trustworthy filesystem identity.
+    #[error("protected path filesystem identity is unavailable: {path}")]
+    FilesystemIdentityUnavailable { path: PathBuf },
+    /// A `SQLite` data path uses a filesystem outside the frozen allowlist.
+    #[error("protected path {path} uses unsupported filesystem {actual}; expected {expected}")]
+    UnsupportedFilesystem {
+        path: PathBuf,
+        actual: String,
+        expected: &'static str,
+    },
     /// No filesystem policy exists for this target.
     #[error("filesystem permission validation is unsupported on this platform")]
     UnsupportedPlatform,
@@ -736,11 +1058,79 @@ mod tests {
             Err(FilesystemError::Symlink(_))
         ));
     }
+
+    #[test]
+    fn rejects_symlink_ancestor_for_data_and_secret_paths() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let target = parent.path().join("target");
+        let link = parent.path().join("redirect");
+        fs::create_dir(&target).unwrap_or_else(|error| unreachable!("create target: {error}"));
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|error| unreachable!("target permissions: {error}"));
+        let secret = target.join("dsn");
+        fs::write(&secret, "not-a-real-dsn")
+            .unwrap_or_else(|error| unreachable!("write secret: {error}"));
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600))
+            .unwrap_or_else(|error| unreachable!("secret permissions: {error}"));
+        symlink(&target, &link).unwrap_or_else(|error| unreachable!("symlink fixture: {error}"));
+
+        assert!(matches!(
+            prepare_data_directory(&link.join("data")),
+            Err(FilesystemError::Symlink(path)) if path == link
+        ));
+        assert!(matches!(
+            validate_owner_only_file(&link.join("dsn")),
+            Err(FilesystemError::Symlink(path)) if path == link
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn accepts_apfs_for_macos_source_development() {
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        super::validate_sqlite_data_filesystem(parent.path())
+            .unwrap_or_else(|error| unreachable!("APFS development filesystem: {error}"));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_filesystem_tests {
+    use std::path::Path;
+
+    use super::linux_mount_filesystem;
+
+    #[test]
+    fn mountinfo_uses_the_most_specific_exact_filesystem_identity() {
+        let mountinfo = concat!(
+            "24 1 8:1 / / rw,relatime - ext4 /dev/root rw\n",
+            "25 24 8:2 / /srv/world\\040stream rw,relatime - xfs /dev/data rw\n",
+        );
+        assert_eq!(
+            linux_mount_filesystem(Path::new("/srv/world stream/data"), mountinfo).as_deref(),
+            Some("xfs")
+        );
+        assert_eq!(
+            linux_mount_filesystem(Path::new("/unrelated"), mountinfo).as_deref(),
+            Some("ext4")
+        );
+    }
+
+    #[test]
+    fn mountinfo_preserves_unsupported_identity_for_closed_rejection() {
+        let mountinfo = "24 1 0:42 / / rw,relatime - overlay overlay rw\n";
+        assert_eq!(
+            linux_mount_filesystem(Path::new("/var/lib/worldstream"), mountinfo).as_deref(),
+            Some("overlay")
+        );
+        assert!(linux_mount_filesystem(Path::new("/data"), "malformed").is_none());
+    }
 }
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use std::{fs, path::Path};
+    use std::{fs, path::Path, process::Command};
 
     use tempfile::tempdir;
     use windows_permissions::{
@@ -754,9 +1144,10 @@ mod windows_tests {
 
     use super::{
         FilesystemError, apply_windows_owner_only_acl, prepare_data_directory,
-        validate_owner_only_file, validate_windows_local_data_path,
-        validate_windows_resolved_local_data_path, windows_current_identity_sid,
-        windows_path_kind_matches,
+        validate_owner_only_file, validate_sqlite_data_filesystem,
+        validate_windows_local_data_path, validate_windows_resolved_local_data_path,
+        windows_current_identity_sid, windows_path_kind_matches,
+        windows_sqlite_filesystem_is_supported,
     };
 
     #[test]
@@ -782,6 +1173,11 @@ mod windows_tests {
         let canonical = fs::canonicalize(parent.path())
             .unwrap_or_else(|error| unreachable!("canonical temp dir: {error}"));
         assert!(validate_windows_resolved_local_data_path(&canonical).is_ok());
+        assert!(validate_sqlite_data_filesystem(&canonical).is_ok());
+        assert!(windows_sqlite_filesystem_is_supported("NTFS"));
+        assert!(windows_sqlite_filesystem_is_supported("refs"));
+        assert!(!windows_sqlite_filesystem_is_supported("FAT32"));
+        assert!(!windows_sqlite_filesystem_is_supported("exFAT"));
     }
 
     #[test]
@@ -865,6 +1261,33 @@ mod windows_tests {
         assert!(matches!(
             validate_owner_only_file(&path),
             Err(FilesystemError::WindowsAcl { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_junction_ancestor_for_data_and_secret_paths() {
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let target = parent.path().join("target");
+        let junction = parent.path().join("redirect");
+        fs::create_dir(&target).unwrap_or_else(|error| unreachable!("create target: {error}"));
+        let secret = target.join("dsn");
+        fs::write(&secret, "not-a-real-dsn")
+            .unwrap_or_else(|error| unreachable!("write secret: {error}"));
+        let status = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .status()
+            .unwrap_or_else(|error| unreachable!("create junction: {error}"));
+        assert!(status.success(), "junction fixture creation failed");
+
+        assert!(matches!(
+            prepare_data_directory(&junction.join("data")),
+            Err(FilesystemError::ReparsePoint(path)) if path == junction
+        ));
+        assert!(matches!(
+            validate_owner_only_file(&junction.join("dsn")),
+            Err(FilesystemError::ReparsePoint(path)) if path == junction
         ));
     }
 

@@ -1,0 +1,40 @@
+{
+  "artifact": "worldstream-oci/v1",
+  "base_image": {
+    "digest": "",
+    "status": "must_be_pinned_by_release_evidence"
+  },
+  "profile": "oci-linux-amd64",
+  "filesystem_policy": {
+    "sqlite_allowed": [
+      "ext4",
+      "xfs"
+    ],
+    "sqlite_rejected": [
+      "overlay",
+      "tmpfs",
+      "nfs",
+      "cifs",
+      "fuse",
+      "fuseblk",
+      "smb"
+    ],
+    "data_volume": "/var/lib/worldstream"
+  },
+  "image": {
+    "architecture": "amd64",
+    "os": "linux",
+    "read_only_root": true,
+    "uid": 65532,
+    "gid": 65532,
+    "healthcheck": "worldstreamctl --data-dir /var/lib/worldstream health"
+  },
+  "manifest_sha256": "",
+  "probes": {
+    "healthz": "GET /healthz -> 200 status=ok",
+    "readyz": "GET /readyz -> 200 status=ready or 503 with stable error code",
+    "version": "GET /version -> 200 manifest-backed product and engine identity"
+  },
+  "source_date_epoch": 0,
+  "version": ""
+}

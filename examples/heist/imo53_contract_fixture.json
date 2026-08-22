@@ -1,0 +1,34 @@
+{
+  "room_seed": "hex:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "roles": ["navigator", "insider", "broker"],
+  "missing_seat_denominator": 3,
+  "maximum_open_offers_per_role": 4,
+  "score_matrix": [
+    {"commitments": {}, "outcome": "failure", "score": 0},
+    {"commitments": {"navigator": ["plan-1", true]}, "outcome": "failure", "score": 0},
+    {"commitments": {"navigator": ["correct", true], "insider": ["correct", false]}, "outcome": "success", "score": 5},
+    {"commitments": {"navigator": ["plan-1", true], "insider": ["plan-2", true]}, "outcome": "failure", "score": 0},
+    {"commitments": {"navigator": ["correct", true], "insider": ["correct", false], "broker": ["correct", true]}, "outcome": "success", "score": 5},
+    {"commitments": {"navigator": ["correct", true], "insider": ["correct", false], "broker": ["wrong", true]}, "outcome": "success", "score": 5},
+    {"commitments": {"navigator": ["plan-1", true], "insider": ["plan-2", true], "broker": ["plan-3", true]}, "outcome": "failure", "score": 0},
+    {"commitments": {"navigator": ["plan-1", false], "insider": ["plan-1", false]}, "plan_route": "wrong-route", "outcome": "partial_failure", "score": 3},
+    {"commitments": {"navigator": ["plan-1", false], "insider": ["plan-1", false], "broker": ["plan-1", false]}, "outcome": "partial_failure", "score": 4}
+  ],
+  "timer_path": [
+    ["briefing_deadline", 1, "Negotiation"],
+    ["negotiation_deadline", 2, "Commitment"],
+    ["commitment_reminder", 1, "Commitment"],
+    ["commitment_deadline", 3, "Resolution"],
+    ["resolve_now", 1, "Result"],
+    ["result_deadline", 4, "Complete"]
+  ],
+  "action_rejections": {
+    "unknown_role": ["ValueError", "action role is outside the story"],
+    "unknown_action": ["ValueError", "action type is outside the deterministic story"],
+    "empty_action_id": ["ValueError", "action identity is invalid"],
+    "non_object_payload": ["TypeError", "action payload is invalid"]
+  },
+  "final_phase": "Complete",
+  "transition_count": 15,
+  "replayed_transition_count": 15
+}

@@ -11,6 +11,27 @@ pub enum ErrorCode {
     StorageNotInitialized,
     /// An unexpected boundary failure occurred.
     Internal,
+    Unauthenticated,
+    Forbidden,
+    UnsupportedProtocol,
+    InvalidEnvelope,
+    MessageTooLarge,
+    RoomNotFound,
+    MembershipNotFound,
+    MembershipNotEnabled,
+    RoomFaulted,
+    RoomQuarantined,
+    RoomBusy,
+    CursorAhead,
+    CursorOutOfRange,
+    SyncBarrierMismatch,
+    IdempotencyConflict,
+    CommitIndeterminate,
+    InvalidPayload,
+    ActivityFault,
+    RateLimited,
+    StorageUnavailable,
+    SlowConsumer,
 }
 
 /// Bounded machine-readable error body.
@@ -24,6 +45,17 @@ pub struct ErrorBody {
     /// Whether retrying without a configuration or process-state change can help.
     pub retryable: bool,
     /// Optional bounded structured detail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+/// Strict error body carried by a versioned WebSocket `error` message.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolErrorBody {
+    pub code: ErrorCode,
+    pub message: String,
+    pub retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
 }

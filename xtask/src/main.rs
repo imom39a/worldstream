@@ -1,5 +1,6 @@
 mod compatibility;
 mod counter_dependency_closure;
+mod gates;
 
 use std::path::PathBuf;
 
@@ -26,6 +27,24 @@ enum Command {
     CounterDependencies {
         #[command(subcommand)]
         command: CounterDependenciesCommand,
+    },
+    /// Run the manifest-driven compatibility and supply-chain gates.
+    Gates {
+        /// Gate tier: fast, pre-push, minimal-ci, release, or provider-smoke.
+        #[arg(default_value = "fast")]
+        tier: String,
+        /// Execute the selected native CI cell.
+        #[arg(long)]
+        cell: Option<String>,
+        /// Treat incomplete external checks as failures.
+        #[arg(long)]
+        strict: bool,
+        /// Mark this invocation as CI (also makes skips fail closed).
+        #[arg(long)]
+        ci: bool,
+        /// Keep dependency resolution offline.
+        #[arg(long)]
+        offline: bool,
     },
 }
 
@@ -61,5 +80,19 @@ fn main() -> Result<()> {
         Command::CounterDependencies {
             command: CounterDependenciesCommand::Verify,
         } => counter_dependency_closure::verify(&repository_root),
+        Command::Gates {
+            tier,
+            cell,
+            strict,
+            ci,
+            offline,
+        } => gates::run(
+            &repository_root,
+            &tier,
+            cell.as_deref(),
+            strict,
+            ci,
+            offline,
+        ),
     }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the checked-in specification compatibility manifest without third-party packages."""
+"""Verify the checked-in embedded compatibility contract without dependencies."""
 
 from __future__ import annotations
 
@@ -35,22 +35,62 @@ def main() -> int:
     if authored.get("canonical_mirror") != MIRROR.name:
         failures.append("canonical_mirror does not name compatibility.json")
     if (
-        authored.get("manifest_kind") != "specification"
-        or authored.get("release_ready") is not False
+        authored.get("manifest_kind") != "release"
+        or authored.get("release_ready") is not True
     ):
         failures.append(
-            "bootstrap manifest must remain specification-only and release_ready=false"
+            "embedded contract must be manifest_kind=release and release_ready=true"
         )
     unresolved = authored.get("unresolved_required_fields")
-    if not isinstance(unresolved, list) or not unresolved:
-        failures.append("specification manifest must retain unresolved release gates")
+    if unresolved != []:
+        failures.append("release contract must have no unresolved embedded identity")
+    if authored.get("release_artifact_digest_source") != "detached_release_manifest":
+        failures.append(
+            "release artifact identities must use the detached release manifest"
+        )
+    if authored.get("evidence_digest_source") != "detached_release_manifest":
+        failures.append(
+            "release evidence identities must use the detached release manifest"
+        )
+
+    for row in authored.get("release_artifacts", []):
+        if (
+            not isinstance(row, dict)
+            or row.get("status") != "detached"
+            or row.get("digest") != ""
+            or row.get("digest_location") != "release-manifest.json"
+        ):
+            failures.append(
+                "release artifact rows must use detached non-self-referential identity"
+            )
+            break
+    for row in authored.get("evidence", []):
+        if (
+            isinstance(row, dict)
+            and row.get("release_gate") is True
+            and (
+                row.get("status") != "detached"
+                or row.get("artifact_digest") != ""
+                or row.get("artifact_digest_location") != "release-manifest.json"
+            )
+        ):
+            failures.append("release-gated evidence rows must use detached identity")
+            break
+
+    sqlite = authored.get("storage", {}).get("sqlite", {})
+    if sqlite.get("bundle_source_inventory_status") != "resolved" or not str(
+        sqlite.get("bundle_source_inventory_digest", "")
+    ).startswith("sha256:"):
+        failures.append("bundled SQLite source inventory identity is unresolved")
 
     if failures:
         for failure in failures:
             print(f"manifest verification failed: {failure}", file=sys.stderr)
         return 1
 
-    print("compatibility manifest verified (specification-only, release_ready=false)")
+    print(
+        "compatibility manifest verified (embedded release contract; detached evidence required)"
+    )
     return 0
 
 

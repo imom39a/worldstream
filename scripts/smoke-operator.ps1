@@ -60,22 +60,22 @@ try {
 
     $Process.Refresh()
     if ($Process.HasExited) { throw "worldstreamd exited after probe; stderr: $(Get-Content $ServerErr -Raw)" }
-    $StartupMarker = '"listen_address":"' + $BindAddress + '"'
+    $StartupMarker = '"readiness":"ready"'
     if (-not (Select-String -LiteralPath $ServerOut -SimpleMatch $StartupMarker -Quiet)) {
         throw "worldstreamd did not emit this smoke run startup event; stdout: $(Get-Content $ServerOut -Raw)"
     }
 
     $Ready = Invoke-WebRequest -Uri "$BaseUrl/readyz" -SkipHttpErrorCheck
     $Version = Invoke-WebRequest -Uri "$BaseUrl/version" -SkipHttpErrorCheck
-    if ($Ready.StatusCode -ne 503) { throw "readyz returned $($Ready.StatusCode), expected 503" }
+    if ($Ready.StatusCode -ne 200) { throw "readyz returned $($Ready.StatusCode), expected 200" }
     if ($Version.StatusCode -ne 200) { throw "version returned $($Version.StatusCode), expected 200" }
 
     $ReadyBody = $Ready.Content | ConvertFrom-Json
     $VersionBody = $Version.Content | ConvertFrom-Json
-    if ($ReadyBody.error.code -ne 'storage_not_initialized') { throw 'readyz returned the wrong stable error code' }
-    if ($VersionBody.manifest.release_ready -ne $false) { throw 'version overstated release readiness' }
-    if ($VersionBody.engine.status -ne 'not_initialized') { throw 'version overstated engine initialization' }
-    if ($null -ne $VersionBody.engine.exact_identity) { throw 'version invented an engine identity' }
+    if ($ReadyBody.status -ne 'ready') { throw 'readyz did not report the verified ready state' }
+    if ($VersionBody.manifest.release_ready -ne $true) { throw 'embedded release contract is not complete' }
+    if ($VersionBody.engine.status -ne 'verified') { throw 'version did not report the verified engine identity' }
+    if (-not $VersionBody.engine.exact_identity.StartsWith('sqlite/')) { throw 'version did not report the bundled SQLite identity' }
 
     $Process.Refresh()
     if ($Process.HasExited) { throw "worldstreamd exited before smoke completion; stderr: $(Get-Content $ServerErr -Raw)" }

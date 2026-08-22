@@ -6,6 +6,7 @@ cd "$workspace_dir"
 
 smoke_root="$(mktemp -d)"
 data_dir="$smoke_root/data"
+bootstrap_secret="$smoke_root/authority.secret"
 server_log="$smoke_root/worldstreamd.log"
 if [[ -n "${WORLDSTREAM_SMOKE_PORT:-}" ]]; then
   smoke_port="$WORLDSTREAM_SMOKE_PORT"
@@ -23,6 +24,9 @@ bind_address="127.0.0.1:$smoke_port"
 base_url="http://$bind_address"
 server_pid=""
 
+dd if=/dev/zero of="$bootstrap_secret" bs=32 count=1 status=none
+chmod 600 "$bootstrap_secret"
+
 stop_server() {
   if [[ -n "$server_pid" ]] && kill -0 "$server_pid" >/dev/null 2>&1; then
     kill "$server_pid" >/dev/null 2>&1 || true
@@ -37,7 +41,8 @@ target/debug/worldstreamctl --data-dir "$data_dir" config effective \
 target/debug/worldstreamctl --data-dir "$data_dir" doctor \
   | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["data_directory"] == "owner_only"; assert value["storage"] == "not_initialized"'
 
-RUST_LOG=info target/debug/worldstreamd --data-dir "$data_dir" --bind "$bind_address" >"$server_log" 2>&1 &
+WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE="$bootstrap_secret" \
+  RUST_LOG=info target/debug/worldstreamd --data-dir "$data_dir" --bind "$bind_address" >"$server_log" 2>&1 &
 server_pid="$!"
 
 for _ in {1..50}; do
@@ -55,7 +60,7 @@ if ! kill -0 "$server_pid" >/dev/null 2>&1; then
   sed -n '1,120p' "$server_log" >&2
   exit 1
 fi
-if ! grep -Fq "\"listen_address\":\"$bind_address\"" "$server_log"; then
+if ! grep -Fq '"readiness":"ready"' "$server_log"; then
   printf '%s\n' 'worldstreamd did not emit this smoke run startup event' >&2
   sed -n '1,120p' "$server_log" >&2
   exit 1
@@ -66,7 +71,7 @@ ready_status="$(curl -sS -o "$smoke_root/ready.json" -w '%{http_code}' "$base_ur
 version_status="$(curl -sS -o "$smoke_root/version.json" -w '%{http_code}' "$base_url/version")"
 
 [[ "$health_status" == "200" ]]
-[[ "$ready_status" == "503" ]]
+[[ "$ready_status" == "200" ]]
 [[ "$version_status" == "200" ]]
 
 python3 - "$smoke_root/ready.json" "$smoke_root/version.json" <<'PY'
@@ -78,10 +83,10 @@ with open(sys.argv[1], encoding="utf-8") as source:
 with open(sys.argv[2], encoding="utf-8") as source:
     version = json.load(source)
 
-assert ready["error"]["code"] == "storage_not_initialized"
-assert version["manifest"]["release_ready"] is False
-assert version["engine"]["status"] == "not_initialized"
-assert version["engine"]["exact_identity"] is None
+assert ready["status"] == "ready"
+assert version["manifest"]["release_ready"] is True
+assert version["engine"]["status"] == "verified"
+assert version["engine"]["exact_identity"] is not None
 PY
 
 kill -0 "$server_pid"

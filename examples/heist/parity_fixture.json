@@ -1,0 +1,84 @@
+{
+  "expected_fixture_outcome": {
+    "checks": {
+      "entry_window": true,
+      "extraction": true,
+      "required_tool": true,
+      "resource_contributed": true,
+      "route": true
+    },
+    "missing_roles": ["broker"],
+    "outcome": "success",
+    "reason": "scored_selected_plan",
+    "score": 5,
+    "selected_plan_id": "01ARZ3NDEKTSV4RRFFQ69G5FNP",
+    "vote_counts": {"01ARZ3NDEKTSV4RRFFQ69G5FNP": 2}
+  },
+  "final_head": {
+    "activity_state_hash": "sha256:a55c41b8ec66d6d7a8ecfc3f48188ec1b20f1346936d950d81ed54fbc7aa517b",
+    "authoritative_state_hash": "sha256:a63fa15f679ab486627052ed482c4e8bdf2b9a83a5579078c9df757c7c029831",
+    "core_state_hash": "sha256:53a55ca514d3e1e950be3a4d333854a519007f5f9aebd11d39358c0ae774328a",
+    "lineage_hash": "sha256:6ae8ad69d00de0c6489a427818f03f4bcaed75919d207470b4420593369b0cae",
+    "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FC5",
+    "room_seq": 15
+  },
+  "fixture": {
+    "entry_window": "early",
+    "extraction": "boat",
+    "fixture_id": "service_window",
+    "required_tool": "thermal_key",
+    "route": "service"
+  },
+  "phase_order": ["Briefing", "Negotiation", "Commitment", "Resolution", "Result", "Complete"],
+  "phase_path": ["Briefing", "Negotiation", "Negotiation", "Negotiation", "Negotiation", "Negotiation", "Negotiation", "Commitment", "Commitment", "Commitment", "Commitment", "Resolution", "Result", "Result", "Result", "Complete"],
+  "replay": {
+    "activation_created": 4,
+    "read_only": true,
+    "snapshots_used": 0,
+    "source": "genesis_plus_ordered_transitions",
+    "verified": true,
+    "verified_transition_count": 15
+  },
+  "schema": "worldstream/imo-57-heist-parity/v1",
+  "transcript_digest": "sha256:4432882d59fc4883e36b405518092dc71242ed6ff4856fafc4a9f6f17286ac36",
+  "transcript_schema": "worldstream/imo-57-absent-broker-story/v1",
+  "retained_executor": {
+    "pack_id": "worldstream.agent-heist",
+    "pack_version": "0.1.0",
+    "pack_digest": "blake3:b05a682f0923001914a800072ee68348e68b979453c93e033cba7916b99a4407",
+    "selectable_for_new_rooms": true,
+    "runnable_for_retained_rooms": true,
+    "operations": {"load": true, "project": true, "advance": true, "replay": true},
+    "phase_path": ["Briefing", "Negotiation", "Negotiation", "Negotiation", "Negotiation", "Negotiation", "Negotiation", "Commitment", "Commitment", "Commitment", "Commitment", "Resolution", "Result", "Result", "Result", "Complete"],
+    "replay_hashes": {
+      "core_state_hash": "sha256:53a55ca514d3e1e950be3a4d333854a519007f5f9aebd11d39358c0ae774328a",
+      "activity_state_hash": "sha256:a55c41b8ec66d6d7a8ecfc3f48188ec1b20f1346936d950d81ed54fbc7aa517b",
+      "authoritative_state_hash": "sha256:a63fa15f679ab486627052ed482c4e8bdf2b9a83a5579078c9df757c7c029831",
+      "lineage_hash": "sha256:6ae8ad69d00de0c6489a427818f03f4bcaed75919d207470b4420593369b0cae",
+      "transition_hashes": [
+        "sha256:80c42d0d6100d9a8eca86d6e65cd3efb85f968a4f6105d19f1549537405d1524",
+        "sha256:1ea205a72b1d2892cd4e8a493d477bd7595d897649a23d5271786082720337e4",
+        "sha256:6e2e05eb8d94eb0007afc10366fbf786d96308b359ac76f6d0a28e651eeb37a9",
+        "sha256:509331be77c8090c4970347101115e43208b68500cddf6a3d2471f9905584a0c",
+        "sha256:ab8449b4a7fc543fda99c3d2460ce18a45ec66dedd984807490e2b5c78a33178",
+        "sha256:fe78b2f6f19aa14e1ddce0aef53498faf8bd46fccdb4e02df329473be21545dc",
+        "sha256:8c1fe4b1cfdbc93391cf16383a47361be9fa0f82e8e7381330bf48a03cc387e4",
+        "sha256:214719a11165df09e3899dd2525050ad18d983286836c0eaf9c2d1dd817b6574",
+        "sha256:249e8c91d0662a2aef9a12b3a1de710d4d77d0ca845322c42ffde7d66a7e3796",
+        "sha256:587d31e8a9b7cc929d1e5609c106d11bbf3739f97a768ef00bd922c3970255d0",
+        "sha256:91572d9d2d81949ad7e053146c1642696328261c81bab5e344db44cfd16c7fc8",
+        "sha256:d6b91b0ef8b123a0a2d1e87f6b672058f46d5196c694a50afd62bcab13ebe7eb",
+        "sha256:5baf49c758d12b06daa3859bc0ac33ea13625377cea971a19344841aea9657fd",
+        "sha256:d9243a754b45d53fe7dd681dd42b29d4b83c19c0378163770cc23217de46dbd4",
+        "sha256:6ae8ad69d00de0c6489a427818f03f4bcaed75919d207470b4420593369b0cae"
+      ]
+    }
+  },
+  "ui_privacy_contract": {
+    "final_reveal_requires_complete": true,
+    "operator_is_redacted": true,
+    "participant_is_fixture_gated": true,
+    "public_excludes": ["participant_action_offers", "private_clues", "commitment_values", "provider_credentials"],
+    "replay_is_read_only": true
+  }
+}

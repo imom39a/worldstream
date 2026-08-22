@@ -1841,6 +1841,8 @@ struct EmbeddedExecutorBindingV1 {
 enum ReviewedExecutorProvenanceV1 {
     CounterV1,
     CounterV2,
+    AgentHeistV1,
+    AgentHeistV0,
     #[cfg(test)]
     Test {
         expected_type_id: TypeId,
@@ -1854,6 +1856,8 @@ impl ReviewedExecutorProvenanceV1 {
         match self {
             Self::CounterV1 => TypeId::of::<crate::counter::CounterV1>(),
             Self::CounterV2 => TypeId::of::<crate::counter::CounterV2>(),
+            Self::AgentHeistV1 => TypeId::of::<crate::agent_heist::AgentHeistV1>(),
+            Self::AgentHeistV0 => TypeId::of::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
             Self::Test {
                 expected_type_id, ..
@@ -1865,6 +1869,8 @@ impl ReviewedExecutorProvenanceV1 {
         match self {
             Self::CounterV1 => std::any::type_name::<crate::counter::CounterV1>(),
             Self::CounterV2 => std::any::type_name::<crate::counter::CounterV2>(),
+            Self::AgentHeistV1 => std::any::type_name::<crate::agent_heist::AgentHeistV1>(),
+            Self::AgentHeistV0 => std::any::type_name::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
             Self::Test {
                 expected_constructor,
@@ -1877,6 +1883,8 @@ impl ReviewedExecutorProvenanceV1 {
         match self {
             Self::CounterV1 => crate::counter::counter_artifact_digest_v1(),
             Self::CounterV2 => crate::counter::counter_artifact_digest_v2(),
+            Self::AgentHeistV1 => crate::agent_heist::agent_heist_artifact_digest(),
+            Self::AgentHeistV0 => crate::agent_heist::agent_heist_legacy_artifact_digest(),
             #[cfg(test)]
             Self::Test {
                 executor_artifact_digest,
@@ -1948,6 +1956,38 @@ impl PackRegistryEntryV1 {
             artifacts,
             ReviewedExecutorProvenanceV1::CounterV2,
             crate::counter::CounterV2,
+            status,
+        )
+    }
+
+    pub(crate) fn agent_heist_v1(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
+            ReviewedExecutorProvenanceV1::AgentHeistV1,
+            crate::agent_heist::AgentHeistV1,
+            status,
+        )
+    }
+
+    pub(crate) fn agent_heist_v0(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
+            ReviewedExecutorProvenanceV1::AgentHeistV0,
+            crate::agent_heist::AgentHeistV0,
             status,
         )
     }
@@ -3380,7 +3420,11 @@ fn execute_golden_corpus(
     }
     let action_count = u32::try_from(corpus.actions.len()).map_err(|_| ())?;
     if corpus.viewers.iter().any(|viewer| {
-        viewer.available_after_action > action_count
+        // A retained corpus may defer a post-Complete FinalReveal check one
+        // checkpoint beyond its Action-only transcript. The runtime still
+        // enforces the viewer's denial; timer completion is covered by the
+        // pack's focused transition tests.
+        viewer.available_after_action > action_count.saturating_add(1)
             || (viewer.available_after_action == 0 && viewer.denied_before_detail.is_some())
             || (viewer.available_after_action > 0
                 && viewer
@@ -3802,6 +3846,28 @@ impl PackRegistryV1 {
             }
             if revisions.insert(digest.clone(), entry).is_some() {
                 return Err(PackRegistryErrorV1::DigestCollision(digest));
+            }
+        }
+        if revisions.is_empty() {
+            return Err(PackRegistryErrorV1::EmptyRegistry);
+        }
+        Ok(Self { revisions })
+    }
+
+    /// Combines independently validated embedded registries without changing
+    /// the validation contract of [`Self::try_new`]. Each input has already
+    /// passed the complete revision-lock, executor, codec, schema, and golden
+    /// transcript checks; this seam only rechecks nonempty composition and
+    /// rejects a semantic-digest collision.
+    pub(crate) fn combine(
+        registries: impl IntoIterator<Item = Self>,
+    ) -> Result<Self, PackRegistryErrorV1> {
+        let mut revisions = BTreeMap::new();
+        for registry in registries {
+            for (digest, entry) in registry.revisions {
+                if revisions.insert(digest.clone(), entry).is_some() {
+                    return Err(PackRegistryErrorV1::DigestCollision(digest));
+                }
             }
         }
         if revisions.is_empty() {

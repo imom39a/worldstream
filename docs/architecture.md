@@ -839,7 +839,7 @@ On every write-capable connection:
 
 Every read connection also enables foreign_keys and busy_timeout and sets query_only = ON. Pragmas that are connection-local are never assumed to carry across connections.
 
-The exact release-bundled SQLite source identity/build and all pragmas are recorded in the compatibility manifest. The main, WAL, and shared-memory files remain on one validated local filesystem; system SQLite, network/UNC filesystems, shared writers, and SQLite on a writable container overlay are rejected. The writer controls checkpoints and reports WAL size and checkpoint latency. Large write transactions are avoided.
+The exact release-bundled SQLite source inventory and all pragmas are recorded in the compatibility manifest. Each native build identity and its compiler/source relationship are recorded in the detached SBOM and provenance. The main, WAL, and shared-memory files remain on one validated local filesystem; system SQLite, network/UNC filesystems, shared writers, and SQLite on a writable container overlay are rejected. The writer controls checkpoints and reports WAL size and checkpoint latency. Large write transactions are avoided.
 
 ### Required PostgreSQL 17 behavior
 
@@ -1307,7 +1307,8 @@ Required controls:
 - authentication at session start and authorization for every operation;
 - room, membership, and action scope checks in the Room Kernel before pack execution;
 - strict schema and unknown-field rejection;
-- per-IP, principal, session, membership, and room rate limits;
+- per-IP, principal, capability, session, membership, room, activation-operation,
+  and operator-endpoint rate limits;
 - bounded payloads, state, pack output, mailboxes, and queues;
 - separate projection types and adversarial privacy tests;
 - origin allowlist and no credentialed wildcard CORS;
@@ -1316,6 +1317,66 @@ Required controls:
 - no chain-of-thought collection;
 - no arbitrary outbound network requests;
 - no pack-supplied JavaScript.
+
+Gateway admission uses one shared process-local token-bucket module at the
+HTTP and WebSocket transport seams. Every HTTP request consumes the source-IP
+bucket before routing. Authenticated HTTP operations then consume the verified
+authority principal, the presented capability's stable token hash, a closed
+operator-operation class where applicable, and any explicit Room/Membership
+target before the semantic backend operation. Runner-Capability issuance is
+one operator-control admission: its bounded target vector remains an authority
+payload and is not expanded into hundreds of transport buckets. A WebSocket
+upgrade first reserves one global pending permit. After authentication it is
+atomically converted into global and per-Principal active permits; RAII release
+on every exit prevents abandoned upgrades from leaking capacity. Browser
+ticket presentation is bounded to 15 seconds, the first `client.hello` to 10
+seconds, and a welcomed connection with no inbound traffic to 90 seconds even
+while server heartbeats continue.
+
+Every inbound WebSocket message, including malformed and non-text messages,
+consumes IP, verified Principal, capability, and server-generated Session
+buckets. Valid targeted messages also consume the composite `(Room ID, Member
+ID)` Membership bucket and Room bucket before dispatch. Claim, renew, release,
+and complete messages additionally consume a key composed from verified
+Principal, capability hash, and a closed activation-operation class; no
+attacker-selected claim or activation ID creates a global key. Source IP is
+the socket peer supplied by the listener; forwarded-address headers are never
+trusted. If peer metadata is unavailable, all such traffic shares one
+conservative unattributed bucket.
+
+The reference limits are fixed release policy:
+
+| Scope | Burst | Refill | Maximum live keys |
+| --- | ---: | ---: | ---: |
+| IP | 1,024 | one token / 2 ms | 4,096 |
+| Principal | 512 | one token / 4 ms | 4,096 |
+| Capability | 256 | one token / 8 ms | 8,192 |
+| Session | 256 | one token / 8 ms | 8,192 |
+| Membership | 128 | one token / 16 ms | 8,192 |
+| Room | 512 | one token / 4 ms | 8,192 |
+| Activation operation | 64 | one token / 32 ms | 8,192 |
+| Operator endpoint | 128 | one token / 16 ms | 8,192 |
+
+Presented dimensions are checked atomically within each admission decision.
+Limiter state retains only BLAKE3 fingerprints keyed by a fresh process CSPRNG
+key; raw IPs, bearer material, and Principal, Capability, Session, Membership,
+or Room IDs are not retained in limiter keys. Target buckets require a
+verified Principal and are paired with an atomic live association budget of at
+most 256 distinct Room/Membership targets per Principal and 65,536 total
+associations. Existing presented associations remain live when their quota is
+exhausted, so repeated rejection cannot age out ownership while retaining the
+global target bucket. Idle keys and associations expire after ten minutes.
+The connection budgets are 256 pending, 4,096 active globally, and 64 active
+per Principal.
+
+A key/association/connection store at capacity, invalid identity material,
+poisoned state, or clock regression rejects new work as the same generic
+retryable `rate_limited`; it never bypasses admission. Rate-limit metrics use
+only the fixed `scope` labels `ip`, `principal`, `capability`, `session`,
+`membership`, `room`, `activation`, `operator`, `capacity`, `target_capacity`,
+`pending_connection`, `active_connection`, `principal_connection`,
+`invalid_identity`, and `clock`. They never expose entity identifiers or
+fingerprints.
 
 The self-hosted preview does not include application-layer database encryption. SQLite operators use encrypted local disks; PostgreSQL encryption, keys, and transport-at-rest facilities remain operator/provider concerns.
 
@@ -1379,9 +1440,9 @@ Telemetry happens after authoritative commit through bounded nonblocking queues 
 
 This section implements [ADR 0004](adr/0004-supported-storage-profiles-and-offline-portability.md) and [ADR 0011](adr/0011-release-compatibility-recovery-and-supply-chain-gate.md).
 
-Reviewed [`compatibility.toml`](../compatibility.toml) is the authored source and canonical [`compatibility.json`](../compatibility.json) is its semantically identical, sorted-key mirror. The checked-in pair deliberately remains `release_ready = false`: the repository's durable Counter-only bundled-SQLite commit/recovery and operational-authority conformance adapter is not wired into the server or gateway and does not supply release-profile evidence. Migration/schema checksums, exact pack-executor and build/artifact digests, and required execution evidence therefore remain unresolved; validation fails closed on every unresolved required field.
+Reviewed [`compatibility.toml`](../compatibility.toml) is the authored source and canonical [`compatibility.json`](../compatibility.json) is its semantically identical, sorted-key mirror. It contains the portable runtime contract and closed release subject inventory. Exact final archive, image, evidence, signature, SBOM, and provenance digests are deliberately detached into `release-manifest.json`; compiling those values into the subjects they hash would be self-referential. Validation fails closed on every unresolved embedded contract field and every missing, extra, or mismatched detached subject.
 
-A real release must generate and review a populated pair, prove semantic parity, set `release_ready = true` only after every hard gate passes, embed the JSON in every binary, and publish it with the release. Startup, `doctor`, `/version`, backups, transfer bundles, release notes, and CI consume that release-valid manifest. The v0.1.0 specification identifies product `0.1.0`, wire `0.1`, config `1`, storage schema `1`, Core schema version `worldstream.core-room-state.v1`, and hash suite `blake3-canonical-json-v1` in addition to the engine/toolchain versions frozen above.
+A real release must generate and review a populated contract pair, prove semantic parity, set `release_ready = true` only when every embedded implementation identity is resolved, embed the JSON in every binary, and publish it with the release. The release is verified only when the detached signed inventory, SBOM, provenance, and every hard-gate evidence subject verify against those exact final bytes. Startup, `doctor`, `/version`, backups, transfer bundles, release notes, and CI consume the embedded contract; release verification consumes the detached evidence bundle. The v0.1.0 contract identifies product `0.1.0`, wire `0.1`, config `1`, storage schema `1`, Core schema version `worldstream.core-room-state.v1`, and hash suite `blake3-canonical-json-v1` in addition to the engine/toolchain versions frozen above.
 
 | Profile | Supported/release contract | Mandatory evidence |
 |---|---|---|
@@ -1390,7 +1451,7 @@ A real release must generate and review a populated pair, prove semantic parity,
 | OCI | Linux/amd64 only, static/minimal, non-root UID 65532, read-only-root compatible, persistent `/var/lib/worldstream` | Image-by-digest test, both storage profiles, persistent-volume enforcement, no writable-overlay SQLite |
 | macOS quickstart | Source build on macOS 15+ APFS, Intel and Apple Silicon, development/default quickstart | Fresh source-build deterministic Heist quickstart; no binary/archive gate |
 
-Each native archive contains `worldstreamd`, `worldstreamctl`, embedded UI, examples/Heist clients, licenses, and compatibility manifest. Published evidence includes source, checksums, Sigstore signatures, SPDX SBOM, and SLSA provenance. ARM64 release artifacts, macOS binary distribution, Windows containers, MSI/MSIX, Windows Service integration, package repositories, Kubernetes/Helm assets, cloud resources, and release-pipeline implementation are not delivered.
+Each native archive contains `worldstreamd`, `worldstreamctl`, embedded UI, examples/Heist clients, licenses, and compatibility manifest. Published evidence includes source, checksums, Sigstore signatures, SPDX SBOM, and SLSA provenance. ARM64 release artifacts, macOS binary distribution, Windows containers, MSI/MSIX, Windows Service integration, package repositories, Kubernetes/Helm assets, and cloud resources are not delivered.
 
 | Evidence tier | Bound and required scope |
 |---|---|

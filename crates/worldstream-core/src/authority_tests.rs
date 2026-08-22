@@ -163,6 +163,16 @@ fn action_request(room_id: &str, payload: &[u8]) -> ParticipantActionRequestV1 {
     )
 }
 
+fn timer_request(room_id: &str, payload: &[u8]) -> TimerFiredRequestV1 {
+    TimerFiredRequestV1::new(
+        parsed(room_id),
+        parsed("01ARZ3NDEKTSV4RRFFQ69G5FE1"),
+        fixture(TimerGenerationV1::new(1)),
+        parsed("2026-08-15T12:30:00Z"),
+        fixture(CanonicalJsonV1::parse(payload)),
+    )
+}
+
 fn member_authority(
     standing: MembershipStandingV1,
     access_mode: AccessModeV1,
@@ -723,6 +733,40 @@ fn room_bound_and_global_host_authority_have_distinct_attribution() {
             parsed("2026-08-15T12:00:00Z"),
         ),
         AuthorityErrorV1::Forbidden,
+    );
+}
+
+#[test]
+fn typed_timer_authority_binds_exact_room_root_and_request_hash() {
+    let request = timer_request(ROOM_A, br#"{"kind":"deadline"}"#);
+    let (_, global, global_capability) = host_authority(None);
+    let grant = fixture(global.authorize_timer_fired(
+        &global_capability,
+        &request,
+        parsed("2026-08-15T12:00:00Z"),
+    ));
+    assert_eq!(format!("{grant:?}"), "AuthorizedTimerFiredV1([OPAQUE])");
+    assert_eq!(grant.room_id(), &parsed::<RoomId>(ROOM_A));
+    assert_eq!(
+        grant.request_hash(),
+        &fixture(request.canonical_request_hash())
+    );
+
+    let (_, room_admin, room_capability) = host_authority(Some(ROOM_A));
+    fixture(room_admin.authorize_timer_fired(
+        &room_capability,
+        &request,
+        parsed("2026-08-15T12:00:00Z"),
+    ));
+    assert_eq!(
+        room_admin
+            .authorize_timer_fired(
+                &room_capability,
+                &timer_request(ROOM_B, br#"{"kind":"deadline"}"#),
+                parsed("2026-08-15T12:00:00Z"),
+            )
+            .err(),
+        Some(AuthorityErrorV1::Forbidden)
     );
 }
 

@@ -3,10 +3,12 @@
 /web/console/node_modules/
 /web/console/dist/
 /sdk/python/.venv/
+/.pnpm-store/
 
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.hypothesis/
 .DS_Store
 .env
 .env.*

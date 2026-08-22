@@ -5,10 +5,14 @@ mod filesystem;
 mod manifest;
 
 pub use config::{
-    CliOverrides, ConfigError, ConfigLoader, EffectiveConfig, RedactedConfig, SanitizedTomlError,
-    SecretSource, ServerConfig, StorageConfig, StorageProfile,
+    AuthorityConfig, CliOverrides, ConfigError, ConfigLoader, DeploymentLineageV1, EffectiveConfig,
+    RedactedAuthorityConfig, RedactedConfig, SanitizedTomlError, SecretSource,
+    SecretValidationError, ServerConfig, StorageConfig, StorageEpochV1, StorageProfile,
 };
-pub use filesystem::{FilesystemError, prepare_data_directory, validate_owner_only_file};
+pub use filesystem::{
+    FilesystemError, prepare_data_directory, validate_owner_only_file,
+    validate_sqlite_data_filesystem,
+};
 pub use manifest::{
     CompatibilityContracts, CompatibilityManifest, CompatibilitySummary, ManifestError,
     embedded_manifest, embedded_manifest_json,

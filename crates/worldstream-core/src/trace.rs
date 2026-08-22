@@ -611,13 +611,6 @@ impl RoomTransitionStateV1 {
     pub fn activity_state(&self) -> &CanonicalJsonV1 {
         &self.activity_state
     }
-
-    /// Returns only currently scheduled Timer facts. Hidden generation history
-    /// remains Core-owned so a pack cannot author a successor generation.
-    #[must_use]
-    pub fn scheduled_timers(&self) -> &BTreeMap<TimerId, ScheduledTimerV1> {
-        &self.timers.scheduled
-    }
 }
 
 fn record_replay_observation_consequences(
@@ -713,6 +706,19 @@ impl CoreTraceV1 {
         if input.pack_digest != retained_pack.descriptor().revision_digest {
             return Err(TraceErrorV1::VersionIdentityMismatch);
         }
+        let preparer = RoomTransitionPreparerV1::from_retained_pack(
+            retained_pack.clone(),
+            input.room_seed.clone(),
+        );
+        Self::create_with_preparer(input, preparer, Some(retained_pack))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn create_uncommitted_retained_for_test(
+        prepared_genesis: &VerifiedRetainedGenesisV1,
+    ) -> Result<Self, TraceErrorV1> {
+        let input = prepared_genesis.genesis_input().clone();
+        let retained_pack = prepared_genesis.retained_pack().clone();
         let preparer = RoomTransitionPreparerV1::from_retained_pack(
             retained_pack.clone(),
             input.room_seed.clone(),

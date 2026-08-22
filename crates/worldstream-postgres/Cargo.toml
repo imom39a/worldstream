@@ -1,0 +1,29 @@
+[package]
+name = "worldstream-postgres"
+description = "Provider-neutral PostgreSQL 17 adapter and conformance harness for WorldStream Room Commit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+conformance-tracer = ["worldstream-core/conformance-tracer"]
+
+[dependencies]
+native-tls.workspace = true
+postgres.workspace = true
+postgres-native-tls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
+worldstream-backup = { path = "../worldstream-backup", version = "=0.1.0" }
+worldstream-transfer = { path = "../worldstream-transfer", version = "=0.1.0" }
+
+[dev-dependencies]
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0", features = ["conformance-tracer"] }
+
+[lints]
+workspace = true

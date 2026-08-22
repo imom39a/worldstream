@@ -22,7 +22,7 @@ use crate::{
     CoreProposedKindV1, MemberId, MembershipGenerationV1, MembershipStandingV1, MembershipV1,
     OperationIdentityV1, ParticipantActionOperationIdentityV1, ParticipantActionRequestV1,
     PrincipalGenerationV1, PrincipalId, PrincipalKindV1, RoomCreationRequestV1, RoomId,
-    RoomSequenceV1, RunnerGenerationV1, RunnerId, canonical::encode,
+    RoomSequenceV1, RunnerGenerationV1, RunnerId, TimerFiredRequestV1, canonical::encode,
     primitives::compare_timestamp_text,
 };
 
@@ -1065,6 +1065,10 @@ pub enum AuthorityUseV1 {
         identity: AdministrationOperationIdentityV1,
         request_hash: CanonicalRequestHashV1,
     },
+    TimerFired {
+        room_id: RoomId,
+        request_hash: CanonicalRequestHashV1,
+    },
     Replay {
         room_id: RoomId,
         member_id: MemberId,
@@ -1103,6 +1107,7 @@ impl fmt::Debug for AuthorityUseV1 {
             },
             Self::CreateRoom { .. } => "AuthorityUseV1::CreateRoom([REDACTED])",
             Self::CoreAdministration { .. } => "AuthorityUseV1::CoreAdministration([REDACTED])",
+            Self::TimerFired { .. } => "AuthorityUseV1::TimerFired([REDACTED])",
             Self::Replay { .. } => "AuthorityUseV1::Replay([REDACTED])",
             Self::HostDiagnostic { .. } => "AuthorityUseV1::HostDiagnostic([REDACTED])",
             Self::RunnerControl { .. } => "AuthorityUseV1::RunnerControl([REDACTED])",
@@ -1145,6 +1150,7 @@ impl AuthorityUseV1 {
             Self::RunnerControl { target, .. } => target.clone(),
             Self::CreateRoom { .. }
             | Self::CoreAdministration { .. }
+            | Self::TimerFired { .. }
             | Self::HostDiagnostic { .. } => None,
         }
     }
@@ -1553,6 +1559,28 @@ impl AuthorizedCoreAdministrationV1 {
     }
 }
 
+/// Present `HostOperator` authority for one exact Timer firing request.
+pub struct AuthorizedTimerFiredV1 {
+    fence: AuthorityFenceFactsV1,
+    room_id: RoomId,
+    request_hash: CanonicalRequestHashV1,
+}
+opaque_grant_debug!(AuthorizedTimerFiredV1);
+
+impl AuthorizedTimerFiredV1 {
+    pub(crate) const fn room_id(&self) -> &RoomId {
+        &self.room_id
+    }
+
+    pub(crate) const fn request_hash(&self) -> &CanonicalRequestHashV1 {
+        &self.request_hash
+    }
+
+    pub(crate) fn into_fence_facts(self) -> AuthorityFenceFactsV1 {
+        self.fence
+    }
+}
+
 /// Present gate plus current Membership; historical Replay still reauthorizes N.
 pub struct AuthorizedReplayV1 {
     #[allow(dead_code)]
@@ -1794,6 +1822,13 @@ impl AuthorizedRunnerControlV1 {
         &self.target
     }
 
+    /// Returns the capability authority generation sealed into this grant.
+    /// Adapters use it as a witness in the exact Invocation Context.
+    #[must_use]
+    pub const fn authority_generation(&self) -> AuthorityGenerationV1 {
+        self.fence.authority_generation()
+    }
+
     /// Transfers this grant into a trusted scheduler/activation Adapter.
     /// Merely extracting it does not establish current authorization.
     #[doc(hidden)]
@@ -1851,6 +1886,7 @@ pub enum AuthorityGrantV1 {
     ParticipantAction(ParticipantActionAuthorityV1),
     RoomCreation(AuthorizedRoomCreationV1),
     CoreAdministration(AuthorizedCoreAdministrationV1),
+    TimerFired(AuthorizedTimerFiredV1),
     Replay(AuthorizedReplayV1),
     Diagnostic(AuthorizedDiagnosticV1),
     RunnerControl(AuthorizedRunnerControlV1),
@@ -1864,6 +1900,7 @@ impl fmt::Debug for AuthorityGrantV1 {
             Self::ParticipantAction(_) => "AuthorityGrantV1::ParticipantAction([OPAQUE])",
             Self::RoomCreation(_) => "AuthorityGrantV1::RoomCreation([OPAQUE])",
             Self::CoreAdministration(_) => "AuthorityGrantV1::CoreAdministration([OPAQUE])",
+            Self::TimerFired(_) => "AuthorityGrantV1::TimerFired([OPAQUE])",
             Self::Replay(_) => "AuthorityGrantV1::Replay([OPAQUE])",
             Self::Diagnostic(_) => "AuthorityGrantV1::Diagnostic([OPAQUE])",
             Self::RunnerControl(_) => "AuthorityGrantV1::RunnerControl([OPAQUE])",
@@ -2972,18 +3009,18 @@ impl AuthorityChangeReceiptV1 {
     ///
     /// # Errors
     ///
-    /// Returns `InvalidChange` for the wrong result, a generation other than
-    /// one, or a commit time before preparation.
+    /// Returns `InvalidChange` for the wrong result or a generation other than
+    /// one. Fresh installs validate that the commit time is not before
+    /// preparation in [`PreparedAuthorityBootstrapV1::validate_install`]; a
+    /// replay must be allowed to reconstruct its already durable receipt even
+    /// when the caller prepares the same idempotent request at a later time.
     pub fn from_applied_bootstrap(
         bootstrap: &PreparedAuthorityBootstrapV1,
         result: AuthorityChangeResultV1,
         resulting_generation: u64,
         changed_at: AuthorityCheckedAt,
     ) -> Result<Self, AuthorityStoreErrorV1> {
-        if result != AuthorityChangeResultV1::AuthorityBootstrapped
-            || resulting_generation != 1
-            || compare_timestamp_text(changed_at.as_str(), bootstrap.prepared_at.as_str()).is_lt()
-        {
+        if result != AuthorityChangeResultV1::AuthorityBootstrapped || resulting_generation != 1 {
             return Err(AuthorityStoreErrorV1::InvalidChange);
         }
         Ok(Self {
@@ -3194,6 +3231,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::RoomCreation(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
@@ -3236,6 +3274,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::MemberRead(_)
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
@@ -3271,6 +3310,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::RoomCreation(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
@@ -3303,6 +3343,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::RoomCreation(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
         }
@@ -3340,6 +3381,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::RoomCreation(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_) => Err(AuthorityErrorV1::Unavailable),
         }
@@ -3383,6 +3425,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::MemberRead(_)
             | AuthorityGrantV1::RoomCreation(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
@@ -3431,6 +3474,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::RoomCreation(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
@@ -3470,6 +3514,45 @@ impl AuthorityV1 {
             | AuthorityGrantV1::MemberRead(_)
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::RoomCreation(_)
+            | AuthorityGrantV1::TimerFired(_)
+            | AuthorityGrantV1::Replay(_)
+            | AuthorityGrantV1::Diagnostic(_)
+            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+        }
+    }
+
+    /// Authorizes one exact scheduled Timer firing for its Room root.
+    /// Core derives the request hash; the returned grant exposes no Timer
+    /// payload and can only be consumed by the typed Room Commit sealer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid request for malformed Timer semantics, or the same
+    /// safe authentication, Room-scope, expiry, and storage failures as
+    /// [`Self::authorize`].
+    pub fn authorize_timer_fired(
+        &self,
+        presented: &PresentedCapabilityV1,
+        request: &TimerFiredRequestV1,
+        checked_at: AuthorityCheckedAt,
+    ) -> Result<AuthorizedTimerFiredV1, AuthorityErrorV1> {
+        let request_hash = request
+            .canonical_request_hash()
+            .map_err(|_| AuthorityErrorV1::InvalidAuthorityRequest)?;
+        match self.authorize(
+            presented,
+            AuthorityUseV1::TimerFired {
+                room_id: request.room_id().clone(),
+                request_hash,
+            },
+            checked_at,
+        )? {
+            AuthorityGrantV1::TimerFired(grant) => Ok(grant),
+            AuthorityGrantV1::ReceiptRead(_)
+            | AuthorityGrantV1::MemberRead(_)
+            | AuthorityGrantV1::ParticipantAction(_)
+            | AuthorityGrantV1::RoomCreation(_)
+            | AuthorityGrantV1::CoreAdministration(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
@@ -3510,6 +3593,7 @@ impl AuthorityV1 {
             | AuthorityGrantV1::ParticipantAction(_)
             | AuthorityGrantV1::RoomCreation(_)
             | AuthorityGrantV1::CoreAdministration(_)
+            | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Diagnostic(_)
             | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
         }
@@ -3628,6 +3712,10 @@ impl AuthorityV1 {
                 checked_at,
                 purpose_bytes,
             ),
+            AuthorityUseV1::TimerFired {
+                room_id,
+                request_hash,
+            } => authorize_timer_fired(snapshot, &room_id, request_hash, checked_at, purpose_bytes),
             AuthorityUseV1::Replay {
                 room_id,
                 member_id,
@@ -4464,6 +4552,26 @@ fn authorize_core_administration(
             classified,
         },
     ))
+}
+
+fn authorize_timer_fired(
+    snapshot: &AuthoritySnapshotV1,
+    room_id: &RoomId,
+    request_hash: CanonicalRequestHashV1,
+    checked_at: AuthorityCheckedAt,
+    purpose: &[u8],
+) -> Result<AuthorityGrantV1, AuthorityErrorV1> {
+    require_host_scope(
+        snapshot,
+        Some(room_id),
+        CapabilityScopeV1::OperatorRoomAdmin,
+    )?;
+    let fence = build_fence(snapshot, None, None, purpose, checked_at)?;
+    Ok(AuthorityGrantV1::TimerFired(AuthorizedTimerFiredV1 {
+        fence,
+        room_id: room_id.clone(),
+        request_hash,
+    }))
 }
 
 fn authorize_replay(

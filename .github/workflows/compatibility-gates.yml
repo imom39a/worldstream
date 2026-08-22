@@ -1,0 +1,1056 @@
+name: Compatibility gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Run the fail-closed release evidence gate
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  WORLDSTREAM_BUILD_REVISION: ${{ github.sha }}
+  WORLDSTREAM_BASE_IMAGE: alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+
+jobs:
+  fast:
+    name: Fast gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.97.1
+      - name: Prime locked Rust dependencies
+        run: cargo fetch --locked
+      - name: Install byte-pinned hosted security scanners
+        run: scripts/gates-install-tools.sh
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned gate Python
+        run: |
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+      - name: Run fast gates
+        run: uv run --python 3.14.7 --no-project python scripts/gates.py fast --ci --offline
+
+  cells:
+    name: Resolve manifest gate cells
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.cells.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: cells
+        name: Read required platform cells from compatibility.toml
+        run: echo "matrix=$(python3 scripts/gates.py minimal-ci --list-cells --format matrix)" >> "$GITHUB_OUTPUT"
+
+  native:
+    name: Manifest platform ${{ matrix.cell }}
+    needs: cells
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.cells.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust
+        shell: ${{ matrix.shell }}
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.97.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm
+        shell: ${{ matrix.shell }}
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned Python
+        shell: ${{ matrix.shell }}
+        run: |
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+      - name: Prime locked Rust dependencies
+        shell: ${{ matrix.shell }}
+        run: cargo fetch --locked
+      - name: Install byte-pinned hosted Linux security scanners
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: scripts/gates-install-tools.sh
+      - name: Install byte-pinned hosted Windows security scanners
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: scripts/gates-install-tools.ps1
+      - name: Build release UI inputs
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+        shell: ${{ matrix.shell }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir web/console build
+      - name: Build Linux release archive
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        shell: bash
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --locked --target x86_64-unknown-linux-musl --workspace
+          mkdir -p dist/linux reports
+          SOURCE_DATE_EPOCH=0 scripts/package-release.sh \
+            --target linux-x86_64 \
+            --binary-dir target/x86_64-unknown-linux-musl/release \
+            --ui-dir web/console/dist \
+            --sdk-dir sdk/python \
+            --examples-dir examples \
+            --licenses-dir licenses \
+            --output dist/linux \
+            --report reports/native-linux-package.json
+          scripts/verify-release.sh \
+            dist/linux/worldstream-$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')-linux-x86_64.tar.gz
+      - name: Build Windows release archive
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        shell: pwsh
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo build --release --locked --target x86_64-pc-windows-msvc --workspace
+          New-Item -ItemType Directory -Force -Path dist/windows, reports | Out-Null
+          $version = ([regex]::Match((Get-Content compatibility.toml -Raw), '(?m)^product\s*=\s*"([^"]+)"')).Groups[1].Value
+          $archive = "dist/windows/worldstream-$version-windows-x64.zip"
+          $report = 'reports/native-windows-package.json'
+          $env:SOURCE_DATE_EPOCH = '0'
+          & scripts/package-release.ps1 --target windows-x64 --binary-dir target/x86_64-pc-windows-msvc/release --ui-dir web/console/dist --sdk-dir sdk/python --examples-dir examples --licenses-dir licenses --output dist/windows --report $report
+          & scripts/verify-release.ps1 $archive
+      - name: Configure pinned docker-container Buildx for OCI export
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver: docker-container
+          version: v0.36.1
+      - name: Build and test OCI release image
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        shell: bash
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --locked --target x86_64-unknown-linux-musl --workspace
+          pnpm install --frozen-lockfile
+          pnpm --dir web/console build
+          mkdir -p dist reports
+          scripts/package-oci.sh \
+            --binary-dir target/x86_64-unknown-linux-musl/release \
+            --ui-dir web/console/dist \
+            --sdk-dir sdk/python \
+            --examples-dir examples \
+            --licenses-dir licenses \
+            --base-image "$WORLDSTREAM_BASE_IMAGE" \
+            --output dist/oci-context \
+            --report reports/oci-context.json
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          manifest_sha256=$(python3 -c 'import json; print(json.load(open("dist/oci-context/oci-metadata.json"))["manifest_sha256"])')
+          build_identity_sha256=$(python3 -c 'import json; print(json.load(open("dist/oci-context/oci-metadata.json"))["build_identity_sha256"])')
+          artifact="dist/worldstream-${version}-oci-linux-amd64.oci.tar"
+          image_tag="worldstream-release:${version}"
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            --provenance=false \
+            --output "type=oci,dest=$artifact,compression=gzip,force-compression=true" \
+            --tag "$image_tag" \
+            --build-arg "WORLDSTREAM_BASE_IMAGE=$WORLDSTREAM_BASE_IMAGE" \
+            --build-arg "VERSION=$version" \
+            --build-arg "MANIFEST_SHA256=$manifest_sha256" \
+            --build-arg "SOURCE_REVISION=$WORLDSTREAM_BUILD_REVISION" \
+            --build-arg "BUILD_IDENTITY_SHA256=$build_identity_sha256" \
+            --build-arg "SOURCE_DATE_EPOCH=0" \
+            dist/oci-context
+          scripts/oci-runtime-smoke.sh \
+            --context dist/oci-context \
+            --artifact "$artifact" \
+            --image "$image_tag" \
+            --skip-build \
+            --report reports/oci-runtime-smoke.json
+      - name: Start pinned PostgreSQL 17.11 on Linux
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          postgres_secret_dir="$RUNNER_TEMP/worldstream-postgres-bootstrap"
+          postgres_password_file="$postgres_secret_dir/password"
+          umask 077
+          mkdir -p "$postgres_secret_dir"
+          openssl rand -hex 24 > "$postgres_password_file"
+          chmod 600 "$postgres_password_file"
+          docker run --detach --name worldstream-postgres \
+            --env POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password \
+            --env POSTGRES_DB=worldstream \
+            --volume "$postgres_password_file:/run/secrets/postgres-password:ro" \
+            --publish 127.0.0.1:5432:5432 \
+            postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          for attempt in $(seq 1 60); do
+            if docker exec worldstream-postgres pg_isready --username postgres --dbname worldstream; then
+              break
+            fi
+            if [[ "$attempt" = 60 ]]; then
+              docker logs worldstream-postgres
+              exit 1
+            fi
+            sleep 1
+          done
+          pg_scheme=postgresql
+          pg_user=postgres
+          IFS= read -r pg_password < "$postgres_password_file"
+          postgres_dsn_file="$RUNNER_TEMP/worldstream-postgresql.dsn"
+          printf '%s://%s:%s@127.0.0.1:5432/worldstream\n' \
+            "$pg_scheme" "$pg_user" "$pg_password" > "$postgres_dsn_file"
+          chmod 600 "$postgres_dsn_file"
+          printf 'WORLDSTREAM_POSTGRES_DSN_FILE=%s\n' "$postgres_dsn_file" >> "$GITHUB_ENV"
+          printf 'WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE=%s\n' "$postgres_dsn_file" >> "$GITHUB_ENV"
+      - name: Start runner PostgreSQL 17.11 on Windows
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: scripts/gates-install-postgres.ps1
+      - name: Run manifest platform cell
+        shell: ${{ matrix.shell }}
+        env:
+          WORLDSTREAM_TELEMETRY_HTTPS_REPORT: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' && 'reports/telemetry-https.json' || '' }}
+        run: uv run --python 3.14.7 --no-project python scripts/gates.py minimal-ci --ci --cell ${{ matrix.cell }} --report reports/${{ matrix.cell }}.json
+      - name: Run packaged Linux binaries against SQLite and PostgreSQL
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          uv run --python 3.14.7 --no-project python scripts/native-package-smoke.py \
+            --package-archive "dist/linux/worldstream-${version}-linux-x86_64.tar.gz" \
+            --package-report reports/native-linux-package.json \
+            --admin-dsn-file "$WORLDSTREAM_POSTGRES_DSN_FILE" \
+            --report reports/native-linux-package-runtime.json
+      - name: Run packaged Windows binaries against SQLite and PostgreSQL
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        shell: pwsh
+        run: |
+          $version = ([regex]::Match((Get-Content compatibility.toml -Raw), '(?m)^product\s*=\s*"([^"]+)"')).Groups[1].Value
+          uv run --python 3.14.7 --no-project python scripts/native-package-smoke.py `
+            --package-archive "dist/windows/worldstream-$version-windows-x64.zip" `
+            --package-report reports/native-windows-package.json `
+            --admin-dsn-file $env:WORLDSTREAM_POSTGRES_DSN_FILE `
+            --report reports/native-windows-package-runtime.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Produce typed Linux platform evidence
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          archive="dist/linux/worldstream-${version}-linux-x86_64.tar.gz"
+          python3 scripts/release-platform-diagnostic.py native \
+            --source native-linux \
+            --package-report reports/native-linux-package.json \
+            --gate-report reports/native-linux-x86_64.json \
+            --runtime-report reports/native-linux-package-runtime.json \
+            --artifact "$archive" \
+            --output-dir reports/platform-diagnostics
+          python3 scripts/release-evidence-produce-platform.py \
+            --source native-linux \
+            --output-dir reports/release-producers \
+            --report native-linux/package=reports/platform-diagnostics/native-linux-package.json \
+            --report native-linux/runtime=reports/platform-diagnostics/native-linux-runtime.json \
+            --report native-linux/filesystem=reports/platform-diagnostics/native-linux-filesystem.json \
+            --artifact native-linux/linux-release-profile="$archive"
+      - name: Produce typed Windows platform evidence
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        shell: pwsh
+        run: |
+          $version = ([regex]::Match((Get-Content compatibility.toml -Raw), '(?m)^product\s*=\s*"([^"]+)"')).Groups[1].Value
+          $archive = "dist/windows/worldstream-$version-windows-x64.zip"
+          python scripts/release-platform-diagnostic.py native `
+            --source native-windows `
+            --package-report reports/native-windows-package.json `
+            --gate-report reports/native-windows-x64.json `
+            --runtime-report reports/native-windows-package-runtime.json `
+            --artifact $archive `
+            --output-dir reports/platform-diagnostics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/release-evidence-produce-platform.py `
+            --source native-windows `
+            --output-dir reports/release-producers `
+            --report native-windows/package=reports/platform-diagnostics/native-windows-package.json `
+            --report native-windows/runtime=reports/platform-diagnostics/native-windows-runtime.json `
+            --report native-windows/acl-or-reparse=reports/platform-diagnostics/native-windows-acl-or-reparse.json `
+            --artifact native-windows/windows-release-profile=$archive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Produce typed OCI platform evidence
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          artifact="dist/worldstream-${version}-oci-linux-amd64.oci.tar"
+          python3 scripts/release-platform-diagnostic.py oci \
+            --context dist/oci-context \
+            --context-report reports/oci-context.json \
+            --runtime-report reports/oci-runtime-smoke.json \
+            --context-metadata dist/oci-context/oci-metadata.json \
+            --artifact "$artifact" \
+            --output-dir reports/platform-diagnostics
+          python3 scripts/release-evidence-produce-platform.py \
+            --source oci-linux \
+            --output-dir reports/release-producers \
+            --report oci-linux/oci=reports/platform-diagnostics/oci-linux-oci.json \
+            --artifact oci-linux/oci-release-profile="$artifact"
+      - name: Upload platform gate report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: platform-gate-${{ matrix.cell }}
+          path: reports/${{ matrix.cell }}.json
+          if-no-files-found: warn
+      - name: Upload Linux release archive
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-native-linux
+          path: dist/linux/*
+          if-no-files-found: error
+      - name: Upload Linux package identity report
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-linux-x86_64' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-linux-package-report
+          path: reports/native-linux-package.json
+          if-no-files-found: error
+      - name: Upload Windows release archive
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'native-windows-x64' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-native-windows
+          path: dist/windows/*
+          if-no-files-found: error
+      - name: Upload OCI release image
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-oci-linux-amd64
+          path: dist/worldstream-*-oci-linux-amd64.oci.tar
+          if-no-files-found: error
+      - name: Upload OCI release evidence
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && matrix.platform == 'oci-linux-amd64' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-oci-evidence
+          path: |
+            reports/oci-context.json
+            reports/oci-runtime-smoke.json
+          if-no-files-found: error
+      - name: Upload typed platform release producers
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-platform-producer-${{ matrix.cell }}
+          path: |
+            reports/release-producers/
+            reports/platform-diagnostics/
+            reports/native-*-package-runtime.json
+            reports/telemetry-https.json
+          if-no-files-found: error
+
+  macos-source:
+    name: macOS source quickstart (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+          - architecture: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.97.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack install
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned Python
+        run: uv python install 3.14.7
+      - name: Run source-only quickstart
+        env:
+          MACOS_SOURCE_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$MACOS_SOURCE_ARCHITECTURE"
+          mkdir -p reports
+          scripts/macos-source-quickstart.sh \
+            --report "reports/macos-source-${MACOS_SOURCE_ARCHITECTURE}.json"
+      - name: Upload architecture-specific macOS source report
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.release == true }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos-source-raw-${{ matrix.architecture }}
+          path: reports/macos-source-${{ matrix.architecture }}.json
+          if-no-files-found: error
+
+  macos-source-release:
+    name: Typed dual-architecture macOS source evidence
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    needs: [macos-source]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download exact architecture-specific macOS reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-macos-source-raw-*
+          merge-multiple: true
+          path: reports/macos-source-raw
+      - name: Produce typed dual-architecture macOS source evidence
+        run: |
+          set -euo pipefail
+          python3 scripts/release-platform-diagnostic.py macos \
+            --quickstart-report reports/macos-source-raw/macos-source-arm64.json \
+            --quickstart-report reports/macos-source-raw/macos-source-x86_64.json \
+            --source-revision "${{ github.sha }}" \
+            --artifact-output reports/macos-source-matrix.json \
+            --output-dir reports/platform-diagnostics
+          python3 scripts/release-evidence-produce-platform.py \
+            --source macos-source \
+            --output-dir reports/release-producers \
+            --report macos-source/source-quickstart=reports/platform-diagnostics/macos-source-source-quickstart.json \
+            --artifact macos-source/macos-quickstart=reports/macos-source-matrix.json
+      - name: Upload typed dual-architecture macOS source evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos-source-evidence
+          path: |
+            reports/macos-source-matrix.json
+            reports/platform-diagnostics/
+            reports/release-producers/
+          if-no-files-found: error
+
+  conformance-release:
+    name: Typed release conformance producers
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup override set 1.97.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned Python and prime locked Rust dependencies
+        run: |
+          uv python install 3.14.7
+          cargo fetch --locked
+          command -v docker
+          command -v psql
+      - name: Produce exact conformance diagnostics
+        run: |
+          set -euo pipefail
+          mkdir -p release-inputs/diagnostics
+          uv run --python 3.14.7 --no-project python \
+            scripts/manifest-evidence-wave6.py --json \
+            > release-inputs/diagnostics/manifest.json
+          scripts/soak-smoke.sh \
+            --iterations 1 \
+            --command-timeout-seconds 600 \
+            --max-total-seconds 900 \
+            --output release-inputs/diagnostics/sqlite.json
+          scripts/postgres-live-evidence.sh \
+            --evidence release-inputs/diagnostics/postgres.json
+          scripts/postgres-transfer-smoke.sh \
+            --build-source \
+            --evidence release-inputs/diagnostics/transfer.json
+          scripts/postgres-native-restore-smoke.sh \
+            --evidence release-inputs/diagnostics/postgres-restore.json
+      - name: Validate and type conformance producers
+        run: |
+          set -euo pipefail
+          python3 scripts/release-evidence-produce-conformance.py \
+            --output-dir release-inputs/producers \
+            --artifact-dir release-inputs/artifacts \
+            --manifest-report release-inputs/diagnostics/manifest.json \
+            --sqlite-report release-inputs/diagnostics/sqlite.json \
+            --postgres-report release-inputs/diagnostics/postgres.json \
+            --transfer-report release-inputs/diagnostics/transfer.json \
+            --postgres-restore-report release-inputs/diagnostics/postgres-restore.json
+      - name: Upload typed conformance producers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-conformance-producers
+          path: release-inputs/
+          if-no-files-found: error
+
+  packaged-backend-release:
+    name: Fresh packaged Counter and absent-Broker backend parity
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    needs: native
+    runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned Python and SDK dependencies
+        run: |
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+          command -v docker
+          command -v psql
+      - name: Download fresh Linux release archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-native-linux
+          path: package-input
+      - name: Download fresh Linux package report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-linux-package-report
+          path: package-input
+      - name: Run six package-bound SQLite, PostgreSQL, and PgBouncer cells
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(package-input/worldstream-*-linux-x86_64.tar.gz)
+          reports=(package-input/native-linux-package.json)
+          [[ "${#archives[@]}" -eq 1 && "${#reports[@]}" -eq 1 ]]
+          uv run --project sdk/python --locked python \
+            scripts/postgres-packaged-acceptance.py \
+            --package-archive "${archives[0]}" \
+            --package-report "${reports[0]}" \
+            --report reports/postgres-packaged-acceptance.json
+      - name: Upload package-bound backend parity report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-packaged-backend-parity
+          path: reports/postgres-packaged-acceptance.json
+          if-no-files-found: error
+
+  failure-soak-release:
+    name: Packaged Linux SIGKILL and one-hour soak evidence
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    needs: [native, packaged-backend-release]
+    runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned Python and SDK dependencies
+        run: |
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+      - name: Download fresh Linux release archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-native-linux
+          path: package-input
+      - name: Download fresh Linux package report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-linux-package-report
+          path: package-input
+      - name: Download exact package-bound backend acceptance
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-packaged-backend-parity
+          path: package-acceptance
+      - id: packaged_linux
+        name: Verify and extract the unique packaged daemon
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(package-input/worldstream-*-linux-x86_64.tar.gz)
+          reports=(package-input/native-linux-package.json)
+          [[ "${#archives[@]}" -eq 1 && "${#reports[@]}" -eq 1 ]]
+          scripts/verify-release.sh "${archives[0]}"
+          mkdir -p reports package-extracted
+          daemon=package-extracted/worldstreamd
+          uv run --project sdk/python --locked python \
+            scripts/release-package-extract.py \
+            --archive "${archives[0]}" \
+            --package-report "${reports[0]}" \
+            --output "$daemon" \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json \
+            > reports/package-extraction.json
+          [[ -f "$daemon" && ! -L "$daemon" && -x "$daemon" ]]
+          printf 'archive=%s\n' "${archives[0]}" >> "$GITHUB_OUTPUT"
+          printf 'report=%s\n' "${reports[0]}" >> "$GITHUB_OUTPUT"
+          printf 'daemon=%s\n' "$daemon" >> "$GITHUB_OUTPUT"
+      - id: kill_point
+        name: Run the exact packaged 12-cell SIGKILL matrix
+        continue-on-error: true
+        run: |
+          scripts/kill-point-smoke.sh \
+            --daemon-bin '${{ steps.packaged_linux.outputs.daemon }}' \
+            --package-archive '${{ steps.packaged_linux.outputs.archive }}' \
+            --package-report '${{ steps.packaged_linux.outputs.report }}' \
+            --output reports/kill-point-evidence.json \
+            --log-output reports/kill-point.log
+      - id: one_hour_soak
+        name: Run the exact packaged 3600-second process workload
+        continue-on-error: true
+        run: |
+          scripts/daemon-transition-soak.sh \
+            --one-hour \
+            --daemon-bin '${{ steps.packaged_linux.outputs.daemon }}' \
+            --package-archive '${{ steps.packaged_linux.outputs.archive }}' \
+            --package-report '${{ steps.packaged_linux.outputs.report }}' \
+            --packaged-acceptance-report package-acceptance/postgres-packaged-acceptance.json \
+            --output reports/daemon-transition-soak.json \
+            --log-output reports/daemon-transition-soak.log
+      - name: Validate and type packaged failure/soak evidence
+        if: ${{ steps.kill_point.outcome == 'success' && steps.one_hour_soak.outcome == 'success' }}
+        run: |
+          uv run --project sdk/python --locked python \
+            scripts/release-evidence-produce-failure-soak.py \
+            --output release-inputs/failure/producers/failure-soak.json \
+            --artifact-output release-inputs/failure/artifacts/failure-soak.json \
+            --soak-report reports/daemon-transition-soak.json \
+            --kill-point-report reports/kill-point-evidence.json \
+            --package-archive '${{ steps.packaged_linux.outputs.archive }}' \
+            --package-report '${{ steps.packaged_linux.outputs.report }}' \
+            --daemon-bin '${{ steps.packaged_linux.outputs.daemon }}' \
+            --packaged-acceptance-report package-acceptance/postgres-packaged-acceptance.json \
+            --retained-log reports/kill-point.log \
+            --retained-log reports/daemon-transition-soak.log \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json
+      - name: Upload packaged failure/soak diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-failure-soak-diagnostics
+          path: reports/
+          if-no-files-found: warn
+      - name: Upload typed packaged failure/soak producer
+        if: ${{ steps.kill_point.outcome == 'success' && steps.one_hour_soak.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-failure-soak
+          path: release-inputs/failure/
+          if-no-files-found: error
+      - name: Enforce successful typed packaged failure/soak evidence
+        if: ${{ always() }}
+        run: |
+          test '${{ steps.kill_point.outcome }}' = success
+          test '${{ steps.one_hour_soak.outcome }}' = success
+          test -s release-inputs/failure/producers/failure-soak.json
+          test -s release-inputs/failure/artifacts/failure-soak.json
+
+  reference-performance-release:
+    name: Frozen-host packaged reference performance evidence
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    needs: [native, packaged-backend-release, failure-soak-release]
+    runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned Python and SDK dependencies
+        run: |
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+      - name: Download fresh Linux release archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-native-linux
+          path: package-input
+      - name: Download fresh Linux package report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-linux-package-report
+          path: package-input
+      - name: Download exact package-bound backend acceptance
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-packaged-backend-parity
+          path: package-acceptance
+      - name: Download exact one-hour process-soak diagnostics
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-failure-soak-diagnostics
+          path: process-input
+      - id: reference_package
+        name: Verify and extract the unique packaged reference daemon
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(package-input/worldstream-*-linux-x86_64.tar.gz)
+          reports=(package-input/native-linux-package.json)
+          acceptances=(package-acceptance/postgres-packaged-acceptance.json)
+          soaks=(process-input/daemon-transition-soak.json)
+          [[ "${#archives[@]}" -eq 1 && "${#reports[@]}" -eq 1 ]]
+          [[ "${#acceptances[@]}" -eq 1 && "${#soaks[@]}" -eq 1 ]]
+          scripts/verify-release.sh "${archives[0]}"
+          mkdir -p package-extracted reports reference-inputs/normalized
+          daemon=package-extracted/worldstreamd
+          uv run --project sdk/python --locked python \
+            scripts/release-package-extract.py \
+            --archive "${archives[0]}" \
+            --package-report "${reports[0]}" \
+            --output "$daemon" \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json \
+            > reports/reference-package-extraction.json
+          [[ -f "$daemon" && ! -L "$daemon" && -x "$daemon" ]]
+          printf 'archive=%s\n' "${archives[0]}" >> "$GITHUB_OUTPUT"
+          printf 'report=%s\n' "${reports[0]}" >> "$GITHUB_OUTPUT"
+          printf 'acceptance=%s\n' "${acceptances[0]}" >> "$GITHUB_OUTPUT"
+          printf 'soak=%s\n' "${soaks[0]}" >> "$GITHUB_OUTPUT"
+          printf 'daemon=%s\n' "$daemon" >> "$GITHUB_OUTPUT"
+      - name: Project exact raw measurements into five normalized reports
+        run: |
+          uv run --project sdk/python --locked python \
+            scripts/reference-evidence-project.py \
+            --packaged-acceptance-report '${{ steps.reference_package.outputs.acceptance }}' \
+            --soak-report '${{ steps.reference_package.outputs.soak }}' \
+            --package-archive '${{ steps.reference_package.outputs.archive }}' \
+            --package-report '${{ steps.reference_package.outputs.report }}' \
+            --daemon-bin '${{ steps.reference_package.outputs.daemon }}' \
+            --output-dir reference-inputs/normalized \
+            --aggregate-report reference-inputs/reference-performance.json \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json
+      - name: Produce typed measured non-SLA reference evidence
+        run: |
+          uv run --project sdk/python --locked python \
+            scripts/release-evidence-produce-reference.py \
+            --output release-inputs/reference/producers/reference-performance.json \
+            --artifact-output release-inputs/reference/artifacts/reference-performance.json \
+            --report reference-inputs/reference-performance.json \
+            --counter-report reference-inputs/normalized/counter.json \
+            --heist-report reference-inputs/normalized/heist.json \
+            --sqlite-report reference-inputs/normalized/sqlite.json \
+            --postgres-report reference-inputs/normalized/postgres.json \
+            --soak-report reference-inputs/normalized/soak.json \
+            --package-archive '${{ steps.reference_package.outputs.archive }}' \
+            --package-report '${{ steps.reference_package.outputs.report }}' \
+            --daemon-bin '${{ steps.reference_package.outputs.daemon }}' \
+            --packaged-acceptance-report '${{ steps.reference_package.outputs.acceptance }}' \
+            --soak-report '${{ steps.reference_package.outputs.soak }}' \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json
+      - name: Upload reference projection diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-reference-performance-diagnostics
+          path: |
+            reports/reference-package-extraction.json
+            reference-inputs/
+          if-no-files-found: warn
+      - name: Upload typed packaged reference-performance producer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-reference-performance
+          path: release-inputs/reference/
+          if-no-files-found: error
+
+  release-evidence:
+    name: Release evidence (manual)
+    needs: [fast, native, macos-source-release, conformance-release, packaged-backend-release, failure-soak-release, reference-performance-release]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true }}
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      COSIGN_CERTIFICATE_IDENTITY: https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main
+      COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build and verify source archive from the clean checkout
+        run: |
+          set -euo pipefail
+          source_payload="$RUNNER_TEMP/worldstream-clean-source-payload"
+          source_report="$RUNNER_TEMP/worldstream-clean-source-package.json"
+          mkdir -p "$source_payload"
+          SOURCE_DATE_EPOCH=0 scripts/package-release.sh \
+            --target source \
+            --source-dir . \
+            --output "$source_payload" \
+            --report "$source_report"
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          scripts/verify-release.sh \
+            "$source_payload/worldstream-${version}-source.tar.gz"
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.97.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239ec42f3b78 # v7
+        with:
+          version: 0.12.5
+          enable-cache: true
+      - name: Install pinned gate Python
+        run: |
+          uv python install 3.14.7
+          uv sync --project sdk/python --locked
+      - name: Install byte-pinned hosted security scanners
+        run: scripts/gates-install-tools.sh
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Prime locked Rust dependencies
+        run: cargo fetch --locked
+      - name: Download native and OCI release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-native-*
+          merge-multiple: true
+          path: release-inputs/payload
+      - name: Download OCI release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-oci-linux-amd64
+          path: release-inputs/payload
+      - name: Download OCI release evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-oci-evidence
+          path: release-inputs/oci-evidence
+      - name: Download macOS source-only evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-macos-source-evidence
+          path: release-inputs/macos
+      - name: Download typed hosted platform producers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-platform-producer-*
+          merge-multiple: true
+          path: release-inputs/platform-producers
+      - name: Download typed conformance producers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-conformance-producers
+          path: release-inputs/conformance
+      - name: Download typed packaged failure/soak producer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-failure-soak
+          path: release-inputs/failure
+      - name: Download typed packaged reference-performance producer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-reference-performance
+          path: release-inputs/reference
+      - name: Add the clean-checkout source archive to the payload set
+        run: |
+          mkdir -p release-inputs/payload reports
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          source_archive="$RUNNER_TEMP/worldstream-clean-source-payload/worldstream-${version}-source.tar.gz"
+          test -f "$source_archive" && test ! -L "$source_archive"
+          cp --no-clobber "$source_archive" release-inputs/payload/
+      - name: Collect platform gate reports
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: platform-gate-*
+          merge-multiple: true
+          path: release-inputs/platform
+      - name: Produce typed release evidence source reports
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            release-inputs/security/diagnostics \
+            release-inputs/security/producers \
+            release-inputs/source-reports
+          python3 scripts/release-platform-diagnostic.py security \
+            --linux-gate-report release-inputs/platform/native-linux-x86_64.json \
+            --windows-gate-report release-inputs/platform/native-windows-x64.json \
+            --linux-runtime-report release-inputs/platform-producers/native-linux-package-runtime.json \
+            --windows-runtime-report release-inputs/platform-producers/native-windows-package-runtime.json \
+            --https-report release-inputs/platform-producers/telemetry-https.json \
+            --artifact-output release-inputs/security/security-observability.json \
+            --output-dir release-inputs/security/diagnostics
+          python3 scripts/release-evidence-produce-platform.py \
+            --source security-observability \
+            --output-dir release-inputs/security/producers \
+            --report security-observability/config-redaction-observability=release-inputs/security/diagnostics/security-observability-config-redaction-observability.json \
+            --report security-observability/security=release-inputs/security/diagnostics/security-observability-security.json \
+            --artifact security-observability/security-observability=release-inputs/security/security-observability.json
+
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          linux_archive="release-inputs/payload/worldstream-${version}-linux-x86_64.tar.gz"
+          windows_archive="release-inputs/payload/worldstream-${version}-windows-x64.zip"
+          oci_archive="release-inputs/payload/worldstream-${version}-oci-linux-amd64.oci.tar"
+          producer_status=0
+          python3 scripts/release-evidence-produce.py \
+            --output-dir release-inputs/source-reports \
+            --producer manifest-contract=release-inputs/conformance/producers/manifest-contract.json \
+            --producer sqlite-conformance=release-inputs/conformance/producers/sqlite-conformance.json \
+            --producer postgres-conformance=release-inputs/conformance/producers/postgres-conformance.json \
+            --producer migration-history=release-inputs/conformance/producers/migration-history.json \
+            --producer transfer=release-inputs/conformance/producers/transfer.json \
+            --producer restore=release-inputs/conformance/producers/restore.json \
+            --producer native-linux=release-inputs/platform-producers/release-producers/native-linux-release-profile.json \
+            --producer native-windows=release-inputs/platform-producers/release-producers/native-windows-release-profile.json \
+            --producer oci-linux=release-inputs/platform-producers/release-producers/oci-linux-amd64-release-profile.json \
+            --producer macos-source=release-inputs/macos/release-producers/macos-source-quickstart.json \
+            --producer security-observability=release-inputs/security/producers/config-secrets-probes-observability-security.json \
+            --producer failure-soak=release-inputs/failure/producers/failure-soak.json \
+            --producer reference-performance=release-inputs/reference/producers/reference-performance.json \
+            --missing supply-chain=supply-chain-pre-sign-typed-producer-not-uploaded \
+            --artifact manifest-contract/compatibility-pair=release-inputs/conformance/artifacts/manifest-contract.json \
+            --artifact sqlite-conformance/sqlite-conformance-result=release-inputs/conformance/artifacts/sqlite-conformance.json \
+            --artifact postgres-conformance/postgres-conformance-result=release-inputs/conformance/artifacts/postgres-conformance.json \
+            --artifact migration-history/migration-history-result=release-inputs/conformance/artifacts/migration-history.json \
+            --artifact transfer/transfer-result=release-inputs/conformance/artifacts/transfer.json \
+            --artifact restore/restore-result=release-inputs/conformance/artifacts/restore.json \
+            --artifact native-linux/linux-release-profile="$linux_archive" \
+            --artifact native-windows/windows-release-profile="$windows_archive" \
+            --artifact oci-linux/oci-release-profile="$oci_archive" \
+            --artifact macos-source/macos-quickstart=release-inputs/macos/macos-source-matrix.json \
+            --artifact security-observability/security-observability=release-inputs/security/security-observability.json \
+            --artifact failure-soak/failure-soak=release-inputs/failure/artifacts/failure-soak.json \
+            --artifact reference-performance/reference-performance=release-inputs/reference/artifacts/reference-performance.json \
+            || producer_status=$?
+          printf 'typed producer adapter exit=%s; only the pre-sign supply-chain input remains intentionally absent in this phase\n' "$producer_status"
+      - name: Produce and sign pre-sign subject inventory, SPDX SBOM, and SLSA provenance
+        run: |
+          set -euo pipefail
+          supply_status=0
+          python3 scripts/release-supply-chain.py \
+            --release-dir dist \
+            --payload-dir release-inputs/payload \
+            --producer-output release-inputs/pre-sign/supply-chain-producer.json \
+            --source-output release-inputs/source-reports/checksums-signature-sbom-provenance.json \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json \
+            --source manifest-contract=release-inputs/source-reports/manifest-syntax-parity.json \
+            --source sqlite-conformance=release-inputs/source-reports/sqlite-conformance-migration-backup-restore-crash.json \
+            --source postgres-conformance=release-inputs/source-reports/postgresql-direct-and-transaction-pooler-conformance.json \
+            --source migration-history=release-inputs/source-reports/all-prior-forward-migrations-both-backends.json \
+            --source transfer=release-inputs/source-reports/sqlite-postgresql-transfer-byte-parity-and-epoch-fencing.json \
+            --source restore=release-inputs/source-reports/backend-native-isolated-restore-and-full-semantic-verifier.json \
+            --source native-linux=release-inputs/source-reports/native-linux-release-profile.json \
+            --source native-windows=release-inputs/source-reports/native-windows-release-profile.json \
+            --source oci-linux=release-inputs/source-reports/oci-linux-amd64-release-profile.json \
+            --source macos-source=release-inputs/source-reports/macos-source-quickstart.json \
+            --source security-observability=release-inputs/source-reports/config-secrets-probes-observability-security.json \
+            --source failure-soak=release-inputs/source-reports/failure-fuzz-resource-and-one-hour-sqlite-soak.json \
+            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json \
+            || supply_status=$?
+          printf 'pre-sign supply-chain producer exit=%s; collector will enforce fail-closed inputs\n' "$supply_status"
+      - name: Collect exact release evidence sources
+        run: |
+          set -euo pipefail
+          python3 scripts/release-evidence-collect.py \
+            --output-dir release-inputs/reports \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json \
+            --source manifest-contract=release-inputs/source-reports/manifest-syntax-parity.json \
+            --source sqlite-conformance=release-inputs/source-reports/sqlite-conformance-migration-backup-restore-crash.json \
+            --source postgres-conformance=release-inputs/source-reports/postgresql-direct-and-transaction-pooler-conformance.json \
+            --source migration-history=release-inputs/source-reports/all-prior-forward-migrations-both-backends.json \
+            --source transfer=release-inputs/source-reports/sqlite-postgresql-transfer-byte-parity-and-epoch-fencing.json \
+            --source restore=release-inputs/source-reports/backend-native-isolated-restore-and-full-semantic-verifier.json \
+            --source native-linux=release-inputs/source-reports/native-linux-release-profile.json \
+            --source native-windows=release-inputs/source-reports/native-windows-release-profile.json \
+            --source oci-linux=release-inputs/source-reports/oci-linux-amd64-release-profile.json \
+            --source macos-source=release-inputs/source-reports/macos-source-quickstart.json \
+            --source security-observability=release-inputs/source-reports/config-secrets-probes-observability-security.json \
+            --source supply-chain=release-inputs/source-reports/checksums-signature-sbom-provenance.json \
+            --source failure-soak=release-inputs/source-reports/failure-fuzz-resource-and-one-hour-sqlite-soak.json \
+            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json
+          scripts/release-evidence-assemble.sh \
+            --release-dir dist \
+            --payload-dir release-inputs/payload \
+            --reports-dir release-inputs/reports \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json \
+            --check-inputs
+      - name: Assemble detached v2 release manifest
+        run: |
+          scripts/release-evidence-assemble.sh \
+            --release-dir dist \
+            --payload-dir release-inputs/payload \
+            --reports-dir release-inputs/reports \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json \
+            --output dist/release-manifest.json
+      - name: Keyless-sign detached release manifest
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          test "$COSIGN_CERTIFICATE_IDENTITY" = "https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main"
+          test "$COSIGN_CERTIFICATE_OIDC_ISSUER" = "https://token.actions.githubusercontent.com"
+          test -f dist/release-manifest.json
+          test ! -e dist/sigstore.bundle.json
+          cosign sign-blob --yes \
+            --bundle dist/sigstore.bundle.json \
+            dist/release-manifest.json >/dev/null
+          test -s dist/sigstore.bundle.json
+      - name: Post-sign verify detached release bundle and supply chain
+        run: scripts/verify-release.sh dist
+      - name: Run final post-sign release gate
+        run: uv run --python 3.14.7 --no-project python scripts/gates.py release --ci --strict --report reports/release-gate.json --handoff reports/release-evidence-handoff.json
+      - name: Upload immutable verified release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-release-bundle-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Upload release gate handoff
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-handoff
+          path: reports/
+          if-no-files-found: warn

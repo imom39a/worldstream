@@ -4,7 +4,11 @@ members = [
     "crates/worldstream-protocol",
     "crates/worldstream-runtime",
     "crates/worldstream-server",
+    "crates/worldstream-postgres",
     "crates/worldstream-sqlite",
+    "crates/worldstream-conformance",
+    "crates/worldstream-backup",
+    "crates/worldstream-transfer",
     "xtask",
 ]
 resolver = "3"
@@ -14,31 +18,37 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
 license = "Apache-2.0"
-repository = "https://github.com/imom39a/agent-streamer"
+repository = "https://github.com/imom39a/worldstream"
 
 [workspace.dependencies]
 anyhow = "=1.0.104"
-axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio", "ws"] }
 blake3 = { version = "=1.8.6", features = ["pure"] }
 clap = { version = "=4.6.6", features = ["derive"] }
 directories = "=6.0.0"
 filedescriptor = "=0.8.3"
+getrandom = "=0.4.3"
 http-body-util = "=0.1.5"
 rustix = { version = "=1.1.4", features = ["process"] }
 # This exact source revision carries the official SQLite 3.53.4 amalgamation.
 # Keep the git revision paired with worldstream-sqlite's exact runtime
 # sqlite_version()/sqlite_source_id() checks.
 rusqlite = { git = "https://github.com/rusqlite/rusqlite.git", rev = "229140734a4a60cc9fa34507fe79cb2277142f49", default-features = false, features = ["bundled"] }
+postgres = "=0.19.14"
+native-tls = { version = "=0.2.14", features = ["vendored"] }
+postgres-native-tls = "=0.5.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"
-time = { version = "=0.3.44", features = ["formatting"] }
-tokio = { version = "=1.53.1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+time = { version = "=0.3.47", features = ["formatting", "parsing"] }
+tokio = { version = "=1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 toml = "=0.9.8"
 tower = { version = "=0.5.3", features = ["util"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }
+rustls = { version = "=0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "=1.0.3"
 windows-permissions = "=0.2.4"
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
 winsafe = { version = "=0.0.28", default-features = false, features = ["kernel"] }

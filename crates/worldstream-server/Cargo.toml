@@ -6,19 +6,28 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+blake3.workspace = true
 clap.workspace = true
+getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
 worldstream-protocol = { path = "../worldstream-protocol", version = "=0.1.0" }
 worldstream-runtime = { path = "../worldstream-runtime", version = "=0.1.0" }
+worldstream-sqlite = { path = "../worldstream-sqlite", version = "=0.1.0" }
+worldstream-postgres = { path = "../worldstream-postgres", version = "=0.1.0" }
 
 [dev-dependencies]
 http-body-util.workspace = true

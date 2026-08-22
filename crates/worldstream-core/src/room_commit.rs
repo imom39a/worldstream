@@ -15,16 +15,17 @@ use crate::{
     ActivityObservationOutcomeV1, AdministrationOperationIdentityV1, AuthorityCheckedAt,
     AuthorityErrorV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1, AuthorityStoreErrorV1,
     AuthorityUseV1, AuthorityV1, AuthorizedCoreAdministrationV1, AuthorizedParticipantActionV1,
-    AuthorizedReceiptReadV1, AuthorizedRoomCreationV1, Blake3DigestV1, CanonicalJsonError,
-    CanonicalJsonV1, ClassifiedCoreAdministrationV1, CompleteHeadV1, CoreAdministrationClassV1,
-    CoreChangeSetV1, CoreProposedKindV1, CoreProposedV1, CoreRecordedAt, CoreRoomStateV1,
-    CoreTraceV1, CreationRecordedAt, ExternalInputRecordedAt, ExternalInputV1, GenesisV1, InputId,
-    IntegrityGenerationV1, MemberAuthorityUseV1, MemberId, MembershipChangeKindV1,
-    MembershipStandingV1, MembershipV1, PackDigestV1, PackRegistryV1, PackRevisionLockV1,
-    PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionV1, PreparedNewRoomGenesisV1,
-    PresentedCapabilityV1, PrincipalId, PrincipalKindV1, RecordedStimulusV1, ReplayFailureClassV1,
-    RoomId, RoomSequenceV1, RoomStatusV1, SourceId, TimerChangeV1, TimerFiredV1, TimerGenerationV1,
-    TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
+    AuthorizedReceiptReadV1, AuthorizedRoomCreationV1, AuthorizedTimerFiredV1, Blake3DigestV1,
+    CanonicalJsonError, CanonicalJsonV1, ClassifiedCoreAdministrationV1, CompleteHeadV1,
+    CoreAdministrationClassV1, CoreChangeSetV1, CoreProposedKindV1, CoreProposedV1, CoreRecordedAt,
+    CoreRoomStateV1, CoreTraceV1, CreationRecordedAt, ExternalInputRecordedAt, ExternalInputV1,
+    GenesisV1, InputId, IntegrityGenerationV1, MemberAuthorityUseV1, MemberId,
+    MembershipChangeKindV1, MembershipStandingV1, MembershipV1, PackDigestV1, PackRegistryV1,
+    PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionV1,
+    PreparedNewRoomGenesisV1, PresentedCapabilityV1, PrincipalId, PrincipalKindV1,
+    RecordedStimulusV1, ReplayFailureClassV1, RoomId, RoomSequenceV1, RoomStatusV1, SourceId,
+    TimerChangeV1, TimerFiredV1, TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1,
+    TransitionId, TransitionV1,
     activity_pack::{ValidatedPackObservationV1, ValidatedPackViewV1},
     authority::{AuthorityFenceFactsV1, ReceiptReadAdapterInputV1, ReceiptReadTargetPolicyV1},
     canonical::encode,
@@ -63,6 +64,10 @@ impl fmt::Debug for CanonicalRequestHashV1 {
 impl CanonicalRequestHashV1 {
     fn calculate(request: &CanonicalJsonV1) -> Result<Self, CanonicalJsonError> {
         Ok(Self(Blake3DigestV1::hash(&request.to_bytes()?)))
+    }
+
+    pub(crate) fn calculate_canonical(request: &[u8]) -> Self {
+        Self(Blake3DigestV1::hash(request))
     }
 
     /// Returns the digest bytes for storage comparison.
@@ -355,9 +360,8 @@ impl CoreAdministrationRequestV1 {
         core_administration_request_hash(self)
     }
 
-    pub(crate) fn classified(
-        &self,
-    ) -> Result<ClassifiedCoreAdministrationV1, PrepareRoomWriteErrorV1> {
+    #[doc(hidden)]
+    pub fn classified(&self) -> Result<ClassifiedCoreAdministrationV1, PrepareRoomWriteErrorV1> {
         self.validate_shape()
     }
 
@@ -541,7 +545,12 @@ impl ParticipantActionRequestV1 {
         &self.action_id
     }
 
-    pub(crate) const fn based_on_room_seq(&self) -> RoomSequenceV1 {
+    /// Returns the exact Room sequence supplied as this Action's basis.
+    ///
+    /// Storage adapters use this value only to choose the Core stale-head
+    /// disposition path; it never authorizes rebasing the request.
+    #[must_use]
+    pub const fn based_on_room_seq(&self) -> RoomSequenceV1 {
         self.based_on_room_seq
     }
 
@@ -589,6 +598,7 @@ pub struct TimerOperationIdentityV1 {
     pub room_id: RoomId,
     pub timer_id: TimerId,
     pub generation: TimerGenerationV1,
+    pub scheduled_for: TimerScheduledFor,
 }
 
 /// Immutable scheduled Timer candidate whose identity/hash can be resolved
@@ -628,6 +638,7 @@ impl TimerFiredRequestV1 {
             room_id: self.room_id.clone(),
             timer_id: self.timer_id.clone(),
             generation: self.generation,
+            scheduled_for: self.scheduled_for.clone(),
         }))
     }
 
@@ -888,6 +899,7 @@ impl PreparedAuthorityWitnessV1 {
     /// Returns stale generation for revocation, expiry, Principal disablement,
     /// Membership/Runner generation drift, or any changed scope/profile fact.
     /// Malformed snapshots and backwards trusted time fail closed.
+    #[allow(clippy::infallible_destructuring_match)]
     pub fn revalidate_current(
         &self,
         snapshot: &AuthoritySnapshotV1,
@@ -1051,6 +1063,43 @@ pub struct PreparedActivationDecisionV1 {
 redacted_debug!(PreparedActivationDecisionV1);
 
 impl PreparedActivationDecisionV1 {
+    /// Builds the default versioned host policy evidence for one validated
+    /// Attention.  Policy is operational and intentionally absent from the
+    /// Transition hash; `SQLite` installs the resulting intent in the same
+    /// transaction as the causing Transition.
+    pub(crate) fn from_attention(
+        signal: &CanonicalJsonV1,
+        cause_room_seq: RoomSequenceV1,
+    ) -> Result<Self, CanonicalJsonError> {
+        let attention = crate::ActivationAttentionV1::from_canonical(signal)
+            .map_err(|error| CanonicalJsonError::TypedDecode(error.to_string()))?;
+        let decision = crate::ActivationDecisionV1 {
+            decision_id: format!(
+                "decision:{}:{}",
+                cause_room_seq.get(),
+                attention.deduplication_key
+            ),
+            activation_id: Some(format!(
+                "activation:{}:{}:{}",
+                cause_room_seq.get(),
+                attention.target_member_id,
+                attention.deduplication_key
+            )),
+            cause_room_seq,
+            attention,
+            policy: crate::ActivationPolicyDecisionV1 {
+                policy_revision: 1,
+                disposition: crate::ActivationPolicyDispositionV1::Intent,
+                maximum_lease_ms: 30_000,
+            },
+        };
+        let canonical_decision_bytes = encode(&decision)?;
+        Ok(Self {
+            decision_id: decision.decision_id,
+            target_member_id: Some(decision.attention.target_member_id.clone()),
+            canonical_decision_bytes,
+        })
+    }
     #[must_use]
     pub fn decision_id(&self) -> &str {
         &self.decision_id
@@ -1065,6 +1114,16 @@ impl PreparedActivationDecisionV1 {
     pub fn canonical_decision_bytes(&self) -> &[u8] {
         &self.canonical_decision_bytes
     }
+}
+
+fn prepare_activation_decisions(
+    transition: &TransitionV1,
+) -> Result<Vec<PreparedActivationDecisionV1>, CanonicalJsonError> {
+    transition
+        .ordered_attention_signals()
+        .iter()
+        .map(|signal| PreparedActivationDecisionV1::from_attention(signal, transition.room_seq()))
+        .collect()
 }
 
 /// Exact initial/current scheduled Timer row, including prepared payload bytes.
@@ -1847,6 +1906,7 @@ fn validate_semantic_result(
             identity.room_id == request.room_id
                 && identity.timer_id == request.timer_id
                 && identity.generation == request.generation
+                && identity.scheduled_for == request.scheduled_for
                 && &request.room_id == result_room_id
                 && valid_transition_result(
                     basis,
@@ -2436,7 +2496,7 @@ impl PreparedRoomCommitV1 {
                         .map(PreparedTimerMutationV1::from_change)
                         .collect::<Result<Vec<_>, _>>()?,
                     delivery_consequences,
-                    activation_decisions: Vec::new(),
+                    activation_decisions: prepare_activation_decisions(transition)?,
                 };
                 (
                     PreparedExistingIntentV1::Advance(Box::new(persistence)),
@@ -2593,7 +2653,7 @@ impl PreparedRoomCommitV1 {
                 .map(PreparedTimerMutationV1::from_change)
                 .collect::<Result<Vec<_>, _>>()?,
             delivery_consequences,
-            activation_decisions: Vec::new(),
+            activation_decisions: prepare_activation_decisions(transition)?,
         };
         let identity = request.operation_identity();
         let request_hash = request.canonical_request_hash()?;
@@ -2629,6 +2689,47 @@ impl PreparedRoomCommitV1 {
             semantic_result,
             pending_transition: Some(prepared),
         })
+    }
+
+    /// Seals one exact Timer firing using the `HostOperator` Room-root grant.
+    /// The grant binds the Room and request hash; this method then delegates
+    /// to the existing exact Timer witness and commit-fence preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the grant targets another Room/request, or if the
+    /// prepared Timer transition or any persistence witness is invalid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_authorized_timer_fired(
+        trace: &CoreTraceV1,
+        request: &TimerFiredRequestV1,
+        prepared: PreparedRoomTransitionV1,
+        transition_id: TransitionId,
+        integrity_generation: IntegrityGenerationV1,
+        authority: AuthorizedTimerFiredV1,
+        current_frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        let request_hash = request.canonical_request_hash()?;
+        if authority.room_id() != request.room_id() || authority.request_hash() != &request_hash {
+            return Err(PrepareRoomWriteErrorV1::AuthorityIdentityMismatch);
+        }
+        let expected_use = AuthorityUseV1::TimerFired {
+            room_id: request.room_id().clone(),
+            request_hash,
+        };
+        let authority_witness = PreparedAuthorityWitnessV1::from_fence_for_use(
+            authority.into_fence_facts(),
+            &expected_use,
+        )?;
+        Self::for_timer_fired(
+            trace,
+            request,
+            prepared,
+            transition_id,
+            integrity_generation,
+            authority_witness,
+            current_frame_heads,
+        )
     }
 
     /// Authorizes, normalizes, reduces, and seals one exact existing-Room
@@ -2763,7 +2864,7 @@ impl PreparedRoomCommitV1 {
                         .map(PreparedTimerMutationV1::from_change)
                         .collect::<Result<Vec<_>, _>>()?,
                     delivery_consequences,
-                    activation_decisions: Vec::new(),
+                    activation_decisions: prepare_activation_decisions(transition)?,
                 };
                 (
                     PreparedExistingIntentV1::Advance(Box::new(persistence)),

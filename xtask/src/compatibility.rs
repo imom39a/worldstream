@@ -1,8 +1,8 @@
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use worldstream_core::{PackDigestV1, builtin_counter_registry};
+use worldstream_core::{PackDigestV1, builtin_agent_heist_registry, builtin_counter_registry};
 
 use crate::counter_dependency_closure;
 
@@ -34,8 +34,118 @@ pub fn verify(repository_root: &Path) -> Result<()> {
         .with_context(|| format!("invalid JSON in {}", json_path.display()))?;
     verify_required_identity(&manifest)?;
     verify_workspace_toolchain(repository_root, &manifest)?;
+    verify_embedded_storage_identity(&manifest)?;
     counter_dependency_closure::verify(repository_root)?;
     verify_embedded_counter_registry(&manifest)?;
+    verify_embedded_agent_heist_registry(&manifest)?;
+    Ok(())
+}
+
+fn verify_embedded_storage_identity(manifest: &Value) -> Result<()> {
+    let sqlite = &manifest["storage"]["sqlite"];
+    if sqlite["version"] != worldstream_sqlite::SQLITE_VERSION
+        || sqlite["source_id"] != worldstream_sqlite::SQLITE_SOURCE_ID
+        || sqlite["bundle_source_inventory_revision"]
+            != worldstream_sqlite::RUSQLITE_BUNDLE_REVISION
+        || sqlite["bundle_source_inventory_digest"]
+            != worldstream_sqlite::SQLITE_BUNDLE_SOURCE_INVENTORY_DIGEST
+        || sqlite["bundle_source_inventory_status"] != "resolved"
+    {
+        bail!("manifest bundled SQLite identity differs from the embedded adapter");
+    }
+
+    let postgres = &manifest["storage"]["postgresql"];
+    let verified_patches = postgres["release_verified_patches"]
+        .as_array()
+        .context("manifest has no PostgreSQL release_verified_patches array")?;
+    if postgres["minimum_patch"] != worldstream_postgres::POSTGRES_MINIMUM_PATCH
+        || verified_patches.as_slice()
+            != [Value::String(
+                worldstream_postgres::POSTGRES_MINIMUM_PATCH.to_owned(),
+            )]
+        || postgres["release_verified_patches_status"] != "resolved"
+    {
+        bail!("manifest PostgreSQL patch identity differs from the embedded adapter");
+    }
+
+    let migrations = &manifest["migrations"];
+    if migrations["logical_history_id"] != worldstream_sqlite::LOGICAL_HISTORY_ID
+        || migrations["logical_history_id"] != worldstream_postgres::LOGICAL_HISTORY_ID
+    {
+        bail!("manifest logical migration history differs from the adapters");
+    }
+    let embedded_schema_fingerprint =
+        worldstream_postgres::schema_contract_fingerprint().to_string();
+    if migrations["schema_contract_fingerprint"].as_str()
+        != Some(embedded_schema_fingerprint.as_str())
+        || migrations["schema_contract_fingerprint_status"] != "implementation_verified"
+    {
+        bail!(
+            "manifest schema fingerprint differs from the PostgreSQL adapter: expected {embedded_schema_fingerprint}, found {}",
+            migrations["schema_contract_fingerprint"]
+        );
+    }
+
+    let entries = migrations["entries"]
+        .as_array()
+        .context("manifest has no migrations.entries array")?;
+    let mut rows = BTreeMap::new();
+    for row in entries {
+        let id = row["id"]
+            .as_str()
+            .context("manifest migration entry has no string id")?;
+        if rows.insert(id, row).is_some() {
+            bail!("manifest contains duplicate migration id {id}");
+        }
+        if row["status"] != "implementation_verified" {
+            bail!("manifest migration {id} is not implementation_verified");
+        }
+    }
+
+    let sqlite_history = worldstream_sqlite::migration_history();
+    let postgres_history = worldstream_postgres::migration_history();
+    let sqlite_by_id = sqlite_history
+        .iter()
+        .map(|descriptor| (descriptor.id, descriptor.checksum().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let postgres_by_id = postgres_history
+        .iter()
+        .map(|descriptor| (descriptor.id, descriptor.checksum().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let expected_ids = sqlite_by_id
+        .keys()
+        .chain(postgres_by_id.keys())
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if rows
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected_ids
+    {
+        bail!("manifest migration IDs differ from the typed adapter histories");
+    }
+
+    for (id, row) in rows {
+        let sqlite_checksum = row["sqlite_checksum"]
+            .as_str()
+            .context("manifest migration has no string sqlite_checksum")?;
+        let postgres_checksum = row["postgresql_checksum"]
+            .as_str()
+            .context("manifest migration has no string postgresql_checksum")?;
+        match sqlite_by_id.get(id) {
+            Some(expected) if sqlite_checksum == expected => {}
+            Some(_) => bail!("manifest SQLite migration checksum differs for {id}"),
+            None if sqlite_checksum.is_empty() => {}
+            None => bail!("non-SQLite migration {id} has a SQLite checksum"),
+        }
+        match postgres_by_id.get(id) {
+            Some(expected) if postgres_checksum == expected => {}
+            Some(_) => bail!("manifest PostgreSQL migration checksum differs for {id}"),
+            None if postgres_checksum.is_empty() => {}
+            None => bail!("non-PostgreSQL migration {id} has a PostgreSQL checksum"),
+        }
+    }
     Ok(())
 }
 
@@ -120,6 +230,99 @@ fn verify_embedded_counter_registry(manifest: &Value) -> Result<()> {
             || row["required_for_release"] != true
         {
             bail!("manifest Counter {expected_version} status contract is invalid");
+        }
+    }
+    Ok(())
+}
+
+fn verify_embedded_agent_heist_registry(manifest: &Value) -> Result<()> {
+    let rows = manifest["pack_executors"]
+        .as_array()
+        .context("manifest has no pack_executors array")?;
+    let heist_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row["pack_id"] == "worldstream.agent-heist")
+        .collect();
+    let registry =
+        builtin_agent_heist_registry().context("embedded Agent Heist registry is invalid")?;
+    if heist_rows.len() != 2 {
+        bail!("manifest must contain exactly retained-only and active Agent Heist executor rows");
+    }
+
+    for (expected_version, expected_selectable) in [("0.0.1", false), ("0.1.0", true)] {
+        let row = heist_rows
+            .iter()
+            .copied()
+            .find(|row| row["explanatory_version"] == expected_version)
+            .with_context(|| format!("manifest is missing Agent Heist {expected_version}"))?;
+        let digest_text = row["revision_digest"]
+            .as_str()
+            .context("Agent Heist manifest row has no revision_digest")?;
+        let digest: PackDigestV1 = digest_text
+            .parse()
+            .context("Agent Heist manifest row has a malformed revision_digest")?;
+        let retained = registry.load_retained(&digest).with_context(|| {
+            format!("manifest Agent Heist {expected_version} is not the embedded retained executor")
+        })?;
+        let descriptor = retained.descriptor();
+        let revision_lock = retained.revision_lock();
+        let revision_digest = descriptor.revision_digest.to_string();
+
+        let exact = [
+            ("pack_id", descriptor.pack_id.as_str()),
+            (
+                "explanatory_version",
+                descriptor.explanatory_version.as_str(),
+            ),
+            ("host_contract_id", descriptor.host_contract.as_str()),
+            ("revision_lock_id", revision_lock.revision_lock_id.as_str()),
+            ("revision_digest", revision_digest.as_str()),
+        ];
+        for (field, embedded) in exact {
+            if row[field].as_str() != Some(embedded) {
+                bail!(
+                    "manifest Agent Heist {expected_version} {field} differs from embedded executor"
+                );
+            }
+        }
+
+        let digests = [
+            (
+                "descriptor_digest",
+                revision_lock.descriptor_digest.to_string(),
+            ),
+            (
+                "executor_artifact_digest",
+                retained.executor_artifact_digest().to_string(),
+            ),
+            (
+                "schema_bundle_digest",
+                revision_lock.schema_bundle_digest.to_string(),
+            ),
+            (
+                "codec_bundle_digest",
+                revision_lock.codec_bundle_digest.to_string(),
+            ),
+            (
+                "golden_corpus_digest",
+                retained.golden_corpus_digest().to_string(),
+            ),
+        ];
+        for (field, embedded) in digests {
+            if row[field].as_str() != Some(embedded.as_str()) {
+                bail!(
+                    "manifest Agent Heist {expected_version} {field} differs from embedded executor"
+                );
+            }
+        }
+
+        if row["revision_digest_algorithm"] != "blake3"
+            || row["status"] != "resolved"
+            || row["runnable_for_retained_rooms"] != true
+            || row["selectable_for_new_rooms"] != expected_selectable
+            || row["required_for_release"] != true
+        {
+            bail!("manifest Agent Heist {expected_version} status contract is invalid");
         }
     }
     Ok(())
@@ -326,7 +529,52 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{canonical_from_toml, sort_json, verify_node_workspace, verify_python_workspace};
+    use super::{
+        canonical_from_toml, sort_json, verify_embedded_storage_identity, verify_node_workspace,
+        verify_python_workspace,
+    };
+
+    #[test]
+    fn embedded_storage_identity_is_exact_and_rejects_non_applicable_checksums() {
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../compatibility.json"))
+                .unwrap_or_else(|error| unreachable!("parse compatibility fixture: {error}"));
+        assert!(verify_embedded_storage_identity(&manifest).is_ok());
+
+        let postgres_only = manifest["migrations"]["entries"]
+            .as_array_mut()
+            .and_then(|entries| {
+                entries
+                    .iter_mut()
+                    .find(|row| row["id"] == "0003-kernel-conformance-v1")
+            })
+            .unwrap_or_else(|| unreachable!("PostgreSQL-only migration fixture"));
+        postgres_only["sqlite_checksum"] = serde_json::Value::String(
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        );
+        assert!(verify_embedded_storage_identity(&manifest).is_err());
+    }
+
+    #[test]
+    fn embedded_storage_identity_rejects_stale_schema_fingerprint() {
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../compatibility.json"))
+                .unwrap_or_else(|error| unreachable!("parse compatibility fixture: {error}"));
+        manifest["migrations"]["schema_contract_fingerprint"] = serde_json::Value::String(
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        );
+
+        let error = verify_embedded_storage_identity(&manifest)
+            .err()
+            .unwrap_or_else(|| {
+                unreachable!("a stale schema fingerprint must fail compatibility verification")
+            });
+        assert!(
+            error
+                .to_string()
+                .contains("schema fingerprint differs from the PostgreSQL adapter")
+        );
+    }
 
     #[test]
     fn canonicalization_sorts_nested_keys_and_keeps_array_order() {

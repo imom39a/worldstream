@@ -1,0 +1,26 @@
+[package]
+name = "worldstream-conformance"
+description = "Shared black-box kernel conformance scenarios and canonical result transcripts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+live-conformance = []
+
+[dependencies]
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0", features = ["conformance-tracer"] }
+
+[dev-dependencies]
+worldstream-postgres = { path = "../worldstream-postgres", version = "=0.1.0", features = ["conformance-tracer"] }
+worldstream-sqlite = { path = "../worldstream-sqlite", version = "=0.1.0" }
+
+[lints]
+workspace = true

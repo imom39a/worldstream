@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "worldstream-sdk"
 version = "0.1.0"
-description = "WorldStream Python SDK package skeleton"
+description = "Bounded asynchronous client for the WorldStream Room protocol"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [

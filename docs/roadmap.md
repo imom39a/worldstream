@@ -76,7 +76,7 @@ If these two stories work without hiding domain special cases in core, the proje
 - vector search and automatic summaries;
 - marketplace, payments, crypto, wallets, or token;
 - NATS, Redis, Kafka, clustering, multiple live WorldStream processes, federation, or multi-region writes;
-- live storage switching, dual writes, reverse or room-at-a-time transfer, automatic failover, provider HA/services as a correctness dependency, cloud resources, or release-pipeline implementation;
+- live storage switching, dual writes, reverse or room-at-a-time transfer, automatic failover, provider HA/services as a correctness dependency, or cloud resources;
 - ARM64 release artifacts, macOS binaries, Windows containers, MSI/MSIX, Windows Service integration, package repositories, or Kubernetes/Helm;
 - production SaaS tenancy and billing.
 
@@ -92,7 +92,7 @@ Build:
 - pin Rust toolchain and dependencies;
 - add format, Clippy, unit-test, dependency-audit, and secret-scan CI;
 - define one checksummed forward-only logical migration history with SQLite and PostgreSQL 17 execution harnesses;
-- maintain the reviewed specification-only `compatibility.toml` and semantically identical canonical `compatibility.json`; populate exact migration, codec/executor, artifact, and evidence digests and set `release_ready = true` only in a genuinely gated release;
+- maintain reviewed `compatibility.toml` and semantically identical canonical `compatibility.json`; populate exact migration and codec/executor identities, declare the closed detached artifact/evidence inventory, and set `release_ready = true` only when the embedded contract is complete; verify exact final subject digests through the signed detached release manifest and provenance;
 - define canonical JSON, ID, room sequence, frame cursor, hash, error, and message envelope types;
 - define ActivityPackV1 (`descriptor`, `initialize`, `reduce`, `view`, `observe`), PackRevisionLockV1, exact codecs, Action Offers, and embedded selectable/runnable registry;
 - implement worldstreamd health, readiness, version, and one WebSocket handshake;

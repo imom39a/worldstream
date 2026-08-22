@@ -689,6 +689,50 @@ fn timer_plan() -> (CoreTraceV1, PreparedRoomCommitV1) {
     (trace, plan)
 }
 
+#[test]
+fn authorized_timer_fired_sealer_delegates_exact_timer_witness() {
+    let (trace, plan) = timer_plan();
+    let request = match plan.input_witness() {
+        PreparedOperationInputWitnessV1::TimerFired(witness) => witness.request.clone(),
+        _ => unreachable!("fixture Timer plan retained a non-Timer witness"),
+    };
+    let (authority, presented) = global_host_authority();
+    let grant = authority
+        .authorize_timer_fired(&presented, &request, parsed("2026-08-15T12:00:00Z"))
+        .unwrap_or_else(|error| unreachable!("fixture Timer authority: {error}"));
+    let prepared_transition = trace
+        .prepare(RecordedStimulusV1::TimerFired(request.recorded_stimulus()))
+        .unwrap_or_else(|error| unreachable!("fixture Timer preparation: {error}"));
+    let frame_heads = trace
+        .core_state()
+        .memberships()
+        .keys()
+        .cloned()
+        .map(|member| (member, 0))
+        .collect::<BTreeMap<_, _>>();
+    let sealed = PreparedRoomCommitV1::for_authorized_timer_fired(
+        &trace,
+        &request,
+        prepared_transition,
+        parsed("01ARZ3NDEKTSV4RRFFQ69G5FC7"),
+        IntegrityGenerationV1::new(1)
+            .unwrap_or_else(|error| unreachable!("fixture integrity generation: {error}")),
+        grant,
+        &frame_heads,
+    )
+    .unwrap_or_else(|error| unreachable!("fixture authorized Timer plan: {error}"));
+    assert!(matches!(
+        sealed.input_witness(),
+        PreparedOperationInputWitnessV1::TimerFired(_)
+    ));
+    assert!(
+        sealed
+            .authority_witness()
+            .authority_snapshot_query()
+            .is_some()
+    );
+}
+
 enum CommitReply {
     Exact,
     Fixed(RoomCommitResolutionV1),

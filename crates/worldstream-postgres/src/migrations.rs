@@ -1,0 +1,815 @@
+//! PostgreSQL migration identity, verification, and provider-neutral fixtures.
+
+use std::{fmt, sync::Mutex};
+
+use thiserror::Error;
+use worldstream_core::Blake3DigestV1;
+
+/// Stable logical migration history shared by the storage profiles.
+pub const LOGICAL_HISTORY_ID: &str = "worldstream-storage-v1";
+/// Stable identifier for the current schema contract.
+pub const SCHEMA_CONTRACT_ID: &str = "worldstream-postgresql-room-commit-v1";
+/// The migration that created the original PostgreSQL room-commit schema.
+pub const INITIAL_MIGRATION_ID: &str = "0001-initial-storage-schema";
+/// The migration that made migration metadata and operational authority explicit.
+pub const AUTHORITY_MIGRATION_ID: &str = "0002-operational-authority-v1";
+/// The migration that adds the shared timer, delivery, receipt, Activation,
+/// snapshot, and integrity witness rows used by the conformance boundary.
+pub const KERNEL_CONFORMANCE_MIGRATION_ID: &str = "0003-kernel-conformance-v1";
+/// The migration that closes the commit-time witness and receipt uniqueness
+/// gaps in the kernel conformance schema.
+pub const KERNEL_PARITY_MIGRATION_ID: &str = "0004-kernel-parity-witnesses-v1";
+/// The migration that adds the byte-preserving transfer publication staging
+/// rows. These rows are an import seam, not semantic Room truth.
+pub const TRANSFER_PUBLICATION_MIGRATION_ID: &str = "0005-transfer-publication-v1";
+/// The migration that adds one durable target-wide fence for transfer imports.
+pub const TRANSFER_TARGET_FENCE_MIGRATION_ID: &str = "0006-transfer-target-fence-v1";
+/// The migration that adds the target-wide canonical deployment identity row.
+pub const DEPLOYMENT_METADATA_MIGRATION_ID: &str = "0007-deployment-metadata-v1";
+/// The migration that persists the source-authoritative complete pack/resource
+/// identity witness used by whole-deployment transfer.
+pub const DEPLOYMENT_IDENTITY_MIGRATION_ID: &str = "0008-deployment-identities-v1";
+/// The forward migration that installs the production Core authority facts.
+pub const AUTHORITY_FACTS_MIGRATION_ID: &str = "0009-authority-facts-v1";
+
+/// A migration body and its stable identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MigrationDescriptor {
+    /// One-based, contiguous migration version.
+    pub version: i32,
+    /// Stable logical identifier.
+    pub id: &'static str,
+    /// Backend-specific SQL body. It is never edited after release.
+    pub sql: &'static str,
+}
+
+impl MigrationDescriptor {
+    /// Returns the checksum that must be stored with this migration.
+    #[must_use]
+    pub fn checksum(self) -> Blake3DigestV1 {
+        Blake3DigestV1::hash(self.sql.as_bytes())
+    }
+}
+
+/// The migration ledger row as read from PostgreSQL or the local fixture seam.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationRecord {
+    /// Applied migration version.
+    pub version: i32,
+    /// Stored migration identifier.
+    pub migration_id: String,
+    /// Stored SQL checksum.
+    pub checksum: Vec<u8>,
+    /// Logical history metadata introduced by migration 2.
+    pub logical_history_id: Option<String>,
+    /// Schema fingerprint metadata introduced by migration 2.
+    pub schema_contract_fingerprint: Option<Vec<u8>>,
+}
+
+impl MigrationRecord {
+    /// Builds a legacy migration row, useful for testing an interrupted upgrade.
+    #[must_use]
+    pub fn legacy(version: i32, migration_id: impl Into<String>, checksum: &[u8]) -> Self {
+        Self {
+            version,
+            migration_id: migration_id.into(),
+            checksum: checksum.to_vec(),
+            logical_history_id: None,
+            schema_contract_fingerprint: None,
+        }
+    }
+}
+
+/// The canonical schema fingerprint material. It is independent of PostgreSQL
+/// OIDs, physical indexes, and provider-specific catalog details.
+pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
+    "worldstream_schema_migrations(",
+    "version:integer:NO,",
+    "migration_id:text:NO,",
+    "checksum:bytea:NO,",
+    "logical_history_id:text:YES,",
+    "schema_contract_fingerprint:bytea:YES);",
+    "worldstream_operation_guards(",
+    "identity_bytes:bytea:NO,request_hash:bytea:NO,room_id:text:YES,receipt_bytes:bytea:YES);",
+    "worldstream_room_roots(",
+    "room_id:text:NO,head_bytes:bytea:NO,integrity_generation:bigint:NO,integrity_status:text:NO);",
+    "worldstream_genesis(",
+    "room_id:text:NO,pack_revision_lock_bytes:bytea:NO,genesis_bytes:bytea:NO);",
+    "worldstream_materializations(",
+    "room_id:text:NO,core_state_bytes:bytea:NO,activity_state_bytes:bytea:NO);",
+    "worldstream_members(",
+    "room_id:text:NO,member_id:text:NO,membership_bytes:bytea:NO,frame_head:bigint:NO,",
+    "membership_generation:bigint:NO,retained_frame_floor:bigint:NO,last_ack_frame_seq:bigint:YES,",
+    "reset_required_through:bigint:YES);",
+    "worldstream_timers(",
+    "room_id:text:NO,timer_id:text:NO,generation:bigint:NO,scheduled_for:text:NO,",
+    "payload_bytes:bytea:NO,state:text:NO);",
+    "worldstream_transitions(",
+    "room_id:text:NO,room_seq:bigint:NO,transition_bytes:bytea:NO);",
+    "worldstream_frames(",
+    "room_id:text:NO,member_id:text:NO,frame_seq:bigint:NO,cause_room_seq:bigint:NO,",
+    "payload_bytes:bytea:NO,payload_hash:bytea:NO);",
+    "worldstream_observation_consequences(",
+    "room_id:text:NO,member_id:text:NO,cause_room_seq:bigint:NO,consequence_kind:text:NO,",
+    "payload_bytes:bytea:YES,projection_hash:bytea:YES);",
+    "worldstream_activation_decisions(",
+    "room_id:text:NO,cause_room_seq:bigint:NO,decision_id:text:NO,",
+    "target_member_id:text:YES,decision_bytes:bytea:NO);",
+    "worldstream_activation_intents(",
+    "activation_id:text:NO,room_id:text:NO,cause_room_seq:bigint:NO,decision_id:text:NO,",
+    "target_member_id:text:NO,reason_code:text:NO,deduplication_key:text:NO,priority:bigint:NO,",
+    "semantic_deadline:text:YES,policy_revision:bigint:NO,state:text:NO,intent_generation:bigint:NO,",
+    "lease_generation:bigint:NO,runner_id:text:YES,claim_id:text:YES,lease_until:text:YES,",
+    "context_hash:bytea:YES,context_bytes:bytea:YES,context_retired:boolean:NO);",
+    "worldstream_activation_operation_receipts(",
+    "room_id:text:NO,operation_id:text:NO,operation_kind:text:NO,canonical_request_hash:bytea:NO,",
+    "activation_id:text:YES,result_code:text:NO,result_bytes:bytea:NO,context_hash:bytea:YES,",
+    "context_bytes:bytea:YES);",
+    "worldstream_room_snapshots(",
+    "room_id:text:NO,room_seq:bigint:NO,snapshot_schema_version:text:NO,",
+    "genesis_or_transition_hash:text:NO,core_schema_version:text:NO,pack_digest:text:NO,",
+    "core_state_hash:text:NO,activity_state_hash:text:NO,authoritative_state_hash:text:NO,",
+    "complete_head_bytes:bytea:NO,core_state_bytes:bytea:NO,activity_state_bytes:bytea:NO);",
+    "worldstream_semantic_receipts(",
+    "identity_bytes:bytea:NO,operation_kind:text:NO,canonical_request_hash:bytea:NO,",
+    "basis_complete_head_bytes:bytea:YES,semantic_input_bytes:bytea:NO,semantic_time_bytes:bytea:NO,",
+    "resolution_kind:text:NO,transition_seq:bigint:YES,receipt_bytes:bytea:NO,room_id:text:YES);",
+    "worldstream_integrity_incidents(",
+    "room_id:text:NO,incident_seq:bigint:NO,generation:bigint:NO,status:text:NO,reason_code:text:NO,",
+    "details_bytes:bytea:YES);",
+    "worldstream_authority_fences(",
+    "witness_id:text:NO,authenticated_principal:text:NO,generation:bigint:NO,",
+    "scope_revocation_hash:bytea:NO,active:boolean:NO);",
+    "worldstream_authority_state(",
+    "authority_id:boolean:NO);",
+    "worldstream_authority_principals(",
+    "principal_id:text:NO,principal_kind:text:NO,authority_status:text:NO,",
+    "principal_generation:bigint:NO);",
+    "worldstream_authority_runners(",
+    "runner_id:text:NO,owner_principal_id:text:NO,authority_status:text:NO,",
+    "runner_generation:bigint:NO);",
+    "worldstream_authority_capabilities(",
+    "capability_id:text:NO,token_hash:bytea:NO,principal_id:text:NO,profile_kind:text:NO,",
+    "target_room_id:text:YES,target_member_id:text:YES,runner_id:text:YES,",
+    "authority_generation:bigint:NO,expires_at:text:YES,revoked_at:text:YES);",
+    "worldstream_authority_capability_scopes(",
+    "capability_id:text:NO,scope:text:NO);",
+    "worldstream_authority_runner_capability_memberships(",
+    "capability_id:text:NO,room_id:text:NO,member_id:text:NO);",
+    "worldstream_authority_change_receipts(",
+    "change_id:text:NO,authenticated_principal:text:YES,request_hash:bytea:NO,",
+    "result_kind:text:NO,target_kind:text:NO,target_id:text:NO,secondary_target_id:text:YES,",
+    "resulting_generation:bigint:NO,checked_at:text:NO);",
+    "worldstream_authority_audit(",
+    "audit_seq:bigint:NO,change_id:text:NO,actor_principal_id:text:YES,target_kind:text:NO,",
+    "target_id:text:NO,secondary_target_id:text:YES,change_kind:text:NO,",
+    "prior_generation:bigint:YES,resulting_generation:bigint:NO,checked_at:text:NO,",
+    "reason_code:text:YES,request_hash:bytea:NO);",
+    "worldstream_transfer_imports(",
+    "bundle_hash:bytea:NO,target_fingerprint:bytea:NO,state:text:NO);",
+    "worldstream_transfer_chunks(",
+    "bundle_hash:bytea:NO,chunk_start:bigint:NO,chunk_end:bigint:NO,",
+    "chunk_digest:bytea:NO,records_bytes:bytea:NO);",
+    "worldstream_transfer_target_fence(",
+    "fence_id:boolean:NO,bundle_hash:bytea:NO,target_fingerprint:bytea:NO);",
+    "worldstream_deployment_metadata(",
+    "target_id:boolean:NO,deployment_lineage_bytes:bytea:NO,storage_epoch_bytes:bytea:NO,",
+    "storage_epoch:bigint:NO);",
+    "worldstream_deployment_identity_metadata(",
+    "target_id:boolean:NO,identity_digest:bytea:NO,pack_set_digest:bytea:NO,",
+    "resource_set_digest:bytea:NO,canonical_bytes:bytea:NO);",
+    "worldstream_deployment_pack_identities(",
+    "pack_id:text:NO,revision:text:NO,pack_digest:bytea:NO);",
+    "worldstream_deployment_resource_identities(",
+    "resource_kind:text:NO,resource_identity:text:NO,size_bytes:bigint:NO,",
+    "resource_digest:bytea:NO);",
+);
+
+/// Computes the release-published schema fingerprint.
+#[must_use]
+pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
+    Blake3DigestV1::hash(SCHEMA_FINGERPRINT_MATERIAL.as_bytes())
+}
+
+/// The complete ordered migration history.
+#[must_use]
+pub fn migration_history() -> [MigrationDescriptor; 9] {
+    [
+        MigrationDescriptor {
+            version: 1,
+            id: INITIAL_MIGRATION_ID,
+            sql: super::SCHEMA,
+        },
+        MigrationDescriptor {
+            version: 2,
+            id: AUTHORITY_MIGRATION_ID,
+            sql: MIGRATION_0002_SQL,
+        },
+        MigrationDescriptor {
+            version: 3,
+            id: KERNEL_CONFORMANCE_MIGRATION_ID,
+            sql: MIGRATION_0003_SQL,
+        },
+        MigrationDescriptor {
+            version: 4,
+            id: KERNEL_PARITY_MIGRATION_ID,
+            sql: MIGRATION_0004_SQL,
+        },
+        MigrationDescriptor {
+            version: 5,
+            id: TRANSFER_PUBLICATION_MIGRATION_ID,
+            sql: MIGRATION_0005_SQL,
+        },
+        MigrationDescriptor {
+            version: 6,
+            id: TRANSFER_TARGET_FENCE_MIGRATION_ID,
+            sql: MIGRATION_0006_SQL,
+        },
+        MigrationDescriptor {
+            version: 7,
+            id: DEPLOYMENT_METADATA_MIGRATION_ID,
+            sql: MIGRATION_0007_SQL,
+        },
+        MigrationDescriptor {
+            version: 8,
+            id: DEPLOYMENT_IDENTITY_MIGRATION_ID,
+            sql: MIGRATION_0008_SQL,
+        },
+        MigrationDescriptor {
+            version: 9,
+            id: AUTHORITY_FACTS_MIGRATION_ID,
+            sql: MIGRATION_0009_SQL,
+        },
+    ]
+}
+
+/// DDL and metadata-shape change for the second migration.
+pub const MIGRATION_0002_SQL: &str = r"
+ALTER TABLE worldstream_schema_migrations
+    ADD COLUMN logical_history_id text;
+ALTER TABLE worldstream_schema_migrations
+    ADD COLUMN schema_contract_fingerprint bytea;
+CREATE TABLE IF NOT EXISTS worldstream_authority_fences (
+    witness_id text PRIMARY KEY,
+    authenticated_principal text NOT NULL,
+    generation bigint NOT NULL CHECK (generation > 0),
+    scope_revocation_hash bytea NOT NULL,
+    active boolean NOT NULL
+);
+";
+
+/// Adds only storage witnesses whose bytes are already sealed by Core. The
+/// migration does not introduce a second source of truth or any provider
+/// callback surface.
+pub const MIGRATION_0003_SQL: &str = r"
+ALTER TABLE worldstream_members
+    ADD COLUMN IF NOT EXISTS membership_generation bigint NOT NULL DEFAULT 1 CHECK (membership_generation > 0),
+    ADD COLUMN IF NOT EXISTS retained_frame_floor bigint NOT NULL DEFAULT 1 CHECK (retained_frame_floor > 0),
+    ADD COLUMN IF NOT EXISTS last_ack_frame_seq bigint CHECK (last_ack_frame_seq IS NULL OR last_ack_frame_seq > 0),
+    ADD COLUMN IF NOT EXISTS reset_required_through bigint CHECK (reset_required_through IS NULL OR reset_required_through >= 0);
+CREATE UNIQUE INDEX worldstream_one_scheduled_timer_generation
+    ON worldstream_timers(room_id, timer_id) WHERE state = 'scheduled';
+CREATE TABLE worldstream_observation_consequences (
+    room_id text NOT NULL,
+    member_id text NOT NULL,
+    cause_room_seq bigint NOT NULL,
+    consequence_kind text NOT NULL CHECK (consequence_kind IN ('reset_required', 'visibility_lost')),
+    payload_bytes bytea,
+    projection_hash bytea,
+    PRIMARY KEY (room_id, member_id, cause_room_seq)
+);
+CREATE TABLE worldstream_activation_intents (
+    activation_id text PRIMARY KEY,
+    room_id text NOT NULL,
+    cause_room_seq bigint NOT NULL CHECK (cause_room_seq > 0),
+    decision_id text NOT NULL,
+    target_member_id text NOT NULL,
+    reason_code text NOT NULL,
+    deduplication_key text NOT NULL,
+    priority bigint NOT NULL CHECK (priority >= 0),
+    semantic_deadline text,
+    policy_revision bigint NOT NULL CHECK (policy_revision > 0),
+    state text NOT NULL CHECK (state IN ('pending', 'leased', 'completed', 'expired', 'cancelled')),
+    intent_generation bigint NOT NULL CHECK (intent_generation > 0),
+    lease_generation bigint NOT NULL CHECK (lease_generation >= 0),
+    runner_id text,
+    claim_id text,
+    lease_until text,
+    context_hash bytea CHECK (context_hash IS NULL OR octet_length(context_hash) = 32),
+    context_bytes bytea,
+    context_retired boolean NOT NULL DEFAULT false,
+    CHECK ((state = 'leased') = (runner_id IS NOT NULL AND claim_id IS NOT NULL AND lease_until IS NOT NULL)),
+    CHECK ((context_hash IS NULL AND context_bytes IS NULL) OR (context_hash IS NOT NULL AND (context_bytes IS NOT NULL OR context_retired)))
+);
+CREATE UNIQUE INDEX worldstream_activation_dedup
+    ON worldstream_activation_intents(room_id, cause_room_seq, target_member_id, deduplication_key);
+CREATE UNIQUE INDEX worldstream_activation_one_live_lease
+    ON worldstream_activation_intents(room_id, target_member_id) WHERE state = 'leased';
+CREATE TABLE worldstream_activation_operation_receipts (
+    room_id text NOT NULL,
+    operation_id text NOT NULL,
+    operation_kind text NOT NULL CHECK (operation_kind IN ('offer', 'claim', 'renew', 'complete', 'release')),
+    canonical_request_hash bytea NOT NULL CHECK (octet_length(canonical_request_hash) = 32),
+    activation_id text,
+    result_code text NOT NULL,
+    result_bytes bytea NOT NULL,
+    context_hash bytea CHECK (context_hash IS NULL OR octet_length(context_hash) = 32),
+    context_bytes bytea,
+    PRIMARY KEY (room_id, operation_id)
+);
+CREATE TABLE worldstream_room_snapshots (
+    room_id text NOT NULL,
+    room_seq bigint NOT NULL CHECK (room_seq >= 0),
+    snapshot_schema_version text NOT NULL CHECK (snapshot_schema_version = 'worldstream/paired-snapshot/v1'),
+    genesis_or_transition_hash text NOT NULL,
+    core_schema_version text NOT NULL,
+    pack_digest text NOT NULL,
+    core_state_hash text NOT NULL,
+    activity_state_hash text NOT NULL,
+    authoritative_state_hash text NOT NULL,
+    complete_head_bytes bytea NOT NULL,
+    core_state_bytes bytea NOT NULL,
+    activity_state_bytes bytea NOT NULL,
+    PRIMARY KEY (room_id, room_seq)
+);
+CREATE TABLE worldstream_semantic_receipts (
+    identity_bytes bytea PRIMARY KEY,
+    operation_kind text NOT NULL,
+    canonical_request_hash bytea NOT NULL CHECK (octet_length(canonical_request_hash) = 32),
+    basis_complete_head_bytes bytea,
+    semantic_input_bytes bytea NOT NULL,
+    semantic_time_bytes bytea NOT NULL,
+    resolution_kind text NOT NULL,
+    transition_seq bigint,
+    receipt_bytes bytea NOT NULL
+);
+CREATE TABLE worldstream_integrity_incidents (
+    room_id text NOT NULL,
+    incident_seq bigint NOT NULL CHECK (incident_seq > 0),
+    generation bigint NOT NULL CHECK (generation > 0),
+    status text NOT NULL CHECK (status IN ('healthy', 'faulted', 'quarantined')),
+    reason_code text NOT NULL,
+    details_bytes bytea,
+    PRIMARY KEY (room_id, incident_seq)
+);
+";
+
+/// Adds provider-enforced uniqueness and the room discriminator required to
+/// keep the operational semantic-receipt ledger aligned with SQLite. This is
+/// deliberately a new forward migration: migration 0003 is immutable once a
+/// database has recorded its checksum.
+pub const MIGRATION_0004_SQL: &str = r"
+ALTER TABLE worldstream_semantic_receipts
+    ADD COLUMN room_id text;
+CREATE UNIQUE INDEX worldstream_observation_frames_one_per_member_transition
+    ON worldstream_frames(room_id, member_id, cause_room_seq);
+CREATE UNIQUE INDEX worldstream_semantic_receipts_by_transition
+    ON worldstream_semantic_receipts(room_id, transition_seq)
+    WHERE transition_seq IS NOT NULL AND room_id IS NOT NULL;
+CREATE UNIQUE INDEX worldstream_semantic_receipts_one_genesis_per_room
+    ON worldstream_semantic_receipts(room_id)
+    WHERE resolution_kind = 'genesis_created' AND room_id IS NOT NULL;
+CREATE INDEX worldstream_activation_pending_by_member
+    ON worldstream_activation_intents(room_id, target_member_id, state, priority DESC, cause_room_seq);
+";
+
+/// Adds the provider-facing, byte-preserving transfer publication seam.
+///
+/// The import and chunk rows are deliberately separate from Core semantic
+/// tables. A successful transfer therefore proves exact staged-byte parity and
+/// fencing, not that the target has been hydrated into a complete live Room.
+pub const MIGRATION_0005_SQL: &str = r"
+CREATE TABLE worldstream_transfer_imports (
+    bundle_hash bytea PRIMARY KEY CHECK (octet_length(bundle_hash) = 32),
+    target_fingerprint bytea NOT NULL CHECK (octet_length(target_fingerprint) = 32),
+    state text NOT NULL CHECK (state IN ('pending', 'verified', 'finalized', 'authoritative'))
+);
+CREATE TABLE worldstream_transfer_chunks (
+    bundle_hash bytea NOT NULL REFERENCES worldstream_transfer_imports(bundle_hash) ON DELETE CASCADE,
+    chunk_start bigint NOT NULL CHECK (chunk_start >= 0),
+    chunk_end bigint NOT NULL CHECK (chunk_end > chunk_start),
+    chunk_digest bytea NOT NULL CHECK (octet_length(chunk_digest) = 32),
+    records_bytes bytea NOT NULL,
+    PRIMARY KEY (bundle_hash, chunk_start)
+);
+";
+
+/// Adds a singleton row that serializes target admission even when the target
+/// has no prior import rows. The fence is removed only by an abort of the
+/// matching incomplete import, and survives finalization/authority.
+pub const MIGRATION_0006_SQL: &str = r"
+CREATE TABLE worldstream_transfer_target_fence (
+    fence_id boolean PRIMARY KEY DEFAULT true CHECK (fence_id),
+    bundle_hash bytea NOT NULL CHECK (octet_length(bundle_hash) = 32),
+    target_fingerprint bytea NOT NULL CHECK (octet_length(target_fingerprint) = 32)
+);
+";
+
+/// Adds one target-wide canonical deployment identity row. The bytes are
+/// supplied by the deployment/transfer boundary and are never reconstructed
+/// from Room state. Runtime processes only read this table; publication can
+/// later write it in the same ordinary transaction as the canonical bundle.
+pub const MIGRATION_0007_SQL: &str = r"
+CREATE TABLE worldstream_deployment_metadata (
+    target_id boolean PRIMARY KEY DEFAULT true CHECK (target_id),
+    deployment_lineage_bytes bytea NOT NULL CHECK (octet_length(deployment_lineage_bytes) > 0),
+    storage_epoch_bytes bytea NOT NULL CHECK (octet_length(storage_epoch_bytes) > 0),
+    storage_epoch bigint NOT NULL CHECK (storage_epoch >= 0)
+);
+";
+
+/// Adds the target-side projection of the source-authenticated deployment
+/// identity. The canonical bytes are the completeness witness; normalized
+/// rows make the exact pack/resource set queryable without becoming a second
+/// source of truth.
+pub const MIGRATION_0008_SQL: &str = r"
+CREATE TABLE worldstream_deployment_identity_metadata (
+    target_id boolean PRIMARY KEY DEFAULT true CHECK (target_id),
+    identity_digest bytea NOT NULL CHECK (octet_length(identity_digest) = 32),
+    pack_set_digest bytea NOT NULL CHECK (octet_length(pack_set_digest) = 32),
+    resource_set_digest bytea NOT NULL CHECK (octet_length(resource_set_digest) = 32),
+    canonical_bytes bytea NOT NULL CHECK (octet_length(canonical_bytes) > 0)
+);
+CREATE TABLE worldstream_deployment_pack_identities (
+    pack_id text NOT NULL,
+    revision text NOT NULL,
+    pack_digest bytea NOT NULL CHECK (octet_length(pack_digest) = 32),
+    PRIMARY KEY (pack_id, revision)
+);
+CREATE TABLE worldstream_deployment_resource_identities (
+    resource_kind text NOT NULL CHECK (resource_kind IN ('artifact', 'codec', 'schema')),
+    resource_identity text NOT NULL,
+    size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
+    resource_digest bytea NOT NULL CHECK (octet_length(resource_digest) = 32),
+    PRIMARY KEY (resource_kind, resource_identity)
+);
+";
+
+/// Adds the durable operational authority facts consumed by Core's
+/// `AuthorityStoreV1`. Existing migration bodies remain immutable; this
+/// migration is intentionally additive and is safe to apply to a database
+/// that has already recorded migration 0008.
+pub const MIGRATION_0009_SQL: &str = r"
+CREATE TABLE worldstream_authority_state (
+    authority_id boolean PRIMARY KEY DEFAULT true CHECK (authority_id)
+);
+INSERT INTO worldstream_authority_state(authority_id) VALUES (true);
+
+CREATE TABLE worldstream_authority_principals (
+    principal_id text PRIMARY KEY,
+    principal_kind text NOT NULL CHECK (principal_kind IN ('human', 'agent')),
+    authority_status text NOT NULL CHECK (authority_status IN ('enabled', 'disabled')),
+    principal_generation bigint NOT NULL CHECK (principal_generation BETWEEN 1 AND 9007199254740991)
+);
+
+CREATE TABLE worldstream_authority_runners (
+    runner_id text PRIMARY KEY,
+    owner_principal_id text NOT NULL REFERENCES worldstream_authority_principals(principal_id),
+    authority_status text NOT NULL CHECK (authority_status IN ('enabled', 'revoked')),
+    runner_generation bigint NOT NULL CHECK (runner_generation BETWEEN 1 AND 9007199254740991)
+);
+
+CREATE TABLE worldstream_authority_capabilities (
+    capability_id text PRIMARY KEY,
+    token_hash bytea NOT NULL UNIQUE CHECK (octet_length(token_hash) = 32),
+    principal_id text NOT NULL REFERENCES worldstream_authority_principals(principal_id),
+    profile_kind text NOT NULL CHECK (profile_kind IN ('room_member', 'host_operator', 'runner_control')),
+    target_room_id text,
+    target_member_id text,
+    runner_id text REFERENCES worldstream_authority_runners(runner_id),
+    authority_generation bigint NOT NULL CHECK (authority_generation BETWEEN 1 AND 9007199254740991),
+    expires_at text,
+    revoked_at text,
+    CHECK (
+        (profile_kind = 'room_member' AND target_room_id IS NOT NULL AND target_member_id IS NOT NULL AND runner_id IS NULL)
+        OR (profile_kind = 'host_operator' AND target_member_id IS NULL AND runner_id IS NULL)
+        OR (profile_kind = 'runner_control' AND target_room_id IS NULL AND target_member_id IS NULL AND runner_id IS NOT NULL)
+    )
+);
+CREATE INDEX worldstream_authority_capabilities_by_principal
+    ON worldstream_authority_capabilities(principal_id);
+CREATE INDEX worldstream_authority_capabilities_by_runner
+    ON worldstream_authority_capabilities(runner_id) WHERE runner_id IS NOT NULL;
+
+CREATE TABLE worldstream_authority_capability_scopes (
+    capability_id text NOT NULL REFERENCES worldstream_authority_capabilities(capability_id) ON DELETE CASCADE,
+    scope text NOT NULL CHECK (scope IN (
+        'room:attach', 'room:act', 'room:observe_public', 'room:observe_member',
+        'room:replay', 'activation:offer_receive', 'activation:claim',
+        'activation:complete', 'operator:room_admin', 'operator:backup'
+    )),
+    PRIMARY KEY (capability_id, scope)
+);
+
+CREATE TABLE worldstream_authority_runner_capability_memberships (
+    capability_id text NOT NULL REFERENCES worldstream_authority_capabilities(capability_id) ON DELETE CASCADE,
+    room_id text NOT NULL,
+    member_id text NOT NULL,
+    PRIMARY KEY (capability_id, room_id, member_id)
+);
+
+CREATE TABLE worldstream_authority_change_receipts (
+    change_id text PRIMARY KEY,
+    authenticated_principal text REFERENCES worldstream_authority_principals(principal_id),
+    request_hash bytea NOT NULL CHECK (octet_length(request_hash) = 32),
+    result_kind text NOT NULL CHECK (result_kind IN (
+        'authority_bootstrapped', 'principal_created', 'capability_registered',
+        'capability_narrowed', 'capability_revoked', 'principal_status_changed',
+        'runner_registered', 'runner_revoked'
+    )),
+    target_kind text NOT NULL CHECK (target_kind IN ('bootstrap', 'principal', 'capability', 'runner')),
+    target_id text NOT NULL,
+    secondary_target_id text,
+    resulting_generation bigint NOT NULL CHECK (resulting_generation BETWEEN 1 AND 9007199254740991),
+    checked_at text NOT NULL,
+    CHECK (
+        (result_kind = 'authority_bootstrapped' AND authenticated_principal IS NULL
+            AND target_kind = 'bootstrap' AND secondary_target_id IS NOT NULL AND resulting_generation = 1)
+        OR (result_kind <> 'authority_bootstrapped' AND authenticated_principal IS NOT NULL
+            AND target_kind <> 'bootstrap' AND secondary_target_id IS NULL)
+    )
+);
+
+CREATE TABLE worldstream_authority_audit (
+    audit_seq bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    change_id text NOT NULL UNIQUE REFERENCES worldstream_authority_change_receipts(change_id),
+    actor_principal_id text REFERENCES worldstream_authority_principals(principal_id),
+    target_kind text NOT NULL CHECK (target_kind IN ('bootstrap', 'principal', 'capability', 'runner')),
+    target_id text NOT NULL,
+    secondary_target_id text,
+    change_kind text NOT NULL CHECK (change_kind IN (
+        'bootstrap_authority', 'create_principal', 'register_capability',
+        'register_runner', 'narrow_capability', 'revoke_capability',
+        'revoke_runner', 'set_principal_status'
+    )),
+    prior_generation bigint CHECK (prior_generation BETWEEN 1 AND 9007199254740991),
+    resulting_generation bigint NOT NULL CHECK (resulting_generation BETWEEN 1 AND 9007199254740991),
+    checked_at text NOT NULL,
+    reason_code text,
+    request_hash bytea NOT NULL CHECK (octet_length(request_hash) = 32),
+    CHECK ((prior_generation IS NULL AND resulting_generation = 1)
+        OR resulting_generation = prior_generation + 1),
+    CHECK (
+        (change_kind = 'bootstrap_authority' AND actor_principal_id IS NULL
+            AND target_kind = 'bootstrap' AND secondary_target_id IS NOT NULL)
+        OR (change_kind <> 'bootstrap_authority' AND actor_principal_id IS NOT NULL
+            AND target_kind <> 'bootstrap' AND secondary_target_id IS NULL)
+    )
+);
+
+CREATE OR REPLACE FUNCTION worldstream_reject_authority_fact_mutation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'WorldStream authority facts are immutable';
+END;
+$$;
+CREATE TRIGGER worldstream_authority_receipts_immutable_update
+    BEFORE UPDATE OR DELETE ON worldstream_authority_change_receipts
+    FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
+CREATE TRIGGER worldstream_authority_audit_immutable_update
+    BEFORE UPDATE OR DELETE ON worldstream_authority_audit
+    FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
+";
+
+/// The result of checking an ordered migration prefix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationVerification {
+    /// Highest verified migration version.
+    pub current_version: i32,
+    /// Whether the complete current history is installed.
+    pub complete: bool,
+    /// Whether the final schema fingerprint was present and correct.
+    pub fingerprint_verified: bool,
+}
+
+/// Migration history failures are deliberately explicit and fail closed.
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
+pub enum MigrationVerificationError {
+    #[error("migration history is not contiguous at version {version}")]
+    NonContiguous { version: i32 },
+    #[error("migration version {version} is unsupported")]
+    Unsupported { version: i32 },
+    #[error("migration version {version} has identity {found:?}, expected {expected:?}")]
+    IdentityDrift {
+        version: i32,
+        expected: &'static str,
+        found: String,
+    },
+    #[error("migration version {version} checksum differs from the reviewed SQL")]
+    ChecksumDrift { version: i32 },
+    #[error("migration metadata belongs to {found:?}, expected {expected:?}")]
+    LogicalHistoryDrift {
+        expected: &'static str,
+        found: String,
+    },
+    #[error("schema contract fingerprint is missing")]
+    FingerprintMissing,
+    #[error("schema contract fingerprint differs from the reviewed contract")]
+    FingerprintDrift,
+    #[error("runtime schema is incomplete at migration version {version}")]
+    IncompleteRuntimeSchema { version: i32 },
+}
+
+/// Verifies a prefix during administration. An empty prefix is valid before
+/// bootstrap; an incomplete prefix is valid only while the admin transaction
+/// is about to apply its next forward migration.
+pub fn verify_migration_prefix(
+    records: &[MigrationRecord],
+) -> Result<MigrationVerification, MigrationVerificationError> {
+    let history = migration_history();
+    // A database at the previous release's final migration can carry the
+    // previous schema fingerprint while the next forward migration is still
+    // unapplied. Identity and checksum checks remain strict; migration 0005
+    // rewrites the metadata to the current fingerprint in the same transaction
+    // as the new staging tables.
+    let allow_stale_fingerprint = records.len() < history.len();
+    for (index, record) in records.iter().enumerate() {
+        let expected_version = i32::try_from(index + 1).unwrap_or(i32::MAX);
+        if record.version != expected_version {
+            return Err(MigrationVerificationError::NonContiguous {
+                version: record.version,
+            });
+        }
+        let Some(expected) = history.get(index) else {
+            return Err(MigrationVerificationError::Unsupported {
+                version: record.version,
+            });
+        };
+        verify_record(record, *expected, allow_stale_fingerprint)?;
+    }
+    Ok(MigrationVerification {
+        current_version: records.last().map_or(0, |record| record.version),
+        complete: records.len() == history.len(),
+        fingerprint_verified: records.last().is_some_and(|record| {
+            record.schema_contract_fingerprint.as_deref()
+                == Some(schema_contract_fingerprint().as_bytes().as_slice())
+        }),
+    })
+}
+
+/// Verifies the state a runtime process is allowed to serve.
+pub fn verify_runtime_migration_history(
+    records: &[MigrationRecord],
+) -> Result<MigrationVerification, MigrationVerificationError> {
+    let state = verify_migration_prefix(records)?;
+    if !state.complete {
+        return Err(MigrationVerificationError::IncompleteRuntimeSchema {
+            version: state.current_version,
+        });
+    }
+    for record in records {
+        if record.logical_history_id.as_deref() != Some(LOGICAL_HISTORY_ID) {
+            return Err(if record.logical_history_id.is_none() {
+                MigrationVerificationError::FingerprintMissing
+            } else {
+                MigrationVerificationError::LogicalHistoryDrift {
+                    expected: LOGICAL_HISTORY_ID,
+                    found: record.logical_history_id.clone().unwrap_or_default(),
+                }
+            });
+        }
+        if record.schema_contract_fingerprint.as_deref()
+            != Some(schema_contract_fingerprint().as_bytes().as_slice())
+        {
+            return Err(if record.schema_contract_fingerprint.is_none() {
+                MigrationVerificationError::FingerprintMissing
+            } else {
+                MigrationVerificationError::FingerprintDrift
+            });
+        }
+    }
+    if records.last().is_none() {
+        return Err(MigrationVerificationError::IncompleteRuntimeSchema { version: 0 });
+    }
+    Ok(MigrationVerification {
+        fingerprint_verified: true,
+        ..state
+    })
+}
+
+fn verify_record(
+    record: &MigrationRecord,
+    expected: MigrationDescriptor,
+    allow_stale_fingerprint: bool,
+) -> Result<(), MigrationVerificationError> {
+    if record.migration_id != expected.id {
+        return Err(MigrationVerificationError::IdentityDrift {
+            version: record.version,
+            expected: expected.id,
+            found: record.migration_id.clone(),
+        });
+    }
+    if record.checksum.as_slice() != expected.checksum().as_bytes().as_slice() {
+        return Err(MigrationVerificationError::ChecksumDrift {
+            version: record.version,
+        });
+    }
+    if let Some(history_id) = &record.logical_history_id
+        && history_id != LOGICAL_HISTORY_ID
+    {
+        return Err(MigrationVerificationError::LogicalHistoryDrift {
+            expected: LOGICAL_HISTORY_ID,
+            found: history_id.clone(),
+        });
+    }
+    if let Some(fingerprint) = &record.schema_contract_fingerprint
+        && fingerprint.as_slice() != schema_contract_fingerprint().as_bytes().as_slice()
+        && !allow_stale_fingerprint
+    {
+        return Err(MigrationVerificationError::FingerprintDrift);
+    }
+    Ok(())
+}
+
+/// A deterministic interruption point for the migration fixture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationFailpoint {
+    /// The migration body ran but its ledger insert was interrupted.
+    AfterMigrationBodyBeforeRecord,
+}
+
+/// In-process migration provider seam. It models transactional DDL outcomes
+/// without claiming that a live PostgreSQL service was exercised.
+#[derive(Clone, Default)]
+pub struct FixtureMigrationProvider {
+    state: std::sync::Arc<Mutex<FixtureMigrationState>>,
+}
+
+#[derive(Default)]
+struct FixtureMigrationState {
+    records: Vec<MigrationRecord>,
+    failpoint: Option<MigrationFailpoint>,
+    body_attempts: usize,
+}
+
+impl fmt::Debug for FixtureMigrationProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixtureMigrationProvider")
+            .finish_non_exhaustive()
+    }
+}
+
+impl FixtureMigrationProvider {
+    /// Arms a deterministic interruption.
+    pub fn set_failpoint(&self, failpoint: Option<MigrationFailpoint>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.failpoint = failpoint;
+        }
+    }
+
+    /// Returns the number of migration bodies attempted by the fixture.
+    #[must_use]
+    pub fn body_attempts(&self) -> usize {
+        self.state.lock().map_or(0, |state| state.body_attempts)
+    }
+
+    /// Returns a snapshot of the durable migration ledger.
+    #[must_use]
+    pub fn records(&self) -> Vec<MigrationRecord> {
+        self.state
+            .lock()
+            .map_or_else(|_| Vec::new(), |state| state.records.clone())
+    }
+
+    /// Applies the next forward migration, restarting safely after an
+    /// interrupted body because the fixture models each body as transactional.
+    pub fn migrate(&self) -> Result<MigrationVerification, MigrationVerificationError> {
+        let history = migration_history();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| MigrationVerificationError::IncompleteRuntimeSchema { version: 0 })?;
+        verify_migration_prefix(&state.records)?;
+        while state.records.len() < history.len() {
+            let next = history[state.records.len()];
+            state.body_attempts += 1;
+            if state.failpoint.take().is_some_and(|failpoint| {
+                matches!(
+                    failpoint,
+                    MigrationFailpoint::AfterMigrationBodyBeforeRecord
+                )
+            }) {
+                return Err(MigrationVerificationError::IncompleteRuntimeSchema {
+                    version: next.version - 1,
+                });
+            }
+            let fingerprint = schema_contract_fingerprint();
+            if next.version > 1 {
+                for record in &mut state.records {
+                    record.logical_history_id = Some(LOGICAL_HISTORY_ID.to_owned());
+                    record.schema_contract_fingerprint = Some(fingerprint.as_bytes().to_vec());
+                }
+            }
+            state.records.push(MigrationRecord {
+                version: next.version,
+                migration_id: next.id.to_owned(),
+                checksum: next.checksum().as_bytes().to_vec(),
+                logical_history_id: (next.version > 1).then(|| LOGICAL_HISTORY_ID.to_owned()),
+                schema_contract_fingerprint: (next.version > 1)
+                    .then(|| fingerprint.as_bytes().to_vec()),
+            });
+        }
+        verify_runtime_migration_history(&state.records)
+    }
+}

@@ -7,7 +7,10 @@
 //! Concrete database, network, scheduler, plugin, and server wiring live in
 //! substitutable adapters.
 
+mod activation;
 mod activity_pack;
+mod agent_heist;
+mod agent_heist_registry;
 mod authority;
 mod canonical;
 mod counter;
@@ -16,10 +19,19 @@ mod lineage;
 mod model;
 mod primitives;
 mod reducer;
+mod registry;
 mod room_commit;
+mod semantic_time;
 mod session;
 mod trace;
 
+pub use activation::{
+    ActivationAttentionV1, ActivationContextErrorV1, ActivationContextInputV1,
+    ActivationDecisionV1, ActivationDeliveryV1, ActivationFrameV1, ActivationIntentStateV1,
+    ActivationInvocationContextV1, ActivationOperationRequestV1, ActivationOperationResultV1,
+    ActivationPolicyDecisionV1, ActivationPolicyDispositionV1, ActivationResultCodeV1,
+    ActivationShapeErrorV1, prepare_activation_context,
+};
 pub use activity_pack::{
     ACTION_OFFER_DOMAIN, ACTIVITY_PACK_HOST_CONTRACT_ID, ActionAdmissionErrorV1,
     ActionDefinitionV1, ActionOfferV1, ActivityGenesisInputV1, ActivityObservationOutcomeV1,
@@ -35,6 +47,15 @@ pub use activity_pack::{
     RoleDefinitionV1, SchemaReferenceV1, ValidatedPackObservationV1, ValidatedPackViewV1,
     ViewInputV1, projection_hash_for_canonical_bytes,
 };
+pub use agent_heist::{
+    ACCEPT_EXCHANGE, ACKNOWLEDGE_RESULT, AGENT_HEIST_PACK_ID, AGENT_HEIST_RETAINED_VERSION,
+    AGENT_HEIST_VERSION, AgentHeistV0, AgentHeistV1, BROKER, CHALLENGE_PLAN, COMMIT_MOVE,
+    ENDORSE_PLAN, INSIDER, INSPECT_CLUE, NAVIGATOR, OFFER_EXCHANGE, PROPOSE_PLAN, PUBLISH_CLUE,
+    ROLES, outcome_for_matrix,
+};
+pub use agent_heist_registry::{
+    agent_heist_digest, agent_heist_retained_digest, builtin_agent_heist_registry,
+};
 #[cfg(any(test, feature = "conformance-tracer"))]
 pub use authority::InMemoryAuthorityStoreV1;
 pub use authority::{
@@ -45,18 +66,18 @@ pub use authority::{
     AuthorityStoreErrorV1, AuthorityStoreV1, AuthorityUseV1, AuthorityV1,
     AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1, AuthorizedParticipantActionV1,
     AuthorizedReceiptReadV1, AuthorizedReplayV1, AuthorizedRoomCreationV1,
-    AuthorizedRunnerControlV1, AuthorizedStableActionDispositionV1, AuthorizedViewerV1,
-    CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1, CapabilityBearerV1,
-    CapabilityProfileV1, CapabilityScopeSetV1, CapabilityScopeV1, CapabilityTokenHashV1,
-    ClassifiedCoreAdministrationV1, CoreAdministrationClassV1, DiagnosticAdapterInputV1,
-    DiagnosticOperationV1, DiagnosticTargetV1, MemberAuthorityUseV1, MemberReadOperationV1,
-    MembershipAuthoritySnapshotV1, NewCapabilityV1, ParticipantActionAuthorityV1,
-    PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1, PresentedCapabilityV1,
-    PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1, ReceiptReadAdapterInputV1,
-    ReplayAdapterInputV1, ReplayProjectionKindV1, RoomMembershipKeyV1, RunnerAuthoritySnapshotV1,
-    RunnerAuthorityStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
-    RunnerMembershipSetV1, ValidatedAuthorityBootstrapV1, ValidatedAuthorityChangeV1,
-    ViewerAdapterInputV1,
+    AuthorizedRunnerControlV1, AuthorizedStableActionDispositionV1, AuthorizedTimerFiredV1,
+    AuthorizedViewerV1, CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1,
+    CapabilityBearerV1, CapabilityProfileV1, CapabilityScopeSetV1, CapabilityScopeV1,
+    CapabilityTokenHashV1, ClassifiedCoreAdministrationV1, CoreAdministrationClassV1,
+    DiagnosticAdapterInputV1, DiagnosticOperationV1, DiagnosticTargetV1, MemberAuthorityUseV1,
+    MemberReadOperationV1, MembershipAuthoritySnapshotV1, NewCapabilityV1,
+    ParticipantActionAuthorityV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
+    PresentedCapabilityV1, PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1,
+    ReceiptReadAdapterInputV1, ReplayAdapterInputV1, ReplayProjectionKindV1, RoomMembershipKeyV1,
+    RunnerAuthoritySnapshotV1, RunnerAuthorityStatusV1, RunnerControlAdapterInputV1,
+    RunnerControlOperationV1, RunnerMembershipSetV1, ValidatedAuthorityBootstrapV1,
+    ValidatedAuthorityChangeV1, ViewerAdapterInputV1,
 };
 pub use canonical::{CanonicalJsonError, CanonicalJsonV1, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER};
 pub use counter_registry::{builtin_counter_registry, counter_v1_digest, counter_v2_digest};
@@ -92,6 +113,7 @@ pub use primitives::{
     SourceId, TimerGenerationV1, TimerId, TimerScheduledFor, TimestampParseError, TransitionId,
 };
 pub use reducer::{CORE_OPERATION_KIND, CoreValidationErrorV1};
+pub use registry::builtin_worldstream_registry;
 #[doc(hidden)]
 pub use room_commit::recover_room_from_storage;
 pub use room_commit::{
@@ -122,6 +144,10 @@ pub use room_commit::{
     authorize_room_creation_operation, commit_existing_room, commit_room_creation,
     resolve_authorized_room_operation_for_adapter,
 };
+pub use semantic_time::{
+    ActionLaneReservationV1, AdmissionLaneClassV1, AdmissionLaneErrorV1, HostClockErrorV1,
+    HostClockSampleV1, HostClockV1, LaneReservationV1, MonotonicHostClockV1, RoomAdmissionLaneV1,
+};
 pub use session::{
     CapturedSessionBarrierV1, SessionBarrierV1, SessionCloseReasonV1, SessionErrorV1,
     SessionFrameV1, SessionPublishOutcomeV1, SessionStateV1, SessionSyncTokenV1, SessionV1,
@@ -134,6 +160,8 @@ pub use trace::{
     TraceErrorV1, VerifiedCoreStateV1,
 };
 
+#[cfg(test)]
+mod activation_tests;
 #[cfg(test)]
 mod authority_tests;
 #[cfg(test)]

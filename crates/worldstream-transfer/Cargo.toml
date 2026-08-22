@@ -1,0 +1,24 @@
+[package]
+name = "worldstream-transfer"
+description = "Provider-neutral offline logical transfer contract for WorldStream"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/imom39a/worldstream"
+
+[dependencies]
+blake3.workspace = true
+thiserror.workspace = true
+worldstream-backup = { path = "../worldstream-backup", version = "=0.1.0" }
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
