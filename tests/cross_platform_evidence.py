@@ -9,7 +9,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/cross-platform-evidence.sh"
-DOC = ROOT / "docs/agents/imo-59-cross-platform-luna.md"
 
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -62,11 +61,6 @@ def main() -> None:
     # be retained without pretending this diagnostic is a compatibility row.
     assert "command[package_linux_dry_run]=" in report
     assert "command[package_oci_dry_run]=" in report
-    assert DOC.exists()
-    document = DOC.read_text(encoding="utf-8")
-    assert "cross-compilation" in document.lower()
-    assert "Windows" in document
-    assert "linux/amd64" in document
     print("cross-platform evidence contract: PASS")
 
 

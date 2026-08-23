@@ -2,10 +2,9 @@
 """Aggregate bounded, non-release Linux reference measurements.
 
 This command consumes five legacy reports plus the frozen-target projection.
-It never runs a
-benchmark, reads a database, or turns a fixture into release evidence.  The
-input reports must carry the common artifact identity and non-release labels
-documented in ``docs/agents/imo-61-reference-evidence-luna.md``.
+It never runs a benchmark, reads a database, or turns a fixture into release
+evidence. The input reports must carry the validated common artifact identity
+and non-release labels.
 """
 
 from __future__ import annotations
