@@ -741,7 +741,9 @@ finally {
             Invoke-WorldstreamProviderCleanup
         }
         catch {
-            $CleanupFailure = $_
+            if ($null -eq $CleanupFailure) {
+                $CleanupFailure = $_
+            }
         }
         try {
             Clear-WorldstreamPassfile

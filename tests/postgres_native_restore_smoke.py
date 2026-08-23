@@ -1516,6 +1516,11 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
         self.assertIn(
             "$script:TransferDsnScrubComplete = $Failures.Count -eq 0", harness
         )
+        provider_cleanup = harness.index("Invoke-WorldstreamProviderCleanup")
+        self.assertIn(
+            "if ($null -eq $CleanupFailure) {\n                $CleanupFailure = $_",
+            harness[provider_cleanup:],
+        )
         self.assertNotIn("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN =", harness)
         self.assertIn("$SourceDatabase = 'worldstream_native_source'", harness)
         self.assertIn("CREATE DATABASE $SourceDatabase", harness)
