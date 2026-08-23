@@ -102,7 +102,7 @@ release_verified_patches_status = "resolved"
 
 [migrations]
 logical_history_id = "worldstream-storage-v1"
-schema_contract_fingerprint = "blake3:c8435cbb21df9aa98518245d14caa0a70416cf5369cc95d7ab2edc40261d119f"
+schema_contract_fingerprint = "blake3:16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb"
 schema_contract_fingerprint_status = "implementation_verified"
 direction = "forward_only"
 backend_specific_execution = true
@@ -165,6 +165,18 @@ status = "implementation_verified"
 id = "0010-transfer-recovery-completeness-v1"
 sqlite_checksum = "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1"
 postgresql_checksum = "blake3:b588bfcf04a87427dc6d49ca2a795230eb740a43e7cecdeb536f3233786b97dd"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0011-transfer-lifecycle-and-resource-identity-v1"
+sqlite_checksum = "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3"
+postgresql_checksum = "blake3:f93d4eed88e503bf1a807ea676e9110dbfab3987adff7be9bdd618394345ad97"
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0012-transfer-backup-file-identity-v1"
+sqlite_checksum = "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9"
+postgresql_checksum = ""
 status = "implementation_verified"
 
 [[migrations.entries]]

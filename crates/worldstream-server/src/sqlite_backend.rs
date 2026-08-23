@@ -168,6 +168,16 @@ impl SqliteGatewayBackend {
         }
     }
 
+    fn ensure_source_authoritative(&self) -> Result<(), BackendError> {
+        if self.store.source_transfer_state()
+            == worldstream_sqlite::SqliteSourceTransferStateV1::SourceAuthoritative
+        {
+            Ok(())
+        } else {
+            Err(BackendError::StorageUnavailable)
+        }
+    }
+
     /// Starts a new actor/runtime generation. The returned lease must move
     /// through Loading -> `CatchingUp` -> `Active` before it may publish.
     ///
@@ -494,6 +504,7 @@ impl SqliteGatewayBackend {
         &self,
         session: &GatewaySession,
     ) -> Result<SqliteAuthenticatedCapabilityV1, BackendError> {
+        self.ensure_source_authoritative()?;
         let bearer = session
             .owned_bearer()
             .ok_or(BackendError::StorageUnavailable)?;
@@ -2224,6 +2235,7 @@ impl GatewayBackend for SqliteGatewayBackend {
     }
 
     fn scheduler_tick(&self) -> Result<(), BackendError> {
+        self.ensure_source_authoritative()?;
         for room_id in self.store.room_ids().map_err(map_activation_error)? {
             if self.verified_room_lifecycle(&room_id)? == SqliteRoomRuntimeStateV1::CatchingUp {
                 // Readiness covers the scheduler process, not ordinary Room

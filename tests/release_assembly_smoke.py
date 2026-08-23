@@ -307,12 +307,18 @@ def make_inputs(tmp_path: Path) -> tuple[Path, Path, Path, tuple[str, ...]]:
                 "artifacts": {},
             },
         }
-        payload_binding = {
-            "native-linux": "native-linux-x86_64-archive",
-            "native-windows": "native-windows-x64-archive",
-            "oci-linux": "oci-linux-amd64-image",
-        }.get(spec.source_id)
+        payload_bindings = {
+            ("native-linux", "linux-release-profile"): "native-linux-x86_64-archive",
+            ("native-windows", "windows-release-profile"): "native-windows-x64-archive",
+            ("oci-linux", "oci-release-profile"): "oci-linux-amd64-image",
+            ("failure-soak", "linux-release-profile"): "native-linux-x86_64-archive",
+            (
+                "reference-performance",
+                "linux-release-profile",
+            ): "native-linux-x86_64-archive",
+        }
         for binding in collector.REQUIRED_ARTIFACT_BINDINGS[spec.source_id]:
+            payload_binding = payload_bindings.get((spec.source_id, binding))
             if payload_binding is None:
                 source["details"]["artifacts"][binding] = {
                     "sha256": "sha256:" + "a" * 64,
@@ -991,6 +997,11 @@ def test_assembly_deep_verifies_every_payload_before_signing(tmp_path, artifact_
         ("native-linux-release-profile", "linux-release-profile"),
         ("native-windows-release-profile", "windows-release-profile"),
         ("oci-linux-amd64-release-profile", "oci-release-profile"),
+        (
+            "failure-fuzz-resource-and-one-hour-sqlite-soak",
+            "linux-release-profile",
+        ),
+        ("reference-performance-per-backend", "linux-release-profile"),
     ],
 )
 def test_assembly_requires_platform_binding_to_exact_payload_bytes(
@@ -1089,6 +1100,14 @@ def test_payload_verifier_requires_the_exact_authoritative_manifest(tmp_path):
             "oci-linux-amd64-image",
             "oci-release-profile",
         ),
+        "failure-fuzz-resource-and-one-hour-sqlite-soak": (
+            "native-linux-x86_64-archive",
+            "linux-release-profile",
+        ),
+        "reference-performance-per-backend": (
+            "native-linux-x86_64-archive",
+            "linux-release-profile",
+        ),
     }
     report_paths = {
         evidence_id: reports / f"{evidence_id}.json" for evidence_id in bindings
@@ -1096,6 +1115,7 @@ def test_payload_verifier_requires_the_exact_authoritative_manifest(tmp_path):
     for evidence_id, (artifact_id, binding_id) in bindings.items():
         report_path = report_paths[evidence_id]
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["contract"] = drifted_manifest["contracts"]
         artifact = paths[artifact_id]
         report["producer_details"]["artifacts"][binding_id] = {
             "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),

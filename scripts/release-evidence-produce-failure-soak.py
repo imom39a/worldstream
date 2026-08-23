@@ -2083,6 +2083,10 @@ def produce(
         "sha256": digest(artifact_output),
         "size_bytes": artifact_output.stat().st_size,
     }
+    package_binding = {
+        "sha256": verified_distribution["archive_sha256"],
+        "size_bytes": verified_distribution["archive_size_bytes"],
+    }
     observations = {
         "failure_matrix": (
             f"coverage_groups={len(soak['coverage_groups'])};"
@@ -2140,12 +2144,20 @@ def produce(
             }
             for check in CHECKS
         },
-        "artifacts": {"failure-soak": binding},
+        "artifacts": {
+            "failure-soak": binding,
+            "linux-release-profile": package_binding,
+        },
     }
     atomic_write(output, typed, "failure/soak typed producer")
     checked = PRODUCER.read_producer(output, PRODUCER.SOURCE_BY_ID[SOURCE_ID], manifest)
     PRODUCER.verify_artifacts(
-        SOURCE_ID, checked, {(SOURCE_ID, "failure-soak"): artifact_output}
+        SOURCE_ID,
+        checked,
+        {
+            (SOURCE_ID, "failure-soak"): artifact_output,
+            (SOURCE_ID, "linux-release-profile"): package_archive,
+        },
     )
 
 

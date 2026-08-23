@@ -241,6 +241,13 @@ def fixture(tmp_path: Path, monkeypatch):
         "platform": {"system": "Linux", "machine": "x86_64"},
     }
     kill_path = write_json(tmp_path / "kill.json", kill)
+    snapshot_fixture_report = write_json(
+        tmp_path / "snapshot-fixture.json",
+        {
+            "schema": "worldstream/reference-snapshot-tail-fixture/v1",
+            "status": "complete",
+        },
+    )
     target = target_report(
         module.REFERENCE_PRODUCER,
         manifest=manifest,
@@ -254,6 +261,7 @@ def fixture(tmp_path: Path, monkeypatch):
         package_archive=package_archive,
         package_report=package_report,
         daemon=daemon,
+        snapshot_fixture_report=snapshot_fixture_report,
         manifest_toml=manifest_toml,
         manifest_json=manifest_json,
     )
@@ -293,6 +301,7 @@ def fixture(tmp_path: Path, monkeypatch):
         package_report=package_report,
         daemon_bin=daemon,
         snapshot_fixture_bin=daemon,
+        snapshot_fixture_report=snapshot_fixture_report,
         output_dir=tmp_path / "normalized",
         aggregate_report=tmp_path / "aggregate.json",
         manifest_toml=manifest_toml,

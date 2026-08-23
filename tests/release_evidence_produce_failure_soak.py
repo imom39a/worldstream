@@ -53,6 +53,10 @@ def fixture(tmp_path: Path, monkeypatch):
     }
     package_archive = tmp_path / "worldstream-package.tar.gz"
     package_archive.write_bytes(b"verified package bytes")
+    distribution["archive_sha256"] = (
+        "sha256:" + hashlib.sha256(package_archive.read_bytes()).hexdigest()
+    )
+    distribution["archive_size_bytes"] = package_archive.stat().st_size
     package_report = tmp_path / "package-report.json"
     package_report.write_text("{}\n", encoding="utf-8")
     daemon = tmp_path / "worldstreamd"
@@ -844,6 +848,12 @@ def test_happy_path_emits_strict_byte_bound_typed_producer(fixture) -> None:
     ]
     declared = producer["artifacts"]["failure-soak"]
     assert declared["size_bytes"] == artifact_path.stat().st_size
+    package = producer["artifacts"]["linux-release-profile"]
+    package_archive = fixture[6] / "worldstream-package.tar.gz"
+    assert package == {
+        "sha256": module.digest(package_archive),
+        "size_bytes": package_archive.stat().st_size,
+    }
     module.PRODUCER.read_producer(
         artifact_path.with_name("producer.json"),
         module.PRODUCER.SOURCE_BY_ID[module.SOURCE_ID],
@@ -883,6 +893,33 @@ def test_reported_distribution_must_match_independently_verified_package_bytes(
     )
 
     with pytest.raises(module.EvidenceError, match="independently verified package"):
+        module.produce(
+            root / "out.json", root / "artifact.json", soak, kill, logs, toml, mirror
+        )
+
+
+def test_package_swap_after_verification_cannot_be_rebound(
+    fixture, monkeypatch
+) -> None:
+    module, toml, mirror, soak, kill, logs, root = fixture
+    package_archive = root / "worldstream-package.tar.gz"
+    original = module.REFERENCE_PRODUCER.verify_packaged_distribution
+
+    def swap_after_verification(*args):
+        result = original(*args)
+        package_archive.write_bytes(b"different package bytes after verification")
+        return result
+
+    monkeypatch.setattr(
+        module.REFERENCE_PRODUCER,
+        "verify_packaged_distribution",
+        swap_after_verification,
+    )
+
+    with pytest.raises(
+        module.PRODUCER.ProducerError,
+        match="linux-release-profile digest mismatch",
+    ):
         module.produce(
             root / "out.json", root / "artifact.json", soak, kill, logs, toml, mirror
         )

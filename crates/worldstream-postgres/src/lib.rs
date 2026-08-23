@@ -32,11 +32,12 @@ pub use migrations::{
     KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
     MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
     MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
-    MIGRATION_0010_SQL, MigrationDescriptor, MigrationFailpoint, MigrationRecord,
-    MigrationVerification, MigrationVerificationError, SCHEMA_CONTRACT_ID,
+    MIGRATION_0010_SQL, MIGRATION_0011_SQL, MigrationDescriptor, MigrationFailpoint,
+    MigrationRecord, MigrationVerification, MigrationVerificationError, SCHEMA_CONTRACT_ID,
     SCHEMA_FINGERPRINT_MATERIAL, TRANSFER_PUBLICATION_MIGRATION_ID,
-    TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, migration_history, schema_contract_fingerprint,
-    verify_migration_prefix, verify_runtime_migration_history,
+    TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
+    migration_history, schema_contract_fingerprint, verify_migration_prefix,
+    verify_runtime_migration_history,
 };
 pub use telemetry::{
     PostgresIntegrityStatusV1, PostgresMigrationPhaseV1, PostgresRecoveryPhaseV1,
@@ -59,13 +60,15 @@ use std::{
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use native_tls::TlsConnector;
+use postgres::fallible_iterator::FallibleIterator as _;
 use postgres::{
-    Client, GenericClient, Transaction,
+    Client, GenericClient, IsolationLevel, Transaction,
     config::{Host, SslMode},
 };
 use postgres_native_tls::MakeTlsConnector;
 use telemetry::{MigrationTelemetryGuard, emit_postgres_telemetry};
 use thiserror::Error;
+use worldstream_backup::{VerifierLimits, max_native_restore_canonical_row_bytes};
 use worldstream_core::{
     AccessModeV1, ActivationContextInputV1, ActivationDeliveryV1, ActivationFrameV1,
     ActivationIntentStateV1, ActivationInvocationContextV1, ActivationOperationRequestV1,
@@ -79,13 +82,15 @@ use worldstream_core::{
     ParticipantActionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
     PreparedCreationPersistenceV1, PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
-    PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredRoomMaterializationsV1,
-    RecoveryIntegrityDispositionV1, ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1,
-    RoomCommitStorageV1, RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1,
-    RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1, RoomSequenceV1,
-    RoomStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1, StoredSemanticResultV1,
-    TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1,
-    TransitionId, TransitionV1, commit_existing_room, prepare_activation_context,
+    PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
+    RecoveredRoomMaterializationsV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
+    ReplayFailureClassV1, ReplayStorageVerificationV1, ResolutionStatusV1, ResolveOutcomeV1,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
+    RoomIntegrityStatusV1, RoomRecoveryCandidateV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1,
+    RoomSequenceV1, RoomStatusV1, RunnerControlAdapterInputV1, RunnerControlOperationV1,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
+    TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1, commit_existing_room,
+    prepare_activation_context, projection_hash_for_canonical_bytes,
 };
 
 #[cfg(feature = "conformance-tracer")]
@@ -104,6 +109,225 @@ const POSTGRES_MINIMUM_VERSION_NUM: u32 = 170_011;
 pub const POSTGRES_SCHEMA_VERSION: &str = "worldstream-postgresql-room-commit-v1";
 const MAX_ACTIVATION_LEASE_MS: u64 = 30_000;
 
+/// One native-restore capture admits at most 32 maximum encoded provider rows
+/// in aggregate. This is separate from the semantic per-object bound because
+/// PostgreSQL's canonical JSON bytea projection expands binary bytes as hex.
+const PROVIDER_CAPTURE_BYTE_MULTIPLIER_V1: usize = 32;
+
+#[derive(Debug)]
+pub(crate) struct ProviderReadBudgetV1 {
+    remaining_rows: usize,
+    remaining_bytes: usize,
+    maximum_row_bytes: usize,
+    maximum_rooms: usize,
+    maximum_records_per_room: usize,
+    maximum_packs: usize,
+    maximum_resources: usize,
+}
+
+#[derive(Debug)]
+pub(crate) enum ProviderReadBudgetError {
+    Exhausted,
+    Malformed,
+}
+
+impl ProviderReadBudgetV1 {
+    pub(crate) fn new(limits: VerifierLimits) -> Result<Self, ProviderReadBudgetError> {
+        let maximum_row_bytes = max_native_restore_canonical_row_bytes(limits.max_object_bytes);
+        let remaining_bytes = maximum_row_bytes
+            .checked_mul(PROVIDER_CAPTURE_BYTE_MULTIPLIER_V1)
+            .ok_or(ProviderReadBudgetError::Exhausted)?;
+        if limits.max_ledger_rows == 0
+            || maximum_row_bytes == 0
+            || limits.max_rooms == 0
+            || limits.max_records_per_room == 0
+        {
+            return Err(ProviderReadBudgetError::Exhausted);
+        }
+        Ok(Self {
+            remaining_rows: limits.max_ledger_rows,
+            remaining_bytes,
+            maximum_row_bytes,
+            maximum_rooms: limits.max_rooms,
+            maximum_records_per_room: limits.max_records_per_room,
+            maximum_packs: limits.max_packs,
+            maximum_resources: limits.max_resources,
+        })
+    }
+
+    pub(crate) fn query_parameters(
+        &self,
+        local_remaining_rows: usize,
+    ) -> Result<(i64, i32), ProviderReadBudgetError> {
+        let remaining_rows = self.remaining_rows.min(local_remaining_rows);
+        let row_limit = remaining_rows
+            .checked_add(1)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or(ProviderReadBudgetError::Exhausted)?;
+        let byte_limit = self
+            .maximum_row_bytes
+            .min(self.remaining_bytes)
+            .checked_add(1)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or(ProviderReadBudgetError::Exhausted)?;
+        Ok((row_limit, byte_limit))
+    }
+
+    pub(crate) fn admit_projection(
+        &mut self,
+        encoded_prefix: &[u8],
+        encoded_length: i64,
+    ) -> Result<Vec<u8>, ProviderReadBudgetError> {
+        let encoded_length =
+            usize::try_from(encoded_length).map_err(|_| ProviderReadBudgetError::Malformed)?;
+        if self.remaining_rows == 0
+            || encoded_length > self.maximum_row_bytes
+            || encoded_length > self.remaining_bytes
+            || encoded_prefix.len() != encoded_length
+        {
+            return Err(ProviderReadBudgetError::Exhausted);
+        }
+        let canonical = CanonicalJsonV1::parse(encoded_prefix)
+            .and_then(|value| value.to_bytes())
+            .map_err(|_| ProviderReadBudgetError::Malformed)?;
+        self.remaining_rows -= 1;
+        self.remaining_bytes -= encoded_length;
+        Ok(canonical)
+    }
+
+    pub(crate) const fn remaining_rows(&self) -> usize {
+        self.remaining_rows
+    }
+
+    pub(crate) const fn maximum_rooms(&self) -> usize {
+        self.maximum_rooms
+    }
+
+    pub(crate) const fn maximum_records_per_room(&self) -> usize {
+        self.maximum_records_per_room
+    }
+
+    pub(crate) const fn maximum_packs(&self) -> usize {
+        self.maximum_packs
+    }
+
+    pub(crate) const fn maximum_resources(&self) -> usize {
+        self.maximum_resources
+    }
+}
+
+fn bounded_provider_projection_query(
+    query: &str,
+    row_limit_parameter: u8,
+    byte_limit_parameter: u8,
+) -> String {
+    format!(
+        "SELECT substring(convert_to(projected.canonical_row, 'UTF8') FROM 1 FOR ${byte_limit_parameter}), \
+         octet_length(convert_to(projected.canonical_row, 'UTF8'))::bigint \
+         FROM ({query} LIMIT ${row_limit_parameter}) AS projected(canonical_row)"
+    )
+}
+
+const NATIVE_ROOM_PROVIDER_READ_QUERIES_V1: &[&str] = &[
+    "SELECT jsonb_build_array(room_id, head_bytes, integrity_generation, integrity_status)::text FROM worldstream_room_roots WHERE room_id = $1 ORDER BY room_id",
+    "SELECT jsonb_build_array(room_id, pack_revision_lock_bytes, genesis_bytes)::text FROM worldstream_genesis WHERE room_id = $1 ORDER BY room_id",
+    "SELECT jsonb_build_array(room_id, core_state_bytes, activity_state_bytes)::text FROM worldstream_materializations WHERE room_id = $1 ORDER BY room_id",
+    "SELECT jsonb_build_array(room_id, room_seq, transition_bytes)::text FROM worldstream_transitions WHERE room_id = $1 ORDER BY room_seq",
+    "SELECT jsonb_build_array(room_id, room_seq, genesis_or_transition_hash, core_schema_version, pack_digest, core_state_hash, activity_state_hash, authoritative_state_hash, complete_head_bytes, core_state_bytes, activity_state_bytes)::text FROM worldstream_room_snapshots WHERE room_id = $1 ORDER BY room_seq",
+    "SELECT jsonb_build_array(room_id, member_id, membership_bytes, frame_head, membership_generation, retained_frame_floor, last_ack_frame_seq, reset_required_through)::text FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
+    "SELECT jsonb_build_array(room_id, timer_id, generation, scheduled_for, payload_bytes, state)::text FROM worldstream_timers WHERE room_id = $1 ORDER BY timer_id, generation",
+    "SELECT jsonb_build_array(room_id, member_id, frame_seq, cause_room_seq, payload_bytes, payload_hash)::text FROM worldstream_frames WHERE room_id = $1 ORDER BY member_id, frame_seq",
+    "SELECT jsonb_build_array(room_id, member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash)::text FROM worldstream_observation_consequences WHERE room_id = $1 ORDER BY member_id, cause_room_seq",
+    "SELECT jsonb_build_array(room_id, cause_room_seq, decision_id, target_member_id, decision_bytes)::text FROM worldstream_activation_decisions WHERE room_id = $1 ORDER BY cause_room_seq, decision_id",
+    "SELECT jsonb_build_array(room_id, incident_seq, generation, status, reason_code, details_bytes)::text FROM worldstream_integrity_incidents WHERE room_id = $1 ORDER BY incident_seq",
+];
+
+fn preflight_native_room_provider_reads<C: GenericClient>(
+    client: &mut C,
+    room_id: &str,
+    budget: &mut ProviderReadBudgetV1,
+) -> Result<(), PostgresRoomVerificationError> {
+    let mut local_remaining = budget.maximum_records_per_room();
+    for query in NATIVE_ROOM_PROVIDER_READ_QUERIES_V1 {
+        let (row_limit, byte_limit) = budget.query_parameters(local_remaining).map_err(|_| {
+            PostgresRoomVerificationError::Corrupt {
+                what: "provider read budget",
+            }
+        })?;
+        let bounded = bounded_provider_projection_query(query, 2, 3);
+        let parameters: [&(dyn postgres::types::ToSql + Sync); 3] =
+            [&room_id, &row_limit, &byte_limit];
+        let mut rows = client
+            .query_raw(&bounded, parameters)
+            .map_err(PostgresRoomVerificationError::Sql)?;
+        while let Some(row) = rows.next().map_err(PostgresRoomVerificationError::Sql)? {
+            if local_remaining == 0 {
+                return Err(PostgresRoomVerificationError::Corrupt {
+                    what: "provider read budget",
+                });
+            }
+            let prefix: Vec<u8> =
+                row.try_get(0)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "provider read projection",
+                    })?;
+            let encoded_length: i64 =
+                row.try_get(1)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "provider read projection",
+                    })?;
+            budget
+                .admit_projection(&prefix, encoded_length)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "provider read budget",
+                })?;
+            local_remaining -= 1;
+        }
+    }
+    Ok(())
+}
+
+fn preflight_native_global_provider_reads<C: GenericClient>(
+    client: &mut C,
+    query: &str,
+    local_remaining: &mut usize,
+    budget: &mut ProviderReadBudgetV1,
+) -> Result<(), PostgresSchemaVerificationError> {
+    let (row_limit, byte_limit) = budget
+        .query_parameters(*local_remaining)
+        .map_err(|_| PostgresSchemaVerificationError::FingerprintDrift)?;
+    let bounded = bounded_provider_projection_query(query, 1, 2);
+    let parameters: [&(dyn postgres::types::ToSql + Sync); 2] = [&row_limit, &byte_limit];
+    let mut rows = client
+        .query_raw(&bounded, parameters)
+        .map_err(PostgresSchemaVerificationError::Sql)?;
+    while let Some(row) = rows.next().map_err(PostgresSchemaVerificationError::Sql)? {
+        if *local_remaining == 0 {
+            return Err(PostgresSchemaVerificationError::FingerprintDrift);
+        }
+        let prefix: Vec<u8> = row
+            .try_get(0)
+            .map_err(PostgresSchemaVerificationError::Sql)?;
+        let encoded_length: i64 = row
+            .try_get(1)
+            .map_err(PostgresSchemaVerificationError::Sql)?;
+        budget
+            .admit_projection(&prefix, encoded_length)
+            .map_err(|_| PostgresSchemaVerificationError::FingerprintDrift)?;
+        *local_remaining -= 1;
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_room_for_native_restore<C: GenericClient>(
+    client: &mut C,
+    room_id: &str,
+    budget: &mut ProviderReadBudgetV1,
+) -> Result<PostgresRoomVerification, PostgresRoomVerificationError> {
+    preflight_native_room_provider_reads(client, room_id, budget)?;
+    PostgresAdmin::verify_room_with_client(client, room_id)
+}
+
 /// Statements available to runtime schema verification. This list is kept
 /// separately so a review or test can assert that runtime admission has no
 /// DDL path.
@@ -112,12 +336,14 @@ pub const RUNTIME_VERIFICATION_STATEMENTS: &[&str] = &[
     "SHOW synchronous_commit",
     "SELECT version, migration_id, checksum, logical_history_id, schema_contract_fingerprint FROM worldstream_schema_migrations ORDER BY version",
     "SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns",
+    "SELECT exact global resource-identity unique indexes from pg_catalog.pg_index",
+    "SELECT exact transfer-fence triggers and trigger function from pg_catalog",
     "SELECT head_bytes, integrity_generation, integrity_status FROM worldstream_room_roots WHERE room_id = $1",
     "SELECT pack_revision_lock_bytes, genesis_bytes FROM worldstream_genesis WHERE room_id = $1",
     "SELECT core_state_bytes, activity_state_bytes FROM worldstream_materializations WHERE room_id = $1",
     "SELECT room_seq, transition_bytes FROM worldstream_transitions WHERE room_id = $1 ORDER BY room_seq",
     "SELECT member_id, membership_bytes FROM worldstream_members WHERE room_id = $1",
-    "SELECT role attributes and effective public-schema/migration-ledger privileges for current_user",
+    "SELECT role attributes and effective public-schema/migration-ledger/transfer-control privileges for current_user",
     "SELECT deployment_lineage_bytes, storage_epoch_bytes, storage_epoch FROM worldstream_deployment_metadata WHERE target_id = true",
     "SELECT identity_digest, pack_set_digest, resource_set_digest, canonical_bytes FROM worldstream_deployment_identity_metadata WHERE target_id = true",
     "SELECT pack_id, revision, pack_digest FROM worldstream_deployment_pack_identities ORDER BY pack_id, revision",
@@ -287,16 +513,24 @@ fn validate_dsn(dsn: String, _profile: PostgresProfile) -> Result<String, Postgr
     if dsn.trim().is_empty() {
         return Err(PostgresConfigError::EmptyDsn);
     }
-    let parsed = postgres::Config::from_str(&dsn).map_err(|_| PostgresConfigError::InvalidDsn)?;
+    // libpq names the authenticated mode `verify-full`, while rust-postgres
+    // exposes only `require`; native-tls still verifies both the certificate
+    // chain and hostname. Accept the exact trailing spelling emitted by the
+    // native restore DSN builder and normalize only the stored driver input.
+    let driver_dsn = match dsn.strip_suffix(" sslmode=verify-full") {
+        Some(prefix) => format!("{prefix} sslmode=require"),
+        None => dsn,
+    };
+    let parsed =
+        postgres::Config::from_str(&driver_dsn).map_err(|_| PostgresConfigError::InvalidDsn)?;
     if !local_postgres_config(&parsed) && parsed.get_ssl_mode() != SslMode::Require {
         return Err(PostgresConfigError::RemoteTlsRequired);
     }
-    Ok(dsn)
+    Ok(driver_dsn)
 }
 
 fn local_postgres_config(config: &postgres::Config) -> bool {
     let hosts_are_local = config.get_hosts().iter().all(|host| match host {
-        Host::Tcp(host) if host.eq_ignore_ascii_case("localhost") => true,
         Host::Tcp(host) => host
             .parse::<IpAddr>()
             .is_ok_and(|address| address.is_loopback()),
@@ -630,6 +864,35 @@ pub struct PostgresAdmin {
     telemetry: Option<Arc<dyn PostgresTelemetrySink>>,
 }
 
+const NATIVE_REBUILD_PROVIDER_IDENTITY_SQL: &str = "SELECT control.system_identifier::text, \
+    db.oid::text, db.datname FROM pg_control_system() control \
+    JOIN pg_database db ON db.datname = current_database()";
+
+fn require_native_restore_provider_identity(
+    client: &mut Client,
+    expected: &native_restore::PostgresProviderIdentityV1,
+) -> Result<(), PostgresMaintenanceError> {
+    let row = client
+        .query_one(NATIVE_REBUILD_PROVIDER_IDENTITY_SQL, &[])
+        .map_err(PostgresMaintenanceError::Sql)?;
+    let system_identifier = row
+        .try_get::<_, String>(0)
+        .map_err(PostgresMaintenanceError::Sql)?;
+    let database_oid = row
+        .try_get::<_, String>(1)
+        .map_err(PostgresMaintenanceError::Sql)?;
+    let database_name = row
+        .try_get::<_, String>(2)
+        .map_err(PostgresMaintenanceError::Sql)?;
+    if system_identifier != expected.system_identifier
+        || database_oid != expected.database_oid
+        || database_name != expected.database_name
+    {
+        return Err(PostgresMaintenanceError::ConcurrentChange);
+    }
+    Ok(())
+}
+
 impl PostgresAdmin {
     /// Creates an admin handle; no network connection is opened yet.
     pub fn new(config: PostgresConnectionConfig) -> Result<Self, PostgresConfigError> {
@@ -648,6 +911,10 @@ impl PostgresAdmin {
     pub fn with_telemetry(mut self, telemetry: Arc<dyn PostgresTelemetrySink>) -> Self {
         self.telemetry = Some(telemetry);
         self
+    }
+
+    fn connect(&self) -> Result<Client, postgres::Error> {
+        Client::connect(&self.config.dsn, self.config.tls.clone())
     }
 
     /// Applies all pending forward-only migrations using a direct admin
@@ -741,6 +1008,7 @@ impl PostgresAdmin {
                 | PostgresSchemaVerificationError::InvalidServerVersion { .. }
                 | PostgresSchemaVerificationError::SynchronousCommit { .. }
                 | PostgresSchemaVerificationError::RuntimeRolePrivileges
+                | PostgresSchemaVerificationError::DisposableRestoreTarget
                 | PostgresSchemaVerificationError::History(_)
                 | PostgresSchemaVerificationError::FingerprintDrift => {
                     PostgresStorageDiagnosticKindV1::Integrity
@@ -831,13 +1099,35 @@ impl PostgresAdmin {
     /// Rebuilds every paired snapshot from the exact retained Genesis and
     /// Transition bytes, preserving revision order and all canonical fields.
     pub fn rebuild_snapshot_cache(&self, room_id: &str) -> Result<usize, PostgresMaintenanceError> {
+        self.rebuild_snapshot_cache_with_budget(room_id, None, None)
+    }
+
+    pub(crate) fn rebuild_snapshot_cache_for_native_restore(
+        &self,
+        room_id: &str,
+        budget: &mut ProviderReadBudgetV1,
+        expected_provider_identity: &native_restore::PostgresProviderIdentityV1,
+    ) -> Result<usize, PostgresMaintenanceError> {
+        self.rebuild_snapshot_cache_with_budget(
+            room_id,
+            Some(budget),
+            Some(expected_provider_identity),
+        )
+    }
+
+    fn rebuild_snapshot_cache_with_budget(
+        &self,
+        room_id: &str,
+        budget: Option<&mut ProviderReadBudgetV1>,
+        expected_provider_identity: Option<&native_restore::PostgresProviderIdentityV1>,
+    ) -> Result<usize, PostgresMaintenanceError> {
         emit_postgres_telemetry(
             self.telemetry.as_deref(),
             PostgresTelemetryEventV1::Recovery {
                 phase: PostgresRecoveryPhaseV1::Started,
             },
         );
-        let result = self.rebuild_snapshot_cache_inner(room_id);
+        let result = self.rebuild_snapshot_cache_inner(room_id, budget, expected_provider_identity);
         let diagnostic = match &result {
             Err(PostgresMaintenanceError::Connection(_)) => {
                 Some(PostgresStorageDiagnosticKindV1::Connection)
@@ -869,21 +1159,62 @@ impl PostgresAdmin {
         result
     }
 
+    #[allow(clippy::too_many_lines)]
     fn rebuild_snapshot_cache_inner(
         &self,
         room_id: &str,
+        budget: Option<&mut ProviderReadBudgetV1>,
+        expected_provider_identity: Option<&native_restore::PostgresProviderIdentityV1>,
     ) -> Result<usize, PostgresMaintenanceError> {
         // Snapshot rows are disposable caches. Delete them before canonical
         // verification so malformed cache bytes cannot prevent repair. The
         // verifier still fails closed on every authoritative retained byte.
-        self.delete_snapshot_cache(room_id)?;
-        let verification = self
-            .verify_room(room_id)
-            .map_err(PostgresMaintenanceError::Verification)?;
+        if let Some(expected) = expected_provider_identity {
+            let mut client = self
+                .connect()
+                .map_err(PostgresMaintenanceError::Connection)?;
+            require_native_restore_provider_identity(&mut client, expected)?;
+            client
+                .execute(
+                    "DELETE FROM worldstream_room_snapshots WHERE room_id = $1",
+                    &[&room_id],
+                )
+                .map_err(PostgresMaintenanceError::Sql)?;
+        } else {
+            self.delete_snapshot_cache(room_id)?;
+        }
+        let verification = if let Some(budget) = budget {
+            let mut client = self
+                .connect()
+                .map_err(PostgresMaintenanceError::Connection)?;
+            require_native_restore_provider_identity(
+                &mut client,
+                expected_provider_identity.ok_or(PostgresMaintenanceError::Corrupt)?,
+            )?;
+            let mut transaction = client
+                .build_transaction()
+                .isolation_level(IsolationLevel::RepeatableRead)
+                .read_only(true)
+                .start()
+                .map_err(PostgresMaintenanceError::Sql)?;
+            let verification = verify_room_for_native_restore(&mut transaction, room_id, budget)
+                .map_err(PostgresMaintenanceError::Verification)?;
+            transaction
+                .commit()
+                .map_err(PostgresMaintenanceError::Sql)?;
+            verification
+        } else {
+            self.verify_room(room_id)
+                .map_err(PostgresMaintenanceError::Verification)?
+        };
         let genesis = GenesisV1::from_canonical_bytes(&verification.genesis_bytes)
             .map_err(|_| PostgresMaintenanceError::Corrupt)?;
-        let mut client = Client::connect(&self.config.dsn, self.config.tls.clone())
+        let mut client = self
+            .connect()
             .map_err(PostgresMaintenanceError::Connection)?;
+        if let Some(expected) = expected_provider_identity {
+            require_native_restore_provider_identity(&mut client, expected)?;
+        }
         let mut tx = client
             .transaction()
             .map_err(PostgresMaintenanceError::Sql)?;
@@ -1335,11 +1666,12 @@ impl PostgresAdmin {
         }
         let member_rows = client
             .query(
-                "SELECT member_id, membership_bytes FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
+                "SELECT member_id, membership_bytes, frame_head, retained_frame_floor, last_ack_frame_seq, reset_required_through FROM worldstream_members WHERE room_id = $1 ORDER BY member_id",
                 &[&room_id],
             )
             .map_err(PostgresRoomVerificationError::Sql)?;
         let mut canonical_membership_bytes = Vec::with_capacity(member_rows.len());
+        let mut observation_positions = Vec::with_capacity(member_rows.len());
         for row in &member_rows {
             let member_id: String = row
                 .try_get(0)
@@ -1352,6 +1684,64 @@ impl PostgresAdmin {
             if membership.member_id().to_string() != member_id {
                 return Err(PostgresRoomVerificationError::Corrupt { what: "Membership" });
             }
+            let frame_head = u64::try_from(row.try_get::<_, i64>(2).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "observation position",
+                }
+            })?)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "observation position",
+            })?;
+            let retained_frame_floor = u64::try_from(row.try_get::<_, i64>(3).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "observation position",
+                }
+            })?)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "observation position",
+            })?;
+            if retained_frame_floor > frame_head.saturating_add(1) {
+                return Err(PostgresRoomVerificationError::Corrupt {
+                    what: "observation position",
+                });
+            }
+            let last_ack_frame_seq = row
+                .try_get::<_, Option<i64>>(4)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "observation position",
+                })?
+                .map(|value| {
+                    u64::try_from(value).map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "observation position",
+                    })
+                })
+                .transpose()?;
+            let reset_required_through = row
+                .try_get::<_, Option<i64>>(5)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                    what: "observation position",
+                })?
+                .map(|value| {
+                    u64::try_from(value).map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "observation position",
+                    })
+                })
+                .transpose()?;
+            if retained_frame_floor == 0
+                || last_ack_frame_seq.is_some_and(|value| value == 0 || value > frame_head)
+                || reset_required_through.is_some_and(|value| value > frame_head)
+            {
+                return Err(PostgresRoomVerificationError::Corrupt {
+                    what: "observation position",
+                });
+            }
+            observation_positions.push(PostgresObservationPositionEvidenceV1 {
+                member_id: member_id.clone(),
+                frame_head,
+                retained_frame_floor,
+                last_ack_frame_seq,
+                reset_required_through,
+            });
             canonical_membership_bytes.push((member_id, bytes));
         }
         let timer_rows = client
@@ -1396,21 +1786,103 @@ impl PostgresAdmin {
             let cause_room_seq: i64 = row
                 .try_get(2)
                 .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?;
+            let member_id: String = row
+                .try_get(0)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?;
+            let payload_bytes: Vec<u8> = row
+                .try_get(3)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?;
+            let payload_hash: Vec<u8> = row
+                .try_get(4)
+                .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?;
+            if member_id.parse::<worldstream_core::MemberId>().is_err()
+                || RoomSequenceV1::new(
+                    u64::try_from(cause_room_seq)
+                        .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?,
+                )
+                .is_err()
+                || payload_hash.as_slice() != Blake3DigestV1::hash(&payload_bytes).as_bytes()
+            {
+                return Err(PostgresRoomVerificationError::Corrupt { what: "Frame" });
+            }
             frames.push(PostgresFrameEvidenceV1 {
-                member_id: row
-                    .try_get(0)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?,
+                member_id,
                 frame_seq: u64::try_from(frame_seq)
                     .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?,
                 cause_room_seq: u64::try_from(cause_room_seq)
                     .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?,
-                payload_bytes: row
-                    .try_get(3)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?,
-                payload_hash: row
-                    .try_get(4)
-                    .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Frame" })?,
+                payload_bytes,
+                payload_hash,
             });
+        }
+        let consequence_rows = client
+            .query(
+                "SELECT member_id, cause_room_seq, consequence_kind, payload_bytes, projection_hash FROM worldstream_observation_consequences WHERE room_id = $1 ORDER BY member_id, cause_room_seq",
+                &[&room_id],
+            )
+            .map_err(PostgresRoomVerificationError::Sql)?;
+        let mut observation_consequences = Vec::with_capacity(consequence_rows.len());
+        for row in consequence_rows {
+            let member_id: String =
+                row.try_get(0)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "observation consequence",
+                    })?;
+            let cause_room_seq = u64::try_from(row.try_get::<_, i64>(1).map_err(|_| {
+                PostgresRoomVerificationError::Corrupt {
+                    what: "observation consequence",
+                }
+            })?)
+            .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                what: "observation consequence",
+            })?;
+            if member_id.parse::<worldstream_core::MemberId>().is_err()
+                || RoomSequenceV1::new(cause_room_seq).is_err()
+            {
+                return Err(PostgresRoomVerificationError::Corrupt {
+                    what: "observation consequence",
+                });
+            }
+            let kind: String =
+                row.try_get(2)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "observation consequence",
+                    })?;
+            let payload_bytes: Option<Vec<u8>> =
+                row.try_get(3)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "observation consequence",
+                    })?;
+            let projection_hash: Option<Vec<u8>> =
+                row.try_get(4)
+                    .map_err(|_| PostgresRoomVerificationError::Corrupt {
+                        what: "observation consequence",
+                    })?;
+            let consequence = match (kind.as_str(), payload_bytes, projection_hash) {
+                ("reset_required", Some(payload_bytes), Some(projection_hash))
+                    if projection_hash_for_canonical_bytes(&payload_bytes)
+                        .is_ok_and(|digest| projection_hash.as_slice() == digest.as_bytes()) =>
+                {
+                    PostgresObservationConsequenceEvidenceV1::ResetRequired {
+                        member_id,
+                        cause_room_seq,
+                        payload_bytes,
+                        projection_hash,
+                    }
+                }
+                ("visibility_lost", None, None) => {
+                    PostgresObservationConsequenceEvidenceV1::VisibilityLost {
+                        member_id,
+                        cause_room_seq,
+                    }
+                }
+                _ => {
+                    return Err(PostgresRoomVerificationError::Corrupt {
+                        what: "observation consequence",
+                    });
+                }
+            };
+            observation_consequences.push(consequence);
         }
         let decision_rows = client
             .query(
@@ -1491,8 +1963,10 @@ impl PostgresAdmin {
                 .collect::<Result<Vec<Vec<u8>>, _>>()
                 .map_err(|_| PostgresRoomVerificationError::Corrupt { what: "Transition" })?,
             membership_bytes: canonical_membership_bytes,
+            observation_positions,
             timers,
             frames,
+            observation_consequences,
             activation_decisions,
             snapshots,
             integrity_incidents,
@@ -1589,6 +2063,8 @@ pub enum PostgresSchemaVerificationError {
     SynchronousCommit { found: String },
     #[error("PostgreSQL runtime role exceeds the reviewed least-privilege contract")]
     RuntimeRolePrivileges,
+    #[error("PostgreSQL runtime refuses a disposable native-restore target")]
+    DisposableRestoreTarget,
     #[error("PostgreSQL migration history failed closed: {0}")]
     History(MigrationVerificationError),
     #[error("PostgreSQL schema catalog fingerprint differs from the reviewed contract")]
@@ -1627,16 +2103,69 @@ pub struct PostgresRoomVerification {
     pub transition_bytes: Vec<Vec<u8>>,
     /// Exact canonical Membership bytes in deterministic member-id order.
     pub membership_bytes: Vec<(String, Vec<u8>)>,
+    /// Durable frame-head and retained-prefix positions per Membership.
+    pub observation_positions: Vec<PostgresObservationPositionEvidenceV1>,
     /// Timer rows persisted for this Room.
     pub timers: Vec<PostgresTimerEvidenceV1>,
     /// Observation frame rows persisted for this Room.
     pub frames: Vec<PostgresFrameEvidenceV1>,
+    /// Non-frame observation consequence rows persisted for this Room.
+    pub observation_consequences: Vec<PostgresObservationConsequenceEvidenceV1>,
     /// Activation decision rows persisted for this Room.
     pub activation_decisions: Vec<PostgresActivationDecisionEvidenceV1>,
     /// Disposable paired-snapshot cache rows persisted for this Room.
     pub snapshots: Vec<PostgresSnapshotEvidenceV1>,
     /// Durable integrity incidents in incident sequence order.
     pub integrity_incidents: Vec<PostgresIntegrityIncidentEvidenceV1>,
+}
+
+impl PostgresRoomVerification {
+    /// Executes the exact retained Pack revision across the complete persisted
+    /// Genesis-to-Head lineage and compares the replay result with every
+    /// serving materialization captured by [`PostgresAdmin::verify_room`].
+    ///
+    /// Structural decoding alone cannot establish that retained Activity code
+    /// still reduces the stored Transitions to their recorded results. This
+    /// check therefore fails closed when the revision is absent, non-runnable,
+    /// faults, or produces a different Head/Core/Activity materialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns the closed recovery failure class without exposing provider or
+    /// executor diagnostics.
+    pub fn verify_executable_replay(
+        &self,
+        registry: &PackRegistryV1,
+    ) -> Result<(), RoomRecoveryErrorV1> {
+        if self.integrity_status != "healthy" {
+            return Err(RoomRecoveryErrorV1::IntegrityUnavailable);
+        }
+        let persisted_lock = PackRevisionLockV1::from_canonical_bytes(
+            &self.pack_revision_lock_bytes,
+            self.head.pack_digest(),
+        )
+        .map_err(|_| RoomRecoveryErrorV1::Corrupt)?;
+        let retained = registry
+            .load_retained(self.head.pack_digest())
+            .map_err(|_| RoomRecoveryErrorV1::RuntimeUnavailable)?;
+        if retained.revision_lock() != &persisted_lock {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+        let replay = CoreTraceV1::verify_executable_history_for_storage(
+            registry,
+            &self.head,
+            &self.genesis_bytes,
+            &self.transition_bytes,
+            &self.core_state_bytes,
+            &self.activity_state_bytes,
+        )
+        .map_err(|failure| match failure.class {
+            ReplayFailureClassV1::RuntimeUnavailable => RoomRecoveryErrorV1::RuntimeUnavailable,
+            ReplayFailureClassV1::RuntimeFault => RoomRecoveryErrorV1::RuntimeFault,
+            _ => RoomRecoveryErrorV1::Corrupt,
+        })?;
+        verify_replayed_observation_evidence(&replay, self)
+    }
 }
 
 /// Exact bytes for one persisted timer row.
@@ -1657,6 +2186,333 @@ pub struct PostgresFrameEvidenceV1 {
     pub cause_room_seq: u64,
     pub payload_bytes: Vec<u8>,
     pub payload_hash: Vec<u8>,
+}
+
+/// Durable frame retention positions for one persisted Membership.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgresObservationPositionEvidenceV1 {
+    pub member_id: String,
+    pub frame_head: u64,
+    pub retained_frame_floor: u64,
+    pub last_ack_frame_seq: Option<u64>,
+    pub reset_required_through: Option<u64>,
+}
+
+/// Exact bytes for one persisted non-frame observation consequence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PostgresObservationConsequenceEvidenceV1 {
+    ResetRequired {
+        member_id: String,
+        cause_room_seq: u64,
+        payload_bytes: Vec<u8>,
+        projection_hash: Vec<u8>,
+    },
+    VisibilityLost {
+        member_id: String,
+        cause_room_seq: u64,
+    },
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ObservationConsequenceWitnessV1 {
+    ResetRequired(String, u64, Vec<u8>),
+    VisibilityLost(String, u64),
+}
+
+fn verify_replayed_frame_evidence(
+    replay: &ReplayStorageVerificationV1,
+    stored_positions: &[PostgresObservationPositionEvidenceV1],
+    stored_frames: &[PostgresFrameEvidenceV1],
+) -> Result<(), RoomRecoveryErrorV1> {
+    let positions = stored_positions
+        .iter()
+        .map(|position| (position.member_id.as_str(), position))
+        .collect::<BTreeMap<_, _>>();
+    if positions.len() != stored_positions.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let mut replay_heads = positions
+        .keys()
+        .map(|member_id| (*member_id, 0_u64))
+        .collect::<BTreeMap<_, _>>();
+    let mut replayed_frames = Vec::new();
+    for frame in replay.observation_frames() {
+        let member_id = frame.member_id().as_str();
+        let position = positions
+            .get(member_id)
+            .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+        let replay_head = replay_heads
+            .get_mut(member_id)
+            .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+        *replay_head = (*replay_head).max(frame.frame_seq());
+        if frame.frame_seq() >= position.retained_frame_floor {
+            replayed_frames.push((
+                member_id.to_owned(),
+                frame.frame_seq(),
+                frame.cause_room_seq().get(),
+                frame.payload_hash().as_bytes().to_vec(),
+            ));
+        }
+    }
+    if positions.iter().any(|(member_id, position)| {
+        replay_heads.get(member_id).copied() != Some(position.frame_head)
+    }) {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    let mut stored_frame_witnesses = stored_frames
+        .iter()
+        .map(|frame| {
+            (
+                frame.member_id.clone(),
+                frame.frame_seq,
+                frame.cause_room_seq,
+                frame.payload_hash.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    replayed_frames.sort_unstable();
+    stored_frame_witnesses.sort_unstable();
+    if replayed_frames != stored_frame_witnesses {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn verify_replayed_nonframe_consequences(
+    replay: &ReplayStorageVerificationV1,
+    stored_consequences: &[PostgresObservationConsequenceEvidenceV1],
+) -> Result<(), RoomRecoveryErrorV1> {
+    let mut replayed_consequences = replay
+        .observation_consequences()
+        .iter()
+        .map(|consequence| match consequence {
+            RecoveredObservationConsequenceV1::ResetRequired {
+                member_id,
+                cause_room_seq,
+                projection_hash,
+            } => ObservationConsequenceWitnessV1::ResetRequired(
+                member_id.to_string(),
+                cause_room_seq.get(),
+                projection_hash.as_bytes().to_vec(),
+            ),
+            RecoveredObservationConsequenceV1::VisibilityLost {
+                member_id,
+                cause_room_seq,
+            } => ObservationConsequenceWitnessV1::VisibilityLost(
+                member_id.to_string(),
+                cause_room_seq.get(),
+            ),
+        })
+        .collect::<Vec<_>>();
+    let mut stored_consequence_witnesses = stored_consequences
+        .iter()
+        .map(|consequence| match consequence {
+            PostgresObservationConsequenceEvidenceV1::ResetRequired {
+                member_id,
+                cause_room_seq,
+                projection_hash,
+                ..
+            } => ObservationConsequenceWitnessV1::ResetRequired(
+                member_id.clone(),
+                *cause_room_seq,
+                projection_hash.clone(),
+            ),
+            PostgresObservationConsequenceEvidenceV1::VisibilityLost {
+                member_id,
+                cause_room_seq,
+            } => {
+                ObservationConsequenceWitnessV1::VisibilityLost(member_id.clone(), *cause_room_seq)
+            }
+        })
+        .collect::<Vec<_>>();
+    replayed_consequences.sort_unstable();
+    stored_consequence_witnesses.sort_unstable();
+    if replayed_consequences != stored_consequence_witnesses {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn verify_replayed_membership_evidence(
+    replay: &ReplayStorageVerificationV1,
+    stored_memberships: &[(String, Vec<u8>)],
+) -> Result<(), RoomRecoveryErrorV1> {
+    let mut replayed_memberships = replay
+        .memberships()
+        .iter()
+        .map(|membership| {
+            (
+                membership.member_id().to_string(),
+                membership.canonical_membership_bytes().to_vec(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut stored_memberships = stored_memberships.to_vec();
+    replayed_memberships.sort_unstable();
+    stored_memberships.sort_unstable();
+    if replayed_memberships != stored_memberships {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn verify_replayed_timer_evidence(
+    replay: &ReplayStorageVerificationV1,
+    stored_timers: &[PostgresTimerEvidenceV1],
+) -> Result<(), RoomRecoveryErrorV1> {
+    let mut replayed_timers = replay
+        .timers()
+        .iter()
+        .map(|timer| {
+            (
+                timer.timer_id().to_string(),
+                timer.generation().get(),
+                timer.scheduled_for().to_string(),
+                timer.canonical_payload_bytes().to_vec(),
+                match timer.state() {
+                    RecoveredTimerStateV1::Scheduled => "scheduled",
+                    RecoveredTimerStateV1::Fired => "fired",
+                    RecoveredTimerStateV1::Cancelled => "cancelled",
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut stored_timers = stored_timers
+        .iter()
+        .map(|timer| {
+            (
+                timer.timer_id.clone(),
+                timer.generation,
+                timer.scheduled_for.clone(),
+                timer.payload_bytes.clone(),
+                timer.state.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    replayed_timers.sort_unstable();
+    stored_timers.sort_unstable();
+    if replayed_timers != stored_timers {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn verify_replayed_activation_decision_evidence(
+    replay: &ReplayStorageVerificationV1,
+    stored_decisions: &[PostgresActivationDecisionEvidenceV1],
+) -> Result<(), RoomRecoveryErrorV1> {
+    let mut replayed_decisions = replay
+        .activation_decisions()
+        .iter()
+        .map(|decision| {
+            (
+                decision.cause_room_seq().get(),
+                decision.decision_id().to_owned(),
+                decision.target_member_id().map(ToString::to_string),
+                decision.canonical_decision_bytes().to_vec(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut stored_decisions = stored_decisions
+        .iter()
+        .map(|decision| {
+            (
+                decision.cause_room_seq,
+                decision.decision_id.clone(),
+                decision.target_member_id.clone(),
+                decision.decision_bytes.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    replayed_decisions.sort_unstable();
+    stored_decisions.sort_unstable();
+    if replayed_decisions != stored_decisions {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn verify_replayed_position_evidence(
+    replay: &ReplayStorageVerificationV1,
+    stored_positions: &[PostgresObservationPositionEvidenceV1],
+) -> Result<(), RoomRecoveryErrorV1> {
+    let replayed_positions = replay
+        .observation_positions()
+        .iter()
+        .map(|position| (position.member_id().as_str(), position))
+        .collect::<BTreeMap<_, _>>();
+    if replayed_positions.len() != stored_positions.len() {
+        return Err(RoomRecoveryErrorV1::Corrupt);
+    }
+    for stored_position in stored_positions {
+        let replayed = replayed_positions
+            .get(stored_position.member_id.as_str())
+            .ok_or(RoomRecoveryErrorV1::Corrupt)?;
+        if !observation_position_relation_is_valid(
+            replayed.frame_head(),
+            replayed.reset_required_through(),
+            stored_position,
+        ) {
+            return Err(RoomRecoveryErrorV1::Corrupt);
+        }
+    }
+    Ok(())
+}
+
+fn observation_position_relation_is_valid(
+    replayed_frame_head: u64,
+    replayed_reset_required_through: Option<u64>,
+    stored: &PostgresObservationPositionEvidenceV1,
+) -> bool {
+    if replayed_frame_head != stored.frame_head
+        || stored.retained_frame_floor == 0
+        || stored.retained_frame_floor > stored.frame_head.saturating_add(1)
+        || stored
+            .last_ack_frame_seq
+            .is_some_and(|cursor| cursor == 0 || cursor > stored.frame_head)
+        || stored
+            .reset_required_through
+            .is_some_and(|marker| marker > stored.frame_head)
+    {
+        return false;
+    }
+    let cursor = stored.last_ack_frame_seq.unwrap_or(0);
+    let lost_prefix = stored
+        .retained_frame_floor
+        .saturating_sub(1)
+        .checked_sub(cursor)
+        .filter(|distance| *distance > 0)
+        .map(|_| stored.retained_frame_floor.saturating_sub(1));
+    let unacknowledged_replay_reset =
+        replayed_reset_required_through.filter(|marker| *marker > cursor && *marker > 0);
+    let required_marker = lost_prefix
+        .into_iter()
+        .chain(unacknowledged_replay_reset)
+        .max();
+    required_marker.is_none_or(|minimum| {
+        stored
+            .reset_required_through
+            .is_some_and(|marker| marker >= minimum && marker <= stored.frame_head)
+    })
+}
+
+fn verify_replayed_materialization_evidence(
+    replay: &ReplayStorageVerificationV1,
+    stored: &PostgresRoomVerification,
+) -> Result<(), RoomRecoveryErrorV1> {
+    verify_replayed_membership_evidence(replay, &stored.membership_bytes)?;
+    verify_replayed_timer_evidence(replay, &stored.timers)?;
+    verify_replayed_activation_decision_evidence(replay, &stored.activation_decisions)?;
+    verify_replayed_position_evidence(replay, &stored.observation_positions)
+}
+
+fn verify_replayed_observation_evidence(
+    replay: &ReplayStorageVerificationV1,
+    stored: &PostgresRoomVerification,
+) -> Result<(), RoomRecoveryErrorV1> {
+    verify_replayed_materialization_evidence(replay, stored)?;
+    verify_replayed_frame_evidence(replay, &stored.observation_positions, &stored.frames)?;
+    verify_replayed_nonframe_consequences(replay, &stored.observation_consequences)
 }
 
 /// Exact bytes and revision identity for one disposable paired snapshot.
@@ -1781,7 +2637,8 @@ fn map_engine_identity_error(
         PostgresSchemaVerificationError::UnsupportedMajor { .. }
         | PostgresSchemaVerificationError::UnsupportedPatch { .. }
         | PostgresSchemaVerificationError::SynchronousCommit { .. }
-        | PostgresSchemaVerificationError::RuntimeRolePrivileges => {
+        | PostgresSchemaVerificationError::RuntimeRolePrivileges
+        | PostgresSchemaVerificationError::DisposableRestoreTarget => {
             PostgresEngineIdentityError::Unsupported
         }
         PostgresSchemaVerificationError::InvalidServerVersion { .. } => {
@@ -1967,6 +2824,327 @@ fn schema_catalog_material<C: GenericClient>(client: &mut C) -> Result<String, p
     Ok(material)
 }
 
+const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
+    (
+        "worldstream_deployment_resource_identity_global_v1",
+        "worldstream_deployment_resource_identities",
+    ),
+    (
+        "worldstream_deployment_resource_blob_identity_global_v1",
+        "worldstream_deployment_resource_blobs",
+    ),
+];
+
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 30] = [
+    (
+        "worldstream_transfer_fence_operation_guards",
+        "worldstream_operation_guards",
+    ),
+    (
+        "worldstream_transfer_fence_room_roots",
+        "worldstream_room_roots",
+    ),
+    ("worldstream_transfer_fence_genesis", "worldstream_genesis"),
+    (
+        "worldstream_transfer_fence_materializations",
+        "worldstream_materializations",
+    ),
+    ("worldstream_transfer_fence_members", "worldstream_members"),
+    ("worldstream_transfer_fence_timers", "worldstream_timers"),
+    (
+        "worldstream_transfer_fence_transitions",
+        "worldstream_transitions",
+    ),
+    ("worldstream_transfer_fence_frames", "worldstream_frames"),
+    (
+        "worldstream_transfer_fence_observation_consequences",
+        "worldstream_observation_consequences",
+    ),
+    (
+        "worldstream_transfer_fence_activation_decisions",
+        "worldstream_activation_decisions",
+    ),
+    (
+        "worldstream_transfer_fence_activation_intents",
+        "worldstream_activation_intents",
+    ),
+    (
+        "worldstream_transfer_fence_activation_receipts",
+        "worldstream_activation_operation_receipts",
+    ),
+    (
+        "worldstream_transfer_fence_room_snapshots",
+        "worldstream_room_snapshots",
+    ),
+    (
+        "worldstream_transfer_fence_semantic_receipts",
+        "worldstream_semantic_receipts",
+    ),
+    (
+        "worldstream_transfer_fence_integrity_incidents",
+        "worldstream_integrity_incidents",
+    ),
+    (
+        "worldstream_transfer_fence_authority_fences",
+        "worldstream_authority_fences",
+    ),
+    (
+        "worldstream_transfer_fence_authority_state",
+        "worldstream_authority_state",
+    ),
+    (
+        "worldstream_transfer_fence_authority_principals",
+        "worldstream_authority_principals",
+    ),
+    (
+        "worldstream_transfer_fence_authority_runners",
+        "worldstream_authority_runners",
+    ),
+    (
+        "worldstream_transfer_fence_authority_capabilities",
+        "worldstream_authority_capabilities",
+    ),
+    (
+        "worldstream_transfer_fence_authority_scopes",
+        "worldstream_authority_capability_scopes",
+    ),
+    (
+        "worldstream_transfer_fence_authority_runner_memberships",
+        "worldstream_authority_runner_capability_memberships",
+    ),
+    (
+        "worldstream_transfer_fence_authority_change_receipts",
+        "worldstream_authority_change_receipts",
+    ),
+    (
+        "worldstream_transfer_fence_authority_audit",
+        "worldstream_authority_audit",
+    ),
+    (
+        "worldstream_transfer_fence_deployment_metadata",
+        "worldstream_deployment_metadata",
+    ),
+    (
+        "worldstream_transfer_fence_deployment_identity_metadata",
+        "worldstream_deployment_identity_metadata",
+    ),
+    (
+        "worldstream_transfer_fence_deployment_packs",
+        "worldstream_deployment_pack_identities",
+    ),
+    (
+        "worldstream_transfer_fence_deployment_resources",
+        "worldstream_deployment_resource_identities",
+    ),
+    (
+        "worldstream_transfer_fence_deployment_resource_blobs",
+        "worldstream_deployment_resource_blobs",
+    ),
+    (
+        "worldstream_transfer_fence_retired_authority_fences",
+        "worldstream_retired_authority_fences_v1",
+    ),
+];
+
+const TRANSFER_FENCE_FUNCTION_BODY: &str = r"BEGIN
+    IF EXISTS (SELECT 1 FROM public.worldstream_transfer_target_fence WHERE fence_id = true) THEN
+        RAISE EXCEPTION 'WorldStream target is non-serving during transfer';
+    END IF;
+    RETURN NULL;
+END;";
+
+fn verify_global_resource_identity_indexes<C: GenericClient>(
+    client: &mut C,
+) -> Result<(), PostgresSchemaVerificationError> {
+    let index_rows = client
+        .query(
+            "SELECT index_relation.relname, table_relation.relname, index.indisunique, \
+                    index.indisvalid, index.indisready, index.indnkeyatts::integer, \
+                    pg_get_indexdef(index.indexrelid, 1, true), \
+                    index.indpred IS NULL, index.indexprs IS NULL \
+             FROM pg_catalog.pg_index AS index \
+             JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid = index.indexrelid \
+             JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid = index.indrelid \
+             JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = table_relation.relnamespace \
+             WHERE namespace.nspname = 'public' \
+               AND index_relation.relname IN ( \
+                   'worldstream_deployment_resource_identity_global_v1', \
+                   'worldstream_deployment_resource_blob_identity_global_v1') \
+             ORDER BY index_relation.relname",
+            &[],
+        )
+        .map_err(PostgresSchemaVerificationError::Sql)?;
+    let mut indexes = BTreeMap::new();
+    for row in index_rows {
+        let name: String = row
+            .try_get(0)
+            .map_err(PostgresSchemaVerificationError::Sql)?;
+        let table: String = row
+            .try_get(1)
+            .map_err(PostgresSchemaVerificationError::Sql)?;
+        let valid = row
+            .try_get::<_, bool>(2)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+            && row
+                .try_get::<_, bool>(3)
+                .map_err(PostgresSchemaVerificationError::Sql)?
+            && row
+                .try_get::<_, bool>(4)
+                .map_err(PostgresSchemaVerificationError::Sql)?
+            && row
+                .try_get::<_, i32>(5)
+                .map_err(PostgresSchemaVerificationError::Sql)?
+                == 1
+            && row
+                .try_get::<_, String>(6)
+                .map_err(PostgresSchemaVerificationError::Sql)?
+                == "resource_identity"
+            && row
+                .try_get::<_, bool>(7)
+                .map_err(PostgresSchemaVerificationError::Sql)?
+            && row
+                .try_get::<_, bool>(8)
+                .map_err(PostgresSchemaVerificationError::Sql)?;
+        if !valid || indexes.insert(name, table).is_some() {
+            return Err(PostgresSchemaVerificationError::FingerprintDrift);
+        }
+    }
+    if indexes.len() != GLOBAL_RESOURCE_IDENTITY_INDEXES.len()
+        || GLOBAL_RESOURCE_IDENTITY_INDEXES
+            .iter()
+            .any(|(name, table)| indexes.get(*name).map(String::as_str) != Some(*table))
+    {
+        return Err(PostgresSchemaVerificationError::FingerprintDrift);
+    }
+    Ok(())
+}
+
+fn verify_transfer_fence_triggers<C: GenericClient>(
+    client: &mut C,
+) -> Result<(), PostgresSchemaVerificationError> {
+    let trigger_rows = client
+        .query(
+            "SELECT trigger.tgname, relation.relname, trigger.tgtype::integer, \
+                    trigger.tgenabled::text, routine.proname \
+             FROM pg_catalog.pg_trigger AS trigger \
+             JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger.tgrelid \
+             JOIN pg_catalog.pg_namespace AS relation_namespace \
+               ON relation_namespace.oid = relation.relnamespace \
+             JOIN pg_catalog.pg_proc AS routine ON routine.oid = trigger.tgfoid \
+             JOIN pg_catalog.pg_namespace AS routine_namespace \
+               ON routine_namespace.oid = routine.pronamespace \
+             WHERE relation_namespace.nspname = 'public' \
+               AND routine_namespace.nspname = 'public' \
+               AND NOT trigger.tgisinternal \
+               AND trigger.tgname LIKE 'worldstream_transfer_fence_%' \
+             ORDER BY trigger.tgname",
+            &[],
+        )
+        .map_err(PostgresSchemaVerificationError::Sql)?;
+    let mut triggers = BTreeMap::new();
+    for row in trigger_rows {
+        let name: String = row
+            .try_get(0)
+            .map_err(PostgresSchemaVerificationError::Sql)?;
+        let table: String = row
+            .try_get(1)
+            .map_err(PostgresSchemaVerificationError::Sql)?;
+        let valid = row
+            .try_get::<_, i32>(2)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+            == 62
+            && row
+                .try_get::<_, String>(3)
+                .map_err(PostgresSchemaVerificationError::Sql)?
+                == "O"
+            && row
+                .try_get::<_, String>(4)
+                .map_err(PostgresSchemaVerificationError::Sql)?
+                == "worldstream_reject_write_while_transfer_fenced";
+        if !valid || triggers.insert(name, table).is_some() {
+            return Err(PostgresSchemaVerificationError::FingerprintDrift);
+        }
+    }
+    if triggers.len() != TRANSFER_FENCE_TRIGGER_TABLES.len()
+        || TRANSFER_FENCE_TRIGGER_TABLES
+            .iter()
+            .any(|(name, table)| triggers.get(*name).map(String::as_str) != Some(*table))
+    {
+        return Err(PostgresSchemaVerificationError::FingerprintDrift);
+    }
+    Ok(())
+}
+
+fn verify_transfer_fence_function<C: GenericClient>(
+    client: &mut C,
+) -> Result<(), PostgresSchemaVerificationError> {
+    let function_rows = client
+        .query(
+            "SELECT pg_get_function_result(routine.oid), language.lanname, \
+                    routine.provolatile::text, routine.prosecdef, routine.proleakproof, \
+                    routine.proparallel::text, routine.pronargs::integer, \
+                    routine.proconfig IS NULL, routine.prosrc \
+             FROM pg_catalog.pg_proc AS routine \
+             JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = routine.pronamespace \
+             JOIN pg_catalog.pg_language AS language ON language.oid = routine.prolang \
+             WHERE namespace.nspname = 'public' \
+               AND routine.proname = 'worldstream_reject_write_while_transfer_fenced' \
+             ORDER BY routine.oid",
+            &[],
+        )
+        .map_err(PostgresSchemaVerificationError::Sql)?;
+    if function_rows.len() != 1 {
+        return Err(PostgresSchemaVerificationError::FingerprintDrift);
+    }
+    let function = &function_rows[0];
+    if function
+        .try_get::<_, String>(0)
+        .map_err(PostgresSchemaVerificationError::Sql)?
+        != "trigger"
+        || function
+            .try_get::<_, String>(1)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+            != "plpgsql"
+        || function
+            .try_get::<_, String>(2)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+            != "v"
+        || function
+            .try_get::<_, bool>(3)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+        || function
+            .try_get::<_, bool>(4)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+        || function
+            .try_get::<_, String>(5)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+            != "u"
+        || function
+            .try_get::<_, i32>(6)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+            != 0
+        || !function
+            .try_get::<_, bool>(7)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+        || function
+            .try_get::<_, String>(8)
+            .map_err(PostgresSchemaVerificationError::Sql)?
+            .trim()
+            != TRANSFER_FENCE_FUNCTION_BODY
+    {
+        return Err(PostgresSchemaVerificationError::FingerprintDrift);
+    }
+    Ok(())
+}
+
+fn verify_schema_safety_catalog<C: GenericClient>(
+    client: &mut C,
+) -> Result<(), PostgresSchemaVerificationError> {
+    verify_global_resource_identity_indexes(client)?;
+    verify_transfer_fence_triggers(client)?;
+    verify_transfer_fence_function(client)
+}
+
 fn verify_runtime_schema_client(
     client: &mut Client,
 ) -> Result<(), PostgresSchemaVerificationError> {
@@ -1990,7 +3168,61 @@ fn verify_runtime_schema<C: GenericClient>(
     if material != SCHEMA_FINGERPRINT_MATERIAL {
         return Err(PostgresSchemaVerificationError::FingerprintDrift);
     }
+    verify_schema_safety_catalog(client)?;
     Ok(())
+}
+
+fn frozen_schema_column_count() -> usize {
+    SCHEMA_FINGERPRINT_MATERIAL
+        .split(';')
+        .filter_map(|table| table.split_once('('))
+        .map(|(_, columns)| {
+            let columns = columns.trim_end_matches(')');
+            usize::from(!columns.is_empty()) + columns.matches(',').count()
+        })
+        .sum()
+}
+
+pub(crate) fn verify_runtime_schema_for_native_restore<C: GenericClient>(
+    client: &mut C,
+    budget: &mut ProviderReadBudgetV1,
+) -> Result<(), PostgresSchemaVerificationError> {
+    let mut migration_rows = migration_history().len();
+    preflight_native_global_provider_reads(
+        client,
+        "SELECT jsonb_build_array(version, migration_id, checksum, logical_history_id, schema_contract_fingerprint)::text FROM worldstream_schema_migrations ORDER BY version",
+        &mut migration_rows,
+        budget,
+    )?;
+    let mut schema_columns = frozen_schema_column_count();
+    preflight_native_global_provider_reads(
+        client,
+        "SELECT jsonb_build_array(table_name, column_name, data_type, is_nullable)::text FROM information_schema.columns WHERE table_schema = 'public' AND table_name LIKE 'worldstream_%' ORDER BY table_name, ordinal_position",
+        &mut schema_columns,
+        budget,
+    )?;
+    let mut index_rows = GLOBAL_RESOURCE_IDENTITY_INDEXES.len();
+    preflight_native_global_provider_reads(
+        client,
+        "SELECT jsonb_build_array(index_relation.relname, table_relation.relname, index.indisunique, index.indisvalid, index.indisready, index.indnkeyatts::integer, pg_get_indexdef(index.indexrelid, 1, true), index.indpred IS NULL, index.indexprs IS NULL)::text FROM pg_catalog.pg_index AS index JOIN pg_catalog.pg_class AS index_relation ON index_relation.oid = index.indexrelid JOIN pg_catalog.pg_class AS table_relation ON table_relation.oid = index.indrelid JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = table_relation.relnamespace WHERE namespace.nspname = 'public' AND index_relation.relname IN ('worldstream_deployment_resource_identity_global_v1', 'worldstream_deployment_resource_blob_identity_global_v1') ORDER BY index_relation.relname",
+        &mut index_rows,
+        budget,
+    )?;
+    let mut trigger_rows = TRANSFER_FENCE_TRIGGER_TABLES.len();
+    preflight_native_global_provider_reads(
+        client,
+        "SELECT jsonb_build_array(trigger.tgname, relation.relname, trigger.tgtype::integer, trigger.tgenabled::text, routine.proname)::text FROM pg_catalog.pg_trigger AS trigger JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger.tgrelid JOIN pg_catalog.pg_namespace AS relation_namespace ON relation_namespace.oid = relation.relnamespace JOIN pg_catalog.pg_proc AS routine ON routine.oid = trigger.tgfoid JOIN pg_catalog.pg_namespace AS routine_namespace ON routine_namespace.oid = routine.pronamespace WHERE relation_namespace.nspname = 'public' AND routine_namespace.nspname = 'public' AND NOT trigger.tgisinternal AND trigger.tgname LIKE 'worldstream_transfer_fence_%' ORDER BY trigger.tgname",
+        &mut trigger_rows,
+        budget,
+    )?;
+    let mut function_rows = 1;
+    preflight_native_global_provider_reads(
+        client,
+        "SELECT jsonb_build_array(pg_get_function_result(routine.oid), language.lanname, routine.provolatile::text, routine.prosecdef, routine.proleakproof, routine.proparallel::text, routine.pronargs::integer, routine.proconfig IS NULL, routine.prosrc)::text FROM pg_catalog.pg_proc AS routine JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = routine.pronamespace JOIN pg_catalog.pg_language AS language ON language.oid = routine.prolang WHERE namespace.nspname = 'public' AND routine.proname = 'worldstream_reject_write_while_transfer_fenced' ORDER BY routine.oid",
+        &mut function_rows,
+        budget,
+    )?;
+    verify_runtime_schema(client)
 }
 
 // Each bit is an independently queried PostgreSQL privilege and each is
@@ -2011,6 +3243,10 @@ struct RuntimeRoleAdmissionV1 {
     migration_update: bool,
     migration_delete: bool,
     migration_truncate: bool,
+    transfer_control_insert: bool,
+    transfer_control_update: bool,
+    transfer_control_delete: bool,
+    transfer_control_truncate: bool,
 }
 
 fn validate_runtime_role_admission(
@@ -2029,6 +3265,10 @@ fn validate_runtime_role_admission(
         || admission.migration_update
         || admission.migration_delete
         || admission.migration_truncate
+        || admission.transfer_control_insert
+        || admission.transfer_control_update
+        || admission.transfer_control_delete
+        || admission.transfer_control_truncate
     {
         Err(PostgresSchemaVerificationError::RuntimeRolePrivileges)
     } else {
@@ -2036,12 +3276,7 @@ fn validate_runtime_role_admission(
     }
 }
 
-fn verify_runtime_role<C: GenericClient>(
-    client: &mut C,
-) -> Result<(), PostgresSchemaVerificationError> {
-    let row = client
-        .query_one(
-            "SELECT role.rolsuper, role.rolcreaterole, role.rolcreatedb, \
+const RUNTIME_ROLE_ADMISSION_SQL: &str = "SELECT role.rolsuper, role.rolcreaterole, role.rolcreatedb, \
                     role.rolreplication, role.rolbypassrls, \
                     has_database_privilege(current_user, current_database(), 'CREATE'), \
                     EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS membership \
@@ -2066,12 +3301,33 @@ fn verify_runtime_role<C: GenericClient>(
                     has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'INSERT'), \
                     has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE'), \
                     has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE'), \
-                    has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE') \
-             FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user",
-            &[],
-        )
-        .map_err(PostgresSchemaVerificationError::Sql)?;
-    let admission = RuntimeRoleAdmissionV1 {
+                    has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE'), \
+                    EXISTS (SELECT 1 FROM unnest(ARRAY[ \
+                        'public.worldstream_transfer_imports', \
+                        'public.worldstream_transfer_chunks', \
+                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        WHERE has_table_privilege(current_user, protected_table.name, 'INSERT')), \
+                    EXISTS (SELECT 1 FROM unnest(ARRAY[ \
+                        'public.worldstream_transfer_imports', \
+                        'public.worldstream_transfer_chunks', \
+                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        WHERE has_table_privilege(current_user, protected_table.name, 'UPDATE')), \
+                    EXISTS (SELECT 1 FROM unnest(ARRAY[ \
+                        'public.worldstream_transfer_imports', \
+                        'public.worldstream_transfer_chunks', \
+                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        WHERE has_table_privilege(current_user, protected_table.name, 'DELETE')), \
+                    EXISTS (SELECT 1 FROM unnest(ARRAY[ \
+                        'public.worldstream_transfer_imports', \
+                        'public.worldstream_transfer_chunks', \
+                        'public.worldstream_transfer_target_fence']::text[]) AS protected_table(name) \
+                        WHERE has_table_privilege(current_user, protected_table.name, 'TRUNCATE')) \
+             FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user";
+
+fn runtime_role_admission_from_row(
+    row: &postgres::Row,
+) -> Result<RuntimeRoleAdmissionV1, PostgresSchemaVerificationError> {
+    Ok(RuntimeRoleAdmissionV1 {
         superuser: row
             .try_get(0)
             .map_err(PostgresSchemaVerificationError::Sql)?,
@@ -2111,8 +3367,52 @@ fn verify_runtime_role<C: GenericClient>(
         migration_truncate: row
             .try_get(12)
             .map_err(PostgresSchemaVerificationError::Sql)?,
-    };
-    validate_runtime_role_admission(admission)
+        transfer_control_insert: row
+            .try_get(13)
+            .map_err(PostgresSchemaVerificationError::Sql)?,
+        transfer_control_update: row
+            .try_get(14)
+            .map_err(PostgresSchemaVerificationError::Sql)?,
+        transfer_control_delete: row
+            .try_get(15)
+            .map_err(PostgresSchemaVerificationError::Sql)?,
+        transfer_control_truncate: row
+            .try_get(16)
+            .map_err(PostgresSchemaVerificationError::Sql)?,
+    })
+}
+
+fn verify_runtime_role<C: GenericClient>(
+    client: &mut C,
+) -> Result<(), PostgresSchemaVerificationError> {
+    let row = client
+        .query_one(RUNTIME_ROLE_ADMISSION_SQL, &[])
+        .map_err(PostgresSchemaVerificationError::Sql)?;
+    validate_runtime_role_admission(runtime_role_admission_from_row(&row)?)
+}
+
+fn validate_runtime_database_marker(
+    marker: Option<&str>,
+) -> Result<(), PostgresSchemaVerificationError> {
+    if marker == Some(native_restore::NATIVE_POSTGRES_DISPOSABLE_TARGET_MARKER_V1) {
+        Err(PostgresSchemaVerificationError::DisposableRestoreTarget)
+    } else {
+        Ok(())
+    }
+}
+
+fn verify_runtime_database_marker<C: GenericClient>(
+    client: &mut C,
+) -> Result<(), PostgresSchemaVerificationError> {
+    let marker = client
+        .query_one(
+            "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = current_database()",
+            &[],
+        )
+        .map_err(PostgresSchemaVerificationError::Sql)?
+        .try_get::<_, Option<String>>(0)
+        .map_err(PostgresSchemaVerificationError::Sql)?;
+    validate_runtime_database_marker(marker.as_deref())
 }
 
 fn verify_runtime_store_client(client: &mut Client) -> Result<(), PostgresSchemaVerificationError> {
@@ -2121,6 +3421,7 @@ fn verify_runtime_store_client(client: &mut Client) -> Result<(), PostgresSchema
         .map_err(PostgresSchemaVerificationError::Sql)?;
     verify_runtime_schema(&mut transaction)?;
     verify_runtime_role(&mut transaction)?;
+    verify_runtime_database_marker(&mut transaction)?;
     transaction
         .commit()
         .map_err(PostgresSchemaVerificationError::Sql)
@@ -2222,6 +3523,7 @@ impl PostgresRoomStore {
                 | PostgresSchemaVerificationError::InvalidServerVersion { .. }
                 | PostgresSchemaVerificationError::SynchronousCommit { .. }
                 | PostgresSchemaVerificationError::RuntimeRolePrivileges
+                | PostgresSchemaVerificationError::DisposableRestoreTarget
                 | PostgresSchemaVerificationError::History(_)
                 | PostgresSchemaVerificationError::FingerprintDrift => {
                     PostgresStorageDiagnosticKindV1::Integrity
@@ -6340,6 +7642,33 @@ mod native_hydration_tests {
     use super::*;
 
     #[test]
+    fn transfer_safety_catalog_contract_matches_the_reviewed_migration() {
+        for (index, table) in GLOBAL_RESOURCE_IDENTITY_INDEXES {
+            assert!(
+                MIGRATION_0011_SQL.contains(&format!("CREATE UNIQUE INDEX {index}")),
+                "missing reviewed unique index {index}"
+            );
+            assert!(
+                MIGRATION_0011_SQL.contains(&format!("ON {table}(resource_identity)")),
+                "unique index {index} no longer closes {table}"
+            );
+        }
+        for (trigger, table) in TRANSFER_FENCE_TRIGGER_TABLES {
+            assert!(
+                MIGRATION_0011_SQL.contains(&format!("CREATE TRIGGER {trigger}")),
+                "missing reviewed transfer-fence trigger {trigger}"
+            );
+            assert!(
+                MIGRATION_0011_SQL.contains(&format!(
+                    "BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON {table}"
+                )),
+                "transfer-fence trigger {trigger} no longer protects {table}"
+            );
+        }
+        assert!(MIGRATION_0011_SQL.contains(TRANSFER_FENCE_FUNCTION_BODY));
+    }
+
+    #[test]
     fn catalog_probe_order_matches_the_frozen_fingerprint_material() {
         let material_order = SCHEMA_FINGERPRINT_MATERIAL
             .split(");")
@@ -6392,6 +7721,165 @@ mod native_hydration_tests {
         assert_eq!(timer.payload_bytes, vec![11]);
         assert_eq!(frame.payload_hash, vec![13]);
         assert_eq!(decision.decision_bytes, vec![14]);
+    }
+
+    #[test]
+    fn executable_replay_rejects_missing_frame_and_consequence_witnesses() {
+        let empty_replay = ReplayStorageVerificationV1::from_observation_witnesses_for_conformance(
+            Vec::new(),
+            Vec::new(),
+        );
+        let positions = vec![PostgresObservationPositionEvidenceV1 {
+            member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+            frame_head: 1,
+            retained_frame_floor: 1,
+            last_ack_frame_seq: None,
+            reset_required_through: None,
+        }];
+        assert_eq!(
+            verify_replayed_frame_evidence(&empty_replay, &positions, &[]),
+            Err(RoomRecoveryErrorV1::Corrupt)
+        );
+
+        let consequences = vec![PostgresObservationConsequenceEvidenceV1::VisibilityLost {
+            member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+            cause_room_seq: 1,
+        }];
+        assert_eq!(
+            verify_replayed_nonframe_consequences(&empty_replay, &consequences),
+            Err(RoomRecoveryErrorV1::Corrupt)
+        );
+    }
+
+    #[test]
+    fn executable_replay_rejects_membership_timer_decision_and_position_substitution() {
+        let empty_replay = ReplayStorageVerificationV1::from_observation_witnesses_for_conformance(
+            Vec::new(),
+            Vec::new(),
+        );
+        let memberships = vec![(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+            br#"{"member":"substituted"}"#.to_vec(),
+        )];
+        assert_eq!(
+            verify_replayed_membership_evidence(&empty_replay, &memberships),
+            Err(RoomRecoveryErrorV1::Corrupt)
+        );
+        let timers = vec![PostgresTimerEvidenceV1 {
+            timer_id: "timer-substituted".to_owned(),
+            generation: 1,
+            scheduled_for: "2026-08-22T00:00:00Z".to_owned(),
+            payload_bytes: b"null".to_vec(),
+            state: "scheduled".to_owned(),
+        }];
+        assert_eq!(
+            verify_replayed_timer_evidence(&empty_replay, &timers),
+            Err(RoomRecoveryErrorV1::Corrupt)
+        );
+        let decisions = vec![PostgresActivationDecisionEvidenceV1 {
+            cause_room_seq: 1,
+            decision_id: "decision-substituted".to_owned(),
+            target_member_id: None,
+            decision_bytes: b"null".to_vec(),
+        }];
+        assert_eq!(
+            verify_replayed_activation_decision_evidence(&empty_replay, &decisions),
+            Err(RoomRecoveryErrorV1::Corrupt)
+        );
+        let positions = vec![PostgresObservationPositionEvidenceV1 {
+            member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+            frame_head: 0,
+            retained_frame_floor: 1,
+            last_ack_frame_seq: None,
+            reset_required_through: Some(0),
+        }];
+        assert_eq!(
+            verify_replayed_position_evidence(&empty_replay, &positions),
+            Err(RoomRecoveryErrorV1::Corrupt)
+        );
+    }
+
+    #[test]
+    fn replay_position_admission_allows_later_frames_and_acknowledged_resets() {
+        let prune_then_new_frame = PostgresObservationPositionEvidenceV1 {
+            member_id: "member-a".to_owned(),
+            frame_head: 6,
+            retained_frame_floor: 4,
+            last_ack_frame_seq: Some(2),
+            reset_required_through: Some(5),
+        };
+        assert!(observation_position_relation_is_valid(
+            6,
+            None,
+            &prune_then_new_frame
+        ));
+
+        let acknowledged_reset = PostgresObservationPositionEvidenceV1 {
+            member_id: "member-a".to_owned(),
+            frame_head: 6,
+            retained_frame_floor: 1,
+            last_ack_frame_seq: Some(5),
+            reset_required_through: None,
+        };
+        assert!(observation_position_relation_is_valid(
+            6,
+            Some(5),
+            &acknowledged_reset
+        ));
+
+        let insufficient_marker = PostgresObservationPositionEvidenceV1 {
+            reset_required_through: Some(2),
+            ..prune_then_new_frame
+        };
+        assert!(!observation_position_relation_is_valid(
+            6,
+            None,
+            &insufficient_marker
+        ));
+    }
+
+    #[test]
+    fn native_room_provider_inventory_is_prefix_length_and_limit_bounded() {
+        assert_eq!(NATIVE_ROOM_PROVIDER_READ_QUERIES_V1.len(), 11);
+        assert!(NATIVE_ROOM_PROVIDER_READ_QUERIES_V1.iter().all(|query| {
+            query.contains("jsonb_build_array")
+                && query.contains("ORDER BY")
+                && !query.contains("SELECT *")
+        }));
+        let sql = bounded_provider_projection_query(NATIVE_ROOM_PROVIDER_READ_QUERIES_V1[0], 2, 3);
+        assert!(sql.contains("LIMIT $2"));
+        assert!(sql.contains("FROM 1 FOR $3"));
+        assert!(sql.contains("octet_length(convert_to(projected.canonical_row, 'UTF8'))::bigint"));
+    }
+
+    #[test]
+    fn native_schema_admission_preflights_every_variable_catalog() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("pub(crate) fn verify_runtime_schema_for_native_restore")
+            .unwrap_or_else(|| unreachable!("native schema admission must exist"));
+        let end = source[start..]
+            .find("// Each bit is an independently queried PostgreSQL privilege")
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| unreachable!("native schema admission boundary must exist"));
+        let body = &source[start..end];
+
+        assert_eq!(
+            body.matches("preflight_native_global_provider_reads(")
+                .count(),
+            5
+        );
+        for required_projection in [
+            "worldstream_schema_migrations",
+            "information_schema.columns",
+            "pg_catalog.pg_index",
+            "pg_catalog.pg_trigger",
+            "routine.prosrc",
+        ] {
+            assert!(body.contains(required_projection));
+        }
+        assert!(body.contains("verify_runtime_schema(client)"));
+        assert!(frozen_schema_column_count() > SCHEMA_TABLE_ORDER.len());
     }
 
     #[test]
@@ -6468,12 +7956,10 @@ mod native_hydration_tests {
     #[test]
     fn dsn_tls_admission_limits_plaintext_exception_to_exact_local_endpoints() {
         for dsn in [
-            "host=localhost sslmode=disable",
             "host=127.0.0.1 sslmode=disable",
             "host=127.20.30.40 sslmode=disable",
             "host=::1 sslmode=disable",
             "host=/var/run/postgresql sslmode=disable",
-            "postgresql://runtime@localhost/worldstream?sslmode=disable",
         ] {
             assert!(
                 validate_dsn(dsn.to_owned(), PostgresProfile::RuntimeLeastPrivilege).is_ok(),
@@ -6481,6 +7967,8 @@ mod native_hydration_tests {
             );
         }
         for dsn in [
+            "host=localhost sslmode=disable",
+            "postgresql://runtime@localhost/worldstream?sslmode=disable",
             "host=localhost.example sslmode=disable",
             "host=127.0.0.1.example sslmode=disable",
             "host=localhost,db.example sslmode=disable",
@@ -6549,12 +8037,40 @@ mod native_hydration_tests {
                 migration_truncate: true,
                 ..RuntimeRoleAdmissionV1::default()
             },
+            RuntimeRoleAdmissionV1 {
+                transfer_control_insert: true,
+                ..RuntimeRoleAdmissionV1::default()
+            },
+            RuntimeRoleAdmissionV1 {
+                transfer_control_update: true,
+                ..RuntimeRoleAdmissionV1::default()
+            },
+            RuntimeRoleAdmissionV1 {
+                transfer_control_delete: true,
+                ..RuntimeRoleAdmissionV1::default()
+            },
+            RuntimeRoleAdmissionV1 {
+                transfer_control_truncate: true,
+                ..RuntimeRoleAdmissionV1::default()
+            },
         ] {
             assert!(matches!(
                 validate_runtime_role_admission(admission),
                 Err(PostgresSchemaVerificationError::RuntimeRolePrivileges)
             ));
         }
+    }
+
+    #[test]
+    fn runtime_admission_rejects_disposable_native_restore_marker() {
+        assert!(validate_runtime_database_marker(None).is_ok());
+        assert!(validate_runtime_database_marker(Some("production")).is_ok());
+        assert!(matches!(
+            validate_runtime_database_marker(Some(
+                native_restore::NATIVE_POSTGRES_DISPOSABLE_TARGET_MARKER_V1
+            )),
+            Err(PostgresSchemaVerificationError::DisposableRestoreTarget)
+        ));
     }
 
     #[test]

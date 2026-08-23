@@ -11,6 +11,7 @@ release evidence; this file only maps those declarations to executable checks.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import importlib.util
 import json
@@ -19,6 +20,7 @@ import platform as platform_module
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -40,6 +42,826 @@ HOSTED_REQUIRED_TOOL_VERSIONS = {
     "cargo-audit": "0.22.2",
     "gitleaks": "8.29.1",
 }
+PROCESS_TREE_REAP_SECONDS = 5.0
+PROCESS_TREE_TERM_SECONDS = 0.25
+PROCESS_TREE_DISCOVERY_ATTEMPTS = 8
+PROCESS_TREE_STABLE_PASSES = 2
+PROCESS_TREE_MARKER_PREFIX = "WORLDSTREAM_GATE_RUN_"
+RELEASE_DEADLINE_EPOCH_ENV = "WORLDSTREAM_RELEASE_DEADLINE_EPOCH_SECONDS"
+
+
+class ProcessTreeError(RuntimeError):
+    """A gate subprocess tree could not be contained or completely reaped."""
+
+
+class _WindowsProcessJob:
+    """Own one Windows process tree through a kill-on-close Job Object."""
+
+    def __init__(self, process: subprocess.Popen[Any]) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class BasicAccountingInformation(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_int64),
+                ("TotalKernelTime", ctypes.c_int64),
+                ("ThisPeriodTotalUserTime", ctypes.c_int64),
+                ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        class ThreadEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ProcessTreeError(
+                f"CreateJobObjectW failed with Windows error {ctypes.get_last_error()}"
+            )
+        self._kernel32 = kernel32
+        self._handle = handle
+        self._accounting_type = BasicAccountingInformation
+        self._thread_entry_type = ThreadEntry32
+        try:
+            information = ExtendedLimitInformation()
+            information.BasicLimitInformation.LimitFlags = 0x0000_2000
+            if not kernel32.SetInformationJobObject(
+                handle, 9, ctypes.byref(information), ctypes.sizeof(information)
+            ):
+                raise ProcessTreeError(
+                    "SetInformationJobObject failed with Windows error "
+                    f"{ctypes.get_last_error()}"
+                )
+            process_handle = getattr(process, "_handle", None)
+            if process_handle is None or not kernel32.AssignProcessToJobObject(
+                handle, process_handle
+            ):
+                raise ProcessTreeError(
+                    "AssignProcessToJobObject failed with Windows error "
+                    f"{ctypes.get_last_error()}"
+                )
+        except BaseException:
+            self.close()
+            raise
+
+    def terminate(self) -> None:
+        if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
+            import ctypes
+
+            raise ProcessTreeError(
+                f"TerminateJobObject failed with Windows error {ctypes.get_last_error()}"
+            )
+
+    def resume(self, process_id: int) -> None:
+        """Resume every initial thread only after the process is in the Job."""
+
+        import ctypes
+
+        snapshot = self._kernel32.CreateToolhelp32Snapshot(0x0000_0004, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            raise ProcessTreeError(
+                "CreateToolhelp32Snapshot failed with Windows error "
+                f"{ctypes.get_last_error()}"
+            )
+        resumed = 0
+        try:
+            entry = self._thread_entry_type()
+            entry.dwSize = ctypes.sizeof(entry)
+            present = self._kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while present:
+                if entry.th32OwnerProcessID == process_id:
+                    thread = self._kernel32.OpenThread(
+                        0x0002, False, entry.th32ThreadID
+                    )
+                    if not thread:
+                        raise ProcessTreeError(
+                            "OpenThread failed with Windows error "
+                            f"{ctypes.get_last_error()}"
+                        )
+                    try:
+                        previous_suspend_count = self._kernel32.ResumeThread(thread)
+                        if previous_suspend_count == 0xFFFF_FFFF:
+                            raise ProcessTreeError(
+                                "ResumeThread failed with Windows error "
+                                f"{ctypes.get_last_error()}"
+                            )
+                        if previous_suspend_count != 1:
+                            raise ProcessTreeError(
+                                "Windows gate process was not exactly once suspended"
+                            )
+                        resumed += 1
+                    finally:
+                        self._kernel32.CloseHandle(thread)
+                present = self._kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        finally:
+            self._kernel32.CloseHandle(snapshot)
+        if resumed == 0:
+            raise ProcessTreeError(
+                "suspended Windows gate process had no resumable thread"
+            )
+
+    def close(self) -> None:
+        if self._handle:
+            import ctypes
+
+            handle = self._handle
+            self._handle = None
+            if not self._kernel32.CloseHandle(handle):
+                raise ProcessTreeError(
+                    "CloseHandle(Job) failed with Windows error "
+                    f"{ctypes.get_last_error()}"
+                )
+
+    def wait_empty(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        deadline = time.monotonic() + PROCESS_TREE_REAP_SECONDS
+        while time.monotonic() < deadline:
+            accounting = self._accounting_type()
+            returned = wintypes.DWORD()
+            if not self._kernel32.QueryInformationJobObject(
+                self._handle,
+                1,
+                ctypes.byref(accounting),
+                ctypes.sizeof(accounting),
+                ctypes.byref(returned),
+            ):
+                raise ProcessTreeError(
+                    "QueryInformationJobObject failed with Windows error "
+                    f"{ctypes.get_last_error()}"
+                )
+            if accounting.ActiveProcesses == 0:
+                return
+            time.sleep(0.01)
+        raise ProcessTreeError("Windows gate subprocess tree was not fully reaped")
+
+
+class _DarwinBsdInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+_DARWIN_PROCESS_APIS: tuple[Any, Any] | None = None
+
+
+def _darwin_process_apis() -> tuple[Any, Any]:
+    global _DARWIN_PROCESS_APIS
+    if _DARWIN_PROCESS_APIS is None:
+        try:
+            libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            libc = ctypes.CDLL(None, use_errno=True)
+        except OSError as error:
+            raise ProcessTreeError("Darwin process APIs are unavailable") from error
+        libproc.proc_listpids.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        libproc.proc_listpids.restype = ctypes.c_int
+        libproc.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        libproc.proc_pidinfo.restype = ctypes.c_int
+        libc.sysctl.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        libc.sysctl.restype = ctypes.c_int
+        _DARWIN_PROCESS_APIS = (libproc, libc)
+    return _DARWIN_PROCESS_APIS
+
+
+def _darwin_process_info(pid: int) -> _DarwinBsdInfo | None:
+    libproc, _libc = _darwin_process_apis()
+    information = _DarwinBsdInfo()
+    returned = libproc.proc_pidinfo(
+        pid,
+        3,  # PROC_PIDTBSDINFO
+        0,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    )
+    if returned != ctypes.sizeof(information):
+        return None
+    return information
+
+
+def _darwin_process_snapshot() -> dict[int, tuple[int, str]]:
+    """Enumerate same-effective-UID Darwin tasks without launching ``ps``."""
+
+    libproc, _libc = _darwin_process_apis()
+    required_bytes = libproc.proc_listpids(
+        4,  # PROC_UID_ONLY
+        os.geteuid(),
+        None,
+        0,
+    )
+    if required_bytes < 0:
+        raise ProcessTreeError("could not enumerate Darwin processes")
+    byte_capacity = required_bytes + 4096
+    process_ids = (
+        ctypes.c_int * max(1, byte_capacity // ctypes.sizeof(ctypes.c_int))
+    )()
+    returned_bytes = libproc.proc_listpids(
+        4,
+        os.geteuid(),
+        process_ids,
+        ctypes.sizeof(process_ids),
+    )
+    if returned_bytes < 0 or returned_bytes >= ctypes.sizeof(process_ids):
+        raise ProcessTreeError("could not enumerate Darwin processes")
+    processes: dict[int, tuple[int, str]] = {}
+    for pid in process_ids[: returned_bytes // ctypes.sizeof(ctypes.c_int)]:
+        if pid <= 0:
+            continue
+        information = _darwin_process_info(pid)
+        if information is None:
+            continue
+        processes[pid] = (
+            int(information.pbi_ppid),
+            f"darwin:{information.pbi_start_tvsec}:{information.pbi_start_tvusec}",
+        )
+    return processes
+
+
+def _proc_stat_identity(path: Path) -> tuple[int, str] | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        remainder = raw[raw.rindex(")") + 2 :].split()
+        return int(remainder[1]), f"proc:{remainder[19]}"
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _ps_process_snapshot() -> dict[int, tuple[int, str]]:
+    process: subprocess.Popen[str] | None = None
+    try:
+        process = subprocess.Popen(
+            ["ps", "-axo", "pid=,ppid=,lstart="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        output, _stderr = process.communicate(timeout=PROCESS_TREE_REAP_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.communicate()
+        raise ProcessTreeError(
+            "could not enumerate the POSIX process tree within its bound"
+        ) from error
+    except (OSError, subprocess.SubprocessError) as error:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        raise ProcessTreeError("could not enumerate the POSIX process tree") from error
+    if process.returncode != 0:
+        raise ProcessTreeError("could not enumerate the POSIX process tree")
+    processes: dict[int, tuple[int, str]] = {}
+    for line in output.splitlines():
+        try:
+            pid_text, parent_text, started = line.split(maxsplit=2)
+            pid, parent = int(pid_text), int(parent_text)
+        except (ValueError, TypeError):
+            continue
+        processes[pid] = (parent, f"ps:{started}")
+    return processes
+
+
+def _posix_process_snapshot() -> dict[int, tuple[int, str]]:
+    """Return PID -> (parent PID, process-start token) for live POSIX tasks."""
+
+    process_root = Path("/proc")
+    if process_root.is_dir():
+        processes: dict[int, tuple[int, str]] = {}
+        for entry in process_root.iterdir():
+            if not entry.name.isdecimal():
+                continue
+            identity = _proc_stat_identity(entry / "stat")
+            if identity is not None:
+                processes[int(entry.name)] = identity
+        return processes
+    if sys.platform == "darwin":
+        return _darwin_process_snapshot()
+    return _ps_process_snapshot()
+
+
+def _posix_process_identity(pid: int) -> str | None:
+    process_root = Path("/proc")
+    if process_root.is_dir():
+        identity = _proc_stat_identity(process_root / str(pid) / "stat")
+        return None if identity is None else identity[1]
+    if sys.platform == "darwin":
+        information = _darwin_process_info(pid)
+        if information is None:
+            return None
+        return f"darwin:{information.pbi_start_tvsec}:{information.pbi_start_tvusec}"
+    return _ps_process_snapshot().get(pid, (0, None))[1]
+
+
+def _posix_descendants(
+    root_pid: int, processes: dict[int, tuple[int, str]] | None = None
+) -> set[int]:
+    """Snapshot all descendants, including children that created a new session."""
+
+    processes = _posix_process_snapshot() if processes is None else processes
+
+    descendants: set[int] = set()
+    frontier = {root_pid}
+    while frontier:
+        children = {
+            pid
+            for pid, (parent, _started) in processes.items()
+            if parent in frontier and pid not in descendants
+        }
+        descendants.update(children)
+        frontier = children
+    return descendants
+
+
+def _darwin_process_has_marker(
+    pid: int, marker: bytes, argument_buffer: ctypes.Array[Any]
+) -> bool | None:
+    _libproc, libc = _darwin_process_apis()
+    size = ctypes.c_size_t(ctypes.sizeof(argument_buffer))
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, pid
+    if libc.sysctl(mib, 3, argument_buffer, ctypes.byref(size), None, 0) != 0:
+        return None
+    arguments = ctypes.string_at(argument_buffer, size.value)
+    return b"\0" + marker + b"\0" in b"\0" + arguments + b"\0"
+
+
+def _ps_process_has_marker(pid: int, marker: bytes) -> bool | None:
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            ["ps", "-Eww", "-p", str(pid), "-o", "command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        output, _stderr = process.communicate(timeout=PROCESS_TREE_REAP_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.communicate()
+        raise ProcessTreeError(
+            "could not inspect a POSIX process marker within its bound"
+        ) from error
+    except (OSError, subprocess.SubprocessError) as error:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        raise ProcessTreeError("could not inspect a POSIX process marker") from error
+    if process.returncode != 0:
+        return None
+    return marker in output
+
+
+class _PosixMarkerScanner:
+    """Discover one run's inherited marker without periodic process polling."""
+
+    def __init__(self, marker: bytes) -> None:
+        self._marker = marker
+        self._inspected: set[tuple[int, str]] = set()
+        self._darwin_argument_buffer: ctypes.Array[Any] | None = None
+        if sys.platform == "darwin":
+            try:
+                argument_max = int(os.sysconf("SC_ARG_MAX"))
+            except (OSError, ValueError) as error:
+                raise ProcessTreeError("could not determine Darwin ARG_MAX") from error
+            if argument_max <= 0 or argument_max > 8 * 1024 * 1024:
+                raise ProcessTreeError("Darwin ARG_MAX is outside the cleanup bound")
+            self._darwin_argument_buffer = ctypes.create_string_buffer(argument_max)
+
+    def matches(self, processes: dict[int, tuple[int, str]]) -> dict[int, str]:
+        matches: dict[int, str] = {}
+        for pid, (_parent, started) in processes.items():
+            identity = (pid, started)
+            if pid == os.getpid() or identity in self._inspected:
+                continue
+            if Path("/proc").is_dir():
+                try:
+                    environment = (Path("/proc") / str(pid) / "environ").read_bytes()
+                except (OSError, ValueError):
+                    present: bool | None = None
+                else:
+                    present = self._marker in environment.split(b"\0")
+            elif sys.platform == "darwin":
+                if self._darwin_argument_buffer is None:
+                    raise ProcessTreeError("Darwin marker buffer is unavailable")
+                present = _darwin_process_has_marker(
+                    pid,
+                    self._marker,
+                    self._darwin_argument_buffer,
+                )
+            else:
+                present = _ps_process_has_marker(pid, self._marker)
+            if present is None:
+                continue
+            self._inspected.add(identity)
+            if present:
+                matches[pid] = started
+        return matches
+
+
+def _signal_posix_process(pid: int, started: str, signal_number: int) -> bool:
+    """Signal one still-matching process identity; never signal a stale PID."""
+
+    if _posix_process_identity(pid) != started:
+        return False
+    try:
+        os.kill(pid, signal_number)
+    except ProcessLookupError:
+        return False
+    except OSError as error:
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = str(signal_number)
+        raise ProcessTreeError(
+            f"could not send {signal_name} to gate subprocess identity {pid}"
+        ) from error
+    return True
+
+
+def _freeze_posix_processes(
+    marker: bytes, seeded: dict[int, str] | None = None
+) -> dict[int, str]:
+    """Discover and stop marked identities until two snapshots are stable."""
+
+    scanner = _PosixMarkerScanner(marker)
+    owned = dict(seeded or {})
+    stopped: set[tuple[int, str]] = set()
+    stable_passes = 0
+    for _attempt in range(PROCESS_TREE_DISCOVERY_ATTEMPTS):
+        before = frozenset(owned.items())
+        processes = _posix_process_snapshot()
+        owned = {
+            pid: started
+            for pid, started in owned.items()
+            if processes.get(pid, (0, ""))[1] == started
+        }
+        candidates = scanner.matches(processes)
+        for root_pid in tuple(owned):
+            for pid in _posix_descendants(root_pid, processes):
+                candidates[pid] = processes[pid][1]
+        owned.update(candidates)
+        for pid, started in sorted(owned.items()):
+            identity = (pid, started)
+            if identity in stopped:
+                continue
+            if _signal_posix_process(pid, started, signal.SIGSTOP):
+                stopped.add(identity)
+            else:
+                owned.pop(pid, None)
+        if frozenset(owned.items()) == before:
+            stable_passes += 1
+        else:
+            stable_passes = 0
+        if stable_passes >= PROCESS_TREE_STABLE_PASSES:
+            return owned
+        if owned:
+            time.sleep(0.001)
+    raise ProcessTreeError("POSIX marked process set did not quiesce before cleanup")
+
+
+def _wait_posix_processes_gone(
+    identities: dict[int, str],
+    *,
+    timeout: float,
+    root_process: subprocess.Popen[Any],
+    root_started: str | None,
+) -> dict[int, str]:
+    deadline = time.monotonic() + timeout
+    remaining = dict(identities)
+    while remaining:
+        for pid, started in tuple(remaining.items()):
+            root_reaped = (
+                pid == root_process.pid
+                and started == root_started
+                and root_process.poll() is not None
+            )
+            if root_reaped or _posix_process_identity(pid) != started:
+                remaining.pop(pid, None)
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(0.01)
+    return remaining
+
+
+def _terminate_posix_processes(
+    process: subprocess.Popen[Any], marker: bytes, root_started: str | None
+) -> None:
+    """Bounded marker/ancestry discovery, graceful stop, and forced cleanup."""
+
+    seeded: dict[int, str] = {}
+    if process.poll() is None:
+        if root_started is None or _posix_process_identity(process.pid) != root_started:
+            raise ProcessTreeError("could not validate the live POSIX gate root")
+        seeded[process.pid] = root_started
+    owned = _freeze_posix_processes(marker, seeded)
+    term_targets: dict[int, str] = {}
+    for pid, started in sorted(owned.items(), reverse=True):
+        if _signal_posix_process(pid, started, signal.SIGTERM):
+            term_targets[pid] = started
+    for pid, started in sorted(term_targets.items()):
+        if not _signal_posix_process(pid, started, signal.SIGCONT):
+            term_targets.pop(pid, None)
+    remaining = _wait_posix_processes_gone(
+        term_targets,
+        timeout=PROCESS_TREE_TERM_SECONDS,
+        root_process=process,
+        root_started=root_started,
+    )
+    if owned:
+        remaining = _freeze_posix_processes(marker, remaining)
+    killed: dict[int, str] = {}
+    for pid, started in sorted(remaining.items(), reverse=True):
+        if _signal_posix_process(pid, started, signal.SIGKILL):
+            killed[pid] = started
+    remaining = _wait_posix_processes_gone(
+        killed,
+        timeout=PROCESS_TREE_REAP_SECONDS,
+        root_process=process,
+        root_started=root_started,
+    )
+    if remaining:
+        raise ProcessTreeError(
+            "gate subprocess identities remained after termination: "
+            + ",".join(str(pid) for pid in sorted(remaining))
+        )
+    if process.poll() is None:
+        raise ProcessTreeError("POSIX gate root did not exit during cleanup")
+
+
+def _kill_owned_posix_root(
+    process: subprocess.Popen[Any], root_started: str | None
+) -> None:
+    """Best-effort direct-child fallback after broader containment failed."""
+
+    if process.poll() is not None:
+        return
+    if root_started is None or not _signal_posix_process(
+        process.pid, root_started, signal.SIGKILL
+    ):
+        raise ProcessTreeError("could not validate the live POSIX gate root")
+    try:
+        process.wait(timeout=PROCESS_TREE_REAP_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise ProcessTreeError("POSIX gate root did not reap after SIGKILL") from error
+
+
+def _run_process_tree(
+    argv: list[str], *, timeout: float | None, **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Run one bounded command in an owned OS process-tree container."""
+
+    kwargs.pop("check", None)
+    capture_output = kwargs.pop("capture_output", False)
+    if capture_output:
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr may not be used with capture_output")
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    input_value = kwargs.pop("input", None)
+    if input_value is not None and kwargs.get("stdin") is not None:
+        raise ValueError("stdin and input arguments may not both be used")
+    if input_value is not None:
+        kwargs["stdin"] = subprocess.PIPE
+
+    windows_job: _WindowsProcessJob | None = None
+    posix_marker: bytes | None = None
+    posix_root_started: str | None = None
+    posix_cleanup_attempted = False
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            kwargs.get("creationflags", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | 0x0000_0004
+        )
+    else:
+        kwargs["start_new_session"] = True
+        marker_name = PROCESS_TREE_MARKER_PREFIX + os.urandom(16).hex().upper()
+        marker_value = os.urandom(16).hex()
+        provided_environment = kwargs.get("env")
+        process_environment = dict(
+            os.environ if provided_environment is None else provided_environment
+        )
+        bytes_environment = any(isinstance(name, bytes) for name in process_environment)
+        environment_name: str | bytes
+        environment_value: str | bytes
+        if bytes_environment:
+            environment_name = marker_name.encode("ascii")
+            environment_value = marker_value.encode("ascii")
+        else:
+            environment_name = marker_name
+            environment_value = marker_value
+        process_environment[environment_name] = environment_value
+        kwargs["env"] = process_environment
+        posix_marker = f"{marker_name}={marker_value}".encode("ascii")
+    process = subprocess.Popen(argv, **kwargs)
+    try:
+        if os.name != "nt":
+            try:
+                posix_root_started = _posix_process_identity(process.pid)
+            except BaseException as error:
+                process.kill()
+                process.wait(timeout=PROCESS_TREE_REAP_SECONDS)
+                posix_cleanup_attempted = True
+                raise ProcessTreeError(
+                    "could not capture the POSIX gate root identity"
+                ) from error
+            if posix_root_started is None and process.poll() is None:
+                # The unreaped direct-child handle makes this fallback immune to
+                # PID reuse even though platform identity capture failed.
+                process.kill()
+                process.wait(timeout=PROCESS_TREE_REAP_SECONDS)
+                posix_cleanup_attempted = True
+                raise ProcessTreeError("could not capture the POSIX gate root identity")
+        if os.name == "nt":
+            try:
+                windows_job = _WindowsProcessJob(process)
+                windows_job.resume(process.pid)
+            except BaseException:
+                process.kill()
+                process.wait(timeout=PROCESS_TREE_REAP_SECONDS)
+                raise
+        try:
+            stdout, stderr = process.communicate(input=input_value, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            containment_error: BaseException | None = None
+            try:
+                if windows_job is not None:
+                    windows_job.terminate()
+                else:
+                    if posix_marker is None:
+                        raise ProcessTreeError("POSIX process marker is unavailable")
+                    posix_cleanup_attempted = True
+                    _terminate_posix_processes(
+                        process,
+                        posix_marker,
+                        posix_root_started,
+                    )
+            except BaseException as tree_error:  # noqa: BLE001 - fail closed below.
+                containment_error = tree_error
+                if os.name != "nt":
+                    _kill_owned_posix_root(process, posix_root_started)
+            try:
+                stdout, stderr = process.communicate(timeout=PROCESS_TREE_REAP_SECONDS)
+            except subprocess.TimeoutExpired as reap_error:
+                raise ProcessTreeError(
+                    "gate subprocess tree did not reap after forced termination"
+                ) from reap_error
+            if containment_error is not None:
+                raise ProcessTreeError(
+                    "gate subprocess tree containment failed during timeout"
+                ) from containment_error
+            raise subprocess.TimeoutExpired(
+                argv, timeout, output=stdout, stderr=stderr
+            ) from error
+        if os.name != "nt":
+            if posix_marker is None:
+                raise ProcessTreeError("POSIX process marker is unavailable")
+            posix_cleanup_attempted = True
+            _terminate_posix_processes(
+                process,
+                posix_marker,
+                posix_root_started,
+            )
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    finally:
+        if windows_job is not None:
+            try:
+                windows_job.terminate()
+                windows_job.wait_empty()
+            finally:
+                windows_job.close()
+            if process.poll() is None:
+                raise ProcessTreeError("Windows gate subprocess did not reap")
+        elif os.name != "nt":
+            if not posix_cleanup_attempted:
+                if posix_marker is None:
+                    raise ProcessTreeError("POSIX process marker is unavailable")
+                posix_cleanup_attempted = True
+                _terminate_posix_processes(
+                    process,
+                    posix_marker,
+                    posix_root_started,
+                )
+            if process.poll() is None:
+                _kill_owned_posix_root(process, posix_root_started)
+
 
 SHA1_DIGEST = re.compile(r"[0-9a-f]{40}\Z")
 SHA256_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -789,6 +1611,7 @@ class GateRunner:
         self.hard_seconds: int | None = None
         self.deadline_monotonic: float | None = None
         self.deadline_recorded = False
+        self.deadline_source = "manifest_tier_start"
 
     def configure_deadline(self, manifest: dict[str, Any], tier: str) -> None:
         """Bind execution to the frozen hard limit for deadline-bearing tiers."""
@@ -808,6 +1631,29 @@ class GateRunner:
             return
         self.hard_seconds = hard
         self.deadline_monotonic = self.started_monotonic + hard
+        if tier == "release" and (
+            absolute := os.environ.get(RELEASE_DEADLINE_EPOCH_ENV)
+        ):
+            if not absolute.isdecimal():
+                self.fail(
+                    "tier-hard-deadline",
+                    "release workflow deadline epoch is not a canonical integer",
+                )
+                self.deadline_recorded = True
+                return
+            remaining = int(absolute) - time.time()
+            if remaining <= 0:
+                self.fail(
+                    "tier-hard-deadline",
+                    "release workflow hard deadline was exhausted before gate start",
+                )
+                self.deadline_recorded = True
+                self.deadline_monotonic = self.started_monotonic
+                return
+            self.deadline_monotonic = min(
+                self.deadline_monotonic, time.monotonic() + remaining
+            )
+            self.deadline_source = "workflow_release_producer_start"
 
     def subprocess_timeout(self, name: str) -> float | None:
         """Return the remaining tier budget, failing once it is exhausted."""
@@ -830,9 +1676,11 @@ class GateRunner:
             return None
         kwargs.pop("check", None)
         try:
-            return subprocess.run(argv, timeout=timeout, check=False, **kwargs)
+            return _run_process_tree(argv, timeout=timeout, **kwargs)
         except subprocess.TimeoutExpired:
             self.fail(name, "command exhausted the tier hard deadline")
+        except ProcessTreeError as error:
+            self.fail(name, f"command process-tree containment failed: {error}")
         except OSError as error:
             self.fail(name, f"could not start {argv[0]}: {error}")
         return None
@@ -907,17 +1755,19 @@ class GateRunner:
         if timeout == 0.0:
             return False
         try:
-            result = subprocess.run(
+            result = _run_process_tree(
                 argv,
                 cwd=ROOT,
                 env=command_env,
-                check=False,
                 capture_output=quiet,
                 text=quiet,
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
             self.fail(name, "command exhausted the tier hard deadline")
+            return False
+        except ProcessTreeError as error:
+            self.fail(name, f"command process-tree containment failed: {error}")
             return False
         except OSError as error:
             detail = f"could not start {argv[0]}: {error}"
@@ -945,15 +1795,21 @@ class GateRunner:
     ) -> int:
         elapsed_seconds = time.monotonic() - self.started_monotonic
         if self.hard_seconds is not None and not self.deadline_recorded:
-            if elapsed_seconds <= self.hard_seconds:
+            within_deadline = (
+                self.deadline_monotonic is not None
+                and time.monotonic() <= self.deadline_monotonic
+            )
+            if within_deadline:
                 self.pass_(
                     "tier-hard-deadline",
-                    f"completed within {self.hard_seconds} seconds",
+                    f"completed within {self.hard_seconds} seconds "
+                    f"from {self.deadline_source}",
                 )
             else:
                 self.fail(
                     "tier-hard-deadline",
-                    f"elapsed time exceeded {self.hard_seconds} seconds",
+                    f"elapsed {elapsed_seconds:.3f}s exceeded {self.hard_seconds} seconds "
+                    f"from {self.deadline_source}",
                 )
             self.deadline_recorded = True
         failures = [outcome for outcome in self.outcomes if outcome.status == "FAIL"]
@@ -1546,7 +2402,10 @@ def dependency_scan(
         # cargo-audit reads Cargo.lock by default. Its current CLI does not
         # accept Cargo's unrelated --locked flag; lockfile resolution was
         # already checked above with cargo metadata.
-        runner.command("cargo-audit", [audit, "audit"])
+        audit_command = [audit, "audit"]
+        if runner.offline:
+            audit_command.append("--no-fetch")
+        runner.command("cargo-audit", audit_command)
     elif release:
         runner.fail("cargo-audit", "required release dependency scanner unavailable")
     else:
@@ -3892,6 +4751,19 @@ def provider_smoke(runner: GateRunner) -> None:
     )
 
 
+def root_python_suite_required(
+    tier: str, selected_cell_row: dict[str, Any] | None
+) -> bool:
+    """Return whether this non-release tier owns the complete root suite."""
+    if tier == "pre-push":
+        return True
+    return (
+        tier == "minimal-ci"
+        and selected_cell_row is not None
+        and selected_cell_row.get("id") in {"native-linux-x86_64", "native-windows-x64"}
+    )
+
+
 def run_tier(
     runner: GateRunner, manifest: dict[str, Any], tier: str, cell: str | None
 ) -> int:
@@ -3938,7 +4810,7 @@ def run_tier(
         dependency_scan(runner, release=False, include_ecosystems=True)
     if tier == "fast":
         root_python_static_checks(runner)
-    elif tier == "pre-push":
+    elif root_python_suite_required(tier, selected_cell_row):
         root_python_checks(runner)
     rust_checks(runner, full=tier != "fast")
     critical_contract_matrix(runner)

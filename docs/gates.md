@@ -94,6 +94,66 @@ any producer or byte binding is absent, its required job or collector stops;
 package reports and generic exit codes never become release evidence. The macOS
 job remains source-only quickstart evidence on both Apple Silicon and Intel.
 
+The native Linux and Windows release cells also run PostgreSQL native restore
+through the exact `worldstreamctl` bytes extracted and identified by the
+packaged-runtime report. Linux downloads byte- and digest-pinned PostgreSQL
+17.11 client packages; Windows uses the byte-pinned 17.11 EDB archive. Each
+cell constructs a source-revision-bound, explicitly untrusted transfer fixture,
+admits a marker-bound disposable target with connection limit zero, retains the
+package archive, control binary, provider tools, passfile, and private artifact
+directory, and executes directory admission, snapshot rebuild, restore, and
+recovery under one bounded process-tree supervisor. A report is published only
+after the native receipt identities match independent source/target admission,
+the target and generated restore roles are absent on the admitted PostgreSQL
+cluster, and exact private artifacts and the retained operator passfile have
+been scrubbed. The live harness then rechecks the admitted cluster and exact
+source/abort database and runtime-role OIDs before dropping those fixtures; it
+does not print success until their absence is observed. Uncertain process
+containment or identity-bound recovery preserves the recovery root and forbids
+provider or artifact cleanup. The supervisor reserves exit 42 for that
+preserved-recovery state and exit 43 for a typed failure whose cleanup was
+proven complete. Each outer runner defaults to preservation as soon as it
+starts the supervisor; an untyped death or signal can therefore never trigger
+fixture or credential teardown.
+
+Both the failure/soak producer and the reference-performance producer carry a
+separate `linux-release-profile` SHA-256/size binding for the package archive
+they executed. Final assembly independently compares each binding with the
+exact shipped Linux payload. A valid report bundle produced from another
+archive is rejected even when all of its internal measurements and citations
+are otherwise self-consistent.
+
+The hosted workflow boundaries include setup rather than starting at the final
+gate command: fast is capped at 60 seconds and each ordinary minimal native
+cell at 1,500 seconds. A main-branch manual release dispatch raises the native
+cell boundary to 3,600 seconds so archive construction and packaged native
+restore evidence remain bounded without consuming the entire release window.
+A release clock job records one absolute 14,400-second deadline before any
+release producer can start; the final release gate consumes that same deadline
+and cannot pass after it expires. Gate subprocess deadlines own
+the direct subprocess. On POSIX, cleanup adds a unique inherited marker to each
+run, supplements marker discovery with any still-visible ancestry, and performs
+bounded fixed-point scans. Every discovered PID's process-start identity is
+revalidated immediately before stop, termination, continuation, or kill; the
+runner never signals a completed leader's old process-group ID and checks that
+the original identities disappear. Linux uses procfs and Darwin uses native
+process APIs rather than a polling `ps` subprocess. This is cooperative
+userspace cleanup, not a kernel sandbox: a descendant that deliberately removes
+the marker and detaches after ancestry is lost, changes effective user, or has
+its launch environment hidden by the platform can escape discovery. Gate tools
+must not use those escape behaviors; commands needing a hostile-process boundary
+must run in an external container/sandbox. The portable POSIX start-token check
+and the following signal syscall are not one atomic kernel operation, so this
+closes retained-PID and old-process-group reuse hazards but cannot exclude reuse
+inside that final syscall gap. Windows retains the kernel-enforced kill-on-close
+Job Object and fails closed if that containment cannot be established.
+
+The reference job admits the Linux archive and package report into private,
+no-follow snapshots before opening the tar stream. Canonical package validation,
+daemon extraction, and packaged-SDK extraction all consume those same snapshot
+bytes. No checkout SDK is imported and no raw archive extraction precedes that
+admission.
+
 Reference measurements run only on a self-hosted runner carrying the exact
 `ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd` certification label. The typed
 reference reports independently require observed Ubuntu 24.04/x86-64, exactly
@@ -103,10 +163,16 @@ Ubuntu label or a missing certified runner leaves the manual release blocked;
 the workflow does not infer those properties from its runner label.
 
 Hosted fast/native/release gates install byte-pinned `gitleaks 8.29.1` and
-`cargo-audit 0.22.2`, prime the locked Rust/Python/pnpm dependency stores, and
-then run the gate offline. The Python gate invokes a sorted explicit
-`tests/*.py` inventory because these repository tests intentionally do not use
-pytest's default `test_*.py` filename pattern.
+`cargo-audit 0.22.2`, prime the RustSec advisory database and the locked
+Rust/Python/pnpm dependency stores during online setup, and then run the gate
+offline. The enforced dependency audit uses `--no-fetch`; if a local advisory
+database has not already been primed, the offline gate fails closed. The Python
+gate invokes a sorted explicit `tests/*.py` inventory in pre-push, both native
+Linux and native Windows CI cells, and final release because these repository
+tests intentionally do not use pytest's default `test_*.py` filename pattern.
+The one-minute fast tier performs only the corresponding static Python checks;
+the OCI cell relies on the same required Linux root-suite result rather than
+running that platform-neutral inventory a third time.
 
 The kill-point probe uses Linux process semantics (`SIGKILL`) and is therefore
 `SKIP_INCOMPLETE` on Darwin in local/pre-push tiers. The native Linux/release

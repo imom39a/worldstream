@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import io
@@ -1204,6 +1205,13 @@ def fixture(tmp_path: Path, monkeypatch):
     )
     kill_value = valid_kill_report(tmp_path, monkeypatch, distribution=distribution)
     kill = write_json(tmp_path / "raw-kill.json", kill_value)
+    snapshot_fixture_report = write_json(
+        tmp_path / "snapshot-fixture.json",
+        {
+            "schema": "worldstream/reference-snapshot-tail-fixture/v1",
+            "status": "complete",
+        },
+    )
     target_value = target_report(
         module,
         manifest=json.loads(manifest_json.read_text(encoding="utf-8")),
@@ -1217,6 +1225,7 @@ def fixture(tmp_path: Path, monkeypatch):
         package_archive=archive,
         package_report=package_report,
         daemon=daemon,
+        snapshot_fixture_report=snapshot_fixture_report,
         manifest_toml=manifest_toml,
         manifest_json=manifest_json,
     )
@@ -1233,6 +1242,7 @@ def fixture(tmp_path: Path, monkeypatch):
             package_report=package_report,
             daemon_bin=daemon,
             snapshot_fixture_bin=daemon,
+            snapshot_fixture_report=snapshot_fixture_report,
             output_dir=normalized_dir,
             aggregate_report=aggregate,
             manifest_toml=manifest_toml,
@@ -1252,6 +1262,7 @@ def fixture(tmp_path: Path, monkeypatch):
         "soak": soak,
         "kill": kill,
         "target": target,
+        "snapshot_fixture_report": snapshot_fixture_report,
         "inputs": inputs,
         "aggregate": aggregate,
         "root": tmp_path,
@@ -1271,6 +1282,7 @@ def produce(value: dict) -> tuple[dict, dict]:
         value["package_report"],
         value["daemon"],
         value["daemon"],
+        value["snapshot_fixture_report"],
         value["packaged_acceptance"],
         value["soak"],
         value["kill"],
@@ -1315,6 +1327,8 @@ def test_cli_parser_keeps_normalized_and_raw_soak_reports_distinct():
             "worldstreamd",
             "--snapshot-fixture-bin",
             "snapshot-fixture",
+            "--snapshot-fixture-report",
+            "snapshot-fixture.json",
             "--packaged-acceptance-report",
             "acceptance.json",
             "--raw-soak-report",
@@ -1330,6 +1344,7 @@ def test_cli_parser_keeps_normalized_and_raw_soak_reports_distinct():
     assert arguments.raw_soak_report == Path("raw-soak.json")
     assert arguments.target_report == Path("normalized-target.json")
     assert arguments.raw_target_report == Path("raw-target.json")
+    assert arguments.snapshot_fixture_report == Path("snapshot-fixture.json")
 
 
 def test_complete_measurements_emit_closed_byte_bound_non_sla_publication(fixture):
@@ -1338,6 +1353,10 @@ def test_complete_measurements_emit_closed_byte_bound_non_sla_publication(fixtur
     assert producer["evidence_id"] == fixture["module"].EVIDENCE_ID
     assert producer["status"] == "passed"
     assert producer["release_evidence"] is True
+    assert producer["artifacts"]["linux-release-profile"] == {
+        "sha256": fixture["module"].sha256(fixture["archive"]),
+        "size_bytes": fixture["archive"].stat().st_size,
+    }
     assert set(producer["outcomes"]) == {
         "packaged_workload_identity",
         "sqlite_measurements",
@@ -1365,6 +1384,56 @@ def test_complete_measurements_emit_closed_byte_bound_non_sla_publication(fixtur
         bundle["projection"]["raw_soak_sha256"] == bundle["raw_soak_report"]["sha256"]
     )
     assert set(bundle["projection"]["input_sha256"]) == set(fixture["inputs"])
+    assert bundle["cell_runner_materials"]["source_revision"] == "1" * 40
+    programs = bundle["cell_runner_materials"]["programs"]
+    assert set(programs) == {"counter", "heist"}
+    for story, path in fixture["module"].CELL_RUNNER_PATHS.items():
+        row = programs[story]
+        assert row["path"] == path.relative_to(ROOT).as_posix()
+        assert row["sha256"] == fixture["module"].sha256(path)
+        assert row["size_bytes"] == path.stat().st_size
+    fixture_bundle = bundle["snapshot_fixture_report"]
+    fixture_raw = fixture["snapshot_fixture_report"].read_bytes()
+    assert fixture_bundle["sha256"] == sha_bytes(fixture_raw)
+    assert fixture_bundle["size_bytes"] == len(fixture_raw)
+    assert (
+        base64.b64decode(fixture_bundle["content_base64"], validate=True) == fixture_raw
+    )
+    assert fixture_bundle["subjects"] == {
+        "package_archive_sha256": bundle["distribution"]["archive_sha256"],
+        "daemon_binary_sha256": bundle["distribution"]["binary_sha256"],
+        "source_revision": bundle["distribution"]["source_revision"],
+        "generator_source_sha256": json.loads(fixture["target"].read_text())[
+            "bindings"
+        ]["snapshot_fixture_source"]["sha256"],
+        "generator_binary_sha256": json.loads(fixture["target"].read_text())[
+            "bindings"
+        ]["snapshot_fixture_binary"]["sha256"],
+    }
+
+
+def test_fixture_report_bytes_cannot_change_after_target_projection(fixture):
+    fixture["snapshot_fixture_report"].write_bytes(
+        b'{"schema":"worldstream/reference-snapshot-tail-fixture/v1","status":"changed"}\n'
+    )
+
+    with pytest.raises(
+        fixture["module"].ReferenceError,
+        match="raw byte bindings differ|fixture report bytes differ",
+    ):
+        produce(fixture)
+
+
+def test_fixture_report_is_rejected_before_an_oversized_allocation(fixture):
+    fixture["snapshot_fixture_report"].write_bytes(
+        b"x" * (fixture["module"].MAX_FIXTURE_REPORT_BYTES + 1)
+    )
+
+    with pytest.raises(
+        fixture["module"].ReferenceError,
+        match="empty or too large",
+    ):
+        produce(fixture)
 
 
 def test_hand_authored_aggregate_cannot_invent_input_hashes(fixture):

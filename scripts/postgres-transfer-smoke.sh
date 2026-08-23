@@ -33,11 +33,13 @@ build_source=0
 requested_mode="${WORLDSTREAM_PG_TRANSFER_MODE:-docker}"
 admin_dsn="${WORLDSTREAM_PG_TRANSFER_ADMIN_DSN:-}"
 runtime_dsn="${WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN:-}"
+abort_admin_dsn="${WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN:-}"
 runtime_role="${WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE:-}"
 docker_bin="${WORLDSTREAM_PG_TRANSFER_DOCKER:-}"
 cargo_bin="${WORLDSTREAM_PG_TRANSFER_CARGO:-}"
 python_bin="${WORLDSTREAM_PG_TRANSFER_PYTHON:-}"
 helper_timeout="${WORLDSTREAM_PG_TRANSFER_TIMEOUT_SECONDS:-180}"
+source_revision="${WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION:-}"
 
 status="unavailable"
 reason="not_started"
@@ -55,8 +57,10 @@ usage() {
     "Default mode creates a digest-pinned disposable postgres:17.11-alpine target with" \
     "separate admin/runtime credentials. Set" \
     "WORLDSTREAM_PG_TRANSFER_MODE=external together with" \
-    "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN and WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN" \
-    "to use an explicitly supplied, already-isolated target." \
+    "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN, WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN, and" \
+    "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN to use explicitly supplied," \
+    "already-isolated success and abort-probe databases. The abort database" \
+    "must be distinct because a provider abort permanently tombstones it." \
     "" \
     "A live result is intentionally incomplete until source and target" \
     "adapters prove exact Room semantics; staged bytes alone are not" \
@@ -96,16 +100,42 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$python_bin" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    python_bin="$(command -v python3)"
-  elif command -v python >/dev/null 2>&1; then
-    python_bin="$(command -v python)"
+resolve_python() {
+  local override="$1"
+  local candidate=""
+  local name=""
+  if [[ -n "$override" ]]; then
+    if [[ -x "$override" ]] \
+      && "$override" -c 'import sys; raise SystemExit(sys.version_info[:3] != (3, 14, 7))' \
+        >/dev/null 2>&1; then
+      printf '%s' "$override"
+    fi
+    return 0
   fi
-fi
+  for name in python3 python; do
+    candidate="$(command -v "$name" 2>/dev/null || true)"
+    if [[ -n "$candidate" && -x "$candidate" ]] \
+      && "$candidate" -c 'import sys; raise SystemExit(sys.version_info[:3] != (3, 14, 7))' \
+        >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  if command -v uv >/dev/null 2>&1; then
+    candidate="$(uv run --python 3.14.7 --no-project python -c \
+      'import sys; print(sys.executable)' 2>/dev/null || true)"
+    if [[ -n "$candidate" && -x "$candidate" ]] \
+      && "$candidate" -c 'import sys; raise SystemExit(sys.version_info[:3] != (3, 14, 7))' \
+        >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+    fi
+  fi
+}
+
+python_bin="$(resolve_python "$python_bin")"
 
 if [[ -z "$python_bin" || ! -x "$python_bin" ]]; then
-  printf '%s\n' '{"schema":"worldstream/sqlite-postgresql-transfer-evidence/v1","status":"unavailable","release_evidence":false,"reason":"python3_unavailable","secrets_emitted":false}'
+  printf '%s\n' '{"schema":"worldstream/sqlite-postgresql-transfer-evidence/v1","status":"unavailable","release_evidence":false,"reason":"pinned_python_unavailable","secrets_emitted":false}'
   exit "$EXIT_UNAVAILABLE"
 fi
 
@@ -179,6 +209,13 @@ if [[ ! "$helper_timeout" =~ ^[1-9][0-9]*$ ]]; then
   exit "$EXIT_CONFIGURATION"
 fi
 
+if [[ -n "$source_revision" && ! "$source_revision" =~ ^[0-9a-f]{40}$ ]]; then
+  status="incomplete"
+  reason="invalid_source_revision"
+  EXIT_CODE="$EXIT_CONFIGURATION" write_static_evidence "$EXIT_CONFIGURATION"
+  exit "$EXIT_CONFIGURATION"
+fi
+
 if [[ "$status" == "incomplete" ]]; then
   EXIT_CODE="$EXIT_INCOMPLETE" write_static_evidence "$EXIT_INCOMPLETE"
   exit "$EXIT_INCOMPLETE"
@@ -190,6 +227,8 @@ mkdir -p "$helper_root/src"
 if [[ "$build_source" -eq 1 ]]; then
   source_file="$temp_root/source.sqlite"
 fi
+source_abort_backup="$temp_root/source-transfer-abort.sqlite"
+source_transfer_backup="$temp_root/source-transfer-point.sqlite"
 
 cleanup() {
   local cleanup_code=0
@@ -221,9 +260,15 @@ trap cleanup EXIT
 
 if [[ "$requested_mode" == "external" ]]; then
   provider_mode="external"
-  if [[ -z "$admin_dsn" || -z "$runtime_dsn" ]]; then
+  if [[ -z "$admin_dsn" || -z "$runtime_dsn" || -z "$abort_admin_dsn" ]]; then
     status="incomplete"
     reason="external_target_credentials_missing"
+    EXIT_CODE="$EXIT_CONFIGURATION" write_static_evidence "$EXIT_CONFIGURATION"
+    exit "$EXIT_CONFIGURATION"
+  fi
+  if [[ "$abort_admin_dsn" == "$admin_dsn" || "$abort_admin_dsn" == "$runtime_dsn" ]]; then
+    status="incomplete"
+    reason="external_abort_target_not_distinct"
     EXIT_CODE="$EXIT_CONFIGURATION" write_static_evidence "$EXIT_CONFIGURATION"
     exit "$EXIT_CONFIGURATION"
   fi
@@ -290,8 +335,17 @@ PY
     EXIT_CODE="$EXIT_UNAVAILABLE" write_static_evidence "$EXIT_UNAVAILABLE"
     exit "$EXIT_UNAVAILABLE"
   fi
+  if ! "$docker_bin" exec --env "PGPASSWORD=$admin_password" "$owned_container" \
+      createdb -U admin worldstream_abort_probe \
+      >"$temp_root/abort-database-setup.log" 2>&1; then
+    status="unavailable"
+    reason="abort_probe_database_setup_failed"
+    EXIT_CODE="$EXIT_UNAVAILABLE" write_static_evidence "$EXIT_UNAVAILABLE"
+    exit "$EXIT_UNAVAILABLE"
+  fi
   admin_dsn="host=127.0.0.1 port=$port user=admin password=$admin_password dbname=worldstream"
   runtime_dsn="host=127.0.0.1 port=$port user=runtime password=$runtime_password dbname=worldstream"
+  abort_admin_dsn="host=127.0.0.1 port=$port user=admin password=$admin_password dbname=worldstream_abort_probe"
 elif [[ "$requested_mode" != "external" ]]; then
   status="incomplete"
   reason="unsupported_mode"
@@ -337,11 +391,12 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{Value, json};
 use worldstream_core::{
     agent_heist_digest, builtin_counter_registry, builtin_worldstream_registry, AccessModeV1,
-    CanonicalJsonV1, CompleteHeadV1, CoreRoomStateV1, CoreTraceV1, IntegrityGenerationV1,
-    MembershipStandingV1, MembershipV1, OperationIdentityV1, PackDigestV1,
-    PackGenesisRequestV1, PackRevisionLockV1, ParticipantActionV1,
-    PreparedAuthorityWitnessV1, PreparedExistingIntentV1, PreparedRoomCommitV1,
-    PreparedTimerMutationKindV1, PrincipalKindV1, RecordedStimulusV1,
+    CanonicalJsonV1, CanonicalRequestHashV1, CompleteHeadV1, CoreRoomStateV1, CoreTraceV1,
+    IntegrityGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1, PackDigestV1,
+    PackGenesisRequestV1, PackRevisionLockV1, ParticipantActionRequestV1,
+    ParticipantActionV1, PreparedAuthorityWitnessV1, PreparedExistingIntentV1,
+    PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedTimerMutationKindV1,
+    PrincipalKindV1, RecordedStimulusV1, ResolveOutcomeV1,
     StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TransitionV1,
     CORE_SCHEMA_VERSION,
 };
@@ -356,12 +411,16 @@ use worldstream_postgres::{
     PostgresAdmin, PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore,
     PostgresTransferDestination, postgres_backend_fingerprint,
 };
-use worldstream_sqlite::{SqliteCanonicalRecordKindV1, SqliteRoomStore};
+use worldstream_sqlite::{
+    SqliteCanonicalRecordKindV1, SqliteRoomStore, SqliteSourceTransferStateV1,
+};
 use worldstream_transfer::{
     BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DigestV1,
     NativeSqliteTransferAdapterV1, NativeSqliteTransferSpecV1, PackIdentityV1,
     ResourceKindV1, ResourcePayloadV1, SessionStatePolicyV1, TargetFingerprintV1, RecordKindV1,
-    TransferChunkV1, TransferDestinationV1, TransferImportSessionV1, TransferStateV1,
+    TransferBundleV1, TransferChunkV1, TransferDestinationV1, TransferImportSessionV1,
+    TransferStateV1,
+    abort_whole_deployment, finalize_whole_deployment,
 };
 
 const EXIT_INCOMPLETE: i32 = 13;
@@ -420,6 +479,15 @@ struct SeedTimer {
 }
 
 #[derive(Clone)]
+struct SeedFrame {
+    member_id: String,
+    frame_seq: u64,
+    cause_room_seq: u64,
+    payload_hash: String,
+    payload_bytes: Vec<u8>,
+}
+
+#[derive(Clone)]
 struct SeedRoom {
     room_id: String,
     head: CompleteHeadV1,
@@ -431,6 +499,7 @@ struct SeedRoom {
     transitions: Vec<(String, Vec<u8>)>,
     memberships: Vec<MembershipV1>,
     timers: Vec<SeedTimer>,
+    frames: Vec<SeedFrame>,
     receipt: Option<StoredSemanticResultV1>,
     integrity_status: &'static str,
     integrity_generation: u64,
@@ -505,6 +574,7 @@ fn table_exists(connection: &rusqlite::Transaction<'_>, table: &str) -> Result<b
 
 fn extract_source_evidence(
     source: &Path,
+    verified_point: &Path,
     source_report: &worldstream_backup::native_sqlite::NativeSqliteVerificationReportV1,
 ) -> Result<SourceCanonicalEvidence, ()> {
     // Use the reviewed SQLite export seam before opening the independent
@@ -520,7 +590,8 @@ fn extract_source_evidence(
         .as_ref()
         .map(|export| export.resource_payloads().to_vec())
         .unwrap_or_default();
-    let restore_evidence = extract_restore_evidence(source, NativeSqliteLimits::default()).ok();
+    let restore_evidence =
+        extract_restore_evidence(verified_point, NativeSqliteLimits::default()).ok();
     let mut metadata_missing = Vec::new();
     if let Some(restore_evidence) = &restore_evidence {
         let readiness = assess_restore_readiness(restore_evidence);
@@ -553,7 +624,9 @@ fn extract_source_evidence(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let connection = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_| ())?;
+    let connection =
+        Connection::open_with_flags(verified_point, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| ())?;
     connection.pragma_update(None, "query_only", true).map_err(|_| ())?;
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
     let has_metadata = table_exists(&transaction, "canonical_export_metadata")?;
@@ -735,7 +808,7 @@ fn extract_source_evidence(
         let parsed_pack = pack_lock.and_then(|(bytes, digest)| {
             let lock = PackRevisionLockV1::from_canonical_bytes(bytes, &digest).ok()?;
             let digest = DigestV1::from_bytes(digest.digest().as_bytes()).ok()?;
-            PackIdentityV1::new(lock.pack_id, lock.revision_lock_id, digest).ok()
+            PackIdentityV1::new(lock.pack_id, lock.explanatory_version, digest).ok()
         });
         if !pack_lock_valid {
             missing.push(missing_evidence(
@@ -1142,11 +1215,33 @@ fn membership_bytes(membership: &MembershipV1) -> Result<Vec<u8>, ()> {
         .map_err(|_| ())
 }
 
+fn seed_frames(plan: &PreparedRoomCommitV1) -> Result<Vec<SeedFrame>, ()> {
+    let PreparedExistingIntentV1::Advance(advance) = plan.intent() else {
+        return Err(());
+    };
+    advance
+        .delivery_consequences
+        .iter()
+        .map(|consequence| match consequence {
+            PreparedObservationConsequenceV1::ObservationFrame(frame) => Ok(SeedFrame {
+                member_id: frame.member_id().to_string(),
+                frame_seq: frame.frame_seq(),
+                cause_room_seq: frame.cause_room_seq().get(),
+                payload_hash: frame.payload_hash().to_string(),
+                payload_bytes: frame.canonical_payload_bytes().to_vec(),
+            }),
+            PreparedObservationConsequenceV1::ResetRequired(_)
+            | PreparedObservationConsequenceV1::VisibilityLost(_) => Err(()),
+        })
+        .collect()
+}
+
 fn seed_room_from_trace(
     room_id: &str,
     trace: &CoreTraceV1,
     transition_ids: &[&str],
     timers: Vec<SeedTimer>,
+    frames: Vec<SeedFrame>,
     receipt: Option<StoredSemanticResultV1>,
 ) -> Result<SeedRoom, ()> {
     if trace.transitions().len() != transition_ids.len() {
@@ -1178,6 +1273,7 @@ fn seed_room_from_trace(
             .collect::<Result<Vec<_>, _>>()?,
         memberships: trace.core_state().memberships().values().cloned().collect(),
         timers,
+        frames,
         receipt,
         integrity_status: "healthy",
         integrity_generation: 1,
@@ -1192,7 +1288,7 @@ fn pack_identity(room: &SeedRoom) -> Result<PackIdentityV1, ()> {
     .map_err(|_| ())?;
     PackIdentityV1::new(
         lock.pack_id,
-        lock.revision_lock_id,
+        lock.explanatory_version,
         DigestV1::from_bytes(room.head.pack_digest().digest().as_bytes()).map_err(|_| ())?,
     )
     .map_err(|_| ())
@@ -1244,9 +1340,16 @@ fn seed_room(connection: &Connection, room: &SeedRoom) -> Result<(), ()> {
             AccessModeV1::Spectator => "spectator",
             AccessModeV1::Operator => "operator",
         };
+        let frame_head = room
+            .frames
+            .iter()
+            .filter(|frame| frame.member_id == membership.member_id().as_str())
+            .map(|frame| frame.frame_seq)
+            .max()
+            .unwrap_or(0);
         connection
             .execute(
-                "INSERT INTO room_members(room_id, member_id, principal_id, principal_kind, standing, access_mode, role, membership_bytes, membership_generation, frame_head) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 0)",
+                "INSERT INTO room_members(room_id, member_id, principal_id, principal_kind, standing, access_mode, role, membership_bytes, membership_generation, frame_head) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9)",
                 rusqlite::params![
                     room.room_id,
                     membership.member_id().to_string(),
@@ -1256,6 +1359,7 @@ fn seed_room(connection: &Connection, room: &SeedRoom) -> Result<(), ()> {
                     access_mode,
                     membership.role(),
                     membership_bytes(membership)?,
+                    i64::try_from(frame_head).map_err(|_| ())?,
                 ],
             )
             .map_err(|_| ())?;
@@ -1288,6 +1392,21 @@ fn seed_room(connection: &Connection, room: &SeedRoom) -> Result<(), ()> {
                     transition_head.activity_state_hash().to_string(),
                     transition_head.authoritative_state_hash().to_string(),
                     transition_bytes,
+                ],
+            )
+            .map_err(|_| ())?;
+    }
+    for frame in &room.frames {
+        connection
+            .execute(
+                "INSERT INTO observation_frames(room_id, member_id, frame_seq, cause_room_seq, payload_hash, payload_bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    room.room_id,
+                    frame.member_id,
+                    i64::try_from(frame.frame_seq).map_err(|_| ())?,
+                    i64::try_from(frame.cause_room_seq).map_err(|_| ())?,
+                    frame.payload_hash,
+                    frame.payload_bytes,
                 ],
             )
             .map_err(|_| ())?;
@@ -1374,7 +1493,13 @@ fn seed_room(connection: &Connection, room: &SeedRoom) -> Result<(), ()> {
     Ok(())
 }
 
-fn seed_global_authority(connection: &Connection, room_id: &str, member_id: &str) -> Result<(), ()> {
+fn seed_global_authority(
+    connection: &Connection,
+    member_room_id: &str,
+    member_id: &str,
+    runner_room_id: &str,
+    runner_member_id: &str,
+) -> Result<(), ()> {
     let principal_id = "01ARZ3NDEKTSV4RRFFQ69G5FD0";
     let runner_id = "01ARZ3NDEKTSV4RRFFQ69G5FH0";
     let member_capability = "01ARZ3NDEKTSV4RRFFQ69G5FF0";
@@ -1389,8 +1514,8 @@ fn seed_global_authority(connection: &Connection, room_id: &str, member_id: &str
         [runner_id, principal_id],
     ).map_err(|_| ())?;
     for (capability_id, token, profile, target_room, target_member, runner) in [
-        (member_capability, vec![0x11_u8; 32], "room_member", Some(room_id), Some(member_id), None),
-        (host_capability, vec![0x22_u8; 32], "host_operator", Some(room_id), None, None),
+        (member_capability, vec![0x11_u8; 32], "room_member", Some(member_room_id), Some(member_id), None),
+        (host_capability, vec![0x22_u8; 32], "host_operator", None, None, None),
         (runner_capability, vec![0x33_u8; 32], "runner_control", None, None, Some(runner_id)),
     ] {
         connection.execute(
@@ -1400,7 +1525,7 @@ fn seed_global_authority(connection: &Connection, room_id: &str, member_id: &str
     }
     for (capability_id, scope) in [
         (member_capability, "room:act"),
-        (host_capability, "operator:backup"),
+        (host_capability, "operator:room_admin"),
         (runner_capability, "activation:claim"),
     ] {
         connection.execute(
@@ -1410,18 +1535,98 @@ fn seed_global_authority(connection: &Connection, room_id: &str, member_id: &str
     }
     connection.execute(
         "INSERT INTO runner_capability_memberships(capability_id, room_id, member_id) VALUES (?1, ?2, ?3)",
-        [runner_capability, room_id, member_id],
+        [runner_capability, runner_room_id, runner_member_id],
     ).map_err(|_| ())?;
-    let change_id = "01ARZ3NDEKTSV4RRFFQ69G5FK0";
-    let request_hash = vec![0x44_u8; 32];
-    connection.execute(
-        "INSERT INTO authority_change_receipts(change_id, authenticated_principal, request_hash, result_kind, target_kind, target_id, secondary_target_id, resulting_generation, checked_at) VALUES (?1, ?2, ?3, 'principal_created', 'principal', ?2, NULL, 1, '2026-08-21T12:00:00Z')",
-        rusqlite::params![change_id, principal_id, request_hash],
-    ).map_err(|_| ())?;
-    connection.execute(
-        "INSERT INTO authority_audit(audit_seq, change_id, actor_principal_id, target_kind, target_id, secondary_target_id, change_kind, prior_generation, resulting_generation, checked_at, reason_code, request_hash) VALUES (1, ?1, ?2, 'principal', ?2, NULL, 'create_principal', NULL, 1, '2026-08-21T12:00:00Z', NULL, ?3)",
-        rusqlite::params![change_id, principal_id, request_hash],
-    ).map_err(|_| ())?;
+    for (
+        audit_seq,
+        change_id,
+        actor,
+        request_hash_byte,
+        result_kind,
+        target_kind,
+        target_id,
+        secondary_target_id,
+        change_kind,
+        checked_at,
+    ) in [
+        (
+            1_i64,
+            "01ARZ3NDEKTSV4RRFFQ69G5FK0",
+            None,
+            0x40_u8,
+            "authority_bootstrapped",
+            "bootstrap",
+            principal_id,
+            Some(host_capability),
+            "bootstrap_authority",
+            "2026-08-21T12:00:00Z",
+        ),
+        (
+            2,
+            "01ARZ3NDEKTSV4RRFFQ69G5FK1",
+            Some(principal_id),
+            0x41,
+            "runner_registered",
+            "runner",
+            runner_id,
+            None,
+            "register_runner",
+            "2026-08-21T12:00:01Z",
+        ),
+        (
+            3,
+            "01ARZ3NDEKTSV4RRFFQ69G5FK2",
+            Some(principal_id),
+            0x42,
+            "capability_registered",
+            "capability",
+            member_capability,
+            None,
+            "register_capability",
+            "2026-08-21T12:00:02Z",
+        ),
+        (
+            4,
+            "01ARZ3NDEKTSV4RRFFQ69G5FK3",
+            Some(principal_id),
+            0x43,
+            "capability_registered",
+            "capability",
+            runner_capability,
+            None,
+            "register_capability",
+            "2026-08-21T12:00:03Z",
+        ),
+    ] {
+        let request_hash = vec![request_hash_byte; 32];
+        connection.execute(
+            "INSERT INTO authority_change_receipts(change_id, authenticated_principal, request_hash, result_kind, target_kind, target_id, secondary_target_id, resulting_generation, checked_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+            rusqlite::params![
+                change_id,
+                actor,
+                request_hash,
+                result_kind,
+                target_kind,
+                target_id,
+                secondary_target_id,
+                checked_at,
+            ],
+        ).map_err(|_| ())?;
+        connection.execute(
+            "INSERT INTO authority_audit(audit_seq, change_id, actor_principal_id, target_kind, target_id, secondary_target_id, change_kind, prior_generation, resulting_generation, checked_at, reason_code, request_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 1, ?8, NULL, ?9)",
+            rusqlite::params![
+                audit_seq,
+                change_id,
+                actor,
+                target_kind,
+                target_id,
+                secondary_target_id,
+                change_kind,
+                checked_at,
+                request_hash,
+            ],
+        ).map_err(|_| ())?;
+    }
     Ok(())
 }
 
@@ -1464,23 +1669,60 @@ fn build_disposable_source(path: &Path) -> Result<(), ()> {
         .iter()
         .find(|action| action.action_type == "increment")
         .ok_or(())?;
-    counter_trace
-        .advance_for_conformance(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
-            member_id: counter_member_id.parse().map_err(|_| ())?,
-            action_id: "01ARZ3NDEKTSV4RRFFQ69G5FE0".parse().map_err(|_| ())?,
+    let counter_member: worldstream_core::MemberId =
+        counter_member_id.parse().map_err(|_| ())?;
+    let counter_action_id: worldstream_core::ActionId =
+        "01ARZ3NDEKTSV4RRFFQ69G5FE0".parse().map_err(|_| ())?;
+    let counter_payload = CanonicalJsonV1::parse(br"{}").map_err(|_| ())?;
+    let counter_action_request = ParticipantActionRequestV1::new(
+        counter_room_id.parse().map_err(|_| ())?,
+        counter_member.clone(),
+        counter_action_id.clone(),
+        counter_trace.head().room_seq(),
+        "increment",
+        counter_payload.clone(),
+    );
+    let counter_stimulus = RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+            member_id: counter_member,
+            action_id: counter_action_id,
             action_type: "increment".to_owned(),
             payload_schema_digest: action_definition.payload_schema.schema_digest.clone(),
-            canonical_payload: CanonicalJsonV1::parse(br"{}").map_err(|_| ())?,
+            canonical_payload: counter_payload,
             exact_basis_head: counter_trace.head().clone(),
             admitted_at: "2026-08-21T12:00:01Z".parse().map_err(|_| ())?,
-        }))
+        });
+    let counter_prepared = counter_trace
+        .prepare(counter_stimulus.clone())
+        .map_err(|_| ())?;
+    let counter_plan = PreparedRoomCommitV1::for_action_for_conformance(
+        &counter_trace,
+        &counter_action_request,
+        counter_prepared,
+        "01ARZ3NDEKTSV4RRFFQ69G5FE0".parse().map_err(|_| ())?,
+        IntegrityGenerationV1::new(1).map_err(|_| ())?,
+        PreparedAuthorityWitnessV1::mint_for_conformance(
+            "transfer-smoke-counter-action",
+            counter_principal_id.parse().map_err(|_| ())?,
+            1,
+            &CanonicalJsonV1::parse(br#"{"revoked":false,"scope":"action"}"#)
+                .map_err(|_| ())?,
+        )
+        .map_err(|_| ())?,
+        &BTreeMap::from([(counter_member_id.parse().map_err(|_| ())?, 0_u64)]),
+    )
+    .map_err(|_| ())?;
+    let counter_frames = seed_frames(&counter_plan)?;
+    let counter_receipt = counter_plan.semantic_result().clone();
+    counter_trace
+        .advance_for_conformance(counter_stimulus)
         .map_err(|_| ())?;
     let counter_room = seed_room_from_trace(
         counter_room_id,
         &counter_trace,
         &["01ARZ3NDEKTSV4RRFFQ69G5FE0"],
         Vec::new(),
-        None,
+        counter_frames,
+        Some(counter_receipt),
     )?;
 
     let heist_room_id = "01ARZ3NDEKTSV4RRFFQ69G5FC5";
@@ -1637,6 +1879,7 @@ fn build_disposable_source(path: &Path) -> Result<(), ()> {
         }
     }
     let timer_receipt = plan.semantic_result().clone();
+    let heist_frames = seed_frames(&plan)?;
     heist_trace
         .advance_for_conformance(timer_stimulus)
         .map_err(|_| ())?;
@@ -1645,6 +1888,7 @@ fn build_disposable_source(path: &Path) -> Result<(), ()> {
         &heist_trace,
         &["01ARZ3NDEKTSV4RRFFQ69G5FG1"],
         timers,
+        heist_frames,
         Some(timer_receipt),
     )?;
 
@@ -1682,15 +1926,65 @@ fn build_disposable_source(path: &Path) -> Result<(), ()> {
     isolated_room.integrity_status = "quarantined";
     isolated_room.integrity_generation = 2;
     seed_room(&connection, &isolated_room)?;
-    seed_global_authority(&connection, counter_room_id, counter_member_id)?;
+    seed_global_authority(
+        &connection,
+        counter_room_id,
+        counter_member_id,
+        heist_room_id,
+        "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+    )?;
     Ok(())
+}
+
+fn build_transfer_bundle(
+    transfer_id: &str,
+    source_evidence: &SourceCanonicalEvidence,
+    rows: &worldstream_backup::native_sqlite::NativeSqliteOperationalRowsV1,
+) -> Result<(TransferBundleV1, TargetFingerprintV1), ()> {
+    let target_backend = postgres_backend_fingerprint().map_err(|_| ())?;
+    let lineage_id = source_evidence.lineage_id.clone().ok_or(())?;
+    let source_epoch = source_evidence.source_epoch.ok_or(())?;
+    let deployment_identity = source_evidence.deployment_identity.clone().ok_or(())?;
+    if deployment_identity.packs().is_empty() {
+        return Err(());
+    }
+    let source_backend = BackendFingerprintV1::new(
+        BundleProfileV1::SqliteBundled,
+        "sqlite-bundled",
+        target_backend.schema().clone(),
+    )
+    .map_err(|_| ())?;
+    let spec = NativeSqliteTransferSpecV1::new_with_deployment_resources(
+        transfer_id,
+        lineage_id,
+        source_epoch,
+        source_backend,
+        target_backend,
+        deployment_identity,
+        source_evidence.resource_payloads.clone(),
+        SessionStatePolicyV1::InvalidateAndRebuild,
+    );
+    let bundle = NativeSqliteTransferAdapterV1::from_operational_rows_with_canonical_records(
+        rows,
+        &spec,
+        &source_evidence.canonical_records,
+    )
+    .map_err(|_| ())?;
+    let target = TargetFingerprintV1::for_bundle(&bundle).map_err(|_| ())?;
+    Ok((bundle, target))
 }
 
 fn main() {
     let mode = env::var("WORLDSTREAM_PG_TRANSFER_PROVIDER_MODE").unwrap_or_else(|_| "external".to_owned());
     let source = env::var("WORLDSTREAM_PG_TRANSFER_SQLITE").unwrap_or_default();
+    let abort_backup =
+        env::var("WORLDSTREAM_PG_TRANSFER_ABORT_BACKUP").unwrap_or_default();
+    let transfer_backup =
+        env::var("WORLDSTREAM_PG_TRANSFER_BACKUP").unwrap_or_default();
     let admin_dsn = env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN").unwrap_or_default();
     let runtime_dsn = env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default();
+    let abort_admin_dsn =
+        env::var("WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN").unwrap_or_default();
     let built_generalized_fixture =
         env::var("WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE").as_deref() == Ok("1");
     let mut evidence = base(&mode);
@@ -1700,9 +1994,344 @@ fn main() {
         incomplete(&mode, "disposable_sqlite_source_build_failed", evidence);
     }
 
-    let source_report = match verify_file(Path::new(&source), NativeSqliteLimits::default()) {
+    let source_store = match SqliteRoomStore::open(Path::new(&source)) {
+        Ok(store) => store,
+        Err(error) => {
+            if env::var("WORLDSTREAM_PG_TRANSFER_DEBUG").as_deref() == Ok("1") {
+                eprintln!("sqlite_source_lifecycle_open_error: {error:?}");
+            }
+            incomplete(&mode, "sqlite_source_lifecycle_open_failed", evidence)
+        }
+    };
+    if source_store.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative {
+        incomplete(&mode, "sqlite_source_not_authoritative_before_smoke", evidence);
+    }
+    let aborted_point = match source_store.begin_source_transfer(Path::new(&abort_backup)) {
+        Ok(status) => status,
+        Err(_) => incomplete(&mode, "sqlite_source_abort_point_backup_failed", evidence),
+    };
+    if aborted_point.state() != SqliteSourceTransferStateV1::TransferPending
+        || aborted_point.backup_digest().is_none()
+    {
+        incomplete(&mode, "sqlite_source_abort_point_not_pending", evidence);
+    }
+    drop(source_store);
+    let restarted_source = match SqliteRoomStore::open(Path::new(&source)) {
+        Ok(store) => store,
+        Err(_) => incomplete(&mode, "sqlite_source_pending_restart_failed", evidence),
+    };
+    let pending_restart_verified = restarted_source.source_transfer_state()
+        == SqliteSourceTransferStateV1::TransferPending
+        && restarted_source
+            .source_transfer_status()
+            .ok()
+            .is_some_and(|status| status == aborted_point);
+    if !pending_restart_verified {
+        incomplete(&mode, "sqlite_source_pending_restart_mismatch", evidence);
+    }
+
+    let abort_report = match verify_file(
+        Path::new(&abort_backup),
+        NativeSqliteLimits::default(),
+    ) {
         Ok(report) => report,
-        Err(_) => incomplete(&mode, "sqlite_native_verification_failed", evidence),
+        Err(_) => incomplete(&mode, "sqlite_abort_backup_verification_failed", evidence),
+    };
+    let abort_source_evidence = match extract_source_evidence(
+        Path::new(&source),
+        Path::new(&abort_backup),
+        &abort_report,
+    ) {
+        Ok(value) if value.missing.is_empty() => value,
+        _ => incomplete(&mode, "sqlite_abort_canonical_evidence_incomplete", evidence),
+    };
+    let abort_rows = match extract_operational_rows(
+        Path::new(&abort_backup),
+        NativeSqliteLimits::default(),
+    ) {
+        Ok(rows) => rows,
+        Err(_) => incomplete(&mode, "sqlite_abort_operational_extraction_failed", evidence),
+    };
+    let (abort_bundle, abort_target) = match build_transfer_bundle(
+        "live-whole-deployment-abort-probe",
+        &abort_source_evidence,
+        &abort_rows,
+    ) {
+        Ok(value) => value,
+        Err(_) => incomplete(&mode, "abort_bundle_construction_failed", evidence),
+    };
+
+    let success_database = Client::connect(&admin_dsn, NoTls)
+        .ok()
+        .and_then(|mut client| client.query_one("SELECT current_database()", &[]).ok())
+        .and_then(|row| row.try_get::<_, String>(0).ok());
+    let abort_database = Client::connect(&abort_admin_dsn, NoTls)
+        .ok()
+        .and_then(|mut client| client.query_one("SELECT current_database()", &[]).ok())
+        .and_then(|row| row.try_get::<_, String>(0).ok());
+    if success_database.is_none()
+        || abort_database.is_none()
+        || success_database == abort_database
+    {
+        provider_failure(&mode, "postgres_abort_target_not_isolated", evidence);
+    }
+    let abort_admin_config = match PostgresConnectionConfig::direct_admin(&abort_admin_dsn) {
+        Ok(config) => config,
+        Err(_) => provider_failure(&mode, "abort_admin_dsn_rejected", evidence),
+    };
+    let abort_admin = match PostgresAdmin::new(abort_admin_config) {
+        Ok(admin) => admin,
+        Err(_) => provider_failure(&mode, "abort_admin_profile_rejected", evidence),
+    };
+    if abort_admin.migrate().is_err() || abort_admin.verify_schema().is_err() {
+        provider_failure(&mode, "postgres_abort_target_migration_failed", evidence);
+    }
+    let mut abort_destination = match PostgresTransferDestination::new(
+        &abort_admin,
+        &abort_bundle,
+        abort_target.clone(),
+    ) {
+        Ok(destination) => destination,
+        Err(_) => provider_failure(&mode, "postgres_abort_destination_rejected", evidence),
+    };
+    let mut abort_session = match TransferImportSessionV1::begin(&abort_bundle) {
+        Ok(session) => session,
+        Err(_) => incomplete(&mode, "abort_session_begin_failed", evidence),
+    };
+    if abort_session.verify_target(&abort_target).is_err() {
+        incomplete(&mode, "abort_target_epoch_fence_rejected", evidence);
+    }
+    let abort_chunk_end = abort_bundle.records().len().min(64);
+    let abort_chunk = match abort_bundle.chunk(0, abort_chunk_end) {
+        Ok(chunk) if abort_chunk_end > 0 => chunk,
+        _ => incomplete(&mode, "abort_bundle_has_no_chunk", evidence),
+    };
+
+    // Exercise the provider branch where neither staging rows nor a target
+    // fence exist yet. A successful abort must still leave one exact durable
+    // tombstone, reject a stale publisher, and be idempotent. This probe uses
+    // the disposable abort database and removes the verified tombstone only
+    // to reset that database for the partial-import coordinator probe below.
+    if abort_destination.abort_import(&abort_target).is_err()
+        || abort_destination.abort_import(&abort_target).is_err()
+    {
+        provider_failure(&mode, "postgres_missing_state_abort_failed", evidence);
+    }
+    if abort_session
+        .apply_chunk(&mut abort_destination, &abort_chunk)
+        .is_ok()
+    {
+        provider_failure(
+            &mode,
+            "postgres_aborted_target_accepted_stale_chunk",
+            evidence,
+        );
+    }
+    let (conflicting_abort_bundle, conflicting_abort_target) = match build_transfer_bundle(
+        "live-whole-deployment-conflicting-abort-probe",
+        &abort_source_evidence,
+        &abort_rows,
+    ) {
+        Ok(value) => value,
+        Err(_) => incomplete(&mode, "conflicting_abort_bundle_construction_failed", evidence),
+    };
+    if abort_destination
+        .abort_import(&conflicting_abort_target)
+        .is_ok()
+    {
+        provider_failure(&mode, "postgres_abort_wrong_target_accepted", evidence);
+    }
+    let mut conflicting_abort_destination = match PostgresTransferDestination::new(
+        &abort_admin,
+        &conflicting_abort_bundle,
+        conflicting_abort_target.clone(),
+    ) {
+        Ok(destination) => destination,
+        Err(_) => provider_failure(&mode, "conflicting_abort_destination_rejected", evidence),
+    };
+    if conflicting_abort_destination
+        .abort_import(&conflicting_abort_target)
+        .is_ok()
+    {
+        provider_failure(&mode, "postgres_abort_wrong_bundle_accepted", evidence);
+    }
+    drop(conflicting_abort_destination);
+
+    let abort_bundle_hash = match abort_bundle.bundle_hash() {
+        Ok(hash) => hash,
+        Err(_) => incomplete(&mode, "abort_bundle_hash_failed", evidence),
+    };
+    let abort_target_digest = match abort_target.fingerprint_digest() {
+        Ok(digest) => digest,
+        Err(_) => incomplete(&mode, "abort_target_digest_failed", evidence),
+    };
+    let abort_bundle_key = abort_bundle_hash.as_bytes().to_vec();
+    let abort_target_key = abort_target_digest.as_bytes().to_vec();
+    let missing_state_tombstone_verified = Client::connect(&abort_admin_dsn, NoTls)
+        .ok()
+        .and_then(|mut client| {
+            client
+                .query_one(
+                    "SELECT bundle_hash, target_fingerprint, state, \
+                     (SELECT count(*)::bigint FROM worldstream_transfer_imports), \
+                     (SELECT count(*)::bigint FROM worldstream_transfer_chunks) \
+                     FROM worldstream_transfer_target_fence WHERE fence_id = true",
+                    &[],
+                )
+                .ok()
+        })
+        .and_then(|row| {
+            Some((
+                row.try_get::<_, Vec<u8>>(0).ok()?,
+                row.try_get::<_, Vec<u8>>(1).ok()?,
+                row.try_get::<_, String>(2).ok()?,
+                row.try_get::<_, i64>(3).ok()?,
+                row.try_get::<_, i64>(4).ok()?,
+            ))
+        })
+        == Some((
+            abort_bundle_key.clone(),
+            abort_target_key.clone(),
+            "aborted".to_owned(),
+            0,
+            0,
+        ));
+    if !missing_state_tombstone_verified {
+        provider_failure(
+            &mode,
+            "postgres_missing_state_abort_tombstone_incomplete",
+            evidence,
+        );
+    }
+    let missing_state_probe_reset = Client::connect(&abort_admin_dsn, NoTls)
+        .ok()
+        .and_then(|mut client| {
+            client
+                .execute(
+                    "DELETE FROM worldstream_transfer_target_fence \
+                     WHERE fence_id = true AND bundle_hash = $1 \
+                     AND target_fingerprint = $2 AND state = 'aborted'",
+                    &[&abort_bundle_key.as_slice(), &abort_target_key.as_slice()],
+                )
+                .ok()
+        })
+        == Some(1);
+    if !missing_state_probe_reset {
+        provider_failure(&mode, "postgres_missing_state_abort_probe_reset_failed", evidence);
+    }
+
+    if abort_session
+        .apply_chunk(&mut abort_destination, &abort_chunk)
+        .is_err()
+    {
+        provider_failure(&mode, "postgres_abort_probe_chunk_failed", evidence);
+    }
+    let pre_abort_checkpoint = match abort_session.to_bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => incomplete(&mode, "abort_checkpoint_serialize_failed", evidence),
+    };
+    if let Err(error) = abort_whole_deployment(
+        &mut abort_session,
+        &mut abort_destination,
+        &restarted_source,
+        &abort_bundle,
+    ) {
+        if env::var("WORLDSTREAM_PG_TRANSFER_DEBUG").as_deref() == Ok("1") {
+            eprintln!("coordinated_abort_error: {error:?}");
+        }
+        provider_failure(&mode, "coordinated_abort_failed", evidence);
+    }
+    let abort_restored_authority = abort_session.state()
+        == TransferStateV1::SourceAuthoritative
+        && restarted_source.source_transfer_state()
+            == SqliteSourceTransferStateV1::SourceAuthoritative;
+    if !abort_restored_authority {
+        provider_failure(&mode, "coordinated_abort_did_not_restore_source", evidence);
+    }
+    drop(restarted_source);
+    let restarted_after_abort = match SqliteRoomStore::open(Path::new(&source)) {
+        Ok(store) => store,
+        Err(_) => incomplete(&mode, "sqlite_source_abort_restart_failed", evidence),
+    };
+    let mut resumed_abort = match TransferImportSessionV1::from_bytes(
+        &abort_bundle,
+        &pre_abort_checkpoint,
+    ) {
+        Ok(session) => session,
+        Err(_) => incomplete(&mode, "abort_checkpoint_resume_failed", evidence),
+    };
+    if abort_whole_deployment(
+        &mut resumed_abort,
+        &mut abort_destination,
+        &restarted_after_abort,
+        &abort_bundle,
+    )
+    .is_err()
+    {
+        provider_failure(&mode, "coordinated_abort_retry_failed", evidence);
+    }
+    let abort_idempotence_verified = resumed_abort.state()
+        == TransferStateV1::SourceAuthoritative
+        && restarted_after_abort.source_transfer_state()
+            == SqliteSourceTransferStateV1::SourceAuthoritative;
+    let abort_provider_tombstone_verified = Client::connect(&abort_admin_dsn, NoTls)
+        .ok()
+        .and_then(|mut client| {
+            client
+                .query_one(
+                    "SELECT state, \
+                     (SELECT count(*)::bigint FROM worldstream_transfer_imports), \
+                     (SELECT count(*)::bigint FROM worldstream_transfer_chunks) \
+                     FROM worldstream_transfer_target_fence WHERE fence_id = true",
+                    &[],
+                )
+                .ok()
+        })
+        .and_then(|row| {
+            Some((
+                row.try_get::<_, String>(0).ok()?,
+                row.try_get::<_, i64>(1).ok()?,
+                row.try_get::<_, i64>(2).ok()?,
+            ))
+        })
+        == Some(("aborted".to_owned(), 0, 0));
+    if !abort_idempotence_verified || !abort_provider_tombstone_verified {
+        provider_failure(&mode, "coordinated_abort_evidence_incomplete", evidence);
+    }
+    drop(abort_destination);
+
+    let transfer_point = match restarted_after_abort
+        .begin_source_transfer(Path::new(&transfer_backup))
+    {
+        Ok(status) => status,
+        Err(_) => incomplete(&mode, "sqlite_source_transfer_point_backup_failed", evidence),
+    };
+    if transfer_point.state() != SqliteSourceTransferStateV1::TransferPending
+        || transfer_point.backup_digest().is_none()
+    {
+        incomplete(&mode, "sqlite_source_transfer_point_not_pending", evidence);
+    }
+    drop(restarted_after_abort);
+    let source_store = match SqliteRoomStore::open(Path::new(&source)) {
+        Ok(store) => store,
+        Err(_) => incomplete(&mode, "sqlite_source_transfer_restart_failed", evidence),
+    };
+    let transfer_pending_restart_verified = source_store.source_transfer_state()
+        == SqliteSourceTransferStateV1::TransferPending
+        && source_store
+            .source_transfer_status()
+            .ok()
+            .is_some_and(|status| status == transfer_point);
+    if !transfer_pending_restart_verified {
+        incomplete(&mode, "sqlite_source_transfer_restart_mismatch", evidence);
+    }
+
+    let source_report = match verify_file(
+        Path::new(&transfer_backup),
+        NativeSqliteLimits::default(),
+    ) {
+        Ok(report) => report,
+        Err(_) => incomplete(&mode, "sqlite_transfer_backup_verification_failed", evidence),
     };
     evidence["source"] = json!({
         "status": if source_report.canonical_ready { "canonical_ready" } else { "not_canonical_ready" },
@@ -1729,14 +2358,19 @@ fn main() {
         })).collect::<Vec<_>>()
     });
 
-    let source_evidence = match extract_source_evidence(Path::new(&source), &source_report) {
+    let source_evidence = match extract_source_evidence(
+        Path::new(&source),
+        Path::new(&transfer_backup),
+        &source_report,
+    ) {
         Ok(value) => value,
         Err(_) => incomplete(&mode, "sqlite_canonical_evidence_extraction_failed", evidence),
     };
     // The transfer contract is gated by the authenticated SQLite canonical
-    // export plus its authoritative DeploymentIdentityV1 record. The native
-    // backup/restore readiness diagnostic is a separate IMO-52/61 contract;
-    // it is intentionally visible, but it is never transfer authority.
+    // export, its authoritative DeploymentIdentityV1 record, and the exact
+    // source-owned backup witness. Native-restore readiness remains a separate
+    // diagnostic because an already quarantined Room may intentionally retain
+    // corrupt bytes that must transfer without promotion.
     let source_complete = source_evidence.missing.is_empty();
     let source_restore_metadata_complete = source_evidence.metadata_missing.is_empty();
     let mut source_missing = source_evidence.missing.clone();
@@ -1820,12 +2454,19 @@ fn main() {
     });
     drop(version_client);
 
-    let rows = match extract_operational_rows(Path::new(&source), NativeSqliteLimits::default()) {
+    let rows = match extract_operational_rows(
+        Path::new(&transfer_backup),
+        NativeSqliteLimits::default(),
+    ) {
         Ok(rows) => rows,
         Err(_) => incomplete(&mode, "sqlite_operational_extraction_failed", evidence),
     };
     let operational_row_count: usize = rows.tables.values().map(Vec::len).sum();
     let source_membership_row_count = rows.tables.get("room_members").map_or(0, Vec::len);
+    let source_semantic_receipt_count = rows
+        .tables
+        .get("semantic_receipts")
+        .map_or(0, Vec::len);
     let source_identity_pack_count = source_evidence
         .deployment_identity
         .as_ref()
@@ -1913,6 +2554,10 @@ fn main() {
         Ok(hash) => hash,
         Err(_) => incomplete(&mode, "bundle_hash_failed", evidence),
     };
+    let target_fingerprint_digest = match target.fingerprint_digest() {
+        Ok(digest) => digest,
+        Err(_) => incomplete(&mode, "target_fingerprint_digest_failed", evidence),
+    };
 
     let admin_config = match PostgresConnectionConfig::direct_admin(admin_dsn) {
         Ok(config) => config,
@@ -1951,7 +2596,11 @@ fn main() {
         };
         if privilege_client
             .batch_execute(&format!(
-                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE worldstream_schema_migrations FROM {runtime_role}",
+                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE \
+                 public.worldstream_schema_migrations, \
+                 public.worldstream_transfer_imports, \
+                 public.worldstream_transfer_chunks, \
+                 public.worldstream_transfer_target_fence FROM {runtime_role}",
             ))
             .is_err()
         {
@@ -1978,7 +2627,27 @@ fn main() {
         }
         provider_failure(&mode, "runtime_read_only_schema_verification_failed", evidence);
     }
-    let mut destination = match PostgresTransferDestination::new(&store, &bundle, target.clone()) {
+    let runtime_transfer_control_denied = if mode == "docker" {
+        Client::connect(
+            &env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default(),
+            NoTls,
+        )
+        .ok()
+        .is_some_and(|mut client| {
+            client
+                .execute(
+                    "DELETE FROM public.worldstream_transfer_target_fence WHERE fence_id = true",
+                    &[],
+                )
+                .is_err()
+        })
+    } else {
+        true
+    };
+    if !runtime_transfer_control_denied {
+        provider_failure(&mode, "postgres_runtime_transfer_control_not_denied", evidence);
+    }
+    let mut destination = match PostgresTransferDestination::new(&admin, &bundle, target.clone()) {
         Ok(destination) => destination,
         Err(_) => provider_failure(&mode, "postgres_destination_fence_rejected", evidence),
     };
@@ -2002,7 +2671,160 @@ fn main() {
         });
         start = end;
     }
-    let mut interrupted_destination = match PostgresTransferDestination::new(&store, &bundle, target.clone()) {
+    let first_chunk = match chunks.first() {
+        Some(chunk) => chunk,
+        None => incomplete(&mode, "transfer_bundle_has_no_chunks", evidence),
+    };
+    let deployment_lineage_bytes = match bundle.records().iter().find_map(|record| {
+        matches!(
+            record.kind(),
+            RecordKindV1::Canonical(CanonicalRecordKindV1::DeploymentLineage)
+        )
+        .then(|| record.bytes().to_vec())
+    }) {
+        Some(bytes) => bytes,
+        None => incomplete(&mode, "transfer_lineage_record_missing", evidence),
+    };
+    let storage_epoch_bytes = match bundle.records().iter().find_map(|record| {
+        matches!(
+            record.kind(),
+            RecordKindV1::Canonical(CanonicalRecordKindV1::StorageEpoch)
+        )
+        .then(|| record.bytes().to_vec())
+    }) {
+        Some(bytes) => bytes,
+        None => incomplete(&mode, "transfer_epoch_record_missing", evidence),
+    };
+    let target_epoch = match i64::try_from(target.storage_epoch()) {
+        Ok(epoch) => epoch,
+        Err(_) => incomplete(&mode, "transfer_target_epoch_out_of_range", evidence),
+    };
+    let mut preseed_client = match Client::connect(
+        &env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN").unwrap_or_default(),
+        NoTls,
+    ) {
+        Ok(client) => client,
+        Err(_) => provider_failure(&mode, "postgres_preseed_connection_failed", evidence),
+    };
+    let mut exact_preseed_destination = match PostgresTransferDestination::new(
+        &admin,
+        &bundle,
+        target.clone(),
+    ) {
+        Ok(destination) => destination,
+        Err(_) => provider_failure(&mode, "postgres_exact_preseed_destination_failed", evidence),
+    };
+    if preseed_client
+        .execute(
+            "INSERT INTO worldstream_deployment_metadata(\
+             target_id, deployment_lineage_bytes, storage_epoch_bytes, storage_epoch\
+             ) VALUES (true, $1, $2, $3)",
+            &[&deployment_lineage_bytes, &storage_epoch_bytes, &target_epoch],
+        )
+        .is_err()
+    {
+        provider_failure(&mode, "postgres_exact_preseed_setup_failed", evidence);
+    }
+    let exact_preseed_rejected = TransferImportSessionV1::begin(&bundle)
+        .ok()
+        .is_some_and(|mut preseed_session| {
+            preseed_session.verify_target(&target).is_ok()
+                && preseed_session
+                    .apply_chunk(&mut exact_preseed_destination, first_chunk)
+                    .is_err()
+        });
+    let exact_preseed_rollback_clean = preseed_client
+        .query_one(
+            "SELECT \
+             (SELECT count(*)::bigint FROM worldstream_transfer_target_fence), \
+             (SELECT count(*)::bigint FROM worldstream_transfer_imports), \
+             (SELECT count(*)::bigint FROM worldstream_transfer_chunks)",
+            &[],
+        )
+        .ok()
+        .and_then(|row| {
+            Some((
+                row.try_get::<_, i64>(0).ok()?,
+                row.try_get::<_, i64>(1).ok()?,
+                row.try_get::<_, i64>(2).ok()?,
+            ))
+        })
+        == Some((0, 0, 0));
+    if !exact_preseed_rejected || !exact_preseed_rollback_clean {
+        provider_failure(&mode, "postgres_exact_preseed_was_not_rejected", evidence);
+    }
+    if preseed_client
+        .execute(
+            "DELETE FROM worldstream_deployment_metadata WHERE target_id = true",
+            &[],
+        )
+        .ok()
+        != Some(1)
+    {
+        provider_failure(&mode, "postgres_exact_preseed_cleanup_failed", evidence);
+    }
+
+    let conflicting_lineage_bytes = b"deployment/conflicting-preseed".to_vec();
+    let mut conflicting_preseed_destination = match PostgresTransferDestination::new(
+        &admin,
+        &bundle,
+        target.clone(),
+    ) {
+        Ok(destination) => destination,
+        Err(_) => provider_failure(&mode, "postgres_conflicting_preseed_destination_failed", evidence),
+    };
+    if preseed_client
+        .execute(
+            "INSERT INTO worldstream_deployment_metadata(\
+             target_id, deployment_lineage_bytes, storage_epoch_bytes, storage_epoch\
+             ) VALUES (true, $1, $2, $3)",
+            &[&conflicting_lineage_bytes, &storage_epoch_bytes, &target_epoch],
+        )
+        .is_err()
+    {
+        provider_failure(&mode, "postgres_conflicting_preseed_setup_failed", evidence);
+    }
+    let conflicting_preseed_rejected = TransferImportSessionV1::begin(&bundle)
+        .ok()
+        .is_some_and(|mut preseed_session| {
+            preseed_session.verify_target(&target).is_ok()
+                && preseed_session
+                    .apply_chunk(&mut conflicting_preseed_destination, first_chunk)
+                    .is_err()
+        });
+    let conflicting_preseed_rollback_clean = preseed_client
+        .query_one(
+            "SELECT \
+             (SELECT count(*)::bigint FROM worldstream_transfer_target_fence), \
+             (SELECT count(*)::bigint FROM worldstream_transfer_imports), \
+             (SELECT count(*)::bigint FROM worldstream_transfer_chunks)",
+            &[],
+        )
+        .ok()
+        .and_then(|row| {
+            Some((
+                row.try_get::<_, i64>(0).ok()?,
+                row.try_get::<_, i64>(1).ok()?,
+                row.try_get::<_, i64>(2).ok()?,
+            ))
+        })
+        == Some((0, 0, 0));
+    if !conflicting_preseed_rejected || !conflicting_preseed_rollback_clean {
+        provider_failure(&mode, "postgres_conflicting_preseed_was_not_rejected", evidence);
+    }
+    if preseed_client
+        .execute(
+            "DELETE FROM worldstream_deployment_metadata WHERE target_id = true",
+            &[],
+        )
+        .ok()
+        != Some(1)
+    {
+        provider_failure(&mode, "postgres_conflicting_preseed_cleanup_failed", evidence);
+    }
+    drop(preseed_client);
+
+    let mut interrupted_destination = match PostgresTransferDestination::new(&admin, &bundle, target.clone()) {
         Ok(destination) => destination,
         Err(_) => provider_failure(&mode, "postgres_interruption_destination_fence_rejected", evidence),
     };
@@ -2055,9 +2877,11 @@ fn main() {
     if !conflicting_chunk_rejected {
         incomplete(&mode, "postgres_conflicting_chunk_was_accepted", evidence);
     }
-    if interrupted.abort(&mut interrupted_destination).is_err() {
-        provider_failure(&mode, "postgres_interruption_abort_failed", evidence);
-    }
+    // Drop the first in-memory session without aborting its durable provider
+    // state. The next session must attach to that exact fenced import and
+    // confirm the already-applied chunk, which models a process restart.
+    drop(interrupted);
+    drop(interrupted_destination);
     let first_disposition = match chunks.first() {
         Some(chunk) => match session.apply_chunk(&mut destination, chunk) {
             Ok(disposition) => format!("{disposition:?}").to_lowercase(),
@@ -2090,18 +2914,75 @@ fn main() {
     if !resumed.is_complete() || resumed.state() != TransferStateV1::TargetVerified {
         provider_failure(&mode, "transfer_checkpoint_not_complete", evidence);
     }
-    if let Err(error) = resumed.finalize(&mut destination, &bundle) {
+    if let Err(error) = finalize_whole_deployment(
+        &mut resumed,
+        &mut destination,
+        &source_store,
+        &bundle,
+    ) {
         if env::var("WORLDSTREAM_PG_TRANSFER_DEBUG").as_deref() == Ok("1") {
-            eprintln!("pre_authority_verification_error: {error:?}");
+            eprintln!("whole_deployment_finalization_error: {error:?}");
         }
-        provider_failure(&mode, "postgres_pre_authority_verification_failed", evidence);
+        provider_failure(&mode, "whole_deployment_finalization_failed", evidence);
     }
-    if let Err(error) = resumed.accept_target_write(&mut destination) {
+    let source_retired = source_store
+        .source_transfer_status()
+        .ok()
+        .is_some_and(|status| {
+            status.state() == SqliteSourceTransferStateV1::SourceRetired
+                && status.bundle_hash() == Some(bundle_hash)
+                && status.target_fingerprint() == Some(target_fingerprint_digest)
+        })
+        && resumed.state() == TransferStateV1::TargetAuthoritative;
+    if !source_retired {
+        provider_failure(&mode, "sqlite_source_retirement_failed", evidence);
+    }
+    let finalized_checkpoint = match resumed.to_bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => incomplete(&mode, "finalized_checkpoint_serialize_failed", evidence),
+    };
+    drop(source_store);
+    let retired_source = match SqliteRoomStore::open(Path::new(&source)) {
+        Ok(store) => store,
+        Err(_) => provider_failure(&mode, "sqlite_retired_source_restart_failed", evidence),
+    };
+    let mut resumed_finalization = match TransferImportSessionV1::from_bytes(
+        &bundle,
+        &finalized_checkpoint,
+    ) {
+        Ok(session) => session,
+        Err(_) => incomplete(&mode, "finalized_checkpoint_resume_failed", evidence),
+    };
+    let retirement_abort_refused = abort_whole_deployment(
+        &mut resumed_finalization,
+        &mut destination,
+        &retired_source,
+        &bundle,
+    )
+    .is_err();
+    let source_retirement_restart_verified = retired_source.source_transfer_state()
+        == SqliteSourceTransferStateV1::SourceRetired
+        && retirement_abort_refused;
+    if !source_retirement_restart_verified {
+        provider_failure(&mode, "sqlite_retired_source_was_not_irreversible", evidence);
+    }
+    if let Err(error) = finalize_whole_deployment(
+        &mut resumed_finalization,
+        &mut destination,
+        &retired_source,
+        &bundle,
+    ) {
         if env::var("WORLDSTREAM_PG_TRANSFER_DEBUG").as_deref() == Ok("1") {
-            eprintln!("target_authority_commit_error: {error:?}");
+            eprintln!("whole_deployment_finalization_retry_error: {error:?}");
         }
-        provider_failure(&mode, "postgres_target_authority_commit_failed", evidence);
+        provider_failure(&mode, "whole_deployment_finalization_retry_failed", evidence);
     }
+    let finalization_restart_idempotence_verified =
+        resumed_finalization.state() == TransferStateV1::TargetAuthoritative;
+    if !finalization_restart_idempotence_verified {
+        provider_failure(&mode, "whole_deployment_finalization_retry_incomplete", evidence);
+    }
+    drop(retired_source);
 
     // Read the published Core-owned rows back through the provider's public
     // least-privileged verifier. Every healthy Room's Genesis, Head,
@@ -2192,6 +3073,88 @@ fn main() {
     };
     if state != "authoritative" || staged_chunks != chunk_count as i64 {
         provider_failure(&mode, "runtime_read_only_authority_witness_mismatch", evidence);
+    }
+    let guard_parity = read_client
+        .query_one(
+            "SELECT \
+             (SELECT count(*)::bigint FROM worldstream_semantic_receipts), \
+             (SELECT count(*)::bigint FROM worldstream_operation_guards), \
+             (SELECT count(*)::bigint \
+              FROM worldstream_semantic_receipts AS receipt \
+              FULL OUTER JOIN worldstream_operation_guards AS guard \
+                ON guard.identity_bytes = receipt.identity_bytes \
+              WHERE receipt.identity_bytes IS NULL \
+                 OR guard.identity_bytes IS NULL \
+                 OR receipt.canonical_request_hash IS DISTINCT FROM guard.request_hash \
+                 OR receipt.room_id IS DISTINCT FROM guard.room_id \
+                 OR receipt.receipt_bytes IS DISTINCT FROM guard.receipt_bytes)",
+            &[],
+        )
+        .ok()
+        .and_then(|row| {
+            Some((
+                row.try_get::<_, i64>(0).ok()?,
+                row.try_get::<_, i64>(1).ok()?,
+                row.try_get::<_, i64>(2).ok()?,
+            ))
+        });
+    let (target_semantic_receipt_count, operation_guard_count, operation_guard_mismatch_count) =
+        match guard_parity {
+            Some(counts) => counts,
+            None => provider_failure(&mode, "runtime_operation_guard_parity_query_failed", evidence),
+        };
+    let operation_guard_exact_parity_verified = target_semantic_receipt_count
+        == i64::try_from(source_semantic_receipt_count).unwrap_or(-1)
+        && operation_guard_count == target_semantic_receipt_count
+        && operation_guard_mismatch_count == 0;
+    if !operation_guard_exact_parity_verified {
+        provider_failure(&mode, "runtime_operation_guard_parity_mismatch", evidence);
+    }
+
+    let probe_receipt_bytes = match read_client
+        .query_opt(
+            "SELECT receipt_bytes FROM worldstream_semantic_receipts ORDER BY identity_bytes LIMIT 1",
+            &[],
+        )
+        .ok()
+        .flatten()
+        .and_then(|row| row.try_get::<_, Vec<u8>>(0).ok())
+    {
+        Some(bytes) => bytes,
+        None => provider_failure(&mode, "runtime_operation_guard_probe_missing", evidence),
+    };
+    let probe_receipt = match StoredSemanticResultV1::from_canonical_receipt_bytes(
+        &probe_receipt_bytes,
+    ) {
+        Ok(receipt) => receipt,
+        Err(_) => provider_failure(&mode, "runtime_operation_guard_probe_corrupt", evidence),
+    };
+    let same_hash_stored_resolution = matches!(
+        store.read_guarded_receipt(
+            probe_receipt.operation_identity(),
+            probe_receipt.canonical_request_hash(),
+        ),
+        Ok(ResolveOutcomeV1::StoredResolution(stored)) if stored.as_ref() == &probe_receipt
+    );
+    let mut conflicting_hash_bytes = *probe_receipt.canonical_request_hash().as_bytes();
+    conflicting_hash_bytes[0] ^= 0xff;
+    let conflicting_hash_hex = conflicting_hash_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let conflicting_request_hash = match format!("blake3:{conflicting_hash_hex}")
+        .parse::<CanonicalRequestHashV1>()
+    {
+        Ok(hash) => hash,
+        Err(_) => provider_failure(&mode, "runtime_operation_guard_conflict_probe_invalid", evidence),
+    };
+    let different_hash_conflict = matches!(
+        store.read_guarded_receipt(probe_receipt.operation_identity(), &conflicting_request_hash),
+        Ok(ResolveOutcomeV1::Conflict { existing_request_hash })
+            if &existing_request_hash == probe_receipt.canonical_request_hash()
+    );
+    if !same_hash_stored_resolution || !different_hash_conflict {
+        provider_failure(&mode, "runtime_operation_guard_resolution_mismatch", evidence);
     }
     let identity_metadata_present: bool = read_client
         .query_opt(
@@ -2382,11 +3345,23 @@ fn main() {
         "target_epoch": target.storage_epoch(),
         "record_count": bundle.records().len(),
         "operational_row_count": operational_row_count,
+        "source_semantic_receipt_count": source_semantic_receipt_count,
+        "target_semantic_receipt_count": target_semantic_receipt_count,
+        "operation_guard_count": operation_guard_count,
+        "operation_guard_mismatch_count": operation_guard_mismatch_count,
+        "operation_guard_exact_parity_verified": operation_guard_exact_parity_verified,
+        "post_cutover_operation_guard_resolution": {
+            "same_hash": if same_hash_stored_resolution { "stored_resolution" } else { "failed" },
+            "different_hash": if different_hash_conflict { "conflict" } else { "failed" }
+        },
         "chunk_count": chunk_count,
         "first_chunk": first_disposition,
         "interruption_first_chunk": interruption_disposition,
-        "interruption_abort": "pass",
+        "interruption_resume_same_fenced_target": "pass",
         "conflicting_chunk_rejected": conflicting_chunk_rejected,
+        "exact_preseed_rejected": exact_preseed_rejected,
+        "conflicting_preseed_rejected": conflicting_preseed_rejected,
+        "preseed_rejection_rolled_back": exact_preseed_rollback_clean && conflicting_preseed_rollback_clean,
         "checkpoint_resume_replay": replay_disposition,
         "pre_authority_verification": "pass",
         "target_fence": "verified",
@@ -2407,6 +3382,28 @@ fn main() {
         "target_identity_witness": if target_identity_witness { "pass" } else { "fail" },
         "target_membership_witness": if target_membership_witness { "pass" } else { "fail" },
         "target_epoch_fence": "verified",
+        "abort_probe": {
+            "target_database_distinct": true,
+            "provider_destination": "postgres",
+            "provider_chunk_staged": true,
+            "coordinated_abort": "pass",
+            "source_authority_restored": abort_restored_authority,
+            "restart_retry_idempotent": abort_idempotence_verified,
+            "provider_tombstone_verified": abort_provider_tombstone_verified,
+            "target_disposition": "discard_required"
+        },
+        "source_transfer_point": {
+            "backup_verified": transfer_point.backup_digest().is_some(),
+            "native_restore_ready": source_report.canonical_ready,
+            "pending_restart_verified": transfer_pending_restart_verified,
+            "abort_path_pending_restart_verified": pending_restart_verified,
+            "abort_restored_authority": abort_restored_authority,
+            "provider_derived_bundle_and_target_proof": true,
+            "retired_before_target_authority": source_retired,
+            "retirement_restart_verified": source_retirement_restart_verified,
+            "retirement_irreversible": source_retirement_restart_verified,
+            "finalization_restart_idempotent": finalization_restart_idempotence_verified
+        },
         "whole_deployment_acceptance": "pass",
         "global_pack_resource_evidence": if generalized_path_verified { "pass" } else { "not_covered_by_supplied_source" },
         "general_deployment_support_verified": generalized_path_verified,
@@ -2439,13 +3436,18 @@ fn main() {
         "membership_witness": "pass",
         "room_head_and_canonical_bytes": "pass",
         "operational_ledgers": "pass",
+        "operation_guard_retry_semantics": "pass",
         "resource_payload_bytes": if resource_bytes_verified { "pass" } else { "not_covered" },
         "global_authority": if global_authority_verified { "pass" } else { "not_covered" },
         "fired_timer_linkage": if fired_timer_linkage_verified { "pass" } else { "not_covered" },
         "mixed_healthy_isolated_rooms": if generalized_path_verified { "pass" } else { "not_covered" },
         "pre_authority_verifier": "pass",
         "rollback_and_conflict_guards": "pass",
-        "restart_replay": "pass"
+        "provider_derived_authority_coordinator": "pass",
+        "separate_abort_target": "pass",
+        "restart_replay": "pass",
+        "source_transfer_lifecycle": "pass",
+        "empty_target_preflight": "pass"
     });
     evidence["status"] = json!("pass");
     evidence["release_evidence"] = json!(false);
@@ -2458,9 +3460,12 @@ helper_stderr="$temp_root/helper.stderr"
 helper_env=(
   "WORLDSTREAM_PG_TRANSFER_PROVIDER_MODE=$provider_mode"
   "WORLDSTREAM_PG_TRANSFER_SQLITE=$source_file"
+  "WORLDSTREAM_PG_TRANSFER_ABORT_BACKUP=$source_abort_backup"
+  "WORLDSTREAM_PG_TRANSFER_BACKUP=$source_transfer_backup"
   "WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE=$build_source"
   "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN=$admin_dsn"
   "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN=$runtime_dsn"
+  "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN=$abort_admin_dsn"
   "WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE=$runtime_role"
 )
 
@@ -2522,7 +3527,8 @@ fi
 
 if [[ -z "$helper_json" ]] || ! "$python_bin" - \
   "$helper_json" "$evidence_file" "$helper_code" \
-  "$POSTGRES_IMAGE" "$POSTGRES_REPOSITORY_DIGEST" "$build_source" <<'PY'
+  "$POSTGRES_IMAGE" "$POSTGRES_REPOSITORY_DIGEST" "$build_source" \
+  "$source_revision" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -2565,6 +3571,20 @@ if status == "pass":
     }
     if any(transfer.get(key) != expected for key, expected in required_transfer.items()):
         raise SystemExit("pass evidence is missing complete target verification")
+    guard_resolution = transfer.get("post_cutover_operation_guard_resolution")
+    if (
+        transfer.get("operation_guard_exact_parity_verified") is not True
+        or transfer.get("source_semantic_receipt_count", 0) <= 0
+        or transfer.get("target_semantic_receipt_count")
+        != transfer.get("source_semantic_receipt_count")
+        or transfer.get("operation_guard_count")
+        != transfer.get("source_semantic_receipt_count")
+        or transfer.get("operation_guard_mismatch_count") != 0
+        or not isinstance(guard_resolution, dict)
+        or guard_resolution.get("same_hash") != "stored_resolution"
+        or guard_resolution.get("different_hash") != "conflict"
+    ):
+        raise SystemExit("pass evidence is missing exact operation-guard retry semantics")
     if transfer.get("authoritative_deployment_identity_gate") != "pass":
         raise SystemExit("pass evidence is missing authoritative deployment identity gate")
     for key in (
@@ -2574,7 +3594,46 @@ if status == "pass":
         if transfer.get(key) is not True:
             raise SystemExit("pass evidence is missing backup diagnostic separation")
     if transfer.get("backup_readiness_required_for_transfer") is not False:
-        raise SystemExit("backup readiness was incorrectly made transfer-authoritative")
+        raise SystemExit("native restore readiness became transfer-authoritative")
+    lifecycle = transfer.get("source_transfer_point")
+    if not isinstance(lifecycle, dict) or any(
+        lifecycle.get(key) is not True
+        for key in (
+            "backup_verified",
+            "pending_restart_verified",
+            "abort_path_pending_restart_verified",
+            "abort_restored_authority",
+            "provider_derived_bundle_and_target_proof",
+            "retired_before_target_authority",
+            "retirement_restart_verified",
+            "retirement_irreversible",
+            "finalization_restart_idempotent",
+        )
+    ):
+        raise SystemExit("pass evidence is missing the durable SQLite transfer lifecycle")
+    abort_probe = transfer.get("abort_probe")
+    required_abort_probe = {
+        "target_database_distinct": True,
+        "provider_destination": "postgres",
+        "provider_chunk_staged": True,
+        "coordinated_abort": "pass",
+        "source_authority_restored": True,
+        "restart_retry_idempotent": True,
+        "provider_tombstone_verified": True,
+        "target_disposition": "discard_required",
+    }
+    if not isinstance(abort_probe, dict) or any(
+        abort_probe.get(key) != expected
+        for key, expected in required_abort_probe.items()
+    ):
+        raise SystemExit("pass evidence is missing the isolated provider abort proof")
+    for key in (
+        "exact_preseed_rejected",
+        "conflicting_preseed_rejected",
+        "preseed_rejection_rolled_back",
+    ):
+        if transfer.get(key) is not True:
+            raise SystemExit("pass evidence is missing atomic empty-target preflight")
     for key in (
         "source_identity_witness",
         "source_membership_witness",
@@ -2593,7 +3652,7 @@ if status == "pass":
     if not isinstance(backup, dict):
         raise SystemExit("pass evidence is missing independent backup diagnostic")
     if backup.get("authoritative_for_transfer") is not False or backup.get("required_for_transfer") is not False:
-        raise SystemExit("backup diagnostic incorrectly masks transfer authority")
+        raise SystemExit("backup diagnostic did not preserve its required non-authority role")
     if sys.argv[6] == "1":
         generalized = {
             "general_deployment_support_verified": True,
@@ -2621,6 +3680,12 @@ if status == "pass":
         ):
             if not isinstance(acceptance, dict) or acceptance.get(key) != "pass":
                 raise SystemExit("generalized transfer acceptance is incomplete")
+if sys.argv[7]:
+    value["source_construction"] = {
+        "classification": "untrusted_source_bound_input_construction",
+        "source_revision": sys.argv[7],
+        "trusted_product_execution": False,
+    }
 encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
 if len(sys.argv) > 2 and sys.argv[2]:
     destination = Path(sys.argv[2])

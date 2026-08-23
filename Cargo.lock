@@ -295,6 +295,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "command-group"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a68fa787550392a9d58f44c21a3022cfb3ea3e2458b7f85d3b399d0ceeccf409"
+dependencies = [
+ "nix",
+ "winapi",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -427,6 +437,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -497,6 +516,17 @@ name = "foreign-types-shared"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
+
+[[package]]
+name = "fs-id"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1648c1b89e98d042d61b5c1ed0fbcd9dbd7815163864d20f8e7976a9b3af938"
+dependencies = [
+ "libc",
+ "wasi 0.11.1+wasi-snapshot-preview1",
+ "winapi",
+]
 
 [[package]]
 name = "futures-channel"
@@ -828,6 +858,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mutants"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "add0ac067452ff1aca8c5002111bd6b1c895baee6e45fcbc44e0193aea17be56"
+
+[[package]]
 name = "native-tls"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -842,6 +878,17 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
+]
+
+[[package]]
+name = "nix"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eb04e9c688eff1c89d72b407f168cf79bb9e867a9d3323ed6c01519eb9cc053"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -947,6 +994,16 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "os_pipe"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "parking_lot"
@@ -1085,6 +1142,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "processkit"
+version = "3.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1549b59abbe4fc78aa39860e36c81da89262c1278679b8f7299ef4ad7668c004"
+dependencies = [
+ "async-trait",
+ "encoding_rs",
+ "libc",
+ "mutants",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1669,6 +1743,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "tokio-tungstenite"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2172,12 +2258,18 @@ name = "worldstream-backup"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "fs-id",
+ "getrandom 0.4.3",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "windows-sys 0.61.2",
  "worldstream-core",
+ "worldstream-sqlite-open",
+ "worldstream-windows-handle",
 ]
 
 [[package]]
@@ -2209,15 +2301,29 @@ dependencies = [
 name = "worldstream-postgres"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "command-group",
+ "fs-id",
+ "getrandom 0.4.3",
  "native-tls",
+ "os_pipe",
  "postgres",
  "postgres-native-tls",
+ "postgres-protocol",
+ "processkit",
+ "rustix",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "windows-sys 0.61.2",
  "worldstream-backup",
  "worldstream-core",
+ "worldstream-runtime",
  "worldstream-transfer",
+ "worldstream-windows-handle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2235,6 +2341,7 @@ version = "0.1.0"
 dependencies = [
  "directories",
  "filedescriptor",
+ "fs-id",
  "rustix",
  "serde",
  "serde_json",
@@ -2255,8 +2362,11 @@ dependencies = [
  "axum",
  "blake3",
  "clap",
+ "fs-id",
  "getrandom 0.4.3",
  "http-body-util",
+ "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
@@ -2268,25 +2378,46 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webpki-roots",
+ "windows-sys 0.61.2",
+ "worldstream-backup",
  "worldstream-core",
  "worldstream-postgres",
  "worldstream-protocol",
  "worldstream-runtime",
  "worldstream-sqlite",
+ "worldstream-transfer",
+ "worldstream-windows-handle",
 ]
 
 [[package]]
 name = "worldstream-sqlite"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "fs-id",
+ "getrandom 0.4.3",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "time",
+ "windows-sys 0.61.2",
  "worldstream-core",
+ "worldstream-sqlite-open",
  "worldstream-transfer",
+ "worldstream-windows-handle",
+]
+
+[[package]]
+name = "worldstream-sqlite-open"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "rustix",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2296,6 +2427,14 @@ dependencies = [
  "blake3",
  "thiserror 2.0.20",
  "worldstream-backup",
+]
+
+[[package]]
+name = "worldstream-windows-handle"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

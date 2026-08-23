@@ -17,6 +17,47 @@ readonly EXIT_UNAVAILABLE=10
 readonly EXIT_CONFIGURATION=12
 readonly EXIT_INCOMPLETE=13
 readonly EXIT_CLEANUP=14
+readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
+
+runtime_role_admission_sql() {
+  cat <<'SQL'
+SELECT role.rolsuper::text || '|' ||
+       role.rolcreaterole::text || '|' ||
+       role.rolcreatedb::text || '|' ||
+       role.rolreplication::text || '|' ||
+       role.rolbypassrls::text || '|' ||
+       has_database_privilege(current_user, current_database(), 'CREATE')::text || '|' ||
+       (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+                WHERE membership.member = role.oid))::text || '|' ||
+       has_schema_privilege(current_user, 'public', 'CREATE')::text || '|' ||
+       (EXISTS (
+          SELECT 1 FROM pg_catalog.pg_namespace AS namespace_row
+          WHERE namespace_row.nspname = 'public' AND namespace_row.nspowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_class AS relation_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = relation_row.relnamespace
+          WHERE namespace_row.nspname = 'public' AND relation_row.relowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_proc AS routine_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = routine_row.pronamespace
+          WHERE namespace_row.nspname = 'public' AND routine_row.proowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_type AS type_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = type_row.typnamespace
+          WHERE namespace_row.nspname = 'public' AND type_row.typowner = role.oid
+       ))::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'INSERT')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE')::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text
+FROM pg_catalog.pg_roles AS role
+WHERE role.rolname = current_user
+SQL
+}
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$workspace_dir"
@@ -24,6 +65,7 @@ cd "$workspace_dir"
 docker_bin="${WORLDSTREAM_PG_LIVE_DOCKER:-}"
 psql_bin="${WORLDSTREAM_PG_LIVE_PSQL:-}"
 cargo_bin="${WORLDSTREAM_PG_LIVE_CARGO:-}"
+python_bin="${WORLDSTREAM_PG_LIVE_PYTHON:-}"
 sqlite_source="${WORLDSTREAM_PG_LIVE_SQLITE:-}"
 evidence_file="${WORLDSTREAM_PG_LIVE_EVIDENCE_FILE:-}"
 
@@ -43,6 +85,7 @@ runtime_dsn=""
 pooler_dsn=""
 transfer_admin_dsn=""
 transfer_runtime_dsn=""
+transfer_abort_admin_dsn=""
 source_mode="not_supplied"
 imo50_shared_direct_status="not_run"
 imo50_shared_pooler_status="not_run"
@@ -55,6 +98,7 @@ pooler_reason="not_checked"
 live_adapter_status="not_run"
 gateway_status="not_run"
 harness_status="not_run"
+harness_summary_json="{}"
 live_marker_migrate="not_observed"
 live_marker_restart="not_observed"
 live_marker_runtime_ddl="not_observed"
@@ -110,9 +154,42 @@ resolve_tool() {
   command -v "$name" 2>/dev/null || true
 }
 
+resolve_python() {
+  local override="$1"
+  local candidate=""
+  local name=""
+  if [[ -n "$override" ]]; then
+    if [[ -x "$override" ]] \
+      && "$override" -c 'import sys; raise SystemExit(sys.version_info[:3] != (3, 14, 7))' \
+        >/dev/null 2>&1; then
+      printf '%s' "$override"
+    fi
+    return 0
+  fi
+  for name in python3 python; do
+    candidate="$(command -v "$name" 2>/dev/null || true)"
+    if [[ -n "$candidate" && -x "$candidate" ]] \
+      && "$candidate" -c 'import sys; raise SystemExit(sys.version_info[:3] != (3, 14, 7))' \
+        >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  if command -v uv >/dev/null 2>&1; then
+    candidate="$(uv run --python 3.14.7 --no-project python -c \
+      'import sys; print(sys.executable)' 2>/dev/null || true)"
+    if [[ -n "$candidate" && -x "$candidate" ]] \
+      && "$candidate" -c 'import sys; raise SystemExit(sys.version_info[:3] != (3, 14, 7))' \
+        >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+    fi
+  fi
+}
+
 docker_bin="$(resolve_tool "$docker_bin" docker)"
 psql_bin="$(resolve_tool "$psql_bin" psql)"
 cargo_bin="$(resolve_tool "$cargo_bin" cargo)"
+python_bin="$(resolve_python "$python_bin")"
 
 add_error() {
   local value="$1"
@@ -131,7 +208,7 @@ json_report() {
   for item in "${errors[@]:-}"; do
     [[ -n "$item" ]] || continue
     if [[ -n "$error_json" ]]; then error_json+=","; fi
-    error_json+="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1], separators=(",",":")))' "$item")"
+    error_json+="$("$python_bin" -c 'import json,sys; print(json.dumps(sys.argv[1], separators=(",",":")))' "$item")"
   done
   [[ -n "$error_json" ]] || error_json=""
   POSTGRES_LIVE_SCHEMA="$SCHEMA" \
@@ -146,6 +223,7 @@ json_report() {
     POSTGRES_LIVE_ADAPTER_STATUS="$live_adapter_status" \
     POSTGRES_LIVE_GATEWAY_STATUS="$gateway_status" \
     POSTGRES_LIVE_HARNESS_STATUS="$harness_status" \
+    POSTGRES_LIVE_HARNESS_SUMMARY="$harness_summary_json" \
     POSTGRES_LIVE_MARKER_MIGRATE="$live_marker_migrate" \
     POSTGRES_LIVE_MARKER_RESTART="$live_marker_restart" \
     POSTGRES_LIVE_MARKER_RUNTIME_DDL="$live_marker_runtime_ddl" \
@@ -160,7 +238,7 @@ json_report() {
     POSTGRES_LIVE_IMO50_COMPARISON="$imo50_shared_comparison_file" \
     POSTGRES_LIVE_SQLITE_SUPPLIED="$([[ -n "$sqlite_source" ]] && printf true || printf false)" \
     POSTGRES_LIVE_ERRORS="$error_json" \
-    python3 - "$destination" <<'PY'
+    "$python_bin" - "$destination" <<'PY'
 import json
 import os
 import sys
@@ -171,6 +249,7 @@ errors = json.loads("[" + errors_raw + "]") if errors_raw else []
 pooler_status = os.environ.get("POSTGRES_LIVE_POOLER_STATUS", "not_checked")
 transfer_status = os.environ.get("POSTGRES_LIVE_TRANSFER_STATUS", "not_run")
 transfer_summary = json.loads(os.environ.get("POSTGRES_LIVE_TRANSFER_SUMMARY", "{}"))
+harness_summary = json.loads(os.environ.get("POSTGRES_LIVE_HARNESS_SUMMARY", "{}"))
 report = {
     "schema": os.environ["POSTGRES_LIVE_SCHEMA"],
     "status": os.environ["POSTGRES_LIVE_STATUS"],
@@ -196,6 +275,7 @@ report = {
         "live_adapter": os.environ.get("POSTGRES_LIVE_ADAPTER_STATUS", "not_run"),
         "production_gateway": os.environ.get("POSTGRES_LIVE_GATEWAY_STATUS", "not_run"),
         "redacted_harness": os.environ.get("POSTGRES_LIVE_HARNESS_STATUS", "not_run"),
+        "redacted_harness_evidence": harness_summary,
     },
     "marker_witnesses": {
         "direct_admin_migrate_verify_major_17": os.environ.get("POSTGRES_LIVE_MARKER_MIGRATE", "not_observed"),
@@ -279,6 +359,11 @@ if [[ -n "$sqlite_source" && ( ! -f "$sqlite_source" || -L "$sqlite_source" ) ]]
   finish "$EXIT_INCOMPLETE"
 fi
 
+if [[ -z "$python_bin" || ! -x "$python_bin" ]]; then
+  printf '%s\n' '{"errors":["pinned_python_unavailable"],"exit_code":10,"reason":"pinned_python_unavailable","release_evidence":false,"schema":"worldstream/postgresql-live-evidence/v1","secrets_emitted":false,"status":"unavailable"}'
+  exit "$EXIT_UNAVAILABLE"
+fi
+
 if [[ -z "$docker_bin" || ! -x "$docker_bin" ]]; then
   overall_status="unavailable"
   overall_reason="docker_unavailable"
@@ -302,8 +387,8 @@ temp_root="$(mktemp -d "${TMPDIR:-/tmp}/worldstream-pg-live.XXXXXX")"
 network_name="worldstream-pg-live-$$"
 postgres_name="worldstream-pg-live-db-$$"
 pooler_name="worldstream-pg-live-pooler-$$"
-admin_password="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-runtime_password="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+admin_password="$("$python_bin" -c 'import secrets; print(secrets.token_hex(24))')"
+runtime_password="$("$python_bin" -c 'import secrets; print(secrets.token_hex(24))')"
 
 if ! "$docker_bin" network create "$network_name" >"$temp_root/network.log" 2>&1; then
   overall_status="unavailable"; overall_reason="docker_network_create_failed"; add_error "docker_network_create_failed"; finish "$EXIT_UNAVAILABLE"
@@ -352,6 +437,7 @@ admin_psql_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream user=admin
 runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream user=runtime password=$runtime_password"
 transfer_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer user=admin password=$admin_password"
 transfer_runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer user=runtime password=$runtime_password"
+transfer_abort_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer_abort user=admin password=$admin_password"
 
 run_admin_sql() {
   printf '%s\n' "$1" | PGPASSWORD="$admin_password" "$psql_bin" "host=127.0.0.1 port=$postgres_port dbname=postgres user=admin" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1
@@ -360,7 +446,9 @@ run_db_admin_sql() {
   printf '%s\n' "$1" | PGPASSWORD="$admin_password" "$psql_bin" "$admin_psql_dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1
 }
 
-if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS" || ! run_admin_sql "CREATE DATABASE worldstream_transfer OWNER admin"; then
+if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS" \
+  || ! run_admin_sql "CREATE DATABASE worldstream_transfer OWNER admin" \
+  || ! run_admin_sql "CREATE DATABASE worldstream_transfer_abort OWNER admin"; then
   overall_status="unavailable"; overall_reason="role_or_transfer_database_setup_failed"; add_error "role_or_transfer_database_setup_failed"; finish "$EXIT_UNAVAILABLE"
 fi
 
@@ -368,7 +456,7 @@ fi
 # access. Granting default table privileges before migration would also grant
 # DML on the migration ledger, which the reviewed runtime-role contract must
 # reject. The owner-only DSN files keep credentials out of argv and logs.
-for database in worldstream worldstream_transfer; do
+for database in worldstream worldstream_transfer worldstream_transfer_abort; do
   database_admin_dsn_file="$temp_root/$database-admin.dsn"
   printf '%s\n' "host=127.0.0.1 port=$postgres_port dbname=$database user=admin password=$admin_password" >"$database_admin_dsn_file"
   chmod 600 "$database_admin_dsn_file"
@@ -378,8 +466,15 @@ for database in worldstream worldstream_transfer; do
     overall_status="incomplete"; overall_reason="admin_pre_migration_failed"; add_error "admin_pre_migration_failed"; finish "$EXIT_INCOMPLETE"
   fi
   dsn="host=127.0.0.1 port=$postgres_port dbname=$database user=admin"
-  if ! printf '%s\n' "REVOKE CREATE ON SCHEMA public FROM PUBLIC; REVOKE CREATE ON DATABASE $database FROM runtime; GRANT CONNECT ON DATABASE $database TO runtime; GRANT USAGE ON SCHEMA public TO runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations FROM runtime;" | PGPASSWORD="$admin_password" "$psql_bin" "$dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1; then
+  if ! printf '%s\n' "REVOKE CREATE ON SCHEMA public FROM PUBLIC; REVOKE CREATE ON DATABASE $database FROM runtime; GRANT CONNECT ON DATABASE $database TO runtime; GRANT USAGE ON SCHEMA public TO runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence FROM runtime;" | PGPASSWORD="$admin_password" "$psql_bin" "$dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1; then
     overall_status="unavailable"; overall_reason="runtime_role_setup_failed"; add_error "runtime_role_setup_failed"; finish "$EXIT_UNAVAILABLE"
+  fi
+  runtime_psql_dsn="host=127.0.0.1 port=$postgres_port dbname=$database user=runtime"
+  if ! runtime_role_admission="$(printf '%s\n' "$(runtime_role_admission_sql)" | PGPASSWORD="$runtime_password" "$psql_bin" "$runtime_psql_dsn" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 2>"$temp_root/$database-runtime-role.log" | tr -d '[:space:]')"; then
+    overall_status="incomplete"; overall_reason="runtime_role_admission_query_failed"; add_error "runtime_role_admission_query_failed"; finish "$EXIT_INCOMPLETE"
+  fi
+  if [[ "$runtime_role_admission" != "$RUNTIME_ROLE_ADMISSION_EXPECTED" ]]; then
+    overall_status="incomplete"; overall_reason="runtime_role_not_least_privileged"; add_error "runtime_role_not_least_privileged"; finish "$EXIT_INCOMPLETE"
   fi
 done
 
@@ -476,7 +571,7 @@ fi
 # Leave the migration ledger and required authority singleton intact, but
 # remove durable Room and authority facts so each acceptance vector starts
 # from fresh logical state. Then reassert the runtime ledger boundary.
-truncate_sql="DO \$\$ DECLARE t text; BEGIN FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name NOT IN ('worldstream_schema_migrations', 'worldstream_authority_state') LOOP EXECUTE 'TRUNCATE TABLE public.' || quote_ident(t) || ' CASCADE'; END LOOP; END \$\$; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations FROM runtime;"
+truncate_sql="DO \$\$ DECLARE t text; BEGIN FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name NOT IN ('worldstream_schema_migrations', 'worldstream_authority_state') LOOP EXECUTE 'TRUNCATE TABLE public.' || quote_ident(t) || ' CASCADE'; END LOOP; END \$\$; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence FROM runtime;"
 if [[ "$live_adapter_status" == "pass" ]]; then
   if ! run_db_admin_sql "$truncate_sql"; then
     add_error "logical_state_reset_or_ledger_revoke_failed"
@@ -551,7 +646,7 @@ fi
 
 if [[ "$imo50_shared_direct_status" == "pass" && "$imo50_shared_pooler_status" == "pass" ]]; then
   imo50_shared_comparison_file="${evidence_file}.imo-50-shared-comparison.json"
-  python3 - "$imo50_shared_comparison_file" "$imo50_direct_artifact" "$imo50_pooler_artifact" <<'PY'
+  "$python_bin" - "$imo50_shared_comparison_file" "$imo50_direct_artifact" "$imo50_pooler_artifact" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -580,20 +675,58 @@ fi
 harness_log="$temp_root/harness.log"
 harness_evidence="$temp_root/harness.json"
 if [[ "$pooler_status" == "pass" ]]; then
-  set +e
-  WORLDSTREAM_PG_HARNESS_MODE=external WORLDSTREAM_PG_HARNESS_ADAPTER_TEST=run \
-    WORLDSTREAM_PG_HARNESS_ADMIN_DSN="$admin_dsn" WORLDSTREAM_PG_HARNESS_RUNTIME_DSN="$runtime_dsn" \
-    WORLDSTREAM_PG_HARNESS_POOLER_DSN="$pooler_dsn" WORLDSTREAM_PG_HARNESS_POOLER_MODE=transaction \
-    WORLDSTREAM_PG_HARNESS_EVIDENCE_FILE="$harness_evidence" WORLDSTREAM_PG_HARNESS_PSQL="$psql_bin" \
-    WORLDSTREAM_PG_HARNESS_CARGO="$cargo_bin" scripts/postgres-harness.sh >"$harness_log" 2>&1
-  harness_code=$?
-  set -e
-  if [[ -f "$harness_evidence" ]] && python3 - "$harness_evidence" "$harness_code" <<'PY'
+  # The shared direct/pooler catalog deliberately leaves durable fixture rows.
+  # The redacted harness uses the same fixed conformance identities, so give it
+  # the same fresh logical-state boundary as every preceding acceptance vector.
+  if ! run_db_admin_sql "$truncate_sql"; then
+    harness_status="incomplete"
+    add_error "redacted_postgres_harness_state_reset_failed"
+  else
+    set +e
+    WORLDSTREAM_PG_HARNESS_MODE=external WORLDSTREAM_PG_HARNESS_ADAPTER_TEST=run \
+      WORLDSTREAM_PG_HARNESS_ADMIN_DSN="$admin_dsn" WORLDSTREAM_PG_HARNESS_RUNTIME_DSN="$runtime_dsn" \
+      WORLDSTREAM_PG_HARNESS_POOLER_DSN="$pooler_dsn" WORLDSTREAM_PG_HARNESS_POOLER_MODE=transaction \
+      WORLDSTREAM_PG_HARNESS_EVIDENCE_FILE="$harness_evidence" WORLDSTREAM_PG_HARNESS_PSQL="$psql_bin" \
+      WORLDSTREAM_PG_HARNESS_CARGO="$cargo_bin" WORLDSTREAM_PG_HARNESS_PYTHON="$python_bin" \
+      scripts/postgres-harness.sh >"$harness_log" 2>&1
+    harness_code=$?
+    set -e
+    if [[ -f "$harness_evidence" ]] && "$python_bin" - "$harness_evidence" "$harness_code" <<'PY'
 import json, sys
 v=json.load(open(sys.argv[1], encoding="utf-8"))
 raise SystemExit(0 if v.get("status") == "pass" and int(v.get("exit_code", -1)) == 0 and int(sys.argv[2]) == 0 and not v.get("secrets_emitted") else 1)
 PY
-  then harness_status="pass"; else harness_status="incomplete"; add_error "redacted_postgres_harness_failed"; fi
+    then harness_status="pass"; else harness_status="incomplete"; add_error "redacted_postgres_harness_failed"; fi
+    if [[ -f "$harness_evidence" ]]; then
+      harness_summary_json="$("$python_bin" - "$harness_evidence" <<'PY'
+import json
+import sys
+
+evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+keys = (
+    "schema",
+    "status",
+    "release_evidence",
+    "evidence_class",
+    "exit_code",
+    "provider_mode",
+    "postgres",
+    "credentials",
+    "profiles",
+    "migration",
+    "crash_retry",
+    "schema_checks",
+    "paths",
+    "adapter_conformance",
+    "adapter_evidence",
+    "errors",
+    "secrets_emitted",
+)
+print(json.dumps({key: evidence.get(key) for key in keys}, separators=(",", ":")))
+PY
+)"
+    fi
+  fi
 else
   harness_status="not_run"
 fi
@@ -611,14 +744,16 @@ if [[ -n "$sqlite_source" || -z "$sqlite_source" ]]; then
   set +e
   WORLDSTREAM_PG_TRANSFER_MODE=external WORLDSTREAM_PG_TRANSFER_SQLITE="$sqlite_source" \
     WORLDSTREAM_PG_TRANSFER_ADMIN_DSN="$transfer_admin_dsn" WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN="$transfer_runtime_dsn" \
+    WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN="$transfer_abort_admin_dsn" \
     WORLDSTREAM_PG_TRANSFER_EVIDENCE_FILE="$transfer_evidence" WORLDSTREAM_PG_TRANSFER_PSQL="$psql_bin" \
-    WORLDSTREAM_PG_TRANSFER_CARGO="$cargo_bin" scripts/postgres-transfer-smoke.sh "${transfer_args[@]}" >"$temp_root/transfer.log" 2>&1
+    WORLDSTREAM_PG_TRANSFER_CARGO="$cargo_bin" WORLDSTREAM_PG_TRANSFER_PYTHON="$python_bin" \
+    scripts/postgres-transfer-smoke.sh "${transfer_args[@]}" >"$temp_root/transfer.log" 2>&1
   transfer_code=$?
   set -e
   if [[ -f "$transfer_evidence" ]]; then
-    transfer_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("status","incomplete"))' "$transfer_evidence")"
-    transfer_reason="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("reason","unknown"))' "$transfer_evidence")"
-    transfer_summary_json="$(python3 - "$transfer_evidence" <<'PY'
+    transfer_status="$("$python_bin" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("status","incomplete"))' "$transfer_evidence")"
+    transfer_reason="$("$python_bin" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("reason","unknown"))' "$transfer_evidence")"
+    transfer_summary_json="$("$python_bin" - "$transfer_evidence" <<'PY'
 import json
 import sys
 

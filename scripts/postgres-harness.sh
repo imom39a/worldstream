@@ -755,8 +755,8 @@ harden_managed_runtime_ledger() {
     return 0
   fi
   if ! psql_query "$admin_dsn" "$admin_password" \
-    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON worldstream_schema_migrations FROM \"$runtime_user\""; then
-    fail "validation_failed" "$EXIT_VALIDATION" "managed_runtime_migration_ledger_revoke_failed"
+    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence FROM \"$runtime_user\""; then
+    fail "validation_failed" "$EXIT_VALIDATION" "managed_runtime_control_table_revoke_failed"
   fi
 }
 
@@ -767,14 +767,14 @@ verify_admin_schema() {
     migration_contract_status="failed"
     fail "validation_failed" "$EXIT_VALIDATION" "admin_schema_probe_failed"
   fi
-  if [[ "$(compact_psql_value)" != "10" ]]; then
+  if [[ "$(compact_psql_value)" != "11" ]]; then
     admin_schema_status="failed"
     migration_contract_status="failed"
     fail "validation_failed" "$EXIT_VALIDATION" "migration_history_incomplete"
   fi
 
   if ! psql_query "$admin_dsn" "$admin_password" \
-    "SELECT CASE WHEN count(*) = 10 AND min(version) = 1 AND max(version) = 10 AND count(DISTINCT version) = 10 AND count(DISTINCT migration_id) = 10 AND count(*) FILTER (WHERE (version, migration_id) IN ((1, '0001-initial-storage-schema'), (2, '0002-operational-authority-v1'), (3, '0003-kernel-conformance-v1'), (4, '0004-kernel-parity-witnesses-v1'), (5, '0005-transfer-publication-v1'), (6, '0006-transfer-target-fence-v1'), (7, '0007-deployment-metadata-v1'), (8, '0008-deployment-identities-v1'), (9, '0009-authority-facts-v1'), (10, '0010-transfer-recovery-completeness-v1'))) = 10 AND count(*) FILTER (WHERE octet_length(checksum) = 32) = 10 AND count(*) FILTER (WHERE logical_history_id = 'worldstream-storage-v1') = 10 AND count(*) FILTER (WHERE octet_length(schema_contract_fingerprint) = 32) = 10 THEN 'pass' ELSE 'fail' END FROM worldstream_schema_migrations"; then
+    "SELECT CASE WHEN count(*) = 11 AND min(version) = 1 AND max(version) = 11 AND count(DISTINCT version) = 11 AND count(DISTINCT migration_id) = 11 AND count(*) FILTER (WHERE (version, migration_id) IN ((1, '0001-initial-storage-schema'), (2, '0002-operational-authority-v1'), (3, '0003-kernel-conformance-v1'), (4, '0004-kernel-parity-witnesses-v1'), (5, '0005-transfer-publication-v1'), (6, '0006-transfer-target-fence-v1'), (7, '0007-deployment-metadata-v1'), (8, '0008-deployment-identities-v1'), (9, '0009-authority-facts-v1'), (10, '0010-transfer-recovery-completeness-v1'), (11, '0011-transfer-lifecycle-and-resource-identity-v1'))) = 11 AND count(*) FILTER (WHERE octet_length(checksum) = 32) = 11 AND count(*) FILTER (WHERE logical_history_id = 'worldstream-storage-v1') = 11 AND count(*) FILTER (WHERE octet_length(schema_contract_fingerprint) = 32) = 11 THEN 'pass' ELSE 'fail' END FROM worldstream_schema_migrations"; then
     admin_schema_status="failed"
     migration_contract_status="failed"
     fail "validation_failed" "$EXIT_VALIDATION" "migration_history_shape_probe_failed"
@@ -798,12 +798,12 @@ verify_runtime_path() {
   if ! psql_query "$dsn" "$password" "SELECT 1"; then
     path_status="unavailable"
   elif ! psql_query "$dsn" "$password" \
-    "SELECT count(*)::text FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('worldstream_schema_migrations','worldstream_operation_guards','worldstream_room_roots','worldstream_genesis','worldstream_materializations','worldstream_members','worldstream_timers','worldstream_transitions','worldstream_frames','worldstream_observation_consequences','worldstream_activation_decisions','worldstream_activation_intents','worldstream_activation_operation_receipts','worldstream_room_snapshots','worldstream_semantic_receipts','worldstream_integrity_incidents','worldstream_authority_fences','worldstream_transfer_imports','worldstream_transfer_chunks','worldstream_transfer_target_fence','worldstream_deployment_metadata')"; then
+    "SELECT count(*)::text FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('worldstream_schema_migrations','worldstream_operation_guards','worldstream_room_roots','worldstream_genesis','worldstream_materializations','worldstream_members','worldstream_timers','worldstream_transitions','worldstream_frames','worldstream_observation_consequences','worldstream_activation_decisions','worldstream_activation_intents','worldstream_activation_operation_receipts','worldstream_room_snapshots','worldstream_semantic_receipts','worldstream_integrity_incidents','worldstream_authority_fences','worldstream_authority_state','worldstream_authority_principals','worldstream_authority_runners','worldstream_authority_capabilities','worldstream_authority_capability_scopes','worldstream_authority_runner_capability_memberships','worldstream_authority_change_receipts','worldstream_authority_audit','worldstream_transfer_imports','worldstream_transfer_chunks','worldstream_transfer_target_fence','worldstream_deployment_metadata','worldstream_deployment_identity_metadata','worldstream_deployment_pack_identities','worldstream_deployment_resource_identities','worldstream_deployment_resource_blobs','worldstream_retired_authority_fences_v1')"; then
     path_status="unavailable"
-  elif [[ "$(compact_psql_value)" != "21" ]]; then
+  elif [[ "$(compact_psql_value)" != "34" ]]; then
     path_status="schema_mismatch"
   elif ! psql_query "$dsn" "$password" \
-    "SELECT (has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'INSERT') OR has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE') OR has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE') OR has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE'))::text"; then
+    "SELECT EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_schema_migrations','public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name), unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE']::text[]) AS protected_privilege(privilege_name) WHERE has_table_privilege(current_user, protected_table.table_name, protected_privilege.privilege_name))::text"; then
     path_status="unavailable"
     migration_ledger_status="unavailable"
   elif [[ "$(compact_psql_value)" != "false" ]]; then

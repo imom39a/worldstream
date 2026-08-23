@@ -5,6 +5,39 @@ use std::{
 
 use thiserror::Error;
 
+#[cfg(unix)]
+type OwnerOnlyFileIdentity = (u64, u64);
+
+#[cfg(windows)]
+type OwnerOnlyFileIdentity = fs_id::FileID;
+
+#[cfg(unix)]
+fn owner_only_file_identity(file: &fs::File) -> io::Result<OwnerOnlyFileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    file.metadata()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn owner_only_file_identity(file: &fs::File) -> io::Result<OwnerOnlyFileIdentity> {
+    fs_id::FileID::new(file)
+}
+
+fn cleanup_failed_owner_only_file(
+    file: fs::File,
+    _identity: Option<&OwnerOnlyFileIdentity>,
+    _path: &Path,
+) {
+    // Scrub through the retained handle before releasing its pathname lock.
+    // Intentionally leave the resulting empty, protected placeholder on every
+    // platform: compare-then-unlink is not atomic and could delete a
+    // same-service replacement after the identity check.
+    let _ = file.set_len(0);
+    let _ = file.sync_all();
+    drop(file);
+}
+
 /// Creates (when absent) and validates the WorldStream-owned data directory.
 ///
 /// POSIX validation requires the effective user to own a non-symlink directory
@@ -69,6 +102,141 @@ pub fn validate_owner_only_file(path: &Path) -> Result<(), FilesystemError> {
         let _ = path;
         Err(FilesystemError::UnsupportedPlatform)
     }
+}
+
+/// Exclusively creates a new owner-only file inside a prepared data directory.
+///
+/// The parent must already satisfy [`prepare_data_directory`]. On Windows the
+/// protected parent DACL constrains access at `CREATE_NEW`; the new file is
+/// then normalized to, and verified against, the exact protected owner,
+/// SYSTEM, and Administrators DACL. POSIX creates the file with mode 0600 and
+/// verifies ownership and permissions before returning it.
+///
+/// # Errors
+///
+/// Returns an error when the parent is unsafe, the path already exists, the
+/// file cannot be created exclusively, or the resulting owner/permissions do
+/// not match the platform policy.
+pub fn create_owner_only_file(path: &Path) -> Result<fs::File, FilesystemError> {
+    create_owner_only_file_with_policy(path, false)
+}
+
+/// Exclusively creates an owner-only file whose Windows handle has the DELETE
+/// access required for an exact retained-handle rename. The handle still
+/// shares reads only, so other processes cannot rename, delete, replace, or
+/// open the file for writes. POSIX behavior is identical to
+/// [`create_owner_only_file`].
+///
+/// # Errors
+///
+/// Returns the same closed filesystem errors as [`create_owner_only_file`].
+pub fn create_owner_only_renameable_file(path: &Path) -> Result<fs::File, FilesystemError> {
+    create_owner_only_file_with_policy(path, true)
+}
+
+fn create_owner_only_file_with_policy(
+    path: &Path,
+    windows_delete_access: bool,
+) -> Result<fs::File, FilesystemError> {
+    #[cfg(not(windows))]
+    let _ = windows_delete_access;
+    if path.as_os_str().is_empty() {
+        return Err(FilesystemError::UnsafePath {
+            path: path.to_path_buf(),
+            reason: "path is empty",
+        });
+    }
+    let parent = path.parent().ok_or_else(|| FilesystemError::UnsafePath {
+        path: path.to_path_buf(),
+        reason: "owner-only file must have a parent directory",
+    })?;
+    let prepared_parent = prepare_data_directory(parent)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| FilesystemError::UnsafePath {
+            path: path.to_path_buf(),
+            reason: "owner-only file must have a file name",
+        })?;
+    let protected_path = prepared_parent.join(file_name);
+
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&protected_path)
+            .map_err(|source| FilesystemError::Io {
+                path: protected_path.clone(),
+                source,
+            })?
+    };
+
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+        use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_SHARE_READ};
+
+        // Denying delete sharing binds this pathname to the returned handle
+        // for its lifetime. Provider children may reopen it for reads, but a
+        // concurrent rename/delete/replacement is rejected by the kernel.
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).share_mode(FILE_SHARE_READ);
+        if windows_delete_access {
+            options.access_mode(GENERIC_READ | GENERIC_WRITE | DELETE);
+        } else {
+            options.read(true).write(true);
+        }
+        options
+            .open(&protected_path)
+            .map_err(|source| FilesystemError::Io {
+                path: protected_path.clone(),
+                source,
+            })?
+    };
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = protected_path;
+        return Err(FilesystemError::UnsupportedPlatform);
+    }
+
+    let created_identity = match owner_only_file_identity(&file) {
+        Ok(identity) => identity,
+        Err(source) => {
+            let error = FilesystemError::Io {
+                path: protected_path.clone(),
+                source,
+            };
+            cleanup_failed_owner_only_file(file, None, &protected_path);
+            return Err(error);
+        }
+    };
+
+    #[cfg(windows)]
+    {
+        let secure_result =
+            windows_current_identity_sid(Some(&prepared_parent)).and_then(|current_sid| {
+                apply_windows_owner_only_acl(&protected_path, &current_sid, false)
+                    .and_then(|()| validate_owner_only_file(&protected_path))
+            });
+        if let Err(error) = secure_result {
+            cleanup_failed_owner_only_file(file, Some(&created_identity), &protected_path);
+            return Err(error);
+        }
+    }
+
+    #[cfg(unix)]
+    if let Err(error) = validate_owner_only_file(&protected_path) {
+        cleanup_failed_owner_only_file(file, Some(&created_identity), &protected_path);
+        return Err(error);
+    }
+
+    Ok(file)
 }
 
 /// Verifies that a prepared `SQLite` data directory uses the platform's
@@ -1009,11 +1177,13 @@ pub enum FilesystemError {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, io::Write as _, os::unix::fs::PermissionsExt};
 
     use tempfile::tempdir;
 
-    use super::{FilesystemError, prepare_data_directory, validate_owner_only_file};
+    use super::{
+        FilesystemError, create_owner_only_file, prepare_data_directory, validate_owner_only_file,
+    };
 
     #[test]
     fn creates_owner_only_data_directory() {
@@ -1027,6 +1197,45 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn exclusively_creates_owner_only_file_in_prepared_directory() {
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let directory = parent.path().join("data");
+        prepare_data_directory(&directory)
+            .unwrap_or_else(|error| unreachable!("prepare data dir: {error}"));
+        let path = directory.join("secret");
+        let file = create_owner_only_file(&path)
+            .unwrap_or_else(|error| unreachable!("create protected file: {error}"));
+        drop(file);
+        assert!(validate_owner_only_file(&path).is_ok());
+        assert!(create_owner_only_file(&path).is_err());
+    }
+
+    #[test]
+    fn failed_file_cleanup_scrubs_without_pathname_unlink() {
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let directory = parent.path().join("data");
+        prepare_data_directory(&directory)
+            .unwrap_or_else(|error| unreachable!("prepare data dir: {error}"));
+        let path = directory.join("failed-secret");
+        let mut file = create_owner_only_file(&path)
+            .unwrap_or_else(|error| unreachable!("create protected file: {error}"));
+        file.write_all(b"secret")
+            .unwrap_or_else(|error| unreachable!("write fixture: {error}"));
+        let identity = super::owner_only_file_identity(&file)
+            .unwrap_or_else(|error| unreachable!("file identity: {error}"));
+
+        super::cleanup_failed_owner_only_file(file, Some(&identity), &path);
+        assert!(path.exists());
+        assert_eq!(
+            fs::metadata(&path)
+                .unwrap_or_else(|error| unreachable!("scrubbed metadata: {error}"))
+                .len(),
+            0
+        );
+        assert!(validate_owner_only_file(&path).is_ok());
     }
 
     #[test]
@@ -1130,7 +1339,7 @@ mod linux_filesystem_tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use std::{fs, path::Path, process::Command};
+    use std::{fs, io::Write as _, path::Path, process::Command};
 
     use tempfile::tempdir;
     use windows_permissions::{
@@ -1143,8 +1352,8 @@ mod windows_tests {
     };
 
     use super::{
-        FilesystemError, apply_windows_owner_only_acl, prepare_data_directory,
-        validate_owner_only_file, validate_sqlite_data_filesystem,
+        FilesystemError, apply_windows_owner_only_acl, create_owner_only_file,
+        prepare_data_directory, validate_owner_only_file, validate_sqlite_data_filesystem,
         validate_windows_local_data_path, validate_windows_resolved_local_data_path,
         windows_current_identity_sid, windows_path_kind_matches,
         windows_sqlite_filesystem_is_supported,
@@ -1231,6 +1440,45 @@ mod windows_tests {
         let second = prepare_data_directory(&path)
             .unwrap_or_else(|error| unreachable!("reopen data dir: {error}"));
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn exclusively_creates_exact_owner_only_windows_file() {
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let directory = parent.path().join("data");
+        prepare_data_directory(&directory)
+            .unwrap_or_else(|error| unreachable!("prepare data dir: {error}"));
+        let path = directory.join("credential.pgpass");
+        let file = create_owner_only_file(&path)
+            .unwrap_or_else(|error| unreachable!("create protected file: {error}"));
+        drop(file);
+        assert!(validate_owner_only_file(&path).is_ok());
+        assert!(create_owner_only_file(&path).is_err());
+    }
+
+    #[test]
+    fn failed_windows_file_cleanup_scrubs_through_the_retained_handle() {
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let directory = parent.path().join("data");
+        prepare_data_directory(&directory)
+            .unwrap_or_else(|error| unreachable!("prepare data dir: {error}"));
+        let path = directory.join("failed-secret");
+        let mut file = create_owner_only_file(&path)
+            .unwrap_or_else(|error| unreachable!("create protected file: {error}"));
+        file.write_all(b"secret")
+            .unwrap_or_else(|error| unreachable!("write fixture: {error}"));
+        let identity = super::owner_only_file_identity(&file)
+            .unwrap_or_else(|error| unreachable!("file identity: {error}"));
+
+        super::cleanup_failed_owner_only_file(file, Some(&identity), &path);
+        assert!(path.exists());
+        assert_eq!(
+            fs::metadata(&path)
+                .unwrap_or_else(|error| unreachable!("scrubbed metadata: {error}"))
+                .len(),
+            0
+        );
+        assert!(validate_owner_only_file(&path).is_ok());
     }
 
     #[test]

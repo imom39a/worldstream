@@ -157,9 +157,10 @@ pub use session::{
 pub use trace::{
     AdvanceDispositionV1, CoreReducerV1, CoreTraceV1, HistoricalReplayAccumulatorV1,
     HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
-    PackFaultV1, PreparedCoreStateV1, PreparedRoomTransitionV1, ReplayFailureClassV1,
-    ReplayFailureV1, ReplayReportV1, ReplayStepV1, RoomTransitionPreparerV1, RoomTransitionStateV1,
-    TraceErrorV1, VerifiedCoreStateV1,
+    PackFaultV1, PreparedCoreStateV1, PreparedRoomTransitionV1, ReplayActivationDecisionWitnessV1,
+    ReplayFailureClassV1, ReplayFailureV1, ReplayMembershipWitnessV1,
+    ReplayObservationPositionWitnessV1, ReplayReportV1, ReplayStepV1, ReplayStorageVerificationV1,
+    RoomTransitionPreparerV1, RoomTransitionStateV1, TraceErrorV1, VerifiedCoreStateV1,
 };
 
 #[cfg(test)]

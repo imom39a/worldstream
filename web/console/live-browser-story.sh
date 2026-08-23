@@ -5,6 +5,89 @@ cd "$workspace_dir"
 blocked() { printf 'blocked:%s\n' "$1" >&2; exit 2; }
 python_bin="${WORLDSTREAM_PYTHON:-$workspace_dir/sdk/python/.venv/bin/python}"
 [[ -x "$python_bin" ]] || blocked python_sdk_runtime_missing
+bounded_control_read() {
+  "$python_bin" - "$1" "$2" <<'PY'
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+MAX_CONTROL_BYTES = 8 * 1024 * 1024
+
+
+def reject_pairs(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+operation, raw_path = sys.argv[1:]
+path = Path(raw_path)
+before = path.lstat()
+if (
+    stat.S_ISLNK(before.st_mode)
+    or not stat.S_ISREG(before.st_mode)
+    or not (0 < before.st_size <= MAX_CONTROL_BYTES)
+):
+    raise SystemExit(2)
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+with os.fdopen(descriptor, "rb") as source:
+    opened = os.fstat(source.fileno())
+    content = source.read(MAX_CONTROL_BYTES + 1)
+    after = os.fstat(source.fileno())
+final_path = path.lstat()
+expected = identity(before)
+if (
+    not stat.S_ISREG(opened.st_mode)
+    or identity(opened) != expected
+    or identity(after) != expected
+    or identity(final_path) != expected
+    or len(content) != before.st_size
+    or len(content) > MAX_CONTROL_BYTES
+):
+    raise SystemExit(2)
+if operation == "flatten-text":
+    text = content.decode("utf-8")
+    if "\x00" in text:
+        raise SystemExit(2)
+    sys.stdout.write(text.replace("\r", "").replace("\n", ""))
+    raise SystemExit(0)
+value = json.loads(
+    content.decode("utf-8"),
+    object_pairs_hook=reject_pairs,
+    parse_constant=lambda item: (_ for _ in ()).throw(ValueError(item)),
+)
+if not isinstance(value, dict):
+    raise SystemExit(2)
+if operation == "surface":
+    surface = value.get("surface_ref")
+    if not isinstance(surface, str):
+        raise SystemExit(2)
+    print(surface)
+elif operation == "compact-json":
+    print(json.dumps(value, separators=(",", ":")))
+elif operation == "completed-story":
+    if value.get("status") != "completed":
+        raise SystemExit(2)
+else:
+    raise SystemExit(2)
+PY
+}
 browser_mode="${WORLDSTREAM_BROWSER_MODE:-cmux}"
 package_mode="${WORLDSTREAM_BROWSER_PACKAGE_MODE:-0}"
 prebuilt_ui="${WORLDSTREAM_BROWSER_PREBUILT_UI:-0}"
@@ -21,6 +104,7 @@ for required_client in seed_browser_room.py run_browser_story.py run_absent_brok
   [[ -f "$heist_live_dir/$required_client" ]] || blocked packaged_heist_client_missing
 done
 if [[ "$package_mode" = 1 ]]; then
+  "$python_bin" -c 'import sys; raise SystemExit(0 if sys.implementation.name == "cpython" and sys.version_info[:3] == (3, 14, 7) else 1)' || blocked package_python_identity_mismatch
   [[ "$browser_mode" = cdp ]] || blocked package_browser_must_use_pinned_cdp
   [[ -n "$report_path" ]] || blocked package_browser_report_required
   package_root="${WORLDSTREAM_BROWSER_PACKAGE_ROOT:-}"
@@ -131,10 +215,11 @@ console_pid="$!"
 console_url="http://127.0.0.1:$console_port/?view=participant"
 browser_open="$root/browser-open.json"
 cmux --json browser open about:blank --workspace "$workspace_ref" --window "$window_ref" --focus false >"$browser_open" || blocked browser_surface_create_failed
-surface="$("$python_bin" -c 'import json,sys; value=json.load(open(sys.argv[1])); ref=value.get("surface_ref"); print(ref if isinstance(ref,str) else "")' "$browser_open")"
+surface="$(bounded_control_read surface "$browser_open")" || blocked browser_surface_response_invalid
 [[ "$surface" == surface:* ]] || blocked browser_surface_ref_missing
-bootstrap_json="$("$python_bin" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])),separators=(",",":")))' "$manifest")"
-init_script="window.__WORLDSTREAM_LIVE_SESSION__=$bootstrap_json;$(tr -d '\n' < "$heist_live_dir/browser_trace_init.js")"
+bootstrap_json="$(bounded_control_read compact-json "$manifest")" || blocked browser_manifest_invalid
+trace_init="$(bounded_control_read flatten-text "$heist_live_dir/browser_trace_init.js")" || blocked browser_trace_init_invalid
+init_script="window.__WORLDSTREAM_LIVE_SESSION__=$bootstrap_json;$trace_init"
 cmux browser "$surface" addinitscript --script "$init_script" >"$root/browser-init.txt" || blocked browser_init_script_failed
 cmux browser "$surface" navigate "$console_url" >"$root/browser-navigate.txt" || blocked browser_navigation_failed
 cmux browser "$surface" wait --load-state complete --timeout-ms 15000 >"$root/browser-load.txt" || blocked browser_page_load_timeout
@@ -379,8 +464,7 @@ signal navigator-acked
 wait_signal story-result.json
 wait "$driver_pid" || blocked full_browser_story_driver_failed
 wait_phase Complete complete-phase.txt 3 complete_phase_not_visible
-result="$(<"$root/story-result.json")"
-printf '%s\n' "$result" | rg -q '"status":"completed"' || blocked full_browser_story_not_completed
+bounded_control_read completed-story "$root/story-result.json" || blocked full_browser_story_not_completed
 for tab in public participant operator replay; do
   cmux browser "$surface" click "#$tab-tab" >"$root/$tab-tab.txt" || blocked "${tab}_tab_missing"
   body="$(cmux browser "$surface" get text body)"
@@ -392,13 +476,10 @@ for tab in public participant operator replay; do
   printf '%s\n' "$body_evidence" >"$root/$tab-body.txt"
   if printf '%s\n' "$body" | rg -qi 'navigator-private-clue|sealed-value|private_clue|own_commitment|chain-of-thought|Bearer[[:space:]]|wsb1:[0-9a-f]{64}|wst1:[0-9a-f]{64}|raw (core|activity) state'; then blocked "privacy_negative_$tab"; fi
 done
-public_body="$(<"$root/public-body.txt")"
-printf '%s\n' "$public_body" | rg -q 'Published clues|Plans and public review|Aggregate result|commitments remain withheld' || blocked public_story_surface_incomplete
-printf '%s\n' "$public_body" | rg -q 'endorsements|challenges' || blocked public_review_counts_missing
-operator_body="$(<"$root/operator-body.txt")"
-printf '%s\n' "$operator_body" | rg -q 'Membership|Session & frame|Runner & Activation|Timer|Room integrity' || blocked operator_diagnostics_incomplete
-replay_body="$(<"$root/replay-body.txt")"
-printf '%s\n' "$replay_body" | rg -q 'Replay · read-only|Verified|Core hash|Activity hash|Aggregate hash|Transition hash|Available' || blocked replay_or_final_reveal_incomplete
+rg -q 'Published clues|Plans and public review|Aggregate result|commitments remain withheld' "$root/public-body.txt" || blocked public_story_surface_incomplete
+rg -q 'endorsements|challenges' "$root/public-body.txt" || blocked public_review_counts_missing
+rg -q 'Membership|Session & frame|Runner & Activation|Timer|Room integrity' "$root/operator-body.txt" || blocked operator_diagnostics_incomplete
+rg -q 'Replay · read-only|Verified|Core hash|Activity hash|Aggregate hash|Transition hash|Available' "$root/replay-body.txt" || blocked replay_or_final_reveal_incomplete
 if rg -n -P 'wsb1:[0-9a-f]{64}|wst1:[0-9a-f]{64}' "$ui_dir" >/dev/null 2>&1; then blocked credential_or_ticket_in_production_assets; fi
 trace_text="$(cmux browser "$surface" eval --script 'JSON.stringify(window.__WORLDSTREAM_BROWSER_TRACE__ || [])')"
 browser_diagnostics_raw="$(cmux browser "$surface" console list 2>/dev/null)" || blocked browser_diagnostics_unavailable
@@ -465,6 +546,7 @@ if [[ -n "$report_path" ]]; then
     "$report_path" "$browser_open" "$root/story-result.json" "$root" \
     "$worldstreamd" "$ui_dir" "$sdk_src" "$heist_dir" "$cdp_adapter" \
     "$package_mode" "$workspace_dir" "$story_started_ns" "$story_finished_ns" <<'PY'
+import contextlib
 import hashlib
 import json
 import os
@@ -472,6 +554,9 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
+
+MAX_CONTROL_BYTES = 8 * 1024 * 1024
+MAX_HASHED_FILE_BYTES = 1024 * 1024 * 1024
 
 
 def reject_pairs(pairs):
@@ -483,9 +568,50 @@ def reject_pairs(pairs):
     return value
 
 
+def file_identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+@contextlib.contextmanager
+def stable_regular_file(path, maximum):
+    target = Path(path)
+    before = target.lstat()
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or not (0 < before.st_size <= maximum)
+    ):
+        raise ValueError("bounded regular file required")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(target, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        identity = file_identity(before)
+        if not stat.S_ISREG(opened.st_mode) or file_identity(opened) != identity:
+            raise ValueError("file changed before stable read")
+        try:
+            yield source, opened
+        finally:
+            after = os.fstat(source.fileno())
+            final_path = target.lstat()
+            if file_identity(after) != identity or file_identity(final_path) != identity:
+                raise ValueError("file changed during stable read")
+
+
 def read_json(path):
+    with stable_regular_file(path, MAX_CONTROL_BYTES) as (source, opened):
+        content = source.read(MAX_CONTROL_BYTES + 1)
+        if len(content) != opened.st_size or len(content) > MAX_CONTROL_BYTES:
+            raise ValueError("JSON input exceeded its byte bound")
     value = json.loads(
-        Path(path).read_text(encoding="utf-8"),
+        content.decode("utf-8"),
         object_pairs_hook=reject_pairs,
         parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
     )
@@ -494,17 +620,17 @@ def read_json(path):
     return value
 
 
-def digest_file(path):
-    target = Path(path)
-    mode = target.lstat().st_mode
-    if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
-        raise ValueError("regular file required")
+def digest_file(path, maximum=MAX_HASHED_FILE_BYTES):
     digest = hashlib.sha256()
     size = 0
-    with target.open("rb") as source:
+    with stable_regular_file(path, maximum) as (source, opened):
         while chunk := source.read(1024 * 1024):
-            digest.update(chunk)
             size += len(chunk)
+            if size > maximum:
+                raise ValueError("hashed file exceeded its byte bound")
+            digest.update(chunk)
+        if size != opened.st_size:
+            raise ValueError("hashed file size changed")
     return {"sha256": "sha256:" + digest.hexdigest(), "size_bytes": size}
 
 
@@ -540,7 +666,7 @@ def tree_identity(path, required):
 
 
 def evidence_digest(root, name):
-    record = digest_file(root / name)
+    record = digest_file(root / name, MAX_CONTROL_BYTES)
     if record["size_bytes"] <= 0:
         raise ValueError("empty DOM evidence")
     return record["sha256"]
@@ -629,7 +755,7 @@ heist = tree_identity(
     ),
 )
 heist["origin"] = "package:examples/heist" if package_mode == "1" else "source:examples/heist"
-adapter = digest_file(adapter_path)
+adapter = digest_file(adapter_path, MAX_CONTROL_BYTES)
 adapter.update({"name": "worldstream-cdp-browser", "protocol": "Chrome DevTools Protocol"})
 
 if package_mode == "1":

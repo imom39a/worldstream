@@ -11,6 +11,7 @@ password-bearing URL is placed in Docker argv or retained evidence.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -93,8 +94,10 @@ REQUIRED_PRIVACY_CHANNEL_CLASSES = (
 )
 SHA256_PREFIX = "sha256:"
 MAX_ARCHIVE_MEMBERS = 20_000
+MAX_ARCHIVE_COMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CONTROL_FILE_BYTES = 16 * 1024 * 1024
+MAX_CELL_REPORT_BYTES = 64 * 1024 * 1024
 MAX_PROVIDER_CHANNEL_BYTES = 16 * 1024 * 1024
 MAX_DOCKER_CONTROL_BYTES = 1024 * 1024
 MAX_MOUNTINFO_BYTES = 4 * 1024 * 1024
@@ -131,6 +134,91 @@ POSTGRESQL_CONTRACT_SETTINGS = {
         "provider_failover",
     ],
 }
+RUNTIME_ROLE_ADMISSION_FIELDS = (
+    "superuser",
+    "create_role",
+    "create_database",
+    "replication",
+    "bypass_row_security",
+    "database_create",
+    "other_role_membership",
+    "public_schema_create",
+    "owns_public_schema_object",
+    "migration_insert",
+    "migration_update",
+    "migration_delete",
+    "migration_truncate",
+    "transfer_control_insert",
+    "transfer_control_update",
+    "transfer_control_delete",
+    "transfer_control_truncate",
+)
+RUNTIME_ROLE_ADMISSION_EXPECTED = "|".join(
+    "false" for _ in RUNTIME_ROLE_ADMISSION_FIELDS
+)
+RUNTIME_ROLE_ADMISSION_SQL = (
+    "SELECT role.rolsuper::text || '|' || "
+    "role.rolcreaterole::text || '|' || "
+    "role.rolcreatedb::text || '|' || "
+    "role.rolreplication::text || '|' || "
+    "role.rolbypassrls::text || '|' || "
+    "has_database_privilege(current_user, current_database(), 'CREATE')::text || "
+    "'|' || "
+    "(EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS membership "
+    "WHERE membership.member = role.oid))::text || '|' || "
+    "has_schema_privilege(current_user, 'public', 'CREATE')::text || '|' || "
+    "(EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS namespace_row "
+    "WHERE namespace_row.nspname = 'public' "
+    "AND namespace_row.nspowner = role.oid "
+    "UNION ALL SELECT 1 FROM pg_catalog.pg_class AS relation_row "
+    "JOIN pg_catalog.pg_namespace AS namespace_row "
+    "ON namespace_row.oid = relation_row.relnamespace "
+    "WHERE namespace_row.nspname = 'public' "
+    "AND relation_row.relowner = role.oid "
+    "UNION ALL SELECT 1 FROM pg_catalog.pg_proc AS routine_row "
+    "JOIN pg_catalog.pg_namespace AS namespace_row "
+    "ON namespace_row.oid = routine_row.pronamespace "
+    "WHERE namespace_row.nspname = 'public' "
+    "AND routine_row.proowner = role.oid "
+    "UNION ALL SELECT 1 FROM pg_catalog.pg_type AS type_row "
+    "JOIN pg_catalog.pg_namespace AS namespace_row "
+    "ON namespace_row.oid = type_row.typnamespace "
+    "WHERE namespace_row.nspname = 'public' "
+    "AND type_row.typowner = role.oid))::text || '|' || "
+    "has_table_privilege(current_user, "
+    "'public.worldstream_schema_migrations', 'INSERT')::text || '|' || "
+    "has_table_privilege(current_user, "
+    "'public.worldstream_schema_migrations', 'UPDATE')::text || '|' || "
+    "has_table_privilege(current_user, "
+    "'public.worldstream_schema_migrations', 'DELETE')::text || '|' || "
+    "has_table_privilege(current_user, "
+    "'public.worldstream_schema_migrations', 'TRUNCATE')::text || '|' || "
+    "(EXISTS (SELECT 1 FROM unnest(ARRAY["
+    "'public.worldstream_transfer_imports',"
+    "'public.worldstream_transfer_chunks',"
+    "'public.worldstream_transfer_target_fence']::text[]) "
+    "AS protected_table(table_name) WHERE has_table_privilege("
+    "current_user, protected_table.table_name, 'INSERT')))::text || '|' || "
+    "(EXISTS (SELECT 1 FROM unnest(ARRAY["
+    "'public.worldstream_transfer_imports',"
+    "'public.worldstream_transfer_chunks',"
+    "'public.worldstream_transfer_target_fence']::text[]) "
+    "AS protected_table(table_name) WHERE has_table_privilege("
+    "current_user, protected_table.table_name, 'UPDATE')))::text || '|' || "
+    "(EXISTS (SELECT 1 FROM unnest(ARRAY["
+    "'public.worldstream_transfer_imports',"
+    "'public.worldstream_transfer_chunks',"
+    "'public.worldstream_transfer_target_fence']::text[]) "
+    "AS protected_table(table_name) WHERE has_table_privilege("
+    "current_user, protected_table.table_name, 'DELETE')))::text || '|' || "
+    "(EXISTS (SELECT 1 FROM unnest(ARRAY["
+    "'public.worldstream_transfer_imports',"
+    "'public.worldstream_transfer_chunks',"
+    "'public.worldstream_transfer_target_fence']::text[]) "
+    "AS protected_table(table_name) WHERE has_table_privilege("
+    "current_user, protected_table.table_name, 'TRUNCATE')))::text "
+    "FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user"
+)
 
 
 class LaneFailure(Exception):
@@ -139,6 +227,11 @@ class LaneFailure(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _validate_runtime_role_admission(witness: str) -> None:
+    if witness != RUNTIME_ROLE_ADMISSION_EXPECTED:
+        raise LaneFailure("postgres_runtime_role_not_least_privileged")
 
 
 def _load_secret_scan() -> Any:
@@ -203,12 +296,176 @@ def _regular_file(path: pathlib.Path, code: str) -> pathlib.Path:
     return path
 
 
-def _sha256_file(path: pathlib.Path) -> str:
+def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+@contextlib.contextmanager
+def _stable_regular_file(
+    path: pathlib.Path,
+    code: str,
+    *,
+    maximum: int,
+    expected_size: int | None = None,
+):
+    """Open one bounded file and reject path or inode changes through its use."""
+
+    if maximum <= 0 or expected_size is not None and not (0 < expected_size <= maximum):
+        raise LaneFailure(code)
+    try:
+        before = path.lstat()
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or not (0 < before.st_size <= maximum)
+            or expected_size is not None
+            and before.st_size != expected_size
+        ):
+            raise LaneFailure(code)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as source:
+            opened = os.fstat(source.fileno())
+            identity = _file_identity(before)
+            if not stat.S_ISREG(opened.st_mode) or _file_identity(opened) != identity:
+                raise LaneFailure(code)
+            try:
+                yield source, opened
+            finally:
+                after = os.fstat(source.fileno())
+                final_path = path.lstat()
+                if (
+                    _file_identity(after) != identity
+                    or _file_identity(final_path) != identity
+                ):
+                    raise LaneFailure(code)
+    except LaneFailure:
+        raise
+    except OSError as error:
+        raise LaneFailure(code) from error
+
+
+def _stable_regular_bytes(
+    path: pathlib.Path,
+    code: str,
+    *,
+    maximum: int = MAX_CONTROL_FILE_BYTES,
+) -> bytes:
+    with _stable_regular_file(path, code, maximum=maximum) as (source, opened):
+        content = source.read(maximum + 1)
+        if len(content) != opened.st_size or len(content) > maximum:
+            raise LaneFailure(code)
+        return content
+
+
+def _sha256_record(
+    path: pathlib.Path,
+    code: str,
+    *,
+    maximum: int = MAX_CONTROL_FILE_BYTES,
+) -> tuple[str, int]:
     digest = hashlib.sha256()
-    with path.open("rb") as source:
+    size = 0
+    with _stable_regular_file(path, code, maximum=maximum) as (source, opened):
         while chunk := source.read(1024 * 1024):
+            size += len(chunk)
+            if size > maximum:
+                raise LaneFailure(code)
             digest.update(chunk)
-    return digest.hexdigest()
+        if size != opened.st_size:
+            raise LaneFailure(code)
+    return digest.hexdigest(), size
+
+
+def _sha256_file(path: pathlib.Path) -> str:
+    return _sha256_record(path, "file_digest_invalid")[0]
+
+
+@contextlib.contextmanager
+def _verified_archive_copy(
+    source_path: pathlib.Path,
+    staging_parent: pathlib.Path,
+    *,
+    expected_size: int,
+    expected_digest: str,
+):
+    """Yield one private stable copy of the exact report-bound archive bytes."""
+
+    code = "package_archive_changed_during_verification"
+    try:
+        parent = staging_parent.lstat()
+    except OSError as error:
+        raise LaneFailure(code) from error
+    if (
+        stat.S_ISLNK(parent.st_mode)
+        or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or stat.S_IMODE(parent.st_mode) & 0o077
+    ):
+        raise LaneFailure(code)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".worldstream-verified-package-", dir=staging_parent
+    )
+    temporary = pathlib.Path(temporary_name)
+    created = os.fstat(descriptor)
+    try:
+        with os.fdopen(descriptor, "w+b") as stable_copy:
+            digest = hashlib.sha256()
+            copied = 0
+            with _stable_regular_file(
+                source_path,
+                code,
+                maximum=MAX_ARCHIVE_COMPRESSED_BYTES,
+                expected_size=expected_size,
+            ) as (source, opened):
+                while chunk := source.read(1024 * 1024):
+                    copied += len(chunk)
+                    if copied > MAX_ARCHIVE_COMPRESSED_BYTES:
+                        raise LaneFailure(code)
+                    digest.update(chunk)
+                    stable_copy.write(chunk)
+                if copied != opened.st_size:
+                    raise LaneFailure(code)
+            observed_digest = digest.hexdigest()
+            if copied != expected_size or observed_digest != expected_digest:
+                raise LaneFailure("package_report_archive_binding_failed")
+            stable_copy.flush()
+            os.fsync(stable_copy.fileno())
+            os.fchmod(stable_copy.fileno(), 0o400)
+            stable_copy.seek(0)
+            opened_copy = os.fstat(stable_copy.fileno())
+            copy_identity = _file_identity(opened_copy)
+            try:
+                yield stable_copy, observed_digest, copied
+            finally:
+                after_copy = os.fstat(stable_copy.fileno())
+                if _file_identity(after_copy) != copy_identity:
+                    raise LaneFailure(code)
+    except LaneFailure:
+        raise
+    except OSError as error:
+        raise LaneFailure(code) from error
+    finally:
+        try:
+            temporary_metadata = temporary.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise LaneFailure(code) from error
+        else:
+            if not stat.S_ISREG(temporary_metadata.st_mode) or (
+                temporary_metadata.st_dev,
+                temporary_metadata.st_ino,
+            ) != (created.st_dev, created.st_ino):
+                raise LaneFailure(code)
+            temporary.unlink()
 
 
 def _safe_archive_member(member: tarfile.TarInfo) -> bool:
@@ -244,11 +501,7 @@ def _member_bytes(
 
 
 def _parse_package_report(path: pathlib.Path) -> dict[str, Any]:
-    _regular_file(path, "package_report_invalid")
-    try:
-        content = path.read_bytes()
-    except OSError as error:
-        raise LaneFailure("package_report_invalid") from error
+    content = _stable_regular_bytes(path, "package_report_invalid")
     return _strict_json(content, "package_report_invalid")
 
 
@@ -398,18 +651,21 @@ def _bind_package(
 ) -> tuple[pathlib.Path, pathlib.Path, dict[str, Any]]:
     """Validate exact identity and extract only the accepted runtime surface."""
 
-    archive_path = _regular_file(archive_path, "package_archive_invalid")
-    package_report = _parse_package_report(report_path)
-    archive_digest = _sha256_file(archive_path)
+    package_report_raw = _stable_regular_bytes(report_path, "package_report_invalid")
+    package_report = _strict_json(package_report_raw, "package_report_invalid")
     identity = package_report.get("identity")
     inventory = package_report.get("inventory")
+    archive_size = package_report.get("size_bytes")
+    archive_digest_reference = package_report.get("sha256")
     if (
         package_report.get("schema") != PACKAGE_REPORT_SCHEMA
         or package_report.get("kind") != "archive"
         or package_report.get("artifact") != archive_path.name
         or package_report.get("path") != archive_path.name
-        or package_report.get("sha256") != SHA256_PREFIX + archive_digest
-        or package_report.get("size_bytes") != archive_path.stat().st_size
+        or type(archive_size) is not int
+        or not (0 < archive_size <= MAX_ARCHIVE_COMPRESSED_BYTES)
+        or not isinstance(archive_digest_reference, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", archive_digest_reference) is None
         or not isinstance(inventory, dict)
         or inventory.get("archive_verified") is not True
         or inventory.get("manifest_source") != "compatibility.toml"
@@ -423,7 +679,20 @@ def _bind_package(
         raise LaneFailure("package_report_archive_binding_failed")
 
     try:
-        with tarfile.open(archive_path, "r:gz") as archive:
+        with contextlib.ExitStack() as stack:
+            archive_stream, archive_digest, archive_size = stack.enter_context(
+                _verified_archive_copy(
+                    archive_path,
+                    extraction_root.parent,
+                    expected_size=archive_size,
+                    expected_digest=archive_digest_reference.removeprefix(
+                        SHA256_PREFIX
+                    ),
+                )
+            )
+            archive = stack.enter_context(
+                tarfile.open(fileobj=archive_stream, mode="r:gz")
+            )
             members = archive.getmembers()
             if (
                 not members
@@ -552,8 +821,9 @@ def _bind_package(
         "status": "pass",
         "artifact": archive_path.name,
         "archive_sha256": SHA256_PREFIX + archive_digest,
-        "archive_size_bytes": archive_path.stat().st_size,
-        "package_report_sha256": SHA256_PREFIX + _sha256_file(report_path),
+        "archive_size_bytes": archive_size,
+        "package_report_sha256": SHA256_PREFIX
+        + hashlib.sha256(package_report_raw).hexdigest(),
         "archive_root": expected_root,
         "identity": {
             "target": "linux-x86_64",
@@ -758,8 +1028,12 @@ class PrivacyCapture:
             ):
                 continue
             try:
-                value = secret_path.read_bytes()
-            except OSError:
+                value = _stable_regular_bytes(
+                    secret_path,
+                    "privacy_secret_channel_invalid",
+                    maximum=32,
+                )
+            except LaneFailure:
                 continue
             if len(value) != 32:
                 continue
@@ -1585,7 +1859,8 @@ class Provider:
         self._psql(
             "postgres",
             "CREATE ROLE runtime LOGIN PASSWORD "
-            f"'{self.runtime_password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;",
+            f"'{self.runtime_password}' NOSUPERUSER NOCREATEDB NOCREATEROLE "
+            "NOINHERIT NOREPLICATION NOBYPASSRLS;",
         )
         for database in DATABASES.values():
             self._psql("postgres", f"CREATE DATABASE {database} OWNER admin;")
@@ -1729,7 +2004,18 @@ class Provider:
             "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public "
             "TO runtime;"
             "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE "
-            "public.worldstream_schema_migrations FROM runtime;",
+            "public.worldstream_schema_migrations,"
+            "public.worldstream_transfer_imports,"
+            "public.worldstream_transfer_chunks,"
+            "public.worldstream_transfer_target_fence FROM runtime;",
+        )
+        _validate_runtime_role_admission(
+            self._psql(
+                database,
+                RUNTIME_ROLE_ADMISSION_SQL,
+                user="runtime",
+                password=self.runtime_password,
+            )
         )
 
     def _start_pooler(self) -> None:
@@ -1979,10 +2265,11 @@ class Provider:
 
 
 def _load_report(path: pathlib.Path) -> dict[str, Any]:
-    try:
-        content = path.read_bytes()
-    except OSError as error:
-        raise LaneFailure("cell_report_unavailable") from error
+    content = _stable_regular_bytes(
+        path,
+        "cell_report_invalid",
+        maximum=MAX_CELL_REPORT_BYTES,
+    )
     return _strict_json(content, "cell_report_invalid")
 
 
@@ -2481,19 +2768,20 @@ def _validate_browser_story(
     tools = value.get("tools")
     adapter = tools.get("adapter") if isinstance(tools, dict) else None
     python_identity = tools.get("python") if isinstance(tools, dict) else None
+    adapter_digest, adapter_size = _sha256_record(
+        ROOT / "scripts/cdp-browser.py",
+        "package_browser_tool_identity_invalid",
+    )
     if not (
         isinstance(adapter, dict)
+        and set(tools) == {"adapter", "python"}
         and set(adapter) == {"name", "protocol", "sha256", "size_bytes"}
         and adapter.get("name") == "worldstream-cdp-browser"
         and adapter.get("protocol") == "Chrome DevTools Protocol"
-        and adapter.get("sha256")
-        == SHA256_PREFIX + _sha256_file(ROOT / "scripts/cdp-browser.py")
-        and adapter.get("size_bytes")
-        == (ROOT / "scripts/cdp-browser.py").stat().st_size
+        and adapter.get("sha256") == SHA256_PREFIX + adapter_digest
+        and adapter.get("size_bytes") == adapter_size
         and isinstance(python_identity, dict)
-        and python_identity.get("implementation") == "cpython"
-        and re.fullmatch(r"3\.[0-9]+\.[0-9]+", str(python_identity.get("version")))
-        is not None
+        and python_identity == {"implementation": "cpython", "version": "3.14.7"}
     ):
         raise LaneFailure("package_browser_tool_identity_invalid")
 
@@ -2548,9 +2836,7 @@ def _run_browser_story(
         privacy_workspace=workspace,
         privacy_label="package-browser-heist",
     )
-    content = _regular_file(report_path, "package_browser_report_invalid").read_bytes()
-    if len(content) > MAX_CONTROL_FILE_BYTES:
-        raise LaneFailure("package_browser_report_invalid")
+    content = _stable_regular_bytes(report_path, "package_browser_report_invalid")
     report = _strict_json(content, "package_browser_report_invalid")
     _validate_browser_story(report, binding, browser)
     if measurement["exit_code"] != 0:

@@ -574,9 +574,11 @@ impl DeploymentIdentityV1 {
         resources.sort_by(|left, right| {
             (left.kind.tag(), left.identity()).cmp(&(right.kind.tag(), right.identity()))
         });
-        if resources.windows(2).any(|pair| {
-            (pair[0].kind.tag(), pair[0].identity()) == (pair[1].kind.tag(), pair[1].identity())
-        }) {
+        let mut resource_identities = BTreeSet::new();
+        if resources
+            .iter()
+            .any(|resource| !resource_identities.insert(resource.identity()))
+        {
             return Err(TransferError::DuplicateIdentity { what: "resource" });
         }
         let mut identity = Self {
@@ -2216,6 +2218,12 @@ pub enum TransferChunkDispositionV1 {
 /// the serialized transfer checkpoint is persisted. `verify_complete` must
 /// perform destination-side semantic verification; the coordinator does not
 /// treat row count or a successful SQL transaction as proof of correctness.
+/// For a whole-deployment move, `verify_complete` must finish target hydration
+/// and full semantic replay while the target is non-serving; `record_finalization`
+/// may persist only that exact provider-derived verified target. Consequently,
+/// `accept_target_write` publishes/unfences an already verified target and must
+/// not defer target hydration or semantic verification until after source
+/// retirement.
 pub trait TransferDestinationV1 {
     /// The provider-specific error returned by destination operations.
     type Error: fmt::Debug + fmt::Display;
@@ -2241,8 +2249,166 @@ pub trait TransferDestinationV1 {
     /// in the next epoch.
     fn accept_target_write(&mut self, target: &TargetFingerprintV1) -> Result<(), Self::Error>;
 
-    /// Removes an incomplete destination import before source rollback.
+    /// Removes an incomplete destination import before source rollback. A
+    /// successful return must durably tombstone the exact bundle/target
+    /// binding, including when no chunk or import marker was ever written;
+    /// this return is the provider evidence that authorizes source restoration.
     fn abort_import(&mut self, target: &TargetFingerprintV1) -> Result<(), Self::Error>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProviderDerivedTargetBindingV1 {
+    bundle_hash: DigestV1,
+    target_fingerprint: DigestV1,
+    source_epoch: u64,
+    target_epoch: u64,
+    lineage_id: String,
+}
+
+impl ProviderDerivedTargetBindingV1 {
+    fn verified(
+        bundle: &TransferBundleV1,
+        target: &TargetFingerprintV1,
+    ) -> Result<Self, TransferError> {
+        if bundle.scope() != TransferScopeV1::WholeDeployment {
+            return Err(TransferError::CanonicalExportNotAuthoritative);
+        }
+        bundle.verify_target(target)?;
+        Ok(Self {
+            bundle_hash: bundle.bundle_hash()?,
+            target_fingerprint: target.fingerprint_digest()?,
+            source_epoch: bundle.source_epoch(),
+            target_epoch: target.storage_epoch(),
+            lineage_id: bundle.lineage_id().to_owned(),
+        })
+    }
+}
+
+/// Opaque proof that the destination provider semantically verified and
+/// durably finalized one exact whole-deployment import.
+///
+/// Its fields are intentionally private. Only the coordinator can construct
+/// this proof, after the destination implementation has confirmed its actual
+/// durable state; callers cannot substitute bundle or target digest labels.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedTargetFinalizationV1(ProviderDerivedTargetBindingV1);
+
+impl VerifiedTargetFinalizationV1 {
+    /// Returns the exact verified bundle hash.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> DigestV1 {
+        self.0.bundle_hash
+    }
+
+    /// Returns the digest of every verified target fingerprint field.
+    #[must_use]
+    pub const fn target_fingerprint(&self) -> DigestV1 {
+        self.0.target_fingerprint
+    }
+
+    /// Returns the source epoch captured by the verified bundle.
+    #[must_use]
+    pub const fn source_epoch(&self) -> u64 {
+        self.0.source_epoch
+    }
+
+    /// Returns the next target epoch admitted by the provider.
+    #[must_use]
+    pub const fn target_epoch(&self) -> u64 {
+        self.0.target_epoch
+    }
+
+    /// Returns the exact deployment lineage admitted by the provider.
+    #[must_use]
+    pub fn lineage_id(&self) -> &str {
+        &self.0.lineage_id
+    }
+}
+
+/// Opaque proof that the destination provider discarded or durably tombstoned
+/// one exact incomplete whole-deployment import.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedTargetAbortV1(ProviderDerivedTargetBindingV1);
+
+impl VerifiedTargetAbortV1 {
+    /// Returns the exact aborted bundle hash.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> DigestV1 {
+        self.0.bundle_hash
+    }
+
+    /// Returns the fingerprint of the exact discarded target import.
+    #[must_use]
+    pub const fn target_fingerprint(&self) -> DigestV1 {
+        self.0.target_fingerprint
+    }
+
+    /// Returns the source epoch captured by the discarded bundle.
+    #[must_use]
+    pub const fn source_epoch(&self) -> u64 {
+        self.0.source_epoch
+    }
+
+    /// Returns the target epoch that was discarded before source restoration.
+    #[must_use]
+    pub const fn target_epoch(&self) -> u64 {
+        self.0.target_epoch
+    }
+
+    /// Returns the exact deployment lineage of the discarded import.
+    #[must_use]
+    pub fn lineage_id(&self) -> &str {
+        &self.0.lineage_id
+    }
+}
+
+/// Source-authority seam consumed only by provider-derived coordinator proofs.
+///
+/// Implementations must make both methods idempotent for the same proof so a
+/// process stop between provider and source commits can be retried safely.
+pub trait TransferSourceAuthorityV1 {
+    /// Provider-specific source error.
+    type Error: fmt::Debug + fmt::Display;
+
+    /// Binds the exact provider finalization and permanently retires the source.
+    fn retire_after_verified_target(
+        &self,
+        proof: &VerifiedTargetFinalizationV1,
+    ) -> Result<(), Self::Error>;
+
+    /// Restores source authority only after the provider discarded the target.
+    fn restore_after_verified_abort(
+        &self,
+        proof: &VerifiedTargetAbortV1,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Failure from the cross-provider authority coordinator.
+#[derive(Debug, Error)]
+pub enum WholeDeploymentTransferErrorV1<DestinationError, SourceError>
+where
+    DestinationError: fmt::Debug + fmt::Display,
+    SourceError: fmt::Debug + fmt::Display,
+{
+    /// Provider-neutral lifecycle or exact-binding failure.
+    #[error(transparent)]
+    Contract(#[from] TransferError),
+    /// Destination operation failed before its authority transition completed.
+    #[error("destination {operation} failed: {error}")]
+    Destination {
+        /// Exact provider operation that failed.
+        operation: &'static str,
+        /// Provider error.
+        error: DestinationError,
+    },
+    /// Source transition failed after the destination disposition was durable.
+    #[error("source {operation} failed: {error}")]
+    Source {
+        /// Exact source operation that failed.
+        operation: &'static str,
+        /// Source error.
+        error: SourceError,
+    },
 }
 
 /// Provider-neutral errors from the coordinated import flow.
@@ -2630,6 +2796,17 @@ impl TransferImportSessionV1 {
         self.checkpoint.next_ordinal == self.record_count
     }
 
+    /// Returns the first record ordinal that has not been durably checkpointed.
+    ///
+    /// Coordinators use this value to construct only the next bounded chunk
+    /// after restoring an opaque serialized session. Destination adapters
+    /// still reconfirm exact replay markers; this ordinal is never treated as
+    /// provider durability evidence by itself.
+    #[must_use]
+    pub const fn next_ordinal(&self) -> usize {
+        self.checkpoint.next_ordinal
+    }
+
     /// Applies one contiguous chunk through the durable destination seam.
     pub fn apply_chunk<D: TransferDestinationV1>(
         &mut self,
@@ -2705,7 +2882,7 @@ impl TransferImportSessionV1 {
     }
 
     /// Verifies the complete destination and writes its finalization record.
-    pub fn finalize<D: TransferDestinationV1>(
+    fn finalize<D: TransferDestinationV1>(
         &mut self,
         destination: &mut D,
         bundle: &TransferBundleV1,
@@ -2774,7 +2951,7 @@ impl TransferImportSessionV1 {
     }
 
     /// Commits the first matching target write after finalization.
-    pub fn accept_target_write<D: TransferDestinationV1>(
+    fn accept_target_write<D: TransferDestinationV1>(
         &mut self,
         destination: &mut D,
     ) -> Result<(), TransferRunError<D::Error>> {
@@ -2795,27 +2972,6 @@ impl TransferImportSessionV1 {
             }
         })?;
         self.lifecycle.accept_target_write_checked(&target)?;
-        Ok(())
-    }
-
-    /// Removes the partial import, then restores source authority.
-    pub fn abort<D: TransferDestinationV1>(
-        &mut self,
-        destination: &mut D,
-    ) -> Result<(), TransferRunError<D::Error>> {
-        if !matches!(
-            self.state(),
-            TransferStateV1::TransferPending | TransferStateV1::TargetVerified
-        ) {
-            return Err(self.lifecycle.invalid_state("abort import").into());
-        }
-        destination
-            .abort_import(self.target())
-            .map_err(|error| TransferRunError::Destination {
-                operation: "abort import",
-                error,
-            })?;
-        self.lifecycle.abort()?;
         Ok(())
     }
 
@@ -2920,6 +3076,156 @@ impl TransferImportSessionV1 {
             record_count,
         })
     }
+}
+
+/// Semantically verifies and finalizes the provider target, retires the exact
+/// `SQLite` source through an opaque provider-derived proof, then performs the
+/// first authoritative target write.
+///
+/// Every provider operation is deliberately idempotently reconfirmed on a
+/// retry. A stop after target finalization leaves the source pending; a stop
+/// after source retirement leaves the target finalization retryable but does
+/// not restore source authority.
+pub fn finalize_whole_deployment<S, D>(
+    session: &mut TransferImportSessionV1,
+    destination: &mut D,
+    source: &S,
+    bundle: &TransferBundleV1,
+) -> Result<(), WholeDeploymentTransferErrorV1<D::Error, S::Error>>
+where
+    S: TransferSourceAuthorityV1,
+    D: TransferDestinationV1,
+{
+    if bundle.scope() != TransferScopeV1::WholeDeployment {
+        return Err(TransferError::CanonicalExportNotAuthoritative.into());
+    }
+    if !matches!(
+        session.state(),
+        TransferStateV1::TargetVerified
+            | TransferStateV1::Finalized
+            | TransferStateV1::TargetAuthoritative
+    ) {
+        return Err(session
+            .lifecycle
+            .invalid_state("finalize whole deployment")
+            .into());
+    }
+    if !session.checkpoint.is_complete(bundle) || bundle.records.len() != session.record_count {
+        return Err(TransferError::InvalidValue {
+            what: "incomplete import",
+        }
+        .into());
+    }
+    bundle.verify_target(session.target())?;
+    let target = session.target().clone();
+    if session.state() == TransferStateV1::TargetVerified {
+        session
+            .finalize(destination, bundle)
+            .map_err(|error| match error {
+                TransferRunError::Contract(error) => {
+                    WholeDeploymentTransferErrorV1::Contract(error)
+                }
+                TransferRunError::Destination { operation, error } => {
+                    WholeDeploymentTransferErrorV1::Destination { operation, error }
+                }
+            })?;
+    } else {
+        // Serialized state is only a retry hint. Re-run both provider checks
+        // before minting source-retirement proof.
+        destination
+            .verify_complete(bundle, &target)
+            .map_err(|error| WholeDeploymentTransferErrorV1::Destination {
+                operation: "confirm complete import",
+                error,
+            })?;
+        destination.record_finalization(&target).map_err(|error| {
+            WholeDeploymentTransferErrorV1::Destination {
+                operation: "confirm finalization",
+                error,
+            }
+        })?;
+    }
+    let proof =
+        VerifiedTargetFinalizationV1(ProviderDerivedTargetBindingV1::verified(bundle, &target)?);
+    source
+        .retire_after_verified_target(&proof)
+        .map_err(|error| WholeDeploymentTransferErrorV1::Source {
+            operation: "retire verified source",
+            error,
+        })?;
+    if session.state() == TransferStateV1::Finalized {
+        session
+            .accept_target_write(destination)
+            .map_err(|error| match error {
+                TransferRunError::Contract(error) => {
+                    WholeDeploymentTransferErrorV1::Contract(error)
+                }
+                TransferRunError::Destination { operation, error } => {
+                    WholeDeploymentTransferErrorV1::Destination { operation, error }
+                }
+            })?;
+    } else {
+        // A serialized authoritative label is not evidence. Reconfirm the
+        // provider's durable first-write marker on every retry.
+        destination.accept_target_write(&target).map_err(|error| {
+            WholeDeploymentTransferErrorV1::Destination {
+                operation: "confirm target authority",
+                error,
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Discards or tombstones the exact provider target before restoring `SQLite`
+/// authority through an opaque provider-derived proof.
+///
+/// The session does not become source-authoritative until both provider abort
+/// and source restoration succeed. Retrying an interrupted abort reconfirms
+/// the provider tombstone before replaying the exact source proof.
+pub fn abort_whole_deployment<S, D>(
+    session: &mut TransferImportSessionV1,
+    destination: &mut D,
+    source: &S,
+    bundle: &TransferBundleV1,
+) -> Result<(), WholeDeploymentTransferErrorV1<D::Error, S::Error>>
+where
+    S: TransferSourceAuthorityV1,
+    D: TransferDestinationV1,
+{
+    if bundle.scope() != TransferScopeV1::WholeDeployment {
+        return Err(TransferError::CanonicalExportNotAuthoritative.into());
+    }
+    if !matches!(
+        session.state(),
+        TransferStateV1::TransferPending
+            | TransferStateV1::TargetVerified
+            | TransferStateV1::SourceAuthoritative
+    ) {
+        return Err(session
+            .lifecycle
+            .invalid_state("abort whole deployment")
+            .into());
+    }
+    bundle.verify_target(session.target())?;
+    let target = session.target().clone();
+    destination.abort_import(&target).map_err(|error| {
+        WholeDeploymentTransferErrorV1::Destination {
+            operation: "abort import",
+            error,
+        }
+    })?;
+    let proof = VerifiedTargetAbortV1(ProviderDerivedTargetBindingV1::verified(bundle, &target)?);
+    source
+        .restore_after_verified_abort(&proof)
+        .map_err(|error| WholeDeploymentTransferErrorV1::Source {
+            operation: "restore verified source",
+            error,
+        })?;
+    if session.state() != TransferStateV1::SourceAuthoritative {
+        session.lifecycle.abort()?;
+    }
+    Ok(())
 }
 
 /// Errors are explicit so unknown records and mismatches fail closed.
@@ -3287,6 +3593,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::panic)]
 
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     use super::{
         BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DeploymentIdentityV1,
@@ -3294,16 +3601,109 @@ mod tests {
         ResourceIdentityV1, ResourceKindV1, SchemaMigrationContractV1, SessionStatePolicyV1,
         TargetFingerprintV1, TransferBundleV1, TransferCheckpointV1, TransferChunkDispositionV1,
         TransferDestinationV1, TransferError, TransferImportSessionV1, TransferLifecycleV1,
-        TransferRunError, TransferScopeV1, TransferStateV1, default_backend_fingerprint,
+        TransferRunError, TransferScopeV1, TransferSourceAuthorityV1, TransferStateV1,
+        VerifiedTargetAbortV1, VerifiedTargetFinalizationV1, WholeDeploymentTransferErrorV1,
+        abort_whole_deployment, default_backend_fingerprint, finalize_whole_deployment,
     };
 
+    #[allow(clippy::struct_excessive_bools)]
     #[derive(Default)]
     struct FixtureDestination {
         chunks: Vec<(usize, usize, DigestV1)>,
         records: Vec<LogicalRecordV1>,
+        hydrated: bool,
+        semantically_verified: bool,
+        provider_verified_marker: bool,
         finalized: bool,
         authoritative: bool,
         aborted: bool,
+        verification_calls: usize,
+        finalization_calls: usize,
+        abort_calls: usize,
+        fail_hydration_once: bool,
+        fail_replay_verification_once: bool,
+        fail_verified_marker_once: bool,
+        fail_reconfirmation_once: bool,
+        fail_finalization_once: bool,
+        fail_accept_once: bool,
+        fail_abort_once: bool,
+        events: Option<Arc<Mutex<Vec<&'static str>>>>,
+    }
+
+    #[derive(Default)]
+    struct FixtureSource {
+        state: Mutex<FixtureSourceState>,
+        events: Option<Arc<Mutex<Vec<&'static str>>>>,
+    }
+
+    #[derive(Default)]
+    struct FixtureSourceState {
+        retired: Option<(DigestV1, DigestV1, u64, u64, String)>,
+        restored: Option<(DigestV1, DigestV1, u64, u64, String)>,
+        retire_calls: usize,
+        restore_calls: usize,
+        fail_retire_after_commit_once: bool,
+        fail_restore_after_commit_once: bool,
+    }
+
+    impl TransferSourceAuthorityV1 for FixtureSource {
+        type Error = String;
+
+        fn retire_after_verified_target(
+            &self,
+            proof: &VerifiedTargetFinalizationV1,
+        ) -> Result<(), Self::Error> {
+            if let Some(events) = &self.events {
+                events
+                    .lock()
+                    .map_err(|_| "source event lock".to_owned())?
+                    .push("retire source");
+            }
+            let binding = (
+                proof.bundle_hash(),
+                proof.target_fingerprint(),
+                proof.source_epoch(),
+                proof.target_epoch(),
+                proof.lineage_id().to_owned(),
+            );
+            let mut state = self.state.lock().map_err(|_| "source lock".to_owned())?;
+            state.retire_calls += 1;
+            if state.restored.is_some() || state.retired.as_ref().is_some_and(|old| old != &binding)
+            {
+                return Err("source retirement binding mismatch".to_owned());
+            }
+            state.retired = Some(binding);
+            if state.fail_retire_after_commit_once {
+                state.fail_retire_after_commit_once = false;
+                return Err("source retirement result lost after commit".to_owned());
+            }
+            Ok(())
+        }
+
+        fn restore_after_verified_abort(
+            &self,
+            proof: &VerifiedTargetAbortV1,
+        ) -> Result<(), Self::Error> {
+            let binding = (
+                proof.bundle_hash(),
+                proof.target_fingerprint(),
+                proof.source_epoch(),
+                proof.target_epoch(),
+                proof.lineage_id().to_owned(),
+            );
+            let mut state = self.state.lock().map_err(|_| "source lock".to_owned())?;
+            state.restore_calls += 1;
+            if state.retired.is_some() || state.restored.as_ref().is_some_and(|old| old != &binding)
+            {
+                return Err("source abort binding mismatch".to_owned());
+            }
+            state.restored = Some(binding);
+            if state.fail_restore_after_commit_once {
+                state.fail_restore_after_commit_once = false;
+                return Err("source restoration result lost after commit".to_owned());
+            }
+            Ok(())
+        }
     }
 
     #[test]
@@ -3348,6 +3748,19 @@ mod tests {
             ),
             Err(TransferError::DuplicateIdentity { what: "resource" })
         ));
+        let cross_kind = [
+            ResourceIdentityV1::from_bytes(ResourceKindV1::Artifact, "shared-id", b"artifact")
+                .expect("artifact"),
+            ResourceIdentityV1::from_bytes(ResourceKindV1::Schema, "shared-id", b"schema")
+                .expect("schema"),
+        ];
+        assert!(matches!(
+            DeploymentIdentityV1::new(
+                vec![PackIdentityV1::new("pack", "r1", DigestV1::hash(b"pack")).expect("pack")],
+                cross_kind.into_iter().collect(),
+            ),
+            Err(TransferError::DuplicateIdentity { what: "resource" })
+        ));
     }
 
     impl TransferDestinationV1 for FixtureDestination {
@@ -3357,6 +3770,9 @@ mod tests {
             &mut self,
             chunk: &super::TransferChunkV1,
         ) -> Result<TransferChunkDispositionV1, Self::Error> {
+            if self.aborted {
+                return Err("target import is durably aborted".to_owned());
+            }
             let identity = (chunk.start(), chunk.end(), chunk.digest());
             if self.chunks.contains(&identity) {
                 return Ok(TransferChunkDispositionV1::AlreadyApplied);
@@ -3371,12 +3787,49 @@ mod tests {
             bundle: &TransferBundleV1,
             target: &TargetFingerprintV1,
         ) -> Result<(), Self::Error> {
+            if let Some(events) = &self.events {
+                events
+                    .lock()
+                    .map_err(|_| "destination event lock".to_owned())?
+                    .push("hydrate and verify target");
+            }
+            self.verification_calls += 1;
             bundle
                 .verify_target(target)
                 .map_err(|error| error.to_string())?;
             if self.records != bundle.records {
                 return Err("destination records differ from bundle".to_owned());
             }
+            if self.provider_verified_marker {
+                if !self.hydrated || !self.semantically_verified {
+                    return Err("stale provider verified marker".to_owned());
+                }
+                return Ok(());
+            }
+            if self.fail_hydration_once {
+                self.fail_hydration_once = false;
+                return Err("target hydration failed before commit".to_owned());
+            }
+            self.hydrated = true;
+            if self.fail_replay_verification_once {
+                self.fail_replay_verification_once = false;
+                // Model provider transaction rollback: hydration is not
+                // durable when the semantic replay gate fails.
+                self.hydrated = false;
+                self.semantically_verified = false;
+                return Err("target replay verification failed before commit".to_owned());
+            }
+            self.semantically_verified = true;
+            if self.fail_verified_marker_once {
+                self.fail_verified_marker_once = false;
+                // Model one provider transaction containing hydration,
+                // executable replay, and the verified marker. Losing the
+                // marker write rolls every target mutation back together.
+                self.hydrated = false;
+                self.semantically_verified = false;
+                return Err("target verified marker failed before commit".to_owned());
+            }
+            self.provider_verified_marker = true;
             Ok(())
         }
 
@@ -3384,6 +3837,24 @@ mod tests {
             &mut self,
             _target: &TargetFingerprintV1,
         ) -> Result<(), Self::Error> {
+            if let Some(events) = &self.events {
+                events
+                    .lock()
+                    .map_err(|_| "destination event lock".to_owned())?
+                    .push("persist verified target");
+            }
+            self.finalization_calls += 1;
+            if !self.hydrated || !self.semantically_verified || !self.provider_verified_marker {
+                return Err("target finalization before semantic verification".to_owned());
+            }
+            if self.fail_reconfirmation_once {
+                self.fail_reconfirmation_once = false;
+                return Err("target verification reconfirmation failed before commit".to_owned());
+            }
+            if self.fail_finalization_once {
+                self.fail_finalization_once = false;
+                return Err("target finalization failed before commit".to_owned());
+            }
             self.finalized = true;
             Ok(())
         }
@@ -3392,10 +3863,24 @@ mod tests {
             &mut self,
             _target: &TargetFingerprintV1,
         ) -> Result<(), Self::Error> {
-            if !self.finalized {
-                return Err("target write before finalization".to_owned());
+            if let Some(events) = &self.events {
+                events
+                    .lock()
+                    .map_err(|_| "destination event lock".to_owned())?
+                    .push("publish target authority");
+            }
+            if !self.finalized
+                || !self.hydrated
+                || !self.semantically_verified
+                || !self.provider_verified_marker
+            {
+                return Err("target write before verified finalization".to_owned());
             }
             self.authoritative = true;
+            if self.fail_accept_once {
+                self.fail_accept_once = false;
+                return Err("target authority result lost after commit".to_owned());
+            }
             Ok(())
         }
 
@@ -3403,8 +3888,16 @@ mod tests {
             if self.finalized {
                 return Err("rollback refused after finalization".to_owned());
             }
+            self.abort_calls += 1;
+            if self.fail_abort_once {
+                self.fail_abort_once = false;
+                return Err("target abort failed before commit".to_owned());
+            }
             self.chunks.clear();
             self.records.clear();
+            self.hydrated = false;
+            self.semantically_verified = false;
+            self.provider_verified_marker = false;
             self.aborted = true;
             Ok(())
         }
@@ -3458,6 +3951,21 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    fn complete_fixture_import(
+        bundle: &TransferBundleV1,
+        destination: &mut FixtureDestination,
+    ) -> Result<TransferImportSessionV1, TransferError> {
+        let target = TargetFingerprintV1::for_bundle(bundle)?;
+        let mut session = TransferImportSessionV1::begin(bundle)?;
+        session.verify_target(&target)?;
+        session
+            .publish_chunks(destination, &[bundle.chunk(0, bundle.records().len())?])
+            .map_err(|_| TransferError::InvalidValue {
+                what: "complete fixture import",
+            })?;
+        Ok(session)
     }
 
     #[test]
@@ -3547,6 +4055,7 @@ mod tests {
             finalized: false,
             authoritative: false,
             aborted: false,
+            ..FixtureDestination::default()
         };
         let mut chunks = Vec::new();
         for start in (0..bundle.records().len()).step_by(2) {
@@ -3881,15 +4390,389 @@ mod tests {
                 what: "partial import",
             })?;
 
-        session
-            .abort(&mut destination)
-            .map_err(|_| TransferError::InvalidValue {
+        let source = FixtureSource::default();
+        abort_whole_deployment(&mut session, &mut destination, &source, &bundle).map_err(|_| {
+            TransferError::InvalidValue {
                 what: "import abort",
-            })?;
+            }
+        })?;
         assert_eq!(session.state(), TransferStateV1::SourceAuthoritative);
         assert!(destination.aborted);
         assert!(destination.chunks.is_empty());
         assert!(destination.records.is_empty());
+        assert!(
+            source
+                .state
+                .lock()
+                .expect("source state")
+                .restored
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_import_abort_tombstones_before_source_proof_and_rejects_stale_publisher()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let target = TargetFingerprintV1::for_bundle(&bundle)?;
+        let mut session = TransferImportSessionV1::begin(&bundle)?;
+        session.verify_target(&target)?;
+        let pending_checkpoint = session.to_bytes()?;
+        let mut destination = FixtureDestination::default();
+        let source = FixtureSource::default();
+
+        // No destination chunk or import marker exists. The provider abort
+        // must nevertheless complete before the coordinator can mint and
+        // deliver the source-restoration proof.
+        abort_whole_deployment(&mut session, &mut destination, &source, &bundle).map_err(|_| {
+            TransferError::InvalidValue {
+                what: "empty import abort",
+            }
+        })?;
+        assert_eq!(session.state(), TransferStateV1::SourceAuthoritative);
+        assert!(destination.aborted);
+        assert_eq!(destination.abort_calls, 1);
+        assert_eq!(source.state.lock().expect("source state").restore_calls, 1);
+
+        // A publisher resumed from the pre-abort checkpoint must consult the
+        // destination and be rejected by the durable tombstone.
+        let mut stale_publisher =
+            TransferImportSessionV1::from_bytes(&bundle, &pending_checkpoint)?;
+        assert!(matches!(
+            stale_publisher.apply_chunk(&mut destination, &bundle.chunk(0, 1)?),
+            Err(TransferRunError::Destination {
+                operation: "apply chunk",
+                error,
+            }) if error == "target import is durably aborted"
+        ));
+
+        // Replaying the exact abort remains idempotent and reconfirms the same
+        // provider tombstone before replaying the same source binding.
+        abort_whole_deployment(&mut stale_publisher, &mut destination, &source, &bundle).map_err(
+            |_| TransferError::InvalidValue {
+                what: "empty import abort retry",
+            },
+        )?;
+        assert_eq!(
+            stale_publisher.state(),
+            TransferStateV1::SourceAuthoritative
+        );
+        assert_eq!(destination.abort_calls, 2);
+        let source_state = source.state.lock().expect("source state");
+        assert_eq!(source_state.restore_calls, 2);
+        assert!(source_state.restored.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn whole_deployment_finalize_retries_lost_source_commit_after_restart()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let mut destination = FixtureDestination::default();
+        let mut session = complete_fixture_import(&bundle, &mut destination)?;
+        let pending_bytes = session.to_bytes()?;
+        let source = FixtureSource::default();
+        source
+            .state
+            .lock()
+            .expect("source state")
+            .fail_retire_after_commit_once = true;
+
+        assert!(matches!(
+            finalize_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Source {
+                operation: "retire verified source",
+                ..
+            })
+        ));
+        assert_eq!(session.state(), TransferStateV1::Finalized);
+        assert!(destination.finalized);
+        assert!(!destination.authoritative);
+        assert!(source.state.lock().expect("source state").retired.is_some());
+
+        // Model a process stop before the mutated in-memory session could be
+        // persisted. The old target-verified checkpoint must safely replay
+        // both durable provider and source transitions.
+        let mut resumed = TransferImportSessionV1::from_bytes(&bundle, &pending_bytes)?;
+        finalize_whole_deployment(&mut resumed, &mut destination, &source, &bundle).map_err(
+            |_| TransferError::InvalidValue {
+                what: "resumed whole-deployment finalization",
+            },
+        )?;
+        assert_eq!(resumed.state(), TransferStateV1::TargetAuthoritative);
+        assert!(destination.authoritative);
+        let source_state = source.state.lock().expect("source state");
+        assert_eq!(source_state.retire_calls, 2);
+        assert_eq!(destination.finalization_calls, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn whole_deployment_finalize_orders_target_before_source_and_reconfirms_lost_first_write()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let mut destination = FixtureDestination {
+            fail_finalization_once: true,
+            ..FixtureDestination::default()
+        };
+        let mut session = complete_fixture_import(&bundle, &mut destination)?;
+        let source = FixtureSource::default();
+
+        assert!(matches!(
+            finalize_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Destination {
+                operation: "record finalization",
+                ..
+            })
+        ));
+        assert_eq!(session.state(), TransferStateV1::TargetVerified);
+        assert_eq!(source.state.lock().expect("source state").retire_calls, 0);
+
+        destination.fail_accept_once = true;
+        assert!(matches!(
+            finalize_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Destination {
+                operation: "accept target authority",
+                ..
+            })
+        ));
+        assert_eq!(session.state(), TransferStateV1::Finalized);
+        assert!(destination.authoritative);
+        let finalized_bytes = session.to_bytes()?;
+
+        let mut resumed = TransferImportSessionV1::from_bytes(&bundle, &finalized_bytes)?;
+        finalize_whole_deployment(&mut resumed, &mut destination, &source, &bundle).map_err(
+            |_| TransferError::InvalidValue {
+                what: "resumed target authority confirmation",
+            },
+        )?;
+        assert_eq!(resumed.state(), TransferStateV1::TargetAuthoritative);
+        assert_eq!(source.state.lock().expect("source state").retire_calls, 2);
+        assert_eq!(destination.finalization_calls, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn whole_deployment_hydrates_and_persists_proof_before_retirement_then_only_publishes()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut destination = FixtureDestination {
+            events: Some(Arc::clone(&events)),
+            ..FixtureDestination::default()
+        };
+        let mut session = complete_fixture_import(&bundle, &mut destination)?;
+        events.lock().expect("event log").clear();
+        let source = FixtureSource {
+            events: Some(Arc::clone(&events)),
+            ..FixtureSource::default()
+        };
+
+        finalize_whole_deployment(&mut session, &mut destination, &source, &bundle).map_err(
+            |_| TransferError::InvalidValue {
+                what: "ordered whole-deployment finalization",
+            },
+        )?;
+
+        assert_eq!(session.state(), TransferStateV1::TargetAuthoritative);
+        assert_eq!(
+            events.lock().expect("event log").as_slice(),
+            [
+                "hydrate and verify target",
+                "persist verified target",
+                "retire source",
+                "publish target authority",
+            ]
+        );
+        Ok(())
+    }
+
+    fn assert_pre_retirement_destination_failure_is_abortable(
+        mut destination: FixtureDestination,
+        expected_operation: &'static str,
+    ) -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let mut session = complete_fixture_import(&bundle, &mut destination)?;
+        let source = FixtureSource::default();
+
+        assert!(matches!(
+            finalize_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Destination {
+                operation,
+                ..
+            }) if operation == expected_operation
+        ));
+        assert_eq!(session.state(), TransferStateV1::TargetVerified);
+        if expected_operation == "record finalization" {
+            // The exact hydrated/replayed provider marker is durable, but the
+            // retirement-authorizing confirmation is not. It remains a
+            // non-serving, abortable import.
+            assert!(destination.hydrated);
+            assert!(destination.semantically_verified);
+            assert!(destination.provider_verified_marker);
+        } else {
+            assert!(!destination.hydrated);
+            assert!(!destination.semantically_verified);
+        }
+        assert!(!destination.finalized);
+        assert!(!destination.authoritative);
+        assert_eq!(
+            destination.finalization_calls,
+            usize::from(expected_operation == "record finalization")
+        );
+        {
+            let source_state = source.state.lock().expect("source state");
+            assert_eq!(source_state.retire_calls, 0);
+            assert!(source_state.retired.is_none());
+        }
+
+        abort_whole_deployment(&mut session, &mut destination, &source, &bundle).map_err(|_| {
+            TransferError::InvalidValue {
+                what: "abort after pre-retirement destination failure",
+            }
+        })?;
+        assert_eq!(session.state(), TransferStateV1::SourceAuthoritative);
+        assert!(destination.aborted);
+        assert!(
+            source
+                .state
+                .lock()
+                .expect("source state")
+                .restored
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn whole_deployment_hydration_failure_keeps_source_pending_and_abort_legal()
+    -> Result<(), TransferError> {
+        assert_pre_retirement_destination_failure_is_abortable(
+            FixtureDestination {
+                fail_hydration_once: true,
+                ..FixtureDestination::default()
+            },
+            "verify complete import",
+        )
+    }
+
+    #[test]
+    fn whole_deployment_replay_failure_keeps_source_pending_and_abort_legal()
+    -> Result<(), TransferError> {
+        assert_pre_retirement_destination_failure_is_abortable(
+            FixtureDestination {
+                fail_replay_verification_once: true,
+                ..FixtureDestination::default()
+            },
+            "verify complete import",
+        )
+    }
+
+    #[test]
+    fn whole_deployment_verified_marker_failure_keeps_abort_legal() -> Result<(), TransferError> {
+        assert_pre_retirement_destination_failure_is_abortable(
+            FixtureDestination {
+                fail_verified_marker_once: true,
+                ..FixtureDestination::default()
+            },
+            "verify complete import",
+        )
+    }
+
+    #[test]
+    fn whole_deployment_reconfirmation_failure_keeps_abort_legal() -> Result<(), TransferError> {
+        assert_pre_retirement_destination_failure_is_abortable(
+            FixtureDestination {
+                fail_reconfirmation_once: true,
+                ..FixtureDestination::default()
+            },
+            "record finalization",
+        )
+    }
+
+    #[test]
+    fn whole_deployment_finalization_marker_failure_keeps_abort_legal() -> Result<(), TransferError>
+    {
+        assert_pre_retirement_destination_failure_is_abortable(
+            FixtureDestination {
+                fail_finalization_once: true,
+                ..FixtureDestination::default()
+            },
+            "record finalization",
+        )
+    }
+
+    #[test]
+    fn whole_deployment_stale_verified_marker_cannot_retire_source() -> Result<(), TransferError> {
+        assert_pre_retirement_destination_failure_is_abortable(
+            FixtureDestination {
+                // Models a marker written by the former staged-chunks-only gate.
+                provider_verified_marker: true,
+                hydrated: false,
+                semantically_verified: false,
+                ..FixtureDestination::default()
+            },
+            "verify complete import",
+        )
+    }
+
+    #[test]
+    fn whole_deployment_abort_orders_destination_before_source_and_retries_lost_source_commit()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let target = TargetFingerprintV1::for_bundle(&bundle)?;
+        let mut session = TransferImportSessionV1::begin(&bundle)?;
+        session.verify_target(&target)?;
+        let pending_bytes = session.to_bytes()?;
+        let mut destination = FixtureDestination {
+            fail_abort_once: true,
+            ..FixtureDestination::default()
+        };
+        let source = FixtureSource::default();
+
+        assert!(matches!(
+            abort_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Destination {
+                operation: "abort import",
+                ..
+            })
+        ));
+        assert_eq!(session.state(), TransferStateV1::TargetVerified);
+        assert_eq!(source.state.lock().expect("source state").restore_calls, 0);
+
+        source
+            .state
+            .lock()
+            .expect("source state")
+            .fail_restore_after_commit_once = true;
+        assert!(matches!(
+            abort_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Source {
+                operation: "restore verified source",
+                ..
+            })
+        ));
+        assert_eq!(session.state(), TransferStateV1::TargetVerified);
+        assert!(destination.aborted);
+        assert!(
+            source
+                .state
+                .lock()
+                .expect("source state")
+                .restored
+                .is_some()
+        );
+
+        let mut resumed = TransferImportSessionV1::from_bytes(&bundle, &pending_bytes)?;
+        abort_whole_deployment(&mut resumed, &mut destination, &source, &bundle).map_err(|_| {
+            TransferError::InvalidValue {
+                what: "resumed whole-deployment abort",
+            }
+        })?;
+        assert_eq!(resumed.state(), TransferStateV1::SourceAuthoritative);
+        assert_eq!(source.state.lock().expect("source state").restore_calls, 2);
+        assert_eq!(destination.abort_calls, 3);
         Ok(())
     }
 
@@ -3949,11 +4832,12 @@ mod tests {
             })?;
         assert!(destination.abort_import(&target).is_err());
         assert_eq!(destination.records, bundle.records);
+        let source = FixtureSource::default();
         assert!(matches!(
-            session.abort(&mut destination),
-            Err(super::TransferRunError::Contract(
+            abort_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Contract(
                 TransferError::InvalidLifecycleState {
-                    operation: "abort import",
+                    operation: "abort whole deployment",
                     state: TransferStateV1::Finalized,
                 }
             ))

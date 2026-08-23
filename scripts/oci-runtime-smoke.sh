@@ -10,6 +10,47 @@ readonly EXIT_RUNTIME=14
 readonly POSTGRES_IMAGE="postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
 readonly POSTGRES_IDENTITY="postgresql/17.11; server_version_num=170011"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
+
+runtime_role_admission_sql() {
+  cat <<'SQL'
+SELECT role.rolsuper::text || '|' ||
+       role.rolcreaterole::text || '|' ||
+       role.rolcreatedb::text || '|' ||
+       role.rolreplication::text || '|' ||
+       role.rolbypassrls::text || '|' ||
+       has_database_privilege(current_user, current_database(), 'CREATE')::text || '|' ||
+       (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+                WHERE membership.member = role.oid))::text || '|' ||
+       has_schema_privilege(current_user, 'public', 'CREATE')::text || '|' ||
+       (EXISTS (
+          SELECT 1 FROM pg_catalog.pg_namespace AS namespace_row
+          WHERE namespace_row.nspname = 'public' AND namespace_row.nspowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_class AS relation_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = relation_row.relnamespace
+          WHERE namespace_row.nspname = 'public' AND relation_row.relowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_proc AS routine_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = routine_row.pronamespace
+          WHERE namespace_row.nspname = 'public' AND routine_row.proowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_type AS type_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = type_row.typnamespace
+          WHERE namespace_row.nspname = 'public' AND type_row.typowner = role.oid
+       ))::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'INSERT')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE')::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text
+FROM pg_catalog.pg_roles AS role
+WHERE role.rolname = current_user
+SQL
+}
 
 context_dir=
 image_tag="worldstream-oci-smoke:$$"
@@ -849,7 +890,7 @@ stage="postgres_runtime_role_prepare"
 docker exec -i "$postgres_container_name" psql \
   --host /var/run/postgresql --username admin --dbname worldstream \
   --no-psqlrc --quiet --set ON_ERROR_STOP=1 >/dev/null <<'SQL'
-CREATE ROLE runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+CREATE ROLE runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT CONNECT ON DATABASE worldstream TO runtime;
 GRANT USAGE ON SCHEMA public TO runtime;
@@ -910,13 +951,13 @@ docker exec -i "$postgres_container_name" psql \
   --no-psqlrc --quiet --set ON_ERROR_STOP=1 >/dev/null <<'SQL'
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime;
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations FROM runtime;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence FROM runtime;
 SQL
 runtime_role="$(docker exec "$postgres_container_name" psql \
   --host /var/run/postgresql --username runtime --dbname worldstream \
   --no-psqlrc --quiet --no-align --tuples-only --command \
-  "SELECT role.rolsuper::text || '|' || role.rolcreaterole::text || '|' || role.rolcreatedb::text || '|' || role.rolreplication::text || '|' || role.rolbypassrls::text || '|' || has_database_privilege(current_user, current_database(), 'CREATE')::text || '|' || EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS membership WHERE membership.member = role.oid)::text || '|' || has_schema_privilege(current_user, 'public', 'CREATE')::text || '|' || EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS namespace_row WHERE namespace_row.nspname = 'public' AND namespace_row.nspowner = role.oid UNION ALL SELECT 1 FROM pg_catalog.pg_class AS relation_row JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = relation_row.relnamespace WHERE namespace_row.nspname = 'public' AND relation_row.relowner = role.oid UNION ALL SELECT 1 FROM pg_catalog.pg_proc AS routine_row JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = routine_row.pronamespace WHERE namespace_row.nspname = 'public' AND routine_row.proowner = role.oid UNION ALL SELECT 1 FROM pg_catalog.pg_type AS type_row JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = type_row.typnamespace WHERE namespace_row.nspname = 'public' AND type_row.typowner = role.oid)::text || '|' || has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'INSERT')::text || '|' || has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE')::text || '|' || has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE')::text || '|' || has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE')::text FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user" | tr -d '[:space:]')"
-if [[ "$runtime_role" != "false|false|false|false|false|false|false|false|false|false|false|false|false" ]]; then
+  "$(runtime_role_admission_sql)" | tr -d '[:space:]')"
+if [[ "$runtime_role" != "$RUNTIME_ROLE_ADMISSION_EXPECTED" ]]; then
   report "FAIL" "postgres_runtime_role_not_least_privileged"
   exit "$EXIT_RUNTIME"
 fi

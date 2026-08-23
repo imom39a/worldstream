@@ -11,6 +11,47 @@ readonly EXIT_PASS=0
 readonly EXIT_UNAVAILABLE=10
 readonly EXIT_INCOMPLETE=13
 readonly EXIT_CLEANUP=14
+readonly RUNTIME_ROLE_ADMISSION_EXPECTED="false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false|false"
+
+runtime_role_admission_sql() {
+  cat <<'SQL'
+SELECT role.rolsuper::text || '|' ||
+       role.rolcreaterole::text || '|' ||
+       role.rolcreatedb::text || '|' ||
+       role.rolreplication::text || '|' ||
+       role.rolbypassrls::text || '|' ||
+       has_database_privilege(current_user, current_database(), 'CREATE')::text || '|' ||
+       (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+                WHERE membership.member = role.oid))::text || '|' ||
+       has_schema_privilege(current_user, 'public', 'CREATE')::text || '|' ||
+       (EXISTS (
+          SELECT 1 FROM pg_catalog.pg_namespace AS namespace_row
+          WHERE namespace_row.nspname = 'public' AND namespace_row.nspowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_class AS relation_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = relation_row.relnamespace
+          WHERE namespace_row.nspname = 'public' AND relation_row.relowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_proc AS routine_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = routine_row.pronamespace
+          WHERE namespace_row.nspname = 'public' AND routine_row.proowner = role.oid
+          UNION ALL
+          SELECT 1 FROM pg_catalog.pg_type AS type_row
+          JOIN pg_catalog.pg_namespace AS namespace_row ON namespace_row.oid = type_row.typnamespace
+          WHERE namespace_row.nspname = 'public' AND type_row.typowner = role.oid
+       ))::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'INSERT')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE')::text || '|' ||
+       has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE')::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'INSERT')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'UPDATE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'DELETE')))::text || '|' ||
+       (EXISTS (SELECT 1 FROM unnest(ARRAY['public.worldstream_transfer_imports','public.worldstream_transfer_chunks','public.worldstream_transfer_target_fence']::text[]) AS protected_table(table_name) WHERE has_table_privilege(current_user, protected_table.table_name, 'TRUNCATE')))::text
+FROM pg_catalog.pg_roles AS role
+WHERE role.rolname = current_user
+SQL
+}
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$workspace_dir"
@@ -241,7 +282,7 @@ server_version_num="$(PGPASSWORD="$admin_password" "$psql_bin" "$admin_psql_dsn"
   2>"$temp_root/version.log" | tr -d '[:space:]')"
 if [[ "$server_version_num" != "170011" ]]; then reason="postgres_server_version_mismatch"; finish "$EXIT_INCOMPLETE"; fi
 
-if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT; REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT CONNECT ON DATABASE worldstream TO runtime; GRANT USAGE ON SCHEMA public TO runtime; ALTER DEFAULT PRIVILEGES FOR ROLE admin IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO runtime; ALTER DEFAULT PRIVILEGES FOR ROLE admin IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO runtime"; then
+if ! run_admin_sql "CREATE ROLE runtime LOGIN PASSWORD '$runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; REVOKE CREATE ON SCHEMA public FROM PUBLIC; GRANT CONNECT ON DATABASE worldstream TO runtime; GRANT USAGE ON SCHEMA public TO runtime; ALTER DEFAULT PRIVILEGES FOR ROLE admin IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO runtime; ALTER DEFAULT PRIVILEGES FOR ROLE admin IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO runtime"; then
   reason="runtime_role_setup_failed"
   finish "$EXIT_INCOMPLETE"
 fi
@@ -266,14 +307,15 @@ if ! grep -Fq '"operation": "verify"' "$adapter_log"; then
 fi
 migration_status="pass"
 
-if ! run_admin_sql "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations FROM runtime"; then
+if ! run_admin_sql "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO runtime; REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.worldstream_schema_migrations, public.worldstream_transfer_imports, public.worldstream_transfer_chunks, public.worldstream_transfer_target_fence FROM runtime"; then
   reason="runtime_privilege_hardening_failed"
   finish "$EXIT_INCOMPLETE"
 fi
-runtime_superuser="$(run_runtime_query "SELECT rolsuper::text || '|' || rolcreaterole::text || '|' || rolcreatedb::text FROM pg_roles WHERE rolname=current_user" 2>"$temp_root/runtime-role.log" | tr -d '[:space:]')"
-runtime_create="$(run_runtime_query "SELECT has_schema_privilege(current_user, 'public', 'CREATE')::text" 2>>"$temp_root/runtime-role.log" | tr -d '[:space:]')"
-runtime_ledger_write="$(run_runtime_query "SELECT (has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'INSERT') OR has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'UPDATE') OR has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'DELETE') OR has_table_privilege(current_user, 'public.worldstream_schema_migrations', 'TRUNCATE'))::text" 2>>"$temp_root/runtime-role.log" | tr -d '[:space:]')"
-if [[ "$runtime_superuser" != "false|false|false" || "$runtime_create" != "false" || "$runtime_ledger_write" != "false" ]]; then
+if ! runtime_role_admission="$(run_runtime_query "$(runtime_role_admission_sql)" 2>"$temp_root/runtime-role.log" | tr -d '[:space:]')"; then
+  reason="runtime_role_admission_query_failed"
+  finish "$EXIT_INCOMPLETE"
+fi
+if [[ "$runtime_role_admission" != "$RUNTIME_ROLE_ADMISSION_EXPECTED" ]]; then
   reason="runtime_role_not_least_privileged"
   finish "$EXIT_INCOMPLETE"
 fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely extract the verified daemon from a fresh Linux release archive."""
+"""Safely extract verified runtime bytes from a fresh Linux release archive."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import stat
 import sys
 import tarfile
+import tempfile
 from typing import Any, BinaryIO
 
 SHA256_PREFIX = "sha256:"
@@ -72,6 +74,74 @@ def sha256_file(path: pathlib.Path) -> str:
     except OSError as error:
         raise ExtractionError(f"cannot hash {path}: {error}") from error
     return SHA256_PREFIX + digest.hexdigest()
+
+
+def stable_private_copy(
+    source_path: pathlib.Path,
+    destination: pathlib.Path,
+    *,
+    label: str,
+    maximum_bytes: int,
+) -> None:
+    """Copy one no-follow regular input once and reject concurrent mutation."""
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    require(
+        isinstance(no_follow, int) and no_follow != 0,
+        f"{label} admission requires no-follow file semantics",
+    )
+    flags = os.O_RDONLY | no_follow
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        source_descriptor = os.open(source_path, flags)
+    except OSError as error:
+        raise ExtractionError(f"cannot open stable {label}") from error
+    try:
+        before = os.fstat(source_descriptor)
+        require(
+            stat.S_ISREG(before.st_mode)
+            and 0 < before.st_size <= maximum_bytes
+            and before.st_nlink >= 1,
+            f"{label} must be a bounded regular file",
+        )
+        output_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        output_flags |= no_follow
+        destination_descriptor = os.open(destination, output_flags, 0o600)
+        copied = 0
+        try:
+            with os.fdopen(destination_descriptor, "wb") as output:
+                while chunk := os.read(source_descriptor, BUFFER_SIZE):
+                    copied += len(chunk)
+                    require(
+                        copied <= maximum_bytes, f"{label} exceeds its bounded size"
+                    )
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
+        after = os.fstat(source_descriptor)
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        require(
+            copied == before.st_size
+            and all(
+                getattr(before, field) == getattr(after, field)
+                for field in stable_fields
+            ),
+            f"{label} changed while being admitted",
+        )
+    finally:
+        os.close(source_descriptor)
 
 
 def read_json(path: pathlib.Path, label: str) -> dict[str, Any]:
@@ -228,7 +298,9 @@ def canonical_verify_archive(archive_path: pathlib.Path) -> None:
         ) from error
 
 
-def stream_member(source: BinaryIO, output: pathlib.Path) -> tuple[str, int]:
+def stream_member(
+    source: BinaryIO, output: pathlib.Path, *, mode: int = 0o755
+) -> tuple[str, int]:
     require(not output.exists() and not output.is_symlink(), "output must be new")
     try:
         parent_mode = output.parent.lstat().st_mode
@@ -256,7 +328,7 @@ def stream_member(source: BinaryIO, output: pathlib.Path) -> tuple[str, int]:
                 digest.update(chunk)
                 size += len(chunk)
             destination.flush()
-            os.fchmod(destination.fileno(), 0o755)
+            os.fchmod(destination.fileno(), mode)
             os.fsync(destination.fileno())
         require(
             sha256_file(output) == SHA256_PREFIX + digest.hexdigest(),
@@ -269,93 +341,218 @@ def stream_member(source: BinaryIO, output: pathlib.Path) -> tuple[str, int]:
     return SHA256_PREFIX + digest.hexdigest(), size
 
 
+def extract_sdk_tree(
+    archive: tarfile.TarFile,
+    members: list[tarfile.TarInfo],
+    archive_root: str,
+    output: pathlib.Path,
+) -> dict[str, Any]:
+    """Extract only the checksum-verified packaged Python SDK into a new tree."""
+
+    require(not output.exists() and not output.is_symlink(), "SDK output must be new")
+    try:
+        parent_mode = output.parent.lstat().st_mode
+        parent_resolved = output.parent.resolve(strict=True)
+    except OSError as error:
+        raise ExtractionError("SDK output parent must be a real directory") from error
+    require(
+        stat.S_ISDIR(parent_mode)
+        and not stat.S_ISLNK(parent_mode)
+        and parent_resolved == pathlib.Path(os.path.abspath(output.parent)),
+        "SDK output parent and ancestors must be real directories",
+    )
+    prefix = f"{archive_root}/sdk/python/"
+    selected = [
+        member
+        for member in members
+        if member.isfile() and member.name.startswith(prefix)
+    ]
+    relative_names = [member.name.removeprefix(prefix) for member in selected]
+    required = {
+        "pyproject.toml",
+        "uv.lock",
+        "src/worldstream_sdk/__init__.py",
+        "src/worldstream_sdk/client.py",
+        "src/worldstream_sdk/compatibility_identity.json",
+    }
+    require(
+        required.issubset(relative_names)
+        and len(relative_names) == len(set(relative_names)),
+        "archive packaged SDK tree is incomplete or duplicated",
+    )
+    output.mkdir(mode=0o700)
+    records: list[dict[str, Any]] = []
+    try:
+        for member, relative in sorted(
+            zip(selected, relative_names, strict=True), key=lambda item: item[1]
+        ):
+            pure = pathlib.PurePosixPath(relative)
+            require(
+                pure.parts and all(part not in {"", ".", ".."} for part in pure.parts),
+                "archive packaged SDK path is unsafe",
+            )
+            destination = output.joinpath(*pure.parts)
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            member_source = archive.extractfile(member)
+            require(member_source is not None, "cannot read packaged SDK member")
+            try:
+                digest, size = stream_member(member_source, destination, mode=0o600)
+            finally:
+                member_source.close()
+            require(size == member.size, "packaged SDK member size changed")
+            records.append({"path": relative, "sha256": digest, "size_bytes": size})
+    except BaseException:
+        shutil.rmtree(output, ignore_errors=True)
+        raise
+    canonical = (
+        json.dumps(records, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    return {
+        "tree_sha256": SHA256_PREFIX + hashlib.sha256(canonical).hexdigest(),
+        "file_count": len(records),
+        "total_bytes": sum(record["size_bytes"] for record in records),
+        "output": output.name,
+    }
+
+
 def extract(
     archive_path: pathlib.Path,
     report_path: pathlib.Path,
     output: pathlib.Path,
     manifest_toml: pathlib.Path,
     manifest_json: pathlib.Path,
+    sdk_output: pathlib.Path | None = None,
 ) -> dict[str, Any]:
-    destinations = {
+    input_destinations = {
         archive_path.resolve(strict=False),
         report_path.resolve(strict=False),
         manifest_toml.resolve(strict=False),
         manifest_json.resolve(strict=False),
         output.resolve(strict=False),
     }
-    require(len(destinations) == 5, "output must be outside all package inputs")
-    identity, root_toml, root_json = validate_report(
-        archive_path, report_path, manifest_toml, manifest_json
+    if sdk_output is not None:
+        input_destinations.add(sdk_output.resolve(strict=False))
+    require(
+        len(input_destinations) == (6 if sdk_output is not None else 5),
+        "output must be outside all package inputs",
     )
-    preflight_archive(archive_path, identity["version"])
-    canonical_verify_archive(archive_path)
-    try:
-        with tarfile.open(archive_path, "r:gz") as archive:
-            members = archive.getmembers()
-            names = [member.name for member in members]
-            require(len(names) == len(set(names)), "archive contains duplicate members")
-            require(
-                all(member_is_safe(member) for member in members),
-                "archive contains an unsafe, linked, or special member",
-            )
-            daemon_members = [
-                member
-                for member in members
-                if pathlib.PurePosixPath(member.name).parts[-2:]
-                == ("bin", "worldstreamd")
-            ]
-            toml_members = [
-                member
-                for member in members
-                if pathlib.PurePosixPath(member.name).parts[-2:]
-                == ("manifest", "compatibility.toml")
-            ]
-            json_members = [
-                member
-                for member in members
-                if pathlib.PurePosixPath(member.name).parts[-2:]
-                == ("manifest", "compatibility.json")
-            ]
-            require(
-                len(daemon_members) == 1
-                and daemon_members[0].isfile()
-                and daemon_members[0].mode & 0o111 != 0,
-                "archive must contain exactly one executable bin/worldstreamd",
-            )
-            require(
-                len(toml_members) == 1 and len(json_members) == 1,
-                "archive must contain exactly one compatibility manifest pair",
-            )
-            archived_toml = member_bytes(archive, toml_members[0], "compatibility.toml")
-            archived_json = member_bytes(archive, json_members[0], "compatibility.json")
-            require(
-                archived_toml == root_toml and archived_json == root_json,
-                "archived compatibility pair differs from the release root",
-            )
-            daemon_source = archive.extractfile(daemon_members[0])
-            require(daemon_source is not None, "cannot read archived worldstreamd")
-            try:
-                binary_sha256, binary_size = stream_member(daemon_source, output)
-            finally:
-                daemon_source.close()
-    except (OSError, tarfile.TarError) as error:
-        output.unlink(missing_ok=True)
-        raise ExtractionError(
-            f"cannot safely inspect package archive: {error}"
-        ) from error
+    require(not output.exists() and not output.is_symlink(), "output must be new")
+    if sdk_output is not None:
+        require(
+            not sdk_output.exists() and not sdk_output.is_symlink(),
+            "SDK output must be new",
+        )
+    require(output.parent.is_dir(), "output parent must exist")
+    sdk_record: dict[str, Any] | None = None
+    with tempfile.TemporaryDirectory(
+        prefix=".worldstream-safe-extract-", dir=output.parent
+    ) as snapshot_directory:
+        snapshot_root = pathlib.Path(snapshot_directory)
+        snapshot_root.chmod(0o700)
+        snapshot_archive = snapshot_root / archive_path.name
+        snapshot_report = snapshot_root / report_path.name
+        stable_private_copy(
+            archive_path,
+            snapshot_archive,
+            label="Linux package archive",
+            maximum_bytes=MAX_ARCHIVE_BYTES,
+        )
+        stable_private_copy(
+            report_path,
+            snapshot_report,
+            label="Linux package report",
+            maximum_bytes=MAX_CONTROL_FILE_BYTES,
+        )
+        identity, root_toml, root_json = validate_report(
+            snapshot_archive, snapshot_report, manifest_toml, manifest_json
+        )
+        preflight_archive(snapshot_archive, identity["version"])
+        canonical_verify_archive(snapshot_archive)
+        archive_sha256 = sha256_file(snapshot_archive)
+        package_report_sha256 = sha256_file(snapshot_report)
+        try:
+            with tarfile.open(snapshot_archive, "r:gz") as archive:
+                members = archive.getmembers()
+                names = [member.name for member in members]
+                require(
+                    len(names) == len(set(names)), "archive contains duplicate members"
+                )
+                require(
+                    all(member_is_safe(member) for member in members),
+                    "archive contains an unsafe, linked, or special member",
+                )
+                daemon_members = [
+                    member
+                    for member in members
+                    if pathlib.PurePosixPath(member.name).parts[-2:]
+                    == ("bin", "worldstreamd")
+                ]
+                toml_members = [
+                    member
+                    for member in members
+                    if pathlib.PurePosixPath(member.name).parts[-2:]
+                    == ("manifest", "compatibility.toml")
+                ]
+                json_members = [
+                    member
+                    for member in members
+                    if pathlib.PurePosixPath(member.name).parts[-2:]
+                    == ("manifest", "compatibility.json")
+                ]
+                require(
+                    len(daemon_members) == 1
+                    and daemon_members[0].isfile()
+                    and daemon_members[0].mode & 0o111 != 0,
+                    "archive must contain exactly one executable bin/worldstreamd",
+                )
+                require(
+                    len(toml_members) == 1 and len(json_members) == 1,
+                    "archive must contain exactly one compatibility manifest pair",
+                )
+                archived_toml = member_bytes(
+                    archive, toml_members[0], "compatibility.toml"
+                )
+                archived_json = member_bytes(
+                    archive, json_members[0], "compatibility.json"
+                )
+                require(
+                    archived_toml == root_toml and archived_json == root_json,
+                    "archived compatibility pair differs from the release root",
+                )
+                daemon_source = archive.extractfile(daemon_members[0])
+                require(daemon_source is not None, "cannot read archived worldstreamd")
+                try:
+                    binary_sha256, binary_size = stream_member(daemon_source, output)
+                finally:
+                    daemon_source.close()
+                if sdk_output is not None:
+                    archive_root = f"worldstream-{identity['version']}-linux-x86_64"
+                    sdk_record = extract_sdk_tree(
+                        archive, members, archive_root, sdk_output
+                    )
+        except BaseException as error:
+            output.unlink(missing_ok=True)
+            if sdk_output is not None:
+                shutil.rmtree(sdk_output, ignore_errors=True)
+            if isinstance(error, (OSError, tarfile.TarError)):
+                raise ExtractionError(
+                    f"cannot safely inspect package archive: {error}"
+                ) from error
+            raise
     return {
         "schema": "worldstream/safe-package-extraction/v1",
         "status": "pass",
         "target": identity["target"],
         "version": identity["version"],
         "artifact": archive_path.name,
-        "archive_sha256": sha256_file(archive_path),
-        "package_report_sha256": sha256_file(report_path),
+        "archive_sha256": archive_sha256,
+        "package_report_sha256": package_report_sha256,
         "manifest_json_sha256": SHA256_PREFIX + hashlib.sha256(root_json).hexdigest(),
         "manifest_toml_sha256": SHA256_PREFIX + hashlib.sha256(root_toml).hexdigest(),
         "binary_sha256": binary_sha256,
         "binary_size_bytes": binary_size,
         "output": output.name,
+        "sdk": sdk_record,
     }
 
 
@@ -364,6 +561,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--archive", required=True, type=pathlib.Path)
     command.add_argument("--package-report", required=True, type=pathlib.Path)
     command.add_argument("--output", required=True, type=pathlib.Path)
+    command.add_argument("--sdk-output", type=pathlib.Path)
     command.add_argument(
         "--manifest-toml", type=pathlib.Path, default=pathlib.Path("compatibility.toml")
     )
@@ -382,6 +580,7 @@ def main() -> int:
             args.output,
             args.manifest_toml,
             args.manifest_json,
+            args.sdk_output,
         )
     except (ExtractionError, OSError, UnicodeError, json.JSONDecodeError) as error:
         print(f"safe package extraction failed: {error}", file=sys.stderr)

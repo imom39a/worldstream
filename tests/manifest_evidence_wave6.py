@@ -60,8 +60,8 @@ class ManifestEvidenceWave6Tests(unittest.TestCase):
             sqlite["source_constants"]["RUSQLITE_BUNDLE_REVISION"],
             "229140734a4a60cc9fa34507fe79cb2277142f49",
         )
-        self.assertEqual(self.report["migrations"]["sqlite"]["source_count"], 9)
-        self.assertEqual(self.report["migrations"]["postgresql"]["source_count"], 10)
+        self.assertEqual(self.report["migrations"]["sqlite"]["source_count"], 11)
+        self.assertEqual(self.report["migrations"]["postgresql"]["source_count"], 11)
         self.assertEqual(
             self.report["migrations"]["postgresql"]["source_ids_not_in_manifest"],
             [],

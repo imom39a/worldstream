@@ -360,6 +360,18 @@
         "status": "implementation_verified"
       },
       {
+        "id": "0011-transfer-lifecycle-and-resource-identity-v1",
+        "postgresql_checksum": "blake3:f93d4eed88e503bf1a807ea676e9110dbfab3987adff7be9bdd618394345ad97",
+        "sqlite_checksum": "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3",
+        "status": "implementation_verified"
+      },
+      {
+        "id": "0012-transfer-backup-file-identity-v1",
+        "postgresql_checksum": "",
+        "sqlite_checksum": "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
+        "status": "implementation_verified"
+      },
+      {
         "id": "0003-kernel-conformance-v1",
         "postgresql_checksum": "blake3:150c9c7049ad4b6dc4889f536f5418388afdc888fb2819b2506881d9d163b9e4",
         "sqlite_checksum": "",
@@ -407,7 +419,7 @@
     "old_binary_after_migration_supported": false,
     "postgresql_production_mode": "explicit_offline_direct_admin",
     "rollback": "restore_preupgrade_backend_and_previous_binary",
-    "schema_contract_fingerprint": "blake3:c8435cbb21df9aa98518245d14caa0a70416cf5369cc95d7ab2edc40261d119f",
+    "schema_contract_fingerprint": "blake3:16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb",
     "schema_contract_fingerprint_status": "implementation_verified",
     "sqlite_production_mode": "exclusive_startup_after_verified_backup"
   },

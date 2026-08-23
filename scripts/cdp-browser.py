@@ -9,11 +9,13 @@ Protocol; it is not a general browser automation wrapper.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import pathlib
 import re
+import secrets
 import signal
 import socket
 import stat
@@ -31,6 +33,7 @@ MAX_CONTROL_BYTES = 8 * 1024 * 1024
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
 SURFACE = re.compile(r"^surface:[0-9a-f]{32}$")
+VERIFIED_EXECUTABLE = re.compile(r"^\.worldstream-verified-[0-9a-f]{32}$")
 STATE_FIELDS = {
     "schema",
     "pid",
@@ -38,11 +41,23 @@ STATE_FIELDS = {
     "surface_ref",
     "websocket_url",
     "browser",
+    "executable",
 }
 
 
 class BrowserFailure(RuntimeError):
     """The pinned browser or requested CDP operation failed closed."""
+
+
+def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _sha256(path: pathlib.Path, expected_size: int) -> str:
@@ -64,21 +79,70 @@ def _sha256(path: pathlib.Path, expected_size: int) -> str:
         with os.fdopen(descriptor, "rb") as source:
             opened = os.fstat(source.fileno())
             while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
                 size += len(chunk)
+                if size > expected_size:
+                    raise BrowserFailure("browser_binary_changed_during_hash")
+                digest.update(chunk)
             after = os.fstat(source.fileno())
+        final_path = path.lstat()
     except OSError as error:
         raise BrowserFailure("browser_binary_unavailable") from error
-    identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    identity = _file_identity(before)
     if (
         size != expected_size
         or not stat.S_ISREG(opened.st_mode)
-        or identity
-        != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
-        or identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or _file_identity(opened) != identity
+        or _file_identity(after) != identity
+        or _file_identity(final_path) != identity
     ):
         raise BrowserFailure("browser_binary_changed_during_hash")
     return digest.hexdigest()
+
+
+def _verify_browser_version(
+    path: pathlib.Path,
+    identity: dict[str, Any],
+    *,
+    descriptor: int | None = None,
+    record: dict[str, Any] | None = None,
+) -> None:
+    if (descriptor is None) != (record is None):
+        raise BrowserFailure("browser_version_descriptor_invalid")
+    try:
+        descriptor_path = (
+            _descriptor_executable_path(descriptor, record)
+            if descriptor is not None and record is not None
+            else None
+        )
+        if descriptor_path is None:
+            completed = subprocess.run(
+                [str(path), "--version"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        else:
+            completed = subprocess.run(
+                [str(path), "--version"],
+                executable=descriptor_path,
+                pass_fds=(descriptor,),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise BrowserFailure("browser_version_unavailable") from error
+    output = (completed.stdout + completed.stderr).strip()
+    if (
+        completed.returncode != 0
+        or "\n" in output
+        or output != identity["version_output"]
+    ):
+        raise BrowserFailure("browser_version_mismatch")
 
 
 def _regular_executable(path: pathlib.Path) -> pathlib.Path:
@@ -144,25 +208,246 @@ def browser_identity() -> tuple[pathlib.Path, dict[str, Any]]:
     observed_digest = _sha256(path, identity["size_bytes"])
     if observed_digest != expected_digest:
         raise BrowserFailure("browser_binary_digest_mismatch")
-    try:
-        completed = subprocess.run(
-            [str(path), "--version"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise BrowserFailure("browser_version_unavailable") from error
-    output = (completed.stdout + completed.stderr).strip()
-    if (
-        completed.returncode != 0
-        or "\n" in output
-        or output != identity["version_output"]
-    ):
-        raise BrowserFailure("browser_version_mismatch")
+    _verify_browser_version(path, identity)
     return path, identity
+
+
+def _prepared_executable_record(
+    path: pathlib.Path, metadata: os.stat_result, identity: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "size_bytes": metadata.st_size,
+        "mtime_ns": metadata.st_mtime_ns,
+        "ctime_ns": metadata.st_ctime_ns,
+        "sha256": identity["sha256"],
+    }
+
+
+def _validate_prepared_executable(
+    record: object,
+    configured_path: pathlib.Path,
+    identity: dict[str, Any],
+) -> pathlib.Path:
+    if not isinstance(record, dict) or set(record) != {
+        "path",
+        "device",
+        "inode",
+        "mode",
+        "size_bytes",
+        "mtime_ns",
+        "ctime_ns",
+        "sha256",
+    }:
+        raise BrowserFailure("browser_executable_identity_invalid")
+    candidate = pathlib.Path(str(record.get("path", "")))
+    if (
+        not candidate.is_absolute()
+        or candidate.parent != configured_path.parent
+        or VERIFIED_EXECUTABLE.fullmatch(candidate.name) is None
+        or type(record.get("device")) is not int
+        or type(record.get("inode")) is not int
+        or type(record.get("mode")) is not int
+        or type(record.get("size_bytes")) is not int
+        or type(record.get("mtime_ns")) is not int
+        or type(record.get("ctime_ns")) is not int
+        or record.get("sha256") != identity["sha256"]
+        or record.get("size_bytes") != identity["size_bytes"]
+        or record.get("mode") != 0o500
+    ):
+        raise BrowserFailure("browser_executable_identity_invalid")
+    try:
+        observed = candidate.lstat()
+    except OSError as error:
+        raise BrowserFailure("browser_executable_identity_invalid") from error
+    if (
+        stat.S_ISLNK(observed.st_mode)
+        or not stat.S_ISREG(observed.st_mode)
+        or observed.st_dev != record["device"]
+        or observed.st_ino != record["inode"]
+        or stat.S_IMODE(observed.st_mode) != record["mode"]
+        or observed.st_size != record["size_bytes"]
+        or observed.st_mtime_ns != record["mtime_ns"]
+        or observed.st_ctime_ns != record["ctime_ns"]
+    ):
+        raise BrowserFailure("browser_executable_identity_changed")
+    return candidate
+
+
+def _remove_prepared_executable(record: object) -> None:
+    if not isinstance(record, dict):
+        return
+    candidate = pathlib.Path(str(record.get("path", "")))
+    if VERIFIED_EXECUTABLE.fullmatch(candidate.name) is None:
+        raise BrowserFailure("browser_executable_cleanup_refused")
+    try:
+        observed = candidate.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise BrowserFailure("browser_executable_cleanup_refused") from error
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or observed.st_dev != record.get("device")
+        or observed.st_ino != record.get("inode")
+    ):
+        raise BrowserFailure("browser_executable_cleanup_refused")
+    try:
+        candidate.unlink()
+    except OSError as error:
+        raise BrowserFailure("browser_executable_cleanup_failed") from error
+
+
+def _prepare_browser_executable(
+    path: pathlib.Path, identity: dict[str, Any]
+) -> tuple[pathlib.Path, dict[str, Any]]:
+    """Copy the verified executable beside its resources and bind the new inode."""
+
+    try:
+        parent = path.parent.lstat()
+    except OSError as error:
+        raise BrowserFailure("browser_executable_parent_unsafe") from error
+    if (
+        stat.S_ISLNK(parent.st_mode)
+        or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or stat.S_IMODE(parent.st_mode) & 0o077
+    ):
+        raise BrowserFailure("browser_executable_parent_unsafe")
+    target = path.parent / f".worldstream-verified-{secrets.token_hex(16)}"
+    target_created: tuple[int, int] | None = None
+    success = False
+    expected_size = identity["size_bytes"]
+    expected_digest = identity["sha256"].removeprefix("sha256:")
+    try:
+        before = path.lstat()
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size != expected_size
+            or before.st_mode & 0o111 == 0
+        ):
+            raise BrowserFailure("browser_binary_size_mismatch")
+        source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        digest = hashlib.sha256()
+        copied = 0
+        with contextlib.ExitStack() as stack:
+            source_descriptor = os.open(path, source_flags)
+            source = stack.enter_context(os.fdopen(source_descriptor, "rb"))
+            target_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            target_flags |= getattr(os, "O_NOFOLLOW", 0)
+            target_descriptor = os.open(target, target_flags, 0o500)
+            target_metadata = os.fstat(target_descriptor)
+            target_created = (target_metadata.st_dev, target_metadata.st_ino)
+            destination = stack.enter_context(os.fdopen(target_descriptor, "wb"))
+            opened = os.fstat(source.fileno())
+            source_identity = _file_identity(before)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _file_identity(opened) != source_identity
+            ):
+                raise BrowserFailure("browser_binary_changed_before_copy")
+            while chunk := source.read(1024 * 1024):
+                copied += len(chunk)
+                if copied > expected_size:
+                    raise BrowserFailure("browser_binary_changed_during_copy")
+                digest.update(chunk)
+                destination.write(chunk)
+            destination.flush()
+            os.fsync(destination.fileno())
+            os.fchmod(destination.fileno(), 0o500)
+            finished_source = os.fstat(source.fileno())
+            finished_target = os.fstat(destination.fileno())
+        final_source = path.lstat()
+        if (
+            copied != expected_size
+            or digest.hexdigest() != expected_digest
+            or _file_identity(finished_source) != source_identity
+            or _file_identity(final_source) != source_identity
+            or not stat.S_ISREG(finished_target.st_mode)
+            or finished_target.st_size != expected_size
+            or stat.S_IMODE(finished_target.st_mode) != 0o500
+        ):
+            raise BrowserFailure("browser_binary_changed_during_copy")
+        if _sha256(target, expected_size) != expected_digest:
+            raise BrowserFailure("browser_executable_digest_mismatch")
+        prepared = target.lstat()
+        record = _prepared_executable_record(target, prepared, identity)
+        _validate_prepared_executable(record, path, identity)
+        version_descriptor = _open_prepared_descriptor(record, path, identity)
+        with os.fdopen(version_descriptor, "rb") as version_source:
+            _verify_browser_version(
+                target,
+                identity,
+                descriptor=version_source.fileno(),
+                record=record,
+            )
+        _validate_prepared_executable(record, path, identity)
+        success = True
+        return target, record
+    except BrowserFailure:
+        raise
+    except OSError as error:
+        raise BrowserFailure("browser_executable_preparation_failed") from error
+    finally:
+        if target_created is not None:
+            try:
+                current = target.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                raise BrowserFailure("browser_executable_cleanup_refused") from error
+            else:
+                if not success:
+                    if (current.st_dev, current.st_ino) != target_created:
+                        raise BrowserFailure("browser_executable_cleanup_refused")
+                    target.unlink()
+
+
+def _open_prepared_descriptor(
+    record: dict[str, Any], configured_path: pathlib.Path, identity: dict[str, Any]
+) -> int:
+    candidate = _validate_prepared_executable(record, configured_path, identity)
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(candidate, flags)
+        opened = os.fstat(descriptor)
+    except OSError as error:
+        raise BrowserFailure("browser_executable_identity_changed") from error
+    if (
+        opened.st_dev != record["device"]
+        or opened.st_ino != record["inode"]
+        or stat.S_IMODE(opened.st_mode) != record["mode"]
+        or opened.st_size != record["size_bytes"]
+        or opened.st_mtime_ns != record["mtime_ns"]
+        or opened.st_ctime_ns != record["ctime_ns"]
+    ):
+        os.close(descriptor)
+        raise BrowserFailure("browser_executable_identity_changed")
+    return descriptor
+
+
+def _descriptor_executable_path(descriptor: int, record: dict[str, Any]) -> str | None:
+    """Return Linux's exact open-file exec path; private-copy exec is the fallback."""
+
+    if not sys.platform.startswith("linux"):
+        return None
+    candidate = pathlib.Path(f"/proc/self/fd/{descriptor}")
+    try:
+        observed = candidate.stat()
+        opened = os.fstat(descriptor)
+    except OSError as error:
+        raise BrowserFailure("browser_descriptor_exec_unavailable") from error
+    if (
+        observed.st_dev != record["device"]
+        or observed.st_ino != record["inode"]
+        or _file_identity(observed) != _file_identity(opened)
+    ):
+        raise BrowserFailure("browser_descriptor_exec_identity_mismatch")
+    return str(candidate)
 
 
 def _state_dir() -> pathlib.Path:
@@ -295,9 +580,10 @@ def _load_state() -> dict[str, Any]:
         or not isinstance(value.get("browser"), dict)
     ):
         raise BrowserFailure("browser_state_invalid")
-    _path, observed = _browser_configuration()
+    configured_path, observed = _browser_configuration()
     if value["browser"] != observed:
         raise BrowserFailure("browser_state_identity_mismatch")
+    _validate_prepared_executable(value["executable"], configured_path, observed)
     try:
         os.kill(value["pid"], 0)
     except OSError as error:
@@ -327,19 +613,27 @@ def _free_port() -> int:
 
 
 def _open() -> dict[str, Any]:
-    path, identity = browser_identity()
+    configured_path, identity = _browser_configuration()
     state_dir = _state_dir()
     if _state_path().exists():
         raise BrowserFailure("browser_state_already_exists")
     user_data = state_dir / "user-data"
     user_data.mkdir(mode=0o700)
     port = _free_port()
-    stdout = (state_dir / "browser.stdout").open("xb")
-    stderr = (state_dir / "browser.stderr").open("xb")
+    executable_path, executable = _prepare_browser_executable(configured_path, identity)
+    process: subprocess.Popen[bytes] | None = None
     try:
-        process = subprocess.Popen(
-            [
-                str(path),
+        with contextlib.ExitStack() as resources:
+            stdout = resources.enter_context((state_dir / "browser.stdout").open("xb"))
+            stderr = resources.enter_context((state_dir / "browser.stderr").open("xb"))
+            executable_descriptor = _open_prepared_descriptor(
+                executable, configured_path, identity
+            )
+            executable_source = resources.enter_context(
+                os.fdopen(executable_descriptor, "rb")
+            )
+            command = [
+                str(executable_path),
                 "--headless",
                 "--disable-background-networking",
                 "--disable-component-update",
@@ -353,22 +647,47 @@ def _open() -> dict[str, Any]:
                 "--remote-allow-origins=*",
                 f"--user-data-dir={user_data}",
                 "about:blank",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
-            start_new_session=True,
-        )
-    except OSError as error:
-        raise BrowserFailure("browser_launch_failed") from error
-    finally:
-        stdout.close()
-        stderr.close()
-    try:
+            ]
+            descriptor_path = _descriptor_executable_path(
+                executable_source.fileno(), executable
+            )
+            try:
+                if descriptor_path is None:
+                    process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        start_new_session=True,
+                    )
+                else:
+                    process = subprocess.Popen(
+                        command,
+                        executable=descriptor_path,
+                        pass_fds=(executable_source.fileno(),),
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        start_new_session=True,
+                    )
+            except OSError as error:
+                raise BrowserFailure("browser_launch_failed") from error
+            after_launch = os.fstat(executable_source.fileno())
+            if (
+                after_launch.st_dev != executable["device"]
+                or after_launch.st_ino != executable["inode"]
+                or stat.S_IMODE(after_launch.st_mode) != executable["mode"]
+                or after_launch.st_size != executable["size_bytes"]
+                or after_launch.st_mtime_ns != executable["mtime_ns"]
+                or after_launch.st_ctime_ns != executable["ctime_ns"]
+            ):
+                raise BrowserFailure("browser_executable_changed_during_launch")
+            _validate_prepared_executable(executable, configured_path, identity)
         deadline = time.monotonic() + 20
         version_body: Any = None
         targets: Any = None
         while time.monotonic() < deadline:
+            assert process is not None
             if process.poll() is not None:
                 raise BrowserFailure("browser_exited_before_debug_ready")
             try:
@@ -391,6 +710,7 @@ def _open() -> dict[str, Any]:
         ]
         if len(pages) != 1:
             raise BrowserFailure("browser_page_target_invalid")
+        _validate_prepared_executable(executable, configured_path, identity)
         surface = (
             "surface:"
             + hashlib.sha256(pages[0]["webSocketDebuggerUrl"].encode()).hexdigest()[:32]
@@ -402,14 +722,17 @@ def _open() -> dict[str, Any]:
             "surface_ref": surface,
             "websocket_url": pages[0]["webSocketDebuggerUrl"],
             "browser": identity,
+            "executable": executable,
         }
         _write_state(state)
         return {"surface_ref": surface, "browser": identity}
     except BaseException:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            pass
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        _remove_prepared_executable(executable)
         raise
 
 
@@ -652,6 +975,7 @@ def _close(arguments: list[str]) -> int:
             os.killpg(state["pid"], signal.SIGKILL)
         except OSError:
             pass
+    _remove_prepared_executable(state["executable"])
     _state_path().unlink(missing_ok=True)
     _init_script_path().unlink(missing_ok=True)
     print("ok")

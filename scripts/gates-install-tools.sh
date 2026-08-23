@@ -42,4 +42,7 @@ install -m 0755 \
 
 "$install_dir/gitleaks" version | grep -F "$GITLEAKS_VERSION" >/dev/null
 "$install_dir/cargo-audit" --version | grep -F "cargo-audit ${CARGO_AUDIT_VERSION}" >/dev/null
+# Prime the RustSec advisory database while this setup phase is explicitly
+# online. The actual gate audits Cargo.lock with --no-fetch.
+printf '%s\n' 'version = 3' | "$install_dir/cargo-audit" audit --file -
 printf '%s\n' "$install_dir" >> "${GITHUB_PATH:?GITHUB_PATH is required}"

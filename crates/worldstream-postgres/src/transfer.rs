@@ -19,7 +19,7 @@ use worldstream_transfer::{
 };
 
 use crate::{
-    LOGICAL_HISTORY_ID, PostgresRoomStore, PostgresRoomVerificationError,
+    LOGICAL_HISTORY_ID, PostgresAdmin, PostgresRoomStore, PostgresRoomVerificationError,
     PostgresSchemaVerificationError, migration_history, schema_contract_fingerprint,
 };
 
@@ -103,30 +103,167 @@ pub enum PostgresTransferError {
     /// A provider integer could not represent a bounded transfer value.
     #[error("PostgreSQL transfer value is outside the provider integer range: {0}")]
     InvalidProviderValue(&'static str),
+    /// A first import found durable user truth on the purported empty target.
+    #[error("PostgreSQL transfer target is not empty in durable domain {domain}")]
+    TargetNotEmpty { domain: String },
+    /// An explicitly aborted target must be discarded, not silently reused.
+    #[error("PostgreSQL transfer target was aborted and must be discarded")]
+    TargetAborted,
 }
 
-/// A runtime-adapter implementation of `TransferDestinationV1`.
+const TARGET_PREFLIGHT_ADVISORY_KEY: i64 = 6_291_328_795_568_100_166;
+const AUTHORITY_STATE_COUNT_SQL: &str =
+    "SELECT count(*)::bigint FROM worldstream_authority_state WHERE authority_id = true";
+
+const TARGET_PREFLIGHT_LOCK_SQL: &str = r"
+LOCK TABLE
+    worldstream_operation_guards,
+    worldstream_room_roots,
+    worldstream_genesis,
+    worldstream_materializations,
+    worldstream_members,
+    worldstream_timers,
+    worldstream_transitions,
+    worldstream_frames,
+    worldstream_observation_consequences,
+    worldstream_activation_decisions,
+    worldstream_activation_intents,
+    worldstream_activation_operation_receipts,
+    worldstream_room_snapshots,
+    worldstream_semantic_receipts,
+    worldstream_integrity_incidents,
+    worldstream_authority_fences,
+    worldstream_authority_state,
+    worldstream_authority_principals,
+    worldstream_authority_runners,
+    worldstream_authority_capabilities,
+    worldstream_authority_capability_scopes,
+    worldstream_authority_runner_capability_memberships,
+    worldstream_authority_change_receipts,
+    worldstream_authority_audit,
+    worldstream_transfer_imports,
+    worldstream_transfer_chunks,
+    worldstream_transfer_target_fence,
+    worldstream_deployment_metadata,
+    worldstream_deployment_identity_metadata,
+    worldstream_deployment_pack_identities,
+    worldstream_deployment_resource_identities,
+    worldstream_deployment_resource_blobs,
+    worldstream_retired_authority_fences_v1
+IN ACCESS EXCLUSIVE MODE;
+";
+
+const TARGET_EMPTY_DOMAIN_COUNTS_SQL: &str = r"
+SELECT domain, row_count FROM (
+    SELECT 'worldstream_operation_guards' AS domain, count(*)::bigint AS row_count FROM worldstream_operation_guards
+    UNION ALL SELECT 'worldstream_room_roots', count(*)::bigint FROM worldstream_room_roots
+    UNION ALL SELECT 'worldstream_genesis', count(*)::bigint FROM worldstream_genesis
+    UNION ALL SELECT 'worldstream_materializations', count(*)::bigint FROM worldstream_materializations
+    UNION ALL SELECT 'worldstream_members', count(*)::bigint FROM worldstream_members
+    UNION ALL SELECT 'worldstream_timers', count(*)::bigint FROM worldstream_timers
+    UNION ALL SELECT 'worldstream_transitions', count(*)::bigint FROM worldstream_transitions
+    UNION ALL SELECT 'worldstream_frames', count(*)::bigint FROM worldstream_frames
+    UNION ALL SELECT 'worldstream_observation_consequences', count(*)::bigint FROM worldstream_observation_consequences
+    UNION ALL SELECT 'worldstream_activation_decisions', count(*)::bigint FROM worldstream_activation_decisions
+    UNION ALL SELECT 'worldstream_activation_intents', count(*)::bigint FROM worldstream_activation_intents
+    UNION ALL SELECT 'worldstream_activation_operation_receipts', count(*)::bigint FROM worldstream_activation_operation_receipts
+    UNION ALL SELECT 'worldstream_room_snapshots', count(*)::bigint FROM worldstream_room_snapshots
+    UNION ALL SELECT 'worldstream_semantic_receipts', count(*)::bigint FROM worldstream_semantic_receipts
+    UNION ALL SELECT 'worldstream_integrity_incidents', count(*)::bigint FROM worldstream_integrity_incidents
+    UNION ALL SELECT 'worldstream_authority_fences', count(*)::bigint FROM worldstream_authority_fences
+    UNION ALL SELECT 'worldstream_authority_principals', count(*)::bigint FROM worldstream_authority_principals
+    UNION ALL SELECT 'worldstream_authority_runners', count(*)::bigint FROM worldstream_authority_runners
+    UNION ALL SELECT 'worldstream_authority_capabilities', count(*)::bigint FROM worldstream_authority_capabilities
+    UNION ALL SELECT 'worldstream_authority_capability_scopes', count(*)::bigint FROM worldstream_authority_capability_scopes
+    UNION ALL SELECT 'worldstream_authority_runner_capability_memberships', count(*)::bigint FROM worldstream_authority_runner_capability_memberships
+    UNION ALL SELECT 'worldstream_authority_change_receipts', count(*)::bigint FROM worldstream_authority_change_receipts
+    UNION ALL SELECT 'worldstream_authority_audit', count(*)::bigint FROM worldstream_authority_audit
+    UNION ALL SELECT 'worldstream_transfer_imports', count(*)::bigint FROM worldstream_transfer_imports
+    UNION ALL SELECT 'worldstream_transfer_chunks', count(*)::bigint FROM worldstream_transfer_chunks
+    UNION ALL SELECT 'worldstream_transfer_target_fence', count(*)::bigint FROM worldstream_transfer_target_fence
+    UNION ALL SELECT 'worldstream_deployment_metadata', count(*)::bigint FROM worldstream_deployment_metadata
+    UNION ALL SELECT 'worldstream_deployment_identity_metadata', count(*)::bigint FROM worldstream_deployment_identity_metadata
+    UNION ALL SELECT 'worldstream_deployment_pack_identities', count(*)::bigint FROM worldstream_deployment_pack_identities
+    UNION ALL SELECT 'worldstream_deployment_resource_identities', count(*)::bigint FROM worldstream_deployment_resource_identities
+    UNION ALL SELECT 'worldstream_deployment_resource_blobs', count(*)::bigint FROM worldstream_deployment_resource_blobs
+    UNION ALL SELECT 'worldstream_retired_authority_fences_v1', count(*)::bigint FROM worldstream_retired_authority_fences_v1
+) counts ORDER BY domain;
+";
+
+// The importing fence remains committed and therefore visible to every other
+// transaction while this transaction removes it from its own MVCC view. That
+// lets the offline administrator erase a verified-but-not-finalized target
+// without opening a serving/write window. TRUNCATE is intentional here: three
+// transferred fact tables reject row DELETEs because their contents are
+// immutable during normal operation, while an aborted deployment must discard
+// the entire isolated target atomically.
+const DISCARD_TRANSFER_TARGET_SQL: &str = r"
+TRUNCATE TABLE
+    worldstream_operation_guards,
+    worldstream_room_roots,
+    worldstream_genesis,
+    worldstream_materializations,
+    worldstream_members,
+    worldstream_timers,
+    worldstream_transitions,
+    worldstream_frames,
+    worldstream_observation_consequences,
+    worldstream_activation_decisions,
+    worldstream_activation_intents,
+    worldstream_activation_operation_receipts,
+    worldstream_room_snapshots,
+    worldstream_semantic_receipts,
+    worldstream_integrity_incidents,
+    worldstream_authority_fences,
+    worldstream_authority_state,
+    worldstream_authority_principals,
+    worldstream_authority_runners,
+    worldstream_authority_capabilities,
+    worldstream_authority_capability_scopes,
+    worldstream_authority_runner_capability_memberships,
+    worldstream_authority_change_receipts,
+    worldstream_authority_audit,
+    worldstream_transfer_chunks,
+    worldstream_transfer_imports,
+    worldstream_deployment_metadata,
+    worldstream_deployment_identity_metadata,
+    worldstream_deployment_pack_identities,
+    worldstream_deployment_resource_blobs,
+    worldstream_deployment_resource_identities,
+    worldstream_retired_authority_fences_v1
+RESTART IDENTITY;
+INSERT INTO worldstream_authority_state(authority_id) VALUES (true);
+";
+
+/// An offline direct-admin implementation of `TransferDestinationV1`.
 ///
 /// The staging rows are written with ordinary transactions and are safe for a
-/// transaction pooler. The adapter never issues DDL; migration 0005 must have
-/// been applied by `PostgresAdmin` before a runtime process uses this type.
+/// transaction pooler. The adapter never issues DDL; migrations must have been
+/// applied before this explicitly offline transfer authority is constructed.
 pub struct PostgresTransferDestination<'a> {
-    store: &'a PostgresRoomStore,
+    admin: &'a PostgresAdmin,
     bundle: TransferBundleV1,
     bundle_hash: DigestV1,
     target: TargetFingerprintV1,
     target_digest: DigestV1,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AbortFenceStateV1 {
+    Missing,
+    Importing,
+    AlreadyAborted,
+}
+
 impl<'a> PostgresTransferDestination<'a> {
     /// Binds a destination to one exact bundle and observed target fence.
     ///
     /// This constructor is deliberately side-effect free. Callers requiring
-    /// live-provider evidence must call `PostgresRoomStore::verify_schema`
-    /// before starting the import; `verify_complete` repeats that read-only
-    /// check before accepting finalization.
+    /// live-provider evidence must call [`PostgresAdmin::verify_schema`] before
+    /// starting the import; `verify_complete` repeats that read-only check
+    /// before accepting finalization.
     pub fn new(
-        store: &'a PostgresRoomStore,
+        admin: &'a PostgresAdmin,
         bundle: &TransferBundleV1,
         target: TargetFingerprintV1,
     ) -> Result<Self, PostgresTransferError> {
@@ -146,7 +283,7 @@ impl<'a> PostgresTransferDestination<'a> {
             verify_bundle_deployment_identity(bundle, &identity)?;
         }
         Ok(Self {
-            store,
+            admin,
             bundle: bundle.clone(),
             bundle_hash: bundle.bundle_hash()?,
             target_digest: target.fingerprint_digest()?,
@@ -195,7 +332,7 @@ impl<'a> PostgresTransferDestination<'a> {
     ) -> Result<(), PostgresTransferError> {
         let Some(row) = transaction
             .query_opt(
-                "SELECT bundle_hash, target_fingerprint FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
                 &[],
             )
             .map_err(PostgresTransferError::Sql)?
@@ -204,11 +341,88 @@ impl<'a> PostgresTransferDestination<'a> {
         };
         let stored_bundle: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
         let stored_target: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let state: String = row.try_get(2).map_err(PostgresTransferError::Sql)?;
+        if state == "aborted" {
+            return Err(PostgresTransferError::TargetAborted);
+        }
+        if state != "importing" {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted target fence state",
+            ));
+        }
         Self::verify_target_fence_bytes(
             self.bundle_hash,
             self.target_digest,
             Some((&stored_bundle, &stored_target)),
         )
+    }
+
+    fn remove_target_fence_for_offline_verification(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        self.verify_target_fence(transaction)?;
+        let bundle_hash = self.bundle_key();
+        let target_digest = self.target_key();
+        let removed = transaction
+            .execute(
+                "DELETE FROM worldstream_transfer_target_fence WHERE fence_id = true AND bundle_hash = $1 AND target_fingerprint = $2 AND state = 'importing'",
+                &[&bundle_hash.as_slice(), &target_digest.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if removed != 1 {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
+        Ok(())
+    }
+
+    fn restore_target_fence_after_offline_verification(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        let bundle_hash = self.bundle_key();
+        let target_digest = self.target_key();
+        let restored = transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'importing')",
+                &[&bundle_hash.as_slice(), &target_digest.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if restored != 1 {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
+        self.verify_target_fence(transaction)
+    }
+
+    /// Hydrates and semantically verifies the target without ever making the
+    /// target serving-visible. PostgreSQL MVCC keeps the committed fence
+    /// visible to every other transaction while this transaction temporarily
+    /// removes it from its own view so the fence triggers permit hydration.
+    /// The same exact fence is restored before the verified marker commits;
+    /// any failure rolls both hydration and fence removal back together.
+    fn hydrate_and_verify_behind_fence(
+        &self,
+        transaction: &mut Transaction<'_>,
+        summary: Option<&NativeSqliteBundleSummaryV1>,
+    ) -> Result<(), PostgresTransferError> {
+        self.remove_target_fence_for_offline_verification(transaction)?;
+        self.publish_canonical_rooms(transaction)?;
+        self.verify_hydrated_target(transaction, summary)?;
+        self.restore_target_fence_after_offline_verification(transaction)
+    }
+
+    /// Reconfirms an existing provider-derived marker against exact native
+    /// rows and executable replay. This rejects `verified`/`finalized` rows
+    /// written by older code that only proved staged chunk completeness.
+    fn reconfirm_hydrated_target_behind_fence(
+        &self,
+        transaction: &mut Transaction<'_>,
+        summary: Option<&NativeSqliteBundleSummaryV1>,
+    ) -> Result<(), PostgresTransferError> {
+        self.remove_target_fence_for_offline_verification(transaction)?;
+        self.verify_native_operational_rows(transaction)?;
+        self.verify_hydrated_target(transaction, summary)?;
+        self.restore_target_fence_after_offline_verification(transaction)
     }
 
     fn chunk_state_accepts_chunk(state: &str) -> bool {
@@ -219,30 +433,126 @@ impl<'a> PostgresTransferDestination<'a> {
         i64::try_from(value).map_err(|_| PostgresTransferError::InvalidProviderValue(what))
     }
 
+    fn validate_empty_domain_counts(
+        counts: &[(String, i64)],
+        authority_state_count: i64,
+        expected_target_fence_count: i64,
+    ) -> Result<(), PostgresTransferError> {
+        if authority_state_count != 1 {
+            return Err(PostgresTransferError::TargetNotEmpty {
+                domain: "worldstream_authority_state".to_owned(),
+            });
+        }
+        if let Some((domain, _)) = counts.iter().find(|(domain, count)| {
+            let expected = if domain == "worldstream_transfer_target_fence" {
+                expected_target_fence_count
+            } else {
+                0
+            };
+            *count != expected
+        }) {
+            return Err(PostgresTransferError::TargetNotEmpty {
+                domain: domain.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn preflight_empty_target(
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        // The table locks make the empty check and first target-fence write one
+        // provider transaction. A concurrent runtime write either precedes
+        // the counts and is rejected as preseed, or waits until the fence is
+        // visible and is rejected by the migration-installed write triggers.
+        transaction
+            .batch_execute(TARGET_PREFLIGHT_LOCK_SQL)
+            .map_err(PostgresTransferError::Sql)?;
+        Self::verify_empty_target_domains(transaction, 0)
+    }
+
+    fn verify_empty_target_domains(
+        transaction: &mut Transaction<'_>,
+        expected_target_fence_count: i64,
+    ) -> Result<(), PostgresTransferError> {
+        let authority_state_count: i64 = transaction
+            .query_one(AUTHORITY_STATE_COUNT_SQL, &[])
+            .map_err(PostgresTransferError::Sql)?
+            .try_get(0)
+            .map_err(PostgresTransferError::Sql)?;
+        let counts = transaction
+            .query(TARGET_EMPTY_DOMAIN_COUNTS_SQL, &[])
+            .map_err(PostgresTransferError::Sql)?
+            .into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<_, String>(0)
+                        .map_err(PostgresTransferError::Sql)?,
+                    row.try_get::<_, i64>(1)
+                        .map_err(PostgresTransferError::Sql)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, PostgresTransferError>>()?;
+        Self::validate_empty_domain_counts(
+            &counts,
+            authority_state_count,
+            expected_target_fence_count,
+        )
+    }
+
+    fn lock_target_preflight(
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock($1)",
+                &[&TARGET_PREFLIGHT_ADVISORY_KEY],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        Ok(())
+    }
+
     fn ensure_import(
         &self,
         transaction: &mut Transaction<'_>,
     ) -> Result<String, PostgresTransferError> {
         let bundle_hash = self.bundle_key();
         let target_fingerprint = self.target_key();
-        // Lock the singleton before looking at the per-bundle marker. This is
-        // the target-wide fence that makes two otherwise unrelated bundles
-        // serialize on an empty target as well as on a populated one.
-        transaction
-            .execute(
-                "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint) VALUES (true, $1, $2) ON CONFLICT (fence_id) DO NOTHING",
-                &[&bundle_hash.as_slice(), &target_fingerprint.as_slice()],
-            )
-            .map_err(PostgresTransferError::Sql)?;
-        let fence = transaction
-            .query_one(
-                "SELECT bundle_hash, target_fingerprint FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+        Self::lock_target_preflight(transaction)?;
+        let mut fence = transaction
+            .query_opt(
+                "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
                 &[],
             )
             .map_err(PostgresTransferError::Sql)?;
+        if fence.is_none() {
+            Self::preflight_empty_target(transaction)?;
+            transaction
+                .execute(
+                    "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'importing')",
+                    &[&bundle_hash.as_slice(), &target_fingerprint.as_slice()],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            fence = transaction
+                .query_opt(
+                    "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                    &[],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+        }
+        let fence = fence.ok_or(PostgresTransferError::MissingTargetFence)?;
         let stored_bundle_hash: Vec<u8> = fence.try_get(0).map_err(PostgresTransferError::Sql)?;
         let stored_target_fingerprint: Vec<u8> =
             fence.try_get(1).map_err(PostgresTransferError::Sql)?;
+        let fence_state: String = fence.try_get(2).map_err(PostgresTransferError::Sql)?;
+        if fence_state == "aborted" {
+            return Err(PostgresTransferError::TargetAborted);
+        }
+        if fence_state != "importing" {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted target fence state",
+            ));
+        }
         if stored_bundle_hash != bundle_hash {
             return Err(PostgresTransferError::TargetMismatch(
                 "persisted target bundle fence",
@@ -605,8 +915,191 @@ impl<'a> PostgresTransferDestination<'a> {
         Ok(())
     }
 
+    /// Reconstructs the complete deployment identity without repairing any
+    /// missing row. Persisted verification markers are only provider evidence
+    /// when every normalized identity row and resource byte already exists
+    /// exactly as it did in the hydration transaction.
+    fn verify_deployment_identity(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        if self.bundle.scope() != TransferScopeV1::WholeDeployment {
+            return Ok(());
+        }
+        let identity = extract_deployment_identity(self.bundle.records())?;
+        verify_bundle_deployment_identity(&self.bundle, &identity)?;
+        let canonical_bytes = identity
+            .canonical_bytes()
+            .map_err(|_| PostgresTransferError::DeploymentIdentity("identity encoding"))?;
+        let metadata = transaction
+            .query_opt(
+                "SELECT identity_digest, pack_set_digest, resource_set_digest, canonical_bytes FROM worldstream_deployment_identity_metadata WHERE target_id = true FOR UPDATE",
+                &[],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .ok_or(PostgresTransferError::DeploymentIdentity(
+                "persisted identity metadata is absent",
+            ))?;
+        if metadata
+            .try_get::<_, Vec<u8>>(0)
+            .map_err(PostgresTransferError::Sql)?
+            != identity.digest().as_bytes()
+            || metadata
+                .try_get::<_, Vec<u8>>(1)
+                .map_err(PostgresTransferError::Sql)?
+                != deployment_pack_set_digest(&identity).as_bytes()
+            || metadata
+                .try_get::<_, Vec<u8>>(2)
+                .map_err(PostgresTransferError::Sql)?
+                != deployment_resource_set_digest(&identity).as_bytes()
+            || metadata
+                .try_get::<_, Vec<u8>>(3)
+                .map_err(PostgresTransferError::Sql)?
+                != canonical_bytes
+        {
+            return Err(PostgresTransferError::DeploymentIdentity(
+                "persisted identity metadata mismatch",
+            ));
+        }
+        Self::verify_persisted_identity(transaction, &identity)?;
+        self.verify_resource_payloads(transaction, &identity)
+    }
+
+    fn verify_resource_payloads(
+        &self,
+        transaction: &mut Transaction<'_>,
+        identity: &DeploymentIdentityV1,
+    ) -> Result<(), PostgresTransferError> {
+        for resource in identity.resources() {
+            let record_identity = resource_record_identity(resource);
+            let record = self
+                .bundle
+                .records()
+                .iter()
+                .find(|record| {
+                    record.kind() == RecordKindV1::Canonical(CanonicalRecordKindV1::ArtifactBytes)
+                        && record.identity() == record_identity
+                })
+                .ok_or(PostgresTransferError::DeploymentIdentity(
+                    "resource payload is absent",
+                ))?;
+            resource.verify_bytes(record.bytes()).map_err(|_| {
+                PostgresTransferError::DeploymentIdentity("resource payload identity mismatch")
+            })?;
+            let stored = transaction
+                .query_opt(
+                    "SELECT resource_bytes, resource_digest FROM worldstream_deployment_resource_blobs WHERE resource_kind = $1 AND resource_identity = $2",
+                    &[&resource_kind_name(resource.kind()), &resource.identity()],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .ok_or(PostgresTransferError::DeploymentIdentity(
+                    "persisted resource payload is absent",
+                ))?;
+            if stored
+                .try_get::<_, Vec<u8>>(0)
+                .map_err(PostgresTransferError::Sql)?
+                != record.bytes()
+                || stored
+                    .try_get::<_, Vec<u8>>(1)
+                    .map_err(PostgresTransferError::Sql)?
+                    != resource.digest().as_bytes()
+            {
+                return Err(PostgresTransferError::DeploymentIdentity(
+                    "persisted resource payload mismatch",
+                ));
+            }
+        }
+        let stored_count = usize::try_from(
+            transaction
+                .query_one(
+                    "SELECT count(*) FROM worldstream_deployment_resource_blobs",
+                    &[],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .try_get::<_, i64>(0)
+                .map_err(PostgresTransferError::Sql)?,
+        )
+        .map_err(|_| PostgresTransferError::InvalidProviderValue("resource payload count"))?;
+        if stored_count != identity.resources().len() {
+            return Err(PostgresTransferError::DeploymentIdentity(
+                "persisted resource payload cardinality",
+            ));
+        }
+        Ok(())
+    }
+
     fn commit_transaction(transaction: Transaction<'_>) -> Result<(), PostgresTransferError> {
         transaction.commit().map_err(PostgresTransferError::Sql)
+    }
+
+    fn lock_abort_fence(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<AbortFenceStateV1, PostgresTransferError> {
+        let Some(row) = transaction
+            .query_opt(
+                "SELECT bundle_hash, target_fingerprint, state FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                &[],
+            )
+            .map_err(PostgresTransferError::Sql)?
+        else {
+            return Ok(AbortFenceStateV1::Missing);
+        };
+        let stored_bundle: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        let stored_target: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        Self::verify_target_fence_bytes(
+            self.bundle_hash,
+            self.target_digest,
+            Some((&stored_bundle, &stored_target)),
+        )?;
+        match row
+            .try_get::<_, String>(2)
+            .map_err(PostgresTransferError::Sql)?
+            .as_str()
+        {
+            "importing" => Ok(AbortFenceStateV1::Importing),
+            "aborted" => Ok(AbortFenceStateV1::AlreadyAborted),
+            _ => Err(PostgresTransferError::TargetMismatch(
+                "persisted target fence state",
+            )),
+        }
+    }
+
+    fn verify_aborted_import_empty(
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        // The exact aborted fence was locked and verified by the caller. Every
+        // other durable target domain must be empty before that fence can act
+        // as source-restoration evidence; checking only the staging tables
+        // would leave a previously hydrated deployment behind.
+        Self::verify_empty_target_domains(transaction, 1)
+    }
+
+    fn discard_import_behind_fence(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), PostgresTransferError> {
+        self.remove_target_fence_for_offline_verification(transaction)?;
+        transaction
+            .batch_execute(DISCARD_TRANSFER_TARGET_SQL)
+            .map_err(PostgresTransferError::Sql)?;
+        // Reuse the first-import emptiness proof while the importing fence is
+        // absent only from this transaction's view. Concurrent transactions
+        // continue to observe the committed importing fence until commit.
+        Self::preflight_empty_target(transaction)?;
+        let bundle_hash = self.bundle_key();
+        let target_digest = self.target_key();
+        let inserted = transaction
+            .execute(
+                "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'aborted')",
+                &[&bundle_hash.as_slice(), &target_digest.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+        if inserted != 1 || self.lock_abort_fence(transaction)? != AbortFenceStateV1::AlreadyAborted
+        {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
+        Self::verify_aborted_import_empty(transaction)
     }
 
     fn hydrated_room_dispositions(
@@ -692,7 +1185,7 @@ impl<'a> PostgresTransferDestination<'a> {
         transaction: &mut Transaction<'_>,
         summary: Option<&NativeSqliteBundleSummaryV1>,
     ) -> Result<(), PostgresTransferError> {
-        self.persist_deployment_identity(transaction)?;
+        self.verify_deployment_identity(transaction)?;
         let metadata = extract_deployment_metadata(self.bundle.records())?;
         let target_epoch = i64::try_from(self.target.storage_epoch())
             .map_err(|_| PostgresTransferError::InvalidProviderValue("target epoch"))?;
@@ -717,12 +1210,19 @@ impl<'a> PostgresTransferDestination<'a> {
             ));
         }
         let (healthy, isolated) = self.hydrated_room_dispositions(summary)?;
+        let registry = worldstream_core::builtin_worldstream_registry()
+            .map_err(|_| PostgresTransferError::Canonical("retained Pack registry"))?;
         for room_id in healthy {
             let verification = PostgresRoomStore::verify_room_in_transaction(transaction, &room_id)
                 .map_err(PostgresTransferError::Semantic)?;
             if verification.integrity_status != "healthy" {
                 return Err(PostgresTransferError::Canonical(
                     "healthy Room was not published healthy",
+                ));
+            }
+            if verification.verify_executable_replay(&registry).is_err() {
+                return Err(PostgresTransferError::Canonical(
+                    "healthy Room executable replay",
                 ));
             }
         }
@@ -759,9 +1259,10 @@ impl<'a> PostgresTransferDestination<'a> {
 
     /// Publishes canonical Room bytes into the existing Core-owned tables.
     ///
-    /// This deliberately runs in the same transaction as the final authority
-    /// transition. Existing rows are compared before any update, so a retry is
-    /// idempotent while a different target bundle fails closed.
+    /// This deliberately runs in the pre-retirement verification transaction
+    /// while the target remains serving-fenced. Existing rows are compared
+    /// before any update, so a retry is idempotent while a different target
+    /// bundle fails closed.
     #[allow(clippy::too_many_lines)]
     fn publish_canonical_rooms(
         &self,
@@ -1017,7 +1518,9 @@ impl<'a> PostgresTransferDestination<'a> {
                     "activation_operation_receipts" => {
                         publish_activation_receipt(transaction, row)?;
                     }
-                    "semantic_receipts" => publish_semantic_receipt(transaction, row)?,
+                    "semantic_receipts" => {
+                        publish_semantic_receipt(transaction, row, mode)?;
+                    }
                     "integrity_incidents" => publish_integrity_incident(transaction, row)?,
                     _ => {
                         return Err(PostgresTransferError::Canonical(
@@ -1118,6 +1621,10 @@ fn verify_native_row_cardinalities(
         (
             "semantic_receipts",
             "SELECT count(*) FROM worldstream_semantic_receipts",
+        ),
+        (
+            "semantic_receipts",
+            "SELECT count(*) FROM worldstream_operation_guards",
         ),
         (
             "integrity_incidents",
@@ -1491,7 +1998,10 @@ fn native_optional_blob(
     }
 }
 
-fn native_hex(value: &str) -> Result<Vec<u8>, PostgresTransferError> {
+fn native_blake3(value: &str) -> Result<Vec<u8>, PostgresTransferError> {
+    let value = value
+        .strip_prefix("blake3:")
+        .ok_or(PostgresTransferError::Canonical("native digest text"))?;
     if value.len() != 64 {
         return Err(PostgresTransferError::Canonical("native digest text"));
     }
@@ -1511,7 +2021,6 @@ fn hex_digit(value: u8) -> Result<u32, PostgresTransferError> {
     match value {
         b'0'..=b'9' => Ok(u32::from(value - b'0')),
         b'a'..=b'f' => Ok(u32::from(value - b'a' + 10)),
-        b'A'..=b'F' => Ok(u32::from(value - b'A' + 10)),
         _ => Err(PostgresTransferError::Canonical("native digest text")),
     }
 }
@@ -2298,7 +2807,7 @@ fn publish_observation_frame(
     let member_id = native_text(row, 1)?;
     let frame_seq = native_integer(row, 2)?;
     let cause_room_seq = native_integer(row, 3)?;
-    let payload_hash = native_hex(&native_text(row, 4)?)?;
+    let payload_hash = native_blake3(&native_text(row, 4)?)?;
     let payload = native_blob(row, 5)?;
     transaction
         .execute(
@@ -2342,7 +2851,7 @@ fn publish_observation_consequence(
     let consequence_kind = native_text(row, 3)?;
     let payload = native_optional_blob(row, 4)?;
     let projection_hash = match row.values.get(5) {
-        Some(NativeValue::Text(value)) => Some(native_hex(value)?),
+        Some(NativeValue::Text(value)) => Some(native_blake3(value)?),
         Some(NativeValue::Null) => None,
         _ => return Err(PostgresTransferError::Canonical("native consequence hash")),
     };
@@ -2599,6 +3108,7 @@ fn publish_activation_receipt(
 fn publish_semantic_receipt(
     transaction: &mut Transaction<'_>,
     row: &NativeRow,
+    mode: NativePublicationMode,
 ) -> Result<(), PostgresTransferError> {
     let room_id = native_text(row, 0)?;
     let operation_kind = native_text(row, 1)?;
@@ -2661,21 +3171,96 @@ fn publish_semantic_receipt(
             .try_get::<_, Option<String>>(8)
             .map_err(PostgresTransferError::Sql)?,
     ) != (
-        operation_kind,
-        request_hash,
-        basis_head,
-        semantic_input,
-        semantic_time,
-        resolution_kind,
+        operation_kind.clone(),
+        request_hash.clone(),
+        basis_head.clone(),
+        semantic_input.clone(),
+        semantic_time.clone(),
+        resolution_kind.clone(),
         transition_seq,
-        receipt,
-        Some(room_id),
+        receipt.clone(),
+        Some(room_id.clone()),
     ) {
         return Err(PostgresTransferError::Canonical(
             "semantic receipt mismatch",
         ));
     }
+    publish_or_verify_semantic_receipt_guard(
+        transaction,
+        mode,
+        &identity_bytes,
+        &request_hash,
+        &room_id,
+        &receipt,
+    )
+}
+
+// SQLite serializes exactly-once operation state in `semantic_receipts`,
+// while PostgreSQL resolves and serializes retries through the paired
+// operation-guard row. Hydration must therefore derive the guard from the
+// exact immutable receipt in this same transaction. Verify-only replay is
+// deliberately read-only for this relation: a missing guard is corruption,
+// not something verification may repair.
+fn publish_or_verify_semantic_receipt_guard(
+    transaction: &mut Transaction<'_>,
+    mode: NativePublicationMode,
+    identity_bytes: &[u8],
+    request_hash: &[u8],
+    room_id: &str,
+    receipt: &[u8],
+) -> Result<(), PostgresTransferError> {
+    if mode == NativePublicationMode::Hydrate {
+        transaction
+            .execute(
+                "INSERT INTO worldstream_operation_guards(identity_bytes, request_hash, room_id, receipt_bytes) VALUES ($1, $2, $3, $4) ON CONFLICT (identity_bytes) DO NOTHING",
+                &[&identity_bytes, &request_hash, &room_id, &receipt],
+            )
+            .map_err(PostgresTransferError::Sql)?;
+    }
+    let guard = transaction
+        .query_opt(
+            "SELECT request_hash, room_id, receipt_bytes FROM worldstream_operation_guards WHERE identity_bytes = $1 FOR SHARE",
+            &[&identity_bytes],
+        )
+        .map_err(PostgresTransferError::Sql)?
+        .ok_or(PostgresTransferError::Canonical(
+            "semantic receipt operation guard missing",
+        ))?;
+    let stored_request_hash = guard
+        .try_get::<_, Vec<u8>>(0)
+        .map_err(PostgresTransferError::Sql)?;
+    let stored_room_id = guard
+        .try_get::<_, Option<String>>(1)
+        .map_err(PostgresTransferError::Sql)?;
+    let stored_receipt = guard
+        .try_get::<_, Option<Vec<u8>>>(2)
+        .map_err(PostgresTransferError::Sql)?;
+    if !semantic_receipt_guard_matches(
+        &stored_request_hash,
+        stored_room_id.as_deref(),
+        stored_receipt.as_deref(),
+        request_hash,
+        room_id,
+        receipt,
+    ) {
+        return Err(PostgresTransferError::Canonical(
+            "semantic receipt operation guard mismatch",
+        ));
+    }
     Ok(())
+}
+
+fn semantic_receipt_guard_matches(
+    stored_request_hash: &[u8],
+    stored_room_id: Option<&str>,
+    stored_receipt: Option<&[u8]>,
+    expected_request_hash: &[u8],
+    expected_room_id: &str,
+    expected_receipt: &[u8],
+) -> bool {
+    stored_request_hash == expected_request_hash
+        && stored_room_id == Some(expected_room_id)
+        && stored_receipt == Some(expected_receipt)
 }
 
 struct NativeReader<'a> {
@@ -2759,7 +3344,7 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
         let end = Self::checked_i64(chunk.end(), "chunk end")?;
         let bundle_hash = self.bundle_key();
         let mut client = self
-            .store
+            .admin
             .connect()
             .map_err(PostgresTransferError::Connection)?;
         let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
@@ -2826,13 +3411,14 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
                 "bound target fingerprint",
             ));
         }
-        self.store
+        self.admin
             .verify_schema()
             .map_err(PostgresTransferError::Schema)?;
+        let native_summary = Self::verify_native_semantic_evidence(bundle)?;
         let bundle_hash = self.bundle_key();
         let target_digest = self.target_key();
         let mut client = self
-            .store
+            .admin
             .connect()
             .map_err(PostgresTransferError::Connection)?;
         let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
@@ -2859,18 +3445,48 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
                 actual: state,
             });
         }
-        self.verify_target_fence(&mut transaction)?;
-        self.verify_staged_chunks(&mut transaction, bundle)?;
-        if matches!(state.as_str(), "finalized" | "authoritative") {
-            Self::commit_transaction(transaction)?;
-            return Ok(());
+        if state != "authoritative" {
+            self.verify_target_fence(&mut transaction)?;
         }
-        transaction
-            .execute(
-                "UPDATE worldstream_transfer_imports SET state = 'verified' WHERE bundle_hash = $1 AND state = 'pending'",
-                &[&bundle_hash.as_slice()],
-            )
-            .map_err(PostgresTransferError::Sql)?;
+        self.verify_staged_chunks(&mut transaction, bundle)?;
+        match state.as_str() {
+            "pending" => {
+                // Hydration, executable replay, the exact importing fence,
+                // and this provider-derived verified marker commit together.
+                // Source retirement is not attempted by the coordinator until
+                // this method and record_finalization both return successfully.
+                self.hydrate_and_verify_behind_fence(&mut transaction, native_summary.as_ref())?;
+                let updated = transaction
+                    .execute(
+                        "UPDATE worldstream_transfer_imports SET state = 'verified' WHERE bundle_hash = $1 AND target_fingerprint = $2 AND state = 'pending'",
+                        &[&bundle_hash.as_slice(), &target_digest.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if updated != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "pending",
+                        actual: state,
+                    });
+                }
+            }
+            // Never trust the label alone: older binaries could persist these
+            // states before hydration. Exact operational-row verification and
+            // full replay turn either label into current provider evidence.
+            "verified" | "finalized" => self.reconfirm_hydrated_target_behind_fence(
+                &mut transaction,
+                native_summary.as_ref(),
+            )?,
+            "authoritative" => {
+                self.verify_native_operational_rows(&mut transaction)?;
+                self.verify_hydrated_target(&mut transaction, native_summary.as_ref())?;
+            }
+            actual => {
+                return Err(PostgresTransferError::InvalidImportState {
+                    expected: "pending or verified",
+                    actual: actual.to_owned(),
+                });
+            }
+        }
         Self::commit_transaction(transaction)
     }
 
@@ -2880,11 +3496,11 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
                 "finalization target fingerprint",
             ));
         }
-        Self::verify_native_semantic_evidence(&self.bundle)?;
+        let native_summary = Self::verify_native_semantic_evidence(&self.bundle)?;
         let bundle_hash = self.bundle_key();
         let target_digest = self.target_key();
         let mut client = self
-            .store
+            .admin
             .connect()
             .map_err(PostgresTransferError::Connection)?;
         let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
@@ -2895,7 +3511,6 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
             )
             .map_err(PostgresTransferError::Sql)?
             .ok_or(PostgresTransferError::MissingImport)?;
-        self.verify_target_fence(&mut transaction)?;
         let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
         if stored_target != target_digest {
             return Err(PostgresTransferError::TargetMismatch(
@@ -2903,17 +3518,40 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
             ));
         }
         let state: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        if state != "authoritative" {
+            self.verify_target_fence(&mut transaction)?;
+        }
         match state.as_str() {
             "verified" => {
                 self.verify_staged_chunks(&mut transaction, &self.bundle)?;
-                transaction
+                self.reconfirm_hydrated_target_behind_fence(
+                    &mut transaction,
+                    native_summary.as_ref(),
+                )?;
+                let updated = transaction
                     .execute(
-                        "UPDATE worldstream_transfer_imports SET state = 'finalized' WHERE bundle_hash = $1 AND state = 'verified'",
-                        &[&bundle_hash.as_slice()],
+                        "UPDATE worldstream_transfer_imports SET state = 'finalized' WHERE bundle_hash = $1 AND target_fingerprint = $2 AND state = 'verified'",
+                        &[&bundle_hash.as_slice(), &target_digest.as_slice()],
                     )
                     .map_err(PostgresTransferError::Sql)?;
+                if updated != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "verified",
+                        actual: state,
+                    });
+                }
             }
-            "finalized" | "authoritative" => {}
+            "finalized" => {
+                self.verify_staged_chunks(&mut transaction, &self.bundle)?;
+                self.reconfirm_hydrated_target_behind_fence(
+                    &mut transaction,
+                    native_summary.as_ref(),
+                )?;
+            }
+            "authoritative" => {
+                self.verify_native_operational_rows(&mut transaction)?;
+                self.verify_hydrated_target(&mut transaction, native_summary.as_ref())?;
+            }
             _ => {
                 return Err(PostgresTransferError::InvalidImportState {
                     expected: "verified",
@@ -2932,46 +3570,75 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
         }
         let native_summary = Self::verify_native_semantic_evidence(&self.bundle)?;
         let bundle_hash = self.bundle_key();
-        self.store
+        let target_digest = self.target_key();
+        self.admin
             .verify_schema()
             .map_err(PostgresTransferError::Schema)?;
         let mut client = self
-            .store
+            .admin
             .connect()
             .map_err(PostgresTransferError::Connection)?;
         let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
-        self.verify_target_fence(&mut transaction)?;
-        let state: Option<String> = transaction
+        let row = transaction
             .query_opt(
-                "SELECT state FROM worldstream_transfer_imports WHERE bundle_hash = $1 FOR UPDATE",
+                "SELECT target_fingerprint, state FROM worldstream_transfer_imports WHERE bundle_hash = $1 FOR UPDATE",
                 &[&bundle_hash.as_slice()],
             )
             .map_err(PostgresTransferError::Sql)?
-            .map(|row| row.try_get(0))
-            .transpose()
-            .map_err(PostgresTransferError::Sql)?;
-        match state.as_deref() {
-            Some("finalized") => {
-                self.publish_canonical_rooms(&mut transaction)?;
-                self.verify_hydrated_target(&mut transaction, native_summary.as_ref())?;
-                transaction
+            .ok_or(PostgresTransferError::MissingImport)?;
+        let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        if stored_target != target_digest {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted target fingerprint",
+            ));
+        }
+        let state: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        match state.as_str() {
+            "finalized" => {
+                self.verify_target_fence(&mut transaction)?;
+                self.verify_staged_chunks(&mut transaction, &self.bundle)?;
+                // Hydration and full replay were committed with the exact
+                // verified marker before source retirement. The importing
+                // fence made that state immutable to runtime writes, so the
+                // post-retirement operation only publishes that authority by
+                // atomically removing the fence and advancing the marker.
+                let removed = transaction
                     .execute(
-                        "UPDATE worldstream_transfer_imports SET state = 'authoritative' WHERE bundle_hash = $1 AND state = 'finalized'",
-                        &[&bundle_hash.as_slice()],
+                        "DELETE FROM worldstream_transfer_target_fence WHERE fence_id = true AND bundle_hash = $1 AND target_fingerprint = $2 AND state = 'importing'",
+                        &[&bundle_hash.as_slice(), &target_digest.as_slice()],
                     )
-                .map_err(PostgresTransferError::Sql)?;
+                    .map_err(PostgresTransferError::Sql)?;
+                if removed != 1 {
+                    return Err(PostgresTransferError::MissingTargetFence);
+                }
+                // This is a non-repairing upgrade/retry check. If an older
+                // binary persisted `finalized` without hydrating the target,
+                // the transaction fails and rolls the fence deletion back.
+                self.verify_native_operational_rows(&mut transaction)?;
+                self.verify_hydrated_target(&mut transaction, native_summary.as_ref())?;
+                let updated = transaction
+                    .execute(
+                        "UPDATE worldstream_transfer_imports SET state = 'authoritative' WHERE bundle_hash = $1 AND target_fingerprint = $2 AND state = 'finalized'",
+                        &[&bundle_hash.as_slice(), &target_digest.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if updated != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "finalized",
+                        actual: state,
+                    });
+                }
             }
-            Some("authoritative") => {
+            "authoritative" => {
                 self.verify_native_operational_rows(&mut transaction)?;
                 self.verify_hydrated_target(&mut transaction, native_summary.as_ref())?;
             }
-            Some(actual) => {
+            actual => {
                 return Err(PostgresTransferError::InvalidImportState {
                     expected: "finalized",
                     actual: actual.to_owned(),
                 });
             }
-            None => return Err(PostgresTransferError::MissingImport),
         }
         Self::commit_transaction(transaction)
     }
@@ -2985,29 +3652,20 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
         let bundle_hash = self.bundle_key();
         let target_digest = self.target_key();
         let mut client = self
-            .store
+            .admin
             .connect()
             .map_err(PostgresTransferError::Connection)?;
         let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
-        if let Some(row) = transaction
-            .query_opt(
-                "SELECT bundle_hash, target_fingerprint FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
-                &[],
-            )
-            .map_err(PostgresTransferError::Sql)?
-        {
-            let stored_bundle: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
-            let stored_target: Vec<u8> = row.try_get(1).map_err(PostgresTransferError::Sql)?;
-            if stored_bundle != bundle_hash {
-                return Err(PostgresTransferError::TargetMismatch(
-                    "persisted target bundle fence",
-                ));
-            }
-            if stored_target != target_digest {
-                return Err(PostgresTransferError::TargetMismatch(
-                    "persisted target fingerprint",
-                ));
-            }
+        // Serialize the missing-state preflight and tombstone write with the
+        // first chunk publisher. Whichever transaction wins leaves one exact
+        // provider state for the loser to validate rather than permitting a
+        // restarted publisher to race a source-authority restoration.
+        Self::lock_target_preflight(&mut transaction)?;
+        let fence_state = self.lock_abort_fence(&mut transaction)?;
+        if fence_state == AbortFenceStateV1::AlreadyAborted {
+            Self::verify_aborted_import_empty(&mut transaction)?;
+            Self::commit_transaction(transaction)?;
+            return Ok(());
         }
         let Some(row) = transaction
             .query_opt(
@@ -3016,9 +3674,33 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
             )
             .map_err(PostgresTransferError::Sql)?
         else {
+            if fence_state == AbortFenceStateV1::Importing {
+                return Err(PostgresTransferError::MissingImport);
+            }
+            // Even an abort that arrives before the first chunk must leave a
+            // durable, exact tombstone. The same empty-target locks used by
+            // first publication prove that this target has no serving truth,
+            // and keep the check plus tombstone in one provider transaction.
+            Self::preflight_empty_target(&mut transaction)?;
+            let inserted = transaction
+                .execute(
+                    "INSERT INTO worldstream_transfer_target_fence(fence_id, bundle_hash, target_fingerprint, state) VALUES (true, $1, $2, 'aborted')",
+                    &[&bundle_hash.as_slice(), &target_digest.as_slice()],
+                )
+                .map_err(PostgresTransferError::Sql)?;
+            if inserted != 1
+                || self.lock_abort_fence(&mut transaction)?
+                    != AbortFenceStateV1::AlreadyAborted
+            {
+                return Err(PostgresTransferError::MissingTargetFence);
+            }
+            Self::verify_aborted_import_empty(&mut transaction)?;
             Self::commit_transaction(transaction)?;
             return Ok(());
         };
+        if fence_state == AbortFenceStateV1::Missing {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
         let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
         if stored_target != target_digest {
             return Err(PostgresTransferError::TargetMismatch(
@@ -3035,18 +3717,7 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
                 actual: state,
             });
         }
-        transaction
-            .execute(
-                "DELETE FROM worldstream_transfer_imports WHERE bundle_hash = $1 AND target_fingerprint = $2",
-                &[&bundle_hash.as_slice(), &target_digest.as_slice()],
-            )
-            .map_err(PostgresTransferError::Sql)?;
-        transaction
-            .execute(
-                "DELETE FROM worldstream_transfer_target_fence WHERE fence_id = true AND bundle_hash = $1 AND target_fingerprint = $2",
-                &[&bundle_hash.as_slice(), &target_digest.as_slice()],
-            )
-            .map_err(PostgresTransferError::Sql)?;
+        self.discard_import_behind_fence(&mut transaction)?;
         Self::commit_transaction(transaction)
     }
 }
@@ -3159,10 +3830,9 @@ mod tests {
         )?)
     }
 
-    fn fixture_store() -> Result<PostgresRoomStore, crate::PostgresConfigError> {
-        PostgresRoomStore::new(crate::PostgresConnectionConfig::runtime(
-            "host=localhost user=runtime sslmode=require",
-            crate::PostgresConnectionPath::Direct,
+    fn fixture_admin() -> Result<PostgresAdmin, crate::PostgresConfigError> {
+        PostgresAdmin::new(crate::PostgresConnectionConfig::direct_admin(
+            "host=localhost user=admin sslmode=require",
         )?)
     }
 
@@ -3171,9 +3841,128 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 10);
+        assert_eq!(fingerprint.schema().migrations().len(), 11);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
+        assert_eq!(fingerprint.schema().migrations()[10].version(), 11);
         Ok(())
+    }
+
+    #[test]
+    fn target_empty_preflight_rejects_exact_and_conflicting_preseed_domains() {
+        let empty = [
+            ("worldstream_room_roots".to_owned(), 0),
+            ("worldstream_deployment_resource_blobs".to_owned(), 0),
+            ("worldstream_transfer_target_fence".to_owned(), 0),
+        ];
+        assert!(PostgresTransferDestination::validate_empty_domain_counts(&empty, 1, 0).is_ok());
+        let aborted = [
+            ("worldstream_room_roots".to_owned(), 0),
+            ("worldstream_deployment_resource_blobs".to_owned(), 0),
+            ("worldstream_transfer_target_fence".to_owned(), 1),
+        ];
+        assert!(PostgresTransferDestination::validate_empty_domain_counts(&aborted, 1, 1).is_ok());
+        for domain in [
+            "worldstream_room_roots",
+            "worldstream_deployment_resource_blobs",
+        ] {
+            let counts = [(domain.to_owned(), 1)];
+            assert!(matches!(
+                PostgresTransferDestination::validate_empty_domain_counts(&counts, 1, 0),
+                Err(PostgresTransferError::TargetNotEmpty { domain: found }) if found == domain
+            ));
+        }
+        assert!(matches!(
+            PostgresTransferDestination::validate_empty_domain_counts(&empty, 0, 0),
+            Err(PostgresTransferError::TargetNotEmpty { domain })
+                if domain == "worldstream_authority_state"
+        ));
+        assert!(matches!(
+            PostgresTransferDestination::validate_empty_domain_counts(&empty, 2, 0),
+            Err(PostgresTransferError::TargetNotEmpty { domain })
+                if domain == "worldstream_authority_state"
+        ));
+        assert!(matches!(
+            PostgresTransferDestination::validate_empty_domain_counts(&aborted, 1, 0),
+            Err(PostgresTransferError::TargetNotEmpty { domain })
+                if domain == "worldstream_transfer_target_fence"
+        ));
+    }
+
+    #[test]
+    fn aborted_target_discard_covers_every_user_truth_domain() {
+        let discarded_domains = [
+            "worldstream_operation_guards",
+            "worldstream_room_roots",
+            "worldstream_genesis",
+            "worldstream_materializations",
+            "worldstream_members",
+            "worldstream_timers",
+            "worldstream_transitions",
+            "worldstream_frames",
+            "worldstream_observation_consequences",
+            "worldstream_activation_decisions",
+            "worldstream_activation_intents",
+            "worldstream_activation_operation_receipts",
+            "worldstream_room_snapshots",
+            "worldstream_semantic_receipts",
+            "worldstream_integrity_incidents",
+            "worldstream_authority_fences",
+            "worldstream_authority_state",
+            "worldstream_authority_principals",
+            "worldstream_authority_runners",
+            "worldstream_authority_capabilities",
+            "worldstream_authority_capability_scopes",
+            "worldstream_authority_runner_capability_memberships",
+            "worldstream_authority_change_receipts",
+            "worldstream_authority_audit",
+            "worldstream_transfer_chunks",
+            "worldstream_transfer_imports",
+            "worldstream_deployment_metadata",
+            "worldstream_deployment_identity_metadata",
+            "worldstream_deployment_pack_identities",
+            "worldstream_deployment_resource_blobs",
+            "worldstream_deployment_resource_identities",
+            "worldstream_retired_authority_fences_v1",
+        ];
+
+        let mut expected_schema_domains =
+            discarded_domains.iter().copied().collect::<BTreeSet<_>>();
+        expected_schema_domains.insert("worldstream_schema_migrations");
+        expected_schema_domains.insert("worldstream_transfer_target_fence");
+        let schema_domains = crate::migrations::SCHEMA_FINGERPRINT_MATERIAL
+            .split(");")
+            .filter_map(|domain| domain.split_once('(').map(|(name, _)| name))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(schema_domains, expected_schema_domains);
+
+        for domain in discarded_domains {
+            if domain == "worldstream_authority_state" {
+                assert!(
+                    AUTHORITY_STATE_COUNT_SQL.contains(domain),
+                    "the authority singleton proof omitted {domain}"
+                );
+            } else {
+                assert!(
+                    TARGET_EMPTY_DOMAIN_COUNTS_SQL.contains(domain),
+                    "the target emptiness proof omitted {domain}"
+                );
+            }
+            assert!(
+                TARGET_PREFLIGHT_LOCK_SQL.contains(domain),
+                "the target transaction lock omitted {domain}"
+            );
+            assert!(
+                DISCARD_TRANSFER_TARGET_SQL.contains(domain),
+                "the aborted-target discard omitted {domain}"
+            );
+        }
+        assert!(TARGET_EMPTY_DOMAIN_COUNTS_SQL.contains("worldstream_transfer_target_fence"));
+        assert!(!DISCARD_TRANSFER_TARGET_SQL.contains("worldstream_transfer_target_fence"));
+        assert!(!DISCARD_TRANSFER_TARGET_SQL.contains("worldstream_schema_migrations"));
+        assert!(
+            DISCARD_TRANSFER_TARGET_SQL
+                .contains("INSERT INTO worldstream_authority_state(authority_id) VALUES (true)")
+        );
     }
 
     #[test]
@@ -3181,14 +3970,14 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let bundle = fixture_bundle()?;
         let target = TargetFingerprintV1::for_bundle(&bundle)?;
-        let store = fixture_store()?;
-        let destination = PostgresTransferDestination::new(&store, &bundle, target.clone())?;
+        let admin = fixture_admin()?;
+        let destination = PostgresTransferDestination::new(&admin, &bundle, target.clone())?;
         assert_eq!(destination.target(), &target);
 
         let wrong_pack = PackIdentityV1::new("transfer-fixture", "r2", DigestV1::hash(b"pack"))?;
         let wrong_target = TargetFingerprintV1::with_pack(&target, wrong_pack)?;
         assert!(matches!(
-            PostgresTransferDestination::new(&store, &bundle, wrong_target),
+            PostgresTransferDestination::new(&admin, &bundle, wrong_target),
             Err(PostgresTransferError::Contract(
                 TransferError::TargetMismatch { .. }
             ))
@@ -3233,6 +4022,40 @@ mod tests {
             ),
             Err(PostgresTransferError::TargetMismatch(
                 "persisted target bundle fence",
+            ))
+        ));
+        let wrong_target = [1_u8; 32];
+        assert!(matches!(
+            PostgresTransferDestination::verify_target_fence_bytes(
+                bundle_hash,
+                target_hash,
+                Some((&bundle_hash.as_bytes(), &wrong_target)),
+            ),
+            Err(PostgresTransferError::TargetMismatch(
+                "persisted target fingerprint",
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn abort_refuses_a_caller_supplied_wrong_target_before_provider_access()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = fixture_bundle()?;
+        let target = TargetFingerprintV1::for_bundle(&bundle)?;
+        let wrong_pack = PackIdentityV1::new(
+            "transfer-fixture",
+            "wrong-abort-target",
+            DigestV1::hash(b"wrong-abort-target"),
+        )?;
+        let wrong_target = TargetFingerprintV1::with_pack(&target, wrong_pack)?;
+        let admin = fixture_admin()?;
+        let mut destination = PostgresTransferDestination::new(&admin, &bundle, target.clone())?;
+
+        assert!(matches!(
+            destination.abort_import(&wrong_target),
+            Err(PostgresTransferError::TargetMismatch(
+                "abort target fingerprint",
             ))
         ));
         Ok(())
@@ -3321,6 +4144,52 @@ mod tests {
     fn authoritative_retry_uses_non_repairing_native_verification() {
         assert!(NativePublicationMode::VerifyOnly.requires_existing_row());
         assert!(!NativePublicationMode::Hydrate.requires_existing_row());
+    }
+
+    #[test]
+    fn semantic_receipt_guard_requires_exact_retry_state() {
+        let request_hash = [7_u8; 32];
+        let receipt = b"canonical-receipt";
+        assert!(semantic_receipt_guard_matches(
+            &request_hash,
+            Some("room-a"),
+            Some(receipt),
+            &request_hash,
+            "room-a",
+            receipt,
+        ));
+        assert!(!semantic_receipt_guard_matches(
+            &[8_u8; 32],
+            Some("room-a"),
+            Some(receipt),
+            &request_hash,
+            "room-a",
+            receipt,
+        ));
+        assert!(!semantic_receipt_guard_matches(
+            &request_hash,
+            Some("room-b"),
+            Some(receipt),
+            &request_hash,
+            "room-a",
+            receipt,
+        ));
+        assert!(!semantic_receipt_guard_matches(
+            &request_hash,
+            Some("room-a"),
+            None,
+            &request_hash,
+            "room-a",
+            receipt,
+        ));
+        assert!(!semantic_receipt_guard_matches(
+            &request_hash,
+            Some("room-a"),
+            Some(b"different-receipt"),
+            &request_hash,
+            "room-a",
+            receipt,
+        ));
     }
 
     #[test]

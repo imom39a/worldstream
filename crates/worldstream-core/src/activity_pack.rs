@@ -3990,6 +3990,16 @@ impl PackRegistryV1 {
     pub fn is_empty(&self) -> bool {
         self.revisions.is_empty()
     }
+
+    /// Returns the exact validated revision locks retained by this registry.
+    ///
+    /// The iterator follows semantic-digest order. Consumers may use these
+    /// already-validated identities to bind deployment and backup metadata;
+    /// no executor or registry mutation capability is exposed.
+    #[must_use]
+    pub fn retained_revision_locks(&self) -> impl ExactSizeIterator<Item = &PackRevisionLockV1> {
+        self.revisions.values().map(|entry| &entry.revision_lock)
+    }
 }
 
 /// Registry-backed Genesis preparation failure. The two layers remain

@@ -5,8 +5,10 @@
 //! operation repairs a database or mutates the source file.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{
@@ -19,12 +21,19 @@ use thiserror::Error;
 use worldstream_core::{
     CORE_SCHEMA_VERSION, CanonicalJsonV1, CompleteHeadV1, GenesisV1, TransitionV1,
 };
+use worldstream_sqlite_open::{ExactSqliteConnection, open_exact};
 
 use crate::{
     BackendNativePointV1, BackendProfileV1, MAX_DEPLOYMENT_LINEAGE_BYTES, MAX_SAFE_INTEGER,
     NativeRestoreRoomMembershipV1, NativeRestoreTargetEvidenceV1,
 };
 use crate::{DigestV1, PAIRED_SNAPSHOT_SCHEMA_V1};
+
+#[cfg(unix)]
+type NativeFileIdentity = (u64, u64);
+
+#[cfg(windows)]
+type NativeFileIdentity = fs_id::FileID;
 
 const REQUIRED_TABLES: &[&str] = &[
     "activation_decisions",
@@ -54,6 +63,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "runners",
     "schema_migrations",
     "semantic_receipts",
+    "source_transfer_lifecycle",
     "timers",
     "transitions",
 ];
@@ -67,6 +77,8 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0008-sqlite-migration-checksums-v1",
     "0009-deployment-identities-v1",
     "0010-transfer-recovery-completeness-v1",
+    "0011-transfer-lifecycle-and-resource-identity-v1",
+    "0012-transfer-backup-file-identity-v1",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -78,6 +90,8 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:ed00960ddbbfbb6a6cb8fde52ce44631ce41c3e0b7dd2e46968552f7538eb33a",
     "blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb",
     "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1",
+    "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3",
+    "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
 ];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
@@ -777,6 +791,12 @@ pub enum NativeSqliteError {
     /// The input is not a regular, non-symlink file.
     #[error("native SQLite input is not a regular file")]
     InvalidPath,
+    /// Evidence admission found a journal mode or sidecar state that the exact
+    /// retained-main VFS cannot bind safely.
+    #[error(
+        "native SQLite evidence requires a standalone DELETE-journal file with no journal, WAL, or SHM sidecars"
+    )]
+    UnsafeSidecarState,
     /// The native process could not be started or read.
     #[error("native SQLite process I/O failed: {0}")]
     Io(String),
@@ -797,6 +817,15 @@ pub enum NativeSqliteError {
     InvalidRow { what: &'static str },
 }
 
+/// Canonical storage and file identifiers for one retained native artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeSqliteFileIdentityV1 {
+    /// Storage device or Windows volume serial number.
+    pub storage_id: u64,
+    /// File identifier within `storage_id`.
+    pub file_id: u128,
+}
+
 /// Result of a bundled `SQLite` online-backup or restore operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeSqliteTransferReportV1 {
@@ -808,6 +837,8 @@ pub struct NativeSqliteTransferReportV1 {
     pub source_canonical_ready: bool,
     /// Read-only semantic verification of the published destination.
     pub destination_canonical_ready: bool,
+    /// Exact published destination object retained through final validation.
+    destination_identity: NativeSqliteFileIdentityV1,
     capture: NativeSqliteCaptureWitnessV1,
 }
 
@@ -855,6 +886,12 @@ impl NativeSqliteTransferReportV1 {
     #[must_use]
     pub fn capture_witness(&self) -> &NativeSqliteCaptureWitnessV1 {
         &self.capture
+    }
+
+    /// Returns the exact published destination storage and file identifiers.
+    #[must_use]
+    pub const fn destination_identity(&self) -> NativeSqliteFileIdentityV1 {
+        self.destination_identity
     }
 }
 
@@ -966,9 +1003,58 @@ pub fn extract_operational_rows(
     path: &Path,
     limits: NativeSqliteLimits,
 ) -> Result<NativeSqliteOperationalRowsV1, NativeSqliteError> {
+    extract_operational_rows_with_retained_hook(path, limits, |_| Ok(()))
+}
+
+fn extract_operational_rows_with_retained_hook<F>(
+    path: &Path,
+    limits: NativeSqliteLimits,
+    after_retention: F,
+) -> Result<NativeSqliteOperationalRowsV1, NativeSqliteError>
+where
+    F: FnOnce(&Path) -> Result<(), NativeSqliteError>,
+{
+    let retained = RetainedNativeSqliteSource::open(path)?;
+    after_retention(path)?;
+    extract_operational_rows_retained(path, &retained.file, limits)
+}
+
+/// Extracts operational rows from one exact retained `SQLite` file.
+///
+/// # Errors
+///
+/// Returns an error when the named path no longer identifies the retained
+/// object or bounded extraction fails.
+pub fn extract_operational_rows_retained(
+    path: &Path,
+    file: &File,
+    limits: NativeSqliteLimits,
+) -> Result<NativeSqliteOperationalRowsV1, NativeSqliteError> {
+    let identity = native_file_identity(file)?;
+    if native_path_identity(path).ok() != Some(identity) {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    let coordinate = retained_native_query_coordinate(path, file, identity)?;
+    let rows =
+        extract_operational_rows_at_coordinate(path, coordinate.file(), coordinate.path(), limits)?;
+    if native_file_identity(file)? != identity || native_path_identity(path).ok() != Some(identity)
+    {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    coordinate.revalidate()?;
+    Ok(rows)
+}
+
+fn extract_operational_rows_at_coordinate(
+    validation_path: &Path,
+    file: &File,
+    path: &Path,
+    limits: NativeSqliteLimits,
+) -> Result<NativeSqliteOperationalRowsV1, NativeSqliteError> {
     validate_limits(limits)?;
-    validate_regular_file(path)?;
+    validate_regular_file(validation_path)?;
     let actual_tables = rows(
+        file,
         path,
         "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;",
         limits,
@@ -984,6 +1070,7 @@ pub fn extract_operational_rows(
             });
         }
         let values = native_rows(
+            file,
             path,
             &format!("{sql} LIMIT {};", bounded_limit(limits.max_rows)?),
             limits,
@@ -1022,10 +1109,60 @@ pub fn extract_restore_evidence(
     path: &Path,
     limits: NativeSqliteLimits,
 ) -> Result<NativeSqliteRestoreEvidenceV1, NativeSqliteError> {
+    extract_restore_evidence_with_retained_hook(path, limits, |_| Ok(()))
+}
+
+fn extract_restore_evidence_with_retained_hook<F>(
+    path: &Path,
+    limits: NativeSqliteLimits,
+    after_retention: F,
+) -> Result<NativeSqliteRestoreEvidenceV1, NativeSqliteError>
+where
+    F: FnOnce(&Path) -> Result<(), NativeSqliteError>,
+{
+    let retained = RetainedNativeSqliteSource::open(path)?;
+    after_retention(path)?;
+    extract_restore_evidence_retained(path, &retained.file, limits)
+}
+
+/// Extracts bounded restore evidence from one exact retained `SQLite` file.
+/// The named path must remain bound to the retained object throughout.
+///
+/// # Errors
+///
+/// Returns an error when identity changes or exact bounded extraction fails.
+pub fn extract_restore_evidence_retained(
+    path: &Path,
+    file: &File,
+    limits: NativeSqliteLimits,
+) -> Result<NativeSqliteRestoreEvidenceV1, NativeSqliteError> {
+    let identity = native_file_identity(file)?;
+    if native_path_identity(path).ok() != Some(identity) {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    let coordinate = retained_native_query_coordinate(path, file, identity)?;
+    let evidence =
+        extract_restore_evidence_at_coordinate(path, coordinate.file(), coordinate.path(), limits)?;
+    if native_file_identity(file)? != identity || native_path_identity(path).ok() != Some(identity)
+    {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    coordinate.revalidate()?;
+    Ok(evidence)
+}
+
+#[allow(clippy::too_many_lines)]
+fn extract_restore_evidence_at_coordinate(
+    validation_path: &Path,
+    file: &File,
+    path: &Path,
+    limits: NativeSqliteLimits,
+) -> Result<NativeSqliteRestoreEvidenceV1, NativeSqliteError> {
     validate_limits(limits)?;
-    validate_regular_file(path)?;
-    let operational = extract_operational_rows(path, limits)?;
+    validate_regular_file(validation_path)?;
+    let operational = extract_operational_rows_at_coordinate(validation_path, file, path, limits)?;
     let actual_tables = rows(
+        file,
         path,
         "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;",
         limits,
@@ -1040,6 +1177,7 @@ pub fn extract_restore_evidence(
     let (deployment_lineage, storage_epoch) = if actual_tables.contains("canonical_export_metadata")
     {
         let metadata = native_rows(
+            file,
             path,
             "SELECT deployment_lineage, storage_epoch FROM canonical_export_metadata WHERE metadata_id = 1 LIMIT 2;",
             limits,
@@ -1075,6 +1213,7 @@ pub fn extract_restore_evidence(
     // evidence remains explicitly absent and therefore blocks readiness.
     let migration_metadata = if actual_tables.contains("schema_migrations") {
         let columns = rows(
+            file,
             path,
             "SELECT name FROM pragma_table_info('schema_migrations');",
             limits,
@@ -1084,6 +1223,7 @@ pub fn extract_restore_evidence(
             .any(|row| row.first().is_some_and(|name| name == "source_checksum"));
         if has_checksum {
             let rows = native_rows(
+                file,
                 path,
                 &format!(
                     "SELECT version, migration_id, source_checksum \
@@ -1120,6 +1260,7 @@ pub fn extract_restore_evidence(
 
     let identity_witness_present = if actual_tables.contains("deployment_identity_metadata") {
         let rows = native_rows(
+            file,
             path,
             "SELECT metadata_id, pack_set_digest, resource_set_digest, canonical_bytes FROM deployment_identity_metadata WHERE metadata_id = 1 LIMIT 2;",
             limits,
@@ -1138,6 +1279,7 @@ pub fn extract_restore_evidence(
     let pack_metadata =
         if identity_witness_present && actual_tables.contains("deployment_pack_identities") {
             let rows = native_rows(
+                file,
                 path,
                 &format!(
                     "SELECT pack_id, revision, pack_digest \
@@ -1162,6 +1304,7 @@ pub fn extract_restore_evidence(
         && actual_tables.contains("deployment_resource_blobs")
     {
         let rows = native_rows(
+            file,
             path,
             &format!(
                 "SELECT i.resource_kind, i.resource_identity, i.size_bytes, i.resource_digest, \
@@ -1206,6 +1349,7 @@ pub fn extract_restore_evidence(
     };
 
     let genesis = native_rows(
+        file,
         path,
         &format!(
             "SELECT room_id, genesis_bytes \
@@ -1216,6 +1360,7 @@ pub fn extract_restore_evidence(
         limits,
     )?;
     let transitions = native_rows(
+        file,
         path,
         &format!(
             "SELECT room_id, room_seq, transition_hash, previous_lineage_hash, transition_bytes \
@@ -1272,6 +1417,7 @@ pub fn extract_restore_evidence(
     }
 
     let materializations = native_rows(
+        file,
         path,
         &format!(
             "SELECT room_id, core_state_bytes, activity_state_bytes \
@@ -1294,6 +1440,7 @@ pub fn extract_restore_evidence(
 
     let integrity =
         native_rows(
+            file,
             path,
             &format!(
                 "SELECT room_id, status, generation FROM room_integrity ORDER BY room_id LIMIT {};",
@@ -1319,6 +1466,7 @@ pub fn extract_restore_evidence(
 
     let room_rows = if actual_tables.contains("rooms") {
         rows(
+            file,
             path,
             &format!(
                 "SELECT room_id, CAST(room_seq AS TEXT), genesis_or_transition_hash, core_schema_version, \
@@ -1361,6 +1509,7 @@ pub fn extract_restore_evidence(
         .collect::<Result<BTreeMap<_, _>, NativeSqliteError>>()?;
     let snapshots = if actual_tables.contains("room_snapshots") {
         rows(
+            file,
             path,
             &format!(
                 "SELECT room_id, CAST(room_seq AS TEXT), snapshot_schema_version, \
@@ -1451,19 +1600,241 @@ pub fn verify_file(
     path: &Path,
     limits: NativeSqliteLimits,
 ) -> Result<NativeSqliteVerificationReportV1, NativeSqliteError> {
+    verify_file_with_retained_hook(path, limits, |_| Ok(()))
+}
+
+fn verify_file_with_retained_hook<F>(
+    path: &Path,
+    limits: NativeSqliteLimits,
+    after_retention: F,
+) -> Result<NativeSqliteVerificationReportV1, NativeSqliteError>
+where
+    F: FnOnce(&Path) -> Result<(), NativeSqliteError>,
+{
+    let retained = RetainedNativeSqliteSource::open(path)?;
+    after_retention(path)?;
+    verify_retained_file(path, &retained.file, limits)
+}
+
+/// Verifies one exact retained `SQLite` file without reopening its mutable
+/// pathname on Unix. The named path must still identify the retained object
+/// before and after the complete bounded verification.
+///
+/// # Errors
+///
+/// Returns an error when the retained object and named path differ, or when
+/// bounded native verification rejects the exact object.
+pub fn verify_retained_file(
+    path: &Path,
+    file: &File,
+    limits: NativeSqliteLimits,
+) -> Result<NativeSqliteVerificationReportV1, NativeSqliteError> {
+    let identity = native_file_identity(file)?;
+    if native_path_identity(path).ok() != Some(identity) {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    let coordinate = retained_native_query_coordinate(path, file, identity)?;
+    let report = verify_file_at_coordinate(path, coordinate.file(), coordinate.path(), limits)?;
+    if native_file_identity(file)? != identity || native_path_identity(path).ok() != Some(identity)
+    {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    coordinate.revalidate()?;
+    Ok(report)
+}
+
+/// Recomputes the exact logical digest persisted by the `SQLite` transfer-point
+/// lifecycle from one retained, standalone backup object.
+///
+/// The lifecycle table itself is deliberately excluded, matching the producer:
+/// the copied backup contains `source_authoritative` while the live source is
+/// advanced to `transfer_pending` after capture. Every other user schema item
+/// and stored value participates in the digest.
+///
+/// # Errors
+///
+/// Returns an error when the retained main object or its parent changes, the
+/// database is not standalone DELETE-journal evidence, a sidecar exists, a
+/// query exceeds `limits`, or the exact logical rows cannot be read.
+pub fn durable_transfer_point_digest_retained(
+    path: &Path,
+    file: &File,
+    limits: NativeSqliteLimits,
+) -> Result<[u8; 32], NativeSqliteError> {
     validate_limits(limits)?;
-    let metadata = fs::symlink_metadata(path).map_err(|_| NativeSqliteError::InvalidPath)?;
+    let identity = native_file_identity(file)?;
+    if native_path_identity(path).ok() != Some(identity) {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    let coordinate = retained_native_query_coordinate(path, file, identity)?;
+    let connection = open_native_read_connection(coordinate.file(), coordinate.path())?;
+    connection
+        .busy_timeout(Duration::from_millis(50))
+        .and_then(|()| connection.execute_batch("PRAGMA query_only=ON; BEGIN;"))
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let digest = durable_transfer_point_digest_at_connection(&connection, limits)?;
+    drop(connection);
+    coordinate.revalidate()?;
+    Ok(digest)
+}
+
+#[allow(clippy::too_many_lines)]
+fn durable_transfer_point_digest_at_connection(
+    connection: &Connection,
+    limits: NativeSqliteLimits,
+) -> Result<[u8; 32], NativeSqliteError> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/sqlite-transfer-point/v1");
+
+    let mut schema_statement = connection
+        .prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+             WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' \
+             ORDER BY type, name, tbl_name",
+        )
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let mut schema_rows = schema_statement
+        .query(())
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let mut schema_count = 0_usize;
+    let mut schema_bytes = 0_usize;
+    while let Some(row) = schema_rows
+        .next()
+        .map_err(|_| NativeSqliteError::QueryFailed)?
+    {
+        schema_count = schema_count.saturating_add(1);
+        if schema_count > limits.max_rows {
+            return Err(NativeSqliteError::OutputBoundExceeded);
+        }
+        for index in 0..4 {
+            let value = row
+                .get_ref(index)
+                .map_err(|_| NativeSqliteError::QueryFailed)?;
+            let ValueRef::Text(value) = value else {
+                return Err(NativeSqliteError::InvalidRow {
+                    what: "transfer digest schema value",
+                });
+            };
+            schema_bytes = schema_bytes.saturating_add(value.len());
+            if schema_bytes > limits.max_output_bytes {
+                return Err(NativeSqliteError::OutputBoundExceeded);
+            }
+            digest_native_length(&mut hasher, value.len())?;
+            hasher.update(value);
+        }
+    }
+    drop(schema_rows);
+    drop(schema_statement);
+
+    let tables = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' \
+             AND name NOT LIKE 'sqlite_%' AND name <> 'source_transfer_lifecycle' \
+             ORDER BY name",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map((), |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let table_name_bytes = tables.iter().map(String::len).sum::<usize>();
+    if tables.len() > limits.max_rows || table_name_bytes > limits.max_output_bytes {
+        return Err(NativeSqliteError::OutputBoundExceeded);
+    }
+
+    for table in tables {
+        digest_native_length(&mut hasher, table.len())?;
+        hasher.update(table.as_bytes());
+        let quoted = table.replace('"', "\"\"");
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY rowid"))
+            .map_err(|_| NativeSqliteError::QueryFailed)?;
+        let column_count = statement.column_count();
+        let mut rows = statement
+            .query(())
+            .map_err(|_| NativeSqliteError::QueryFailed)?;
+        let mut row_count = 0_usize;
+        let mut value_bytes = 0_usize;
+        while let Some(row) = rows.next().map_err(|_| NativeSqliteError::QueryFailed)? {
+            row_count = row_count.saturating_add(1);
+            if row_count > limits.max_rows {
+                return Err(NativeSqliteError::OutputBoundExceeded);
+            }
+            hasher.update(b"row");
+            for index in 0..column_count {
+                match row
+                    .get_ref(index)
+                    .map_err(|_| NativeSqliteError::QueryFailed)?
+                {
+                    ValueRef::Null => {
+                        hasher.update(&[0]);
+                    }
+                    ValueRef::Integer(value) => {
+                        value_bytes = value_bytes.saturating_add(std::mem::size_of::<i64>());
+                        hasher.update(&[1]);
+                        hasher.update(&value.to_le_bytes());
+                    }
+                    ValueRef::Real(value) => {
+                        value_bytes = value_bytes.saturating_add(std::mem::size_of::<f64>());
+                        hasher.update(&[2]);
+                        hasher.update(&value.to_bits().to_le_bytes());
+                    }
+                    ValueRef::Text(value) => {
+                        value_bytes = value_bytes.saturating_add(value.len());
+                        hasher.update(&[3]);
+                        digest_native_length(&mut hasher, value.len())?;
+                        hasher.update(value);
+                    }
+                    ValueRef::Blob(value) => {
+                        value_bytes = value_bytes.saturating_add(value.len());
+                        hasher.update(&[4]);
+                        digest_native_length(&mut hasher, value.len())?;
+                        hasher.update(value);
+                    }
+                }
+                if value_bytes > limits.max_output_bytes {
+                    return Err(NativeSqliteError::OutputBoundExceeded);
+                }
+            }
+        }
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn digest_native_length(
+    hasher: &mut blake3::Hasher,
+    value: usize,
+) -> Result<(), NativeSqliteError> {
+    let value = u64::try_from(value).map_err(|_| NativeSqliteError::InvalidRow {
+        what: "transfer digest length",
+    })?;
+    hasher.update(&value.to_le_bytes());
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn verify_file_at_coordinate(
+    validation_path: &Path,
+    file: &File,
+    path: &Path,
+    limits: NativeSqliteLimits,
+) -> Result<NativeSqliteVerificationReportV1, NativeSqliteError> {
+    validate_limits(limits)?;
+    let metadata =
+        fs::symlink_metadata(validation_path).map_err(|_| NativeSqliteError::InvalidPath)?;
     if !metadata.file_type().is_file() {
         return Err(NativeSqliteError::InvalidPath);
     }
 
     let query_only = scalar(
+        file,
         path,
         "SELECT CAST(query_only AS TEXT) FROM pragma_query_only;",
         limits,
     )? == "1";
-    let engine_version = scalar(path, "SELECT sqlite_version();", limits)?;
-    let integrity_check = scalar(path, "PRAGMA integrity_check;", limits)?;
+    let engine_version = scalar(file, path, "SELECT sqlite_version();", limits)?;
+    let integrity_check = scalar(file, path, "PRAGMA integrity_check;", limits)?;
     let mut diagnostics = Vec::new();
     if !query_only {
         diagnostic(&mut diagnostics, "native_not_query_only", true, "database");
@@ -1478,6 +1849,7 @@ pub fn verify_file(
     }
 
     let tables = rows(
+        file,
         path,
         "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;",
         limits,
@@ -1494,7 +1866,56 @@ pub fn verify_file(
         }
     }
 
+    if actual_tables.contains("source_transfer_lifecycle") {
+        let lifecycle_valid = scalar(
+            file,
+            path,
+            r"SELECT CAST(
+                 (SELECT count(*) FROM source_transfer_lifecycle) = 1 AND EXISTS(
+                     SELECT 1 FROM source_transfer_lifecycle WHERE lifecycle_id = 1 AND (
+                         (state = 'source_authoritative'
+                          AND source_epoch IS NULL AND target_epoch IS NULL
+                          AND backup_path IS NULL AND backup_digest IS NULL
+                          AND bundle_hash IS NULL AND target_fingerprint IS NULL
+                          AND ((last_aborted_bundle_hash IS NULL
+                                AND last_aborted_target_fingerprint IS NULL)
+                               OR (length(last_aborted_bundle_hash) = 32
+                                   AND length(last_aborted_target_fingerprint) = 32)))
+                         OR
+                         (state = 'transfer_pending'
+                          AND source_epoch BETWEEN 1 AND 9007199254740991
+                          AND target_epoch = source_epoch + 1
+                          AND backup_path IS NOT NULL AND length(backup_path) > 0
+                          AND length(backup_digest) = 32
+                          AND ((bundle_hash IS NULL AND target_fingerprint IS NULL)
+                               OR (length(bundle_hash) = 32 AND length(target_fingerprint) = 32))
+                          AND last_aborted_bundle_hash IS NULL
+                          AND last_aborted_target_fingerprint IS NULL)
+                         OR
+                         (state = 'source_retired'
+                          AND source_epoch BETWEEN 1 AND 9007199254740991
+                          AND target_epoch = source_epoch + 1
+                          AND backup_path IS NOT NULL AND length(backup_path) > 0
+                          AND length(backup_digest) = 32
+                          AND length(bundle_hash) = 32 AND length(target_fingerprint) = 32
+                          AND last_aborted_bundle_hash IS NULL
+                          AND last_aborted_target_fingerprint IS NULL)
+                     )
+                 ) AS TEXT);",
+            limits,
+        )? == "1";
+        if !lifecycle_valid {
+            diagnostic(
+                &mut diagnostics,
+                "source_transfer_lifecycle_mismatch",
+                true,
+                "source_transfer_lifecycle",
+            );
+        }
+    }
+
     let migration_columns = rows_if_table(
+        file,
         path,
         "SELECT name FROM pragma_table_info('schema_migrations');",
         limits,
@@ -1518,6 +1939,7 @@ pub fn verify_file(
         )
     };
     let migrations = rows_if_table(
+        file,
         path,
         &migration_query,
         limits,
@@ -1552,6 +1974,7 @@ pub fn verify_file(
     }
 
     let export_metadata = rows_if_table(
+        file,
         path,
         &format!(
             "SELECT CAST(metadata_id AS TEXT), deployment_lineage, CAST(storage_epoch AS TEXT) \
@@ -1580,6 +2003,7 @@ pub fn verify_file(
     }
 
     let room_rows = rows_if_table(
+        file,
         path,
         &format!(
             "SELECT room_id, CAST(room_seq AS TEXT), genesis_or_transition_hash, core_schema_version, \
@@ -1593,6 +2017,7 @@ pub fn verify_file(
         "rooms",
     )?;
     let genesis_rows = rows_if_table(
+        file,
         path,
         &format!(
             "SELECT room_id, hex(genesis_bytes) FROM room_genesis ORDER BY room_id LIMIT {};",
@@ -1603,6 +2028,7 @@ pub fn verify_file(
         "room_genesis",
     )?;
     let transition_rows = rows_if_table(
+        file,
         path,
         &format!(
             "SELECT room_id, CAST(room_seq AS TEXT), transition_hash, previous_lineage_hash, \
@@ -1616,6 +2042,7 @@ pub fn verify_file(
         "transitions",
     )?;
     let materialization_rows = rows_if_table(
+        file,
         path,
         &format!(
             "SELECT room_id, hex(core_state_bytes), hex(activity_state_bytes) \
@@ -1627,6 +2054,7 @@ pub fn verify_file(
         "room_materializations",
     )?;
     let snapshot_rows = rows_if_table(
+        file,
         path,
         &format!(
             "SELECT room_id, CAST(room_seq AS TEXT), snapshot_schema_version, \
@@ -1818,7 +2246,9 @@ pub fn verify_file(
         .iter()
         .all(|(table, _)| actual_tables.contains(*table))
     {
-        if let Ok(rows) = extract_operational_rows(path, limits) {
+        if let Ok(rows) =
+            extract_operational_rows_at_coordinate(validation_path, file, path, limits)
+        {
             Some(rows)
         } else {
             diagnostic(
@@ -2470,6 +2900,7 @@ fn transfer_file(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn transfer_file_with_publish_hook<F>(
     source: &Path,
     destination: &Path,
@@ -2481,75 +2912,188 @@ fn transfer_file_with_publish_hook<F>(
 where
     F: FnOnce(&Path) -> Result<(), NativeSqliteError>,
 {
+    transfer_file_with_hooks(
+        source,
+        destination,
+        operation,
+        options,
+        interrupt_after_steps,
+        |_, _| Ok(()),
+        before_publish,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
+fn transfer_file_with_hooks<F, G>(
+    source: &Path,
+    destination: &Path,
+    operation: &'static str,
+    options: NativeSqliteTransferOptions,
+    interrupt_after_steps: Option<u32>,
+    before_native_open: F,
+    before_publish: G,
+) -> Result<NativeSqliteTransferReportV1, NativeSqliteError>
+where
+    F: FnOnce(&Path, &Path) -> Result<(), NativeSqliteError>,
+    G: FnOnce(&Path) -> Result<(), NativeSqliteError>,
+{
     validate_transfer_options(options)?;
-    validate_regular_file(source)?;
-    validate_new_destination(destination)?;
-    let source_report = verify_file(source, NativeSqliteLimits::default())?;
+    let retained_source = RetainedNativeSqliteSource::open(source)?;
+    let publication_parent = validate_new_destination(destination)?;
+    let source_report =
+        verify_retained_file(source, &retained_source.file, NativeSqliteLimits::default())?;
     if !source_report.canonical_ready {
         return Err(NativeSqliteError::NativeOperationFailed { operation });
     }
+    retained_source.revalidate()?;
 
-    let temporary = temporary_destination(destination)?;
+    let (temporary, mut temporary_file) = temporary_destination(&publication_parent, destination)?;
+    let temporary_identity = native_file_identity(&temporary_file)?;
+    let temporary_name = temporary
+        .file_name()
+        .ok_or(NativeSqliteError::InvalidPath)?
+        .to_owned();
+    before_native_open(source, &temporary)?;
+    retained_source.revalidate()?;
+    publication_parent.require_named()?;
+    publication_parent.require_relative_identity(&temporary_name, temporary_identity)?;
     let page_count = match bundled_online_backup(
         source,
         &temporary,
+        &retained_source,
+        &publication_parent,
+        &temporary_name,
+        temporary_identity,
+        &temporary_file,
         operation,
         options,
         interrupt_after_steps,
     ) {
         Ok(page_count) => page_count,
         Err(error) => {
-            return Err(cleanup_then_error(&temporary, error, "temporary cleanup"));
+            return Err(if scrub_native_file(&temporary_file, temporary_identity) {
+                error
+            } else {
+                NativeSqliteError::CleanupFailed {
+                    what: "temporary retained-handle cleanup",
+                }
+            });
         }
     };
-    if let Err(error) = before_publish(destination) {
-        return Err(cleanup_then_error(&temporary, error, "temporary cleanup"));
-    }
-    if let Err(error) = publish_without_replacement(&temporary, destination) {
-        return Err(cleanup_then_error(&temporary, error, "temporary cleanup"));
-    }
+    retained_source.revalidate()?;
+    temporary_file = publication_parent
+        .reopen_staging_for_publication(&temporary_name, &temporary_file, temporary_identity)
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+    let mut published = None;
+    let mut source_moved = false;
+    let result = (|| {
+        before_publish(destination)?;
+        publication_parent.require_named()?;
+        publication_parent.require_relative_identity(&temporary_name, temporary_identity)?;
+        let expected_fingerprint = native_file_fingerprint(&mut temporary_file)?;
+        let (mut publication_file, publication_identity) = prepare_native_publication_source(
+            &publication_parent,
+            &mut temporary_file,
+            expected_fingerprint,
+        )?;
+        source_moved = publish_native_source_without_replacement(
+            &publication_parent,
+            &mut publication_file,
+            publication_identity,
+            expected_fingerprint,
+            &mut published,
+        )?;
 
-    let destination_report = match verify_file(destination, NativeSqliteLimits::default()) {
-        Ok(report) if report.canonical_ready => report,
-        Ok(_) | Err(_) => {
-            let error = NativeSqliteError::NativeOperationFailed { operation };
-            let error = cleanup_then_error(destination, error, "published destination cleanup");
-            return Err(cleanup_then_error(&temporary, error, "temporary cleanup"));
-        }
-    };
-    remove_file_strict(&temporary, "temporary cleanup")?;
-    let source_evidence = extract_restore_evidence(source, NativeSqliteLimits::default())?;
-    let destination_evidence =
-        extract_restore_evidence(destination, NativeSqliteLimits::default())?;
-    let source_evidence_digest = native_extraction_digest(&source_evidence)?;
-    let target_evidence_digest = native_extraction_digest(&destination_evidence)?;
-    if source_evidence_digest != target_evidence_digest {
-        let error = NativeSqliteError::NativeOperationFailed { operation };
-        return Err(cleanup_then_error(
+        publication_parent.require_named()?;
+        let final_file = published.as_ref().ok_or(NativeSqliteError::CleanupFailed {
+            what: "published destination handle",
+        })?;
+        let destination_report =
+            match verify_retained_file(destination, final_file, NativeSqliteLimits::default()) {
+                Ok(report) if report.canonical_ready => report,
+                Ok(_) => {
+                    return Err(NativeSqliteError::NativeOperationFailed { operation });
+                }
+                Err(error) => return Err(error),
+            };
+        retained_source.revalidate()?;
+        let source_evidence = extract_restore_evidence_retained(
+            source,
+            &retained_source.file,
+            NativeSqliteLimits::default(),
+        )?;
+        retained_source.revalidate()?;
+        let destination_evidence = extract_restore_evidence_retained(
             destination,
+            final_file,
+            NativeSqliteLimits::default(),
+        )?;
+        let destination_identity = public_native_file_identity(native_file_identity(final_file)?);
+        let source_evidence_digest = native_extraction_digest(&source_evidence)?;
+        let target_evidence_digest = native_extraction_digest(&destination_evidence)?;
+        if source_evidence_digest != target_evidence_digest {
+            return Err(NativeSqliteError::NativeOperationFailed { operation });
+        }
+        publication_parent.require_named()?;
+        publication_parent.require_relative_identity(&temporary_name, temporary_identity)?;
+        require_native_file_fingerprint(
+            &mut temporary_file,
+            temporary_identity,
+            expected_fingerprint,
+        )?;
+        require_native_file_fingerprint(
+            &mut publication_file,
+            publication_identity,
+            expected_fingerprint,
+        )?;
+        if let Some(final_file) = published.as_mut() {
+            let final_identity = native_file_identity(final_file)?;
+            require_native_file_fingerprint(final_file, final_identity, expected_fingerprint)?;
+            publication_parent
+                .require_relative_identity(publication_parent.name(), final_identity)?;
+        }
+        finish_native_publication_source(
+            &publication_parent,
+            &temporary_name,
+            &temporary_file,
+            temporary_identity,
+            source_moved,
+        )?;
+        publication_parent.sync()?;
+        publication_parent.require_named()?;
+        let engine_version = rusqlite::version().to_owned();
+        let native_point = BackendNativePointV1::SqliteOnlineBackup {
+            engine_identity: engine_version.clone(),
+            point_id: format!(
+                "sqlite-online-backup-v1:{}",
+                source_evidence_digest.as_str()
+            ),
+        };
+        Ok(NativeSqliteTransferReportV1 {
+            engine_version: rusqlite::version().to_owned(),
+            page_count,
+            source_canonical_ready: source_report.canonical_ready,
+            destination_canonical_ready: destination_report.canonical_ready,
+            destination_identity,
+            capture: NativeSqliteCaptureWitnessV1 {
+                source_evidence_digest,
+                target_evidence_digest,
+                native_point: native_point.clone(),
+                engine_version,
+            },
+        })
+    })();
+    result.map_err(|error| {
+        cleanup_native_publication(
+            &temporary,
+            temporary_identity,
+            &temporary_file,
+            &publication_parent,
+            published.as_ref(),
+            source_moved,
             error,
-            "published destination cleanup",
-        ));
-    }
-    let engine_version = rusqlite::version().to_owned();
-    let native_point = BackendNativePointV1::SqliteOnlineBackup {
-        engine_identity: engine_version.clone(),
-        point_id: format!(
-            "sqlite-online-backup-v1:{}",
-            source_evidence_digest.as_str()
-        ),
-    };
-    Ok(NativeSqliteTransferReportV1 {
-        engine_version: rusqlite::version().to_owned(),
-        page_count,
-        source_canonical_ready: source_report.canonical_ready,
-        destination_canonical_ready: destination_report.canonical_ready,
-        capture: NativeSqliteCaptureWitnessV1 {
-            source_evidence_digest,
-            target_evidence_digest,
-            native_point: native_point.clone(),
-            engine_version,
-        },
+        )
     })
 }
 
@@ -2563,27 +3107,64 @@ fn native_extraction_digest(
         })
 }
 
+fn require_standalone_delete_journal(connection: &Connection) -> rusqlite::Result<()> {
+    let mode: String = connection.query_row("PRAGMA journal_mode=DELETE", (), |row| row.get(0))?;
+    if mode != "delete" {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn bundled_online_backup(
     source: &Path,
     destination: &Path,
+    retained_source: &RetainedNativeSqliteSource,
+    publication_parent: &NativePublicationParent,
+    temporary_name: &OsStr,
+    temporary_identity: NativeFileIdentity,
+    temporary_file: &File,
     operation: &'static str,
     options: NativeSqliteTransferOptions,
     interrupt_after_steps: Option<u32>,
 ) -> Result<u64, NativeSqliteError> {
-    fs::remove_file(destination)
-        .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
-    let source_connection = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
+    let canonical_source = fs::canonicalize(source).map_err(|_| NativeSqliteError::InvalidPath)?;
+    let canonical_destination =
+        fs::canonicalize(destination).map_err(|_| NativeSqliteError::InvalidPath)?;
+    let source_authority = retained_source
+        .file
+        .try_clone()
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+    let source_connection = open_exact(
+        source_authority,
+        &canonical_source,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
+    retained_source.revalidate()?;
     source_connection
         .busy_timeout(Duration::from_millis(50))
         .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
-    let mut destination_connection = Connection::open(destination)
-        .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
+    let destination_authority = temporary_file
+        .try_clone()
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+    let mut destination_connection = open_exact(
+        destination_authority,
+        &canonical_destination,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
+    publication_parent.require_named()?;
+    publication_parent.require_relative_identity(temporary_name, temporary_identity)?;
     destination_connection
         .busy_timeout(Duration::from_millis(50))
         .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
     destination_connection
-        .execute_batch("PRAGMA synchronous = FULL;")
+        .execute_batch("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=FULL;")
         .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
     let backup = Backup::new(&source_connection, &mut destination_connection)
         .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
@@ -2598,13 +3179,12 @@ fn bundled_online_backup(
             StepResult::Done => {
                 let page_count = backup.progress().pagecount;
                 drop(backup);
+                require_standalone_delete_journal(&destination_connection)
+                    .map_err(|_| NativeSqliteError::NativeOperationFailed { operation })?;
                 drop(destination_connection);
-                let file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(destination)
-                    .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
-                file.sync_all()
+                publication_parent.require_relative_identity(temporary_name, temporary_identity)?;
+                temporary_file
+                    .sync_all()
                     .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
                 return u64::try_from(page_count)
                     .map_err(|_| NativeSqliteError::NativeOperationFailed { operation });
@@ -2622,6 +3202,53 @@ fn bundled_online_backup(
         }
     }
     Err(NativeSqliteError::NativeOperationFailed { operation })
+}
+
+struct RetainedNativeSqliteSource {
+    path: std::path::PathBuf,
+    file: File,
+    identity: NativeFileIdentity,
+}
+
+impl RetainedNativeSqliteSource {
+    fn open(path: &Path) -> Result<Self, NativeSqliteError> {
+        validate_regular_file(path)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+            let flags = i32::try_from(flags.bits()).map_err(|_| NativeSqliteError::InvalidPath)?;
+            options.custom_flags(flags);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        }
+        let file = options
+            .open(path)
+            .map_err(|_| NativeSqliteError::InvalidPath)?;
+        let identity = native_file_identity(&file)?;
+        let retained = Self {
+            path: path.to_owned(),
+            file,
+            identity,
+        };
+        retained.revalidate()?;
+        Ok(retained)
+    }
+
+    fn revalidate(&self) -> Result<(), NativeSqliteError> {
+        if native_file_identity(&self.file).ok() != Some(self.identity)
+            || native_path_identity(&self.path).ok() != Some(self.identity)
+        {
+            return Err(NativeSqliteError::InvalidPath);
+        }
+        Ok(())
+    }
 }
 
 fn validate_regular_file(path: &Path) -> Result<(), NativeSqliteError> {
@@ -2648,72 +3275,724 @@ fn validate_transfer_options(
     Ok(())
 }
 
-fn validate_new_destination(path: &Path) -> Result<(), NativeSqliteError> {
-    if fs::symlink_metadata(path).is_ok() {
-        return Err(NativeSqliteError::InvalidPath);
-    }
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let metadata = fs::symlink_metadata(parent).map_err(|_| NativeSqliteError::InvalidPath)?;
-    if !metadata.file_type().is_dir() {
-        return Err(NativeSqliteError::InvalidPath);
-    }
-    Ok(())
+struct NativePublicationParent {
+    path: std::path::PathBuf,
+    name: OsString,
+    directory: File,
+    identity: NativeFileIdentity,
 }
 
+impl NativePublicationParent {
+    fn open(destination: &Path) -> Result<Self, NativeSqliteError> {
+        let path = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_owned();
+        let name = destination
+            .file_name()
+            .ok_or(NativeSqliteError::InvalidPath)?
+            .to_owned();
+        #[cfg(unix)]
+        let directory = {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let flags = rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC;
+            let flags = i32::try_from(flags.bits()).map_err(|_| NativeSqliteError::InvalidPath)?;
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(&path)
+                .map_err(|_| NativeSqliteError::InvalidPath)?
+        };
+        #[cfg(windows)]
+        let directory = worldstream_windows_handle::open_pinned_directory(&path)
+            .map_err(|_| NativeSqliteError::InvalidPath)?;
+        #[cfg(not(any(unix, windows)))]
+        return Err(NativeSqliteError::InvalidPath);
+        if !directory
+            .metadata()
+            .map_err(|_| NativeSqliteError::InvalidPath)?
+            .is_dir()
+        {
+            return Err(NativeSqliteError::InvalidPath);
+        }
+        let identity = native_file_identity(&directory)?;
+        let parent = Self {
+            path,
+            name,
+            directory,
+            identity,
+        };
+        parent.require_named()?;
+        parent.require_relative_absent(parent.name())?;
+        Ok(parent)
+    }
+
+    fn name(&self) -> &OsStr {
+        &self.name
+    }
+
+    fn directory(&self) -> &File {
+        &self.directory
+    }
+
+    fn path_for(&self, name: &OsStr) -> std::path::PathBuf {
+        self.path.join(name)
+    }
+
+    fn create_staging(&self, name: &OsStr) -> io::Result<File> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let descriptor = rustix::fs::openat(
+                &self.directory,
+                name,
+                OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(io::Error::from)?;
+            return Ok(File::from(descriptor));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::{
+                Foundation::{GENERIC_READ, GENERIC_WRITE},
+                Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
+            };
+            return OpenOptions::new()
+                .access_mode(GENERIC_READ | GENERIC_WRITE)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .create_new(true)
+                .open(self.path_for(name));
+        }
+        #[allow(unreachable_code)]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported native SQLite staging platform",
+        ))
+    }
+
+    fn reopen_staging_for_publication(
+        &self,
+        name: &OsStr,
+        staging: &File,
+        expected: NativeFileIdentity,
+    ) -> io::Result<File> {
+        #[cfg(not(windows))]
+        {
+            let _ = (self, name, expected);
+            staging.try_clone()
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::{
+                Foundation::{GENERIC_READ, GENERIC_WRITE},
+                Storage::FileSystem::{DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
+            };
+
+            let path = self.path_for(name);
+            let publication = match OpenOptions::new()
+                .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) => {
+                    return if scrub_native_file(staging, expected) {
+                        Err(error)
+                    } else {
+                        Err(io::Error::other(format!(
+                            "opening the native SQLite publication handle failed ({error}); exact staging cleanup was unsafe"
+                        )))
+                    };
+                }
+            };
+            let validation = (|| {
+                if native_file_identity(&publication)
+                    .map_err(|error| io::Error::other(error.to_string()))?
+                    != expected
+                {
+                    return Err(io::Error::other("native SQLite staging identity changed"));
+                }
+                self.require_relative_identity(name, expected)
+                    .map_err(|error| io::Error::other(error.to_string()))
+            })();
+            if let Err(error) = validation {
+                if !cleanup_rejected_staging_reopen(staging, expected, &publication) {
+                    return Err(io::Error::other(format!(
+                        "native SQLite staging validation failed ({error}); exact staging cleanup was unsafe"
+                    )));
+                }
+                return Err(error);
+            }
+            Ok(publication)
+        }
+    }
+
+    fn require_named(&self) -> Result<(), NativeSqliteError> {
+        if native_directory_path_identity(&self.path).ok() != Some(self.identity) {
+            return Err(NativeSqliteError::InvalidPath);
+        }
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), NativeSqliteError> {
+        self.directory
+            .sync_all()
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))
+    }
+
+    fn open_relative_read(&self, name: &OsStr) -> io::Result<File> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let descriptor = rustix::fs::openat(
+                &self.directory,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(io::Error::from)?;
+            return Ok(File::from(descriptor));
+        }
+        #[cfg(windows)]
+        {
+            return File::open(self.path_for(name));
+        }
+        #[allow(unreachable_code)]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported relative native publication open",
+        ))
+    }
+
+    fn require_relative_identity(
+        &self,
+        name: &OsStr,
+        expected: NativeFileIdentity,
+    ) -> Result<(), NativeSqliteError> {
+        let file = self
+            .open_relative_read(name)
+            .map_err(|_| NativeSqliteError::InvalidPath)?;
+        if native_file_identity(&file)? != expected {
+            return Err(NativeSqliteError::InvalidPath);
+        }
+        Ok(())
+    }
+
+    fn require_relative_absent(&self, name: &OsStr) -> Result<(), NativeSqliteError> {
+        match self.open_relative_read(name) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            _ => Err(NativeSqliteError::InvalidPath),
+        }
+    }
+}
+
+fn validate_new_destination(path: &Path) -> Result<NativePublicationParent, NativeSqliteError> {
+    NativePublicationParent::open(path)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeFileFingerprint {
+    byte_len: u64,
+    digest: [u8; 32],
+}
+
+fn prepare_native_publication_source(
+    parent: &NativePublicationParent,
+    staging: &mut File,
+    expected: NativeFileFingerprint,
+) -> Result<(File, NativeFileIdentity), NativeSqliteError> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::fs::{Mode, OFlags};
+        use std::io::Write as _;
+
+        let descriptor = rustix::fs::openat(
+            parent.directory(),
+            ".",
+            OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let mut publication = File::from(descriptor);
+        staging
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let mut remaining = expected.byte_len;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while remaining != 0 {
+            let limit = usize::try_from(remaining.min(buffer.len() as u64))
+                .map_err(|_| NativeSqliteError::InvalidPath)?;
+            let read = staging
+                .read(&mut buffer[..limit])
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+            if read == 0 {
+                return Err(NativeSqliteError::InvalidPath);
+            }
+            publication
+                .write_all(&buffer[..read])
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+            remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
+        }
+        let mut extra = [0_u8; 1];
+        if staging
+            .read(&mut extra)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?
+            != 0
+        {
+            return Err(NativeSqliteError::InvalidPath);
+        }
+        publication
+            .sync_all()
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let identity = native_file_identity(&publication)?;
+        require_native_file_fingerprint(&mut publication, identity, expected)?;
+        return Ok((publication, identity));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        parent.require_named()?;
+        let mut publication = staging
+            .try_clone()
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let identity = native_file_identity(&publication)?;
+        require_native_file_fingerprint(&mut publication, identity, expected)?;
+        Ok((publication, identity))
+    }
+}
+
+#[cfg(test)]
 fn publish_without_replacement(
+    source: &mut File,
+    source_identity: NativeFileIdentity,
     temporary: &Path,
     destination: &Path,
-) -> Result<(), NativeSqliteError> {
-    match fs::hard_link(temporary, destination) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+    expected: NativeFileFingerprint,
+    published: &mut Option<File>,
+) -> Result<bool, NativeSqliteError> {
+    publish_without_replacement_with_hook(
+        source,
+        source_identity,
+        temporary,
+        destination,
+        expected,
+        published,
+        |_| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+fn publish_without_replacement_with_hook<F>(
+    source: &mut File,
+    source_identity: NativeFileIdentity,
+    temporary: &Path,
+    destination: &Path,
+    expected: NativeFileFingerprint,
+    published: &mut Option<File>,
+    before_publish: F,
+) -> Result<bool, NativeSqliteError>
+where
+    F: FnOnce(&Path) -> Result<(), NativeSqliteError>,
+{
+    let publication_parent = validate_new_destination(destination)?;
+    require_native_file_fingerprint(source, source_identity, expected)?;
+    let temporary_name = temporary
+        .file_name()
+        .ok_or(NativeSqliteError::InvalidPath)?;
+    publication_parent.require_relative_identity(temporary_name, source_identity)?;
+    before_publish(temporary)?;
+    publication_parent.require_named()?;
+    publication_parent.require_relative_identity(temporary_name, source_identity)?;
+    publish_native_source_without_replacement(
+        &publication_parent,
+        source,
+        source_identity,
+        expected,
+        published,
+    )
+}
+
+fn publish_native_source_without_replacement(
+    publication_parent: &NativePublicationParent,
+    source: &mut File,
+    source_identity: NativeFileIdentity,
+    expected: NativeFileFingerprint,
+    published: &mut Option<File>,
+) -> Result<bool, NativeSqliteError> {
+    require_native_file_fingerprint(source, source_identity, expected)?;
+    publication_parent.require_named()?;
+    let (source_moved, mut final_file) =
+        publish_native_handle_noreplace(source, publication_parent)?;
+    let final_identity = native_file_identity(&final_file)?;
+    *published = Some(
+        final_file
+            .try_clone()
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+    );
+    require_native_file_fingerprint(source, source_identity, expected)?;
+    require_native_file_fingerprint(&mut final_file, final_identity, expected)?;
+    publication_parent.require_relative_identity(publication_parent.name(), final_identity)?;
+    publication_parent.require_named()?;
+    Ok(source_moved)
+}
+
+fn publish_native_handle_noreplace(
+    source: &File,
+    publication_parent: &NativePublicationParent,
+) -> Result<(bool, File), NativeSqliteError> {
+    #[cfg(target_os = "linux")]
+    let result: io::Result<(bool, File)> = (|| {
+        use std::os::fd::AsRawFd as _;
+
+        let descriptor_path = format!("/proc/self/fd/{}", source.as_raw_fd());
+        rustix::fs::linkat(
+            rustix::fs::CWD,
+            descriptor_path.as_str(),
+            publication_parent.directory(),
+            publication_parent.name(),
+            rustix::fs::AtFlags::SYMLINK_FOLLOW,
+        )
+        .map_err(io::Error::from)?;
+        publication_parent
+            .require_named()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        source.try_clone().map(|file| (false, file))
+    })();
+    #[cfg(target_os = "macos")]
+    let result: io::Result<(bool, File)> = (|| {
+        use rustix::fs::{Mode, OFlags};
+
+        rustix::fs::fclonefileat(
+            source,
+            publication_parent.directory(),
+            publication_parent.name(),
+            rustix::fs::CloneFlags::empty(),
+        )
+        .map_err(io::Error::from)?;
+        let descriptor = rustix::fs::openat(
+            publication_parent.directory(),
+            publication_parent.name(),
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        let final_file = File::from(descriptor);
+        if let Err(error) = publication_parent.require_named() {
+            if let Ok(identity) = native_file_identity(&final_file) {
+                let _ = scrub_native_file(&final_file, identity);
+            }
+            return Err(io::Error::other(error.to_string()));
+        }
+        Ok((false, final_file))
+    })();
+    #[cfg(windows)]
+    let result: io::Result<(bool, File)> = (|| {
+        worldstream_windows_handle::rename_noreplace_at(
+            source,
+            publication_parent.directory(),
+            publication_parent.name(),
+        )?;
+        source.try_clone().map(|file| (true, file))
+    })();
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let result: io::Result<(bool, File)> = Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "unsupported native SQLite publication platform",
+    ));
+
+    match result {
+        Ok(published) => Ok(published),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             Err(NativeSqliteError::InvalidPath)
         }
         Err(error) => Err(NativeSqliteError::Io(error.to_string())),
     }
 }
 
-fn remove_file_strict(path: &Path, what: &'static str) -> Result<(), NativeSqliteError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err(NativeSqliteError::CleanupFailed { what }),
+fn native_file_fingerprint(file: &mut File) -> Result<NativeFileFingerprint, NativeSqliteError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut byte_len = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        byte_len = byte_len
+            .checked_add(u64::try_from(read).unwrap_or(u64::MAX))
+            .ok_or(NativeSqliteError::InvalidPath)?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok(NativeFileFingerprint {
+        byte_len,
+        digest: *hasher.finalize().as_bytes(),
+    })
+}
+
+fn require_native_file_fingerprint(
+    file: &mut File,
+    identity: NativeFileIdentity,
+    expected: NativeFileFingerprint,
+) -> Result<(), NativeSqliteError> {
+    if native_file_identity(file)? != identity || native_file_fingerprint(file)? != expected {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn native_file_identity(file: &File) -> Result<NativeFileIdentity, NativeSqliteError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    file.metadata()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))
+}
+
+#[cfg(windows)]
+fn native_file_identity(file: &File) -> Result<NativeFileIdentity, NativeSqliteError> {
+    fs_id::FileID::new(file).map_err(|error| NativeSqliteError::Io(error.to_string()))
+}
+
+#[cfg(unix)]
+const fn public_native_file_identity(identity: NativeFileIdentity) -> NativeSqliteFileIdentityV1 {
+    NativeSqliteFileIdentityV1 {
+        storage_id: identity.0,
+        file_id: identity.1 as u128,
     }
 }
 
-fn cleanup_then_error(
-    path: &Path,
+#[cfg(windows)]
+const fn public_native_file_identity(identity: NativeFileIdentity) -> NativeSqliteFileIdentityV1 {
+    NativeSqliteFileIdentityV1 {
+        storage_id: identity.storage_id(),
+        file_id: identity.internal_file_id(),
+    }
+}
+
+#[cfg(unix)]
+fn native_file_has_single_link(file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    file.metadata().is_ok_and(|metadata| metadata.nlink() == 1)
+}
+
+#[cfg(windows)]
+fn native_file_has_single_link(file: &File) -> bool {
+    worldstream_windows_handle::hard_link_count(file).is_ok_and(|count| count == 1)
+}
+
+fn scrub_native_file(file: &File, expected: NativeFileIdentity) -> bool {
+    if native_file_identity(file).ok() != Some(expected) || !native_file_has_single_link(file) {
+        return false;
+    }
+    if file.set_len(0).and_then(|()| file.sync_all()).is_err() {
+        return false;
+    }
+    native_file_identity(file).ok() == Some(expected)
+        && native_file_has_single_link(file)
+        && file.metadata().is_ok_and(|metadata| metadata.len() == 0)
+}
+
+/// A rejected pathname reopen is never cleanup authority. It may identify an
+/// unrelated same-owner victim installed after the retained staging object was
+/// admitted. Only the retained expected staging handle may be scrubbed.
+#[cfg(any(test, windows))]
+fn cleanup_rejected_staging_reopen(
+    staging: &File,
+    expected: NativeFileIdentity,
+    _rejected_reopen: &File,
+) -> bool {
+    scrub_native_file(staging, expected)
+}
+
+#[cfg(unix)]
+fn native_path_identity(path: &Path) -> io::Result<NativeFileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(io::Error::other(
+            "native SQLite artifact is not a regular file",
+        ));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn native_path_identity(path: &Path) -> io::Result<NativeFileIdentity> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(io::Error::other(
+            "native SQLite artifact is not a regular file",
+        ));
+    }
+    fs_id::FileID::new(path)
+}
+
+#[cfg(unix)]
+fn native_directory_path_identity(path: &Path) -> io::Result<NativeFileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(io::Error::other(
+            "native SQLite publication parent is not a directory",
+        ));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn native_directory_path_identity(path: &Path) -> io::Result<NativeFileIdentity> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(io::Error::other(
+            "native SQLite publication parent is not a directory",
+        ));
+    }
+    fs_id::FileID::new(path)
+}
+
+fn finish_native_publication_source(
+    parent: &NativePublicationParent,
+    temporary_name: &OsStr,
+    temporary_file: &File,
+    identity: NativeFileIdentity,
+    source_moved: bool,
+) -> Result<(), NativeSqliteError> {
+    if source_moved {
+        return parent.require_relative_absent(temporary_name);
+    }
+    parent.require_relative_identity(temporary_name, identity)?;
+    if !scrub_native_file(temporary_file, identity) {
+        return Err(NativeSqliteError::CleanupFailed {
+            what: "temporary retained-handle scrub",
+        });
+    }
+    parent.require_relative_identity(temporary_name, identity)?;
+    if temporary_file
+        .metadata()
+        .map_err(|_| NativeSqliteError::CleanupFailed {
+            what: "temporary retained-handle metadata",
+        })?
+        .len()
+        != 0
+    {
+        return Err(NativeSqliteError::CleanupFailed {
+            what: "temporary retained-handle scrub",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+fn remove_published_source_with_hook<F>(
+    temporary: &Path,
+    identity: NativeFileIdentity,
+    source_moved: bool,
+    after_identity_check: F,
+) -> Result<(), NativeSqliteError>
+where
+    F: FnOnce() -> Result<(), NativeSqliteError>,
+{
+    if source_moved {
+        if fs::symlink_metadata(temporary).is_ok() {
+            return Err(NativeSqliteError::CleanupFailed {
+                what: "renamed temporary remained",
+            });
+        }
+        return Ok(());
+    }
+    if native_path_identity(temporary).ok() != Some(identity) {
+        return Err(NativeSqliteError::CleanupFailed {
+            what: "temporary identity changed",
+        });
+    }
+    after_identity_check()?;
+    if native_path_identity(temporary).ok() != Some(identity) {
+        return Err(NativeSqliteError::CleanupFailed {
+            what: "temporary identity changed",
+        });
+    }
+    Err(NativeSqliteError::CleanupFailed {
+        what: "pathname cleanup is forbidden",
+    })
+}
+
+fn cleanup_native_publication(
+    temporary: &Path,
+    temporary_identity: NativeFileIdentity,
+    temporary_file: &File,
+    publication_parent: &NativePublicationParent,
+    published_file: Option<&File>,
+    source_moved: bool,
     error: NativeSqliteError,
-    what: &'static str,
 ) -> NativeSqliteError {
-    match remove_file_strict(path, what) {
-        Ok(()) => error,
-        Err(cleanup_error) => cleanup_error,
+    let mut complete = scrub_native_file(temporary_file, temporary_identity);
+    if let Some(final_file) = published_file {
+        let final_identity = native_file_identity(final_file).ok();
+        complete &= final_identity.is_some_and(|identity| scrub_native_file(final_file, identity));
+        complete &= final_identity.is_some_and(|identity| {
+            publication_parent
+                .require_relative_identity(publication_parent.name(), identity)
+                .is_ok()
+        }) && final_file
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() == 0);
+    }
+    if source_moved {
+        let temporary_name = temporary.file_name();
+        complete &= temporary_name
+            .is_some_and(|name| publication_parent.require_relative_absent(name).is_ok());
+    } else {
+        complete &= native_file_identity(temporary_file).ok() == Some(temporary_identity)
+            && temporary_file
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() == 0);
+    }
+    complete &= publication_parent.sync().is_ok();
+    if complete {
+        error
+    } else {
+        NativeSqliteError::CleanupFailed {
+            what: "retained native publication cleanup",
+        }
     }
 }
 
-fn temporary_destination(destination: &Path) -> Result<std::path::PathBuf, NativeSqliteError> {
+fn temporary_destination(
+    parent: &NativePublicationParent,
+    destination: &Path,
+) -> Result<(std::path::PathBuf, File), NativeSqliteError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
     let file_name = destination
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(NativeSqliteError::InvalidPath)?;
-    for attempt in 0..100_u16 {
-        let candidate = destination.with_file_name(format!(
-            ".{file_name}.worldstream-{}-{attempt}.tmp",
-            std::process::id()
-        ));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => {
-                drop(file);
-                return Ok(candidate);
-            }
+    for _ in 0..100_u16 {
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let mut nonce = String::with_capacity(bytes.len().saturating_mul(2));
+        for byte in bytes {
+            nonce.push(char::from(HEX[usize::from(byte >> 4)]));
+            nonce.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        let name = format!(".{file_name}.worldstream-{nonce}.tmp");
+        let candidate = parent.path_for(OsStr::new(&name));
+        match parent.create_staging(OsStr::new(&name)) {
+            Ok(file) => return Ok((candidate, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(NativeSqliteError::Io(error.to_string())),
         }
@@ -2854,8 +4133,13 @@ fn bounded_limit(max_rows: usize) -> Result<usize, NativeSqliteError> {
         .ok_or(NativeSqliteError::InvalidRow { what: "row limit" })
 }
 
-fn scalar(path: &Path, sql: &str, limits: NativeSqliteLimits) -> Result<String, NativeSqliteError> {
-    let result = rows(path, sql, limits)?;
+fn scalar(
+    file: &File,
+    path: &Path,
+    sql: &str,
+    limits: NativeSqliteLimits,
+) -> Result<String, NativeSqliteError> {
+    let result = rows(file, path, sql, limits)?;
     if result.len() != 1 || result[0].len() != 1 {
         return Err(NativeSqliteError::InvalidRow { what: "scalar" });
     }
@@ -2863,12 +4147,12 @@ fn scalar(path: &Path, sql: &str, limits: NativeSqliteLimits) -> Result<String, 
 }
 
 fn rows(
+    file: &File,
     path: &Path,
     sql: &str,
     limits: NativeSqliteLimits,
 ) -> Result<Vec<Vec<String>>, NativeSqliteError> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let connection = open_native_read_connection(file, path)?;
     connection
         .busy_timeout(Duration::from_millis(50))
         .map_err(|_| NativeSqliteError::QueryFailed)?;
@@ -2899,6 +4183,7 @@ fn rows(
 }
 
 fn rows_if_table(
+    file: &File,
     path: &Path,
     sql: &str,
     limits: NativeSqliteLimits,
@@ -2906,19 +4191,19 @@ fn rows_if_table(
     table: &str,
 ) -> Result<Vec<Vec<String>>, NativeSqliteError> {
     if actual_tables.contains(table) {
-        rows(path, sql, limits)
+        rows(file, path, sql, limits)
     } else {
         Ok(Vec::new())
     }
 }
 
 fn native_rows(
+    file: &File,
     path: &Path,
     sql: &str,
     limits: NativeSqliteLimits,
 ) -> Result<Vec<Vec<NativeSqliteValueV1>>, NativeSqliteError> {
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|_| NativeSqliteError::QueryFailed)?;
+    let connection = open_native_read_connection(file, path)?;
     connection
         .busy_timeout(Duration::from_millis(50))
         .map_err(|_| NativeSqliteError::QueryFailed)?;
@@ -2946,6 +4231,334 @@ fn native_rows(
         }
     }
     Ok(result)
+}
+
+fn open_native_read_connection(
+    file: &File,
+    path: &Path,
+) -> Result<ExactSqliteConnection, NativeSqliteError> {
+    let retained = file
+        .try_clone()
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+    open_exact(
+        retained,
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| NativeSqliteError::QueryFailed)
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDirectoryMutationWitness {
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+struct RetainedNativeQueryParent {
+    path: PathBuf,
+    directory: File,
+    identity: NativeFileIdentity,
+    #[cfg(unix)]
+    mutation: NativeDirectoryMutationWitness,
+}
+
+impl RetainedNativeQueryParent {
+    fn open(database: &Path) -> Result<Self, NativeSqliteError> {
+        let path = database
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .ok_or(NativeSqliteError::InvalidPath)?
+            .to_owned();
+        #[cfg(unix)]
+        let directory = {
+            use std::os::unix::fs::OpenOptionsExt as _;
+
+            let flags = rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC;
+            let flags = i32::try_from(flags.bits()).map_err(|_| NativeSqliteError::InvalidPath)?;
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(&path)
+                .map_err(|_| NativeSqliteError::InvalidPath)?
+        };
+        #[cfg(windows)]
+        let directory = worldstream_windows_handle::open_pinned_directory(&path)
+            .map_err(|_| NativeSqliteError::InvalidPath)?;
+        let identity = native_file_identity(&directory)?;
+        #[cfg(unix)]
+        let mutation = native_directory_mutation_witness(&directory)?;
+        let retained = Self {
+            path,
+            directory,
+            identity,
+            #[cfg(unix)]
+            mutation,
+        };
+        retained.require_named_and_unchanged()?;
+        Ok(retained)
+    }
+
+    fn require_named_and_unchanged(&self) -> Result<(), NativeSqliteError> {
+        if native_file_identity(&self.directory).ok() != Some(self.identity)
+            || native_directory_path_identity(&self.path).ok() != Some(self.identity)
+        {
+            return Err(NativeSqliteError::UnsafeSidecarState);
+        }
+        #[cfg(unix)]
+        if native_directory_mutation_witness(&self.directory).ok() != Some(self.mutation) {
+            return Err(NativeSqliteError::UnsafeSidecarState);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn native_directory_mutation_witness(
+    directory: &File,
+) -> Result<NativeDirectoryMutationWitness, NativeSqliteError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = directory
+        .metadata()
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+    Ok(NativeDirectoryMutationWitness {
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+struct RetainedNativeQueryCoordinate {
+    validation_path: PathBuf,
+    file: File,
+    identity: NativeFileIdentity,
+    parent: RetainedNativeQueryParent,
+    #[cfg(windows)]
+    sidecars: RetainedNativeSidecarReservations,
+    path: PathBuf,
+}
+
+impl RetainedNativeQueryCoordinate {
+    fn file(&self) -> &File {
+        &self.file
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn revalidate(&self) -> Result<(), NativeSqliteError> {
+        if native_file_identity(&self.file)? != self.identity
+            || native_path_identity(&self.validation_path).ok() != Some(self.identity)
+        {
+            return Err(NativeSqliteError::InvalidPath);
+        }
+        require_standalone_delete_header(&self.file)?;
+        self.parent.require_named_and_unchanged()?;
+        #[cfg(unix)]
+        require_native_query_sidecars_absent(&self.path)?;
+        #[cfg(windows)]
+        self.sidecars.revalidate()?;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+struct RetainedNativeSidecarReservation {
+    path: PathBuf,
+    file: File,
+    identity: NativeFileIdentity,
+}
+
+#[cfg(windows)]
+struct RetainedNativeSidecarReservations {
+    reservations: Vec<RetainedNativeSidecarReservation>,
+}
+
+#[cfg(windows)]
+impl RetainedNativeSidecarReservations {
+    fn reserve(database: &Path) -> Result<Self, NativeSqliteError> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
+            Storage::FileSystem::{
+                DELETE, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE,
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            },
+        };
+
+        let mut reservations = Vec::with_capacity(3);
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let path = native_query_sidecar_path(database, suffix)?;
+            let file = OpenOptions::new()
+                .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(
+                    FILE_ATTRIBUTE_TEMPORARY
+                        | FILE_FLAG_DELETE_ON_CLOSE
+                        | FILE_FLAG_OPEN_REPARSE_POINT,
+                )
+                .create_new(true)
+                .open(&path)
+                .map_err(|_| NativeSqliteError::UnsafeSidecarState)?;
+            file.set_len(0)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+            let identity = native_file_identity(&file)?;
+            if native_path_identity(&path).ok() != Some(identity) {
+                return Err(NativeSqliteError::UnsafeSidecarState);
+            }
+            reservations.push(RetainedNativeSidecarReservation {
+                path,
+                file,
+                identity,
+            });
+        }
+        Ok(Self { reservations })
+    }
+
+    fn revalidate(&self) -> Result<(), NativeSqliteError> {
+        for reservation in &self.reservations {
+            if native_file_identity(&reservation.file).ok() != Some(reservation.identity)
+                || native_path_identity(&reservation.path).ok() != Some(reservation.identity)
+                || !reservation
+                    .file
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.len() == 0)
+            {
+                return Err(NativeSqliteError::UnsafeSidecarState);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn retained_native_query_coordinate(
+    path: &Path,
+    file: &File,
+    identity: NativeFileIdentity,
+) -> Result<RetainedNativeQueryCoordinate, NativeSqliteError> {
+    retained_native_query_coordinate_with_hooks(path, file, identity, || Ok(()), || Ok(()))
+}
+
+fn retained_native_query_coordinate_with_hooks<F, G>(
+    path: &Path,
+    file: &File,
+    identity: NativeFileIdentity,
+    after_sidecar_preflight: F,
+    after_main_bind: G,
+) -> Result<RetainedNativeQueryCoordinate, NativeSqliteError>
+where
+    F: FnOnce() -> Result<(), NativeSqliteError>,
+    G: FnOnce() -> Result<(), NativeSqliteError>,
+{
+    if native_file_identity(file)? != identity || native_path_identity(path).ok() != Some(identity)
+    {
+        return Err(NativeSqliteError::InvalidPath);
+    }
+    require_standalone_delete_header(file)?;
+    let canonical_path = fs::canonicalize(path).map_err(|_| NativeSqliteError::InvalidPath)?;
+    let parent = RetainedNativeQueryParent::open(&canonical_path)?;
+    require_native_query_sidecars_absent(&canonical_path)?;
+    after_sidecar_preflight()?;
+    parent.require_named_and_unchanged()?;
+    require_native_query_sidecars_absent(&canonical_path)?;
+    #[cfg(windows)]
+    let sidecars = RetainedNativeSidecarReservations::reserve(&canonical_path)?;
+
+    // This connection exists only to establish the deterministic post-MAIN_DB
+    // admission boundary used by the production checks and regression hooks.
+    // The exact VFS binds MAIN_DB; the retained DELETE header proves SQLite
+    // cannot consult WAL/SHM, while the absent rollback journal and parent
+    // mutation witness fence the remaining sidecar surface.
+    let bound = open_native_read_connection(file, &canonical_path)?;
+    after_main_bind()?;
+    drop(bound);
+
+    let coordinate = RetainedNativeQueryCoordinate {
+        validation_path: path.to_owned(),
+        file: file
+            .try_clone()
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+        identity,
+        parent,
+        #[cfg(windows)]
+        sidecars,
+        path: canonical_path,
+    };
+    coordinate.revalidate()?;
+    Ok(coordinate)
+}
+
+fn require_standalone_delete_header(file: &File) -> Result<(), NativeSqliteError> {
+    let mut header = [0_u8; 20];
+    read_native_exact_at(file, &mut header, 0)?;
+    if &header[..16] != b"SQLite format 3\0" || header[18] != 1 || header[19] != 1 {
+        return Err(NativeSqliteError::UnsafeSidecarState);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_native_exact_at(
+    file: &File,
+    buffer: &mut [u8],
+    offset: u64,
+) -> Result<(), NativeSqliteError> {
+    use std::os::unix::fs::FileExt as _;
+
+    file.read_exact_at(buffer, offset)
+        .map_err(|error| NativeSqliteError::Io(error.to_string()))
+}
+
+#[cfg(windows)]
+fn read_native_exact_at(
+    file: &File,
+    buffer: &mut [u8],
+    offset: u64,
+) -> Result<(), NativeSqliteError> {
+    use std::os::windows::fs::FileExt as _;
+
+    let mut filled = 0_usize;
+    while filled < buffer.len() {
+        let position = offset
+            .checked_add(u64::try_from(filled).map_err(|_| NativeSqliteError::InvalidPath)?)
+            .ok_or(NativeSqliteError::InvalidPath)?;
+        let read = file
+            .seek_read(&mut buffer[filled..], position)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        if read == 0 {
+            return Err(NativeSqliteError::UnsafeSidecarState);
+        }
+        filled = filled.saturating_add(read);
+    }
+    Ok(())
+}
+
+fn native_query_sidecar_path(database: &Path, suffix: &str) -> Result<PathBuf, NativeSqliteError> {
+    let name = database.file_name().ok_or(NativeSqliteError::InvalidPath)?;
+    let mut sidecar = name.to_os_string();
+    sidecar.push(suffix);
+    Ok(database.with_file_name(sidecar))
+}
+
+fn require_native_query_sidecars_absent(database: &Path) -> Result<(), NativeSqliteError> {
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let sidecar = native_query_sidecar_path(database, suffix)?;
+        match fs::symlink_metadata(sidecar) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            _ => return Err(NativeSqliteError::UnsafeSidecarState),
+        }
+    }
+    Ok(())
 }
 
 fn native_row_to_values(
@@ -3184,6 +4797,9 @@ fn action_for_diagnostic(code: &'static str) -> &'static str {
         "migration_contract_mismatch" => {
             "restore the exact forward-only migration prefix before retrying"
         }
+        "source_transfer_lifecycle_mismatch" => {
+            "restore the exact singleton SQLite source-transfer authority state"
+        }
         "duplicate_room" | "duplicate_genesis" => {
             "discard the target and recapture one immutable Room root"
         }
@@ -3252,11 +4868,12 @@ mod tests {
     };
 
     fn fixture_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "worldstream-native-sqlite-{name}-{}-{}.db",
-            std::process::id(),
-            name
-        ))
+        let directory = std::env::temp_dir().join(format!(
+            "worldstream-native-sqlite-{}-{name}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&directory);
+        directory.join("database.sqlite3")
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3449,6 +5066,8 @@ mod tests {
                  CREATE TABLE deployment_pack_identities(pack_id TEXT, revision TEXT, pack_digest BLOB);\
                  CREATE TABLE deployment_resource_identities(resource_kind TEXT, resource_identity TEXT, size_bytes INTEGER, resource_digest BLOB);\
                  CREATE TABLE deployment_resource_blobs(resource_kind TEXT, resource_identity TEXT, resource_bytes BLOB, resource_digest BLOB);\
+                 CREATE TABLE source_transfer_lifecycle(lifecycle_id INTEGER, state TEXT, source_epoch INTEGER, target_epoch INTEGER, backup_path TEXT, backup_digest BLOB, bundle_hash BLOB, target_fingerprint BLOB, last_aborted_bundle_hash BLOB, last_aborted_target_fingerprint BLOB, backup_storage_id TEXT, backup_file_id TEXT);\
+                 INSERT INTO source_transfer_lifecycle VALUES (1, 'source_authoritative', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);\
                  INSERT INTO schema_migrations VALUES\
                  (1, '0001-initial-storage-schema', 'blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763'),\
                  (2, '0002-operational-authority-v1', 'blake3:237088a0f888ef9f91a1010efd95e38a40170b0fc968229b886881937af805b0'),\
@@ -3458,7 +5077,9 @@ mod tests {
                  (6, '0006-canonical-export-metadata-v1', 'blake3:60de4825b3796865acff18f836dfa475640324b71d168350a8ea20c2e06206d5'),\
                  (7, '0008-sqlite-migration-checksums-v1', 'blake3:ed00960ddbbfbb6a6cb8fde52ce44631ce41c3e0b7dd2e46968552f7538eb33a'),\
                  (8, '0009-deployment-identities-v1', 'blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb'),\
-                 (9, '0010-transfer-recovery-completeness-v1', 'blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1');\
+                 (9, '0010-transfer-recovery-completeness-v1', 'blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1'),\
+                 (10, '0011-transfer-lifecycle-and-resource-identity-v1', 'blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3'),\
+                 (11, '0012-transfer-backup-file-identity-v1', 'blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9');\
                  INSERT INTO canonical_export_metadata VALUES (1, 'deployment/fixture', 7);",
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "fixture" })?;
@@ -3857,7 +5478,7 @@ mod tests {
             migration_contract: MigrationContractV1 {
                 logical_history_id: "worldstream-storage-v1".to_owned(),
                 schema_contract_fingerprint: DigestV1::parse(
-                    "c8435cbb21df9aa98518245d14caa0a70416cf5369cc95d7ab2edc40261d119f".to_owned(),
+                    "16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb".to_owned(),
                 )
                 .unwrap(),
                 records,
@@ -3982,7 +5603,7 @@ mod tests {
         artifact
     }
 
-    fn temporary_entries(
+    fn nonempty_temporary_entries(
         destination: &std::path::Path,
     ) -> Result<Vec<std::path::PathBuf>, NativeSqliteError> {
         let parent = destination
@@ -3998,6 +5619,7 @@ mod tests {
             .map_err(|error| NativeSqliteError::Io(error.to_string()))?
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .filter(|entry| entry.metadata().is_ok_and(|metadata| metadata.len() != 0))
             .map(|entry| entry.path())
             .collect::<Vec<_>>();
         Ok(entries)
@@ -4030,6 +5652,84 @@ mod tests {
                 }
             },
         )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_read_entrypoints_remain_bound_to_the_initially_retained_file()
+    -> Result<(), NativeSqliteError> {
+        fn substitute(
+            path: &Path,
+            held: &Path,
+            replacement: &Path,
+        ) -> Result<(), NativeSqliteError> {
+            fs::rename(path, held).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+            fs::rename(replacement, path).map_err(|error| NativeSqliteError::Io(error.to_string()))
+        }
+
+        let verify = create_fixture("public-verify-retention")?;
+        let verify_replacement = create_fixture("public-verify-replacement")?;
+        let verify_held = verify.with_extension("held");
+        let verify_replacement_bytes = fs::read(&verify_replacement)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        assert_eq!(
+            verify_file_with_retained_hook(&verify, NativeSqliteLimits::default(), |path| {
+                substitute(path, &verify_held, &verify_replacement)
+            },),
+            Err(NativeSqliteError::InvalidPath)
+        );
+        assert_eq!(
+            fs::read(&verify).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            verify_replacement_bytes
+        );
+
+        let evidence = create_fixture("public-evidence-retention")?;
+        let evidence_replacement = create_fixture("public-evidence-replacement")?;
+        let evidence_held = evidence.with_extension("held");
+        let evidence_replacement_bytes = fs::read(&evidence_replacement)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        assert_eq!(
+            extract_restore_evidence_with_retained_hook(
+                &evidence,
+                NativeSqliteLimits::default(),
+                |path| substitute(path, &evidence_held, &evidence_replacement),
+            ),
+            Err(NativeSqliteError::InvalidPath)
+        );
+        assert_eq!(
+            fs::read(&evidence).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            evidence_replacement_bytes
+        );
+
+        let operational = create_fixture("public-operational-retention")?;
+        let operational_replacement = create_fixture("public-operational-replacement")?;
+        let operational_held = operational.with_extension("held");
+        let operational_replacement_bytes = fs::read(&operational_replacement)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        assert_eq!(
+            extract_operational_rows_with_retained_hook(
+                &operational,
+                NativeSqliteLimits::default(),
+                |path| substitute(path, &operational_held, &operational_replacement),
+            ),
+            Err(NativeSqliteError::InvalidPath)
+        );
+        assert_eq!(
+            fs::read(&operational).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            operational_replacement_bytes
+        );
+
+        for path in [
+            verify,
+            verify_held,
+            evidence,
+            evidence_held,
+            operational,
+            operational_held,
+        ] {
+            let _ = fs::remove_file(path);
+        }
+        Ok(())
     }
 
     #[test]
@@ -4368,7 +6068,7 @@ mod tests {
         assert!(TransitionV1::from_canonical_bytes(&records[1].bytes).is_ok());
         assert_eq!(evidence.newest_valid_snapshots.len(), 1);
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(9));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(11));
         assert_eq!(evidence.pack_metadata, None);
         assert_eq!(evidence.resource_metadata, None);
         let _ = fs::remove_file(path);
@@ -4603,7 +6303,7 @@ mod tests {
         let path = create_fixture("restore-evidence-absent-metadata")?;
         let evidence = extract_restore_evidence(&path, NativeSqliteLimits::default())?;
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(9));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(11));
         assert!(evidence.pack_metadata.is_none());
         assert!(evidence.resource_metadata.is_none());
         let readiness = assess_restore_readiness(&evidence);
@@ -4798,6 +6498,55 @@ mod tests {
                 && diagnostic.subject.starts_with("subject:")
         }));
         let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn source_transfer_lifecycle_is_required_and_shape_checked() -> Result<(), NativeSqliteError> {
+        let path = create_fixture("source-transfer-lifecycle-shape")?;
+        let connection = Connection::open(&path)
+            .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
+        connection
+            .execute(
+                "UPDATE source_transfer_lifecycle SET state = 'transfer_pending', \
+                 source_epoch = 7, target_epoch = 8, backup_path = NULL, \
+                 backup_digest = zeroblob(32)",
+                [],
+            )
+            .map_err(|_| NativeSqliteError::NativeOperationFailed {
+                operation: "lifecycle fixture",
+            })?;
+        drop(connection);
+
+        let report = verify_file(&path, NativeSqliteLimits::default())?;
+        assert!(!report.canonical_ready);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "source_transfer_lifecycle_mismatch"
+                && diagnostic.blocking
+                && diagnostic.subject.starts_with("subject:")
+        }));
+        let _ = fs::remove_file(path);
+
+        let retired = create_fixture("source-transfer-retired-witnesses")?;
+        let connection = Connection::open(&retired)
+            .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
+        connection
+            .execute(
+                "UPDATE source_transfer_lifecycle SET state = 'source_retired', \
+                 source_epoch = 7, target_epoch = 8, backup_path = '/verified/source.sqlite3', \
+                 backup_digest = zeroblob(32), bundle_hash = NULL, target_fingerprint = NULL",
+                [],
+            )
+            .map_err(|_| NativeSqliteError::NativeOperationFailed {
+                operation: "retired lifecycle fixture",
+            })?;
+        drop(connection);
+        let report = verify_file(&retired, NativeSqliteLimits::default())?;
+        assert!(!report.canonical_ready);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "source_transfer_lifecycle_mismatch" && diagnostic.blocking
+        }));
+        let _ = fs::remove_file(retired);
         Ok(())
     }
 
@@ -5188,10 +6937,10 @@ mod tests {
         assert_eq!(backup_report.engine_version, BUNDLED_SQLITE_VERSION);
         assert!(backup_report.source_canonical_ready);
         assert!(backup_report.destination_canonical_ready);
-        assert!(temporary_entries(&backup)?.is_empty());
+        assert!(nonempty_temporary_entries(&backup)?.is_empty());
         let restore_report = restore_file(&backup, &restored)?;
         assert!(restore_report.destination_canonical_ready);
-        assert!(temporary_entries(&restored)?.is_empty());
+        assert!(nonempty_temporary_entries(&restored)?.is_empty());
         let backup_bytes =
             fs::read(&backup).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
         let restored_bytes =
@@ -5209,7 +6958,7 @@ mod tests {
     }
 
     #[test]
-    fn wal_active_writer_and_read_only_connection_are_native_evidence()
+    fn wal_active_writer_is_rejected_without_mutating_native_evidence()
     -> Result<(), NativeSqliteError> {
         let source = create_fixture("wal-source")?;
         let backup = fixture_path("wal-backup");
@@ -5260,11 +7009,15 @@ mod tests {
         let shm_before =
             fs::read(&shm).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
 
-        let verification = verify_file(&source, NativeSqliteLimits::default())?;
-        assert!(verification.canonical_ready);
-        assert!(verification.query_only);
-        let transfer = backup_file(&source, &backup)?;
-        assert!(transfer.destination_canonical_ready);
+        assert_eq!(
+            verify_file(&source, NativeSqliteLimits::default()),
+            Err(NativeSqliteError::UnsafeSidecarState)
+        );
+        assert_eq!(
+            backup_file(&source, &backup),
+            Err(NativeSqliteError::UnsafeSidecarState)
+        );
+        assert!(!backup.exists());
         assert_eq!(
             database_before,
             fs::read(&source).map_err(|error| NativeSqliteError::Io(error.to_string()))?
@@ -5283,6 +7036,224 @@ mod tests {
         let _ = fs::remove_file(backup);
         let _ = fs::remove_file(wal);
         let _ = fs::remove_file(shm);
+        Ok(())
+    }
+
+    #[test]
+    fn wal_header_is_rejected_even_after_named_sidecars_are_removed()
+    -> Result<(), NativeSqliteError> {
+        let source = create_fixture("wal-header-only")?;
+        let wal = native_query_sidecar_path(&source, "-wal")?;
+        let shm = native_query_sidecar_path(&source, "-shm")?;
+        let connection = Connection::open(&source)
+            .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "open" })?;
+        connection
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|_| NativeSqliteError::NativeOperationFailed {
+                operation: "fixture",
+            })?;
+        drop(connection);
+        let _ = fs::remove_file(&wal);
+        let _ = fs::remove_file(&shm);
+
+        assert_eq!(
+            verify_file(&source, NativeSqliteLimits::default()),
+            Err(NativeSqliteError::UnsafeSidecarState)
+        );
+
+        let _ = fs::remove_file(source);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_sidecar_victim_is_rejected_without_mutation_or_snapshot_leak()
+    -> Result<(), NativeSqliteError> {
+        let source = create_fixture("existing-sidecar-victim")?;
+        let victim = fixture_path("existing-sidecar-victim-bytes");
+        let wal = native_query_sidecar_path(&source, "-wal")?;
+        let sentinel = b"unrelated same-owner WAL-name victim";
+        let _ = fs::remove_file(&victim);
+        let _ = fs::remove_file(&wal);
+        fs::write(&victim, sentinel).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        fs::hard_link(&victim, &wal).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+
+        assert_eq!(
+            verify_file(&source, NativeSqliteLimits::default()),
+            Err(NativeSqliteError::UnsafeSidecarState)
+        );
+        assert_eq!(
+            fs::read(&victim).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            sentinel
+        );
+        let leaked_snapshot = fs::read_dir(source.parent().ok_or(NativeSqliteError::InvalidPath)?)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".worldstream-retained-query-")
+            });
+        assert!(!leaked_snapshot);
+
+        let _ = fs::remove_file(wal);
+        let _ = fs::remove_file(victim);
+        let _ = fs::remove_file(source);
+        Ok(())
+    }
+
+    #[test]
+    fn sidecar_install_after_preflight_is_rejected_before_query() -> Result<(), NativeSqliteError> {
+        let source = create_fixture("sidecar-after-preflight")?;
+        let wal = native_query_sidecar_path(&source, "-wal")?;
+        let retained = RetainedNativeSqliteSource::open(&source)?;
+        let result = retained_native_query_coordinate_with_hooks(
+            &source,
+            &retained.file,
+            retained.identity,
+            || {
+                fs::write(&wal, b"post-preflight WAL victim")
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))
+            },
+            || Ok(()),
+        );
+
+        assert!(matches!(result, Err(NativeSqliteError::UnsafeSidecarState)));
+        assert_eq!(
+            fs::read(&wal).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            b"post-preflight WAL victim"
+        );
+        let _ = fs::remove_file(wal);
+        let _ = fs::remove_file(source);
+        Ok(())
+    }
+
+    #[test]
+    fn sidecar_install_after_main_bind_is_rejected_without_mutation()
+    -> Result<(), NativeSqliteError> {
+        let source = create_fixture("sidecar-after-main-bind")?;
+        let wal = native_query_sidecar_path(&source, "-wal")?;
+        let retained = RetainedNativeSqliteSource::open(&source)?;
+        let result = retained_native_query_coordinate_with_hooks(
+            &source,
+            &retained.file,
+            retained.identity,
+            || Ok(()),
+            || {
+                fs::write(&wal, b"post-bind WAL victim")
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))
+            },
+        );
+
+        assert!(matches!(result, Err(NativeSqliteError::UnsafeSidecarState)));
+        assert_eq!(
+            fs::read(&wal).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            b"post-bind WAL victim"
+        );
+        let _ = fs::remove_file(wal);
+        let _ = fs::remove_file(source);
+        Ok(())
+    }
+
+    #[test]
+    fn transient_sidecar_swap_after_main_bind_changes_the_retained_parent_witness()
+    -> Result<(), NativeSqliteError> {
+        let source = create_fixture("transient-sidecar-after-main-bind")?;
+        let shm = native_query_sidecar_path(&source, "-shm")?;
+        let retained = RetainedNativeSqliteSource::open(&source)?;
+        let result = retained_native_query_coordinate_with_hooks(
+            &source,
+            &retained.file,
+            retained.identity,
+            || Ok(()),
+            || {
+                fs::write(&shm, b"transient SHM victim")
+                    .and_then(|()| fs::remove_file(&shm))
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))
+            },
+        );
+
+        assert!(matches!(result, Err(NativeSqliteError::UnsafeSidecarState)));
+        assert!(!shm.exists());
+        let _ = fs::remove_file(source);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_retained_sidecar_reservations_make_transient_substitution_impossible()
+    -> Result<(), NativeSqliteError> {
+        let source = create_fixture("windows-retained-sidecar-reservations")?;
+        let wal = native_query_sidecar_path(&source, "-wal")?;
+        let retained = RetainedNativeSqliteSource::open(&source)?;
+        let coordinate = retained_native_query_coordinate_with_hooks(
+            &source,
+            &retained.file,
+            retained.identity,
+            || Ok(()),
+            || {
+                if fs::remove_file(&wal).is_ok()
+                    || OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&wal)
+                        .is_ok()
+                {
+                    return Err(NativeSqliteError::UnsafeSidecarState);
+                }
+                Ok(())
+            },
+        )?;
+        coordinate.revalidate()?;
+        drop(coordinate);
+        assert!(!wal.exists());
+        let _ = fs::remove_file(source);
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_staging_reopen_scrubs_only_the_retained_expected_authority()
+    -> Result<(), NativeSqliteError> {
+        let staging_path = fixture_path("rejected-reopen-staging");
+        let victim_path = fixture_path("rejected-reopen-victim");
+        let sentinel = b"unrelated same-owner reopen victim";
+        let _ = fs::remove_file(&staging_path);
+        let _ = fs::remove_file(&victim_path);
+        fs::write(&staging_path, b"sensitive retained staging bytes")
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        fs::write(&victim_path, sentinel)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let staging = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&staging_path)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let victim = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&victim_path)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let staging_identity = native_file_identity(&staging)?;
+
+        assert!(cleanup_rejected_staging_reopen(
+            &staging,
+            staging_identity,
+            &victim
+        ));
+        assert_eq!(
+            fs::metadata(&staging_path)
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))?
+                .len(),
+            0
+        );
+        assert_eq!(
+            fs::read(&victim_path).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            sentinel
+        );
+
+        let _ = fs::remove_file(staging_path);
+        let _ = fs::remove_file(victim_path);
         Ok(())
     }
 
@@ -5315,7 +7286,7 @@ mod tests {
             Err(NativeSqliteError::QueryFailed)
         ));
         assert!(!destination.exists());
-        assert!(temporary_entries(&destination)?.is_empty());
+        assert!(nonempty_temporary_entries(&destination)?.is_empty());
 
         drop(writer);
         let _ = fs::remove_file(source);
@@ -5341,7 +7312,7 @@ mod tests {
             })
         );
         assert!(!backup.exists());
-        assert!(temporary_entries(&backup)?.is_empty());
+        assert!(nonempty_temporary_entries(&backup)?.is_empty());
 
         backup_file(&source, &backup)?;
         let restore_result = transfer_file(&backup, &restored, "restore", options, Some(1));
@@ -5352,7 +7323,7 @@ mod tests {
             })
         );
         assert!(!restored.exists());
-        assert!(temporary_entries(&restored)?.is_empty());
+        assert!(nonempty_temporary_entries(&restored)?.is_empty());
 
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(backup);
@@ -5400,10 +7371,26 @@ mod tests {
             .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
         fs::write(&link_destination, b"existing")
             .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let mut link_source = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&link_temporary)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let link_identity = native_file_identity(&link_source)?;
+        let link_fingerprint = native_file_fingerprint(&mut link_source)?;
+        let mut published = None;
         assert_eq!(
-            publish_without_replacement(&link_temporary, &link_destination),
+            publish_without_replacement(
+                &mut link_source,
+                link_identity,
+                &link_temporary,
+                &link_destination,
+                link_fingerprint,
+                &mut published,
+            ),
             Err(NativeSqliteError::InvalidPath)
         );
+        assert!(published.is_none());
         assert_eq!(
             fs::read(&link_destination)
                 .map_err(|error| NativeSqliteError::Io(error.to_string()))?,
@@ -5415,6 +7402,282 @@ mod tests {
         let _ = fs::remove_dir(existing_directory);
         let _ = fs::remove_file(link_temporary);
         let _ = fs::remove_file(link_destination);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_publication_never_publishes_a_substituted_temporary_name()
+    -> Result<(), NativeSqliteError> {
+        use std::io::Write as _;
+
+        let destination = fixture_path("descriptor-publication-destination");
+        let held = fixture_path("descriptor-publication-held");
+        let _ = fs::remove_file(&destination);
+        let _ = fs::remove_file(&held);
+        let publication_parent = NativePublicationParent::open(&destination)?;
+        let (temporary, mut source) = temporary_destination(&publication_parent, &destination)?;
+        source
+            .write_all(b"admitted native bytes")
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let source_identity = native_file_identity(&source)?;
+        source
+            .sync_all()
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let fingerprint = native_file_fingerprint(&mut source)?;
+        let mut published = None;
+
+        let result = publish_without_replacement_with_hook(
+            &mut source,
+            source_identity,
+            &temporary,
+            &destination,
+            fingerprint,
+            &mut published,
+            |partial| {
+                fs::rename(partial, &held)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+                fs::write(partial, b"substituted native bytes")
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))
+            },
+        );
+
+        assert_eq!(result, Err(NativeSqliteError::InvalidPath));
+        assert!(!destination.exists());
+        let cleanup = cleanup_native_publication(
+            &temporary,
+            source_identity,
+            &source,
+            &publication_parent,
+            published.as_ref(),
+            false,
+            NativeSqliteError::InvalidPath,
+        );
+        assert_eq!(cleanup, NativeSqliteError::InvalidPath);
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::metadata(&held)
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))?
+                .len(),
+            0
+        );
+        assert_eq!(
+            fs::read(&temporary).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            b"substituted native bytes"
+        );
+
+        let _ = fs::remove_file(destination);
+        let _ = fs::remove_file(held);
+        let _ = fs::remove_file(temporary);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_open_never_mutates_a_substituted_staging_hardlink() -> Result<(), NativeSqliteError> {
+        let source = create_fixture("pre-open-staging-source")?;
+        let destination = fixture_path("pre-open-staging-destination");
+        let held = fixture_path("pre-open-staging-held");
+        let victim = fixture_path("pre-open-staging-victim");
+        for path in [&destination, &held, &victim] {
+            let _ = fs::remove_file(path);
+        }
+        let sentinel = b"unrelated same-owner staging victim";
+        fs::write(&victim, sentinel).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+
+        let result = transfer_file_with_hooks(
+            &source,
+            &destination,
+            "backup",
+            NativeSqliteTransferOptions::default(),
+            None,
+            |_, temporary| {
+                fs::rename(temporary, &held)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+                fs::hard_link(&victim, temporary)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))
+            },
+            |_| Ok(()),
+        );
+
+        assert_eq!(result, Err(NativeSqliteError::InvalidPath));
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::read(&victim).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            sentinel
+        );
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(held);
+        let _ = fs::remove_file(destination);
+        let _ = fs::remove_file(victim);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_open_rejects_source_replacement_after_initial_verification()
+    -> Result<(), NativeSqliteError> {
+        let source = create_fixture("pre-open-source-admitted")?;
+        let held = fixture_path("pre-open-source-held");
+        let alternate = create_fixture("pre-open-source-alternate")?;
+        let destination = fixture_path("pre-open-source-destination");
+        let _ = fs::remove_file(&held);
+        let _ = fs::remove_file(&destination);
+        let alternate_before =
+            fs::read(&alternate).map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+
+        let result = transfer_file_with_hooks(
+            &source,
+            &destination,
+            "backup",
+            NativeSqliteTransferOptions::default(),
+            None,
+            |source, _| {
+                fs::rename(source, &held)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+                fs::rename(&alternate, source)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))
+            },
+            |_| Ok(()),
+        );
+
+        assert_eq!(result, Err(NativeSqliteError::InvalidPath));
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::read(&source).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            alternate_before
+        );
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(held);
+        let _ = fs::remove_file(destination);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_publication_rejects_destination_parent_substitution() -> Result<(), NativeSqliteError>
+    {
+        let source = create_fixture("parent-substitution-source")?;
+        let root = fixture_path("parent-substitution-root");
+        let admitted_parent = root.join("admitted");
+        let held_parent = root.join("held-admitted");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&admitted_parent)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let destination = admitted_parent.join("backup.sqlite3");
+        let options = NativeSqliteTransferOptions::default();
+
+        let result =
+            transfer_file_with_publish_hook(&source, &destination, "backup", options, None, |_| {
+                let staged = nonempty_temporary_entries(&destination)?;
+                let staged_name = staged
+                    .first()
+                    .and_then(|path| path.file_name())
+                    .ok_or(NativeSqliteError::InvalidPath)?
+                    .to_owned();
+                fs::rename(&admitted_parent, &held_parent)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+                fs::create_dir(&admitted_parent)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+                fs::rename(
+                    held_parent.join(&staged_name),
+                    admitted_parent.join(&staged_name),
+                )
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))
+            });
+
+        assert!(result.is_err());
+        assert!(
+            !destination.exists()
+                || fs::metadata(&destination)
+                    .map_err(|error| NativeSqliteError::Io(error.to_string()))?
+                    .len()
+                    == 0,
+            "publication reached the replacement parent"
+        );
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_cleanup_never_unlinks_a_substituted_name() -> Result<(), NativeSqliteError> {
+        let temporary = fixture_path("cleanup-substitution-partial");
+        let held = fixture_path("cleanup-substitution-held");
+        let _ = fs::remove_file(&temporary);
+        let _ = fs::remove_file(&held);
+        fs::write(&temporary, b"admitted native bytes")
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let source = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let identity = native_file_identity(&source)?;
+        let replacement = b"same-owner replacement";
+
+        let result = remove_published_source_with_hook(&temporary, identity, false, || {
+            fs::rename(&temporary, &held)
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+            fs::write(&temporary, replacement)
+                .map_err(|error| NativeSqliteError::Io(error.to_string()))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&temporary).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            replacement
+        );
+        let _ = fs::remove_file(temporary);
+        let _ = fs::remove_file(held);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_cleanup_refuses_to_truncate_a_hardlink_alias() -> Result<(), NativeSqliteError> {
+        let destination = fixture_path("cleanup-hardlink-destination");
+        let publication_parent = NativePublicationParent::open(&destination)?;
+        let (temporary, _source) = temporary_destination(&publication_parent, &destination)?;
+        fs::write(&temporary, b"retained staging bytes")
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let source = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+        let identity = native_file_identity(&source)?;
+        let alias = fixture_path("cleanup-hardlink-alias");
+        let _ = fs::remove_file(&alias);
+        fs::hard_link(&temporary, &alias)
+            .map_err(|error| NativeSqliteError::Io(error.to_string()))?;
+
+        let result = cleanup_native_publication(
+            &temporary,
+            identity,
+            &source,
+            &publication_parent,
+            None,
+            false,
+            NativeSqliteError::InvalidPath,
+        );
+
+        assert!(matches!(
+            result,
+            NativeSqliteError::CleanupFailed {
+                what: "retained native publication cleanup"
+            }
+        ));
+        assert_eq!(
+            fs::read(&alias).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
+            b"retained staging bytes"
+        );
+
+        let _ = fs::remove_file(alias);
+        let _ = fs::remove_file(temporary);
         Ok(())
     }
 
@@ -5446,7 +7709,7 @@ mod tests {
             fs::read(&destination).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
             b"destination-wins"
         );
-        assert!(temporary_entries(&destination)?.is_empty());
+        assert!(nonempty_temporary_entries(&destination)?.is_empty());
 
         let backup = fixture_path("publish-race-restore-source");
         let restore_destination = fixture_path("publish-race-restore-destination");
@@ -5472,7 +7735,7 @@ mod tests {
             fs::read(&backup).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
             backup_before
         );
-        assert!(temporary_entries(&restore_destination)?.is_empty());
+        assert!(nonempty_temporary_entries(&restore_destination)?.is_empty());
 
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(destination);
@@ -5516,7 +7779,7 @@ mod tests {
             fs::read(&backup).map_err(|error| NativeSqliteError::Io(error.to_string()))?,
             source_before
         );
-        assert!(temporary_entries(&restored)?.is_empty());
+        assert!(nonempty_temporary_entries(&restored)?.is_empty());
 
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(backup);

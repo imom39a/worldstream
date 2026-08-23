@@ -6,9 +6,11 @@ members = [
     "crates/worldstream-server",
     "crates/worldstream-postgres",
     "crates/worldstream-sqlite",
+    "crates/worldstream-sqlite-open",
     "crates/worldstream-conformance",
     "crates/worldstream-backup",
     "crates/worldstream-transfer",
+    "crates/worldstream-windows-handle",
     "xtask",
 ]
 resolver = "3"
@@ -25,8 +27,10 @@ anyhow = "=1.0.104"
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio", "ws"] }
 blake3 = { version = "=1.8.6", features = ["pure"] }
 clap = { version = "=4.6.6", features = ["derive"] }
+command-group = "=5.0.1"
 directories = "=6.0.0"
 filedescriptor = "=0.8.3"
+fs-id = "=0.2.0"
 getrandom = "=0.4.3"
 http-body-util = "=0.1.5"
 rustix = { version = "=1.1.4", features = ["process"] }
@@ -34,15 +38,19 @@ rustix = { version = "=1.1.4", features = ["process"] }
 # Keep the git revision paired with worldstream-sqlite's exact runtime
 # sqlite_version()/sqlite_source_id() checks.
 rusqlite = { git = "https://github.com/rusqlite/rusqlite.git", rev = "229140734a4a60cc9fa34507fe79cb2277142f49", default-features = false, features = ["bundled"] }
+worldstream-sqlite-open = { path = "crates/worldstream-sqlite-open", version = "=0.1.0" }
 postgres = "=0.19.14"
+postgres-protocol = "=0.6.12"
 native-tls = { version = "=0.2.14", features = ["vendored"] }
+os_pipe = "=1.2.3"
 postgres-native-tls = "=0.5.3"
+processkit = { version = "=3.3.4", default-features = false, features = ["stats"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"
 time = { version = "=0.3.47", features = ["formatting", "parsing"] }
-tokio = { version = "=1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "=1.53.1", features = ["macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 toml = "=0.9.8"
 tower = { version = "=0.5.3", features = ["util"] }
 tracing = "=0.1.44"
@@ -52,6 +60,7 @@ webpki-roots = "=1.0.3"
 windows-permissions = "=0.2.4"
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
 winsafe = { version = "=0.0.28", default-features = false, features = ["kernel"] }
+zeroize = "=1.9.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

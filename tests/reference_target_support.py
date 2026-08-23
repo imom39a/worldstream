@@ -86,6 +86,7 @@ def target_report(
     package_archive: Path,
     package_report: Path,
     daemon: Path,
+    snapshot_fixture_report: Path,
     manifest_toml: Path,
     manifest_json: Path,
 ) -> dict[str, Any]:
@@ -113,6 +114,10 @@ def target_report(
             ROOT
             / "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs",
             "worldstream/reference-snapshot-tail-fixture-source/v1",
+        ),
+        "snapshot_fixture_report": producer.exact_binding(
+            snapshot_fixture_report.read_bytes(),
+            "worldstream/reference-snapshot-tail-fixture/v1",
         ),
     }
     target_environment = {
@@ -275,7 +280,15 @@ def target_report(
                     "generator_binary_sha256": bindings["snapshot_fixture_binary"][
                         "sha256"
                     ],
-                    "generator_report_sha256": "sha256:" + "2" * 64,
+                    "generator_report_sha256": bindings["snapshot_fixture_report"][
+                        "sha256"
+                    ],
+                    "generator_report_size_bytes": bindings["snapshot_fixture_report"][
+                        "size_bytes"
+                    ],
+                    "generator_report_schema": bindings["snapshot_fixture_report"][
+                        "schema"
+                    ],
                     "transition_kind": (
                         "alternating_authorized_membership_suspend_resume"
                     ),

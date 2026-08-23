@@ -19,6 +19,35 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "postgres-packaged-acceptance.py"
 SCHEMA = "worldstream/packaged-backend-parity/v1"
+RUNTIME_ROLE_SQL_FRAGMENTS = (
+    "role.rolsuper::text",
+    "role.rolcreaterole::text",
+    "role.rolcreatedb::text",
+    "role.rolreplication::text",
+    "role.rolbypassrls::text",
+    "has_database_privilege(current_user, current_database(), 'CREATE')",
+    "pg_catalog.pg_auth_members",
+    "has_schema_privilege(current_user, 'public', 'CREATE')",
+    "pg_catalog.pg_namespace",
+    "pg_catalog.pg_class",
+    "pg_catalog.pg_proc",
+    "pg_catalog.pg_type",
+    "'public.worldstream_schema_migrations', 'INSERT'",
+    "'public.worldstream_schema_migrations', 'UPDATE'",
+    "'public.worldstream_schema_migrations', 'DELETE'",
+    "'public.worldstream_schema_migrations', 'TRUNCATE'",
+    "protected_table.table_name, 'INSERT'",
+    "protected_table.table_name, 'UPDATE'",
+    "protected_table.table_name, 'DELETE'",
+    "protected_table.table_name, 'TRUNCATE'",
+)
+
+
+def _assert_runtime_role_sql(query: str) -> None:
+    assert query.count("|| '|' ||") == 16
+    for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+        assert fragment in query
+    assert "unnest(ARRAY['INSERT'" not in query
 
 
 def _module():
@@ -292,6 +321,50 @@ def _valid_browser_story(module, binding: dict) -> dict:
 
 
 class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
+    def test_runtime_role_witness_rejects_each_individual_escalation(self) -> None:
+        module = _module()
+        self.assertEqual(
+            module.RUNTIME_ROLE_ADMISSION_FIELDS,
+            (
+                "superuser",
+                "create_role",
+                "create_database",
+                "replication",
+                "bypass_row_security",
+                "database_create",
+                "other_role_membership",
+                "public_schema_create",
+                "owns_public_schema_object",
+                "migration_insert",
+                "migration_update",
+                "migration_delete",
+                "migration_truncate",
+                "transfer_control_insert",
+                "transfer_control_update",
+                "transfer_control_delete",
+                "transfer_control_truncate",
+            ),
+        )
+        module._validate_runtime_role_admission(module.RUNTIME_ROLE_ADMISSION_EXPECTED)
+        witness = module.RUNTIME_ROLE_ADMISSION_EXPECTED.split("|")
+        for index, field in enumerate(module.RUNTIME_ROLE_ADMISSION_FIELDS):
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(
+                    module.LaneFailure, "postgres_runtime_role_not_least_privileged"
+                ),
+            ):
+                changed = list(witness)
+                changed[index] = "true"
+                module._validate_runtime_role_admission("|".join(changed))
+        _assert_runtime_role_sql(module.RUNTIME_ROLE_ADMISSION_SQL)
+        for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+            with self.subTest(sql_fragment=fragment), self.assertRaises(AssertionError):
+                _assert_runtime_role_sql(
+                    module.RUNTIME_ROLE_ADMISSION_SQL.replace(fragment, "mutated")
+                )
+        self.assertIn("NOREPLICATION NOBYPASSRLS", SCRIPT.read_text(encoding="utf-8"))
+
     @staticmethod
     def _privacy_capture(module, root: Path):
         capture = module.PrivacyCapture(root)
@@ -1007,6 +1080,83 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
                 {"ui", "sdk_python_source", "heist_reference_clients"},
             )
 
+    def test_archive_is_hashed_and_parsed_from_one_private_stable_descriptor(
+        self,
+    ) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-package-fd-") as name:
+            root = Path(name)
+            archive, report = _package_fixture(root)
+            real_open = module.tarfile.open
+            observed_file_objects = []
+
+            def checked_open(*args, **kwargs):
+                observed_file_objects.append(kwargs.get("fileobj"))
+                self.assertIsNotNone(kwargs.get("fileobj"))
+                self.assertEqual(kwargs.get("mode"), "r:gz")
+                return real_open(*args, **kwargs)
+
+            with mock.patch.object(module.tarfile, "open", side_effect=checked_open):
+                module._bind_package(archive, report, root / "extracted")
+
+            self.assertEqual(len(observed_file_objects), 1)
+            self.assertTrue(observed_file_objects[0].closed)
+            self.assertFalse(
+                any(root.glob(".worldstream-verified-package-*")),
+                "the private archive copy must be removed after extraction",
+            )
+
+    def test_archive_path_inode_replacement_during_copy_fails_closed(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-package-race-") as name:
+            root = Path(name)
+            archive, report = _package_fixture(root)
+            replacement = root / "replacement.tar.gz"
+            replacement.write_bytes(archive.read_bytes())
+            real_lstat = module.pathlib.Path.lstat
+            archive_lstat_calls = 0
+
+            def replacing_lstat(path):
+                nonlocal archive_lstat_calls
+                if path == archive:
+                    archive_lstat_calls += 1
+                    if archive_lstat_calls == 2:
+                        replacement.replace(archive)
+                return real_lstat(path)
+
+            with (
+                mock.patch.object(
+                    module.pathlib.Path,
+                    "lstat",
+                    autospec=True,
+                    side_effect=replacing_lstat,
+                ),
+                self.assertRaisesRegex(
+                    module.LaneFailure,
+                    "package_archive_changed_during_verification",
+                ),
+            ):
+                module._bind_package(archive, report, root / "extracted")
+
+    def test_oversized_package_report_is_rejected_before_reading(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-package-size-") as name:
+            root = Path(name)
+            archive, report = _package_fixture(root)
+            with report.open("wb") as output:
+                output.truncate(64 * 1024 * 1024 + 1)
+            with self.assertRaisesRegex(module.LaneFailure, "package_report_invalid"):
+                module._bind_package(archive, report, root / "extracted")
+
+    def test_oversized_cell_report_is_rejected_before_reading(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="worldstream-cell-size-") as name:
+            report = Path(name) / "cell-report.json"
+            with report.open("wb") as output:
+                output.truncate(module.MAX_CELL_REPORT_BYTES + 1)
+            with self.assertRaisesRegex(module.LaneFailure, "cell_report_invalid"):
+                module._load_report(report)
+
     def test_browser_story_is_exactly_bound_and_adversarial_drift_is_rejected(
         self,
     ) -> None:
@@ -1039,6 +1189,27 @@ class PostgreSQLPackagedAcceptanceTests(unittest.TestCase):
                         target = target[key]
                     target[mutation[-2]] = mutation[-1]
                     with self.assertRaises(module.LaneFailure):
+                        module._validate_browser_story(
+                            changed, binding, module.PINNED_BROWSER_IDENTITY
+                        )
+
+            for label, change in {
+                "unlisted-tool": lambda item: item["tools"].__setitem__(
+                    "unexpected", {}
+                ),
+                "python-field": lambda item: item["tools"]["python"].__setitem__(
+                    "executable", "/usr/bin/python"
+                ),
+                "python-version": lambda item: item["tools"]["python"].__setitem__(
+                    "version", "3.14.6"
+                ),
+            }.items():
+                with self.subTest(label=label):
+                    changed = json.loads(json.dumps(valid))
+                    change(changed)
+                    with self.assertRaisesRegex(
+                        module.LaneFailure, "package_browser_tool_identity_invalid"
+                    ):
                         module._validate_browser_story(
                             changed, binding, module.PINNED_BROWSER_IDENTITY
                         )

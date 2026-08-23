@@ -15,8 +15,9 @@ use worldstream_core::CanonicalJsonV1;
 
 use crate::{
     BackendNativePointV1, BackendProfileV1, BackupImageV1, CanonicalRecordKindV1,
-    ConsistencyClassV1, IntegrityWitnessV1, MAX_SAFE_INTEGER, MigrationContractV1, PackIdentityV1,
-    ResourceIdentityV1, RoomDispositionV1, VerificationReportV1, VerifierLimits, verify_restore,
+    ConsistencyClassV1, DigestV1, IntegrityWitnessV1, MAX_SAFE_INTEGER, MigrationContractV1,
+    PackIdentityV1, ResourceIdentityV1, RoomDispositionV1, VerificationReportV1, VerifierLimits,
+    verify_restore,
 };
 
 /// Fixed provider-neutral durable domains required for a `PostgreSQL` native
@@ -56,6 +57,19 @@ pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomai
     NativeRestoreDurableDomainV1::DeploymentResourceIdentities,
     NativeRestoreDurableDomainV1::DeploymentResourceBlobs,
 ];
+
+/// Returns the separate transport bound for one canonical durable-domain row.
+///
+/// `PostgreSQL`'s canonical `jsonb` projection renders each raw `bytea` byte as
+/// two hexadecimal characters and one row can contain several independently
+/// bounded payloads. The semantic object bound therefore cannot also be used
+/// as the encoded-row bound: doing so rejects a valid object above roughly
+/// half the advertised size. Eight payload expansions plus fixed JSON framing
+/// remains finite while admitting every currently modeled multi-payload row.
+#[must_use]
+pub const fn max_native_restore_canonical_row_bytes(max_object_bytes: usize) -> usize {
+    max_object_bytes.saturating_mul(8).saturating_add(64 * 1024)
+}
 
 /// One exact durable ledger domain captured on both sides of a native restore.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -725,16 +739,18 @@ fn check_durable_domains(
         total_rows = total_rows.saturating_add(domain.source_rows.len());
         let mut source_identities = BTreeSet::new();
         let mut restored_identities = BTreeSet::new();
+        let max_canonical_row_bytes =
+            max_native_restore_canonical_row_bytes(limits.max_object_bytes);
         invalid |= domain.source_rows.iter().any(|row| {
             row.canonical_bytes.is_empty()
-                || row.canonical_bytes.len() > limits.max_object_bytes
+                || row.canonical_bytes.len() > max_canonical_row_bytes
                 || CanonicalJsonV1::from_canonical_bytes(&row.canonical_bytes).is_err()
                 || crate::DigestV1::hash(&row.canonical_bytes) != row.digest
                 || !source_identities.insert(row.digest.clone())
         });
         invalid |= domain.restored_rows.iter().any(|row| {
             row.canonical_bytes.is_empty()
-                || row.canonical_bytes.len() > limits.max_object_bytes
+                || row.canonical_bytes.len() > max_canonical_row_bytes
                 || CanonicalJsonV1::from_canonical_bytes(&row.canonical_bytes).is_err()
                 || crate::DigestV1::hash(&row.canonical_bytes) != row.digest
                 || !restored_identities.insert(row.digest.clone())
@@ -941,9 +957,17 @@ fn check_pack_identities(
         );
         return;
     };
-    let expected = identity_map(&evidence.image.manifest.expected_packs, |pack| {
-        pack.pack_id.as_str()
-    });
+    let Some(expected) = unique_pack_map(&evidence.image.manifest.expected_packs) else {
+        block(
+            report,
+            limits,
+            ConsistencyClassV1::Manifest,
+            "native_restore_duplicate_pack_identity",
+            "Activity Pack identities",
+            "remove duplicate or conflicting Pack evidence and repeat restore",
+        );
+        return;
+    };
     if actual != expected {
         block(
             report,
@@ -1115,8 +1139,17 @@ fn exact_canonical_evidence(room: &crate::RoomImageV1, limits: VerifierLimits) -
         && crate::materialization_hash_matches(room)
 }
 
-fn unique_pack_map(values: &[PackIdentityV1]) -> Option<BTreeMap<String, PackIdentityV1>> {
-    unique_identity_map(values, |pack| pack.pack_id.clone())
+fn unique_pack_map(
+    values: &[PackIdentityV1],
+) -> Option<BTreeMap<(String, DigestV1), PackIdentityV1>> {
+    let mut result = BTreeMap::new();
+    for value in values {
+        let key = (value.pack_id.clone(), value.revision_digest.clone());
+        if result.insert(key, value.clone()).is_some() {
+            return None;
+        }
+    }
+    Some(result)
 }
 
 fn unique_resource_map(
@@ -1386,8 +1419,61 @@ mod tests {
     }
 
     #[test]
+    fn complete_evidence_accepts_two_retained_revisions_of_one_pack() {
+        let mut evidence = evidence(vec![room("healthy", IntegrityStatusV1::Healthy)]);
+        let mut retained = evidence.image.manifest.expected_packs[0].clone();
+        retained.revision_digest = digest(GLOBAL_DIGEST);
+        evidence
+            .image
+            .manifest
+            .expected_packs
+            .push(retained.clone());
+        evidence
+            .target
+            .pack_identities
+            .as_mut()
+            .unwrap_or_else(|| unreachable!())
+            .push(retained);
+
+        let report = verify_native_restore(&evidence, VerifierLimits::default());
+        assert!(report.is_ready(), "{:?}", report.diagnostics);
+    }
+
+    #[test]
     fn complete_postgres_durable_domain_inventory_is_required_and_ready() {
         let report = verify_native_restore(&postgres_evidence(), VerifierLimits::default());
+        assert!(report.is_ready(), "{:?}", report.diagnostics);
+    }
+
+    #[test]
+    fn exact_maximum_raw_resource_survives_postgres_hex_row_framing() {
+        let limits = VerifierLimits::default();
+        let mut canonical = Vec::with_capacity(limits.max_object_bytes * 2 + 8);
+        canonical.extend_from_slice(br#"["\\x"#);
+        for _ in 0..limits.max_object_bytes {
+            canonical.extend_from_slice(b"00");
+        }
+        canonical.extend_from_slice(br#""]"#);
+        assert!(canonical.len() > limits.max_object_bytes);
+        assert!(canonical.len() <= max_native_restore_canonical_row_bytes(limits.max_object_bytes));
+
+        let mut evidence = postgres_evidence();
+        let domain = evidence
+            .target
+            .durable_domains
+            .as_mut()
+            .unwrap_or_else(|| unreachable!())
+            .iter_mut()
+            .find(|domain| domain.domain == NativeRestoreDurableDomainV1::DeploymentResourceBlobs)
+            .unwrap_or_else(|| unreachable!());
+        let rows = vec![NativeRestoreCanonicalRowV1::new(canonical)];
+        *domain = NativeRestoreDurableDomainEvidenceV1::new(
+            NativeRestoreDurableDomainV1::DeploymentResourceBlobs,
+            rows.clone(),
+            rows,
+        );
+
+        let report = verify_native_restore(&evidence, limits);
         assert!(report.is_ready(), "{:?}", report.diagnostics);
     }
 

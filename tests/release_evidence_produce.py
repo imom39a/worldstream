@@ -372,7 +372,9 @@ def test_workflow_maps_typed_producers_and_exact_artifact_bindings():
         "macos-source/macos-quickstart",
         "security-observability/security-observability",
         "failure-soak/failure-soak",
+        "failure-soak/linux-release-profile",
         "reference-performance/reference-performance",
+        "reference-performance/linux-release-profile",
     ):
         assert f"--artifact {binding}=" in release
     assert (
@@ -416,13 +418,13 @@ def test_workflow_hard_requires_packaged_failure_soak_artifact_layout():
     release = workflow[workflow.index("  release-evidence:") :]
 
     assert (
-        "needs: [fast, native, macos-source-release, conformance-release, "
+        "needs: [release-clock, fast, native, macos-source-release, conformance-release, "
         "packaged-backend-release, failure-soak-release, "
         "reference-performance-release]" in release
     )
     assert "name: release-native-linux" in failure
     assert "name: release-linux-package-report" in failure
-    assert "needs: [native, packaged-backend-release]" in failure
+    assert "needs: [release-clock, native, packaged-backend-release]" in failure
     assert (
         "runs-on: [self-hosted, linux, x64, "
         "ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]" in failure
@@ -490,7 +492,8 @@ def test_workflow_projects_and_uploads_exact_packaged_reference_inputs():
     release = workflow[workflow.index("  release-evidence:") :]
 
     assert (
-        "needs: [native, packaged-backend-release, failure-soak-release]" in reference
+        "needs: [release-clock, native, packaged-backend-release, "
+        "failure-soak-release]" in reference
     )
     assert "always()" not in reference[: reference.index("    steps:")]
     for artifact_name, destination in (

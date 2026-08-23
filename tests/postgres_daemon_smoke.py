@@ -14,6 +14,40 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "postgres-daemon-smoke.sh"
 SCHEMA = "worldstream/postgresql-daemon-smoke/v1"
+RUNTIME_ROLE_SQL_FRAGMENTS = (
+    "role.rolsuper::text",
+    "role.rolcreaterole::text",
+    "role.rolcreatedb::text",
+    "role.rolreplication::text",
+    "role.rolbypassrls::text",
+    "has_database_privilege(current_user, current_database(), 'CREATE')",
+    "pg_catalog.pg_auth_members",
+    "has_schema_privilege(current_user, 'public', 'CREATE')",
+    "pg_catalog.pg_namespace",
+    "pg_catalog.pg_class",
+    "pg_catalog.pg_proc",
+    "pg_catalog.pg_type",
+    "'public.worldstream_schema_migrations', 'INSERT'",
+    "'public.worldstream_schema_migrations', 'UPDATE'",
+    "'public.worldstream_schema_migrations', 'DELETE'",
+    "'public.worldstream_schema_migrations', 'TRUNCATE'",
+    "protected_table.table_name, 'INSERT'",
+    "protected_table.table_name, 'UPDATE'",
+    "protected_table.table_name, 'DELETE'",
+    "protected_table.table_name, 'TRUNCATE'",
+)
+
+
+def assert_runtime_role_contract(source: str) -> None:
+    start = source.index("runtime_role_admission_sql() {")
+    end = source.index("\n}\n", start)
+    query = source[start:end]
+    expected = "false|" * 16 + "false"
+    assert f'RUNTIME_ROLE_ADMISSION_EXPECTED="{expected}"' in source
+    assert query.count("|| '|' ||") == 16
+    for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+        assert fragment in query
+    assert "unnest(ARRAY['INSERT'" not in query
 
 
 class PostgreSQLDaemonSmokeTests(unittest.TestCase):
@@ -116,6 +150,14 @@ class PostgreSQLDaemonSmokeTests(unittest.TestCase):
         self.assertIn("bootstrap_authority(&store", source)
         self.assertIn(".with_scheduler()", source)
         self.assertIn("tokio::task::spawn_blocking(work)", source)
+
+    def test_runtime_role_witness_is_exact_and_mutation_closed(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        assert_runtime_role_contract(source)
+        self.assertIn("NOREPLICATION NOBYPASSRLS", source)
+        for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+            with self.subTest(fragment=fragment), self.assertRaises(AssertionError):
+                assert_runtime_role_contract(source.replace(fragment, "mutated"))
 
     def test_shell_syntax_is_valid(self) -> None:
         completed = subprocess.run(

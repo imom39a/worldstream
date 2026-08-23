@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,41 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/release-platform-diagnostic.py"
 PLATFORM_PRODUCER = ROOT / "scripts/release-evidence-produce-platform.py"
+RESTORE_DURABLE_DOMAINS = (
+    "schema_migrations",
+    "operation_guards",
+    "room_roots",
+    "genesis",
+    "materializations",
+    "member_delivery_state",
+    "timers",
+    "transitions",
+    "frames",
+    "observation_consequences",
+    "activation_decisions",
+    "activation_intents",
+    "activation_operation_receipts",
+    "semantic_receipts",
+    "integrity_incidents",
+    "authority_fences",
+    "retired_authority_fences",
+    "authority_state",
+    "authority_principals",
+    "authority_runners",
+    "authority_capabilities",
+    "authority_capability_scopes",
+    "authority_runner_capability_memberships",
+    "authority_change_receipts",
+    "authority_audit",
+    "transfer_imports",
+    "transfer_chunks",
+    "transfer_target_fence",
+    "deployment_metadata",
+    "deployment_identity_metadata",
+    "deployment_pack_identities",
+    "deployment_resource_identities",
+    "deployment_resource_blobs",
+)
 
 
 def load_module():
@@ -36,6 +72,13 @@ def load_platform_producer():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_postgres_native_point_digest_matches_the_frozen_rust_shape() -> None:
+    module = load_module()
+    assert module.postgres_native_point_digest("b" * 64) == (
+        "d12ef884fee4573a111d13e5adbb2b2e05683f65f7f219bc0019c9b9c8a899dc"
+    )
 
 
 def write_json(path: Path, value: object) -> Path:
@@ -61,7 +104,91 @@ def gate_report(system: str, outcomes: set[str]) -> dict:
     }
 
 
+def windows_native_restore_report(module, dump_bytes: bytes = b"d" * 4096) -> dict:
+    dump_digest = module.BLAKE3(dump_bytes).hex()
+    inventory = [
+        {
+            "domain": domain,
+            "source_row_count": 1,
+            "restored_row_count": 1,
+            "source_digest": f"{index:064x}",
+            "restored_digest": f"{index:064x}",
+        }
+        for index, domain in enumerate(RESTORE_DURABLE_DOMAINS, start=1)
+    ]
+    return {
+        "schema": "worldstream/native-postgres-restore-evidence/v2",
+        "status": "ready",
+        "reason": "postgres_native_restore_verified_by_unified_verifier",
+        "release_evidence": False,
+        "native_dump_restore": "pass",
+        "backup_id": "postgres-native-" + dump_digest,
+        "native_point_digest": module.postgres_native_point_digest(dump_digest),
+        "native_dump_digest": dump_digest,
+        "native_dump_size_bytes": len(dump_bytes),
+        "source_provider_identity": {
+            "system_identifier": "123456789",
+            "database_oid": "5",
+            "database_name": "postgres",
+        },
+        "target_provider_identity": {
+            "system_identifier": "123456789",
+            "database_oid": "16384",
+            "database_name": "worldstream_native_restore",
+        },
+        "verifier": {
+            "readiness": "Ready",
+            "rooms": {
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV": "Verified",
+                "01ARZ3NDEKTSV4RRFFQ69G5FC5": "Verified",
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ0": "IsolatedPreExisting",
+            },
+            "diagnostics": [
+                {
+                    "class": "Integrity",
+                    "code": "pre_existing_isolation_preserved",
+                    "subject": "subject:020e3e550f71",
+                    "action": "keep the Room isolated; investigate or repair it through the separate verifier-repair contract",
+                    "disposition": "PermittedPreExistingIsolation",
+                }
+            ],
+        },
+        "source_unchanged": True,
+        "exact_restored_row_set": True,
+        "snapshots_disposable": True,
+        "target_isolated": True,
+        "target_published": False,
+        "cleanup_required": True,
+        "native_witness_minted": True,
+        "secrets_emitted": False,
+        "source_version_num": 170_011,
+        "restored_version_num": 170_011,
+        "semantic_receipts_verified": True,
+        "activation_intents_verified": True,
+        "activation_operation_receipts_verified": True,
+        "activation_request_evidence": "stored_canonical_hash_only_verified",
+        "authority_state_verified": True,
+        "durable_domains_verified": True,
+        "verifier_scope": {
+            "profile": "full_deployment_all_durable_domains",
+            "source_pack_identity_count": 2,
+            "restored_pack_identity_count": 2,
+            "source_resource_identity_count": 1,
+            "restored_resource_identity_count": 1,
+            "source_fired_timer_count": 1,
+            "restored_fired_timer_count": 1,
+            "general_deployment_support_verified": True,
+        },
+        "source_durable_domains_digest": "a" * 64,
+        "restored_durable_domains_digest": "a" * 64,
+        "durable_domain_inventory": inventory,
+        "restored_snapshot_count_before": 4,
+        "restored_snapshot_count_after": 0,
+    }
+
+
 def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     system = "Linux" if source == "native-linux" else "Windows"
     target = "linux-x86_64" if source == "native-linux" else "windows-x64"
     version = module.manifest()["release_candidate"]
@@ -69,6 +196,8 @@ def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
     artifact.write_bytes(b"exact packaged native archive")
     manifest_json_sha = "1" * 64
     manifest_toml_sha = "2" * 64
+    source_revision = "5" * 40
+    build_identity_sha256 = "sha256:" + "6" * 64
     package_report = {
         "schema": "worldstream/package-report/v1",
         "kind": "archive",
@@ -82,6 +211,8 @@ def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
             "manifest_sha256": manifest_json_sha,
             "manifest_json_sha256": manifest_json_sha,
             "manifest_toml_sha256": manifest_toml_sha,
+            "source_revision": source_revision,
+            "build_identity_sha256": build_identity_sha256,
         },
         "inventory": {
             "archive_verified": True,
@@ -129,9 +260,12 @@ def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
             "archive_sha256": module.digest(artifact),
             "archive_size_bytes": artifact.stat().st_size,
             "package_report_sha256": module.digest(package_report_path),
+            "package_report_size_bytes": package_report_path.stat().st_size,
             "manifest_sha256": "sha256:" + manifest_json_sha,
             "manifest_json_sha256": "sha256:" + manifest_json_sha,
             "manifest_toml_sha256": "sha256:" + manifest_toml_sha,
+            "source_revision": source_revision,
+            "build_identity_sha256": build_identity_sha256,
             "worldstreamd_sha256": "sha256:" + "3" * 64,
             "worldstreamd_size_bytes": 100,
             "worldstreamctl_sha256": "sha256:" + "4" * 64,
@@ -153,6 +287,13 @@ def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
                     "health": "pass",
                     "version": "pass",
                     "binary_version": version,
+                    "source_revision": source_revision,
+                },
+                "sqlite_operator": {
+                    "backup": "native_and_semantic_pass",
+                    "restore": "native_and_semantic_pass",
+                    "verify": "native_only_pass_semantic_not_invoked",
+                    "envelope": "exact_bytes_preserved",
                 },
             },
             "postgres-primary": {
@@ -168,6 +309,7 @@ def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
                     "health": "pass",
                     "version": "pass",
                     "binary_version": version,
+                    "source_revision": source_revision,
                 },
             },
         },
@@ -178,18 +320,328 @@ def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
             "verify": "pass",
             "runtime_role": "least_privilege",
         },
+        "transfer_operator": {
+            "status": "pass",
+            "control_binding": {
+                "archive_sha256": module.digest(artifact),
+                "archive_size_bytes": artifact.stat().st_size,
+                "package_report_sha256": module.digest(package_report_path),
+                "package_report_size_bytes": package_report_path.stat().st_size,
+                "worldstreamctl_sha256": "sha256:" + "4" * 64,
+                "worldstreamctl_size_bytes": 101,
+            },
+            "abort": {
+                "restart_checkpoint": "pass",
+                "pre_abort_checkpoint_rows": 1,
+                "pre_abort_checkpoint_bytes": 128,
+                "provider_cleanup": "all_durable_domains_empty_with_exact_tombstone",
+                "source_authority_restored": "pass",
+                "abort_replay": "pass",
+                "bundle_sha256": "sha256:" + "7" * 64,
+                "bundle_size_bytes": 512,
+            },
+            "finalized": {
+                "restart_resume": "pass",
+                "resume_invocations": 2,
+                "completed_resume_replay": "no_new_generation",
+                "canonical_bundle_sha256": "sha256:" + "8" * 64,
+                "canonical_bundle_size_bytes": 1024,
+                "operator_bundle_hash": "9" * 64,
+                "record_count": 3,
+                "target_epoch": 2,
+                "hydration_verified_before_handoff": "pass",
+                "source_retired": "pass",
+                "target_authoritative": "pass",
+                "finalize_replay": "pass",
+            },
+        },
+        "control_output": {
+            "status": "persisted",
+            "archive_sha256": module.digest(artifact),
+            "archive_size_bytes": artifact.stat().st_size,
+            "package_report_sha256": module.digest(package_report_path),
+            "package_report_size_bytes": package_report_path.stat().st_size,
+            "worldstreamctl_sha256": "sha256:" + "4" * 64,
+            "worldstreamctl_size_bytes": 101,
+        },
         "cleanup": "pass",
     }
+    runtime_report_path = write_json(tmp_path / "runtime.json", runtime_report)
+    fixture_report = {
+        "schema": "worldstream/sqlite-postgresql-transfer-evidence/v1",
+        "status": "pass",
+        "release_evidence": False,
+        "secrets_emitted": False,
+        "source_construction": {
+            "classification": module.UNTRUSTED_FIXTURE_CLASSIFICATION,
+            "source_revision": source_revision,
+            "trusted_product_execution": False,
+        },
+    }
+    fixture_report_path = write_json(
+        tmp_path / "native-source-fixture.json", fixture_report
+    )
+    dump_bytes = b"d" * 4096
+    native_restore = windows_native_restore_report(module, dump_bytes)
+    raw_native_bytes = (json.dumps(native_restore, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    canonical_native = json.dumps(
+        native_restore, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    empty_sha256 = "sha256:" + hashlib.sha256(b"").hexdigest()
+    directory_receipt = {
+        "schema": "worldstream/postgres-native-artifact-directory-identity/v1",
+        "status": "observed",
+        "artifact_directory_identity": {
+            "storage_id": "0000000000000001",
+            "file_id": "00000000000000000000000000000002",
+        },
+        "secrets_emitted": False,
+    }
+    snapshot_receipt = {
+        "schema": "worldstream/postgres-native-snapshot-rebuild-receipt/v1",
+        "status": "complete",
+        "rebuilt_snapshot_count": 2,
+        "source_provider_identity": native_restore["source_provider_identity"],
+        "secrets_emitted": False,
+    }
+    restore_receipt = {
+        "schema": "worldstream/postgres-native-restore-receipt/v1",
+        "status": "committed",
+        "report_digest": "blake3:" + module.BLAKE3(raw_native_bytes).hex(),
+        "report_size_bytes": len(raw_native_bytes),
+        "native_dump_digest": native_restore["native_dump_digest"],
+        "native_dump_size_bytes": native_restore["native_dump_size_bytes"],
+        "native_dump_identity": {
+            "storage_id": "0000000000000001",
+            "file_id": "00000000000000000000000000000003",
+        },
+        "report_identity": {
+            "storage_id": "0000000000000001",
+            "file_id": "00000000000000000000000000000004",
+        },
+        "recovery_record_identity": {
+            "storage_id": "0000000000000001",
+            "file_id": "00000000000000000000000000000005",
+        },
+        "recovery_record_name": (".worldstream_native_recovery_" + "a" * 32 + ".json"),
+        "source_provider_identity": native_restore["source_provider_identity"],
+        "target_provider_identity": native_restore["target_provider_identity"],
+        "secrets_emitted": False,
+    }
+    action_receipts = (directory_receipt, snapshot_receipt, restore_receipt)
+    action_stdout = [
+        (json.dumps(receipt, sort_keys=True) + "\n").encode("utf-8")
+        for receipt in action_receipts
+    ]
+    hosted_restore = {
+        "schema": module.HOSTED_NATIVE_RESTORE_SCHEMA,
+        "status": "pass",
+        "release_evidence": False,
+        "secrets_emitted": False,
+        "platform": {"system": system, "machine": "x86_64"},
+        "package_binding": {
+            key: runtime_report["package_binding"][key]
+            for key in (
+                "archive_sha256",
+                "archive_size_bytes",
+                "package_report_sha256",
+                "package_report_size_bytes",
+                "source_revision",
+                "worldstreamctl_sha256",
+                "worldstreamctl_size_bytes",
+            )
+        },
+        "source_fixture": {
+            "classification": module.UNTRUSTED_FIXTURE_CLASSIFICATION,
+            "fixture_report_sha256": module.digest(fixture_report_path),
+            "fixture_report_size_bytes": fixture_report_path.stat().st_size,
+            "source_revision": source_revision,
+        },
+        "product_execution": {
+            "controller": {
+                "execution": "retained_exact_packaged_binary",
+                "sha256": runtime_report["package_binding"]["worldstreamctl_sha256"],
+                "size_bytes": runtime_report["package_binding"][
+                    "worldstreamctl_size_bytes"
+                ],
+            },
+            "provider_tools": {
+                tool: {"sha256": "sha256:" + character * 64, "size_bytes": size}
+                for tool, character, size in (
+                    ("pg_dump", "5", 201),
+                    ("pg_restore", "6", 202),
+                    ("psql", "7", 203),
+                )
+            },
+            "source": {
+                "host": "127.0.0.1",
+                "port": 5432,
+                "database": "postgres",
+                "username": "postgres",
+                "tls_mode": "disable",
+            },
+            "target": {
+                "host": "127.0.0.1",
+                "port": 5432,
+                "database": "worldstream_native_restore",
+                "username": "postgres",
+                "tls_mode": "disable",
+            },
+            "actions": [
+                {
+                    "operation": "artifact_directory_identity",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "stdout_sha256": "sha256:"
+                    + hashlib.sha256(action_stdout[0]).hexdigest(),
+                    "stdout_size_bytes": len(action_stdout[0]),
+                    "stderr_sha256": empty_sha256,
+                    "stderr_size_bytes": 0,
+                    "environment": "sanitized_no_ambient_pg",
+                    "receipt": directory_receipt,
+                },
+                {
+                    "operation": "snapshot_rebuild",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "stdout_sha256": "sha256:"
+                    + hashlib.sha256(action_stdout[1]).hexdigest(),
+                    "stdout_size_bytes": len(action_stdout[1]),
+                    "stderr_sha256": empty_sha256,
+                    "stderr_size_bytes": 0,
+                    "environment": "sanitized_no_ambient_pg",
+                    "receipt": snapshot_receipt,
+                },
+                {
+                    "operation": "native_restore",
+                    "status": "pass",
+                    "exit_code": 0,
+                    "stdout_sha256": "sha256:"
+                    + hashlib.sha256(action_stdout[2]).hexdigest(),
+                    "stdout_size_bytes": len(action_stdout[2]),
+                    "stderr_sha256": empty_sha256,
+                    "stderr_size_bytes": 0,
+                    "environment": "sanitized_no_ambient_pg",
+                    "receipt": restore_receipt,
+                },
+            ],
+            "native_report_sha256": "sha256:"
+            + hashlib.sha256(raw_native_bytes).hexdigest(),
+            "native_report_size_bytes": len(raw_native_bytes),
+            "native_report_canonical_sha256": "sha256:"
+            + hashlib.sha256(canonical_native).hexdigest(),
+        },
+        "native_restore": native_restore,
+        "cleanup": {
+            "status": "pass",
+            "admitted_target_identity": {
+                "system_identifier": "123456789",
+                "database_oid": "16384",
+                "database_name": "worldstream_native_restore",
+            },
+            "target_marker_before_drop": "worldstream/native-postgres-disposable-target/v1",
+            "target_connection_limit_before_drop": 0,
+            "target_backends_before_drop": 0,
+            "generated_restore_roles_before_drop": 0,
+            "target_database_after_drop": "absent",
+            "provider_cleanup_transcript_sha256": "sha256:" + "b" * 64,
+            "private_artifacts_disposition": (
+                "exact_retained_root_scrubbed_to_zero_length_placeholders"
+            ),
+            "private_artifact_placeholder_count": 3,
+            "operator_passfile_disposition": (
+                "exact_retained_file_scrubbed_to_zero_length"
+            ),
+        },
+    }
+    binding_parent = tmp_path / "native-binding-parent"
+    binding_parent.mkdir(mode=0o700)
+    binding_root = binding_parent / module.PRIVATE_NATIVE_BINDING_ROOT
+    binding_root.mkdir(mode=0o700)
+    binding_values = {
+        "artifact_directory_stdout": action_stdout[0],
+        "snapshot_rebuild_stdout": action_stdout[1],
+        "native_restore_stdout": action_stdout[2],
+        "native_report": raw_native_bytes,
+        "native_dump": dump_bytes,
+    }
+    binding_paths = {}
+    for key, value in binding_values.items():
+        path = binding_root / module.PRIVATE_NATIVE_BINDING_FILES[key]
+        path.write_bytes(value)
+        path.chmod(0o600)
+        binding_paths[key] = path
+
+    def exact_identity(path: Path, *, directory: bool = False) -> dict[str, str]:
+        opener = (
+            module.NATIVE_AUTHORITY._open_exact_directory
+            if directory
+            else module.NATIVE_AUTHORITY._open_exact
+        )
+        descriptor, _metadata = opener(path, "test private binding")
+        try:
+            return module.NATIVE_AUTHORITY._canonical_file_identity(descriptor)
+        finally:
+            os.close(descriptor)
+
+    hosted_restore["private_binding"] = {
+        "schema": module.PRIVATE_NATIVE_BINDING_SCHEMA,
+        "parent_identity": exact_identity(binding_parent, directory=True),
+        "root_name": module.PRIVATE_NATIVE_BINDING_ROOT,
+        "root_identity": exact_identity(binding_root, directory=True),
+        "files": {
+            key: {
+                "name": path.name,
+                "identity": exact_identity(path),
+                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                "size_bytes": path.stat().st_size,
+            }
+            for key, path in binding_paths.items()
+        },
+    }
+    native_restore_report_path = write_json(
+        tmp_path / f"{source}-postgres-restore.json", hosted_restore
+    )
     return argparse.Namespace(
         source=source,
         package_report=package_report_path,
         gate_report=write_json(
             tmp_path / "gate.json", gate_report(system, runtime_required)
         ),
-        runtime_report=write_json(tmp_path / "runtime.json", runtime_report),
+        runtime_report=runtime_report_path,
+        native_restore_report=native_restore_report_path,
+        native_fixture_report=fixture_report_path,
+        native_binding_parent=binding_parent,
         artifact=artifact,
         output_dir=tmp_path / "diagnostics",
     )
+
+
+def private_binding_path(args, module, key: str) -> Path:
+    return (
+        args.native_binding_parent
+        / module.PRIVATE_NATIVE_BINDING_ROOT
+        / module.PRIVATE_NATIVE_BINDING_FILES[key]
+    )
+
+
+def assert_private_binding_scrubbed(args, module) -> None:
+    root = args.native_binding_parent / module.PRIVATE_NATIVE_BINDING_ROOT
+    children = list(root.iterdir())
+    assert len(children) == len(module.PRIVATE_NATIVE_BINDING_FILES)
+    assert all(path.is_file() and not path.is_symlink() for path in children)
+    assert all(path.stat().st_size == 0 for path in children)
+
+
+def rewrite_private_json_binding(args, module, report, key: str, value: dict) -> None:
+    raw = (json.dumps(value, sort_keys=True) + "\n").encode("utf-8")
+    path = private_binding_path(args, module, key)
+    path.write_bytes(raw)
+    record = report["private_binding"]["files"][key]
+    record["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    record["size_bytes"] = len(raw)
 
 
 def stub_native_archive_verification(monkeypatch, module, args):
@@ -221,6 +673,7 @@ def test_native_diagnostic_requires_exact_packaged_binary_runtime_profiles(
     stub_native_archive_verification(monkeypatch, module, args)
 
     module.emit_native(args)
+    assert_private_binding_scrubbed(args, module)
 
     runtime = json.loads(
         (args.output_dir / f"{source}-runtime.json").read_text(encoding="utf-8")
@@ -231,6 +684,451 @@ def test_native_diagnostic_requires_exact_packaged_binary_runtime_profiles(
     assert runtime["facts"]["packaged_binary_sha256"] == "sha256:" + "3" * 64
     assert runtime["facts"]["packaged_control_sha256"] == "sha256:" + "4" * 64
     assert "migrate/verify" in runtime["facts"]["postgres_admin"]
+    restore = json.loads(
+        (args.output_dir / f"{source}-native-postgres-restore.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert restore["facts"]["native_restore_report_sha256"] == module.digest(
+        args.native_restore_report
+    )
+    assert restore["facts"]["release_archive_sha256"] == module.digest(args.artifact)
+    assert restore["facts"]["restore_profile"] == (
+        "full_deployment_all_durable_domains"
+    )
+    assert restore["facts"]["fixture_report_sha256"] == module.digest(
+        args.native_fixture_report
+    )
+    expected_native_restore_facts = (
+        "platform_identity",
+        "release_candidate",
+        "native_restore_report_sha256",
+        "native_restore_report_size_bytes",
+        "release_archive_sha256",
+        "release_archive_size_bytes",
+        "package_report_sha256",
+        "package_report_size_bytes",
+        "packaged_runtime_report_sha256",
+        "packaged_runtime_report_size_bytes",
+        "provider_identity",
+        "restore_profile",
+        "verified_scope",
+        "target_safety",
+        "source_durable_domains_digest",
+        "backup_id",
+        "native_point_digest",
+        "native_dump_digest",
+        "native_dump_size_bytes",
+        "source_provider_identity",
+        "target_provider_identity",
+        "fixture_classification",
+        "fixture_report_sha256",
+        "fixture_report_size_bytes",
+        "source_revision",
+        "packaged_control_sha256",
+        "packaged_control_size_bytes",
+        "native_raw_report_sha256",
+        "native_raw_report_size_bytes",
+        "native_product_execution_sha256",
+        "native_provider_tools_sha256",
+        "native_cleanup_sha256",
+    )
+    producer = load_platform_producer()
+    assert "native-postgres-restore" in producer.PLATFORM_SPECS[source]["reports"]
+    assert (
+        producer.REQUIRED_FACTS[(source, "native-postgres-restore")]
+        == expected_native_restore_facts
+    )
+    assert set(restore["facts"]) == set(expected_native_restore_facts)
+    producer_manifest = producer.load_manifest(
+        ROOT / "compatibility.toml", ROOT / "compatibility.json"
+    )
+    assert (
+        producer.read_report(
+            args.output_dir / f"{source}-native-postgres-restore.json",
+            source,
+            "native-postgres-restore",
+            producer_manifest,
+        )
+        == restore
+    )
+
+
+def test_windows_native_diagnostic_requires_restore_report_and_rejects_substitution(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-windows")
+    stub_native_archive_verification(monkeypatch, module, args)
+    args.native_restore_report = None
+    with pytest.raises(module.DiagnosticError, match="missing hosted Windows"):
+        module.emit_native(args)
+
+    args = native_args(tmp_path / "missing-fixture", module, "native-windows")
+    stub_native_archive_verification(monkeypatch, module, args)
+    args.native_fixture_report = None
+    with pytest.raises(module.DiagnosticError, match="missing hosted Windows"):
+        module.emit_native(args)
+
+    args = native_args(tmp_path / "substitution", module, "native-windows")
+    stub_native_archive_verification(monkeypatch, module, args)
+    args.native_restore_report = args.runtime_report
+    with pytest.raises(module.DiagnosticError, match="substituted by another input"):
+        module.emit_native(args)
+
+    args = native_args(tmp_path / "fixture-substitution", module, "native-windows")
+    stub_native_archive_verification(monkeypatch, module, args)
+    args.native_fixture_report = args.runtime_report
+    with pytest.raises(module.DiagnosticError, match="substituted by another input"):
+        module.emit_native(args)
+
+
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("artifact_directory_stdout", "content mismatch"),
+        ("native_report", "content mismatch"),
+        ("native_dump", "content mismatch"),
+    ],
+)
+def test_native_private_binding_rejects_same_inode_same_size_tamper_and_scrubs(
+    tmp_path, monkeypatch, key, message
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    path = private_binding_path(args, module, key)
+    original = path.read_bytes()
+    path.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+    assert path.stat().st_size == len(original)
+
+    with pytest.raises(module.DiagnosticError, match=message):
+        module.emit_native(args)
+
+    assert_private_binding_scrubbed(args, module)
+    assert not args.output_dir.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix pathname substitution regression")
+def test_native_private_binding_substitution_never_scrubs_victim(tmp_path, monkeypatch):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    path = private_binding_path(args, module, "snapshot_rebuild_stdout")
+    held = path.with_name("held-snapshot-rebuild.stdout")
+    original = path.read_bytes()
+    path.rename(held)
+    victim = path.parent.parent / "victim-private-canary"
+    victim_bytes = b"victim must never be admitted or scrubbed"
+    victim.write_bytes(victim_bytes)
+    victim.rename(path)
+
+    with pytest.raises(module.DiagnosticError, match="child identity mismatch"):
+        module.emit_native(args)
+
+    assert path.read_bytes() == victim_bytes
+    assert held.read_bytes() == original
+    assert not args.output_dir.exists()
+    for key, name in module.PRIVATE_NATIVE_BINDING_FILES.items():
+        candidate = path.parent / name
+        if key != "snapshot_rebuild_stdout":
+            assert candidate.stat().st_size == 0
+
+
+def test_native_validation_failure_still_scrubs_exact_private_binding(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    report = json.loads(args.native_restore_report.read_text(encoding="utf-8"))
+    report["native_restore"]["status"] = "incomplete"
+    write_json(args.native_restore_report, report)
+
+    with pytest.raises(module.DiagnosticError, match="semantic contract"):
+        module.emit_native(args)
+
+    assert_private_binding_scrubbed(args, module)
+    assert not args.output_dir.exists()
+
+
+def test_native_parsed_input_path_substitution_fails_without_touching_victim(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    original_admit = module.PrivateNativeBinding.admit
+    admitted_bytes = args.package_report.read_bytes()
+    victim_bytes = b'{"private_canary":"must-survive"}\n'
+
+    def admit_then_substitute(self, parent, binding):
+        original_admit(self, parent, binding)
+        held = args.package_report.with_name("held-package-report.json")
+        args.package_report.rename(held)
+        args.package_report.write_bytes(victim_bytes)
+        assert held.read_bytes() == admitted_bytes
+
+    monkeypatch.setattr(module.PrivateNativeBinding, "admit", admit_then_substitute)
+
+    with pytest.raises(module.DiagnosticError, match="changed while retained"):
+        module.emit_native(args)
+
+    assert args.package_report.read_bytes() == victim_bytes
+    assert_private_binding_scrubbed(args, module)
+    assert not args.output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "message"),
+    [
+        (("product_execution", "actions", 0), "exit_code", "product action"),
+        (("cleanup",), "target_backends_before_drop", "cleanup"),
+        (("cleanup",), "generated_restore_roles_before_drop", "cleanup"),
+    ],
+)
+def test_native_exact_numeric_fields_reject_boolean_zero(
+    tmp_path, monkeypatch, section, field, message
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    report = json.loads(args.native_restore_report.read_text(encoding="utf-8"))
+    target = report
+    for part in section:
+        target = target[part]
+    target[field] = False
+    write_json(args.native_restore_report, report)
+
+    with pytest.raises(module.DiagnosticError, match=message):
+        module.emit_native(args)
+
+    assert_private_binding_scrubbed(args, module)
+
+
+def test_native_receipt_artifact_identities_must_be_distinct(tmp_path, monkeypatch):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    report = json.loads(args.native_restore_report.read_text(encoding="utf-8"))
+    action = report["product_execution"]["actions"][2]
+    receipt = action["receipt"]
+    receipt["report_identity"] = receipt["native_dump_identity"]
+    rewrite_private_json_binding(args, module, report, "native_restore_stdout", receipt)
+    raw = private_binding_path(args, module, "native_restore_stdout").read_bytes()
+    action["stdout_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    action["stdout_size_bytes"] = len(raw)
+    write_json(args.native_restore_report, report)
+
+    with pytest.raises(module.DiagnosticError, match="identities must be distinct"):
+        module.emit_native(args)
+
+    assert_private_binding_scrubbed(args, module)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("system_identifier", "١"),
+        ("system_identifier", str(1 << 64)),
+        ("database_oid", "١"),
+        ("database_oid", str(1 << 32)),
+        ("database_oid", "01"),
+    ],
+)
+def test_native_provider_numeric_identity_is_ascii_canonical_and_bounded(field, value):
+    module = load_module()
+    report = windows_native_restore_report(module)
+    report["target_provider_identity"][field] = value
+
+    with pytest.raises(module.DiagnosticError, match="semantic contract"):
+        module.verify_native_restore_report(report)
+
+
+def test_native_source_and_target_require_distinct_authoritative_numeric_tuple():
+    module = load_module()
+    report = windows_native_restore_report(module)
+    source = report["source_provider_identity"]
+    report["target_provider_identity"] = {
+        **source,
+        "database_name": "different_display_name",
+    }
+
+    with pytest.raises(module.DiagnosticError, match="semantic contract"):
+        module.verify_native_restore_report(report)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (lambda report: report.update({"status": "incomplete"}), "semantic contract"),
+        (
+            lambda report: report.update({"native_witness_minted": False}),
+            "semantic contract",
+        ),
+        (
+            lambda report: report.update({"native_point_digest": "d" * 64}),
+            "semantic contract",
+        ),
+        (
+            lambda report: report["verifier_scope"].update(
+                {"profile": "single_pack_no_resources_no_fired_timers"}
+            ),
+            "scope is incomplete",
+        ),
+        (
+            lambda report: report["durable_domain_inventory"].pop(),
+            "inventory is incomplete",
+        ),
+        (
+            lambda report: report["durable_domain_inventory"][0].update(
+                {"restored_row_count": 2}
+            ),
+            "row is malformed",
+        ),
+        (
+            lambda report: report.update({"restored_snapshot_count_before": True}),
+            "semantic contract",
+        ),
+        (
+            lambda report: report.update({"restored_snapshot_count_after": False}),
+            "semantic contract",
+        ),
+        (
+            lambda report: report["target_provider_identity"].update(
+                {"database_oid": "0"}
+            ),
+            "semantic contract",
+        ),
+        (
+            lambda report: report["verifier_scope"].update(
+                {"source_resource_identity_count": True}
+            ),
+            "scope is incomplete",
+        ),
+        (
+            lambda report: report["durable_domain_inventory"][0].update(
+                {"restored_row_count": True}
+            ),
+            "row is malformed",
+        ),
+        (
+            lambda report: report["verifier"]["diagnostics"][0].update(
+                {"subject": "subject:TOP_SECRET"}
+            ),
+            "malformed or blocking diagnostic",
+        ),
+        (
+            lambda report: report["verifier"]["diagnostics"][0].update(
+                {"action": "accept an unreviewed isolation"}
+            ),
+            "malformed or blocking diagnostic",
+        ),
+        (
+            lambda report: report["verifier"]["rooms"].update(
+                {"01ARZ3NDEKTSV4RRFFQ69G5FAV": "Blocked"}
+            ),
+            "rooms are blocked",
+        ),
+        (lambda report: report.update({"unexpected": True}), "wrong fields"),
+    ],
+)
+def test_windows_native_diagnostic_rejects_tampered_restore_report(
+    tmp_path, monkeypatch, tamper, message
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-windows")
+    stub_native_archive_verification(monkeypatch, module, args)
+    report = json.loads(args.native_restore_report.read_text(encoding="utf-8"))
+    tamper(report["native_restore"])
+    write_json(args.native_restore_report, report)
+
+    with pytest.raises(module.DiagnosticError, match=message):
+        module.emit_native(args)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (
+            lambda report: report["package_binding"].update(
+                {"worldstreamctl_sha256": "sha256:" + "0" * 64}
+            ),
+            "exact package/control bytes",
+        ),
+        (
+            lambda report: report["source_fixture"].update(
+                {"fixture_report_size_bytes": 0}
+            ),
+            "fixture binding mismatch",
+        ),
+        (
+            lambda report: report["platform"].update({"machine": "aarch64"}),
+            "platform identity mismatch",
+        ),
+        (lambda report: report.update({"unexpected": True}), "wrapper is incomplete"),
+    ],
+)
+def test_native_diagnostic_rejects_tampered_hosted_restore_wrapper(
+    tmp_path, monkeypatch, tamper, message
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    report = json.loads(args.native_restore_report.read_text(encoding="utf-8"))
+    tamper(report)
+    write_json(args.native_restore_report, report)
+
+    with pytest.raises(module.DiagnosticError, match=message):
+        module.emit_native(args)
+
+
+def test_native_diagnostic_rejects_fixture_revision_claim_from_wrapper_alone(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    fixture = json.loads(args.native_fixture_report.read_text(encoding="utf-8"))
+    fixture["source_construction"]["source_revision"] = "0" * 40
+    write_json(args.native_fixture_report, fixture)
+    wrapper = json.loads(args.native_restore_report.read_text(encoding="utf-8"))
+    wrapper["source_fixture"]["fixture_report_sha256"] = module.digest(
+        args.native_fixture_report
+    )
+    wrapper["source_fixture"]["fixture_report_size_bytes"] = (
+        args.native_fixture_report.stat().st_size
+    )
+    write_json(args.native_restore_report, wrapper)
+
+    with pytest.raises(
+        module.DiagnosticError, match="explicitly untrusted and source-bound"
+    ):
+        module.emit_native(args)
+
+
+def test_native_diagnostic_rejects_unversioned_fixture_provenance(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    stub_native_archive_verification(monkeypatch, module, args)
+    fixture = json.loads(args.native_fixture_report.read_text(encoding="utf-8"))
+    fixture["schema"] = "worldstream/sqlite-postgresql-transfer-evidence/unversioned"
+    write_json(args.native_fixture_report, fixture)
+    wrapper = json.loads(args.native_restore_report.read_text(encoding="utf-8"))
+    wrapper["source_fixture"]["fixture_report_sha256"] = module.digest(
+        args.native_fixture_report
+    )
+    wrapper["source_fixture"]["fixture_report_size_bytes"] = (
+        args.native_fixture_report.stat().st_size
+    )
+    write_json(args.native_restore_report, wrapper)
+
+    with pytest.raises(
+        module.DiagnosticError, match="explicitly untrusted and source-bound"
+    ):
+        module.emit_native(args)
 
 
 @pytest.mark.parametrize(
@@ -242,6 +1140,12 @@ def test_native_diagnostic_requires_exact_packaged_binary_runtime_profiles(
         ("profile", "both storage profiles"),
         ("health", "contract is incomplete"),
         ("admin", "administration contract"),
+        ("source-revision", "exact archive/report/manifests/binaries"),
+        ("package-report-size", "exact archive/report/manifests/binaries"),
+        ("sqlite-operator", "SQLite operator backup/restore"),
+        ("transfer-abort", "transfer abort/restart"),
+        ("transfer-finalize", "transfer hydration/finalization"),
+        ("control-output", "retained control output"),
     ],
 )
 def test_native_diagnostic_rejects_unbound_or_partial_runtime(
@@ -261,8 +1165,22 @@ def test_native_diagnostic_rejects_unbound_or_partial_runtime(
         del runtime["profiles"]["postgres-primary"]
     elif tamper == "health":
         runtime["profiles"]["postgres-primary"]["healthz"] = "not_run"
-    else:
+    elif tamper == "admin":
         runtime["postgres_admin"]["verify"] = "not_run"
+    elif tamper == "source-revision":
+        runtime["package_binding"]["source_revision"] = "0" * 40
+    elif tamper == "package-report-size":
+        runtime["package_binding"]["package_report_size_bytes"] += 1
+    elif tamper == "sqlite-operator":
+        runtime["profiles"]["sqlite-bundled"]["sqlite_operator"]["restore"] = (
+            "native_only"
+        )
+    elif tamper == "transfer-abort":
+        runtime["transfer_operator"]["abort"]["pre_abort_checkpoint_rows"] = 0
+    elif tamper == "transfer-finalize":
+        runtime["transfer_operator"]["finalized"]["source_retired"] = "not_run"
+    else:
+        runtime["control_output"]["worldstreamctl_sha256"] = "sha256:" + "0" * 64
     write_json(args.runtime_report, runtime)
 
     with pytest.raises(module.DiagnosticError, match=message):
@@ -392,12 +1310,41 @@ def macos_report(module, architecture: str) -> dict:
                 ],
                 "public_projection": {
                     "broker_present": True,
+                    "public_claims": 2,
+                    "plans": 1,
+                    "endorsements": 2,
+                    "challenges": 0,
                     "commitment_count": 2,
                     "aggregate_outcome_present": True,
                 },
                 "final_replay": {
                     "verified": True,
-                    "hash_parity": {"verified": True},
+                    "hash_parity": {
+                        "verified": True,
+                        "fields": [
+                            "pack",
+                            "core",
+                            "activity",
+                            "aggregate_authoritative",
+                            "transition",
+                            "room_id",
+                            "room_seq",
+                        ],
+                        "expected": {
+                            "pack": "blake3:pack",
+                            "core": "blake3:core",
+                            "activity": "blake3:activity",
+                            "aggregate_authoritative": "blake3:aggregate",
+                            "transition": "blake3:transition",
+                        },
+                        "replayed": {
+                            "pack": "blake3:pack",
+                            "core": "blake3:core",
+                            "activity": "blake3:activity",
+                            "aggregate_authoritative": "blake3:aggregate",
+                            "transition": "blake3:transition",
+                        },
+                    },
                 },
             },
             "dom_evidence": {

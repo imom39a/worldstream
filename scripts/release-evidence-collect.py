@@ -71,8 +71,8 @@ REQUIRED_ARTIFACT_BINDINGS = {
         "spdx-sbom",
         "slsa-provenance",
     ),
-    "failure-soak": ("failure-soak",),
-    "reference-performance": ("reference-performance",),
+    "failure-soak": ("failure-soak", "linux-release-profile"),
+    "reference-performance": ("reference-performance", "linux-release-profile"),
 }
 EXPECTED_PRODUCER_IDS = {
     "manifest-contract": "conformance/manifest-contract/v1",

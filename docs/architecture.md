@@ -1423,14 +1423,19 @@ Key metrics:
 - oldest SQLite reader age or PostgreSQL snapshot/pool pressure, Replay/catch-up page duration, and checkpoint-blocked time where applicable;
 - telemetry dropped events and rate-limited overflow warnings.
 
-worldstreamctl should eventually provide:
+The shipped storage subset of `worldstreamctl` provides offline SQLite native
+backup plus sealed-envelope restore/verification, PostgreSQL offline
+migration/verification, and resumable whole-deployment SQLite-to-PostgreSQL
+transfer. See [Offline storage commands](operator-storage.md). The broader
+host-operator surface should eventually provide:
 
 - create principal/capability;
 - create, inspect, archive, and export room;
 - verify replay and hashes;
 - list pending activations and timers;
-- trigger backend-native backup/restore workflows and SQLite checkpoint;
-- migrate PostgreSQL offline, transfer SQLite to PostgreSQL, and run backend plus full semantic verification.
+- SQLite checkpoint and the remaining provider-native workflow integrations;
+- backend plus full semantic verification outside the shipped SQLite envelope
+  and transfer paths.
 
 Logs are structured JSON with W3C trace correlation. They may include Room, Membership, Action, and Transition IDs only in access-controlled logs/traces; those IDs are never metric labels. Logs exclude Action/Observation bodies, capabilities, private observations, prompts/model output, artifact bytes, DSNs, and credentials. Prometheus metrics and the optional OpenTelemetry/OTLP exporter are vendor-neutral seams; no vendor SDK, account, collector, or credential participates in admission, reduction, commit, Replay, Room Integrity State, or readiness.
 

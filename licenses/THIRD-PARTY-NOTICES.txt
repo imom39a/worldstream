@@ -2027,6 +2027,12 @@ Declared license: Apache-2.0
 Source: https://registry.npmjs.org/@typescript%2Ftypescript-freebsd-x64/-/typescript-freebsd-x64-7.0.2.tgz
 ===== END NOTICE sha256:1c76fa665ae11103b0c7766d9ae1b041e79c435d567debbbceb4d29f0cea4bf2 =====
 
+===== BEGIN NOTICE sha256:1c8bbb65165f3553e8b3bbd1d71b1f589ade5fb2d020134423be26421d2642b8 =====
+Component: cargo:nix@0.27.1
+Declared license: MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:1c8bbb65165f3553e8b3bbd1d71b1f589ade5fb2d020134423be26421d2642b8 =====
+
 ===== BEGIN NOTICE sha256:1cbe51b907662f6cb1492b16c359384a595180bf0e4d101603ed525e75c4e484 =====
 Copyright 2018 Rich Harris
 
@@ -2315,6 +2321,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ===== END NOTICE sha256:1e697ce8d21401fbf1bddd9b5c3fd4c4c79ae1e3bdf51f81761c85e11d5a89cd =====
 
+===== BEGIN NOTICE sha256:1e86202a57ad76f70a73f3778f255896b1202c62e6baccafcce2c555c735dcd7 =====
+Component: cargo:encoding_rs@0.8.35
+Declared license: (Apache-2.0 OR MIT) AND BSD-3-Clause
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:1e86202a57ad76f70a73f3778f255896b1202c62e6baccafcce2c555c735dcd7 =====
+
 ===== BEGIN NOTICE sha256:1f154b52b52b6c74a185abe459e73ce9abd2091c41de8176173613dbdd92704b =====
 Component: npm:why-is-node-running@2.3.0
 Declared license: MIT
@@ -2491,6 +2503,28 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ===== END NOTICE sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3 =====
+
+===== BEGIN NOTICE sha256:23fa053279289d01c137177215c23f61c0a563531e24e4fbf78f29c05eead205 =====
+zlib License
+
+(C) 2024 Felice D'Angelo
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+===== END NOTICE sha256:23fa053279289d01c137177215c23f61c0a563531e24e4fbf78f29c05eead205 =====
 
 ===== BEGIN NOTICE sha256:248378d0a3383c173fb925f17141b88e71580b3ba17ddc6ac3d2a344683232ab =====
 Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors
@@ -4022,6 +4056,34 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ===== END NOTICE sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04 =====
 
+===== BEGIN NOTICE sha256:3fa4ca83dcc9237839b1bdeb2e6d16bdfb5ec0c5ce42b24694d8bbf0dcbef72c =====
+Copyright Mozilla Foundation
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+===== END NOTICE sha256:3fa4ca83dcc9237839b1bdeb2e6d16bdfb5ec0c5ce42b24694d8bbf0dcbef72c =====
+
 ===== BEGIN NOTICE sha256:409a1e91cf4dcfca85d6ea755957f7393a8e43abfbe27e333b7d9a0402f5871d =====
 Component: npm:lightningcss-freebsd-x64@1.33.0
 Declared license: MPL-2.0
@@ -4096,6 +4158,12 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ===== END NOTICE sha256:42fa16951ce7f24b5a467a40e5b449a1d41e662f97ca779864f053f39e097737 =====
+
+===== BEGIN NOTICE sha256:43177731ebd3864a28de64ea0354592fa40c5930a5d79a80128d8bedb90c7101 =====
+Component: cargo:processkit@3.3.4
+Declared license: MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:43177731ebd3864a28de64ea0354592fa40c5930a5d79a80128d8bedb90c7101 =====
 
 ===== BEGIN NOTICE sha256:4455bf75a91154108304cb283e0fea9948c14f13e20d60887cf2552449dea3b1 =====
 The MIT License (MIT)
@@ -4741,6 +4809,12 @@ Declared license: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
 ===== END NOTICE sha256:4ea0a420d1b84e4bd0b06bf1ab81893fd40795303a64479ef2b0337c07324b2b =====
 
+===== BEGIN NOTICE sha256:4ed3a17d2ac085af04efd7233d2799b3578f90e2fa20a975b180a98b4fed90c7 =====
+Component: cargo:fs-id@0.2.0
+Declared license: Zlib
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:4ed3a17d2ac085af04efd7233d2799b3578f90e2fa20a975b180a98b4fed90c7 =====
+
 ===== BEGIN NOTICE sha256:4efc7a671d92af7672f8ee6e7a7b6f7b6bd52305dc631b9c96a1ef10bcd02109 =====
 Component: cargo:tower@0.5.3
 Declared license: MIT
@@ -5217,6 +5291,12 @@ signature of Ty Coon, 1 April 1990
 Ty Coon, President of Vice
 That's all there is to it!
 ===== END NOTICE sha256:5749785c8bdefafcb5d798270ed0a967036fe2ca63dcedade1627565dfef81d2 =====
+
+===== BEGIN NOTICE sha256:579e2b27057f65129b197920a7b667a4a7fd4d27cca609f32f5e24a4009494be =====
+Component: cargo:os_pipe@1.2.3
+Declared license: MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:579e2b27057f65129b197920a7b667a4a7fd4d27cca609f32f5e24a4009494be =====
 
 ===== BEGIN NOTICE sha256:5864a27b4d0b8259ee2a2ac695dcfc759cf7977774ff15f081a3a18099daee1e =====
 Component: cargo:web-sys@0.3.104
@@ -8443,6 +8523,30 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ===== END NOTICE sha256:6652c868f35dfe5e8ef636810a4e576b9d663f3a17fb0f5613ad73583e1b88fd =====
 
+===== BEGIN NOTICE sha256:66e3ee1fa7f909ad3c612d556f2a0cdabcd809ad6e66f3b0605015ac64841b70 =====
+The MIT License (MIT)
+
+Copyright (c) 2015 Carl Lerche + nix-rust Authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+===== END NOTICE sha256:66e3ee1fa7f909ad3c612d556f2a0cdabcd809ad6e66f3b0605015ac64841b70 =====
+
 ===== BEGIN NOTICE sha256:67622e24418c4e010c08401862015c30b1ca3a4b415e8abf59746da30b2ad99a =====
 Component: cargo:tracing-attributes@0.1.31
 Declared license: MIT
@@ -9735,6 +9839,35 @@ Declared license: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 ===== END NOTICE sha256:834cd4ce44ac668e185a6076eba647c704f5644997d0930d4c921336e6eb2e7d =====
 
+===== BEGIN NOTICE sha256:838118388fe5c2e7f1dbbaeed13e1c7f3ebf88be91319c7c1d77c18e987d1a50 =====
+Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+===== END NOTICE sha256:838118388fe5c2e7f1dbbaeed13e1c7f3ebf88be91319c7c1d77c18e987d1a50 =====
+
 ===== BEGIN NOTICE sha256:83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32 =====
 Copyright 2019 The Fuchsia Authors.
 
@@ -9791,6 +9924,12 @@ The copyright notices in the Software and this entire statement, including the a
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ===== END NOTICE sha256:84c6ef3ea9e3254a54d0acf5d3e0c61ae011b8fef7dd6940591cf060e6380a8f =====
+
+===== BEGIN NOTICE sha256:84dd138da0d342d6b988bf59fb911c3a869fccc6a3f53c4338376b6d42e5eb1d =====
+Component: cargo:tokio-stream@0.1.19
+Declared license: MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:84dd138da0d342d6b988bf59fb911c3a869fccc6a3f53c4338376b6d42e5eb1d =====
 
 ===== BEGIN NOTICE sha256:85c409ccb2c8ba26cec883721334ce6b17445b09ccc4f20ac1423cc78f2b04c4 =====
 Component: cargo:num-conv@0.2.2
@@ -11113,6 +11252,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ===== END NOTICE sha256:8d073a6a80d1ef2d2fc2bc6c809aa221161bf1906c76d4aeef55fd2b999d9413 =====
 
+===== BEGIN NOTICE sha256:8d774ed7d64679748866557aeec11feea03b2781d3aa0cc3d14b83e90789ab6c =====
+Component: cargo:mutants@0.0.4
+Declared license: MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:8d774ed7d64679748866557aeec11feea03b2781d3aa0cc3d14b83e90789ab6c =====
+
 ===== BEGIN NOTICE sha256:8dcb8841eb74af91a201c1831155bf1746bc58281e8d2645f4536f1397e3d985 =====
 Component: cargo:syn@3.0.3
 Declared license: MIT OR Apache-2.0
@@ -11152,6 +11297,28 @@ Component: cargo:axum-core@0.5.6
 Declared license: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
 ===== END NOTICE sha256:8ec122bbdee386c6f5cbb7fd089b15720b14c105c5f597dc28cbcba0f65d5d34 =====
+
+===== BEGIN NOTICE sha256:8f71659370c5268d9a1dc962a46232540e8fca63462586d8efaa95aab492a208 =====
+The MIT License (MIT)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+===== END NOTICE sha256:8f71659370c5268d9a1dc962a46232540e8fca63462586d8efaa95aab492a208 =====
 
 ===== BEGIN NOTICE sha256:9064d49fa52c95686935e03a297498223341af17cc19c0cd93325fb114dcdf52 =====
 Component: cargo:subtle@2.6.1
@@ -13374,6 +13541,12 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ===== END NOTICE sha256:b8c6939380a400f53e11923d50fcc4dd2fa1ba8339fd9d04cda38a0251b6c9b0 =====
+
+===== BEGIN NOTICE sha256:b8d0c741bf1bdb50a7c75c9be58fc8a2dc9097c37db9c6d38399b444f116aa9b =====
+Component: cargo:command-group@5.0.1
+Declared license: Apache-2.0 OR MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:b8d0c741bf1bdb50a7c75c9be58fc8a2dc9097c37db9c6d38399b444f116aa9b =====
 
 ===== BEGIN NOTICE sha256:b9a109463e273ee6fd51d9fa5d34a0c782c20545ba00eac3284c41e9fc50706a =====
 Component: npm:pathe@2.0.3
@@ -15936,6 +16109,30 @@ Component: cargo:fallible-iterator@0.2.0
 Declared license: MIT/Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 ===== END NOTICE sha256:f352366f20b2b743938878850371e54c33c584ce27ded30d323982da8ac148ea =====
+
+===== BEGIN NOTICE sha256:f3823a3eb651bbce65985fc945218eb2a42b4c3dc42896d42c1f88a09a2a5886 =====
+MIT License
+
+Copyright (c) 2026 Anton Zhelezniakou
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+===== END NOTICE sha256:f3823a3eb651bbce65985fc945218eb2a42b4c3dc42896d42c1f88a09a2a5886 =====
 
 ===== BEGIN NOTICE sha256:f3b59aa33955d2b8ae69c70fab69087116980aec74ac53dc22b8b373297a0c6e =====
 Component: cargo:tower-service@0.3.3

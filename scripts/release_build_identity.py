@@ -124,6 +124,7 @@ PINNED_MATERIAL_PATHS = (
 )
 PROVENANCE_MATERIAL_PATHS = (
     "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs",
+    "examples/counter/run_live_acceptance.py",
     "examples/heist/wave10_live/browser_trace_init.js",
     "examples/heist/wave10_live/run_absent_broker_live.py",
     "examples/heist/wave10_live/run_browser_story.py",
@@ -250,12 +251,16 @@ OCI_SETUP_STEP_SHA256 = (
     "cdb0942efb3e5fe8953c93c031a215c0469e99342c679d1494cfa497591f59bd"
 )
 RELEASE_SIGNING_JOB_SHA256 = (
-    "c0973cf5130c29448b45e1e7ed51d35095fea1bbe72dff0024bbc7ce76d2f375"
+    "6042a72514a633a251846cbab8aff47a4830e8574fe464f2a5a7523e3b0b3111"
 )
 RELEASE_MANIFEST_SIGNING_JOB_SHA256 = (
-    "a4d5b0b347e13e1d9700d4e01d15cacb90a754679b5bcff23af9d0e67841b13c"
+    "b66a7e888f645fac7deff0e4335a5e4750d4d9f1ba062bcce77ab7d15636fa06"
 )
 SLSA_EXECUTION_STEP_CONTRACTS = {
+    (
+        "release-clock",
+        "Start the four-hour release boundary before all producers",
+    ): "c75d6edf822804fec44593179ee08f33703aab550124cf11de3d49c243392c52",
     (
         "native",
         "Enable pinned pnpm",
@@ -264,6 +269,10 @@ SLSA_EXECUTION_STEP_CONTRACTS = {
         "native",
         "Build release UI inputs",
     ): "6e5c4173e78a1ee766f5df0ac9e8cd45a195244a22d5817a02bd8cd519398411",
+    (
+        "native",
+        "Prove native gate process-tree deadline containment",
+    ): "02235e7c23b972d8f0f9e274071e85233c46161f88509872ae47d89da633b54d",
     (
         "macos-source",
         "Enable pinned pnpm",
@@ -294,16 +303,20 @@ SLSA_EXECUTION_STEP_CONTRACTS = {
     ): "059382dd81d73fbb11cbe363d1033ce546d1ded4ff0d17d6c5026adc21e76e6f",
     (
         "reference-performance-release",
+        "Verify and extract the unique packaged reference daemon",
+    ): "d6291847a79c040f79b0100b28a407167dd7ee808672a576a1670331adcfeb19",
+    (
+        "reference-performance-release",
         "Run the exact frozen packaged reference-target workload",
-    ): "7ef0a5d04b77cd3301b1fd10c1900b6a568ea50a667497a0b0706e8d52a4fa93",
+    ): "d434dfa7d61f42d14424d390d66b1f06aa87812dacd1292011840a3660570819",
     (
         "reference-performance-release",
         "Project exact raw measurements into six normalized reports",
-    ): "74375313dd9ee2d37eac7fd9e07fa8d102bcb656657a4e370e5c3f031889747e",
+    ): "3a3ab9a5f791993d6606eeb150350d9d314b1963a6857a6e3755a859ea684b20",
     (
         "reference-performance-release",
         "Produce typed measured non-SLA reference evidence",
-    ): "a968f4d1315b4f08683e4bac17aed09482987203a4e705af59d7496bbf52e34b",
+    ): "2ec2d7234e87cbd6419400e5e60c2de48dcd69d03e7c8167f46b745ac46fe707",
     (
         "release-evidence",
         "Produce and verify unsigned subject inventory, SPDX SBOM, and SLSA provenance",
@@ -3214,6 +3227,8 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         "ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]"
     )
     expected_routes = {
+        "release-clock": "runs-on: ubuntu-24.04",
+        "fast": "runs-on: ubuntu-24.04",
         "native": "runs-on: ${{ matrix.runner }}",
         "macos-source": "runs-on: ${{ matrix.runner }}",
         "macos-source-release": "runs-on: ubuntu-24.04",
@@ -3237,6 +3252,64 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         ]
         if observed != [expected_line]:
             reject(f"release workflow producer route drifted for job {job}")
+    expected_job_controls = {
+        "release-clock": (None, "    timeout-minutes: 1"),
+        "fast": ("    needs: release-clock", "    timeout-minutes: 1"),
+        "native": (
+            "    needs: release-clock",
+            "    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && 60 || 25 }}",
+        ),
+        "macos-source": ("    needs: release-clock", "    timeout-minutes: 30"),
+        "macos-source-release": (
+            "    needs: [macos-source]",
+            "    timeout-minutes: 10",
+        ),
+        "conformance-release": (
+            "    needs: release-clock",
+            "    timeout-minutes: 120",
+        ),
+        "packaged-backend-release": (
+            "    needs: [release-clock, native]",
+            "    timeout-minutes: 150",
+        ),
+        "failure-soak-release": (
+            "    needs: [release-clock, native, packaged-backend-release]",
+            "    timeout-minutes: 150",
+        ),
+        "reference-performance-release": (
+            "    needs: [release-clock, native, packaged-backend-release, failure-soak-release]",
+            "    timeout-minutes: 240",
+        ),
+        "release-evidence": (
+            "    needs: [release-clock, fast, native, macos-source-release, conformance-release, packaged-backend-release, failure-soak-release, reference-performance-release]",
+            "    timeout-minutes: 240",
+        ),
+        "release-signing": (
+            "    needs: [release-clock, release-evidence]",
+            "    timeout-minutes: 15",
+        ),
+        "release-finalize": (
+            "    needs: [release-clock, release-evidence, release-signing]",
+            "    timeout-minutes: 30",
+        ),
+        "release-manifest-signing": (
+            "    needs: [release-clock, release-evidence, release-signing, release-finalize]",
+            "    timeout-minutes: 15",
+        ),
+        "release-verify": (
+            "    needs: [release-clock, release-evidence, release-finalize, release-manifest-signing]",
+            "    timeout-minutes: 240",
+        ),
+    }
+    for job, (expected_needs, expected_timeout) in expected_job_controls.items():
+        lines = blocks[job].splitlines()
+        needs = [line for line in lines if line.startswith("    needs:")]
+        if needs != ([] if expected_needs is None else [expected_needs]):
+            reject(f"release workflow deadline dependency drifted for job {job}")
+        if [line for line in lines if line.startswith("    timeout-minutes:")] != [
+            expected_timeout
+        ]:
+            reject(f"release workflow hard timeout drifted for job {job}")
     release_condition = (
         "    if: ${{ github.event_name == 'workflow_dispatch' "
         "&& inputs.release == true && github.ref == 'refs/heads/main' }}"
@@ -3312,6 +3385,16 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         != 1
     ):
         reject("release workflow external input observation drifted")
+    release_verify_lines = blocks["release-verify"].splitlines()
+    if (
+        release_verify_lines.count("    env:") != 1
+        or release_verify_lines.count(
+            "      WORLDSTREAM_RELEASE_DEADLINE_EPOCH_SECONDS: "
+            "${{ needs.release-clock.outputs.deadline_epoch_seconds }}"
+        )
+        != 1
+    ):
+        reject("release workflow absolute deadline environment drifted")
     for route in ("runner: macos-15", "runner: macos-15-intel"):
         if (
             len(re.findall(rf"(?m)^\s*{re.escape(route)}\s*$", blocks["macos-source"]))

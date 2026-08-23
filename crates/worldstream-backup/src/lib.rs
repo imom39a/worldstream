@@ -28,7 +28,8 @@ pub use native_restore::{
     NativeRestoreRoomMembershipV1, NativeRestoreTargetEvidenceV1,
     POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1, RestoreCommitWitnessV1, RestoreInstallOutcomeV1,
     RestoreLifecycleErrorV1, RestoreLifecycleProjectionV1, RestoreLifecycleStateV1,
-    RestoreRoomLifecycleStateV1, verify_native_restore, verify_native_restore_from_adapter,
+    RestoreRoomLifecycleStateV1, max_native_restore_canonical_row_bytes, verify_native_restore,
+    verify_native_restore_from_adapter,
 };
 pub use native_sqlite::{
     NativeSqliteCaptureWitnessV1, NativeSqliteRestoreInputProjectionV1,
@@ -1615,8 +1616,12 @@ fn room_has_seq(image: &BackupImageV1, room_id: Option<&str>, seq: u64) -> bool 
 fn unique_packs(packs: &[PackIdentityV1]) -> Result<(), MetadataError> {
     let mut ids = BTreeSet::new();
     for pack in packs {
-        if !ids.insert(&pack.pack_id) {
-            return Err(MetadataError::DuplicateIdentity(pack.pack_id.clone()));
+        if !ids.insert((&pack.pack_id, &pack.revision_digest)) {
+            return Err(MetadataError::DuplicateIdentity(format!(
+                "{}@{}",
+                pack.pack_id,
+                pack.revision_digest.as_str()
+            )));
         }
     }
     Ok(())
@@ -1749,6 +1754,21 @@ mod tests {
             manifest.validate(&VerifierLimits::default()),
             Err(MetadataError::ZeroGeneration("storage_epoch"))
         );
+    }
+
+    #[test]
+    fn manifest_retains_distinct_revisions_of_one_pack() {
+        let mut manifest = manifest();
+        let mut retained_revision = manifest.expected_packs[0].clone();
+        retained_revision.revision_digest = DigestV1::hash(b"retained counter revision");
+        manifest.expected_packs.push(retained_revision.clone());
+        assert!(manifest.validate(&VerifierLimits::default()).is_ok());
+
+        manifest.expected_packs.push(retained_revision);
+        assert!(matches!(
+            manifest.validate(&VerifierLimits::default()),
+            Err(MetadataError::DuplicateIdentity(_))
+        ));
     }
 
     fn room(status: IntegrityStatusV1) -> RoomImageV1 {

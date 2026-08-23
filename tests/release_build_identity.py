@@ -185,7 +185,7 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
         entries[module.THIRD_PARTY_NOTICE_MANIFEST_PATH], "notice manifest"
     )
 
-    assert sum(ecosystem == "cargo" for ecosystem, _name, _version in declared) == 240
+    assert sum(ecosystem == "cargo" for ecosystem, _name, _version in declared) == 248
     assert sum(ecosystem == "npm" for ecosystem, _name, _version in declared) == 95
     assert sum(ecosystem == "apk" for ecosystem, _name, _version in declared) == 15
     assert manifest["inputs"] == {
@@ -490,6 +490,7 @@ def test_provenance_materials_bind_release_evidence_execution_sources():
     entries = source_entries(module)
     expected = {
         "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs",
+        "examples/counter/run_live_acceptance.py",
         "examples/heist/wave10_live/browser_trace_init.js",
         "examples/heist/wave10_live/run_absent_broker_live.py",
         "examples/heist/wave10_live/run_browser_story.py",
@@ -525,6 +526,7 @@ def test_provenance_materials_bind_release_evidence_execution_sources():
             "reference-performance-release",
             "Build the source-bound snapshot-tail fixture generator",
         ),
+        ("native", "Prove native gate process-tree deadline containment"),
         (
             "reference-performance-release",
             "Run the exact frozen packaged reference-target workload",
@@ -916,6 +918,51 @@ def test_release_workflow_routes_and_payload_commands_are_bound():
         )
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            b"deadline_epoch_seconds=$((started_epoch_seconds + 14400))",
+            b"deadline_epoch_seconds=$((started_epoch_seconds + 14401))",
+            "provenance execution step",
+        ),
+        (
+            b"    needs: [release-clock, native]\n",
+            b"    needs: [native]\n",
+            "deadline dependency",
+        ),
+        (
+            (
+                b"  fast:\n    name: Fast gates\n    needs: release-clock\n"
+                b"    runs-on: ubuntu-24.04\n    timeout-minutes: 1\n"
+            ),
+            (
+                b"  fast:\n    name: Fast gates\n    needs: release-clock\n"
+                b"    runs-on: ubuntu-24.04\n    timeout-minutes: 2\n"
+            ),
+            "hard timeout",
+        ),
+        (
+            (
+                b"      WORLDSTREAM_RELEASE_DEADLINE_EPOCH_SECONDS: "
+                b"${{ needs.release-clock.outputs.deadline_epoch_seconds }}\n"
+            ),
+            b"      WORLDSTREAM_RELEASE_DEADLINE_EPOCH_SECONDS: 0\n",
+            "absolute deadline environment",
+        ),
+    ],
+)
+def test_release_clock_dependency_and_hosted_deadlines_are_exact(old, new, message):
+    module = load_module()
+    entries = source_entries(module)
+    drifted = dict(entries)
+    assert drifted[module.WORKFLOW_PATH].count(old) == 1
+    drifted[module.WORKFLOW_PATH] = drifted[module.WORKFLOW_PATH].replace(old, new, 1)
+
+    with pytest.raises(module.IdentityError, match=message):
+        module.validate_workflow_producer_contract(drifted)
+
+
 def test_payload_step_control_flow_cannot_be_disabled_or_spoofed():
     module = load_module()
     entries = source_entries(module)
@@ -923,8 +970,8 @@ def test_payload_step_control_flow_cannot_be_disabled_or_spoofed():
     mutations = []
 
     disabled = workflow.replace(
-        b"        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}\n        shell: bash\n",
-        b"        if: ${{ false }}\n        shell: bash\n",
+        b"      - name: Build Linux release archive\n        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}\n        shell: bash\n",
+        b"      - name: Build Linux release archive\n        if: ${{ false }}\n        shell: bash\n",
         1,
     )
     mutations.append(disabled)

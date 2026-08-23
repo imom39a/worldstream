@@ -66,13 +66,23 @@ PLATFORM_SPECS: dict[str, dict[str, Any]] = {
     "native-linux": {
         "evidence_id": "native-linux-release-profile",
         "platform": "native-linux-x86_64",
-        "reports": ("package", "runtime", "filesystem"),
+        "reports": (
+            "package",
+            "runtime",
+            "filesystem",
+            "native-postgres-restore",
+        ),
         "checks": ("archive_identity", "runtime_smoke", "filesystem_policy"),
     },
     "native-windows": {
         "evidence_id": "native-windows-release-profile",
         "platform": "native-windows-x64",
-        "reports": ("package", "runtime", "acl-or-reparse"),
+        "reports": (
+            "package",
+            "runtime",
+            "acl-or-reparse",
+            "native-postgres-restore",
+        ),
         "checks": (
             "archive_identity",
             "runtime_smoke",
@@ -109,6 +119,41 @@ PLATFORM_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
+NATIVE_POSTGRES_RESTORE_FACTS = (
+    "platform_identity",
+    "release_candidate",
+    "native_restore_report_sha256",
+    "native_restore_report_size_bytes",
+    "release_archive_sha256",
+    "release_archive_size_bytes",
+    "package_report_sha256",
+    "package_report_size_bytes",
+    "packaged_runtime_report_sha256",
+    "packaged_runtime_report_size_bytes",
+    "provider_identity",
+    "restore_profile",
+    "verified_scope",
+    "target_safety",
+    "source_durable_domains_digest",
+    "backup_id",
+    "native_point_digest",
+    "native_dump_digest",
+    "native_dump_size_bytes",
+    "source_provider_identity",
+    "target_provider_identity",
+    "fixture_classification",
+    "fixture_report_sha256",
+    "fixture_report_size_bytes",
+    "source_revision",
+    "packaged_control_sha256",
+    "packaged_control_size_bytes",
+    "native_raw_report_sha256",
+    "native_raw_report_size_bytes",
+    "native_product_execution_sha256",
+    "native_provider_tools_sha256",
+    "native_cleanup_sha256",
+)
+
 # A report is not evidence merely because its JSON is well formed.  Every
 # diagnostic must state each fact needed to explain the corresponding release
 # check.  Values may be structured attestations, but empty/false/skipped
@@ -136,6 +181,7 @@ REQUIRED_FACTS: dict[tuple[str, str], tuple[str, ...]] = {
         "owner_only_paths",
         "symlink_rejection",
     ),
+    ("native-linux", "native-postgres-restore"): NATIVE_POSTGRES_RESTORE_FACTS,
     ("native-windows", "package"): (
         "archive_identity",
         "release_candidate",
@@ -158,6 +204,7 @@ REQUIRED_FACTS: dict[tuple[str, str], tuple[str, ...]] = {
         "reparse_policy",
         "broad_write_rejected",
     ),
+    ("native-windows", "native-postgres-restore"): NATIVE_POSTGRES_RESTORE_FACTS,
     ("oci-linux", "oci"): (
         "platform_identity",
         "release_candidate",
@@ -452,13 +499,19 @@ def result_for_source(
     for binding in declared_bindings:
         digest, size = sha256_file(artifacts[(source_id, binding)])
         artifact_values[binding] = {"sha256": digest, "size_bytes": size}
-    observations = [
-        {
-            "kind": "diagnostic-report",
-            "value": diagnostic_reports[kind]["report_id"],
-        }
-        for kind in spec["reports"]
-    ]
+    observations = []
+    for kind in spec["reports"]:
+        report_path = reports[(source_id, kind)]
+        report_digest, report_size = sha256_file(report_path)
+        observations.append(
+            {
+                "kind": "diagnostic-report",
+                "value": (
+                    f"{diagnostic_reports[kind]['report_id']};"
+                    f"sha256={report_digest};size_bytes={report_size}"
+                ),
+            }
+        )
     return {
         "schema": PRODUCER_SCHEMA,
         "producer_id": f"platform-security/{source_id}/v1",

@@ -37,6 +37,13 @@ mod tests {
         let registry = builtin_worldstream_registry()
             .unwrap_or_else(|error| unreachable!("WorldStream registry: {error}"));
         assert_eq!(registry.len(), 4);
+        let revision_locks = registry.retained_revision_locks().collect::<Vec<_>>();
+        assert_eq!(revision_locks.len(), registry.len());
+        assert!(
+            revision_locks
+                .iter()
+                .all(|lock| lock.revision_digest().is_ok())
+        );
         assert!(registry.load_retained(&counter_v1_digest()).is_ok());
         assert!(registry.select_for_new_room(&counter_v2_digest()).is_ok());
         assert!(registry.select_for_new_room(&agent_heist_digest()).is_ok());

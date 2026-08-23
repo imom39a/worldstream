@@ -21,10 +21,35 @@ env:
   WORLDSTREAM_BASE_IMAGE: alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 jobs:
+  release-clock:
+    name: Frozen release critical-path clock
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    outputs:
+      started_epoch_seconds: ${{ steps.clock.outputs.started_epoch_seconds }}
+      deadline_epoch_seconds: ${{ steps.clock.outputs.deadline_epoch_seconds }}
+    steps:
+      - name: Start the four-hour release boundary before all producers
+        id: clock
+        shell: bash
+        env:
+          RELEASE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          started_epoch_seconds=$(date +%s)
+          if [[ "$RELEASE_REQUESTED" == true ]]; then
+            deadline_epoch_seconds=$((started_epoch_seconds + 14400))
+          else
+            deadline_epoch_seconds=0
+          fi
+          printf 'started_epoch_seconds=%s\n' "$started_epoch_seconds" >> "$GITHUB_OUTPUT"
+          printf 'deadline_epoch_seconds=%s\n' "$deadline_epoch_seconds" >> "$GITHUB_OUTPUT"
+
   fast:
     name: Fast gates
+    needs: release-clock
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 1
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned Rust
@@ -48,8 +73,9 @@ jobs:
 
   native:
     name: Manifest platform ${{ matrix.cell }}
+    needs: release-clock
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && 60 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +131,10 @@ jobs:
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
         run: scripts/gates-install-tools.ps1
+      - name: Install byte-pinned PostgreSQL 17.11 Linux provider clients
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
+        shell: bash
+        run: scripts/gates-install-postgres-client.sh
       - name: Build release UI inputs
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
         shell: ${{ matrix.shell }}
@@ -288,15 +318,40 @@ jobs:
           chmod 600 "$postgres_dsn_file"
           printf 'WORLDSTREAM_POSTGRES_DSN_FILE=%s\n' "$postgres_dsn_file" >> "$GITHUB_ENV"
           printf 'WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE=%s\n' "$postgres_dsn_file" >> "$GITHUB_ENV"
+          printf 'WORLDSTREAM_POSTGRES_PASSWORD_FILE=%s\n' "$postgres_password_file" >> "$GITHUB_ENV"
       - name: Start runner PostgreSQL 17.11 on Windows
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
         run: scripts/gates-install-postgres.ps1
+      - name: Execute native Windows protected restore artifact tests
+        if: ${{ matrix.platform == 'native-windows-x64' }}
+        shell: pwsh
+        run: |
+          cargo test --locked -p worldstream-runtime filesystem::windows_tests::exclusively_creates_exact_owner_only_windows_file
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p worldstream-runtime filesystem::windows_tests::failed_windows_file_cleanup_scrubs_through_the_retained_handle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p worldstream-postgres native_restore::tests::native_windows_artifacts_are_exclusive_protected_and_identity_bound
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p worldstream-postgres native_restore::tests::native_windows_dump_publication_faults_leave_no_nonempty_public_artifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p worldstream-postgres native_restore::tests::native_windows_dump_publication_collision_preserves_the_exact_sentinel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p worldstream-postgres native_restore::tests::native_windows_retained_parent_prevents_substitution_during_publication
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p worldstream-postgres native_restore::tests::native_windows_provider_guard_accepts_a_sole_successful_job
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p worldstream-postgres native_restore::tests::native_windows_provider_guard_waits_for_background_job_descendant_exit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prove native gate process-tree deadline containment
+        if: ${{ matrix.platform != 'oci-linux-amd64' }}
+        shell: ${{ matrix.shell }}
+        run: uv run --project sdk/python --locked python -m pytest -q tests/gate_smoke.py -k "test_gate_runner_kills_and_reaps_adversarial_child_and_detached_grandchild or test_gate_runner_windows_job_kills_and_reaps_child_and_grandchild"
       - name: Run manifest platform cell
         shell: ${{ matrix.shell }}
         env:
           WORLDSTREAM_TELEMETRY_HTTPS_REPORT: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' && 'reports/telemetry-https.json' || '' }}
-        run: uv run --python 3.14.7 --no-project python scripts/gates.py minimal-ci --ci --cell ${{ matrix.cell }} --report reports/${{ matrix.cell }}.json
+        run: uv run --python 3.14.7 --no-project python scripts/gates.py minimal-ci --ci --cell ${{ matrix.cell }} --report reports/${{ matrix.cell }}.json --offline
       - name: Run packaged Linux binaries against SQLite and PostgreSQL
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
         shell: bash
@@ -304,22 +359,36 @@ jobs:
           set -euo pipefail
           release_python="$(uv python find 3.14.7)"
           version=$("$release_python" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          packaged_control="$RUNNER_TEMP/worldstream-packaged-control/worldstreamctl"
           uv run --python 3.14.7 --no-project python scripts/native-package-smoke.py \
             --package-archive "dist/linux/worldstream-${version}-linux-x86_64.tar.gz" \
             --package-report reports/native-linux-package.json \
             --admin-dsn-file "$WORLDSTREAM_POSTGRES_DSN_FILE" \
+            --control-output "$packaged_control" \
             --report reports/native-linux-package-runtime.json
+          printf 'WORLDSTREAM_PACKAGED_CTL=%s\n' "$packaged_control" >> "$GITHUB_ENV"
       - name: Run packaged Windows binaries against SQLite and PostgreSQL
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
         shell: pwsh
         run: |
           $version = ([regex]::Match((Get-Content compatibility.toml -Raw), '(?m)^product\s*=\s*"([^"]+)"')).Groups[1].Value
+          $packagedControl = Join-Path $env:RUNNER_TEMP 'worldstream-packaged-control\worldstreamctl.exe'
           uv run --python 3.14.7 --no-project python scripts/native-package-smoke.py `
             --package-archive "dist/windows/worldstream-$version-windows-x64.zip" `
             --package-report reports/native-windows-package.json `
             --admin-dsn-file $env:WORLDSTREAM_POSTGRES_DSN_FILE `
+            --control-output $packagedControl `
             --report reports/native-windows-package-runtime.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "WORLDSTREAM_PACKAGED_CTL=$packagedControl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run hosted Linux PostgreSQL native backup restore and recovery
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
+        shell: bash
+        run: scripts/postgres-native-restore-linux-live.sh
+      - name: Run hosted Windows PostgreSQL native backup restore and recovery
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
+        shell: pwsh
+        run: scripts/postgres-native-restore-windows-live.ps1
       - name: Produce typed Linux platform evidence
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}
         shell: bash
@@ -333,14 +402,33 @@ jobs:
             --package-report reports/native-linux-package.json \
             --gate-report reports/native-linux-x86_64.json \
             --runtime-report reports/native-linux-package-runtime.json \
+            --native-restore-report reports/native-linux-postgres-restore.json \
+            --native-fixture-report reports/native-linux-transfer-seed.json \
+            --native-binding-parent "$RUNNER_TEMP/worldstream-native-restore-work" \
             --artifact "$archive" \
             --output-dir reports/platform-diagnostics
+          "$release_python" -I - "$RUNNER_TEMP/worldstream-native-restore-work/worldstream-native-platform-binding" <<'PY'
+          import stat
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          children = list(root.iterdir())
+          if len(children) != 5 or any(
+              not stat.S_ISREG(child.lstat().st_mode)
+              or child.is_symlink()
+              or child.stat().st_size != 0
+              for child in children
+          ):
+              raise SystemExit("Linux native private binding was not scrubbed")
+          PY
           "$release_python" -I scripts/release-evidence-produce-platform.py \
             --source native-linux \
             --output-dir reports/release-producers \
             --report native-linux/package=reports/platform-diagnostics/native-linux-package.json \
             --report native-linux/runtime=reports/platform-diagnostics/native-linux-runtime.json \
             --report native-linux/filesystem=reports/platform-diagnostics/native-linux-filesystem.json \
+            --report native-linux/native-postgres-restore=reports/platform-diagnostics/native-linux-native-postgres-restore.json \
             --artifact native-linux/linux-release-profile="$archive"
       - name: Produce typed Windows platform evidence
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
@@ -354,15 +442,28 @@ jobs:
             --package-report reports/native-windows-package.json `
             --gate-report reports/native-windows-x64.json `
             --runtime-report reports/native-windows-package-runtime.json `
+            --native-restore-report reports/native-windows-postgres-restore.json `
+            --native-fixture-report reports/native-windows-transfer-seed.json `
+            --native-binding-parent "$env:RUNNER_TEMP\worldstream-native-restore-work" `
             --artifact $archive `
             --output-dir reports/platform-diagnostics
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bindingRoot = Join-Path $env:RUNNER_TEMP 'worldstream-native-restore-work\worldstream-native-platform-binding'
+          $bindingFiles = @(Get-ChildItem -LiteralPath $bindingRoot -Force)
+          if ($bindingFiles.Count -ne 5 -or @($bindingFiles | Where-Object {
+              $_.PSIsContainer `
+              -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 `
+              -or $_.Length -ne 0
+          }).Count -ne 0) {
+              throw 'Windows native private binding was not scrubbed'
+          }
           & $releasePython -I scripts/release-evidence-produce-platform.py `
             --source native-windows `
             --output-dir reports/release-producers `
             --report native-windows/package=reports/platform-diagnostics/native-windows-package.json `
             --report native-windows/runtime=reports/platform-diagnostics/native-windows-runtime.json `
             --report native-windows/acl-or-reparse=reports/platform-diagnostics/native-windows-acl-or-reparse.json `
+            --report native-windows/native-postgres-restore=reports/platform-diagnostics/native-windows-native-postgres-restore.json `
             --artifact native-windows/windows-release-profile=$archive
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Produce typed OCI platform evidence
@@ -438,11 +539,14 @@ jobs:
             reports/release-producers/
             reports/platform-diagnostics/
             reports/native-*-package-runtime.json
+            reports/native-*-postgres-restore.json
+            reports/native-*-transfer-seed.json
             reports/telemetry-https.json
           if-no-files-found: error
 
   macos-source:
     name: macOS source quickstart (${{ matrix.architecture }})
+    needs: release-clock
     strategy:
       fail-fast: false
       matrix:
@@ -591,6 +695,7 @@ jobs:
   conformance-release:
     name: Typed release conformance producers
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
+    needs: release-clock
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -649,7 +754,7 @@ jobs:
   packaged-backend-release:
     name: Fresh packaged Counter and absent-Broker backend parity
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
-    needs: native
+    needs: [release-clock, native]
     environment: worldstream-release
     runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
     timeout-minutes: 150
@@ -734,7 +839,7 @@ jobs:
   failure-soak-release:
     name: Packaged Linux SIGKILL and one-hour soak evidence
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
-    needs: [native, packaged-backend-release]
+    needs: [release-clock, native, packaged-backend-release]
     environment: worldstream-release
     runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
     timeout-minutes: 150
@@ -852,7 +957,7 @@ jobs:
   reference-performance-release:
     name: Frozen-host packaged reference performance evidence
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
-    needs: [native, packaged-backend-release, failure-soak-release]
+    needs: [release-clock, native, packaged-backend-release, failure-soak-release]
     environment: worldstream-release
     runs-on: [self-hosted, linux, x64, ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd]
     timeout-minutes: 240
@@ -896,8 +1001,8 @@ jobs:
         with:
           name: release-failure-soak-diagnostics
           path: process-input
-      - id: reference_package
-        name: Verify and extract the unique packaged reference daemon
+      - name: Verify and extract the unique packaged reference daemon
+        id: reference_package
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -908,23 +1013,19 @@ jobs:
           kills=(process-input/kill-point-evidence.json)
           [[ "${#archives[@]}" -eq 1 && "${#reports[@]}" -eq 1 ]]
           [[ "${#acceptances[@]}" -eq 1 && "${#soaks[@]}" -eq 1 && "${#kills[@]}" -eq 1 ]]
-          scripts/verify-release.sh "${archives[0]}"
           mkdir -p package-extracted reports reference-inputs/normalized
           daemon=package-extracted/worldstreamd
+          sdk_root=package-extracted/sdk-python
           uv run --python 3.14.7 --project sdk/python --locked python \
             scripts/release-package-extract.py \
             --archive "${archives[0]}" \
             --package-report "${reports[0]}" \
             --output "$daemon" \
+            --sdk-output "$sdk_root" \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json \
             > reports/reference-package-extraction.json
           [[ -f "$daemon" && ! -L "$daemon" && -x "$daemon" ]]
-          sdk_extract="$(mktemp -d "$RUNNER_TEMP/worldstream-reference-package.XXXXXX")"
-          tar --extract --gzip --file "${archives[0]}" --directory "$sdk_extract"
-          sdk_roots=("$sdk_extract"/worldstream-*-linux-x86_64/sdk/python)
-          [[ "${#sdk_roots[@]}" -eq 1 ]]
-          sdk_root="$(realpath "${sdk_roots[0]}")"
           [[ -f "$sdk_root/pyproject.toml" && ! -L "$sdk_root/pyproject.toml" ]]
           [[ -f "$sdk_root/uv.lock" && ! -L "$sdk_root/uv.lock" ]]
           [[ -f "$sdk_root/src/worldstream_sdk/client.py" && ! -L "$sdk_root/src/worldstream_sdk/client.py" ]]
@@ -951,6 +1052,7 @@ jobs:
             --soak-report '${{ steps.reference_package.outputs.soak }}' \
             --kill-point-report '${{ steps.reference_package.outputs.kill }}' \
             --snapshot-fixture-bin "$snapshot_fixture" \
+            --snapshot-fixture-report reference-inputs/snapshot-tail-fixture.json \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json
       - name: Project exact raw measurements into six normalized reports
@@ -965,6 +1067,7 @@ jobs:
             --package-report '${{ steps.reference_package.outputs.report }}' \
             --daemon-bin '${{ steps.reference_package.outputs.daemon }}' \
             --snapshot-fixture-bin "$snapshot_fixture" \
+            --snapshot-fixture-report reference-inputs/snapshot-tail-fixture.json \
             --output-dir reference-inputs/normalized \
             --aggregate-report reference-inputs/reference-performance.json \
             --manifest-toml compatibility.toml \
@@ -986,6 +1089,7 @@ jobs:
             --package-report '${{ steps.reference_package.outputs.report }}' \
             --daemon-bin '${{ steps.reference_package.outputs.daemon }}' \
             --snapshot-fixture-bin "$snapshot_fixture" \
+            --snapshot-fixture-report reference-inputs/snapshot-tail-fixture.json \
             --packaged-acceptance-report '${{ steps.reference_package.outputs.acceptance }}' \
             --raw-soak-report '${{ steps.reference_package.outputs.soak }}' \
             --kill-point-report '${{ steps.reference_package.outputs.kill }}' \
@@ -1010,7 +1114,7 @@ jobs:
 
   release-evidence:
     name: Unsigned release subject aggregation
-    needs: [fast, native, macos-source-release, conformance-release, packaged-backend-release, failure-soak-release, reference-performance-release]
+    needs: [release-clock, fast, native, macos-source-release, conformance-release, packaged-backend-release, failure-soak-release, reference-performance-release]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
@@ -1169,7 +1273,9 @@ jobs:
             --artifact macos-source/macos-quickstart=release-inputs/macos/macos-source-matrix.json \
             --artifact security-observability/security-observability=release-inputs/security/security-observability.json \
             --artifact failure-soak/failure-soak=release-inputs/failure/artifacts/failure-soak.json \
+            --artifact failure-soak/linux-release-profile="$linux_archive" \
             --artifact reference-performance/reference-performance=release-inputs/reference/artifacts/reference-performance.json \
+            --artifact reference-performance/linux-release-profile="$linux_archive" \
             || producer_status=$?
           printf 'typed producer adapter exit=%s; only the pre-sign supply-chain input remains intentionally absent in this phase\n' "$producer_status"
       - name: Produce and verify unsigned subject inventory, SPDX SBOM, and SLSA provenance
@@ -1223,7 +1329,7 @@ jobs:
 
   release-signing:
     name: Sign exact pre-sign subject inventory
-    needs: [release-evidence]
+    needs: [release-clock, release-evidence]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     environment: worldstream-release
     permissions:
@@ -1294,7 +1400,7 @@ jobs:
 
   release-finalize:
     name: Assemble exact unsigned final manifest
-    needs: [release-evidence, release-signing]
+    needs: [release-clock, release-evidence, release-signing]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
@@ -1433,7 +1539,7 @@ jobs:
 
   release-manifest-signing:
     name: Sign exact detached final manifest
-    needs: [release-evidence, release-signing, release-finalize]
+    needs: [release-clock, release-evidence, release-signing, release-finalize]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     environment: worldstream-release
     permissions:
@@ -1512,13 +1618,14 @@ jobs:
 
   release-verify:
     name: Verify and upload immutable release bundle
-    needs: [release-evidence, release-finalize, release-manifest-signing]
+    needs: [release-clock, release-evidence, release-finalize, release-manifest-signing]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 240
     env:
+      WORLDSTREAM_RELEASE_DEADLINE_EPOCH_SECONDS: ${{ needs.release-clock.outputs.deadline_epoch_seconds }}
       COSIGN_CERTIFICATE_IDENTITY: https://github.com/imom39a/worldstream/.github/workflows/compatibility-gates.yml@refs/heads/main
       COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
     steps:
@@ -1582,7 +1689,7 @@ jobs:
       - name: Verify both detached release signatures and all subjects
         run: scripts/verify-release.sh dist
       - name: Run final release gate without OIDC
-        run: uv run --python 3.14.7 --no-project python scripts/gates.py release --ci --strict --report reports/release-gate.json --handoff reports/release-evidence-handoff.json
+        run: uv run --python 3.14.7 --no-project python scripts/gates.py release --ci --strict --report reports/release-gate.json --handoff reports/release-evidence-handoff.json --offline
       - name: Upload immutable verified release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

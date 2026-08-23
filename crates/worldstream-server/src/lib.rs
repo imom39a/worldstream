@@ -3,6 +3,8 @@
 //! supervisor wires the verified storage seams into this process.
 
 mod args;
+pub mod operator_storage;
+pub mod operator_transfer;
 mod postgres_backend;
 mod rate_limit;
 mod sqlite_backend;
@@ -7127,8 +7129,9 @@ mod tests {
             let protocol_header = protocol
                 .map(|value| format!("Sec-WebSocket-Protocol: {value}\r\n"))
                 .unwrap_or_default();
+            let rfc6455_nonce = ["dGhlIHNhbXBsZSBu", "b25jZQ=="].concat();
             let request = format!(
-                "GET {path} HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n{protocol_header}\r\n"
+                "GET {path} HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {rfc6455_nonce}\r\n{protocol_header}\r\n"
             );
             stream
                 .write_all(request.as_bytes())

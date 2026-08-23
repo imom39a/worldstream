@@ -43,6 +43,12 @@ try {
     if (-not ((& (Join-Path $InstallDir 'cargo-audit.exe') --version) -match "cargo-audit $([regex]::Escape($CargoAuditVersion))")) {
         throw 'unexpected cargo-audit version'
     }
+    # Prime the RustSec advisory database during the explicitly online setup
+    # phase. The actual gate audits Cargo.lock with --no-fetch.
+    'version = 3' | & (Join-Path $InstallDir 'cargo-audit.exe') audit --file -
+    if ($LASTEXITCODE -ne 0) {
+        throw 'cargo-audit advisory database prime failed'
+    }
     $InstallDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 }
 finally {

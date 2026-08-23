@@ -53,6 +53,40 @@ SQLite backup, a real PostgreSQL target, full semantic verification,
 nonterminal Activation lease fencing, native PostgreSQL checks, and
 provider-backed finalization records.
 
+## Reopened retirement-order defect closure
+
+The live PostgreSQL adapter now closes the authority-ordering gap that remained
+after the original foundation increment:
+
+1. The first staged chunk installs an exact bundle/target importing fence on an
+   atomically verified empty PostgreSQL target.
+2. `verify_complete` hydrates canonical and operational rows, runs the existing
+   PostgreSQL Room verifier plus executable replay, and persists the exact
+   provider-derived `verified` marker in one transaction. The transaction
+   temporarily removes the importing fence only from its own MVCC view and
+   restores the same fence before commit, so the hydrated target never becomes
+   serving-visible.
+3. `record_finalization` rechecks staged chunks, exact native rows, deployment
+   identity/resource bytes, Room semantics, and executable replay without
+   repairing the target. Only that reconfirmed provider state can authorize
+   SQLite retirement.
+4. After SQLite retirement, `accept_target_write` is publication-only: it
+   removes the exact importing fence and advances the already hydrated target
+   to `authoritative`; its verification is non-repairing and cannot defer
+   hydration until after source retirement.
+5. Before the retirement boundary, abort atomically discards every PostgreSQL
+   user-truth domain and writes an exact durable tombstone before the source is
+   restored. Missing-state abort is also tombstoned, preventing a stale
+   publisher from racing restored SQLite authority.
+
+Deterministic destination fault injection covers hydration, executable replay,
+verified-marker persistence, provider reconfirmation, finalization-marker
+persistence, and rejection of a stale legacy `verified` marker. Every injected
+pre-retirement failure leaves source retirement uncalled and proves that the
+same import can still be coordinately aborted. A separate ordering witness
+asserts `hydrate and verify target` → `persist verified target` → `retire
+source` → `publish target authority`.
+
 The native SQLite bridge deliberately does not fill absent source metadata,
 pack/resource bytes, or hosted/native restore witnesses. The smoke lane must
 remain incomplete until an adapter supplies those exact facts. The transfer
@@ -86,6 +120,20 @@ cargo fmt --manifest-path crates/worldstream-transfer/Cargo.toml -- --check
 cargo clippy --manifest-path crates/worldstream-transfer/Cargo.toml --all-targets -- -D warnings
 ```
 
-No live SQLite, PostgreSQL 17, provider, full WorldStream semantic verifier,
-or production deployment evidence is claimed by these commands; the focused
-crate suite has 24 passing tests.
+The focused transfer crate has 40 passing tests. The reopened defect was also
+verified from the repository root with:
+
+```text
+cargo test --manifest-path crates/worldstream-postgres/Cargo.toml --lib --locked transfer::tests::
+uv run --python 3.14.7 --no-project python -m unittest -v tests.postgres_transfer_smoke
+bash -n scripts/postgres-transfer-smoke.sh
+scripts/postgres-transfer-smoke.sh --build-source --evidence /tmp/imo-51-transfer-evidence.json
+```
+
+The PostgreSQL transfer filter has 21 passing tests, the Python boundary suite
+has 17 passing tests, and the disposable digest-pinned PostgreSQL 17.11 smoke
+completed with exit `0`. Its evidence records passing whole-deployment,
+provider-derived authority coordinator, exact Room/operational readback,
+restart replay, source transfer lifecycle, empty-target preflight, and isolated
+provider-abort witnesses. The JSON remains bounded operational evidence with
+`release_evidence: false`; it does not claim production deployment evidence.

@@ -4713,6 +4713,28 @@ pub enum RecoveredObservationConsequenceV1 {
 }
 
 impl RecoveredObservationConsequenceV1 {
+    pub(crate) fn from_replay_reset(
+        member_id: MemberId,
+        cause_room_seq: RoomSequenceV1,
+        projection_hash: Blake3DigestV1,
+    ) -> Self {
+        Self::ResetRequired {
+            member_id,
+            cause_room_seq,
+            projection_hash,
+        }
+    }
+
+    pub(crate) fn from_replay_visibility_lost(
+        member_id: MemberId,
+        cause_room_seq: RoomSequenceV1,
+    ) -> Self {
+        Self::VisibilityLost {
+            member_id,
+            cause_room_seq,
+        }
+    }
+
     #[must_use]
     pub const fn member_id(&self) -> &MemberId {
         match self {
@@ -4732,6 +4754,20 @@ impl RecoveredObservationConsequenceV1 {
 }
 
 impl RecoveredObservationFrameV1 {
+    pub(crate) fn from_replay(
+        member_id: MemberId,
+        frame_seq: u64,
+        cause_room_seq: RoomSequenceV1,
+        payload_hash: Blake3DigestV1,
+    ) -> Self {
+        Self {
+            member_id,
+            frame_seq,
+            cause_room_seq,
+            payload_hash,
+        }
+    }
+
     #[must_use]
     pub const fn member_id(&self) -> &MemberId {
         &self.member_id
@@ -5021,7 +5057,7 @@ fn recover_materializations(
 }
 
 #[allow(clippy::too_many_lines)]
-fn recover_timer_ledger(
+pub(crate) fn recover_timer_ledger(
     canonical_genesis_bytes: &[u8],
     canonical_transition_bytes: &[Vec<u8>],
 ) -> Result<Vec<RecoveredTimerMaterializationV1>, RoomRecoveryErrorV1> {

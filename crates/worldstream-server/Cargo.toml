@@ -24,13 +24,24 @@ tracing-subscriber.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
+worldstream-backup = { path = "../worldstream-backup", version = "=0.1.0" }
 worldstream-protocol = { path = "../worldstream-protocol", version = "=0.1.0" }
 worldstream-runtime = { path = "../worldstream-runtime", version = "=0.1.0" }
 worldstream-sqlite = { path = "../worldstream-sqlite", version = "=0.1.0" }
 worldstream-postgres = { path = "../worldstream-postgres", version = "=0.1.0" }
+worldstream-transfer = { path = "../worldstream-transfer", version = "=0.1.0" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+fs-id.workspace = true
+windows-sys.workspace = true
+worldstream-windows-handle = { path = "../worldstream-windows-handle", version = "=0.1.0" }
 
 [dev-dependencies]
 http-body-util.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 

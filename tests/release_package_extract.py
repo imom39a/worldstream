@@ -186,6 +186,53 @@ def test_extracts_exact_new_executable_and_returns_identity(fixture):
     assert result["binary_sha256"] == (
         "sha256:" + hashlib.sha256(fixture["daemon"]).hexdigest()
     )
+    assert result["sdk"] is None
+
+
+def test_archive_path_replacement_after_stable_admission_cannot_change_bytes(
+    fixture, monkeypatch
+):
+    original_validate = fixture["module"].validate_report
+
+    def replace_original_path(*args, **kwargs):
+        identity = original_validate(*args, **kwargs)
+        write_archive(
+            fixture["archive"],
+            b"substituted daemon\n",
+            fixture["toml_bytes"],
+            fixture["json_bytes"],
+        )
+        return identity
+
+    monkeypatch.setattr(fixture["module"], "validate_report", replace_original_path)
+
+    result = invoke(fixture)
+
+    assert result["status"] == "pass"
+    assert fixture["output"].read_bytes() == fixture["daemon"]
+    assert result["archive_sha256"] != (
+        "sha256:" + hashlib.sha256(fixture["archive"].read_bytes()).hexdigest()
+    )
+
+
+def test_report_path_replacement_after_stable_admission_cannot_change_bytes(
+    fixture, monkeypatch
+):
+    original_validate = fixture["module"].validate_report
+
+    def replace_original_path(*args, **kwargs):
+        identity = original_validate(*args, **kwargs)
+        fixture["report"].write_bytes(b'{"status":"substituted"}\n')
+        return identity
+
+    monkeypatch.setattr(fixture["module"], "validate_report", replace_original_path)
+
+    result = invoke(fixture)
+
+    assert result["status"] == "pass"
+    assert result["package_report_sha256"] != (
+        "sha256:" + hashlib.sha256(fixture["report"].read_bytes()).hexdigest()
+    )
 
 
 @pytest.mark.parametrize(
@@ -340,6 +387,9 @@ def canonical_fixture(tmp_path: pathlib.Path):
     manifest, manifest_toml, manifest_json = helpers.PACKAGE.read_manifest()
     version = manifest["contracts"]["product"]
     inputs = helpers.fixture_inputs(tmp_path / "inputs")
+    client_module = tmp_path / "inputs/sdk/src/worldstream_sdk/client.py"
+    client_module.write_text("class Client: pass\n", encoding="utf-8")
+    inputs["sdk"].append((client_module, "sdk/python/src/worldstream_sdk/client.py"))
     (tmp_path / "inputs/examples/heist/parity_fixture.json").write_bytes(
         (ROOT / "examples/heist/parity_fixture.json").read_bytes()
     )
@@ -403,6 +453,27 @@ def rewrite_canonical_archive(value, mutator) -> None:
 def test_canonical_package_verifier_accepts_real_package_layout(canonical_fixture):
     result = canonical_invoke(canonical_fixture)
     assert result["status"] == "pass"
+
+
+def test_canonical_extractor_copies_the_verified_packaged_sdk(canonical_fixture):
+    sdk_output = canonical_fixture["output"].parent / "sdk-python"
+
+    result = canonical_fixture["module"].extract(
+        canonical_fixture["archive"],
+        canonical_fixture["report"],
+        canonical_fixture["output"],
+        canonical_fixture["manifest_toml"],
+        canonical_fixture["manifest_json"],
+        sdk_output,
+    )
+
+    assert result["status"] == "pass"
+    assert result["sdk"]["file_count"] > 4
+    assert result["sdk"]["total_bytes"] > 0
+    assert (sdk_output / "pyproject.toml").is_file()
+    assert (sdk_output / "uv.lock").is_file()
+    assert (sdk_output / "src/worldstream_sdk/client.py").is_file()
+    assert not any(path.is_symlink() for path in sdk_output.rglob("*"))
 
 
 def test_forged_archive_verified_cannot_hide_checksum_drift(canonical_fixture):

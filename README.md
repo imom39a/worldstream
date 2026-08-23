@@ -89,6 +89,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [Extended terminology](docs/glossary.md) — protocol, runtime, storage, UI, and lifecycle reference
 - [Product vision](docs/vision.md) — audience, value, and boundaries
 - [System architecture](docs/architecture.md) — stack, storage, filesystem, failure semantics, and scaling
+- [Operator storage and transfer](docs/operator-storage.md) — packaged SQLite backup/restore and resumable SQLite-to-PostgreSQL transfer
 - [Wire protocol](docs/protocol.md) — sessions, actions, observations, cursors, and activations
 - [Observation and Activation](docs/observation-and-activation.md) — frozen attach/reset, delivery, intent, lease, and Invocation Context contracts
 - [Activity Packs](docs/activity-packs.md) — host contract and both reference activities

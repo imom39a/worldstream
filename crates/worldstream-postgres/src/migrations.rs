@@ -35,6 +35,9 @@ pub const AUTHORITY_FACTS_MIGRATION_ID: &str = "0009-authority-facts-v1";
 /// source authority-fence evidence for complete transfer/restore parity.
 pub const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID: &str =
     "0010-transfer-recovery-completeness-v1";
+/// The forward migration that globally closes resource identity across kinds.
+pub const TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID: &str =
+    "0011-transfer-lifecycle-and-resource-identity-v1";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -175,7 +178,7 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "bundle_hash:bytea:NO,chunk_start:bigint:NO,chunk_end:bigint:NO,",
     "chunk_digest:bytea:NO,records_bytes:bytea:NO);",
     "worldstream_transfer_target_fence(",
-    "fence_id:boolean:NO,bundle_hash:bytea:NO,target_fingerprint:bytea:NO);",
+    "fence_id:boolean:NO,bundle_hash:bytea:NO,target_fingerprint:bytea:NO,state:text:NO);",
     "worldstream_deployment_metadata(",
     "target_id:boolean:NO,deployment_lineage_bytes:bytea:NO,storage_epoch_bytes:bytea:NO,",
     "storage_epoch:bigint:NO);",
@@ -203,7 +206,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 10] {
+pub fn migration_history() -> [MigrationDescriptor; 11] {
     [
         MigrationDescriptor {
             version: 1,
@@ -254,6 +257,11 @@ pub fn migration_history() -> [MigrationDescriptor; 10] {
             version: 10,
             id: TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
             sql: MIGRATION_0010_SQL,
+        },
+        MigrationDescriptor {
+            version: 11,
+            id: TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
+            sql: MIGRATION_0011_SQL,
         },
     ]
 }
@@ -616,6 +624,118 @@ CREATE TRIGGER worldstream_retired_authority_fences_immutable
     FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
 ";
 
+/// Closes the deployment resource namespace globally. Backup and transfer
+/// references carry the identity alone, so the same identity may not name
+/// different artifact/schema/codec rows.
+pub const MIGRATION_0011_SQL: &str = r"
+CREATE UNIQUE INDEX worldstream_deployment_resource_identity_global_v1
+    ON worldstream_deployment_resource_identities(resource_identity);
+CREATE UNIQUE INDEX worldstream_deployment_resource_blob_identity_global_v1
+    ON worldstream_deployment_resource_blobs(resource_identity);
+ALTER TABLE worldstream_transfer_target_fence
+    ADD COLUMN state text NOT NULL DEFAULT 'importing'
+    CHECK (state IN ('importing', 'aborted'));
+CREATE OR REPLACE FUNCTION worldstream_reject_write_while_transfer_fenced()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.worldstream_transfer_target_fence WHERE fence_id = true) THEN
+        RAISE EXCEPTION 'WorldStream target is non-serving during transfer';
+    END IF;
+    RETURN NULL;
+END;
+$$;
+CREATE TRIGGER worldstream_transfer_fence_operation_guards
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_operation_guards
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_room_roots
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_roots
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_genesis
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_genesis
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_materializations
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_materializations
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_members
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_members
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_timers
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_timers
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_transitions
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_transitions
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_frames
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_frames
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_observation_consequences
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_observation_consequences
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_activation_decisions
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_activation_decisions
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_activation_intents
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_activation_intents
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_activation_receipts
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_activation_operation_receipts
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_room_snapshots
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_room_snapshots
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_semantic_receipts
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_semantic_receipts
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_integrity_incidents
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_integrity_incidents
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_fences
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_fences
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_state
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_state
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_principals
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_principals
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_runners
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_runners
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_capabilities
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_capabilities
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_scopes
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_capability_scopes
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_runner_memberships
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_runner_capability_memberships
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_change_receipts
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_change_receipts
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_authority_audit
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_authority_audit
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_deployment_metadata
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_deployment_metadata
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_deployment_identity_metadata
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_deployment_identity_metadata
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_deployment_packs
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_deployment_pack_identities
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_deployment_resources
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_deployment_resource_identities
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_deployment_resource_blobs
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_deployment_resource_blobs
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+CREATE TRIGGER worldstream_transfer_fence_retired_authority_fences
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_retired_authority_fences_v1
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+";
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -856,5 +976,24 @@ impl FixtureMigrationProvider {
             });
         }
         verify_runtime_migration_history(&state.records)
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn transfer_lifecycle_migration_and_schema_fingerprint_are_stable() {
+        let migration = migration_history()[10];
+        assert_eq!(migration.id, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID);
+        assert_eq!(
+            migration.checksum().to_string(),
+            "blake3:f93d4eed88e503bf1a807ea676e9110dbfab3987adff7be9bdd618394345ad97"
+        );
+        assert_eq!(
+            schema_contract_fingerprint().to_string(),
+            "blake3:16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb"
+        );
     }
 }

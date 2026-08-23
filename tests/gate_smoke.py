@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -59,7 +62,7 @@ def test_cargo_evidence_rejects_zero_test_success(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr(gates.subprocess, "run", fake_run)
+    monkeypatch.setattr(gates, "_run_process_tree", fake_run)
     runner = gates.GateRunner(strict=True, offline=True, ci=False)
 
     gates.cargo_test_evidence(
@@ -576,7 +579,7 @@ def test_command_start_failure_is_classified_as_gate_failure(monkeypatch):
     def fail_to_start(*args, **kwargs):
         raise OSError("simulated spawn failure")
 
-    monkeypatch.setattr(gates.subprocess, "run", fail_to_start)
+    monkeypatch.setattr(gates, "_run_process_tree", fail_to_start)
     runner = gates.GateRunner(strict=True, offline=True, ci=False)
 
     assert not runner.command("spawn-test", ["tool"])
@@ -596,7 +599,7 @@ def test_gate_runner_enforces_manifest_deadline_on_commands_and_finish(monkeypat
         observed["timeout"] = kwargs["timeout"]
         return gates.subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(gates.subprocess, "run", complete)
+    monkeypatch.setattr(gates, "_run_process_tree", complete)
     runner = gates.GateRunner(strict=True, offline=True, ci=False)
     runner.configure_deadline({"evidence_tiers": {"fast": {"hard_seconds": 2}}}, "fast")
 
@@ -610,6 +613,42 @@ def test_gate_runner_enforces_manifest_deadline_on_commands_and_finish(monkeypat
     assert "exceeded 2 seconds" in deadline[0].detail
 
 
+def test_release_gate_uses_the_earlier_workflow_producer_deadline(monkeypatch):
+    gates = load_gates()
+    monotonic = [500.0]
+    wall = [1_700_000_000.0]
+    monkeypatch.setattr(gates.time, "monotonic", lambda: monotonic[0])
+    monkeypatch.setattr(gates.time, "time", lambda: wall[0])
+    monkeypatch.setenv(gates.RELEASE_DEADLINE_EPOCH_ENV, "1700000030")
+    runner = gates.GateRunner(strict=True, offline=True, ci=True)
+
+    runner.configure_deadline(
+        {"evidence_tiers": {"release": {"hard_seconds": 14_400}}}, "release"
+    )
+
+    assert runner.deadline_monotonic == 530.0
+    assert runner.deadline_source == "workflow_release_producer_start"
+    monotonic[0] = 530.1
+    assert runner.finish() == 1
+    assert runner.outcomes[-1].status == "FAIL"
+    assert "workflow_release_producer_start" in runner.outcomes[-1].detail
+
+
+@pytest.mark.parametrize("value", ["not-an-epoch", "0"])
+def test_release_gate_rejects_invalid_or_expired_workflow_deadline(monkeypatch, value):
+    gates = load_gates()
+    monkeypatch.setenv(gates.RELEASE_DEADLINE_EPOCH_ENV, value)
+    monkeypatch.setattr(gates.time, "time", lambda: 1_700_000_000.0)
+    runner = gates.GateRunner(strict=True, offline=True, ci=True)
+
+    runner.configure_deadline(
+        {"evidence_tiers": {"release": {"hard_seconds": 14_400}}}, "release"
+    )
+
+    assert runner.deadline_recorded
+    assert runner.outcomes[-1].status == "FAIL"
+
+
 def test_gate_runner_terminates_a_command_at_the_tier_deadline(monkeypatch):
     gates = load_gates()
     clock = [200.0]
@@ -619,7 +658,7 @@ def test_gate_runner_terminates_a_command_at_the_tier_deadline(monkeypatch):
     def time_out(argv, **kwargs):
         raise gates.subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
-    monkeypatch.setattr(gates.subprocess, "run", time_out)
+    monkeypatch.setattr(gates, "_run_process_tree", time_out)
     runner = gates.GateRunner(strict=True, offline=True, ci=False)
     runner.configure_deadline(
         {"evidence_tiers": {"minimal_ci": {"hard_seconds": 1}}}, "minimal-ci"
@@ -628,6 +667,333 @@ def test_gate_runner_terminates_a_command_at_the_tier_deadline(monkeypatch):
     assert not runner.command("bounded", ["tool"])
     assert runner.outcomes[-1].status == "FAIL"
     assert "exhausted the tier hard deadline" in runner.outcomes[-1].detail
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    if sys.platform.startswith("linux"):
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+        except (OSError, IndexError):
+            return False
+        return state != "Z"
+    return True
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX PID identity regression")
+def test_posix_signal_revalidates_identity_immediately_before_every_signal(
+    monkeypatch,
+):
+    gates = load_gates()
+    identities = iter(["owned-start", "owned-start", "reused-start"])
+    signaled: list[tuple[int, int]] = []
+    monkeypatch.setattr(gates, "_posix_process_identity", lambda _pid: next(identities))
+    monkeypatch.setattr(
+        gates.os,
+        "kill",
+        lambda pid, signal_number: signaled.append((pid, signal_number)),
+    )
+
+    assert gates._signal_posix_process(5678, "owned-start", signal.SIGSTOP)
+    assert gates._signal_posix_process(5678, "owned-start", signal.SIGTERM)
+    assert not gates._signal_posix_process(5678, "owned-start", signal.SIGKILL)
+    assert signaled == [(5678, signal.SIGSTOP), (5678, signal.SIGTERM)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+def test_posix_cleanup_never_signals_a_reaped_roots_old_process_group(monkeypatch):
+    gates = load_gates()
+
+    class CompletedProcess:
+        pid = 1234
+
+        @staticmethod
+        def poll():
+            return 0
+
+    freeze_results = iter([{5678: "owned-start"}, {5678: "owned-start"}])
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        gates,
+        "_freeze_posix_processes",
+        lambda _marker, _seeded=None: next(freeze_results),
+    )
+    monkeypatch.setattr(
+        gates,
+        "_signal_posix_process",
+        lambda pid, _started, signal_number: (
+            signals.append((pid, signal_number)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        gates,
+        "_wait_posix_processes_gone",
+        lambda identities, **_kwargs: (
+            {}
+            if signal.SIGKILL in {signal_number for _pid, signal_number in signals}
+            else dict(identities)
+        ),
+    )
+    monkeypatch.setattr(
+        gates.os,
+        "killpg",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("a completed root's PGID must never be signaled")
+        ),
+        raising=False,
+    )
+
+    gates._terminate_posix_processes(CompletedProcess(), b"marker=value", None)
+
+    assert signals == [
+        (5678, signal.SIGTERM),
+        (5678, signal.SIGCONT),
+        (5678, signal.SIGKILL),
+    ]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX PID identity regression")
+def test_posix_wait_does_not_drop_a_reused_root_pid(monkeypatch):
+    gates = load_gates()
+
+    class ReapedRoot:
+        pid = 1234
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(
+        gates,
+        "_posix_process_identity",
+        lambda _pid: "reused-start",
+    )
+
+    remaining = gates._wait_posix_processes_gone(
+        {1234: "reused-start"},
+        timeout=0,
+        root_process=ReapedRoot(),
+        root_started="original-start",
+    )
+
+    assert remaining == {1234: "reused-start"}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin native sampler")
+def test_darwin_process_snapshot_does_not_launch_ps(monkeypatch):
+    gates = load_gates()
+    monkeypatch.setattr(
+        gates.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Darwin process sampling must not launch ps")
+        ),
+    )
+
+    processes = gates._posix_process_snapshot()
+
+    assert os.getpid() in processes
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX process-tree regression")
+def test_gate_runner_kills_and_reaps_adversarial_child_and_detached_grandchild(
+    tmp_path,
+):
+    gates = load_gates()
+    identities = tmp_path / "process-tree.txt"
+    child = (
+        "import os,pathlib,subprocess,sys,time; "
+        "grandchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "start_new_session=True); "
+        "pathlib.Path(sys.argv[1]).write_text(f'{os.getpid()} {grandchild.pid}',encoding='utf-8'); "
+        "time.sleep(60)"
+    )
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    runner.configure_deadline({"evidence_tiers": {"fast": {"hard_seconds": 1}}}, "fast")
+
+    assert (
+        runner.bounded_process(
+            "real-process-tree-timeout",
+            [sys.executable, "-c", child, str(identities)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        is None
+    )
+    child_pid, grandchild_pid = (
+        int(value) for value in identities.read_text(encoding="utf-8").split()
+    )
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and any(
+        _pid_is_running(pid) for pid in (child_pid, grandchild_pid)
+    ):
+        time.sleep(0.02)
+    assert not _pid_is_running(child_pid)
+    assert not _pid_is_running(grandchild_pid)
+    assert runner.outcomes[-1].status == "FAIL"
+    assert "exhausted the tier hard deadline" in runner.outcomes[-1].detail
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX process-tree regression")
+def test_gate_runner_reaps_detached_child_after_successful_parent_exit(tmp_path):
+    gates = load_gates()
+    identity = tmp_path / "detached-child.txt"
+    parent = (
+        "import pathlib,subprocess,sys,time; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "start_new_session=True); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid),encoding='utf-8'); "
+        "time.sleep(0.25)"
+    )
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+
+    completed = runner.bounded_process(
+        "real-process-tree-success",
+        [sys.executable, "-c", parent, str(identity)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    assert completed is not None
+    assert completed.returncode == 0
+    child_pid = int(identity.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and _pid_is_running(child_pid):
+        time.sleep(0.02)
+    assert not _pid_is_running(child_pid)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX process-tree regression")
+def test_gate_runner_reaps_rapid_daemon_after_successful_parent_exit(tmp_path):
+    gates = load_gates()
+    identity = tmp_path / "rapid-daemon.txt"
+    parent = (
+        "import pathlib,subprocess,sys; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
+        "stderr=subprocess.DEVNULL,start_new_session=True); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid),encoding='utf-8')"
+    )
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+
+    completed = runner.bounded_process(
+        "real-process-tree-rapid-daemon",
+        [sys.executable, "-c", parent, str(identity)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    assert completed is not None
+    assert completed.returncode == 0
+    child_pid = int(identity.read_text(encoding="utf-8"))
+    child_started = gates._posix_process_identity(child_pid)
+    try:
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and _pid_is_running(child_pid):
+            time.sleep(0.01)
+        assert not _pid_is_running(child_pid)
+    finally:
+        if child_started is not None:
+            gates._signal_posix_process(child_pid, child_started, signal.SIGKILL)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows Job Object regression")
+def test_gate_runner_windows_job_kills_and_reaps_child_and_grandchild(tmp_path):
+    gates = load_gates()
+    identities = tmp_path / "process-tree.txt"
+    child = (
+        "import os,pathlib,subprocess,sys,time; "
+        "flags=getattr(subprocess,'CREATE_NEW_PROCESS_GROUP',0); "
+        "grandchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "creationflags=flags); "
+        "pathlib.Path(sys.argv[1]).write_text(f'{os.getpid()} {grandchild.pid}',encoding='utf-8'); "
+        "time.sleep(60)"
+    )
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    runner.configure_deadline({"evidence_tiers": {"fast": {"hard_seconds": 1}}}, "fast")
+
+    assert (
+        runner.bounded_process(
+            "real-windows-process-tree-timeout",
+            [sys.executable, "-c", child, str(identities)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        is None
+    )
+    child_pid, grandchild_pid = (
+        int(value) for value in identities.read_text(encoding="utf-8").split()
+    )
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and any(
+        _pid_is_running(pid) for pid in (child_pid, grandchild_pid)
+    ):
+        time.sleep(0.02)
+    assert not _pid_is_running(child_pid)
+    assert not _pid_is_running(grandchild_pid)
+    assert runner.outcomes[-1].status == "FAIL"
+
+
+def test_process_tree_containment_failure_is_a_closed_gate_failure(monkeypatch):
+    gates = load_gates()
+    monkeypatch.setattr(gates.shutil, "which", lambda _name: "/usr/bin/tool")
+
+    def fail_containment(*_args, **_kwargs):
+        raise gates.ProcessTreeError("simulated containment failure")
+
+    monkeypatch.setattr(gates, "_run_process_tree", fail_containment)
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+
+    assert not runner.command("tree-containment", ["tool"])
+    assert runner.outcomes[-1].status == "FAIL"
+    assert "process-tree containment failed" in runner.outcomes[-1].detail
+
+
+def test_windows_job_setup_failure_kills_child_without_posix_cleanup(monkeypatch):
+    gates = load_gates()
+
+    class SuspendedProcess:
+        pid = 42
+        _handle = 7
+
+        def __init__(self):
+            self.killed = False
+            self.waited = False
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, *, timeout):
+            assert timeout == gates.PROCESS_TREE_REAP_SECONDS
+            self.waited = True
+            return 1
+
+        def poll(self):
+            return 1 if self.waited else None
+
+    process = SuspendedProcess()
+    monkeypatch.setattr(gates.os, "name", "nt")
+    monkeypatch.setattr(gates.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    def reject_job(_process):
+        raise gates.ProcessTreeError("Job Object unavailable")
+
+    monkeypatch.setattr(gates, "_WindowsProcessJob", reject_job)
+    monkeypatch.setattr(
+        gates.os,
+        "killpg",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("Windows cleanup must never call POSIX killpg")
+        ),
+    )
+
+    with pytest.raises(gates.ProcessTreeError, match="Job Object unavailable"):
+        gates._run_process_tree(["tool"], timeout=1)
+    assert process.killed is True
+    assert process.waited is True
 
 
 def test_pre_push_requires_a_positive_hard_deadline():
@@ -685,6 +1051,40 @@ def test_fast_tier_uses_static_python_checks_without_network_or_full_suite(
         "rust_checks",
         "critical_contract_matrix",
     ]
+
+
+def test_pre_commit_routes_through_fast_gate_launcher() -> None:
+    hook = (ROOT / ".githooks/pre-commit").read_text(encoding="utf-8")
+    staged_check = hook.index("git diff --cached --check")
+    fast_gate = hook.index("scripts/gates.sh fast --offline")
+
+    assert staged_check < fast_gate
+    assert "python3 scripts/verify-manifest.py" not in hook
+    assert "RUSTUP_TOOLCHAIN=" not in hook
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_dependency_scan_disables_cargo_audit_fetch_when_offline(
+    monkeypatch, offline
+) -> None:
+    gates = load_gates()
+    monkeypatch.setattr(
+        gates.shutil,
+        "which",
+        lambda name: "/tools/cargo-audit" if name == "cargo-audit" else None,
+    )
+    runner = gates.GateRunner(strict=True, offline=offline, ci=False)
+    commands: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        runner,
+        "command",
+        lambda name, argv, **_kwargs: commands.append((name, argv)) or True,
+    )
+
+    gates.dependency_scan(runner, release=False, include_ecosystems=False)
+
+    audit = next(argv for name, argv in commands if name == "cargo-audit")
+    assert ("--no-fetch" in audit) is offline
 
 
 def test_gate_report_summarizes_blocking_and_incomplete_outcomes(tmp_path, monkeypatch):
@@ -916,6 +1316,26 @@ def test_native_ci_provisions_exact_postgresql_before_manifest_cells():
     assert hosted_provisioning.count("WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE=") == 2
     assert 'chmod 600 "$postgres_dsn_file"' in workflow
     assert "POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password" in workflow
+    assert (
+        "scripts/gates.py minimal-ci --ci --cell ${{ matrix.cell }} --report "
+        "reports/${{ matrix.cell }}.json --offline" in workflow
+    )
+
+
+def test_native_linux_and_windows_execute_real_process_tree_regressions():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    native = workflow[workflow.index("  native:") : workflow.index("  macos-source:")]
+    step = (
+        "      - name: Prove native gate process-tree deadline containment\n"
+        "        if: ${{ matrix.platform != 'oci-linux-amd64' }}\n"
+        "        shell: ${{ matrix.shell }}\n"
+        "        run: uv run --project sdk/python --locked python -m pytest -q "
+        'tests/gate_smoke.py -k "test_gate_runner_kills_and_reaps_adversarial_'
+        "child_and_detached_grandchild or test_gate_runner_windows_job_kills_and_"
+        'reaps_child_and_grandchild"\n'
+    )
+
+    assert native.count(step) == 1
 
 
 def test_pull_request_runner_matrix_is_static_workflow_data():
@@ -941,6 +1361,10 @@ def test_windows_ci_installs_and_proves_byte_pinned_postgresql_17_11():
     assert "'170011'" in script
     assert "WORLDSTREAM_POSTGRES_DSN_FILE=" in script
     assert "WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE=" in script
+    assert "WORLDSTREAM_POSTGRES_PASSWORD_FILE=" in script
+    assert "WORLDSTREAM_PG_DUMP=" in script
+    assert "WORLDSTREAM_PG_RESTORE=" in script
+    assert "WORLDSTREAM_PSQL=" in script
     assert "POSTGRES_PASSWORD=" not in script
     assert "--superpassword" not in script.lower()
     assert "function Protect-WorldstreamPath" in script
@@ -962,11 +1386,79 @@ def test_windows_ci_installs_and_proves_byte_pinned_postgresql_17_11():
     )
 
 
+def test_linux_release_installs_byte_pinned_postgresql_17_11_clients():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    script = (ROOT / "scripts/gates-install-postgres-client.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scripts/gates-install-postgres-client.sh" in workflow
+    assert "postgresql-client-17_17.11-1.pgdg24.04+2_amd64.deb" in script
+    assert "postgresql-client-common_293.pgdg24.04+1_all.deb" in script
+    assert "libpq5_18.6-1.pgdg24.04+2_amd64.deb" in script
+    for digest in (
+        "b3b071b67a814a382516d6f6241b529c52f909672457e2f48083acce047b634f",
+        "80ae115f63ba67fbba442f6b75a468a559b77a3ee3b0be357a4c49e70bf860c5",
+        "b487c5ed2ceb9244c6a9d6ae65818ed6707c3c44a2e14488394ae4194c52c53b",
+    ):
+        assert digest in script
+    assert "--proto '=https' --tlsv1.2" in script
+    assert "sha256sum --check --strict" in script
+    assert "WORLDSTREAM_PG_DUMP=" in script
+    assert "WORLDSTREAM_PG_RESTORE=" in script
+    assert "WORLDSTREAM_PSQL=" in script
+
+
 def test_release_workflow_uses_verified_safe_package_extraction():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "scripts/release-package-extract.py" in workflow
-    assert "tar -xzf" not in workflow
-    assert "reports/package-extraction.json" in workflow
+    reference = workflow[
+        workflow.index("  reference-performance-release:") : workflow.index(
+            "  release-evidence:"
+        )
+    ]
+    assert "scripts/release-package-extract.py" in reference
+    assert "tar -xzf" not in reference
+    assert "tar --extract" not in reference
+    assert "scripts/verify-release.sh" not in reference
+    assert '--sdk-output "$sdk_root"' in reference
+    assert "reports/reference-package-extraction.json" in reference
+
+
+def test_workflow_deadlines_cover_setup_and_the_complete_release_producer_chain():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    def job(name: str) -> str:
+        start = workflow.index(f"  {name}:\n")
+        following = re.search(r"\n  [a-z][a-z0-9-]+:\n", workflow[start + 1 :])
+        end = len(workflow) if following is None else start + 1 + following.start()
+        return workflow[start:end]
+
+    assert "    timeout-minutes: 1\n" in job("fast")
+    assert (
+        "    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' "
+        "&& inputs.release == true && github.ref == 'refs/heads/main' && 60 || 25 }}\n"
+        in job("native")
+    )
+    clock = job("release-clock")
+    assert "deadline_epoch_seconds=$((started_epoch_seconds + 14400))" in clock
+    for name in (
+        "packaged-backend-release",
+        "failure-soak-release",
+        "reference-performance-release",
+        "release-evidence",
+        "release-signing",
+        "release-finalize",
+        "release-manifest-signing",
+        "release-verify",
+    ):
+        assert "release-clock" in next(
+            line for line in job(name).splitlines() if line.startswith("    needs:")
+        )
+    assert (
+        "WORLDSTREAM_RELEASE_DEADLINE_EPOCH_SECONDS: "
+        "${{ needs.release-clock.outputs.deadline_epoch_seconds }}"
+        in job("release-verify")
+    )
 
 
 def test_release_job_bootstraps_pinned_gate_toolchain_before_release_gate():
@@ -982,6 +1474,10 @@ def test_release_job_bootstraps_pinned_gate_toolchain_before_release_gate():
     )
     assert "id-token: write" in release
     assert "id-token: write" not in workflow[: workflow.index("  release-evidence:")]
+    assert (
+        "scripts/gates.py release --ci --strict --report reports/release-gate.json "
+        "--handoff reports/release-evidence-handoff.json --offline" in release
+    )
 
 
 def test_every_external_workflow_action_uses_an_exact_commit():
@@ -1058,8 +1554,8 @@ def test_local_postgresql_redacts_keyword_dsn_credentials(monkeypatch, capsys):
     monkeypatch.setenv("WORLDSTREAM_POSTGRES_URL", dsn)
     monkeypatch.setattr(gates.shutil, "which", lambda name: "/usr/bin/psql")
     monkeypatch.setattr(
-        gates.subprocess,
-        "run",
+        gates,
+        "_run_process_tree",
         lambda argv, **kwargs: subprocess.CompletedProcess(
             argv, 0, stdout="", stderr=""
         ),
@@ -1101,7 +1597,7 @@ def test_local_postgresql_reads_owner_only_dsn_file_and_scopes_password(
         observed["env"] = kwargs["env"]
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(gates.subprocess, "run", fake_run)
+    monkeypatch.setattr(gates, "_run_process_tree", fake_run)
     runner = gates.GateRunner(strict=True, offline=True, ci=False)
 
     gates.local_postgresql(runner, required=True)
@@ -1160,6 +1656,25 @@ def test_root_python_gate_uses_explicit_sorted_test_inventory(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    ("tier", "cell_id", "expected"),
+    [
+        ("pre-push", None, True),
+        ("minimal-ci", "native-linux-x86_64", True),
+        ("minimal-ci", "native-windows-x64", True),
+        ("minimal-ci", "oci-linux-amd64", False),
+        ("fast", None, False),
+    ],
+)
+def test_root_python_suite_is_owned_by_pre_push_and_both_native_ci_cells(
+    tier, cell_id, expected
+):
+    gates = load_gates()
+    row = None if cell_id is None else {"id": cell_id}
+
+    assert gates.root_python_suite_required(tier, row) is expected
+
+
 def test_sdk_gate_scopes_pytest_to_the_sdk_tree(monkeypatch):
     gates = load_gates()
     monkeypatch.setattr(gates.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -1213,6 +1728,16 @@ def test_hosted_scanner_inventory_is_version_and_byte_pinned():
     assert "ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39" in linux
     assert "e4b7d556f0cddbe23d10d8fac2ab0f29f68f019091c6599ffbeaa8a4fb71ac78" in windows
     assert "0a7316540862c13d954f648917ceacca593747baed6eec180fafa590be2710ab" in windows
+    linux_prime = linux.index(
+        "printf '%s\\n' 'version = 3' | \"$install_dir/cargo-audit\" audit --file -"
+    )
+    windows_prime = windows.index(
+        "'version = 3' | & (Join-Path $InstallDir 'cargo-audit.exe') audit --file -"
+    )
+    assert linux_prime < linux.index("GITHUB_PATH")
+    assert windows_prime < windows.index("$InstallDir | Out-File")
+    assert "$LASTEXITCODE -ne 0" in windows[windows_prime:]
+    assert "cargo-audit advisory database prime failed" in windows[windows_prime:]
     assert workflow.count("scripts/gates-install-tools.sh") >= 3
     assert "scripts/gates-install-tools.ps1" in workflow
 

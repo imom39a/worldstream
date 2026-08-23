@@ -178,7 +178,7 @@ fn prepared_increment_with_frame_head(
 
 #[test]
 fn profiles_and_pooler_path_are_explicit_and_manifest_stays_fail_closed() {
-    let admin = PostgresConnectionConfig::direct_admin("host=localhost user=admin")
+    let admin = PostgresConnectionConfig::direct_admin("host=localhost user=admin sslmode=require")
         .unwrap_or_else(|error| panic!("admin profile: {error}"));
     assert_eq!(admin.profile(), PostgresProfile::DirectAdmin);
     let runtime = PostgresConnectionConfig::runtime(
@@ -670,7 +670,7 @@ fn interrupted_migration_restarts_without_duplicate_history() {
 
 #[test]
 fn kernel_conformance_migration_is_reviewed_and_forward_only() {
-    assert_eq!(migration_history().len(), 10);
+    assert_eq!(migration_history().len(), 11);
     assert_eq!(
         migration_history()[2].id,
         worldstream_postgres::KERNEL_CONFORMANCE_MIGRATION_ID
@@ -694,6 +694,14 @@ fn kernel_conformance_migration_is_reviewed_and_forward_only() {
     assert!(
         worldstream_postgres::MIGRATION_0010_SQL
             .contains("worldstream_retired_authority_fences_v1")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0011_SQL
+            .contains("CREATE UNIQUE INDEX worldstream_deployment_resource_identity_global_v1")
+    );
+    assert!(
+        worldstream_postgres::MIGRATION_0011_SQL
+            .contains("public.worldstream_transfer_target_fence")
     );
 }
 

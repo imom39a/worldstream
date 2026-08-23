@@ -292,6 +292,15 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
     target, _target_raw = read_json(
         args.target_report, "reference-target workload report"
     )
+    fixture_report, fixture_report_raw = REFERENCE_PRODUCER.read_fixture_report(
+        args.snapshot_fixture_report
+    )
+    require(
+        len(fixture_report_raw) <= REFERENCE_PRODUCER.MAX_FIXTURE_REPORT_BYTES
+        and fixture_report.get("schema")
+        == "worldstream/reference-snapshot-tail-fixture/v1",
+        "snapshot-tail fixture report is oversized or has the wrong schema",
+    )
     try:
         soak_validated = FAILURE_PRODUCER.validate_soak(
             soak,
@@ -362,6 +371,9 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
         "snapshot_fixture_source": REFERENCE_PRODUCER.file_binding(
             REFERENCE_PRODUCER.REFERENCE_TARGET_FIXTURE_SOURCE_PATH,
             "worldstream/reference-snapshot-tail-fixture-source/v1",
+        ),
+        "snapshot_fixture_report": REFERENCE_PRODUCER.exact_binding(
+            fixture_report_raw, fixture_report["schema"]
         ),
     }
     expected_external_sources = {
@@ -510,6 +522,7 @@ def project(args: argparse.Namespace) -> dict[str, Path]:
         args.soak_report.resolve(),
         args.kill_point_report.resolve(),
         args.target_report.resolve(),
+        args.snapshot_fixture_report.resolve(),
         args.manifest_toml.resolve(),
         args.manifest_json.resolve(),
     }
@@ -545,6 +558,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--package-report", type=Path, required=True)
     command.add_argument("--daemon-bin", type=Path, required=True)
     command.add_argument("--snapshot-fixture-bin", type=Path, required=True)
+    command.add_argument("--snapshot-fixture-report", type=Path, required=True)
     command.add_argument("--output-dir", type=Path, required=True)
     command.add_argument("--aggregate-report", type=Path, required=True)
     command.add_argument(

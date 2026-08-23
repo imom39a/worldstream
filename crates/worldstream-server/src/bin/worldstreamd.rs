@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 use worldstream_core::{
     AuthorityBootstrapV1, AuthorityChangeId, AuthorityChangeReceiptV1, AuthorityChangeResultV1,
     AuthorityCheckedAt, AuthorityStoreV1, AuthorityV1, CapabilityBearerV1, CapabilityId,
-    PrincipalId, PrincipalKindV1, builtin_worldstream_registry,
+    PackRegistryV1, PrincipalId, PrincipalKindV1, builtin_worldstream_registry,
 };
 use worldstream_postgres::{PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore};
 use worldstream_runtime::{
@@ -20,6 +20,7 @@ use worldstream_server::{
     StructuredLogTelemetryExporter, operator_router, read_postgres_dsn, telemetry,
 };
 use worldstream_sqlite::SqliteRoomStore;
+use worldstream_transfer::{DeploymentIdentityV1, DigestV1, PackIdentityV1};
 
 const BOOTSTRAP_CHANGE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC4";
 const BOOTSTRAP_PRINCIPAL_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC2";
@@ -96,14 +97,24 @@ async fn main() -> Result<()> {
                     database_path.display()
                 )
             })?;
+            if store.source_transfer_state()
+                != worldstream_sqlite::SqliteSourceTransferStateV1::SourceAuthoritative
+            {
+                anyhow::bail!(
+                    "SQLite source is {:?}; this process must not serve or mutate it",
+                    store.source_transfer_state()
+                );
+            }
             let canonical_metadata = initialize_canonical_metadata(&store, &config.storage)
                 .context("SQLite canonical deployment metadata initialization failed")?;
+            let registry = builtin_worldstream_registry()
+                .context("WorldStream Activity Pack registry initialization/verification failed")?;
+            let deployment_identity = initialize_deployment_identity(&store, &registry)
+                .context("SQLite deployment Pack identity initialization failed")?;
             let _bootstrap_receipt =
                 bootstrap_authority(&store, config.authority.bootstrap_secret.as_ref())
                     .context("SQLite authority bootstrap failed closed")?;
             let (sqlite_version, sqlite_source_id) = store.engine_identity();
-            let registry = builtin_worldstream_registry()
-                .context("WorldStream Activity Pack registry initialization/verification failed")?;
             let backend = Arc::new(SqliteGatewayBackend::new(store, Arc::new(registry)));
             let state = OperatorState::new(config)
                 .context("operator state initialization failed")?
@@ -127,6 +138,7 @@ async fn main() -> Result<()> {
                 scheduler = "running",
                 authority_bootstrap = "verified",
                 canonical_export_metadata = canonical_metadata.as_str(),
+                deployment_identity,
                 readiness = "ready",
                 "WorldStream SQLite operator shell started; runtime, host authority bootstrap, and Activation scheduler are running"
             );
@@ -263,6 +275,39 @@ fn initialize_canonical_metadata(
             anyhow::bail!("deployment lineage and storage epoch must be supplied together")
         }
     }
+}
+
+fn initialize_deployment_identity(
+    store: &SqliteRoomStore,
+    registry: &PackRegistryV1,
+) -> Result<&'static str> {
+    let packs = registry
+        .retained_revision_locks()
+        .map(|revision_lock| {
+            let semantic_digest = revision_lock
+                .revision_digest()
+                .context("validated Pack revision identity could not be reproduced")?;
+            let digest = DigestV1::from_bytes(semantic_digest.digest().as_bytes())
+                .context("validated Pack digest could not be represented for transfer")?;
+            PackIdentityV1::new(
+                revision_lock.pack_id.clone(),
+                revision_lock.explanatory_version.clone(),
+                digest,
+            )
+            .context("validated Pack identity could not be represented for transfer")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let identity = DeploymentIdentityV1::new(packs, Vec::new())
+        .context("embedded deployment identity was rejected")?;
+    let initialized = store
+        .initialize_deployment_identity(identity)
+        .context("embedded deployment identity conflicts with durable SQLite identity")?;
+    Ok(match initialized {
+        worldstream_sqlite::SqliteDeploymentIdentityInitializationV1::Initialized => "initialized",
+        worldstream_sqlite::SqliteDeploymentIdentityInitializationV1::AlreadyInitialized => {
+            "already_initialized"
+        }
+    })
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -410,7 +455,8 @@ mod tests {
     use super::{
         BOOTSTRAP_CHANGE_ID, CanonicalMetadataStartup, TelemetryExporterSelection,
         bootstrap_authority, bootstrap_authority_at, build_telemetry_exporter,
-        initialize_canonical_metadata, run_on_blocking_worker, select_telemetry_exporter,
+        initialize_canonical_metadata, initialize_deployment_identity, run_on_blocking_worker,
+        select_telemetry_exporter,
     };
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -519,10 +565,49 @@ mod tests {
             initialize_canonical_metadata(&store, &config.storage)?,
             CanonicalMetadataStartup::Absent
         );
+        let registry = worldstream_core::builtin_worldstream_registry()?;
+        assert_eq!(
+            initialize_deployment_identity(&store, &registry)?,
+            "initialized"
+        );
+        assert_eq!(
+            store.begin_source_transfer(directory.path().join("incomplete-transfer.sqlite3")),
+            Err(worldstream_sqlite::SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)
+        );
         assert_eq!(
             store.export_canonical_evidence(),
-            Err(worldstream_sqlite::SqliteCanonicalExportErrorV1::MetadataAbsent)
+            Err(worldstream_sqlite::SqliteCanonicalExportErrorV1::SourceNotTransferPending)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn configured_sqlite_persists_the_complete_embedded_pack_identity() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let database_path = directory.path().join("worldstream.sqlite3");
+        let backup_path = directory.path().join("transfer.sqlite3");
+        let store = worldstream_sqlite::SqliteRoomStore::open(&database_path)?;
+        let mut config = EffectiveConfig::default();
+        config.storage.deployment_lineage =
+            Some(DeploymentLineageV1::parse("deployment/identity")?);
+        config.storage.storage_epoch = Some(StorageEpochV1::new(1)?);
+        assert_eq!(
+            initialize_canonical_metadata(&store, &config.storage)?,
+            CanonicalMetadataStartup::Initialized
+        );
+        let registry = worldstream_core::builtin_worldstream_registry()?;
+        assert_eq!(
+            initialize_deployment_identity(&store, &registry)?,
+            "initialized"
+        );
+        assert_eq!(
+            initialize_deployment_identity(&store, &registry)?,
+            "already_initialized"
+        );
+        store.begin_source_transfer(&backup_path)?;
+        let export = store.export_canonical_evidence()?;
+        assert_eq!(export.deployment_identity().packs().len(), registry.len());
+        assert!(export.deployment_identity().resources().is_empty());
         Ok(())
     }
 

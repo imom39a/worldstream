@@ -4,8 +4,8 @@ use worldstream_core::{
     AccessModeV1, ActionAdmissionErrorV1, ActionId, ActivityObservationOutcomeV1,
     AdvanceDispositionV1, CanonicalJsonV1, CoreRoomStateV1, CoreTraceV1, MemberId,
     MembershipStandingV1, MembershipV1, PackGenesisRequestV1, PackRegistryV1, ParticipantActionV1,
-    PrincipalKindV1, RecordedStimulusV1, RoomSeedV1, TraceErrorV1, builtin_counter_registry,
-    counter_v2_digest,
+    PrincipalKindV1, RecordedStimulusV1, ReplayFailureClassV1, RoomSeedV1, TraceErrorV1,
+    builtin_counter_registry, counter_v2_digest,
 };
 
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -199,4 +199,63 @@ fn sealed_prepared_observation_and_replay_continuation_remain_registry_bound() {
         .install_prepared_for_conformance(prepared)
         .unwrap_or_else(|error| unreachable!("continuation install: {error}"));
     assert_eq!(restored.head().room_seq().get(), 2);
+}
+
+#[test]
+fn storage_verifier_executes_exact_history_without_returning_a_continuation() {
+    let (registry, mut trace) = new_trace(0, 4);
+    let action = participant_action(
+        &trace,
+        "increment",
+        "01ARZ3NDEKTSV4RRFFQ69G5FC8",
+        "2026-08-15T12:00:01Z",
+    );
+    let prepared = trace
+        .prepare(action)
+        .unwrap_or_else(|error| unreachable!("preparation: {error}"));
+    trace
+        .install_prepared_for_conformance(prepared)
+        .unwrap_or_else(|error| unreachable!("install: {error}"));
+    let genesis_bytes = trace
+        .genesis_bytes()
+        .unwrap_or_else(|error| unreachable!("Genesis bytes: {error}"));
+    let transition_bytes = trace
+        .transition_bytes()
+        .unwrap_or_else(|error| unreachable!("Transition bytes: {error}"));
+    let core_state_bytes = trace
+        .core_state()
+        .canonical_bytes()
+        .unwrap_or_else(|error| unreachable!("Core bytes: {error}"));
+    let activity_state_bytes = trace
+        .activity_state()
+        .to_bytes()
+        .unwrap_or_else(|error| unreachable!("Activity bytes: {error}"));
+
+    let storage_verification = CoreTraceV1::verify_executable_history_for_storage(
+        &registry,
+        trace.head(),
+        &genesis_bytes,
+        &transition_bytes,
+        &core_state_bytes,
+        &activity_state_bytes,
+    )
+    .unwrap_or_else(|failure| unreachable!("storage replay: {}", failure.detail));
+    assert!(
+        !storage_verification.observation_frames().is_empty(),
+        "storage replay must return regenerated observation witnesses"
+    );
+
+    let mut wrong_core_state_bytes = core_state_bytes;
+    wrong_core_state_bytes.push(b' ');
+    let failure = CoreTraceV1::verify_executable_history_for_storage(
+        &registry,
+        trace.head(),
+        &genesis_bytes,
+        &transition_bytes,
+        &wrong_core_state_bytes,
+        &activity_state_bytes,
+    )
+    .err()
+    .unwrap_or_else(|| unreachable!("mismatched materialization was accepted"));
+    assert_eq!(failure.class, ReplayFailureClassV1::CoreState);
 }

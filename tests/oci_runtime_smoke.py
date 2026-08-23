@@ -30,6 +30,40 @@ FIXTURE_BASE_IMAGE = (
     (ROOT / "packaging/oci/base-image.txt").read_text(encoding="utf-8").strip()
 )
 BASH = shutil.which("bash") or "bash"
+RUNTIME_ROLE_SQL_FRAGMENTS = (
+    "role.rolsuper::text",
+    "role.rolcreaterole::text",
+    "role.rolcreatedb::text",
+    "role.rolreplication::text",
+    "role.rolbypassrls::text",
+    "has_database_privilege(current_user, current_database(), 'CREATE')",
+    "pg_catalog.pg_auth_members",
+    "has_schema_privilege(current_user, 'public', 'CREATE')",
+    "pg_catalog.pg_namespace",
+    "pg_catalog.pg_class",
+    "pg_catalog.pg_proc",
+    "pg_catalog.pg_type",
+    "'public.worldstream_schema_migrations', 'INSERT'",
+    "'public.worldstream_schema_migrations', 'UPDATE'",
+    "'public.worldstream_schema_migrations', 'DELETE'",
+    "'public.worldstream_schema_migrations', 'TRUNCATE'",
+    "protected_table.table_name, 'INSERT'",
+    "protected_table.table_name, 'UPDATE'",
+    "protected_table.table_name, 'DELETE'",
+    "protected_table.table_name, 'TRUNCATE'",
+)
+
+
+def assert_runtime_role_contract(source: str) -> None:
+    start = source.index("runtime_role_admission_sql() {")
+    end = source.index("\n}\n", start)
+    query = source[start:end]
+    expected = "false|" * 16 + "false"
+    assert f'RUNTIME_ROLE_ADMISSION_EXPECTED="{expected}"' in source
+    assert query.count("|| '|' ||") == 16
+    for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+        assert fragment in query
+    assert "unnest(ARRAY['INSERT'" not in query
 
 
 def embedded_python(source: str, marker: str) -> str:
@@ -910,22 +944,15 @@ def main() -> None:
     assert "postgres:17.11-alpine@sha256:" in runtime_smoke
     assert '"postgres-primary"' in runtime_smoke
     assert "postgres_runtime_role_not_least_privileged" in runtime_smoke
-    for runtime_role_witness in (
-        "rolsuper",
-        "rolcreaterole",
-        "rolcreatedb",
-        "rolreplication",
-        "rolbypassrls",
-        "has_database_privilege",
-        "pg_auth_members",
-        "has_schema_privilege",
-        "pg_namespace",
-        "pg_class",
-        "pg_proc",
-        "pg_type",
-        "worldstream_schema_migrations",
-    ):
-        assert runtime_role_witness in runtime_smoke
+    assert "NOREPLICATION NOBYPASSRLS" in runtime_smoke
+    assert_runtime_role_contract(runtime_smoke)
+    for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+        try:
+            assert_runtime_role_contract(runtime_smoke.replace(fragment, "mutated"))
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"runtime role witness mutation survived: {fragment}")
     for filesystem in ("overlay", "tmpfs", "nfs", "cifs", "fuse", "fuseblk", "smb"):
         result = run_policy(filesystem)
         assert result.returncode == 78, (filesystem, result)

@@ -15,6 +15,40 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "postgres-live-evidence.sh"
 SCHEMA = "worldstream/postgresql-live-evidence/v1"
+RUNTIME_ROLE_SQL_FRAGMENTS = (
+    "role.rolsuper::text",
+    "role.rolcreaterole::text",
+    "role.rolcreatedb::text",
+    "role.rolreplication::text",
+    "role.rolbypassrls::text",
+    "has_database_privilege(current_user, current_database(), 'CREATE')",
+    "pg_catalog.pg_auth_members",
+    "has_schema_privilege(current_user, 'public', 'CREATE')",
+    "pg_catalog.pg_namespace",
+    "pg_catalog.pg_class",
+    "pg_catalog.pg_proc",
+    "pg_catalog.pg_type",
+    "'public.worldstream_schema_migrations', 'INSERT'",
+    "'public.worldstream_schema_migrations', 'UPDATE'",
+    "'public.worldstream_schema_migrations', 'DELETE'",
+    "'public.worldstream_schema_migrations', 'TRUNCATE'",
+    "protected_table.table_name, 'INSERT'",
+    "protected_table.table_name, 'UPDATE'",
+    "protected_table.table_name, 'DELETE'",
+    "protected_table.table_name, 'TRUNCATE'",
+)
+
+
+def assert_runtime_role_contract(source: str) -> None:
+    start = source.index("runtime_role_admission_sql() {")
+    end = source.index("\n}\n", start)
+    query = source[start:end]
+    expected = "false|" * 16 + "false"
+    assert f'RUNTIME_ROLE_ADMISSION_EXPECTED="{expected}"' in source
+    assert query.count("|| '|' ||") == 16
+    for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+        assert fragment in query
+    assert "unnest(ARRAY['INSERT'" not in query
 
 
 class PostgreSQLLiveEvidenceBoundaryTests(unittest.TestCase):
@@ -128,7 +162,7 @@ class PostgreSQLLiveEvidenceBoundaryTests(unittest.TestCase):
         self.assertIn('gateway_status="failed"', script)
         self.assertIn('add_error "production_gateway_workflow_failed"', script)
 
-    def test_runtime_grants_follow_migration_and_exclude_the_ledger(self) -> None:
+    def test_runtime_grants_follow_migration_and_exclude_control_tables(self) -> None:
         script = SCRIPT.read_text(encoding="utf-8")
         pre_migration = script.index(
             'postgres migrate --dsn-file "$database_admin_dsn_file"'
@@ -144,7 +178,10 @@ class PostgreSQLLiveEvidenceBoundaryTests(unittest.TestCase):
         self.assertNotIn("ALTER DEFAULT PRIVILEGES", script)
         self.assertIn(
             "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE "
-            "public.worldstream_schema_migrations FROM runtime",
+            "public.worldstream_schema_migrations, "
+            "public.worldstream_transfer_imports, "
+            "public.worldstream_transfer_chunks, "
+            "public.worldstream_transfer_target_fence FROM runtime",
             script,
         )
         self.assertIn(
@@ -153,6 +190,56 @@ class PostgreSQLLiveEvidenceBoundaryTests(unittest.TestCase):
             script,
         )
         self.assertIn("NOREPLICATION NOBYPASSRLS", script)
+        self.assertIn("CREATE DATABASE worldstream_transfer_abort OWNER admin", script)
+        self.assertIn(
+            'WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN="$transfer_abort_admin_dsn"',
+            script,
+        )
+
+    def test_live_runner_resolves_and_propagates_the_pinned_python(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('python_bin="$(resolve_python "$python_bin")"', script)
+        self.assertIn("sys.version_info[:3] != (3, 14, 7)", script)
+        self.assertIn("uv run --python 3.14.7 --no-project python", script)
+        self.assertIn(
+            'WORLDSTREAM_PG_TRANSFER_PYTHON="$python_bin"',
+            script,
+        )
+        self.assertIn(
+            'WORLDSTREAM_PG_HARNESS_PYTHON="$python_bin"',
+            script,
+        )
+        self.assertNotIn("python3 -", script)
+
+    def test_runtime_role_witness_is_exact_and_mutation_closed(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        assert_runtime_role_contract(script)
+        self.assertIn('user=runtime"', script)
+        self.assertIn("runtime_role_admission_query_failed", script)
+        self.assertIn("runtime_role_not_least_privileged", script)
+        for fragment in RUNTIME_ROLE_SQL_FRAGMENTS:
+            with self.subTest(fragment=fragment), self.assertRaises(AssertionError):
+                assert_runtime_role_contract(script.replace(fragment, "mutated"))
+
+    def test_redacted_harness_starts_from_fresh_logical_state(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        comparison = script.index(
+            'imo50_shared_comparison_file="${evidence_file}.imo-50-shared-comparison.json"'
+        )
+        harness = script.index('harness_log="$temp_root/harness.log"')
+        reset = script.index('run_db_admin_sql "$truncate_sql"', harness)
+
+        self.assertGreater(reset, comparison)
+        self.assertLess(reset, script.index("scripts/postgres-harness.sh", harness))
+        self.assertIn(
+            'add_error "redacted_postgres_harness_state_reset_failed"',
+            script[harness : script.index("transfer_evidence=", harness)],
+        )
+        self.assertIn('POSTGRES_LIVE_HARNESS_SUMMARY="$harness_summary_json"', script)
+        self.assertIn('"redacted_harness_evidence": harness_summary', script)
+        self.assertIn(
+            'harness_summary_json="$("$python_bin" - "$harness_evidence"', script
+        )
 
 
 if __name__ == "__main__":

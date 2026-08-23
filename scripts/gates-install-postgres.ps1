@@ -46,7 +46,9 @@ $Initdb = Join-Path $PostgresBin 'initdb.exe'
 $PgCtl = Join-Path $PostgresBin 'pg_ctl.exe'
 $PgIsReady = Join-Path $PostgresBin 'pg_isready.exe'
 $Psql = Join-Path $PostgresBin 'psql.exe'
-foreach ($Executable in @($Postgres, $Initdb, $PgCtl, $PgIsReady, $Psql)) {
+$PgDump = Join-Path $PostgresBin 'pg_dump.exe'
+$PgRestore = Join-Path $PostgresBin 'pg_restore.exe'
+foreach ($Executable in @($Postgres, $Initdb, $PgCtl, $PgIsReady, $Psql, $PgDump, $PgRestore)) {
     if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
         throw 'PostgreSQL 17.11 archive is missing a required executable'
     }
@@ -54,6 +56,12 @@ foreach ($Executable in @($Postgres, $Initdb, $PgCtl, $PgIsReady, $Psql)) {
 $ObservedVersion = (& $Postgres --version).Trim()
 if ($LASTEXITCODE -ne 0 -or $ObservedVersion -cne "postgres (PostgreSQL) $PostgresVersion") {
     throw 'PostgreSQL server binary is not exact version 17.11'
+}
+foreach ($ProviderTool in @($Psql, $PgDump, $PgRestore)) {
+    $ProviderVersion = (& $ProviderTool --version).Trim()
+    if ($LASTEXITCODE -ne 0 -or $ProviderVersion -cnotmatch ' 17\.11(?:\s|$)') {
+        throw 'PostgreSQL provider binary is not exact version 17.11'
+    }
 }
 
 $ExistingService = Get-Service -Name 'postgresql-x64-17' -ErrorAction SilentlyContinue
@@ -109,5 +117,9 @@ Protect-WorldstreamPath -Path $PostgresDsnFile
 $PostgresBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 "WORLDSTREAM_POSTGRES_DSN_FILE=$PostgresDsnFile" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 "WORLDSTREAM__STORAGE__POSTGRESQL__DSN_FILE=$PostgresDsnFile" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+"WORLDSTREAM_POSTGRES_PASSWORD_FILE=$BootstrapSecret" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+"WORLDSTREAM_PG_DUMP=$PgDump" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+"WORLDSTREAM_PG_RESTORE=$PgRestore" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+"WORLDSTREAM_PSQL=$Psql" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
 Write-Host 'Provisioned byte-pinned PostgreSQL 17.11 with protected credential DACLs.'

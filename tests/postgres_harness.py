@@ -103,11 +103,11 @@ class PostgreSQLHarnessBoundaryTests(unittest.TestCase):
                     ;;
                   "SELECT rolsuper::text"*) printf '%s\\n' 'false|false|false' ;;
                   "SELECT has_schema_privilege"*) printf '%s\\n' false ;;
-                  "SELECT count(*)::text FROM worldstream_schema_migrations") printf '%s\\n' 10 ;;
-                  "SELECT CASE WHEN count(*) = 10 AND min(version) = 1"*) printf '%s\\n' '{migration_shape}' ;;
-                  "SELECT (has_table_privilege"*) printf '%s\\n' '{migration_ledger_privilege}' ;;
+                  "SELECT count(*)::text FROM worldstream_schema_migrations") printf '%s\\n' 11 ;;
+                  "SELECT CASE WHEN count(*) = 11 AND min(version) = 1"*) printf '%s\\n' '{migration_shape}' ;;
+                  "SELECT EXISTS (SELECT 1 FROM unnest"*) printf '%s\\n' '{migration_ledger_privilege}' ;;
                   "SELECT 1") printf '%s\\n' 1 ;;
-                  "SELECT count(*)::text FROM information_schema.tables"*) printf '%s\\n' 21 ;;
+                  "SELECT count(*)::text FROM information_schema.tables"*) printf '%s\\n' 34 ;;
                   "CREATE TABLE worldstream_harness_runtime_ddl_probe"*)
                     printf 'fake psql error dsn=%s password=ADMIN_SECRET\\n' "$dsn" >&2
                     exit 1

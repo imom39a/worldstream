@@ -90,20 +90,33 @@ SPDX_CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2
 SPDX_TOOL_CREATOR = re.compile(
     r"Tool: [A-Za-z0-9][A-Za-z0-9._-]*-[0-9]+(?:\.[0-9]+)+(?:[-+][0-9A-Za-z.-]+)?\Z"
 )
-PAYLOAD_EVIDENCE_BINDINGS = {
-    "native-linux-release-profile": (
+PAYLOAD_EVIDENCE_BINDINGS = (
+    (
+        "native-linux-release-profile",
         "native-linux-x86_64-archive",
         "linux-release-profile",
     ),
-    "native-windows-release-profile": (
+    (
+        "native-windows-release-profile",
         "native-windows-x64-archive",
         "windows-release-profile",
     ),
-    "oci-linux-amd64-release-profile": (
+    (
+        "oci-linux-amd64-release-profile",
         "oci-linux-amd64-image",
         "oci-release-profile",
     ),
-}
+    (
+        "failure-fuzz-resource-and-one-hour-sqlite-soak",
+        "native-linux-x86_64-archive",
+        "linux-release-profile",
+    ),
+    (
+        "reference-performance-per-backend",
+        "native-linux-x86_64-archive",
+        "linux-release-profile",
+    ),
+)
 
 
 @cache
@@ -704,7 +717,7 @@ def validate_release_payloads(
         evidence_id: json_object(
             report_paths[evidence_id], f"payload binding report {evidence_id}"
         )
-        for evidence_id in PAYLOAD_EVIDENCE_BINDINGS
+        for evidence_id, _artifact_id, _binding_id in PAYLOAD_EVIDENCE_BINDINGS
         if evidence_id in report_paths
     }
     require_contracts = {
@@ -766,7 +779,7 @@ def validate_release_payloads(
     except oci.VerificationError as error:
         fail(f"release payload oci-linux-amd64-image failed deep verification: {error}")
 
-    for evidence_id, (artifact_id, binding_id) in PAYLOAD_EVIDENCE_BINDINGS.items():
+    for evidence_id, artifact_id, binding_id in PAYLOAD_EVIDENCE_BINDINGS:
         report_path = report_paths.get(evidence_id)
         if report_path is None:
             fail(f"payload binding report is missing: {evidence_id}")

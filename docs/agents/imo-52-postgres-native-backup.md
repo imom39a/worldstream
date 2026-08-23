@@ -18,6 +18,14 @@ argv, report JSON, stdout, or stderr. The trusted witness is a non-serializable
 Rust value and is minted only after the native restore and unified verification
 complete.
 
+Provider tools run with a cleared environment and only the reviewed `PG*`
+settings are restored. Remote endpoints require explicit authenticated TLS;
+plaintext is limited to numeric loopback and Unix-socket endpoints. One
+capture-scoped row/byte budget is charged before the PostgreSQL driver
+materializes canonical payloads. Healthy-room evidence compares replayed
+Membership, Timer, Activation-decision, frame/cursor, and reset/visibility
+witnesses, and the room fingerprint binds every field of those typed records.
+
 ## Evidence path
 
 1. The Docker smoke uses the digest-pinned PostgreSQL 17.11 Alpine image
@@ -38,6 +46,11 @@ complete.
 6. Snapshot cache rows are deleted only after the verifier is ready and source
    and target durable digests match. Durable state is recaptured afterward;
    only then is the result `ready` and the trusted witness minted.
+7. Before any worker result is returned, the admitted target keeper commits
+   `CONNECTION LIMIT 0`, retires the one-use restore role, and verifies the
+   disposable marker, provider identity, zero competing sessions, and sealed
+   limit. The target remains unpublished; runtime admission rejects the
+   disposable marker until a separate operator publication step removes it.
 
 ## Docker result
 
@@ -77,9 +90,13 @@ The emitted redacted evidence reported:
 }
 ```
 
-The script removes the temporary dump, owner-only Docker credential files,
-wrappers, and both disposable containers on success or failure. It performs no
-target authority/publication operation.
+The script removes only the two disposable containers by their exact returned
+container IDs. It retains creation handles and canonical identities for every
+owner-only temporary child, preflights the complete directory manifest before
+the first mutation, and truncates only exact retained file identities. The
+protected directory and inert zero-length placeholders remain for the
+platform runner to remove; a substituted root or child is never admitted at
+cleanup time. It performs no target authority/publication operation.
 
 ## Negative/security boundaries
 
@@ -87,8 +104,22 @@ target authority/publication operation.
   PostgreSQL version, incomplete migration history, missing identity metadata,
   pack/resource identity drift, malformed canonical rows, stale/tampered
   receipts, and invalid timer/frame relations fail closed without a witness.
+- The target-wide transfer-fence lifecycle row, including its `importing` or
+  `aborted` state, is captured and digest-bound with the other durable domains.
 - A fake-tool Python test captures argv/stdout/stderr and proves that the
   password and URI forms are absent.
+- The Docker lane holds the real `pg_restore` executable by its exact open
+  descriptor and pauses its first restore-role DDL with a smoke-only server gate.
+  While held, an independent admin observation proves connection limit two,
+  exactly the direct-superuser keeper plus one non-superuser one-use restore
+  role backend, and distinct backend PIDs. After release and successful
+  restore, it proves connection limit zero, no cluster session for the captured
+  role, and absence of that role before emitting ready evidence.
+- Deterministic regressions substitute the protected root, one manifested
+  child, and the Docker mount-source pathname. Each fails before cleanup or
+  mount mutation and preserves independently seeded victim bytes. A portable
+  `Windows_NT` helper execution rejects Unix `dir_fd` use, while native Windows
+  identity checks use the full volume serial and 128-bit `FILE_ID_INFO` value.
 - The fixture has an explicit empty external-resource set. That set is
   authenticated as present in the canonical deployment identity; nonempty
   resource rows currently fail closed because this PostgreSQL schema does not

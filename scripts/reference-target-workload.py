@@ -284,6 +284,37 @@ def atomic_write(path: Path, value: object) -> None:
         raise
 
 
+def atomic_write_exact_bytes(path: Path, raw: bytes, *, maximum: int) -> None:
+    """Publish one bounded retained input without reserializing or overwriting."""
+
+    require(
+        isinstance(raw, bytes) and 0 < len(raw) <= maximum,
+        "retained fixture report bytes exceeded their bound",
+    )
+    require(
+        not path.exists() and not path.is_symlink() and not path.is_dir(),
+        "retained fixture report output must be new",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    created = False
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o644)
+        os.link(temporary, path)
+        created = True
+        temporary.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        if created:
+            path.unlink(missing_ok=True)
+        raise
+
+
 @dataclass(frozen=True)
 class RoomRecord:
     room_id: str
@@ -482,7 +513,7 @@ def _run_snapshot_fixture(
     record: RoomRecord,
     transition_count: int,
     timeout_seconds: float,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], bytes]:
     output = daemon.root / "snapshot-tail-fixture.json"
     try:
         result = subprocess.run(
@@ -522,7 +553,7 @@ def _run_snapshot_fixture(
         raise TargetFailure(
             "snapshot-tail fixture report was not strict JSON"
         ) from error
-    return report, "sha256:" + hashlib.sha256(raw).hexdigest()
+    return report, raw
 
 
 async def measure_snapshot_tail_recovery(
@@ -530,7 +561,7 @@ async def measure_snapshot_tail_recovery(
     profile: dict[str, Any],
     expected_binary_sha256: str,
     expected_source_revision: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bytes]:
     """Set up history outside the stopwatch, then time exact packaged recovery."""
 
     fixture_bin = args.snapshot_fixture_bin
@@ -574,7 +605,7 @@ async def measure_snapshot_tail_recovery(
         daemon.stop()
 
         transition_count = fixture_transition_count(profile)
-        fixture, fixture_report_sha256 = await asyncio.to_thread(
+        fixture, fixture_report_raw = await asyncio.to_thread(
             _run_snapshot_fixture,
             fixture_bin,
             daemon,
@@ -605,6 +636,14 @@ async def measure_snapshot_tail_recovery(
             and isinstance(fixture["projection_hash"], str),
             "snapshot-tail fixture observations were incomplete",
         )
+        atomic_write_exact_bytes(
+            args.snapshot_fixture_report,
+            fixture_report_raw,
+            maximum=MAX_FIXTURE_REPORT_BYTES,
+        )
+        fixture_report_sha256 = (
+            "sha256:" + hashlib.sha256(fixture_report_raw).hexdigest()
+        )
 
         recovery_started = time.monotonic()
         daemon.start()
@@ -630,6 +669,8 @@ async def measure_snapshot_tail_recovery(
                 ),
                 "generator_binary_sha256": PRODUCER.sha256(fixture_bin),
                 "generator_report_sha256": fixture_report_sha256,
+                "generator_report_size_bytes": len(fixture_report_raw),
+                "generator_report_schema": SNAPSHOT_FIXTURE_SCHEMA,
                 "transition_kind": fixture["transition_kind"],
                 "setup_elapsed_ms": fixture["setup_elapsed_ms"],
             },
@@ -649,7 +690,7 @@ async def measure_snapshot_tail_recovery(
                 "after_projection_hash": after["projection_hash"],
                 "projection_hash_equal": projection_equal,
             },
-        }
+        }, fixture_report_raw
     finally:
         daemon.stop()
         remove_owned_root(root)
@@ -922,6 +963,12 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             == {field: distribution[field] for field in source_distribution},
             f"{label} report does not bind the exact target package",
         )
+    history, fixture_report_raw = await measure_snapshot_tail_recovery(
+        args,
+        profile,
+        distribution["binary_sha256"],
+        distribution["source_revision"],
+    )
     bindings = {
         "package_archive": PRODUCER.file_binding(
             args.package_archive, "worldstream/linux-release-archive/v1"
@@ -949,6 +996,9 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             SNAPSHOT_FIXTURE_SOURCE_PATH,
             "worldstream/reference-snapshot-tail-fixture-source/v1",
         ),
+        "snapshot_fixture_report": PRODUCER.exact_binding(
+            fixture_report_raw, SNAPSHOT_FIXTURE_SCHEMA
+        ),
     }
     external_sources = {
         "packaged_acceptance": {
@@ -967,13 +1017,6 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             "source_environment": {"platform": kill["platform"]},
         },
     }
-
-    history = await measure_snapshot_tail_recovery(
-        args,
-        profile,
-        distribution["binary_sha256"],
-        distribution["source_revision"],
-    )
 
     root = COMMON.private_root("worldstream-reference-target-")
     daemon = COMMON.Daemon(
@@ -1314,6 +1357,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--soak-report", type=Path, required=True)
     command.add_argument("--kill-point-report", type=Path, required=True)
     command.add_argument("--snapshot-fixture-bin", type=Path, required=True)
+    command.add_argument("--snapshot-fixture-report", type=Path, required=True)
     command.add_argument(
         "--startup-timeout-seconds",
         type=float,

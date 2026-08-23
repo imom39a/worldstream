@@ -492,6 +492,8 @@ def test_postgres_admin_clone_and_observation_are_direct_while_runtime_dsn_varie
             return "42"
         if "SELECT (SELECT count(*)" in sql:
             return "0|0|0"
+        if sql == kill.POSTGRES_HARNESS.RUNTIME_ROLE_ADMISSION_SQL:
+            return kill.POSTGRES_HARNESS.RUNTIME_ROLE_ADMISSION_EXPECTED
         return ""
 
     provider._psql = fake_psql
@@ -506,7 +508,11 @@ def test_postgres_admin_clone_and_observation_are_direct_while_runtime_dsn_varie
     admin_dsn = (provider_root / "kill_admin_fixture-admin.dsn").read_text()
     assert "port=15432" in admin_dsn
     assert "port=16432" not in admin_dsn
-    assert [call[2] for call in psql_calls] == [{}, {}]
+    assert [call[2] for call in psql_calls] == [
+        {},
+        {},
+        {"user": "runtime", "password": "b" * 48},
+    ]
     assert [call[1:3] for call in control_calls] == [
         ["postgres", "migrate"],
         ["postgres", "verify"],

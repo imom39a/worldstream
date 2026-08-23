@@ -76,16 +76,47 @@ def test_reference_workflow_binds_four_hour_job_and_exact_source_revision():
         f"    timeout-minutes: {module.REFERENCE_JOB_HARD_SECONDS // 60}\n"
         in reference_job
     )
-    # The workflow wrapper includes checkout and tool installation. The gate
-    # processes enforce their frozen execution deadlines independently, so the
-    # wrapper must leave setup/teardown headroom instead of racing the contract.
-    assert "    timeout-minutes: 20\n" in job_block("fast")
-    assert "    timeout-minutes: 90\n" in job_block("native")
+    # Hosted job timeouts include checkout and tool installation; they are the
+    # same frozen fast/minimal boundaries enforced by the manifest gate.
+    assert "    timeout-minutes: 1\n" in job_block("fast")
+    assert (
+        "    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' "
+        "&& inputs.release == true && github.ref == 'refs/heads/main' "
+        "&& 60 || 25 }}\n" in job_block("native")
+    )
     assert "    timeout-minutes: 30\n" in job_block("macos-source")
-    assert "    timeout-minutes: 300\n" in job_block("release-verify")
+    assert "    timeout-minutes: 240\n" in job_block("release-verify")
+    release_clock = job_block("release-clock")
+    assert "deadline_epoch_seconds=$((started_epoch_seconds + 14400))" in release_clock
+    assert "needs: release-clock" in job_block("fast")
+    assert "needs: release-clock" in job_block("native")
+    native_job = job_block("native")
+    assert native_job.count("--control-output") == 2
+    assert native_job.count("WORLDSTREAM_PACKAGED_CTL") == 2
+    assert native_job.count("--native-restore-report") == 2
+    assert native_job.count("--native-fixture-report") == 2
+    assert native_job.count("--native-binding-parent") == 2
+    assert native_job.count("worldstream-native-platform-binding") == 2
+    assert native_job.count("/native-postgres-restore=") == 2
+    assert "reports/native-linux-postgres-restore.json" in native_job
+    assert "reports/native-linux-transfer-seed.json" in native_job
+    assert "reports/native-windows-postgres-restore.json" in native_job
+    assert "reports/native-windows-transfer-seed.json" in native_job
+    assert "worldstream-packaged-control/worldstreamctl" in native_job
+    assert "worldstream-packaged-control\\worldstreamctl.exe" in native_job
+    assert "needs: [release-clock," in job_block("release-evidence")
+    assert (
+        "WORLDSTREAM_RELEASE_DEADLINE_EPOCH_SECONDS: "
+        "${{ needs.release-clock.outputs.deadline_epoch_seconds }}"
+        in job_block("release-verify")
+    )
     assert workflow.count("  WORLDSTREAM_BUILD_REVISION: ${{ github.sha }}\n") == 1
     assert "--example reference_snapshot_tail_fixture" in reference_job
     assert '--snapshot-fixture-bin "$snapshot_fixture"' in reference_job
+    assert (
+        "--snapshot-fixture-report reference-inputs/snapshot-tail-fixture.json"
+        in reference_job
+    )
     assert "--fixture-setup-timeout-seconds" not in reference_job
 
 
@@ -136,6 +167,24 @@ def test_fixture_report_reader_rejects_oversize_and_symlink(tmp_path: Path):
         link.symlink_to(target)
         with pytest.raises(module.TargetFailure, match="unavailable or unsafe"):
             module.stable_fixture_report_bytes(link)
+
+
+def test_fixture_report_atomic_publish_does_not_remove_a_racing_path(
+    tmp_path: Path, monkeypatch
+):
+    module = load_module()
+    output = tmp_path / "fixture.json"
+    original_link = module.os.link
+
+    def race(source: Path, destination: Path) -> None:
+        destination.write_bytes(b"racing-owner\n")
+        original_link(source, destination)
+
+    monkeypatch.setattr(module.os, "link", race)
+    with pytest.raises(FileExistsError):
+        module.atomic_write_exact_bytes(output, b"fixture\n", maximum=64)
+
+    assert output.read_bytes() == b"racing-owner\n"
 
 
 def test_nearest_rank_retains_no_unbounded_sample_inventory():

@@ -737,8 +737,10 @@ def _validate(report: dict[str, Any]) -> list[str]:
         "input_inventory_sha256"
     ) != sqlite["manifest_values"].get("bundle_source_inventory_digest"):
         failures.append("SQLite bundled source inventory digest mismatch")
-    if report["migrations"]["sqlite"]["source_count"] != 9:
+    if report["migrations"]["sqlite"]["source_count"] != 11:
         failures.append("SQLite migration source count changed unexpectedly")
+    if report["migrations"]["postgresql"]["source_count"] != 11:
+        failures.append("PostgreSQL migration source count changed unexpectedly")
     for provider in ("sqlite", "postgresql"):
         migration_report = report["migrations"][provider]
         if migration_report["source_ids_not_in_manifest"]:

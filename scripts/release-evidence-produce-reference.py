@@ -31,6 +31,10 @@ REFERENCE_TARGET_RUNNER_PATH = ROOT / "scripts/reference-target-workload.py"
 REFERENCE_TARGET_FIXTURE_SOURCE_PATH = (
     ROOT / "crates/worldstream-sqlite/examples/reference_snapshot_tail_fixture.rs"
 )
+CELL_RUNNER_PATHS = {
+    "counter": ROOT / "examples/counter/run_live_acceptance.py",
+    "heist": ROOT / "examples/heist/wave10_live/run_absent_broker_live.py",
+}
 SOURCE_ID = "reference-performance"
 EVIDENCE_ID = "reference-performance-per-backend"
 EXPECTED_KINDS = frozenset({"counter", "heist", "sqlite", "postgres", "soak", "target"})
@@ -81,6 +85,7 @@ FROZEN_REFERENCE_PROFILE = {
     "one_hour_soak_target_seconds": 3_600,
     "forced_termination_minimum_count": 2,
 }
+MAX_FIXTURE_REPORT_BYTES = 64 * 1024
 
 
 def load_adapter():
@@ -166,6 +171,30 @@ def read_json(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
         value = ADAPTER.COLLECTOR.strict_json_object(raw, label)
     except ADAPTER.COLLECTOR.CollectionError as error:
         raise ReferenceError(str(error)) from error
+    return value, raw
+
+
+def read_fixture_report(path: Path) -> tuple[dict[str, Any], bytes]:
+    """Read the retained fixture report once, mutation-checked and pre-bounded."""
+
+    try:
+        raw = ADAPTER.COLLECTOR.BUILD_IDENTITY.regular_bytes(
+            path,
+            "snapshot-tail fixture report",
+            maximum=MAX_FIXTURE_REPORT_BYTES,
+        )
+        value = ADAPTER.COLLECTOR.strict_json_object(
+            raw, "snapshot-tail fixture report"
+        )
+    except (
+        ADAPTER.COLLECTOR.BUILD_IDENTITY.IdentityError,
+        ADAPTER.COLLECTOR.CollectionError,
+    ) as error:
+        raise ReferenceError(str(error)) from error
+    require(
+        value.get("schema") == "worldstream/reference-snapshot-tail-fixture/v1",
+        "snapshot-tail fixture report has the wrong schema",
+    )
     return value, raw
 
 
@@ -1273,6 +1302,8 @@ def validate_reference_target(
             "generator_source_sha256",
             "generator_binary_sha256",
             "generator_report_sha256",
+            "generator_report_size_bytes",
+            "generator_report_schema",
             "transition_kind",
             "setup_elapsed_ms",
         }
@@ -1281,6 +1312,10 @@ def validate_reference_target(
         and setup.get("source_revision") == distribution.get("source_revision")
         and setup.get("transition_kind")
         == "alternating_authorized_membership_suspend_resume"
+        and setup.get("generator_report_schema")
+        == "worldstream/reference-snapshot-tail-fixture/v1"
+        and type(setup.get("generator_report_size_bytes")) is int
+        and 0 < setup["generator_report_size_bytes"] <= 64 * 1024
         and type(setup.get("setup_elapsed_ms")) is int
         and setup["setup_elapsed_ms"] >= 0,
         "snapshot-tail setup boundary or source identity is incomplete",
@@ -1295,8 +1330,14 @@ def validate_reference_target(
         setup["generator_source_sha256"]
         == expected_bindings["snapshot_fixture_source"]["sha256"]
         and setup["generator_binary_sha256"]
-        == expected_bindings["snapshot_fixture_binary"]["sha256"],
-        "snapshot fixture source or executable differs from its exact binding",
+        == expected_bindings["snapshot_fixture_binary"]["sha256"]
+        and setup["generator_report_sha256"]
+        == expected_bindings["snapshot_fixture_report"]["sha256"]
+        and setup["generator_report_size_bytes"]
+        == expected_bindings["snapshot_fixture_report"]["size_bytes"]
+        and setup["generator_report_schema"]
+        == expected_bindings["snapshot_fixture_report"]["schema"],
+        "snapshot fixture source, executable, or report differs from its exact binding",
     )
     snapshot = history_observed["snapshot"]
     require(
@@ -1719,6 +1760,7 @@ def independently_project_raw_sources(
     package_report_path: Path,
     daemon_bin: Path,
     snapshot_fixture_bin: Path,
+    snapshot_fixture_report: Path,
     manifest_toml: Path,
     manifest_json: Path,
 ) -> tuple[dict[str, bytes], bytes, bytes, bytes, bytes]:
@@ -1746,6 +1788,7 @@ def independently_project_raw_sources(
                 package_report=package_report_path,
                 daemon_bin=daemon_bin,
                 snapshot_fixture_bin=snapshot_fixture_bin,
+                snapshot_fixture_report=snapshot_fixture_report,
                 output_dir=root / "normalized",
                 aggregate_report=root / "aggregate.json",
                 manifest_toml=manifest_toml,
@@ -1781,6 +1824,7 @@ def produce(
     package_report_path: Path,
     daemon_bin: Path,
     snapshot_fixture_bin: Path,
+    snapshot_fixture_report: Path,
     packaged_acceptance_path: Path,
     raw_soak_path: Path,
     kill_point_path: Path,
@@ -1798,6 +1842,7 @@ def produce(
         package_report_path.resolve(),
         daemon_bin.resolve(),
         snapshot_fixture_bin.resolve(),
+        snapshot_fixture_report.resolve(),
         packaged_acceptance_path.resolve(),
         raw_soak_path.resolve(),
         kill_point_path.resolve(),
@@ -1847,6 +1892,7 @@ def produce(
         package_report_path=package_report_path,
         daemon_bin=daemon_bin,
         snapshot_fixture_bin=snapshot_fixture_bin,
+        snapshot_fixture_report=snapshot_fixture_report,
         manifest_toml=manifest_toml,
         manifest_json=manifest_json,
     )
@@ -1884,6 +1930,60 @@ def produce(
                 "content_base64": base64.b64encode(raw).decode("ascii"),
             }
         )
+    snapshot_fixture, snapshot_fixture_raw = read_fixture_report(
+        snapshot_fixture_report
+    )
+    require(
+        0 < len(snapshot_fixture_raw) <= MAX_FIXTURE_REPORT_BYTES
+        and snapshot_fixture.get("schema")
+        == "worldstream/reference-snapshot-tail-fixture/v1",
+        "snapshot-tail fixture report is oversized or has the wrong schema",
+    )
+    snapshot_fixture_binding = exact_binding(
+        snapshot_fixture_raw, snapshot_fixture["schema"]
+    )
+    try:
+        target_report_value = ADAPTER.COLLECTOR.strict_json_object(
+            target_raw, "raw reference-target report"
+        )
+    except ADAPTER.COLLECTOR.CollectionError as error:
+        raise ReferenceError(str(error)) from error
+    exact_target_bindings = target_report_value.get("bindings")
+    require(
+        isinstance(exact_target_bindings, dict)
+        and exact_target_bindings.get("snapshot_fixture_report")
+        == snapshot_fixture_binding,
+        "snapshot-tail fixture report bytes differ from the target report binding",
+    )
+    source_binding = exact_target_bindings.get("snapshot_fixture_source")
+    binary_binding = exact_target_bindings.get("snapshot_fixture_binary")
+    require(
+        isinstance(source_binding, dict)
+        and isinstance(source_binding.get("sha256"), str)
+        and isinstance(binary_binding, dict)
+        and isinstance(binary_binding.get("sha256"), str),
+        "snapshot fixture source or executable subject binding is missing",
+    )
+    snapshot_subjects = {
+        "package_archive_sha256": distribution["archive_sha256"],
+        "daemon_binary_sha256": distribution["binary_sha256"],
+        "source_revision": distribution["source_revision"],
+        "generator_source_sha256": source_binding["sha256"],
+        "generator_binary_sha256": binary_binding["sha256"],
+    }
+    cell_runner_materials = {
+        "source_revision": distribution["source_revision"],
+        "programs": {
+            story: {
+                "path": path.relative_to(ROOT).as_posix(),
+                **file_binding(
+                    path,
+                    "worldstream/packaged-acceptance-cell-runner/python-source/v1",
+                ),
+            }
+            for story, path in sorted(CELL_RUNNER_PATHS.items())
+        },
+    }
     bundle = {
         "schema": "worldstream/reference-performance-publication-bundle/v1",
         "status": "passed",
@@ -1896,6 +1996,7 @@ def produce(
         "distribution": distribution,
         "reference_environments": report["reference_environments"],
         "workloads": report["workloads"],
+        "cell_runner_materials": cell_runner_materials,
         "aggregate_report": {
             "sha256": SHA256_PREFIX + hashlib.sha256(report_raw).hexdigest(),
             "size_bytes": len(report_raw),
@@ -1930,6 +2031,11 @@ def produce(
             "size_bytes": len(target_raw),
             "content_base64": base64.b64encode(target_raw).decode("ascii"),
             "schema": REFERENCE_TARGET_SCHEMA,
+        },
+        "snapshot_fixture_report": {
+            **snapshot_fixture_binding,
+            "content_base64": base64.b64encode(snapshot_fixture_raw).decode("ascii"),
+            "subjects": snapshot_subjects,
         },
         "projection": {
             "definition": "exact independent projection from raw acceptance, soak, kill, and target bytes",
@@ -2003,7 +2109,11 @@ def produce(
             "reference-performance": {
                 "sha256": bundle_digest,
                 "size_bytes": artifact_output.stat().st_size,
-            }
+            },
+            "linux-release-profile": {
+                "sha256": distribution["archive_sha256"],
+                "size_bytes": distribution["archive_size_bytes"],
+            },
         },
     }
     atomic_write(output, typed)
@@ -2011,7 +2121,10 @@ def produce(
     ADAPTER.verify_artifacts(
         SOURCE_ID,
         checked,
-        {(SOURCE_ID, "reference-performance"): artifact_output},
+        {
+            (SOURCE_ID, "reference-performance"): artifact_output,
+            (SOURCE_ID, "linux-release-profile"): package_archive,
+        },
     )
 
 
@@ -2026,6 +2139,7 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--package-report", type=Path, required=True)
     command.add_argument("--daemon-bin", type=Path, required=True)
     command.add_argument("--snapshot-fixture-bin", type=Path, required=True)
+    command.add_argument("--snapshot-fixture-report", type=Path, required=True)
     command.add_argument("--packaged-acceptance-report", type=Path, required=True)
     command.add_argument("--raw-soak-report", type=Path, required=True)
     command.add_argument("--kill-point-report", type=Path, required=True)
@@ -2051,6 +2165,7 @@ def main(argv: list[str] | None = None) -> int:
             args.package_report,
             args.daemon_bin,
             args.snapshot_fixture_bin,
+            args.snapshot_fixture_report,
             args.packaged_acceptance_report,
             args.raw_soak_report,
             args.kill_point_report,

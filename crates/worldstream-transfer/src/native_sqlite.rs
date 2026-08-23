@@ -1826,6 +1826,9 @@ fn optional_blob<'a>(
 }
 
 fn parse_digest(value: &str) -> Result<DigestV1, NativeSqliteTransferError> {
+    let Some(value) = value.strip_prefix("blake3:") else {
+        return invalid("observation_frames", "digest text");
+    };
     if value.len() != 64 {
         return invalid("observation_frames", "digest text");
     }
@@ -1848,7 +1851,6 @@ fn hex_digit(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
         b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
     }
 }
@@ -2006,7 +2008,7 @@ mod tests {
 
     fn healthy_rows() -> NativeSqliteOperationalRowsV1 {
         let payload = b"frame payload".to_vec();
-        let frame_hash = DigestV1::hash(&payload).to_string();
+        let frame_hash = format!("blake3:{}", DigestV1::hash(&payload));
         let mut tables = BTreeMap::new();
         tables.insert(
             "room_integrity".to_owned(),

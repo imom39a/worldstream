@@ -5,19 +5,4 @@ workspace_dir="$(git rev-parse --show-toplevel)"
 cd "$workspace_dir"
 
 git diff --cached --check
-
-if command -v python3 >/dev/null 2>&1; then
-  python3 scripts/verify-manifest.py
-elif command -v python >/dev/null 2>&1; then
-  python scripts/verify-manifest.py
-else
-  printf '%s\n' 'Python 3.11+ is required for manifest verification.' >&2
-  exit 1
-fi
-
-if ! rustup toolchain list | grep -Eq '^1\.97\.1($|-)'; then
-  printf '%s\n' 'Rust 1.97.1 is not installed; run scripts/verify-local.sh once.' >&2
-  exit 1
-fi
-
-RUSTUP_TOOLCHAIN=1.97.1 cargo fmt --all -- --check
+scripts/gates.sh fast --offline

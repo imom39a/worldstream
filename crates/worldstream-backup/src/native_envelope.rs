@@ -54,7 +54,7 @@ const REQUIRED_COVERAGE_TABLES: [&str; 18] = [
 ];
 
 const TRUSTED_COMPATIBILITY_JSON_DIGEST: &str =
-    "3aa82c4c1c0c95040f0f70f2115bea62242d35be1b7a577e4ac75a261ea60ab7";
+    "628d56f413df439d231a555107391585c75cd5f178feb31296bddf19a36b9037";
 
 type RequestKey = (NativeSqliteRequestLedgerV1, Vec<u8>);
 type RequestMap = BTreeMap<RequestKey, Vec<u8>>;
@@ -314,13 +314,14 @@ impl NativeSqliteBackupEnvelopeV1 {
             return Err(NativeSqliteEnvelopeError::IncompleteCompanion);
         }
         let migrations = migration_contract_from_native(source, &self.manifest.migration_contract)?;
-        let request_map = request_map(&self.request_witnesses)?;
-        let timer_map = timer_relation_map(&self.timer_relations)?;
+        let mut request_map = request_map(&self.request_witnesses)?;
+        let mut timer_map = timer_relation_map(&self.timer_relations)?;
         let authoritative = authoritative_map(&self.authoritative_materializations);
         let rooms = build_rooms(source, &authoritative, limits)?;
-        let receipts = build_semantic_receipts(source, &request_map)?;
-        let activation_receipts = build_activation_receipts(source, &request_map)?;
-        let timers = build_timers(source, &timer_map)?;
+        let receipts = build_semantic_receipts(source, &mut request_map)?;
+        let activation_receipts = build_activation_receipts(source, &mut request_map)?;
+        let timers = build_timers(source, &mut timer_map)?;
+        require_companion_maps_consumed(&request_map, &timer_map)?;
         let frames = build_frames(source)?;
         let activations = build_activations(source)?;
         let mut image = BackupImageV1 {
@@ -784,6 +785,16 @@ fn timer_relation_map(
     Ok(result)
 }
 
+fn require_companion_maps_consumed(
+    requests: &RequestMap,
+    timers: &TimerRelationMap,
+) -> Result<(), NativeSqliteEnvelopeError> {
+    if !requests.is_empty() || !timers.is_empty() {
+        return Err(NativeSqliteEnvelopeError::CompanionDigestMismatch);
+    }
+    Ok(())
+}
+
 fn authoritative_map(
     values: &[NativeSqliteAuthoritativeMaterializationV1],
 ) -> BTreeMap<String, NativeSqliteAuthoritativeMaterializationV1> {
@@ -956,16 +967,16 @@ fn room_evidence_digest(
 
 fn build_semantic_receipts(
     evidence: &NativeSqliteRestoreEvidenceV1,
-    requests: &BTreeMap<(NativeSqliteRequestLedgerV1, Vec<u8>), Vec<u8>>,
+    requests: &mut BTreeMap<(NativeSqliteRequestLedgerV1, Vec<u8>), Vec<u8>>,
 ) -> Result<Vec<ReceiptV1>, NativeSqliteEnvelopeError> {
     let mut result = Vec::new();
     for row in rows(evidence, "semantic_receipts") {
         let identity = blob(&row.values, 2)?;
         let request = requests
-            .get(&(NativeSqliteRequestLedgerV1::Semantic, identity.to_vec()))
+            .remove(&(NativeSqliteRequestLedgerV1::Semantic, identity.to_vec()))
             .ok_or(NativeSqliteEnvelopeError::IncompleteCompanion)?;
         let request_digest = digest_bytes(&row.values, 4)?;
-        if DigestV1::hash(request) != request_digest {
+        if DigestV1::hash(&request) != request_digest {
             return Err(NativeSqliteEnvelopeError::CompanionDigestMismatch);
         }
         let room_id = text(&row.values, 0)
@@ -980,7 +991,7 @@ fn build_semantic_receipts(
         result.push(ReceiptV1 {
             kind: ReceiptKindV1::Semantic,
             identity_bytes: identity.to_vec(),
-            request_bytes: request.clone(),
+            request_bytes: request,
             request_bytes_available: true,
             request_digest,
             result_digest: DigestV1::hash(&result_bytes),
@@ -996,7 +1007,7 @@ fn build_semantic_receipts(
 
 fn build_activation_receipts(
     evidence: &NativeSqliteRestoreEvidenceV1,
-    requests: &BTreeMap<(NativeSqliteRequestLedgerV1, Vec<u8>), Vec<u8>>,
+    requests: &mut BTreeMap<(NativeSqliteRequestLedgerV1, Vec<u8>), Vec<u8>>,
 ) -> Result<Vec<ReceiptV1>, NativeSqliteEnvelopeError> {
     let mut result = Vec::new();
     for row in rows(evidence, "activation_operation_receipts") {
@@ -1005,20 +1016,20 @@ fn build_activation_receipts(
             .as_bytes()
             .to_vec();
         let request = requests
-            .get(&(
+            .remove(&(
                 NativeSqliteRequestLedgerV1::Activation,
                 operation_id.clone(),
             ))
             .ok_or(NativeSqliteEnvelopeError::IncompleteCompanion)?;
         let request_digest = digest_bytes(&row.values, 3)?;
-        if DigestV1::hash(request) != request_digest {
+        if DigestV1::hash(&request) != request_digest {
             return Err(NativeSqliteEnvelopeError::CompanionDigestMismatch);
         }
         let result_bytes = blob(&row.values, 6)?.to_vec();
         result.push(ReceiptV1 {
             kind: ReceiptKindV1::ActivationOperation,
             identity_bytes: operation_id,
-            request_bytes: request.clone(),
+            request_bytes: request,
             request_bytes_available: true,
             request_digest,
             result_digest: DigestV1::hash(&result_bytes),
@@ -1034,7 +1045,7 @@ fn build_activation_receipts(
 
 fn build_timers(
     evidence: &NativeSqliteRestoreEvidenceV1,
-    relations: &BTreeMap<(String, String, u64), Option<u64>>,
+    relations: &mut BTreeMap<(String, String, u64), Option<u64>>,
 ) -> Result<Vec<TimerV1>, NativeSqliteEnvelopeError> {
     let mut result = Vec::new();
     for row in rows(evidence, "timers") {
@@ -1047,12 +1058,14 @@ fn build_timers(
             Some("fired") => TimerStateV1::Fired,
             _ => return Err(NativeSqliteEnvelopeError::InvalidNativeRow),
         };
-        let relation = relations.get(&(room_id.to_owned(), timer_id.to_owned(), generation));
-        let fired_transition_seq = relation.copied().flatten();
+        let relation = relations.remove(&(room_id.to_owned(), timer_id.to_owned(), generation));
+        let fired_transition_seq = relation.flatten();
         if matches!(state, TimerStateV1::Fired) && relation.is_none() {
             return Err(NativeSqliteEnvelopeError::IncompleteCompanion);
         }
-        if !matches!(state, TimerStateV1::Fired) && relation.is_some_and(Option::is_some) {
+        if !matches!(state, TimerStateV1::Fired)
+            && relation.is_some_and(|transition| transition.is_some())
+        {
             return Err(NativeSqliteEnvelopeError::CompanionDigestMismatch);
         }
         let payload = blob(&row.values, 4)?.to_vec();
@@ -1301,7 +1314,15 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod compatibility_authority_tests {
-    use super::{DigestV1, TRUSTED_COMPATIBILITY_JSON_DIGEST};
+    use std::collections::BTreeMap;
+
+    use super::{
+        DigestV1, NativeSqliteOperationalRowsV1, NativeSqliteRequestLedgerV1,
+        NativeSqliteRequestWitnessV1, NativeSqliteRestoreEvidenceV1, NativeSqliteRowV1,
+        NativeSqliteTimerRelationV1, NativeSqliteValueV1, TRUSTED_COMPATIBILITY_JSON_DIGEST,
+        build_activation_receipts, build_semantic_receipts, build_timers, request_map,
+        require_companion_maps_consumed, timer_relation_map,
+    };
 
     #[test]
     fn trusted_compatibility_mirror_digest_is_current() {
@@ -1309,5 +1330,143 @@ mod compatibility_authority_tests {
             DigestV1::hash(include_bytes!("../../../compatibility.json")).as_str(),
             TRUSTED_COMPATIBILITY_JSON_DIGEST
         );
+    }
+
+    #[test]
+    fn exact_request_and_timer_witnesses_are_consumed() {
+        let request_bytes = b"exact-request".to_vec();
+        let identity = b"operation-identity".to_vec();
+        let request = NativeSqliteRequestWitnessV1 {
+            ledger: NativeSqliteRequestLedgerV1::Semantic,
+            identity_bytes: identity.clone(),
+            request_bytes: request_bytes.clone(),
+            request_digest: DigestV1::hash(&request_bytes),
+        };
+        let timer = NativeSqliteTimerRelationV1 {
+            room_id: "room-1".to_owned(),
+            timer_id: "timer-1".to_owned(),
+            generation: 1,
+            fired_transition_seq: Some(1),
+        };
+        let mut tables = BTreeMap::new();
+        tables.insert(
+            "semantic_receipts".to_owned(),
+            vec![NativeSqliteRowV1 {
+                table: "semantic_receipts".to_owned(),
+                values: vec![
+                    NativeSqliteValueV1::Text("room-1".to_owned()),
+                    NativeSqliteValueV1::Text("action".to_owned()),
+                    NativeSqliteValueV1::Blob(identity),
+                    NativeSqliteValueV1::Text("worldstream/operation-receipt/v1".to_owned()),
+                    NativeSqliteValueV1::Blob(blake3::hash(&request_bytes).as_bytes().to_vec()),
+                    NativeSqliteValueV1::Null,
+                    NativeSqliteValueV1::Blob(Vec::new()),
+                    NativeSqliteValueV1::Blob(Vec::new()),
+                    NativeSqliteValueV1::Text("no_change_recorded".to_owned()),
+                    NativeSqliteValueV1::Null,
+                    NativeSqliteValueV1::Blob(b"result".to_vec()),
+                    NativeSqliteValueV1::Text("2026-08-22T00:00:00Z".to_owned()),
+                ],
+            }],
+        );
+        tables.insert(
+            "timers".to_owned(),
+            vec![NativeSqliteRowV1 {
+                table: "timers".to_owned(),
+                values: vec![
+                    NativeSqliteValueV1::Text("room-1".to_owned()),
+                    NativeSqliteValueV1::Text("timer-1".to_owned()),
+                    NativeSqliteValueV1::Integer(1),
+                    NativeSqliteValueV1::Text("2026-08-22T00:00:00Z".to_owned()),
+                    NativeSqliteValueV1::Blob(b"payload".to_vec()),
+                    NativeSqliteValueV1::Text("fired".to_owned()),
+                ],
+            }],
+        );
+        let evidence = empty_evidence(tables);
+        let mut requests =
+            request_map(&[request]).unwrap_or_else(|error| unreachable!("request map: {error:?}"));
+        let mut timers = timer_relation_map(&[timer])
+            .unwrap_or_else(|error| unreachable!("timer map: {error:?}"));
+
+        assert_eq!(
+            build_semantic_receipts(&evidence, &mut requests)
+                .unwrap_or_else(|error| unreachable!("semantic receipt: {error:?}"))
+                .len(),
+            1
+        );
+        assert_eq!(
+            build_timers(&evidence, &mut timers)
+                .unwrap_or_else(|error| unreachable!("timer: {error:?}"))
+                .len(),
+            1
+        );
+        assert!(
+            requests.is_empty(),
+            "the exact request key must be consumed"
+        );
+        assert!(timers.is_empty(), "the exact timer key must be consumed");
+        assert!(require_companion_maps_consumed(&requests, &timers).is_ok());
+    }
+
+    #[test]
+    fn unreferenced_request_and_timer_witnesses_fail_closed() {
+        let request_bytes = b"unreferenced-request".to_vec();
+        let mut requests = request_map(&[NativeSqliteRequestWitnessV1 {
+            ledger: NativeSqliteRequestLedgerV1::Semantic,
+            identity_bytes: b"unreferenced-operation".to_vec(),
+            request_digest: DigestV1::hash(&request_bytes),
+            request_bytes,
+        }])
+        .unwrap_or_else(|error| unreachable!("request map: {error:?}"));
+        let mut timers = timer_relation_map(&[NativeSqliteTimerRelationV1 {
+            room_id: "unreferenced-room".to_owned(),
+            timer_id: "unreferenced-timer".to_owned(),
+            generation: 1,
+            fired_transition_seq: Some(1),
+        }])
+        .unwrap_or_else(|error| unreachable!("timer map: {error:?}"));
+        let evidence = empty_evidence(BTreeMap::new());
+
+        assert!(
+            build_semantic_receipts(&evidence, &mut requests)
+                .unwrap_or_else(|error| unreachable!("no semantic rows: {error:?}"))
+                .is_empty()
+        );
+        assert!(
+            build_activation_receipts(&evidence, &mut requests)
+                .unwrap_or_else(|error| unreachable!("no activation rows: {error:?}"))
+                .is_empty()
+        );
+        assert!(
+            build_timers(&evidence, &mut timers)
+                .unwrap_or_else(|error| unreachable!("no timer rows: {error:?}"))
+                .is_empty()
+        );
+        assert_eq!(
+            require_companion_maps_consumed(&requests, &timers),
+            Err(super::NativeSqliteEnvelopeError::CompanionDigestMismatch)
+        );
+    }
+
+    fn empty_evidence(
+        tables: BTreeMap<String, Vec<NativeSqliteRowV1>>,
+    ) -> NativeSqliteRestoreEvidenceV1 {
+        NativeSqliteRestoreEvidenceV1 {
+            operational: NativeSqliteOperationalRowsV1 { tables },
+            canonical_records: BTreeMap::new(),
+            materializations: BTreeMap::new(),
+            newest_valid_snapshots: BTreeMap::new(),
+            integrity: BTreeMap::new(),
+            deployment_lineage: None,
+            storage_epoch: None,
+            migration_metadata: None,
+            pack_metadata: None,
+            resource_metadata: None,
+            backend: None,
+            native_point: None,
+            room_membership: None,
+            room_heads: BTreeMap::new(),
+        }
     }
 }

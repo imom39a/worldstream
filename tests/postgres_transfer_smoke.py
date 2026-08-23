@@ -32,6 +32,7 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         mode: str = "external",
         admin_dsn: str = "host=admin user=admin password=ADMIN_SECRET",
         runtime_dsn: str = "host=runtime user=runtime password=RUNTIME_SECRET",
+        abort_admin_dsn: str = "host=abort user=admin password=ABORT_SECRET",
         cargo: Path | None = None,
         docker: Path | None = None,
         evidence: Path | None = None,
@@ -43,6 +44,7 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
                 "WORLDSTREAM_PG_TRANSFER_MODE": mode,
                 "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN": admin_dsn,
                 "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN": runtime_dsn,
+                "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN": abort_admin_dsn,
                 "WORLDSTREAM_PG_TRANSFER_CARGO": str(cargo or ROOT / "no-such-cargo"),
                 "WORLDSTREAM_PG_TRANSFER_DOCKER": str(
                     docker or ROOT / "no-such-docker"
@@ -159,12 +161,69 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
                 source=source,
                 admin_dsn="",
                 runtime_dsn="",
+                abort_admin_dsn="",
             )
         self.assertEqual(completed.returncode, 12)
         self.assertEqual(evidence["reason"], "external_target_credentials_missing")
         output = completed.stdout + completed.stderr
         for secret in ("ADMIN_SECRET", "RUNTIME_SECRET", "password=", "host=admin"):
             self.assertNotIn(secret, output)
+
+    def test_external_abort_target_must_be_explicitly_distinct(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="worldstream-transfer-boundary-"
+        ) as name:
+            source = Path(name) / "source.sqlite"
+            source.write_bytes(b"not-a-database")
+            success_dsn = "host=shared user=admin password=SHARED_SECRET"
+            completed, evidence = self.run_harness(
+                source=source,
+                admin_dsn=success_dsn,
+                abort_admin_dsn=success_dsn,
+            )
+        self.assertEqual(completed.returncode, 12)
+        self.assertEqual(evidence["reason"], "external_abort_target_not_distinct")
+        self.assertNotIn("SHARED_SECRET", completed.stdout + completed.stderr)
+
+    def test_runner_resolves_the_exact_pinned_python(self) -> None:
+        script = HARNESS.read_text(encoding="utf-8")
+        self.assertIn('python_bin="$(resolve_python "$python_bin")"', script)
+        self.assertIn("sys.version_info[:3] != (3, 14, 7)", script)
+        self.assertIn("uv run --python 3.14.7 --no-project python", script)
+        self.assertNotIn("python3_unavailable", script)
+
+    def test_transfer_preserves_exact_postgres_operation_guards(self) -> None:
+        implementation = (
+            ROOT / "crates" / "worldstream-postgres" / "src" / "transfer.rs"
+        ).read_text(encoding="utf-8")
+        script = HARNESS.read_text(encoding="utf-8")
+
+        hydrate_only = implementation.index("if mode == NativePublicationMode::Hydrate")
+        guard_insert = implementation.index(
+            "INSERT INTO worldstream_operation_guards(identity_bytes, request_hash, room_id, receipt_bytes)"
+        )
+        guard_read = implementation.index(
+            "SELECT request_hash, room_id, receipt_bytes FROM worldstream_operation_guards"
+        )
+        self.assertLess(hydrate_only, guard_insert)
+        self.assertLess(guard_insert, guard_read)
+        self.assertIn("semantic receipt operation guard missing", implementation)
+        self.assertIn("semantic receipt operation guard mismatch", implementation)
+        self.assertRegex(
+            implementation,
+            r'"semantic_receipts",\s*"SELECT count\(\*\) FROM worldstream_operation_guards"',
+        )
+
+        for witness in (
+            "operation_guard_exact_parity_verified",
+            "operation_guard_mismatch_count",
+            "post_cutover_operation_guard_resolution",
+            "same_hash_stored_resolution",
+            "different_hash_conflict",
+            "ResolveOutcomeV1::StoredResolution",
+            "ResolveOutcomeV1::Conflict",
+        ):
+            self.assertIn(witness, script)
 
     def test_docker_absence_is_unavailable_not_incomplete_provider_evidence(
         self,
@@ -207,6 +266,23 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 12)
         self.assertEqual(evidence["reason"], "invalid_helper_timeout")
         self.assertFalse(evidence["release_evidence"])
+
+    def test_hosted_fixture_revision_is_explicit_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="worldstream-transfer-boundary-"
+        ) as name:
+            source = Path(name) / "source.sqlite"
+            source.write_bytes(b"placeholder")
+            completed, evidence = self.run_harness(
+                source=source,
+                extra={"WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION": "not-a-revision"},
+            )
+        self.assertEqual(completed.returncode, 12)
+        self.assertEqual(evidence["reason"], "invalid_source_revision")
+        script = HARNESS.read_text(encoding="utf-8")
+        self.assertIn("untrusted_source_bound_input_construction", script)
+        self.assertIn('"trusted_product_execution": False', script)
+        self.assertIn('"source_revision": sys.argv[7]', script)
 
     def test_fake_driver_output_is_canonicalized_and_redacted(self) -> None:
         driver_output = (
@@ -334,17 +410,15 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         self.assertNotIn("password=LEAK", output)
         self.assertFalse(evidence["secrets_emitted"])
 
-    def test_source_bytes_are_digest_preserved_and_missing_global_evidence_refuses_provider(
-        self,
-    ) -> None:
+    def test_unversioned_source_schema_fails_closed_before_provider(self) -> None:
         cargo = shutil.which("cargo")
         self.assertIsNotNone(
-            cargo, "cargo is required for the live source-evidence boundary"
+            cargo, "cargo is required for the live source-lifecycle boundary"
         )
         with tempfile.TemporaryDirectory(prefix="worldstream-transfer-source-") as name:
             directory = Path(name)
             source = directory / "source.sqlite"
-            values = self.source_fixture(source)
+            self.source_fixture(source)
             completed, evidence = self.run_harness(
                 source=source,
                 cargo=Path(cargo),
@@ -359,56 +433,59 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
             )
 
         self.assertEqual(completed.returncode, 13)
-        self.assertEqual(
-            evidence["reason"], "sqlite_source_canonical_evidence_incomplete"
-        )
+        self.assertEqual(evidence["reason"], "sqlite_source_lifecycle_open_failed")
         self.assertFalse(evidence["release_evidence"])
         self.assertFalse(evidence["secrets_emitted"])
+        self.assertEqual(evidence["postgres"]["status"], "not_checked")
+        self.assertEqual(evidence["source"]["status"], "not_checked")
         output = completed.stdout + completed.stderr
-        for secret in ("ADMIN_SECRET", "RUNTIME_SECRET", "password=", "room-test"):
+        for secret in (
+            "ADMIN_SECRET",
+            "RUNTIME_SECRET",
+            "ABORT_SECRET",
+            "password=",
+            "room-test",
+        ):
             self.assertNotIn(secret, output)
 
-        source_evidence = evidence["source"]["canonical_evidence"]
-        self.assertEqual(
-            source_evidence["stored_bytes"],
-            sum(len(value) for value in values.values()),
+    def test_generated_source_permitted_isolation_reaches_provider_boundary(
+        self,
+    ) -> None:
+        cargo = shutil.which("cargo")
+        self.assertIsNotNone(
+            cargo, "cargo is required for the generated-source boundary"
         )
-        room = source_evidence["rooms"][0]
-        self.assertEqual(room["status"], "incomplete")
-        expected = {
-            "pack_revision_lock": (
-                10,
-                "6e89e80621c93dcc0432bfa3679a0a390faa85f12240adea2e7d0b56c5ddfd06",
-            ),
-            "genesis": (
-                13,
-                "fd85d24d655b38c54508ebf8d1fd6d3342a5bde9d7c9a609feb029ac0b2ca640",
-            ),
-            "head": (
-                10,
-                "814844cd77ae9d3395404ac4b0f99e8ca2ddaa1894e408fa38d03ae2423ec0c5",
-            ),
-            "core": (
-                10,
-                "58c4e7700c6d54f9162062ae6a2b0cbc532ac8f164581ec603f4fc90dfbea23e",
-            ),
-            "activity": (
-                14,
-                "c874a0b97530c9ef281841e2b48f46591a3f6e7fda6cc8243af5f1f7fd436e2b",
-            ),
-        }
-        for field, (size, digest) in expected.items():
-            self.assertEqual(room[field]["status"], "observed")
-            self.assertEqual(room[field]["bytes"], size)
-            self.assertEqual(room[field]["digest"], digest)
-
-        missing_codes = {item["code"] for item in source_evidence["missing_evidence"]}
-        self.assertTrue(
+        environment = os.environ.copy()
+        environment.update(
             {
-                "deployment_lineage_absent",
-                "storage_epoch_absent",
-                "sqlite_canonical_export_unavailable",
-            }.issubset(missing_codes)
+                "WORLDSTREAM_PG_TRANSFER_MODE": "external",
+                "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN": (
+                    "host=127.0.0.1 port=1 user=admin dbname=success"
+                ),
+                "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN": (
+                    "host=127.0.0.1 port=1 user=runtime dbname=success"
+                ),
+                "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN": (
+                    "host=127.0.0.1 port=1 user=admin dbname=abort"
+                ),
+                "WORLDSTREAM_PG_TRANSFER_CARGO": cargo,
+                "WORLDSTREAM_PG_TRANSFER_PYTHON": sys.executable,
+            }
+        )
+        completed = subprocess.run(
+            [str(HARNESS), "--build-source"],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        evidence = json.loads(completed.stdout.splitlines()[-1])
+
+        self.assertEqual(completed.returncode, 14)
+        self.assertEqual(evidence["reason"], "postgres_abort_target_not_isolated")
+        self.assertNotEqual(
+            evidence["reason"], "sqlite_abort_backup_verification_failed"
         )
 
 

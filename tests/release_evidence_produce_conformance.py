@@ -30,6 +30,7 @@ RESTORE_DURABLE_DOMAINS = (
     "semantic_receipts",
     "integrity_incidents",
     "authority_fences",
+    "retired_authority_fences",
     "authority_state",
     "authority_principals",
     "authority_runners",
@@ -45,6 +46,7 @@ RESTORE_DURABLE_DOMAINS = (
     "deployment_identity_metadata",
     "deployment_pack_identities",
     "deployment_resource_identities",
+    "deployment_resource_blobs",
 )
 
 
@@ -233,7 +235,7 @@ def transfer_report() -> dict:
     }
 
 
-def restore_report() -> dict:
+def native_restore_report() -> dict:
     inventory = [
         {
             "domain": domain,
@@ -247,15 +249,35 @@ def restore_report() -> dict:
     return {
         "schema": "worldstream/native-postgres-restore-evidence/v2",
         "status": "ready",
+        "reason": "postgres_native_restore_verified_by_unified_verifier",
         "release_evidence": False,
         "native_dump_restore": "pass",
+        "backup_id": "postgres-native-" + "b" * 64,
+        "native_point_digest": (
+            "d12ef884fee4573a111d13e5adbb2b2e05683f65f7f219bc0019c9b9c8a899dc"
+        ),
+        "native_dump_digest": "b" * 64,
+        "native_dump_size_bytes": 4096,
         "source_unchanged": True,
         "exact_restored_row_set": True,
         "snapshots_disposable": True,
         "target_isolated": True,
         "target_published": False,
+        "cleanup_required": True,
         "native_witness_minted": True,
         "secrets_emitted": False,
+        "source_provider_identity": {
+            "system_identifier": "7400000000000000001",
+            "database_oid": "16384",
+            "database_name": "worldstream_source",
+        },
+        "target_provider_identity": {
+            "system_identifier": "7400000000000000001",
+            "database_oid": "16385",
+            "database_name": "worldstream_target",
+        },
+        "source_version_num": 170_011,
+        "restored_version_num": 170_011,
         "semantic_receipts_verified": True,
         "activation_intents_verified": True,
         "activation_operation_receipts_verified": True,
@@ -263,22 +285,211 @@ def restore_report() -> dict:
         "authority_state_verified": True,
         "durable_domains_verified": True,
         "verifier_scope": {
-            "profile": "single_pack_no_resources_no_fired_timers",
-            "source_pack_identity_count": 1,
-            "restored_pack_identity_count": 1,
-            "source_resource_identity_count": 0,
-            "restored_resource_identity_count": 0,
-            "source_fired_timer_count": 0,
-            "restored_fired_timer_count": 0,
-            "general_deployment_support_verified": False,
+            "profile": "full_deployment_all_durable_domains",
+            "source_pack_identity_count": 2,
+            "restored_pack_identity_count": 2,
+            "source_resource_identity_count": 1,
+            "restored_resource_identity_count": 1,
+            "source_fired_timer_count": 1,
+            "restored_fired_timer_count": 1,
+            "general_deployment_support_verified": True,
         },
         "source_durable_domains_digest": "a" * 64,
         "restored_durable_domains_digest": "a" * 64,
         "durable_domain_inventory": inventory,
         "restored_snapshot_count_before": 2,
         "restored_snapshot_count_after": 0,
-        "verifier": {"status": "ready"},
+        "verifier": {
+            "readiness": "Ready",
+            "rooms": {
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV": "Verified",
+                "01ARZ3NDEKTSV4RRFFQ69G5FC5": "Verified",
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ0": "IsolatedPreExisting",
+            },
+            "diagnostics": [
+                {
+                    "class": "Integrity",
+                    "code": "pre_existing_isolation_preserved",
+                    "subject": "subject:020e3e550f71",
+                    "action": "keep the Room isolated; investigate or repair it through the separate verifier-repair contract",
+                    "disposition": "PermittedPreExistingIsolation",
+                }
+            ],
+        },
     }
+
+
+def restore_report() -> dict:
+    return {
+        "schema": "worldstream/native-postgres-restore-smoke-evidence/v1",
+        "status": "ready",
+        "reason": "native_postgres_restore_smoke_completed",
+        "exit_code": 0,
+        "release_evidence": False,
+        "native_restore": native_restore_report(),
+        "live_restore_concurrency": {
+            "observed": True,
+            "target_connection_limit_during_restore": 2,
+            "target_client_backends_excluding_observer": 2,
+            "direct_superuser_keeper_backends": 1,
+            "one_use_restore_role_backends": 1,
+            "keeper_and_restore_pids_distinct": True,
+            "final_captured_role_sessions_across_cluster": 0,
+            "final_captured_role_exists": 0,
+            "captured_restore_role": (
+                "worldstream_restore_0123456789abcdef0123456789abcdef"
+            ),
+            "captured_keeper_pid": 101,
+            "captured_restore_pid": 102,
+        },
+        "target_isolated": True,
+        "target_published": False,
+        "secrets_emitted": False,
+    }
+
+
+def test_restore_accepts_actual_full_deployment_verifier_shape():
+    module = load_module()
+
+    outcomes = module.validate_restore(sqlite_report(), restore_report())
+
+    assert "two Pack identities" in outcomes["bounded_fixture_semantic_verifier"]
+    assert "one immutable resource" in outcomes["bounded_fixture_semantic_verifier"]
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("observed", False),
+        ("target_connection_limit_during_restore", 1),
+        ("target_client_backends_excluding_observer", 1),
+        ("direct_superuser_keeper_backends", 0),
+        ("one_use_restore_role_backends", 0),
+        ("keeper_and_restore_pids_distinct", False),
+        ("final_captured_role_sessions_across_cluster", 1),
+        ("final_captured_role_exists", 1),
+        ("captured_restore_role", "postgres"),
+        ("captured_keeper_pid", 0),
+        ("captured_restore_pid", 0),
+    ],
+)
+def test_restore_requires_each_live_one_use_credential_witness(field, invalid):
+    module = load_module()
+    report = restore_report()
+    report["live_restore_concurrency"][field] = invalid
+
+    with pytest.raises(module.EvidenceError, match="one-use credential proof"):
+        module.validate_restore(sqlite_report(), report)
+
+
+def test_restore_rejects_unversioned_or_extended_smoke_wrapper():
+    module = load_module()
+    unversioned = native_restore_report()
+    with pytest.raises(module.EvidenceError, match="smoke wrapper"):
+        module.validate_restore(sqlite_report(), unversioned)
+
+    extended = restore_report()
+    extended["ignored_proof"] = True
+    with pytest.raises(module.EvidenceError, match="smoke wrapper"):
+        module.validate_restore(sqlite_report(), extended)
+
+
+def test_restore_rejects_same_live_keeper_and_restore_pid():
+    module = load_module()
+    report = restore_report()
+    report["live_restore_concurrency"]["captured_restore_pid"] = report[
+        "live_restore_concurrency"
+    ]["captured_keeper_pid"]
+
+    with pytest.raises(module.EvidenceError, match="one-use credential proof"):
+        module.validate_restore(sqlite_report(), report)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (lambda verifier: verifier.update({"status": "ready"}), "return ready"),
+        (lambda verifier: verifier.update({"readiness": "NotReady"}), "return ready"),
+        (
+            lambda verifier: verifier["rooms"].update(
+                {"01ARZ3NDEKTSV4RRFFQ69G5FAV": "Blocked"}
+            ),
+            "rooms are malformed",
+        ),
+        (lambda verifier: verifier.update({"rooms": {}}), "rooms are malformed"),
+        (
+            lambda verifier: verifier["diagnostics"][0].update(
+                {"disposition": "Blocking"}
+            ),
+            "blocking diagnostics",
+        ),
+        (
+            lambda verifier: verifier["diagnostics"][0].update(
+                {"raw_payload": "not-redacted"}
+            ),
+            "blocking diagnostics",
+        ),
+        (
+            lambda verifier: verifier["diagnostics"][0].update(
+                {"subject": "subject:TOP_SECRET"}
+            ),
+            "blocking diagnostics",
+        ),
+        (
+            lambda verifier: verifier["diagnostics"][0].update(
+                {"action": "accept an unreviewed isolation"}
+            ),
+            "blocking diagnostics",
+        ),
+    ],
+)
+def test_restore_rejects_malformed_or_blocking_real_verifier_shape(tamper, message):
+    module = load_module()
+    report = restore_report()
+    tamper(report["native_restore"]["verifier"])
+
+    with pytest.raises(module.EvidenceError, match=message):
+        module.validate_restore(sqlite_report(), report)
+
+
+def test_restore_enforces_verifier_room_and_diagnostic_bounds():
+    module = load_module()
+    module.MAX_RESTORE_VERIFIER_ROOMS = 2
+    with pytest.raises(module.EvidenceError, match="unbounded"):
+        module.validate_restore(sqlite_report(), restore_report())
+
+    module = load_module()
+    module.MAX_RESTORE_VERIFIER_DIAGNOSTICS = 0
+    with pytest.raises(module.EvidenceError, match="diagnostics.*unbounded"):
+        module.validate_restore(sqlite_report(), restore_report())
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("restored_snapshot_count_before", True),
+        ("restored_snapshot_count_after", False),
+    ],
+)
+def test_restore_rejects_boolean_snapshot_counts(field, invalid):
+    module = load_module()
+    report = restore_report()
+    report["native_restore"][field] = invalid
+
+    with pytest.raises(module.EvidenceError, match="isolated semantic contract"):
+        module.validate_restore(sqlite_report(), report)
+
+
+def test_restore_rejects_boolean_restored_domain_count():
+    module = load_module()
+    report = restore_report()
+    authority_index = RESTORE_DURABLE_DOMAINS.index("authority_state")
+    report["native_restore"]["durable_domain_inventory"][authority_index][
+        "restored_row_count"
+    ] = True
+
+    with pytest.raises(module.EvidenceError, match="count or digest mismatch"):
+        module.validate_restore(sqlite_report(), report)
 
 
 @pytest.mark.parametrize(
@@ -294,7 +505,7 @@ def restore_report() -> dict:
 def test_restore_requires_each_typed_activation_and_authority_witness(field, invalid):
     module = load_module()
     report = restore_report()
-    report[field] = invalid
+    report["native_restore"][field] = invalid
     with pytest.raises(module.EvidenceError, match="isolated semantic contract"):
         module.validate_restore(sqlite_report(), report)
 
@@ -302,20 +513,50 @@ def test_restore_requires_each_typed_activation_and_authority_witness(field, inv
 @pytest.mark.parametrize(
     ("field", "invalid"),
     [
-        ("profile", "general_deployment"),
-        ("source_pack_identity_count", 2),
-        ("restored_pack_identity_count", 2),
-        ("source_resource_identity_count", 1),
-        ("restored_resource_identity_count", 1),
-        ("source_fired_timer_count", 1),
-        ("restored_fired_timer_count", 1),
-        ("general_deployment_support_verified", True),
+        ("backup_id", "postgres-native-" + "0" * 64),
+        ("native_point_digest", "c" * 64),
+        ("native_dump_digest", "not-a-digest"),
+        ("native_dump_size_bytes", 0),
+        ("reason", "uncommitted"),
+        ("cleanup_required", False),
+        ("source_provider_identity", {"database_name": "worldstream_source"}),
+        (
+            "target_provider_identity",
+            {
+                "system_identifier": "7400000000000000001",
+                "database_oid": "0",
+                "database_name": "worldstream_target",
+            },
+        ),
+        ("source_version_num", 170_010),
+        ("restored_version_num", 170_010),
+    ],
+)
+def test_restore_requires_exact_provider_native_backup_identity(field, invalid):
+    module = load_module()
+    report = restore_report()
+    report["native_restore"][field] = invalid
+    with pytest.raises(module.EvidenceError, match="isolated semantic contract"):
+        module.validate_restore(sqlite_report(), report)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("profile", "single_pack_no_resources_no_fired_timers"),
+        ("source_pack_identity_count", 1),
+        ("restored_pack_identity_count", 1),
+        ("source_resource_identity_count", 0),
+        ("restored_resource_identity_count", 0),
+        ("source_fired_timer_count", 0),
+        ("restored_fired_timer_count", 0),
+        ("general_deployment_support_verified", False),
     ],
 )
 def test_restore_requires_exact_bounded_verifier_scope(field, invalid):
     module = load_module()
     report = restore_report()
-    report["verifier_scope"][field] = invalid
+    report["native_restore"]["verifier_scope"][field] = invalid
     with pytest.raises(module.EvidenceError, match="scope.*overclaims"):
         module.validate_restore(sqlite_report(), report)
 
@@ -323,7 +564,7 @@ def test_restore_requires_exact_bounded_verifier_scope(field, invalid):
 def test_restore_requires_complete_bounded_verifier_scope():
     module = load_module()
     report = restore_report()
-    report["verifier_scope"].pop("source_fired_timer_count")
+    report["native_restore"]["verifier_scope"].pop("source_fired_timer_count")
     with pytest.raises(module.EvidenceError, match="scope.*overclaims"):
         module.validate_restore(sqlite_report(), report)
 
@@ -332,8 +573,10 @@ def test_restore_requires_complete_bounded_verifier_scope():
 def test_restore_rejects_each_durable_domain_omission(domain):
     module = load_module()
     report = restore_report()
-    report["durable_domain_inventory"] = [
-        row for row in report["durable_domain_inventory"] if row["domain"] != domain
+    report["native_restore"]["durable_domain_inventory"] = [
+        row
+        for row in report["native_restore"]["durable_domain_inventory"]
+        if row["domain"] != domain
     ]
     with pytest.raises(module.EvidenceError, match="inventory is incomplete"):
         module.validate_restore(sqlite_report(), report)
@@ -352,7 +595,7 @@ def test_restore_rejects_each_durable_domain_omission(domain):
 def test_restore_binds_each_domain_count_and_digest(field, invalid, message):
     module = load_module()
     report = restore_report()
-    report["durable_domain_inventory"][0][field] = invalid
+    report["native_restore"]["durable_domain_inventory"][0][field] = invalid
     with pytest.raises(module.EvidenceError, match=message):
         module.validate_restore(sqlite_report(), report)
 
@@ -361,22 +604,27 @@ def test_restore_binds_aggregate_digest_order_and_authority_singleton():
     module = load_module()
 
     aggregate = restore_report()
-    aggregate["restored_durable_domains_digest"] = "b" * 64
+    aggregate["native_restore"]["restored_durable_domains_digest"] = "b" * 64
     with pytest.raises(module.EvidenceError, match="aggregate digest"):
         module.validate_restore(sqlite_report(), aggregate)
 
     order = restore_report()
-    order["durable_domain_inventory"][0], order["durable_domain_inventory"][1] = (
-        order["durable_domain_inventory"][1],
-        order["durable_domain_inventory"][0],
+    inventory = order["native_restore"]["durable_domain_inventory"]
+    inventory[0], inventory[1] = (
+        inventory[1],
+        inventory[0],
     )
     with pytest.raises(module.EvidenceError, match="inventory drifted"):
         module.validate_restore(sqlite_report(), order)
 
     singleton = restore_report()
     index = RESTORE_DURABLE_DOMAINS.index("authority_state")
-    singleton["durable_domain_inventory"][index]["source_row_count"] = 0
-    singleton["durable_domain_inventory"][index]["restored_row_count"] = 0
+    singleton["native_restore"]["durable_domain_inventory"][index][
+        "source_row_count"
+    ] = 0
+    singleton["native_restore"]["durable_domain_inventory"][index][
+        "restored_row_count"
+    ] = 0
     with pytest.raises(module.EvidenceError, match="authority singleton"):
         module.validate_restore(sqlite_report(), singleton)
 
@@ -445,6 +693,102 @@ def test_exact_diagnostics_emit_six_artifact_bound_typed_producers(tmp_path):
         )
 
 
+def test_producer_rejects_parsed_input_path_substitution_without_hashing_victim(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    args = producer_args(tmp_path, complete_values())
+    admitted_bytes = args.manifest_report.read_bytes()
+    victim_bytes = b'{"private_canary":"must-survive"}\n'
+    original_validate = module.validate_manifest
+    substituted = False
+
+    def substitute_after_parse(report):
+        nonlocal substituted
+        result = original_validate(report)
+        if substituted:
+            return result
+        substituted = True
+        held = args.manifest_report.with_name("held-manifest-report.json")
+        args.manifest_report.rename(held)
+        args.manifest_report.write_bytes(victim_bytes)
+        assert held.read_bytes() == admitted_bytes
+        return result
+
+    monkeypatch.setattr(module, "validate_manifest", substitute_after_parse)
+
+    with pytest.raises(module.EvidenceError, match="changed while it was retained"):
+        module.produce(args)
+
+    assert args.manifest_report.read_bytes() == victim_bytes
+    assert not args.output_dir.exists()
+    assert not args.artifact_dir.exists()
+
+
+def test_producer_rejects_same_inode_same_size_input_mutation(tmp_path, monkeypatch):
+    module = load_module()
+    args = producer_args(tmp_path, complete_values())
+    original = args.transfer_report.read_bytes()
+    original_validate = module.validate_manifest
+
+    def mutate_after_parse(report):
+        result = original_validate(report)
+        args.transfer_report.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        assert args.transfer_report.stat().st_size == len(original)
+        return result
+
+    monkeypatch.setattr(module, "validate_manifest", mutate_after_parse)
+
+    with pytest.raises(module.EvidenceError, match="changed while it was retained"):
+        module.produce(args)
+
+    assert not args.output_dir.exists()
+    assert not args.artifact_dir.exists()
+
+
+def test_postgres_exit_code_rejects_boolean_zero():
+    module = load_module()
+    report = postgres_report()
+    report["exit_code"] = False
+
+    with pytest.raises(module.EvidenceError, match="live diagnostic"):
+        module.validate_postgres(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("system_identifier", "١"),
+        ("system_identifier", str(1 << 64)),
+        ("database_oid", "١"),
+        ("database_oid", str(1 << 32)),
+        ("database_oid", "01"),
+    ],
+)
+def test_restore_provider_numeric_identity_is_ascii_canonical_and_bounded(field, value):
+    module = load_module()
+    report = restore_report()
+    report["native_restore"]["target_provider_identity"][field] = value
+
+    with pytest.raises(module.EvidenceError, match="isolated semantic contract"):
+        module.validate_restore(sqlite_report(), report)
+
+
+def test_restore_source_and_target_require_distinct_authoritative_numeric_tuple():
+    module = load_module()
+    report = restore_report()
+    source = report["native_restore"]["source_provider_identity"]
+    target = report["native_restore"]["target_provider_identity"]
+    target.update(
+        system_identifier=source["system_identifier"],
+        database_oid=source["database_oid"],
+        database_name="different_display_name",
+    )
+
+    with pytest.raises(module.EvidenceError, match="isolated semantic contract"):
+        module.validate_restore(sqlite_report(), report)
+
+
 @pytest.mark.parametrize(
     ("report_name", "tamper", "message"),
     [
@@ -478,7 +822,7 @@ def test_exact_diagnostics_emit_six_artifact_bound_typed_producers(tmp_path):
         ),
         (
             "restore",
-            lambda value: value.update({"target_published": True}),
+            lambda value: value["native_restore"].update({"target_published": True}),
             "native PostgreSQL restore",
         ),
     ],

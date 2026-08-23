@@ -32,6 +32,12 @@ INSTALLER = load(
 CDP = load("worldstream_cdp_browser_test", "scripts/cdp-browser.py")
 
 
+def browser_story_control_helper() -> str:
+    source = (ROOT / "web/console/live-browser-story.sh").read_text(encoding="utf-8")
+    marker = 'bounded_control_read() {\n  "$python_bin" - "$1" "$2" <<\'PY\'\n'
+    return source.split(marker, 1)[1].split("\nPY\n}\n", 1)[0]
+
+
 def archive_args(tmp_path: Path, members: list[tuple[zipfile.ZipInfo, bytes]]):
     archive = tmp_path / "browser.zip"
     with zipfile.ZipFile(archive, "w") as output:
@@ -152,6 +158,20 @@ def test_cdp_binary_hash_is_size_bounded_and_fd_stable(tmp_path: Path, monkeypat
     run.assert_not_called()
 
 
+def test_cdp_binary_growth_is_stopped_at_the_expected_size(tmp_path: Path):
+    binary = tmp_path / "browser"
+    binary.write_bytes(b"oversized")
+    observed = binary.lstat()
+    fields = list(observed)
+    fields[6] = observed.st_size - 1
+    stale_metadata = CDP.os.stat_result(fields)
+    with (
+        mock.patch.object(CDP.pathlib.Path, "lstat", return_value=stale_metadata),
+        pytest.raises(CDP.BrowserFailure, match="browser_binary_changed_during_hash"),
+    ):
+        CDP._sha256(binary, observed.st_size - 1)
+
+
 def test_cdp_identity_binds_exact_observed_version(tmp_path: Path, monkeypatch):
     binary = tmp_path / "browser"
     binary.write_bytes(b"fixture")
@@ -170,6 +190,117 @@ def test_cdp_identity_binds_exact_observed_version(tmp_path: Path, monkeypatch):
     assert identity["distribution"]["size_bytes"] == 1234
 
 
+def test_cdp_prepares_a_private_exact_executable_copy(tmp_path: Path, monkeypatch):
+    binary = tmp_path / "browser"
+    binary.write_text(
+        "#!/bin/sh\nprintf 'Google Chrome for Testing 152.0.7977.54\\n'\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o700)
+    browser_environment(monkeypatch, binary, size=binary.stat().st_size)
+    configured, identity = CDP._browser_configuration()
+    prepared, record = CDP._prepare_browser_executable(configured, identity)
+
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"hostile")
+    replacement.chmod(0o700)
+    replacement.replace(binary)
+    assert prepared.read_text(encoding="utf-8").startswith("#!/bin/sh")
+    assert CDP._validate_prepared_executable(record, configured, identity) == prepared
+    assert prepared.stat().st_ino != binary.stat().st_ino
+    CDP._remove_prepared_executable(record)
+    assert not prepared.exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux /proc fd exec")
+def test_cdp_linux_exec_uses_the_verified_open_descriptor(tmp_path: Path, monkeypatch):
+    binary = tmp_path / "browser"
+    binary.write_text(
+        "#!/bin/sh\nprintf 'Google Chrome for Testing 152.0.7977.54\\n'\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o700)
+    browser_environment(monkeypatch, binary, size=binary.stat().st_size)
+    configured, identity = CDP._browser_configuration()
+    prepared, record = CDP._prepare_browser_executable(configured, identity)
+    descriptor = CDP._open_prepared_descriptor(record, configured, identity)
+    try:
+        descriptor_path = CDP._descriptor_executable_path(descriptor, record)
+        assert descriptor_path is not None
+        substitute = tmp_path / "substitute"
+        substitute.write_text("#!/bin/sh\nprintf 'hostile\\n'\n", encoding="utf-8")
+        substitute.chmod(0o500)
+        substitute.replace(prepared)
+        completed = subprocess.run(
+            [str(prepared), "--version"],
+            executable=descriptor_path,
+            pass_fds=(descriptor,),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        CDP.os.close(descriptor)
+        prepared.unlink(missing_ok=True)
+    assert completed.returncode == 0
+    assert completed.stdout == "Google Chrome for Testing 152.0.7977.54\n"
+
+
+def test_cdp_rejects_source_path_replacement_during_stable_copy(
+    tmp_path: Path, monkeypatch
+):
+    binary = tmp_path / "browser"
+    binary.write_bytes(b"fixture")
+    binary.chmod(0o700)
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"hostile")
+    replacement.chmod(0o700)
+    browser_environment(monkeypatch, binary, size=binary.stat().st_size)
+    configured, identity = CDP._browser_configuration()
+    real_fsync = CDP.os.fsync
+    replaced = False
+
+    def replace_during_copy(descriptor: int) -> None:
+        nonlocal replaced
+        real_fsync(descriptor)
+        if not replaced:
+            replaced = True
+            replacement.replace(binary)
+
+    with (
+        mock.patch.object(CDP.os, "fsync", side_effect=replace_during_copy),
+        mock.patch.object(CDP.subprocess, "run") as version,
+        pytest.raises(CDP.BrowserFailure, match="browser_binary_changed_during_copy"),
+    ):
+        CDP._prepare_browser_executable(configured, identity)
+    version.assert_not_called()
+    assert replaced
+    assert not list(tmp_path.glob(".worldstream-verified-*"))
+
+
+def test_cdp_rejects_prepared_executable_inode_replacement(tmp_path: Path, monkeypatch):
+    binary = tmp_path / "browser"
+    binary.write_bytes(b"fixture")
+    binary.chmod(0o700)
+    browser_environment(monkeypatch, binary, size=binary.stat().st_size)
+    configured, identity = CDP._browser_configuration()
+    completed = subprocess.CompletedProcess(
+        [str(binary), "--version"],
+        0,
+        stdout="Google Chrome for Testing 152.0.7977.54\n",
+        stderr="",
+    )
+    with mock.patch.object(CDP.subprocess, "run", return_value=completed):
+        prepared, record = CDP._prepare_browser_executable(configured, identity)
+
+    substitute = tmp_path / "substitute"
+    substitute.write_bytes(b"fixture")
+    substitute.chmod(0o500)
+    substitute.replace(prepared)
+    with pytest.raises(CDP.BrowserFailure, match="browser_executable_identity_changed"):
+        CDP._validate_prepared_executable(record, configured, identity)
+
+
 def test_cdp_state_is_rejected_before_unbounded_read(tmp_path: Path, monkeypatch):
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
@@ -177,6 +308,35 @@ def test_cdp_state_is_rejected_before_unbounded_read(tmp_path: Path, monkeypatch
     monkeypatch.setenv("WORLDSTREAM_CDP_STATE_DIR", str(state))
     with pytest.raises(CDP.BrowserFailure, match="browser_state_invalid"):
         CDP._load_state()
+
+
+def test_browser_story_control_reader_is_bounded_and_nofollow(tmp_path: Path):
+    helper = browser_story_control_helper()
+    valid = tmp_path / "valid.json"
+    valid.write_text('{"ok":true}\n', encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-c", helper, "compact-json", str(valid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == '{"ok":true}\n'
+
+    oversized = tmp_path / "oversized.json"
+    with oversized.open("wb") as output:
+        output.truncate(8 * 1024 * 1024 + 1)
+    linked = tmp_path / "linked.json"
+    linked.symlink_to(valid)
+    for path in (oversized, linked):
+        rejected = subprocess.run(
+            [sys.executable, "-c", helper, "compact-json", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert rejected.stdout == ""
 
 
 def test_release_browser_never_disables_sandbox_and_records_console_channels():
@@ -189,6 +349,19 @@ def test_release_browser_never_disables_sandbox_and_records_console_channels():
     assert "browser_diagnostics_not_clean" in story
     assert "Warnings are release-blocking too" in story
     assert "errors list" not in story
+    assert "Path(path).read_text" not in story
+    assert "json.load(open" not in story
+    assert 'result="$(<"' not in story
+    assert "def identity(metadata)" in story
+    assert "bounded_control_read" in story
+    assert "MAX_CONTROL_BYTES + 1" in story
+    assert "package_python_identity_mismatch" in story
+    assert "def stable_regular_file" in story
+    assert 'getattr(os, "O_NOFOLLOW", 0)' in story
+    assert "source.read(MAX_CONTROL_BYTES + 1)" in story
+    assert "_prepare_browser_executable" in source
+    assert "_open_prepared_descriptor" in source
+    assert "_descriptor_executable_path" in source
     assert 'root / "bin/worldstreamd"' in story
     assert 'root / "ui"' in story
     assert 'root / "sdk/python/src"' in story

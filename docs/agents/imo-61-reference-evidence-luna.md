@@ -73,8 +73,11 @@ a checkout copy or an installed copy under `.venv/site-packages` is rejected.
 
 The runner also binds the exact archive, package report, daemon, snapshot-tail
 fixture binary and source, manifests, packaged acceptance, one-hour soak, and
-kill-point report bytes. The fixture's compiled revision must equal the source
-revision in the checksum-bound archived build identity. Inputs are strict,
+kill-point report bytes. The fixture report itself is retained as an exact
+bounded artifact: its original bytes, digest, size, schema, archive/daemon
+subjects, source revision, and generator source/binary subjects are carried
+through projection and publication. The fixture's compiled revision must equal
+the source revision in the checksum-bound archived build identity. Inputs are strict,
 bounded JSON or bounded regular files; duplicate keys, non-finite numbers,
 symlinks, oversized inputs, and digest substitutions fail closed.
 
@@ -102,7 +105,8 @@ uv run --python 3.14.7 --project "$packaged_sdk_root" --locked python \
   --packaged-sdk-root "$packaged_sdk_root" \
   --soak-report "$one_hour_soak_report" \
   --kill-point-report "$kill_point_report" \
-  --snapshot-fixture-bin "$snapshot_fixture_bin"
+  --snapshot-fixture-bin "$snapshot_fixture_bin" \
+  --snapshot-fixture-report reports/snapshot-tail-fixture.json
 ```
 
 Project the raw inputs and aggregate all six mandatory normalized reports:
@@ -118,6 +122,7 @@ uv run --python 3.14.7 --project sdk/python --locked python \
   --package-report "$package_report" \
   --daemon-bin "$packaged_daemon" \
   --snapshot-fixture-bin "$snapshot_fixture_bin" \
+  --snapshot-fixture-report reports/snapshot-tail-fixture.json \
   --output-dir reference-inputs/normalized \
   --aggregate-report reference-inputs/reference-summary.json
 ```
@@ -143,6 +148,7 @@ uv run --python 3.14.7 --project sdk/python --locked python \
   --package-report "$package_report" \
   --daemon-bin "$packaged_daemon" \
   --snapshot-fixture-bin "$snapshot_fixture_bin" \
+  --snapshot-fixture-report reports/snapshot-tail-fixture.json \
   --packaged-acceptance-report "$acceptance_report" \
   --raw-soak-report "$one_hour_soak_report" \
   --kill-point-report "$kill_point_report" \

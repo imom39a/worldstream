@@ -11,10 +11,17 @@
 
 //! Bundled `SQLite` adapter for the core-owned prepared Room Commit seam.
 //!
-//! One private thread owns the sole writer connection for each database path.
-//! Callers submit already-prepared semantic bundles through a bounded command
-//! queue; SQL, transaction ordering, identity guards, and durable receipt
-//! decoding remain private to this adapter.
+//! One private thread owns the writer connection for each admitted exact main
+//! database object. Callers submit already-prepared semantic bundles through a
+//! bounded command queue; SQL, transaction ordering, identity guards, and
+//! durable receipt decoding remain private to this adapter. On Unix a retained,
+//! exclusively locked parent-directory handle is the cross-process namespace
+//! lease for the one deployment database in that data directory. Same-process
+//! stores share that exact directory lease; a renamed/replaced directory is a
+//! distinct authority. The named lease and main-database names are revalidated
+//! before and after every command, and any change closes the writer. Windows
+//! denies lease rename/delete through handle sharing. `SQLite`'s native
+//! transaction locks remain the exact-object write serializer.
 
 mod migration_contract;
 
@@ -25,14 +32,16 @@ pub use migration_contract::{
 
 use std::{
     collections::BTreeMap,
+    ffi::{OsStr, OsString},
     fmt,
     fs::{self, File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom},
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
@@ -92,9 +101,11 @@ use worldstream_core::{
     ViewerAdapterInputV1, commit_existing_room, prepare_activation_context,
     recover_room_from_storage, resolve_authorized_room_operation_for_adapter,
 };
+use worldstream_sqlite_open::{ExactSqliteConnection, ExactSqliteOpenError, open_exact};
 use worldstream_transfer::{
     DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceIdentityV1, ResourceKindV1,
-    ResourcePayloadV1,
+    ResourcePayloadV1, TransferSourceAuthorityV1, VerifiedTargetAbortV1,
+    VerifiedTargetFinalizationV1,
 };
 
 /// Frozen `SQLite` engine selected by the authored compatibility manifest.
@@ -122,6 +133,8 @@ const CANONICAL_EXPORT_MIGRATION_ID: &str = "0006-canonical-export-metadata-v1";
 const MIGRATION_CHECKSUMS_MIGRATION_ID: &str = "0008-sqlite-migration-checksums-v1";
 const DEPLOYMENT_IDENTITIES_MIGRATION_ID: &str = "0009-deployment-identities-v1";
 const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID: &str = "0010-transfer-recovery-completeness-v1";
+const TRANSFER_LIFECYCLE_MIGRATION_ID: &str = "0011-transfer-lifecycle-and-resource-identity-v1";
+const TRANSFER_BACKUP_IDENTITY_MIGRATION_ID: &str = "0012-transfer-backup-file-identity-v1";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const MIGRATION_BACKUP_PREFIX: &str = "worldstream-migration-backup";
@@ -603,6 +616,93 @@ BEFORE DELETE ON integrity_incidents BEGIN
 END;
 ";
 
+/// Adds the source-owned transfer authority state and closes resource
+/// identities across kinds. The singleton begins source-authoritative; only
+/// the controlled writer may move it through pending to permanently retired.
+const TRANSFER_LIFECYCLE_MIGRATION_SCHEMA: &str = r"
+CREATE UNIQUE INDEX deployment_resource_identity_global_v1
+    ON deployment_resource_identities(resource_identity);
+CREATE UNIQUE INDEX deployment_resource_blob_identity_global_v1
+    ON deployment_resource_blobs(resource_identity);
+CREATE TABLE source_transfer_lifecycle (
+    lifecycle_id INTEGER PRIMARY KEY CHECK (lifecycle_id = 1),
+    state TEXT NOT NULL CHECK (state IN ('source_authoritative', 'transfer_pending', 'source_retired')),
+    source_epoch INTEGER CHECK (source_epoch BETWEEN 1 AND 9007199254740991),
+    target_epoch INTEGER CHECK (target_epoch BETWEEN 2 AND 9007199254740991),
+    backup_path TEXT,
+    backup_digest BLOB CHECK (backup_digest IS NULL OR length(backup_digest) = 32),
+    bundle_hash BLOB CHECK (bundle_hash IS NULL OR length(bundle_hash) = 32),
+    target_fingerprint BLOB CHECK (target_fingerprint IS NULL OR length(target_fingerprint) = 32),
+    last_aborted_bundle_hash BLOB
+        CHECK (last_aborted_bundle_hash IS NULL OR length(last_aborted_bundle_hash) = 32),
+    last_aborted_target_fingerprint BLOB
+        CHECK (last_aborted_target_fingerprint IS NULL OR length(last_aborted_target_fingerprint) = 32),
+    CHECK (
+        (state = 'source_authoritative' AND source_epoch IS NULL AND target_epoch IS NULL
+            AND backup_path IS NULL AND backup_digest IS NULL
+            AND bundle_hash IS NULL AND target_fingerprint IS NULL)
+        OR
+        (state = 'transfer_pending'
+            AND source_epoch IS NOT NULL AND target_epoch = source_epoch + 1
+            AND backup_path IS NOT NULL AND length(backup_path) > 0
+            AND backup_digest IS NOT NULL
+            AND ((bundle_hash IS NULL AND target_fingerprint IS NULL)
+                OR (bundle_hash IS NOT NULL AND target_fingerprint IS NOT NULL)))
+        OR
+        (state = 'source_retired'
+            AND source_epoch IS NOT NULL AND target_epoch = source_epoch + 1
+            AND backup_path IS NOT NULL AND length(backup_path) > 0
+            AND backup_digest IS NOT NULL
+            AND bundle_hash IS NOT NULL AND target_fingerprint IS NOT NULL)
+    ),
+    CHECK (
+        (last_aborted_bundle_hash IS NULL AND last_aborted_target_fingerprint IS NULL)
+        OR (last_aborted_bundle_hash IS NOT NULL
+            AND last_aborted_target_fingerprint IS NOT NULL)
+    ),
+    CHECK (state = 'source_authoritative'
+        OR (last_aborted_bundle_hash IS NULL AND last_aborted_target_fingerprint IS NULL))
+) STRICT;
+INSERT INTO source_transfer_lifecycle(lifecycle_id, state)
+VALUES (1, 'source_authoritative');
+";
+
+/// Persists the exact storage object created for a source-transfer backup.
+/// Fixed-width lowercase hexadecimal keeps the full Unix or Windows identity
+/// lossless without relying on `SQLite`'s signed 64-bit integer representation.
+const TRANSFER_BACKUP_IDENTITY_MIGRATION_SCHEMA: &str = r"
+ALTER TABLE source_transfer_lifecycle ADD COLUMN backup_storage_id TEXT
+    CHECK (backup_storage_id IS NULL OR (
+        length(backup_storage_id) = 16
+        AND backup_storage_id = lower(backup_storage_id)
+        AND backup_storage_id NOT GLOB '*[^0-9a-f]*'
+    ));
+ALTER TABLE source_transfer_lifecycle ADD COLUMN backup_file_id TEXT
+    CHECK (backup_file_id IS NULL OR (
+        length(backup_file_id) = 32
+        AND backup_file_id = lower(backup_file_id)
+        AND backup_file_id NOT GLOB '*[^0-9a-f]*'
+    ));
+CREATE TRIGGER source_transfer_backup_identity_insert_v1
+BEFORE INSERT ON source_transfer_lifecycle
+WHEN (NEW.state = 'source_authoritative'
+        AND (NEW.backup_storage_id IS NOT NULL OR NEW.backup_file_id IS NOT NULL))
+    OR (NEW.state <> 'source_authoritative'
+        AND (NEW.backup_storage_id IS NULL OR NEW.backup_file_id IS NULL))
+BEGIN
+    SELECT RAISE(ABORT, 'source transfer backup identity shape');
+END;
+CREATE TRIGGER source_transfer_backup_identity_update_v1
+BEFORE UPDATE ON source_transfer_lifecycle
+WHEN (NEW.state = 'source_authoritative'
+        AND (NEW.backup_storage_id IS NOT NULL OR NEW.backup_file_id IS NOT NULL))
+    OR (NEW.state <> 'source_authoritative'
+        AND (NEW.backup_storage_id IS NULL OR NEW.backup_file_id IS NULL))
+BEGIN
+    SELECT RAISE(ABORT, 'source transfer backup identity shape');
+END;
+";
+
 const INITIAL_MIGRATION_SCHEMA: &str = r"
 CREATE TABLE authority_fences (
     witness_id TEXT PRIMARY KEY,
@@ -755,6 +855,11 @@ END;
 
 static WRITERS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<WriterClient>>>> = OnceLock::new();
 
+#[cfg(unix)]
+static UNIX_WRITER_DIRECTORY_LEASES: OnceLock<
+    Mutex<BTreeMap<TransferFileIdentity, Weak<UnixWriterDirectoryLeaseV1>>>,
+> = OnceLock::new();
+
 trait TrustedAuthorityClock: Send + Sync {
     fn checked_at(&self) -> Result<AuthorityCheckedAt, AuthorityStoreErrorV1>;
 }
@@ -858,6 +963,16 @@ static REPLAY_PROJECTION_TEST_SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
 static AUTHORITY_CHANGE_ENQUEUED: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
 
 #[cfg(test)]
+static WRITER_EXACT_OPEN_HOOK: OnceLock<Mutex<Option<WriterExactOpenHook>>> = OnceLock::new();
+
+#[cfg(test)]
+static WRITER_POST_COMMAND_HOOK: OnceLock<Mutex<Option<WriterPostCommandHook>>> = OnceLock::new();
+
+#[cfg(all(test, windows))]
+static WINDOWS_STAGING_REOPEN_HOOK: OnceLock<Mutex<Option<WindowsStagingReopenHook>>> =
+    OnceLock::new();
+
+#[cfg(test)]
 #[derive(Default)]
 struct GuardedCommitPause {
     reached: bool,
@@ -886,10 +1001,50 @@ struct ReplaySliceBudget {
     by_path: BTreeMap<PathBuf, usize>,
 }
 
+#[cfg(test)]
+struct WriterExactOpenHook {
+    target_path: PathBuf,
+    hook: Box<dyn FnOnce() -> io::Result<()> + Send>,
+}
+
+#[cfg(test)]
+struct WriterPostCommandHook {
+    target_path: PathBuf,
+    hook: Box<dyn FnOnce() -> io::Result<()> + Send>,
+}
+
+#[cfg(all(test, windows))]
+struct WindowsStagingReopenHook {
+    parent: PathBuf,
+    hook: Box<dyn FnOnce(&Path) -> io::Result<()> + Send>,
+}
+
 /// Cloneable handle to one controlled writer thread and connection.
 #[derive(Clone)]
 pub struct SqliteRoomStore {
     writer: Arc<WriterClient>,
+}
+
+/// Stable native identity of the exact `SQLite` main-database object retained by
+/// a [`SqliteRoomStore`]. It contains no path or database content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SqliteFileIdentityV1 {
+    storage_id: u64,
+    file_id: u128,
+}
+
+impl SqliteFileIdentityV1 {
+    /// Returns the filesystem/volume identity containing the database.
+    #[must_use]
+    pub const fn storage_id(self) -> u64 {
+        self.storage_id
+    }
+
+    /// Returns the filesystem-native file identity within that storage.
+    #[must_use]
+    pub const fn file_id(self) -> u128 {
+        self.file_id
+    }
 }
 
 /// The canonical record classes emitted by [`SqliteRoomStore::export_canonical_evidence`].
@@ -1128,6 +1283,10 @@ pub enum SqliteRoomDiagnosticErrorV1 {
 
 #[derive(Debug, Eq, Error, PartialEq)]
 pub enum SqliteCanonicalExportErrorV1 {
+    #[error("canonical export requires a verified transfer-pending source")]
+    SourceNotTransferPending,
+    #[error("canonical export backup evidence is absent or changed")]
+    BackupEvidenceMismatch,
     #[error("canonical export storage is unavailable")]
     StorageUnavailable,
     #[error("canonical export metadata is absent")]
@@ -1137,6 +1296,152 @@ pub enum SqliteCanonicalExportErrorV1 {
     #[error("healthy Room canonical evidence is incomplete for {room_id}: {what}")]
     RoomIncomplete { room_id: String, what: &'static str },
     #[error("canonical export source is corrupt")]
+    Corrupt,
+}
+
+/// Durable authority state of the `SQLite` source during the one-way transfer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum SqliteSourceTransferStateV1 {
+    /// `SQLite` is writable and may serve the deployment.
+    SourceAuthoritative = 0,
+    /// Serving and all writes are fenced while the verified backup is exported.
+    TransferPending = 1,
+    /// `PostgreSQL` was finalized and `SQLite` is a permanently read-only artifact.
+    SourceRetired = 2,
+}
+
+impl SqliteSourceTransferStateV1 {
+    fn from_tag(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::SourceAuthoritative),
+            1 => Some(Self::TransferPending),
+            2 => Some(Self::SourceRetired),
+            _ => None,
+        }
+    }
+
+    fn from_sql_name(value: &str) -> Option<Self> {
+        match value {
+            "source_authoritative" => Some(Self::SourceAuthoritative),
+            "transfer_pending" => Some(Self::TransferPending),
+            "source_retired" => Some(Self::SourceRetired),
+            _ => None,
+        }
+    }
+}
+
+/// State-derived evidence for the exact frozen `SQLite` transfer point.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteSourceTransferStatusV1 {
+    state: SqliteSourceTransferStateV1,
+    source_epoch: Option<u64>,
+    target_epoch: Option<u64>,
+    backup_path: Option<PathBuf>,
+    backup_digest: Option<DigestV1>,
+    backup_identity: Option<TransferBackupIdentity>,
+    bundle_hash: Option<DigestV1>,
+    target_fingerprint: Option<DigestV1>,
+    last_aborted_bundle_hash: Option<DigestV1>,
+    last_aborted_target_fingerprint: Option<DigestV1>,
+}
+
+impl SqliteSourceTransferStatusV1 {
+    #[must_use]
+    pub const fn state(&self) -> SqliteSourceTransferStateV1 {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn source_epoch(&self) -> Option<u64> {
+        self.source_epoch
+    }
+
+    #[must_use]
+    pub const fn target_epoch(&self) -> Option<u64> {
+        self.target_epoch
+    }
+
+    #[must_use]
+    pub fn backup_path(&self) -> Option<&Path> {
+        self.backup_path.as_deref()
+    }
+
+    #[must_use]
+    pub const fn backup_digest(&self) -> Option<DigestV1> {
+        self.backup_digest
+    }
+
+    /// Storage identifier of the exact backup object created at transfer begin.
+    #[must_use]
+    pub const fn backup_storage_id(&self) -> Option<u64> {
+        match self.backup_identity {
+            Some(identity) => Some(identity.storage_id),
+            None => None,
+        }
+    }
+
+    /// File identifier of the exact backup object created at transfer begin.
+    #[must_use]
+    pub const fn backup_file_id(&self) -> Option<u128> {
+        match self.backup_identity {
+            Some(identity) => Some(identity.file_id),
+            None => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn bundle_hash(&self) -> Option<DigestV1> {
+        self.bundle_hash
+    }
+
+    #[must_use]
+    pub const fn target_fingerprint(&self) -> Option<DigestV1> {
+        self.target_fingerprint
+    }
+
+    /// Exact bundle hash whose provider import was last durably aborted.
+    ///
+    /// This witness is present only in source-authoritative state after an
+    /// abort and is used to revalidate an interrupted operator checkpoint.
+    #[must_use]
+    pub const fn last_aborted_bundle_hash(&self) -> Option<DigestV1> {
+        self.last_aborted_bundle_hash
+    }
+
+    /// Exact target fingerprint whose provider import was last durably aborted.
+    ///
+    /// This witness is paired with [`Self::last_aborted_bundle_hash`].
+    #[must_use]
+    pub const fn last_aborted_target_fingerprint(&self) -> Option<DigestV1> {
+        self.last_aborted_target_fingerprint
+    }
+}
+
+/// Closed failures for the `SQLite` source transfer state machine.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum SqliteSourceTransferErrorV1 {
+    #[error("SQLite source transfer requires source-authoritative state; found {actual:?}")]
+    NotSourceAuthoritative { actual: SqliteSourceTransferStateV1 },
+    #[error("SQLite source transfer requires transfer-pending state; found {actual:?}")]
+    NotTransferPending { actual: SqliteSourceTransferStateV1 },
+    #[error("retired SQLite source authority cannot be restored")]
+    SourceRetired,
+    #[error("SQLite source transfer metadata or deployment identity is incomplete")]
+    SourceEvidenceIncomplete,
+    #[error("SQLite source transfer target epoch cannot advance monotonically")]
+    StorageEpochExhausted,
+    #[error("SQLite source transfer backup destination is unsafe or already exists")]
+    UnsafeBackupPath,
+    #[error("SQLite source transfer native backup failed")]
+    BackupFailed,
+    #[error("SQLite source transfer backup verification failed")]
+    BackupVerificationFailed,
+    #[error("SQLite source transfer evidence differs from the persisted transfer point")]
+    EvidenceMismatch,
+    #[error("SQLite source transfer storage is unavailable")]
+    StorageUnavailable,
+    #[error("SQLite source transfer durable state is corrupt")]
     Corrupt,
 }
 
@@ -2369,10 +2674,25 @@ impl RoomHistoryInspectionV1 {
 struct WriterClient {
     commands: SyncSender<WriterCommand>,
     path: PathBuf,
+    database_file: File,
+    database_identity: SqliteFileIdentityV1,
+    source_transfer_state: Arc<AtomicU8>,
     telemetry: Option<Arc<dyn SqliteTelemetrySink>>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     in_flight_replay_slices: Mutex<usize>,
     replay_sessions: Mutex<ReplaySessionRegistryV1>,
+}
+
+impl WriterClient {
+    fn open_read_connection(&self) -> Result<ExactSqliteConnection, ExactSqliteOpenError> {
+        open_retained_sqlite(
+            &self.database_file,
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -2455,6 +2775,27 @@ enum WriterCommand {
         reply: mpsc::Sender<
             Result<SqliteDeploymentIdentityInitializationV1, SqliteDeploymentIdentityErrorV1>,
         >,
+    },
+    BeginSourceTransfer {
+        backup_path: PathBuf,
+        reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
+    },
+    #[cfg(test)]
+    BeginSourceTransferWithHook {
+        backup_path: PathBuf,
+        after_verified_backup: Box<dyn FnOnce() -> Result<(), SqliteSourceTransferErrorV1> + Send>,
+        reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
+    },
+    ExportCanonicalEvidence {
+        reply: mpsc::Sender<Result<SqliteCanonicalExportV1, SqliteCanonicalExportErrorV1>>,
+    },
+    RestoreSourceAfterAbort {
+        binding: SqliteVerifiedTargetBindingV1,
+        reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
+    },
+    RetireSourceAfterFinalization {
+        binding: SqliteVerifiedTargetBindingV1,
+        reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
     },
     ApplyAuthorityBootstrap(
         Box<PreparedAuthorityBootstrapV1>,
@@ -2592,6 +2933,39 @@ enum WriterCommand {
     #[cfg(test)]
     PauseQueue,
     Shutdown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SqliteVerifiedTargetBindingV1 {
+    bundle_hash: DigestV1,
+    target_fingerprint: DigestV1,
+    source_epoch: u64,
+    target_epoch: u64,
+    lineage_id: String,
+}
+
+impl From<&VerifiedTargetFinalizationV1> for SqliteVerifiedTargetBindingV1 {
+    fn from(proof: &VerifiedTargetFinalizationV1) -> Self {
+        Self {
+            bundle_hash: proof.bundle_hash(),
+            target_fingerprint: proof.target_fingerprint(),
+            source_epoch: proof.source_epoch(),
+            target_epoch: proof.target_epoch(),
+            lineage_id: proof.lineage_id().to_owned(),
+        }
+    }
+}
+
+impl From<&VerifiedTargetAbortV1> for SqliteVerifiedTargetBindingV1 {
+    fn from(proof: &VerifiedTargetAbortV1) -> Self {
+        Self {
+            bundle_hash: proof.bundle_hash(),
+            target_fingerprint: proof.target_fingerprint(),
+            source_epoch: proof.source_epoch(),
+            target_epoch: proof.target_epoch(),
+            lineage_id: proof.lineage_id().to_owned(),
+        }
+    }
 }
 
 impl Drop for WriterClient {
@@ -2985,6 +3359,279 @@ fn read_canonical_export_rooms(
     Ok((isolated_rooms, records))
 }
 
+fn read_canonical_export_from_connection(
+    connection: &Connection,
+) -> Result<SqliteCanonicalExportV1, SqliteCanonicalExportErrorV1> {
+    let metadata = connection
+        .query_row(
+            "SELECT deployment_lineage, storage_epoch \
+             FROM canonical_export_metadata WHERE metadata_id = 1",
+            (),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?
+        .ok_or(SqliteCanonicalExportErrorV1::MetadataAbsent)?;
+    if metadata.0.is_empty() {
+        return Err(SqliteCanonicalExportErrorV1::MetadataCorrupt);
+    }
+    let storage_epoch = u64::try_from(metadata.1)
+        .ok()
+        .filter(|epoch| *epoch > 0)
+        .ok_or(SqliteCanonicalExportErrorV1::MetadataCorrupt)?;
+    let deployment_identity =
+        read_deployment_identity(connection).map_err(|error| match error {
+            SqliteDeploymentIdentityErrorV1::StorageUnavailable => {
+                SqliteCanonicalExportErrorV1::StorageUnavailable
+            }
+            SqliteDeploymentIdentityErrorV1::Invalid(_)
+            | SqliteDeploymentIdentityErrorV1::Conflict
+            | SqliteDeploymentIdentityErrorV1::Corrupt => {
+                SqliteCanonicalExportErrorV1::MetadataCorrupt
+            }
+        })?;
+    let resource_payloads = read_deployment_resource_payloads(connection, &deployment_identity)
+        .map_err(|error| match error {
+            SqliteDeploymentIdentityErrorV1::StorageUnavailable => {
+                SqliteCanonicalExportErrorV1::StorageUnavailable
+            }
+            SqliteDeploymentIdentityErrorV1::Invalid(_)
+            | SqliteDeploymentIdentityErrorV1::Conflict
+            | SqliteDeploymentIdentityErrorV1::Corrupt => {
+                SqliteCanonicalExportErrorV1::MetadataCorrupt
+            }
+        })?;
+    let (isolated_rooms, records) = read_canonical_export_rooms(connection)?;
+    Ok(SqliteCanonicalExportV1 {
+        deployment_lineage: metadata.0,
+        storage_epoch,
+        deployment_identity,
+        resource_payloads,
+        isolated_rooms,
+        records,
+    })
+}
+
+fn read_source_transfer_status(
+    connection: &Connection,
+) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+    type StoredStatus = (
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<Vec<u8>>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    );
+    let row: StoredStatus = connection
+        .query_row(
+            "SELECT state, source_epoch, target_epoch, backup_path, backup_digest, \
+                    backup_storage_id, backup_file_id, bundle_hash, target_fingerprint, \
+                    last_aborted_bundle_hash, last_aborted_target_fingerprint \
+             FROM source_transfer_lifecycle WHERE lifecycle_id = 1",
+            (),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+        .ok_or(SqliteSourceTransferErrorV1::Corrupt)?;
+    let (
+        state,
+        source_epoch,
+        target_epoch,
+        backup_path,
+        backup_digest,
+        backup_storage_id,
+        backup_file_id,
+        bundle_hash,
+        target,
+        last_aborted_bundle_hash,
+        last_aborted_target_fingerprint,
+    ) = row;
+    let state = SqliteSourceTransferStateV1::from_sql_name(&state)
+        .ok_or(SqliteSourceTransferErrorV1::Corrupt)?;
+    let decode_epoch = |value: Option<i64>| {
+        value
+            .map(|value| {
+                u64::try_from(value)
+                    .ok()
+                    .filter(|value| (1..=MAX_SAFE_INTEGER as u64).contains(value))
+                    .ok_or(SqliteSourceTransferErrorV1::Corrupt)
+            })
+            .transpose()
+    };
+    let decode_digest = |value: Option<Vec<u8>>| {
+        value
+            .map(|value| {
+                DigestV1::from_bytes(&value).map_err(|_| SqliteSourceTransferErrorV1::Corrupt)
+            })
+            .transpose()
+    };
+    let backup_identity = match (backup_storage_id, backup_file_id) {
+        (None, None) => None,
+        (Some(storage_id), Some(file_id)) => Some(TransferBackupIdentity {
+            storage_id: decode_fixed_hex_u64(&storage_id)?,
+            file_id: decode_fixed_hex_u128(&file_id)?,
+        }),
+        (Some(_), None) | (None, Some(_)) => return Err(SqliteSourceTransferErrorV1::Corrupt),
+    };
+    let status = SqliteSourceTransferStatusV1 {
+        state,
+        source_epoch: decode_epoch(source_epoch)?,
+        target_epoch: decode_epoch(target_epoch)?,
+        backup_path: backup_path.map(PathBuf::from),
+        backup_digest: decode_digest(backup_digest)?,
+        backup_identity,
+        bundle_hash: decode_digest(bundle_hash)?,
+        target_fingerprint: decode_digest(target)?,
+        last_aborted_bundle_hash: decode_digest(last_aborted_bundle_hash)?,
+        last_aborted_target_fingerprint: decode_digest(last_aborted_target_fingerprint)?,
+    };
+    validate_source_transfer_status(&status)?;
+    Ok(status)
+}
+
+fn validate_source_transfer_status(
+    status: &SqliteSourceTransferStatusV1,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    let authoritative_shape = status.state == SqliteSourceTransferStateV1::SourceAuthoritative
+        && status.source_epoch.is_none()
+        && status.target_epoch.is_none()
+        && status.backup_path.is_none()
+        && status.backup_digest.is_none()
+        && status.backup_identity.is_none()
+        && status.bundle_hash.is_none()
+        && status.target_fingerprint.is_none()
+        && status.last_aborted_bundle_hash.is_some()
+            == status.last_aborted_target_fingerprint.is_some();
+    let pending_shape = status.state == SqliteSourceTransferStateV1::TransferPending
+        && status.source_epoch.is_some()
+        && status.source_epoch.and_then(|epoch| epoch.checked_add(1)) == status.target_epoch
+        && status.backup_path.is_some()
+        && status.backup_digest.is_some()
+        && status.backup_identity.is_some()
+        && status.bundle_hash.is_some() == status.target_fingerprint.is_some();
+    let retired_shape = status.state == SqliteSourceTransferStateV1::SourceRetired
+        && status.source_epoch.is_some()
+        && status.source_epoch.and_then(|epoch| epoch.checked_add(1)) == status.target_epoch
+        && status.backup_path.is_some()
+        && status.backup_digest.is_some()
+        && status.backup_identity.is_some()
+        && status.bundle_hash.is_some()
+        && status.target_fingerprint.is_some();
+    let active_transfer_has_no_abort_witness = status.state
+        == SqliteSourceTransferStateV1::SourceAuthoritative
+        || (status.last_aborted_bundle_hash.is_none()
+            && status.last_aborted_target_fingerprint.is_none());
+    if (!authoritative_shape && !pending_shape && !retired_shape)
+        || !active_transfer_has_no_abort_witness
+    {
+        return Err(SqliteSourceTransferErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+fn digest_u64(hasher: &mut blake3::Hasher, value: u64) {
+    hasher.update(&value.to_le_bytes());
+}
+
+/// Hashes the exact durable schema and all user-table values at one read
+/// point. Only the source lifecycle row is omitted because the verified backup
+/// intentionally contains `source_authoritative` while the live database is
+/// advanced to `transfer_pending` immediately after capture.
+fn durable_transfer_point_digest(
+    connection: &Connection,
+) -> Result<DigestV1, SqliteSourceTransferErrorV1> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/sqlite-transfer-point/v1");
+    let schema = schema_corpus(connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    for (kind, name, table, sql) in schema {
+        for value in [&kind, &name, &table, &sql] {
+            digest_u64(&mut hasher, value.len() as u64);
+            hasher.update(value.as_bytes());
+        }
+    }
+    let tables = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' \
+             AND name NOT LIKE 'sqlite_%' AND name <> 'source_transfer_lifecycle' \
+             ORDER BY name",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map((), |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    for table in tables {
+        digest_u64(&mut hasher, table.len() as u64);
+        hasher.update(table.as_bytes());
+        let quoted = table.replace('"', "\"\"");
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY rowid"))
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+        let column_count = statement.column_count();
+        let mut rows = statement
+            .query(())
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?
+        {
+            hasher.update(b"row");
+            for index in 0..column_count {
+                use rusqlite::types::ValueRef;
+                match row
+                    .get_ref(index)
+                    .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?
+                {
+                    ValueRef::Null => hasher.update(&[0]),
+                    ValueRef::Integer(value) => {
+                        hasher.update(&[1]);
+                        hasher.update(&value.to_le_bytes())
+                    }
+                    ValueRef::Real(value) => {
+                        hasher.update(&[2]);
+                        hasher.update(&value.to_bits().to_le_bytes())
+                    }
+                    ValueRef::Text(value) => {
+                        hasher.update(&[3]);
+                        digest_u64(&mut hasher, value.len() as u64);
+                        hasher.update(value)
+                    }
+                    ValueRef::Blob(value) => {
+                        hasher.update(&[4]);
+                        digest_u64(&mut hasher, value.len() as u64);
+                        hasher.update(value)
+                    }
+                };
+            }
+        }
+    }
+    DigestV1::from_bytes(hasher.finalize().as_bytes())
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)
+}
+
 impl SqliteRoomStore {
     fn emit_telemetry(&self, event: SqliteTelemetryEventV1) {
         emit_sqlite_telemetry(self.writer.telemetry.as_deref(), event);
@@ -2993,6 +3640,10 @@ impl SqliteRoomStore {
     /// Opens the local database and fails closed unless the linked engine is
     /// the exact release-selected bundled `SQLite` source. Repeated opens of the
     /// same path share one private bounded writer queue and writer connection.
+    /// On Unix, one retained parent-directory lease serializes the deployment
+    /// namespace across processes. The exact database object may remain open
+    /// after its name or parent is replaced, but no later read, write, or
+    /// acknowledgement is permitted through that no-longer-named store.
     ///
     /// # Errors
     ///
@@ -3001,6 +3652,49 @@ impl SqliteRoomStore {
     /// the writer connection cannot be initialized.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SqliteStoreOpenError> {
         Self::open_with_telemetry(path, None)
+    }
+
+    /// Opens an existing database using `retained` as the exact main-file
+    /// authority. The file is consumed and held for the writer connection's
+    /// complete lifetime; a pathname substitution before the VFS `xOpen`
+    /// therefore fails instead of redirecting the store.
+    ///
+    /// Callers that need to retain the same authority for their own evidence
+    /// may pass an exact `File::try_clone` and keep the original handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained handle is not a regular file, its
+    /// current canonical name differs from `path`, the object changes before
+    /// the exact VFS open, or ordinary store startup fails.
+    pub fn open_with_retained_file(
+        path: impl AsRef<Path>,
+        retained: File,
+    ) -> Result<Self, SqliteStoreOpenError> {
+        #[cfg(not(test))]
+        let clock: Arc<dyn TrustedAuthorityClock> = Arc::new(SystemAuthorityClock);
+        #[cfg(test)]
+        let clock: Arc<dyn TrustedAuthorityClock> =
+            Arc::new(TestAuthorityClock::at("2026-08-15T12:00:10Z"));
+        let path = normalized_path(path.as_ref())?;
+        if !retained
+            .metadata()
+            .map_err(SqliteStoreOpenError::Path)?
+            .file_type()
+            .is_file()
+        {
+            return Err(SqliteStoreOpenError::UnsafePath);
+        }
+        let identity = publication_file_identity(&retained).map_err(SqliteStoreOpenError::Path)?;
+        require_retained_sqlite_name(&path, &retained, identity)
+            .map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+        Self::open_with_retained_authority(
+            path,
+            retained,
+            public_sqlite_file_identity(identity),
+            clock,
+            None,
+        )
     }
 
     /// Opens the local database with an optional observational telemetry sink.
@@ -3036,11 +3730,26 @@ impl SqliteRoomStore {
         telemetry: Option<Arc<dyn SqliteTelemetrySink>>,
     ) -> Result<Self, SqliteStoreOpenError> {
         let path = normalized_path(path.as_ref())?;
+        let (database_file, database_identity) = retain_or_create_writer_database(&path)?;
+        let database_identity = public_sqlite_file_identity(database_identity);
+        Self::open_with_retained_authority(path, database_file, database_identity, clock, telemetry)
+    }
+
+    fn open_with_retained_authority(
+        path: PathBuf,
+        database_file: File,
+        database_identity: SqliteFileIdentityV1,
+        clock: Arc<dyn TrustedAuthorityClock>,
+        telemetry: Option<Arc<dyn SqliteTelemetrySink>>,
+    ) -> Result<Self, SqliteStoreOpenError> {
         let registry = WRITERS.get_or_init(|| Mutex::new(BTreeMap::new()));
         let mut registry = registry
             .lock()
             .map_err(|_| SqliteStoreOpenError::WriterRegistryPoisoned)?;
         if let Some(writer) = registry.get(&path).and_then(Weak::upgrade) {
+            if writer.database_identity != database_identity {
+                return Err(SqliteStoreOpenError::UnsafePath);
+            }
             return Ok(Self { writer });
         }
 
@@ -3048,15 +3757,24 @@ impl SqliteRoomStore {
         let (startup_send, startup_receive) = mpsc::channel();
         let thread_path = path.clone();
         let thread_telemetry = telemetry.clone();
+        let reader_database_file = database_file
+            .try_clone()
+            .map_err(SqliteStoreOpenError::Path)?;
+        let source_transfer_state = Arc::new(AtomicU8::new(
+            SqliteSourceTransferStateV1::SourceAuthoritative as u8,
+        ));
+        let thread_source_transfer_state = Arc::clone(&source_transfer_state);
         let writer_thread = thread::Builder::new()
             .name("worldstream-sqlite-writer".to_owned())
             .spawn(move || {
                 writer_main(
                     &thread_path,
+                    &database_file,
                     receiver,
                     startup_send,
                     clock.as_ref(),
                     thread_telemetry.as_deref(),
+                    &thread_source_transfer_state,
                 );
             })
             .map_err(SqliteStoreOpenError::ThreadSpawn)?;
@@ -3070,6 +3788,9 @@ impl SqliteRoomStore {
         let writer = Arc::new(WriterClient {
             commands,
             path,
+            database_file: reader_database_file,
+            database_identity,
+            source_transfer_state,
             telemetry,
             thread: Mutex::new(Some(writer_thread)),
             in_flight_replay_slices: Mutex::new(0),
@@ -3077,6 +3798,13 @@ impl SqliteRoomStore {
         });
         registry.insert(writer.path.clone(), Arc::downgrade(&writer));
         Ok(Self { writer })
+    }
+
+    /// Returns the exact native main-database identity retained continuously
+    /// by this store's writer connection.
+    #[must_use]
+    pub fn database_identity(&self) -> SqliteFileIdentityV1 {
+        self.writer.database_identity
     }
 
     /// Returns the exact runtime engine identity verified at open.
@@ -3176,6 +3904,109 @@ impl SqliteRoomStore {
             .map_err(|_| SqliteDeploymentIdentityErrorV1::StorageUnavailable)?
     }
 
+    /// Returns the writer-admission view of durable `SQLite` source authority.
+    /// The value is loaded from the singleton lifecycle row during startup and
+    /// changed only after the corresponding durable transition commits.
+    #[must_use]
+    pub fn source_transfer_state(&self) -> SqliteSourceTransferStateV1 {
+        SqliteSourceTransferStateV1::from_tag(
+            self.writer.source_transfer_state.load(Ordering::Acquire),
+        )
+        .unwrap_or(SqliteSourceTransferStateV1::SourceRetired)
+    }
+
+    /// Reads the complete durable transfer status from `SQLite`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed storage or corruption error when the durable singleton
+    /// cannot be read and validated exactly.
+    pub fn source_transfer_status(
+        &self,
+    ) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        read_source_transfer_status(&connection)
+    }
+
+    /// Quiesces the controlled writer, creates and verifies one new bundled
+    /// online backup, then durably enters `transfer_pending` at the next epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lifecycle, evidence, backup, or storage error without
+    /// granting target authority.
+    pub fn begin_source_transfer(
+        &self,
+        backup_path: impl AsRef<Path>,
+    ) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+        let backup_path = normalized_path(backup_path.as_ref())
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::BeginSourceTransfer { backup_path, reply })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
+    #[cfg(test)]
+    fn begin_source_transfer_with_test_hook<F>(
+        &self,
+        backup_path: impl AsRef<Path>,
+        after_verified_backup: F,
+    ) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>
+    where
+        F: FnOnce() -> Result<(), SqliteSourceTransferErrorV1> + Send + 'static,
+    {
+        let backup_path = normalized_path(backup_path.as_ref())
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::BeginSourceTransferWithHook {
+                backup_path,
+                after_verified_backup: Box::new(after_verified_backup),
+                reply,
+            })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
+    fn retire_after_verified_target(
+        &self,
+        binding: SqliteVerifiedTargetBindingV1,
+    ) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::RetireSourceAfterFinalization { binding, reply })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
+    fn restore_after_verified_abort(
+        &self,
+        binding: SqliteVerifiedTargetBindingV1,
+    ) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::RestoreSourceAfterAbort { binding, reply })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
     /// Reads the source-side canonical transfer evidence without using the
     /// writer connection. Metadata and every Room record are copied
     /// exactly as stored; no canonical payload is decoded, synthesized, or
@@ -3190,67 +4021,14 @@ impl SqliteRoomStore {
     pub fn export_canonical_evidence(
         &self,
     ) -> Result<SqliteCanonicalExportV1, SqliteCanonicalExportErrorV1> {
-        let connection = Connection::open_with_flags(
-            &self.writer.path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?;
-
-        let metadata = connection
-            .query_row(
-                "SELECT deployment_lineage, storage_epoch \
-                 FROM canonical_export_metadata WHERE metadata_id = 1",
-                (),
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::ExportCanonicalEvidence { reply })
+            .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
             .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?
-            .ok_or(SqliteCanonicalExportErrorV1::MetadataAbsent)?;
-        if metadata.0.is_empty() {
-            return Err(SqliteCanonicalExportErrorV1::MetadataCorrupt);
-        }
-        let storage_epoch = u64::try_from(metadata.1)
-            .ok()
-            .filter(|epoch| *epoch > 0)
-            .ok_or(SqliteCanonicalExportErrorV1::MetadataCorrupt)?;
-
-        let deployment_identity =
-            read_deployment_identity(&connection).map_err(|error| match error {
-                SqliteDeploymentIdentityErrorV1::StorageUnavailable => {
-                    SqliteCanonicalExportErrorV1::StorageUnavailable
-                }
-                SqliteDeploymentIdentityErrorV1::Invalid(_)
-                | SqliteDeploymentIdentityErrorV1::Conflict
-                | SqliteDeploymentIdentityErrorV1::Corrupt => {
-                    SqliteCanonicalExportErrorV1::MetadataCorrupt
-                }
-            })?;
-        let resource_payloads =
-            read_deployment_resource_payloads(&connection, &deployment_identity).map_err(
-                |error| match error {
-                    SqliteDeploymentIdentityErrorV1::StorageUnavailable => {
-                        SqliteCanonicalExportErrorV1::StorageUnavailable
-                    }
-                    SqliteDeploymentIdentityErrorV1::Invalid(_)
-                    | SqliteDeploymentIdentityErrorV1::Conflict
-                    | SqliteDeploymentIdentityErrorV1::Corrupt => {
-                        SqliteCanonicalExportErrorV1::MetadataCorrupt
-                    }
-                },
-            )?;
-
-        let (isolated_rooms, records) = read_canonical_export_rooms(&connection)?;
-
-        Ok(SqliteCanonicalExportV1 {
-            deployment_lineage: metadata.0,
-            storage_epoch,
-            deployment_identity,
-            resource_payloads,
-            isolated_rooms,
-            records,
-        })
     }
 
     /// Resolves an opaque bearer through the durable capability table. The
@@ -3264,13 +4042,10 @@ impl SqliteRoomStore {
         &self,
         bearer: CapabilityBearerV1,
     ) -> Result<SqliteAuthenticatedCapabilityV1, SqliteGatewayErrorV1> {
-        let connection = Connection::open_with_flags(
-            &self.writer.path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
         let token_hash = bearer.token_hash();
         let checked_at = OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -3322,13 +4097,10 @@ impl SqliteRoomStore {
         &self,
         room_id: &RoomId,
     ) -> Result<Option<RoomIntegrityStateV1>, SqliteGatewayErrorV1> {
-        let connection = Connection::open_with_flags(
-            &self.writer.path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
         let row: Option<(Option<String>, Option<i64>)> = connection
             .query_row(
                 "SELECT i.status, i.generation FROM rooms AS r \
@@ -3364,7 +4136,8 @@ impl SqliteRoomStore {
             DiagnosticOperationV1::SafeRoomSummary,
             checked_at,
         )?;
-        let history = read_diagnostic_history(&self.writer.path, &room_id)?;
+        let history =
+            read_diagnostic_history(&self.writer.database_file, &self.writer.path, &room_id)?;
         let head = decode_diagnostic_head(&history.head_bytes, &room_id)?;
         Ok(SqliteRoomDiagnosticSummaryV1 {
             room_id,
@@ -3390,7 +4163,7 @@ impl SqliteRoomStore {
             DiagnosticOperationV1::RawExport,
             checked_at,
         )?;
-        read_diagnostic_export(&self.writer.path, &room_id)
+        read_diagnostic_export(&self.writer.database_file, &self.writer.path, &room_id)
     }
 
     /// Runs the exact retained-runtime verifier read-only. A successful
@@ -3412,7 +4185,12 @@ impl SqliteRoomStore {
             DiagnosticOperationV1::Verify,
             checked_at,
         )?;
-        verify_diagnostic_room(&self.writer.path, registry, &room_id)
+        verify_diagnostic_room(
+            &self.writer.database_file,
+            &self.writer.path,
+            registry,
+            &room_id,
+        )
     }
 
     /// This adapter deliberately does not own deployment restore authority.
@@ -3452,13 +4230,10 @@ impl SqliteRoomStore {
                 return Err(SqliteRoomDiagnosticErrorV1::DeploymentTarget);
             }
         };
-        let connection = Connection::open_with_flags(
-            &self.writer.path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?;
         let snapshot = load_authority_snapshot(&connection, &authority.authority_snapshot_query())
             .map_err(|error| match error {
                 AuthorityStoreErrorV1::Corrupt => SqliteRoomDiagnosticErrorV1::Corrupt,
@@ -3916,13 +4691,10 @@ impl SqliteRoomStore {
         room_id: &RoomId,
         request: &ActivationOperationRequestV1,
     ) -> Result<Option<ActivationOperationResultV1>, SqliteActivationErrorV1> {
-        let connection = Connection::open_with_flags(
-            &self.writer.path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
         let transaction = connection
             .unchecked_transaction()
             .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
@@ -3960,6 +4732,7 @@ impl SqliteRoomStore {
                 })?
                 .ok_or(SqliteActivationErrorV1::Fenced)?;
         prepare_activation_claim_readonly(
+            &self.writer.database_file,
             &self.writer.path,
             registry,
             authority,
@@ -4199,7 +4972,12 @@ impl SqliteRoomStore {
         mut paging: AuthorizedReplayPagingStateV1,
         active: ActiveReplaySessionV1,
     ) -> Result<SqliteAuthorizedReplayOutcomeV1, SqliteAuthorizedReplayErrorV1> {
-        match read_authorized_replay_slice(&self.writer.path, registry, &mut paging) {
+        match read_authorized_replay_slice(
+            &self.writer.database_file,
+            &self.writer.path,
+            registry,
+            &mut paging,
+        ) {
             Err(error) => return self.finish_authorized_replay_error(paging.session, error),
             Ok(false) => {
                 paging.session = self.fence_authorized_replay(paging.session, true)?;
@@ -4495,13 +5273,10 @@ impl SqliteRoomStore {
     ///
     /// Returns a closed storage or corruption error.
     pub fn room_ids(&self) -> Result<Vec<RoomId>, SqliteActivationErrorV1> {
-        let connection = Connection::open_with_flags(
-            &self.writer.path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
         let mut statement = connection
             .prepare("SELECT room_id FROM rooms ORDER BY room_id")
             .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
@@ -4530,13 +5305,10 @@ impl SqliteRoomStore {
         if activation_id.is_empty() || activation_id.len() > 256 {
             return Err(SqliteActivationErrorV1::InvalidRequest);
         }
-        let connection = Connection::open_with_flags(
-            &self.writer.path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
         let value = connection
             .query_row(
                 "SELECT room_id, target_member_id FROM activation_intents WHERE activation_id = ?1",
@@ -4572,7 +5344,12 @@ impl SqliteRoomStore {
         room_id: &RoomId,
         cutoff: &HostClockSampleV1,
     ) -> Result<Option<TimerFiredRequestV1>, SqliteTimerErrorV1> {
-        next_due_timer_at_path(&self.writer.path, room_id, cutoff)
+        next_due_timer_at_path(
+            &self.writer.database_file,
+            &self.writer.path,
+            room_id,
+            cutoff,
+        )
     }
 
     /// Loads one exact Timer generation, including its durable lifecycle, from
@@ -4589,7 +5366,13 @@ impl SqliteRoomStore {
         timer_id: &TimerId,
         generation: TimerGenerationV1,
     ) -> Result<Option<SqliteTimerCandidateV1>, SqliteTimerErrorV1> {
-        timer_candidate_at_path(&self.writer.path, room_id, timer_id, generation)
+        timer_candidate_at_path(
+            &self.writer.database_file,
+            &self.writer.path,
+            room_id,
+            timer_id,
+            generation,
+        )
     }
 
     /// Samples trusted host time for the exact loaded Timer candidate.
@@ -4605,6 +5388,24 @@ impl SqliteRoomStore {
             .sample()
             .map_err(|_| SqliteTimerErrorV1::StorageUnavailable)?;
         Ok(cutoff.is_due(candidate.request.scheduled_for()))
+    }
+}
+
+impl TransferSourceAuthorityV1 for SqliteRoomStore {
+    type Error = SqliteSourceTransferErrorV1;
+
+    fn retire_after_verified_target(
+        &self,
+        proof: &VerifiedTargetFinalizationV1,
+    ) -> Result<(), Self::Error> {
+        self.retire_after_verified_target(proof.into()).map(|_| ())
+    }
+
+    fn restore_after_verified_abort(
+        &self,
+        proof: &VerifiedTargetAbortV1,
+    ) -> Result<(), Self::Error> {
+        self.restore_after_verified_abort(proof.into()).map(|_| ())
     }
 }
 
@@ -4649,7 +5450,7 @@ impl SqliteRoomStore {
         &self,
         room_id: &RoomId,
     ) -> Result<Option<RoomHistoryInspectionV1>, SqliteRoomInspectionErrorV1> {
-        let result = inspect_room_at_path(&self.writer.path, room_id);
+        let result = inspect_room_at_path(&self.writer.database_file, &self.writer.path, room_id);
         if matches!(
             &result,
             Err(SqliteRoomInspectionErrorV1::Corrupt
@@ -4757,7 +5558,7 @@ impl AuthorityStoreV1 for SqliteRoomStore {
         &self,
         query: &AuthoritySnapshotQueryV1,
     ) -> Result<Option<AuthoritySnapshotV1>, AuthorityStoreErrorV1> {
-        snapshot_authority_at_path(&self.writer.path, query)
+        snapshot_authority_at_path(&self.writer.database_file, &self.writer.path, query)
     }
 
     fn apply_bootstrap(
@@ -4864,8 +5665,9 @@ impl RoomRecoveryStorageV1 for SqliteRoomStore {
         &self,
         room_id: &RoomId,
     ) -> Result<Option<RoomRecoveryCandidateV1>, RoomRecoveryErrorV1> {
-        let observed_fence = capture_observed_recovery_fence(&self.writer.path, room_id)
-            .map_err(|error| map_inspection_error(&error))?;
+        let observed_fence =
+            capture_observed_recovery_fence(&self.writer.database_file, &self.writer.path, room_id)
+                .map_err(|error| map_inspection_error(&error))?;
         match self.inspect_room(room_id) {
             Ok(inspection) => Ok(inspection.map(|value| value.recovery_candidate())),
             Err(SqliteRoomInspectionErrorV1::Corrupt) => {
@@ -4950,6 +5752,7 @@ fn map_inspection_error(error: &SqliteRoomInspectionErrorV1) -> RoomRecoveryErro
 }
 
 fn next_due_timer_at_path(
+    file: &File,
     path: &Path,
     room_id: &RoomId,
     cutoff: &HostClockSampleV1,
@@ -4957,7 +5760,7 @@ fn next_due_timer_at_path(
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let connection = Connection::open_with_flags(path, flags)
+    let connection = open_retained_sqlite(file, path, flags)
         .map_err(|_| SqliteTimerErrorV1::StorageUnavailable)?;
     let mut statement = connection
         .prepare(
@@ -5014,6 +5817,7 @@ fn next_due_timer_at_path(
 }
 
 fn timer_candidate_at_path(
+    file: &File,
     path: &Path,
     room_id: &RoomId,
     timer_id: &TimerId,
@@ -5022,7 +5826,7 @@ fn timer_candidate_at_path(
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let connection = Connection::open_with_flags(path, flags)
+    let connection = open_retained_sqlite(file, path, flags)
         .map_err(|_| SqliteTimerErrorV1::StorageUnavailable)?;
     let row: Option<(String, Vec<u8>, String)> = connection
         .query_row(
@@ -5064,13 +5868,15 @@ fn timer_candidate_at_path(
 }
 
 fn snapshot_authority_at_path(
+    file: &File,
     path: &Path,
     query: &AuthoritySnapshotQueryV1,
 ) -> Result<Option<AuthoritySnapshotV1>, AuthorityStoreErrorV1> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let mut connection = Connection::open_with_flags(path, flags).map_err(authority_sql_failure)?;
+    let mut connection =
+        open_retained_sqlite(file, path, flags).map_err(|_| AuthorityStoreErrorV1::Unavailable)?;
     connection
         .pragma_update(None, "query_only", true)
         .map_err(authority_sql_failure)?;
@@ -6708,13 +7514,15 @@ fn authority_write_failure(error: rusqlite::Error) -> AuthorityStoreErrorV1 {
 }
 
 fn capture_observed_recovery_fence(
+    file: &File,
     path: &Path,
     requested_room_id: &RoomId,
 ) -> Result<Option<ObservedRecoveryFence>, SqliteRoomInspectionErrorV1> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let connection = Connection::open_with_flags(path, flags)?;
+    let connection = open_retained_sqlite(file, path, flags)
+        .map_err(|_| SqliteRoomInspectionErrorV1::Unavailable)?;
     connection.pragma_update(None, "query_only", true)?;
     let room_id = requested_room_id.to_string();
     connection
@@ -6877,10 +7685,12 @@ fn parse_integrity_state(
 }
 
 fn read_diagnostic_history(
+    file: &File,
     path: &Path,
     room_id: &RoomId,
 ) -> Result<DiagnosticHistoryV1, SqliteRoomDiagnosticErrorV1> {
-    let connection = Connection::open_with_flags(
+    let connection = open_retained_sqlite(
+        file,
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -6972,10 +7782,11 @@ fn decode_diagnostic_head(
 }
 
 fn read_diagnostic_export(
+    file: &File,
     path: &Path,
     room_id: &RoomId,
 ) -> Result<SqliteRoomDiagnosticExportV1, SqliteRoomDiagnosticErrorV1> {
-    let history = read_diagnostic_history(path, room_id)?;
+    let history = read_diagnostic_history(file, path, room_id)?;
     let mut records = Vec::with_capacity(history.transition_bytes.len() + 2);
     records.push(SqliteRoomDiagnosticRecordV1 {
         kind: SqliteRoomDiagnosticRecordKindV1::Genesis,
@@ -7023,11 +7834,12 @@ fn canonical_history_digest(history: &DiagnosticHistoryV1) -> Blake3DigestV1 {
 }
 
 fn verify_diagnostic_room(
+    file: &File,
     path: &Path,
     registry: &PackRegistryV1,
     room_id: &RoomId,
 ) -> Result<SqliteRoomDiagnosticVerificationV1, SqliteRoomDiagnosticErrorV1> {
-    let history = read_diagnostic_history(path, room_id)?;
+    let history = read_diagnostic_history(file, path, room_id)?;
     let head = decode_diagnostic_head(&history.head_bytes, room_id)?;
     PackRevisionLockV1::from_canonical_bytes(&history.pack_revision_lock_bytes, head.pack_digest())
         .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?;
@@ -7072,13 +7884,15 @@ fn replay_inspection_read_only(
 
 #[allow(clippy::too_many_lines)]
 fn inspect_room_at_path(
+    file: &File,
     path: &Path,
     requested_room_id: &RoomId,
 ) -> Result<Option<RoomHistoryInspectionV1>, SqliteRoomInspectionErrorV1> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let mut connection = Connection::open_with_flags(path, flags)?;
+    let mut connection = open_retained_sqlite(file, path, flags)
+        .map_err(|_| SqliteRoomInspectionErrorV1::Unavailable)?;
     connection.pragma_update(None, "query_only", true)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let room_id = requested_room_id.to_string();
@@ -7964,16 +8778,42 @@ fn initialize_deployment_identity(
     Ok(SqliteDeploymentIdentityInitializationV1::Initialized)
 }
 
+fn enforce_source_transfer_mode(
+    connection: &Connection,
+    source_transfer_state: &AtomicU8,
+    restore_authoritative_writes: bool,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    let status = read_source_transfer_status(connection)?;
+    source_transfer_state.store(status.state() as u8, Ordering::Release);
+    if status.state() == SqliteSourceTransferStateV1::SourceAuthoritative
+        && !restore_authoritative_writes
+    {
+        // An unexpected read-only writer must fail its operation naturally;
+        // ordinary command admission never clears a driver/storage fence. Only
+        // startup and a completed lifecycle transition may restore writes.
+        return Ok(());
+    }
+    connection
+        .pragma_update(
+            None,
+            "query_only",
+            status.state() != SqliteSourceTransferStateV1::SourceAuthoritative,
+        )
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)
+}
+
 #[allow(clippy::too_many_lines)]
 fn writer_main(
     path: &Path,
+    database_file: &File,
     receiver: Receiver<WriterCommand>,
     startup: mpsc::Sender<Result<(), SqliteStoreOpenError>>,
     clock: &dyn TrustedAuthorityClock,
     telemetry: Option<&dyn SqliteTelemetrySink>,
+    source_transfer_state: &AtomicU8,
 ) {
-    let _writer_lock = match acquire_writer_lock(path) {
-        Ok(lock) => lock,
+    let writer_lease = match acquire_writer_lock(path, database_file) {
+        Ok(lease) => lease,
         Err(error) => {
             if let Some(telemetry) = telemetry {
                 emit_sqlite_telemetry(
@@ -7987,11 +8827,8 @@ fn writer_main(
             return;
         }
     };
-    let mut connection = match open_writer_connection(path, telemetry) {
-        Ok(connection) => {
-            let _ = startup.send(Ok(()));
-            connection
-        }
+    let mut connection = match open_writer_connection(path, database_file, telemetry) {
+        Ok(connection) => connection,
         Err(error) => {
             if let Some(telemetry) = telemetry {
                 emit_sqlite_telemetry(
@@ -8005,47 +8842,125 @@ fn writer_main(
             return;
         }
     };
+    if writer_lease.require_named().is_err() {
+        let _ = startup.send(Err(SqliteStoreOpenError::UnsafePath));
+        return;
+    }
+    if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
+        let _ = startup.send(Err(SqliteStoreOpenError::SourceTransferState));
+        return;
+    }
+    let _ = startup.send(Ok(()));
     drop(startup);
     #[cfg(test)]
     let mut failpoint = None;
+    macro_rules! reply_after_namespace_check {
+        ($reply:expr, $value:expr) => {{
+            let value = $value;
+            #[cfg(test)]
+            if run_writer_post_command_hook(path).is_err() {
+                break;
+            }
+            if writer_lease.require_named().is_err() {
+                break;
+            }
+            let _ = $reply.send(value);
+        }};
+    }
     while let Ok(command) = receiver.recv() {
+        if writer_lease.require_named().is_err() {
+            break;
+        }
+        if enforce_source_transfer_mode(&connection, source_transfer_state, false).is_err() {
+            break;
+        }
         match command {
             WriterCommand::InitializeCanonicalMetadata {
                 deployment_lineage,
                 storage_epoch,
                 reply,
             } => {
-                let _ = reply.send(initialize_canonical_metadata(
-                    &mut connection,
-                    &deployment_lineage,
-                    storage_epoch,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    initialize_canonical_metadata(
+                        &mut connection,
+                        &deployment_lineage,
+                        storage_epoch,
+                    )
+                );
             }
             WriterCommand::InitializeDeploymentIdentity {
                 identity,
                 resources,
                 reply,
             } => {
-                let _ = reply.send(initialize_deployment_identity(
+                reply_after_namespace_check!(
+                    reply,
+                    initialize_deployment_identity(&mut connection, &identity, &resources,)
+                );
+            }
+            WriterCommand::BeginSourceTransfer { backup_path, reply } => {
+                let mut result = begin_source_transfer(&mut connection, &backup_path);
+                if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
+                    result = Err(SqliteSourceTransferErrorV1::StorageUnavailable);
+                    reply_after_namespace_check!(reply, result);
+                    break;
+                }
+                reply_after_namespace_check!(reply, result);
+            }
+            #[cfg(test)]
+            WriterCommand::BeginSourceTransferWithHook {
+                backup_path,
+                after_verified_backup,
+                reply,
+            } => {
+                let mut result = begin_source_transfer_with_hook(
                     &mut connection,
-                    &identity,
-                    &resources,
-                ));
+                    &backup_path,
+                    after_verified_backup,
+                );
+                if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
+                    result = Err(SqliteSourceTransferErrorV1::StorageUnavailable);
+                    reply_after_namespace_check!(reply, result);
+                    break;
+                }
+                reply_after_namespace_check!(reply, result);
+            }
+            WriterCommand::ExportCanonicalEvidence { reply } => {
+                reply_after_namespace_check!(reply, export_verified_transfer_point(&connection));
+            }
+            WriterCommand::RestoreSourceAfterAbort { binding, reply } => {
+                let mut result = restore_source_after_abort(&mut connection, &binding);
+                if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
+                    result = Err(SqliteSourceTransferErrorV1::StorageUnavailable);
+                    reply_after_namespace_check!(reply, result);
+                    break;
+                }
+                reply_after_namespace_check!(reply, result);
+            }
+            WriterCommand::RetireSourceAfterFinalization { binding, reply } => {
+                let mut result = retire_source_after_finalization(&mut connection, &binding);
+                if enforce_source_transfer_mode(&connection, source_transfer_state, true).is_err() {
+                    result = Err(SqliteSourceTransferErrorV1::StorageUnavailable);
+                    reply_after_namespace_check!(reply, result);
+                    break;
+                }
+                reply_after_namespace_check!(reply, result);
             }
             WriterCommand::ApplyAuthorityBootstrap(bootstrap, reply) => {
                 let result = apply_authority_bootstrap(&mut connection, &bootstrap, clock);
-                let _ = reply.send(result);
+                reply_after_namespace_check!(reply, result);
             }
             WriterCommand::ApplyAuthorityChange(change, reply) => {
                 let result = apply_authority_change(&mut connection, &change, clock);
-                let _ = reply.send(result);
+                reply_after_namespace_check!(reply, result);
             }
             WriterCommand::Commit(prepared, reply) => {
                 #[cfg(test)]
                 let resolution = commit_prepared(&mut connection, *prepared, clock, failpoint);
                 #[cfg(not(test))]
                 let resolution = commit_prepared(&mut connection, *prepared, clock);
-                let _ = reply.send(resolution);
+                reply_after_namespace_check!(reply, resolution);
             }
             WriterCommand::Resolve {
                 identity,
@@ -8053,55 +8968,56 @@ fn writer_main(
                 request_hash,
                 reply,
             } => {
-                let _ = reply.send(resolve_guarded(
-                    &mut connection,
-                    &identity,
-                    &identity_bytes,
-                    &request_hash,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    resolve_guarded(&mut connection, &identity, &identity_bytes, &request_hash,)
+                );
             }
             WriterCommand::ResolveAuthorized { authority, reply } => {
-                let _ = reply.send(resolve_authorized_guarded(
-                    &mut connection,
-                    authority,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    resolve_authorized_guarded(&mut connection, authority, clock,)
+                );
             }
             WriterCommand::AttachObservations {
                 authority,
                 current_view,
                 reply,
             } => {
-                let _ = reply.send(attach_observations_guarded(
-                    &mut connection,
-                    &authority,
-                    &current_view,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    attach_observations_guarded(&mut connection, &authority, &current_view, clock,)
+                );
             }
             WriterCommand::AcknowledgeObservation {
                 authority,
                 through_frame_seq,
                 reply,
             } => {
-                let _ = reply.send(acknowledge_observation_guarded(
-                    &mut connection,
-                    &authority,
-                    through_frame_seq,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    acknowledge_observation_guarded(
+                        &mut connection,
+                        &authority,
+                        through_frame_seq,
+                        clock,
+                    )
+                );
             }
             WriterCommand::ReadObservationSuffix {
                 authority,
                 after_frame_seq,
                 reply,
             } => {
-                let _ = reply.send(read_observation_suffix_guarded(
-                    &mut connection,
-                    &authority,
-                    after_frame_seq,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    read_observation_suffix_guarded(
+                        &mut connection,
+                        &authority,
+                        after_frame_seq,
+                        clock,
+                    )
+                );
             }
             WriterCommand::PruneObservationFrames {
                 room_id,
@@ -8109,24 +9025,25 @@ fn writer_main(
                 retain_from_frame_seq,
                 reply,
             } => {
-                let _ = reply.send(prune_observation_frames(
-                    &mut connection,
-                    &room_id,
-                    &member_id,
-                    retain_from_frame_seq,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    prune_observation_frames(
+                        &mut connection,
+                        &room_id,
+                        &member_id,
+                        retain_from_frame_seq,
+                    )
+                );
             }
             WriterCommand::ActivationOffer {
                 authority,
                 request,
                 reply,
             } => {
-                let _ = reply.send(activation_offer_guarded(
-                    &mut connection,
-                    &authority,
-                    &request,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    activation_offer_guarded(&mut connection, &authority, &request, clock,)
+                );
             }
             WriterCommand::ActivationClaim {
                 authority,
@@ -8134,64 +9051,79 @@ fn writer_main(
                 runtime_state,
                 reply,
             } => {
-                let _ = reply.send(activation_claim_guarded(
-                    &mut connection,
-                    &authority,
-                    &claim,
-                    runtime_state,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    activation_claim_guarded(
+                        &mut connection,
+                        &authority,
+                        &claim,
+                        runtime_state,
+                        clock,
+                    )
+                );
             }
             WriterCommand::ActivationRenew {
                 authority,
                 request,
                 reply,
             } => {
-                let _ = reply.send(activation_lease_operation_guarded(
-                    &mut connection,
-                    &authority,
-                    &request,
-                    ActivationLeaseOperationV1::Renew,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    activation_lease_operation_guarded(
+                        &mut connection,
+                        &authority,
+                        &request,
+                        ActivationLeaseOperationV1::Renew,
+                        clock,
+                    )
+                );
             }
             WriterCommand::ActivationRelease {
                 authority,
                 request,
                 reply,
             } => {
-                let _ = reply.send(activation_lease_operation_guarded(
-                    &mut connection,
-                    &authority,
-                    &request,
-                    ActivationLeaseOperationV1::Release,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    activation_lease_operation_guarded(
+                        &mut connection,
+                        &authority,
+                        &request,
+                        ActivationLeaseOperationV1::Release,
+                        clock,
+                    )
+                );
             }
             WriterCommand::ActivationComplete {
                 authority,
                 request,
                 reply,
             } => {
-                let _ = reply.send(activation_lease_operation_guarded(
-                    &mut connection,
-                    &authority,
-                    &request,
-                    ActivationLeaseOperationV1::Complete,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    activation_lease_operation_guarded(
+                        &mut connection,
+                        &authority,
+                        &request,
+                        ActivationLeaseOperationV1::Complete,
+                        clock,
+                    )
+                );
             }
             WriterCommand::ActivationReclaim {
                 room_id,
                 activation_id,
                 reply,
             } => {
-                let _ = reply.send(reclaim_activation_leases(
-                    &mut connection,
-                    &room_id,
-                    activation_id.as_deref(),
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    reclaim_activation_leases(
+                        &mut connection,
+                        &room_id,
+                        activation_id.as_deref(),
+                        clock,
+                    )
+                );
             }
             WriterCommand::ActivationExpire {
                 room_id,
@@ -8199,50 +9131,57 @@ fn writer_main(
                 expected_generation,
                 reply,
             } => {
-                let _ = reply.send(expire_activation(
-                    &mut connection,
-                    &room_id,
-                    &activation_id,
-                    expected_generation,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    expire_activation(
+                        &mut connection,
+                        &room_id,
+                        &activation_id,
+                        expected_generation,
+                        clock,
+                    )
+                );
             }
             WriterCommand::ActivationRetireContext {
                 room_id,
                 activation_id,
                 reply,
             } => {
-                let _ = reply.send(retire_activation_context(
-                    &mut connection,
-                    &room_id,
-                    &activation_id,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    retire_activation_context(&mut connection, &room_id, &activation_id,)
+                );
             }
             WriterCommand::BeginAuthorizedReplay { authority, reply } => {
-                let _ = reply.send(begin_authorized_replay(&mut connection, authority, clock));
+                reply_after_namespace_check!(
+                    reply,
+                    begin_authorized_replay(&mut connection, authority, clock)
+                );
             }
             WriterCommand::ReleaseAuthorizedReplay {
                 session,
                 require_operational_fence,
                 reply,
             } => {
-                let _ = reply.send(release_authorized_replay(
-                    &mut connection,
-                    *session,
-                    require_operational_fence,
-                    clock,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    release_authorized_replay(
+                        &mut connection,
+                        *session,
+                        require_operational_fence,
+                        clock,
+                    )
+                );
             }
             WriterCommand::RecordReplayDisposition {
                 fence,
                 disposition,
                 reply,
             } => {
-                let _ = reply.send(record_replay_disposition(
-                    &mut connection,
-                    &fence,
-                    disposition,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    record_replay_disposition(&mut connection, &fence, disposition,)
+                );
             }
             WriterCommand::GuardRecoveryInstall {
                 room_id,
@@ -8251,13 +9190,16 @@ fn writer_main(
                 recovered_materializations,
                 reply,
             } => {
-                let _ = reply.send(guard_recovery_install(
-                    &mut connection,
-                    &room_id,
-                    &expected_head,
-                    expected_integrity_generation,
-                    &recovered_materializations,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    guard_recovery_install(
+                        &mut connection,
+                        &room_id,
+                        &expected_head,
+                        expected_integrity_generation,
+                        &recovered_materializations,
+                    )
+                );
             }
             WriterCommand::RecordRecoveryFailure {
                 room_id,
@@ -8266,19 +9208,22 @@ fn writer_main(
                 disposition,
                 reply,
             } => {
-                let _ = reply.send(record_recovery_failure(
-                    &mut connection,
-                    &room_id,
-                    &expected_head,
-                    expected_integrity_generation,
-                    disposition,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    record_recovery_failure(
+                        &mut connection,
+                        &room_id,
+                        &expected_head,
+                        expected_integrity_generation,
+                        disposition,
+                    )
+                );
             }
             WriterCommand::QuarantineObservedRecoveryCorruption { fence, reply } => {
-                let _ = reply.send(quarantine_observed_recovery_corruption(
-                    &mut connection,
-                    &fence,
-                ));
+                reply_after_namespace_check!(
+                    reply,
+                    quarantine_observed_recovery_corruption(&mut connection, &fence,)
+                );
             }
             #[cfg(test)]
             WriterCommand::SeedAuthority {
@@ -8288,7 +9233,7 @@ fn writer_main(
             } => {
                 let result = seed_authority_fence(&connection, &witness, active)
                     .map_err(|error| error.to_string());
-                let _ = reply.send(result);
+                reply_after_namespace_check!(reply, result);
             }
             #[cfg(test)]
             WriterCommand::SeedAuthoritySnapshot {
@@ -8298,19 +9243,19 @@ fn writer_main(
             } => {
                 let result = seed_authority_snapshot(&mut connection, &principal, &capability)
                     .map_err(|error| error.to_string());
-                let _ = reply.send(result);
+                reply_after_namespace_check!(reply, result);
             }
             #[cfg(test)]
             WriterCommand::SetFailpoint(value, reply) => {
                 failpoint = value;
-                let _ = reply.send(());
+                reply_after_namespace_check!(reply, ());
             }
             #[cfg(test)]
             WriterCommand::SetQueryOnly(enabled, reply) => {
                 let result = connection
                     .pragma_update(None, "query_only", enabled)
                     .map_err(|error| error.to_string());
-                let _ = reply.send(result);
+                reply_after_namespace_check!(reply, result);
             }
             #[cfg(test)]
             WriterCommand::PauseQueue => pause_writer_queue(),
@@ -9633,7 +10578,126 @@ const fn recovered_timer_state(state: RecoveredTimerStateV1) -> &'static str {
     }
 }
 
-fn acquire_writer_lock(path: &Path) -> Result<File, SqliteStoreOpenError> {
+#[cfg(unix)]
+struct UnixWriterDirectoryLeaseV1 {
+    file: File,
+    path: PathBuf,
+    identity: TransferFileIdentity,
+}
+
+#[cfg(unix)]
+impl UnixWriterDirectoryLeaseV1 {
+    fn require_named(&self) -> io::Result<()> {
+        if publication_file_identity(&self.file)? != self.identity
+            || publication_directory_path_identity(&self.path)? != self.identity
+        {
+            return Err(io::Error::other(
+                "SQLite writer data-directory identity changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct WriterLeaseV1 {
+    #[cfg(unix)]
+    directory: Arc<UnixWriterDirectoryLeaseV1>,
+    lock_file: File,
+    lock_path: PathBuf,
+    lock_identity: TransferFileIdentity,
+    database_file: File,
+    database_path: PathBuf,
+    database_identity: TransferFileIdentity,
+}
+
+impl WriterLeaseV1 {
+    fn require_named(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        self.directory.require_named()?;
+        if publication_file_identity(&self.lock_file)? != self.lock_identity
+            || transfer_path_identity(&self.lock_path)? != self.lock_identity
+        {
+            return Err(io::Error::other("writer lease identity changed"));
+        }
+        if publication_file_identity(&self.database_file)? != self.database_identity
+            || transfer_path_identity(&self.database_path)? != self.database_identity
+        {
+            return Err(io::Error::other("writer database name changed"));
+        }
+        #[cfg(windows)]
+        if !transfer_file_has_single_link(&self.lock_file) {
+            return Err(io::Error::other("writer lease acquired another name"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn acquire_unix_writer_directory_lease(
+    database_path: &Path,
+) -> Result<Arc<UnixWriterDirectoryLeaseV1>, SqliteStoreOpenError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let directory_path = database_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or(SqliteStoreOpenError::UnsafePath)?
+        .to_owned();
+    let flags =
+        rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+    let flags = i32::try_from(flags.bits()).map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+    let directory_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(&directory_path)
+        .map_err(SqliteStoreOpenError::Path)?;
+    if !directory_file
+        .metadata()
+        .map_err(SqliteStoreOpenError::Path)?
+        .is_dir()
+    {
+        return Err(SqliteStoreOpenError::UnsafePath);
+    }
+    let identity =
+        publication_file_identity(&directory_file).map_err(SqliteStoreOpenError::Path)?;
+    if publication_directory_path_identity(&directory_path).ok() != Some(identity) {
+        return Err(SqliteStoreOpenError::UnsafePath);
+    }
+
+    let leases = UNIX_WRITER_DIRECTORY_LEASES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut leases = leases
+        .lock()
+        .map_err(|_| SqliteStoreOpenError::WriterRegistryPoisoned)?;
+    if let Some(lease) = leases.get(&identity).and_then(Weak::upgrade) {
+        lease
+            .require_named()
+            .map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+        return Ok(lease);
+    }
+
+    rustix::fs::flock(
+        &directory_file,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+    )
+    .map_err(|_| SqliteStoreOpenError::WriterAlreadyOwned)?;
+    let lease = Arc::new(UnixWriterDirectoryLeaseV1 {
+        file: directory_file,
+        path: directory_path,
+        identity,
+    });
+    lease
+        .require_named()
+        .map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+    leases.insert(identity, Arc::downgrade(&lease));
+    Ok(lease)
+}
+
+fn acquire_writer_lock(
+    path: &Path,
+    database_file: &File,
+) -> Result<WriterLeaseV1, SqliteStoreOpenError> {
+    #[cfg(unix)]
+    let directory = acquire_unix_writer_directory_lease(path)?;
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -9642,29 +10706,211 @@ fn acquire_writer_lock(path: &Path) -> Result<File, SqliteStoreOpenError> {
     if fs::symlink_metadata(&lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(SqliteStoreOpenError::UnsafePath);
     }
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)
+    #[cfg(unix)]
+    let lock_file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+        let flags = i32::try_from(flags.bits()).map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(flags)
+            .open(&lock_path)
+            .map_err(SqliteStoreOpenError::Path)?
+    };
+    #[cfg(windows)]
+    let lock_file = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            // Deliberately omit FILE_SHARE_DELETE: the retained lease name
+            // cannot be renamed, deleted, or replaced until this handle drops.
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&lock_path)
+            .map_err(SqliteStoreOpenError::Path)?;
+        if !lock
+            .metadata()
+            .map_err(SqliteStoreOpenError::Path)?
+            .is_file()
+        {
+            return Err(SqliteStoreOpenError::UnsafePath);
+        }
+        lock
+    };
+    #[cfg(not(any(unix, windows)))]
+    return Err(SqliteStoreOpenError::UnsafePath);
+
+    if !lock_file
+        .metadata()
+        .map_err(SqliteStoreOpenError::Path)?
+        .is_file()
+    {
+        return Err(SqliteStoreOpenError::UnsafePath);
+    }
+    let lock_identity =
+        publication_file_identity(&lock_file).map_err(SqliteStoreOpenError::Path)?;
+    let database_identity =
+        publication_file_identity(database_file).map_err(SqliteStoreOpenError::Path)?;
+    let retained_database_file = database_file
+        .try_clone()
         .map_err(SqliteStoreOpenError::Path)?;
-    lock.try_lock()
+    let lease = WriterLeaseV1 {
+        #[cfg(unix)]
+        directory,
+        lock_file,
+        lock_path,
+        lock_identity,
+        database_file: retained_database_file,
+        database_path: path.to_owned(),
+        database_identity,
+    };
+    lease
+        .require_named()
+        .map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+    lease
+        .lock_file
+        .try_lock()
         .map_err(|_| SqliteStoreOpenError::WriterAlreadyOwned)?;
-    Ok(lock)
+    lease
+        .require_named()
+        .map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+    Ok(lease)
 }
 
+#[cfg(test)]
+fn arm_writer_exact_open_hook(path: &Path, hook: impl FnOnce() -> io::Result<()> + Send + 'static) {
+    let slot = WRITER_EXACT_OPEN_HOOK.get_or_init(|| Mutex::new(None));
+    let mut slot = slot
+        .lock()
+        .unwrap_or_else(|_| panic!("writer exact-open hook mutex"));
+    *slot = Some(WriterExactOpenHook {
+        target_path: path.to_path_buf(),
+        hook: Box::new(hook),
+    });
+}
+
+#[cfg(test)]
+fn run_writer_exact_open_hook(path: &Path) -> Result<(), SqliteStoreOpenError> {
+    let Some(slot) = WRITER_EXACT_OPEN_HOOK.get() else {
+        return Ok(());
+    };
+    let hook = {
+        let mut slot = slot
+            .lock()
+            .map_err(|_| SqliteStoreOpenError::WriterRegistryPoisoned)?;
+        if slot.as_ref().is_none_or(|hook| hook.target_path != path) {
+            return Ok(());
+        }
+        slot.take()
+    };
+    let Some(hook) = hook else {
+        return Ok(());
+    };
+    (hook.hook)().map_err(SqliteStoreOpenError::Path)
+}
+
+#[cfg(test)]
+fn arm_writer_post_command_hook(
+    path: &Path,
+    hook: impl FnOnce() -> io::Result<()> + Send + 'static,
+) {
+    let slot = WRITER_POST_COMMAND_HOOK.get_or_init(|| Mutex::new(None));
+    let mut slot = slot
+        .lock()
+        .unwrap_or_else(|_| panic!("writer post-command hook mutex"));
+    *slot = Some(WriterPostCommandHook {
+        target_path: path.to_path_buf(),
+        hook: Box::new(hook),
+    });
+}
+
+#[cfg(test)]
+fn run_writer_post_command_hook(path: &Path) -> io::Result<()> {
+    let Some(slot) = WRITER_POST_COMMAND_HOOK.get() else {
+        return Ok(());
+    };
+    let hook = {
+        let mut slot = slot
+            .lock()
+            .map_err(|_| io::Error::other("writer post-command hook mutex"))?;
+        if slot.as_ref().is_none_or(|hook| hook.target_path != path) {
+            return Ok(());
+        }
+        slot.take()
+    };
+    let Some(hook) = hook else {
+        return Ok(());
+    };
+    (hook.hook)()
+}
+
+#[cfg(all(test, windows))]
+fn arm_windows_staging_reopen_hook(
+    parent: &Path,
+    hook: impl FnOnce(&Path) -> io::Result<()> + Send + 'static,
+) {
+    let slot = WINDOWS_STAGING_REOPEN_HOOK.get_or_init(|| Mutex::new(None));
+    let mut slot = slot
+        .lock()
+        .unwrap_or_else(|_| panic!("Windows staging reopen hook mutex"));
+    *slot = Some(WindowsStagingReopenHook {
+        parent: parent.to_owned(),
+        hook: Box::new(hook),
+    });
+}
+
+#[cfg(all(test, windows))]
+fn run_windows_staging_reopen_hook(path: &Path) -> io::Result<()> {
+    let Some(slot) = WINDOWS_STAGING_REOPEN_HOOK.get() else {
+        return Ok(());
+    };
+    let hook = {
+        let mut slot = slot
+            .lock()
+            .map_err(|_| io::Error::other("Windows staging reopen hook mutex"))?;
+        if slot
+            .as_ref()
+            .is_none_or(|hook| path.parent() != Some(hook.parent.as_path()))
+        {
+            return Ok(());
+        }
+        slot.take()
+    };
+    let Some(hook) = hook else {
+        return Ok(());
+    };
+    (hook.hook)(path)
+}
+
+#[allow(clippy::too_many_lines)]
 fn open_writer_connection(
     path: &Path,
+    database_file: &File,
     telemetry: Option<&dyn SqliteTelemetrySink>,
-) -> Result<Connection, SqliteStoreOpenError> {
+) -> Result<ExactSqliteConnection, SqliteStoreOpenError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    let mut connection =
-        Connection::open_with_flags(path, flags).map_err(SqliteStoreOpenError::Sqlite)?;
-    secure_database_file(path)?;
+    secure_database_file(database_file)?;
+    let retained_for_connection = database_file
+        .try_clone()
+        .map_err(SqliteStoreOpenError::Path)?;
+    #[cfg(test)]
+    run_writer_exact_open_hook(path)?;
+    let mut connection = open_exact(retained_for_connection, path, flags)
+        .map_err(SqliteStoreOpenError::ExactOpen)?;
     let (version, source_id): (String, String) = connection
         .query_row("SELECT sqlite_version(), sqlite_source_id()", (), |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -9704,10 +10950,31 @@ fn open_writer_connection(
             busy_timeout,
         });
     }
-    if migration_requires_backup(&connection)? {
-        let _ = publish_verified_migration_backup(path)?;
+    let frozen_transfer_state = preexisting_source_transfer_state(&connection)?;
+    if frozen_transfer_state
+        .is_some_and(|state| state != SqliteSourceTransferStateV1::SourceAuthoritative)
+    {
+        // A pending or retired source is never migrated in place. The current
+        // binary may reopen it only when the exact existing migration/schema
+        // contract is already complete, after which the writer becomes
+        // query-only before startup admission succeeds.
+        let records = read_migration_rows(&connection, true)?
+            .into_iter()
+            .map(|(version, migration_id, checksum)| {
+                (version, migration_id, checksum.unwrap_or_default())
+            })
+            .collect::<Vec<_>>();
+        verify_migration_records(&records).map_err(map_migration_verification_error)?;
+        if records.len() != migration_history().len() {
+            return Err(SqliteStoreOpenError::UnexpectedMigrationSet);
+        }
+        verify_schema(&connection)?;
+    } else {
+        if migration_requires_backup(&connection)? {
+            let _ = publish_verified_migration_backup_from_retained(path, database_file)?;
+        }
+        migrate_with_telemetry(&mut connection, telemetry)?;
     }
-    migrate_with_telemetry(&mut connection, telemetry)?;
     #[cfg(test)]
     connection
         .execute_batch(
@@ -9753,20 +11020,62 @@ fn open_writer_connection(
     Ok(connection)
 }
 
+fn preexisting_source_transfer_state(
+    connection: &Connection,
+) -> Result<Option<SqliteSourceTransferStateV1>, SqliteStoreOpenError> {
+    let table_exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' \
+             AND name = 'source_transfer_lifecycle')",
+            (),
+            |row| row.get(0),
+        )
+        .map_err(SqliteStoreOpenError::Sqlite)?;
+    if !table_exists {
+        return Ok(None);
+    }
+    let state = connection
+        .query_row(
+            "SELECT state FROM source_transfer_lifecycle WHERE lifecycle_id = 1",
+            (),
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(SqliteStoreOpenError::Sqlite)?
+        .ok_or(SqliteStoreOpenError::SourceTransferState)?;
+    SqliteSourceTransferStateV1::from_sql_name(&state)
+        .map(Some)
+        .ok_or(SqliteStoreOpenError::SourceTransferState)
+}
+
 #[cfg(unix)]
-fn secure_database_file(path: &Path) -> Result<(), SqliteStoreOpenError> {
+fn secure_database_file(file: &File) -> Result<(), SqliteStoreOpenError> {
     use std::os::unix::fs::PermissionsExt;
-    let metadata = fs::symlink_metadata(path).map_err(SqliteStoreOpenError::Path)?;
-    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+    let metadata = file.metadata().map_err(SqliteStoreOpenError::Path)?;
+    if !metadata.file_type().is_file() {
         return Err(SqliteStoreOpenError::UnsafePath);
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(SqliteStoreOpenError::Path)
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(SqliteStoreOpenError::Path)?;
+    if !file
+        .metadata()
+        .map_err(SqliteStoreOpenError::Path)?
+        .file_type()
+        .is_file()
+    {
+        return Err(SqliteStoreOpenError::UnsafePath);
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn secure_database_file(path: &Path) -> Result<(), SqliteStoreOpenError> {
-    let metadata = fs::symlink_metadata(path).map_err(SqliteStoreOpenError::Path)?;
-    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+fn secure_database_file(file: &File) -> Result<(), SqliteStoreOpenError> {
+    if !file
+        .metadata()
+        .map_err(SqliteStoreOpenError::Path)?
+        .file_type()
+        .is_file()
+    {
         return Err(SqliteStoreOpenError::UnsafePath);
     }
     Ok(())
@@ -9937,55 +11246,449 @@ fn native_migration_rows(
     }
 }
 
+struct SqlitePublicationParent {
+    path: PathBuf,
+    name: OsString,
+    directory: File,
+    identity: TransferFileIdentity,
+}
+
+impl SqlitePublicationParent {
+    fn open(destination: &Path) -> io::Result<Self> {
+        let path = destination
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_owned();
+        let name = destination
+            .file_name()
+            .ok_or_else(|| io::Error::other("publication destination name"))?
+            .to_owned();
+        #[cfg(unix)]
+        let directory = {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let flags = rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC;
+            let flags = i32::try_from(flags.bits())
+                .map_err(|_| io::Error::other("publication parent flags"))?;
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(&path)?
+        };
+        #[cfg(windows)]
+        let directory = worldstream_windows_handle::open_pinned_directory(&path)?;
+        #[cfg(not(any(unix, windows)))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported SQLite publication parent platform",
+        ));
+        if !directory.metadata()?.is_dir() {
+            return Err(io::Error::other("publication parent is not a directory"));
+        }
+        let identity = publication_file_identity(&directory)?;
+        let parent = Self {
+            path,
+            name,
+            directory,
+            identity,
+        };
+        parent.require_named()?;
+        Ok(parent)
+    }
+
+    fn name(&self) -> &OsStr {
+        &self.name
+    }
+
+    #[cfg(target_os = "linux")]
+    fn directory(&self) -> &File {
+        &self.directory
+    }
+
+    fn path_for(&self, name: &OsStr) -> PathBuf {
+        self.path.join(name)
+    }
+
+    fn require_named(&self) -> io::Result<()> {
+        if publication_directory_path_identity(&self.path).ok() != Some(self.identity) {
+            return Err(io::Error::other("publication parent identity changed"));
+        }
+        Ok(())
+    }
+
+    fn sync(&self) -> io::Result<()> {
+        self.directory.sync_all()
+    }
+
+    fn open_relative_read(&self, name: &OsStr) -> io::Result<File> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let descriptor = rustix::fs::openat(
+                &self.directory,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(io::Error::from)?;
+            return Ok(File::from(descriptor));
+        }
+        #[cfg(windows)]
+        {
+            return File::open(self.path_for(name));
+        }
+        #[allow(unreachable_code)]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported relative SQLite publication open",
+        ))
+    }
+
+    fn require_relative_identity(
+        &self,
+        name: &OsStr,
+        expected: TransferFileIdentity,
+    ) -> io::Result<()> {
+        let file = self.open_relative_read(name)?;
+        if publication_file_identity(&file)? != expected {
+            return Err(io::Error::other("relative publication identity changed"));
+        }
+        Ok(())
+    }
+
+    fn require_relative_absent(&self, name: &OsStr) -> io::Result<()> {
+        match self.open_relative_read(name) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "publication destination already exists",
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn create_staging(&self, name: &OsStr) -> io::Result<File> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let descriptor = rustix::fs::openat(
+                &self.directory,
+                name,
+                OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(io::Error::from)?;
+            return Ok(File::from(descriptor));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::{
+                Foundation::{GENERIC_READ, GENERIC_WRITE},
+                Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
+            };
+            return OpenOptions::new()
+                .access_mode(GENERIC_READ | GENERIC_WRITE)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .create_new(true)
+                .open(self.path_for(name));
+        }
+        #[allow(unreachable_code)]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported SQLite staging platform",
+        ))
+    }
+
+    fn reopen_staging_for_publication(
+        &self,
+        name: &OsStr,
+        staging: &File,
+        expected: TransferFileIdentity,
+    ) -> io::Result<File> {
+        #[cfg(not(windows))]
+        {
+            let _ = (self, name, expected);
+            staging.try_clone()
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::{
+                Foundation::{GENERIC_READ, GENERIC_WRITE},
+                Storage::FileSystem::{DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
+            };
+
+            let path = self.path_for(name);
+            #[cfg(test)]
+            run_windows_staging_reopen_hook(&path)?;
+            let publication = match OpenOptions::new()
+                .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) => {
+                    return if scrub_transfer_file(staging, expected) {
+                        Err(error)
+                    } else {
+                        Err(io::Error::other(format!(
+                            "opening the SQLite publication handle failed ({error}); exact staging cleanup was unsafe"
+                        )))
+                    };
+                }
+            };
+            let validation = (|| {
+                if publication_file_identity(&publication)? != expected {
+                    return Err(io::Error::other("SQLite staging identity changed"));
+                }
+                self.require_relative_identity(name, expected)
+            })();
+            if let Err(error) = validation {
+                let staging_cleanup = scrub_transfer_file(staging, expected);
+                // `publication` may be an attacker-selected replacement that
+                // merely occupies the mutable staging name. Its identity was
+                // never admitted, so cleanup must never derive authority from
+                // that handle and truncate it. Only the continuously retained
+                // expected staging object is safe to scrub.
+                if !staging_cleanup {
+                    return Err(io::Error::other(format!(
+                        "SQLite staging validation failed ({error}); exact staging cleanup was unsafe"
+                    )));
+                }
+                return Err(error);
+            }
+            Ok(publication)
+        }
+    }
+
+    fn publish_noreplace(&self, source: &File) -> io::Result<(bool, File)> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd as _;
+            let descriptor_path = format!("/proc/self/fd/{}", source.as_raw_fd());
+            rustix::fs::linkat(
+                rustix::fs::CWD,
+                descriptor_path.as_str(),
+                &self.directory,
+                self.name(),
+                rustix::fs::AtFlags::SYMLINK_FOLLOW,
+            )
+            .map_err(io::Error::from)?;
+            self.require_named()?;
+            return source.try_clone().map(|file| (false, file));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use rustix::fs::{Mode, OFlags};
+            rustix::fs::fclonefileat(
+                source,
+                &self.directory,
+                self.name(),
+                rustix::fs::CloneFlags::empty(),
+            )
+            .map_err(io::Error::from)?;
+            let descriptor = rustix::fs::openat(
+                &self.directory,
+                self.name(),
+                OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(io::Error::from)?;
+            let final_file = File::from(descriptor);
+            if let Err(error) = self.require_named() {
+                if let Ok(identity) = publication_file_identity(&final_file) {
+                    let _ = scrub_transfer_file(&final_file, identity);
+                }
+                return Err(error);
+            }
+            return Ok((false, final_file));
+        }
+        #[cfg(windows)]
+        {
+            worldstream_windows_handle::rename_noreplace_at(source, &self.directory, self.name())?;
+            return source.try_clone().map(|file| (true, file));
+        }
+        #[allow(unreachable_code)]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported SQLite publication platform",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn publication_file_identity(file: &File) -> io::Result<TransferFileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+    file.metadata()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn publication_file_identity(file: &File) -> io::Result<TransferFileIdentity> {
+    fs_id::FileID::new(file)
+}
+
+#[cfg(unix)]
+fn publication_directory_path_identity(path: &Path) -> io::Result<TransferFileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(io::Error::other("publication parent is not a directory"));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn publication_directory_path_identity(path: &Path) -> io::Result<TransferFileIdentity> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(io::Error::other("publication parent is not a directory"));
+    }
+    fs_id::FileID::new(path)
+}
+
+fn publication_nonce() -> io::Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    let mut output = String::with_capacity(32);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
 fn publish_verified_migration_backup(path: &Path) -> Result<PathBuf, SqliteStoreOpenError> {
+    publish_verified_migration_backup_with_hooks(path, None, |_, _| Ok(()), |_| Ok(()))
+}
+
+fn publish_verified_migration_backup_from_retained(
+    path: &Path,
+    source: &File,
+) -> Result<PathBuf, SqliteStoreOpenError> {
+    publish_verified_migration_backup_with_hooks(path, Some(source), |_, _| Ok(()), |_| Ok(()))
+}
+
+#[cfg(test)]
+fn publish_verified_migration_backup_with_hook<F>(
+    path: &Path,
+    before_publish: F,
+) -> Result<PathBuf, SqliteStoreOpenError>
+where
+    F: FnOnce(&Path) -> Result<(), SqliteStoreOpenError>,
+{
+    publish_verified_migration_backup_with_hooks(path, None, |_, _| Ok(()), before_publish)
+}
+
+fn publish_verified_migration_backup_with_hooks<F, G>(
+    path: &Path,
+    retained_source: Option<&File>,
+    before_sqlite_open: F,
+    before_publish: G,
+) -> Result<PathBuf, SqliteStoreOpenError>
+where
+    F: FnOnce(&Path, &Path) -> Result<(), SqliteStoreOpenError>,
+    G: FnOnce(&Path) -> Result<(), SqliteStoreOpenError>,
+{
     let path = normalized_path(path)?;
-    let source_connection = Connection::open_with_flags(
-        &path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|_| migration_backup_failure("source-open"))?;
-    let source_witness = native_migration_witness(&source_connection)?;
-    let (temporary, destination) = migration_backup_paths(&path)?;
-    let mut destination_connection =
-        Connection::open(&temporary).map_err(|_| migration_backup_failure("destination-open"))?;
-    let backup = Backup::new(&source_connection, &mut destination_connection)
-        .map_err(|_| migration_backup_failure("backup"))?;
-    backup
-        .run_to_completion(128, Duration::from_millis(10), None)
-        .map_err(|_| migration_backup_failure("backup"))?;
-    drop(backup);
-    destination_connection
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(|_| migration_backup_failure("backup-checkpoint"))?;
-    drop(destination_connection);
-    remove_sqlite_sidecars(&temporary)?;
-    sync_file(&temporary)?;
-    let destination_connection = Connection::open_with_flags(
-        &temporary,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|_| migration_backup_failure("destination-open"))?;
-    let destination_witness = native_migration_witness(&destination_connection)?;
-    if source_witness != destination_witness {
-        remove_native_artifact(&temporary);
-        return Err(migration_backup_failure("destination-verification"));
+    let (source_file, source_identity) = if let Some(retained_source) = retained_source {
+        let source_file = retained_source
+            .try_clone()
+            .map_err(|_| migration_backup_failure("source-open"))?;
+        let source_identity = publication_file_identity(&source_file)
+            .map_err(|_| migration_backup_failure("source-open"))?;
+        require_retained_sqlite_name(&path, &source_file, source_identity)
+            .map_err(|_| migration_backup_failure("source-open"))?;
+        (source_file, source_identity)
+    } else {
+        retain_sqlite_file(&path, false).map_err(|_| migration_backup_failure("source-open"))?
+    };
+    let (publication_parent, temporary, mut temporary_file, temporary_identity) =
+        migration_backup_paths(&path)?;
+    let destination = publication_parent.path_for(publication_parent.name());
+    let result = (|| {
+        let temporary_name = temporary
+            .file_name()
+            .ok_or_else(|| migration_backup_failure("destination-open"))?;
+        before_sqlite_open(&path, &temporary)?;
+        require_retained_sqlite_name(&path, &source_file, source_identity)
+            .map_err(|_| migration_backup_failure("source-open"))?;
+        publication_parent
+            .require_named()
+            .and_then(|()| {
+                publication_parent.require_relative_identity(temporary_name, temporary_identity)
+            })
+            .map_err(|_| migration_backup_failure("destination-open"))?;
+        let source_connection = open_retained_sqlite(
+            &source_file,
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| migration_backup_failure("source-open"))?;
+        require_retained_sqlite_name(&path, &source_file, source_identity)
+            .map_err(|_| migration_backup_failure("source-open"))?;
+        let source_witness = native_migration_witness(&source_connection)?;
+        let mut destination_connection = open_retained_sqlite(
+            &temporary_file,
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| migration_backup_failure("destination-open"))?;
+        destination_connection
+            .execute_batch("PRAGMA journal_mode=MEMORY;")
+            .map_err(|_| migration_backup_failure("destination-open"))?;
+        let backup = Backup::new(&source_connection, &mut destination_connection)
+            .map_err(|_| migration_backup_failure("backup"))?;
+        backup
+            .run_to_completion(128, Duration::from_millis(10), None)
+            .map_err(|_| migration_backup_failure("backup"))?;
+        drop(backup);
+        require_standalone_delete_journal(&destination_connection)
+            .map_err(|_| migration_backup_failure("backup"))?;
+        drop(destination_connection);
+        remove_sqlite_sidecars(&temporary)?;
+        temporary_file
+            .sync_all()
+            .map_err(|_| migration_backup_failure("backup-sync"))?;
+        let destination_connection = open_retained_sqlite(
+            &temporary_file,
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| migration_backup_failure("destination-open"))?;
+        let destination_witness = native_migration_witness(&destination_connection)?;
+        if source_witness != destination_witness {
+            return Err(migration_backup_failure("destination-verification"));
+        }
+        drop(destination_connection);
+        remove_sqlite_sidecars(&temporary)?;
+        temporary_file = publication_parent
+            .reopen_staging_for_publication(temporary_name, &temporary_file, temporary_identity)
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        publish_migration_staging(
+            &publication_parent,
+            &temporary,
+            &mut temporary_file,
+            temporary_identity,
+            before_publish,
+        )?;
+        Ok(destination)
+    })();
+    if result.is_err() && !scrub_migration_staging(&temporary_file, temporary_identity) {
+        return Err(migration_backup_failure("publication-cleanup"));
     }
-    drop(destination_connection);
-    remove_sqlite_sidecars(&temporary)?;
-    if fs::symlink_metadata(&destination).is_ok() {
-        remove_native_artifact(&temporary);
-        return Err(migration_backup_failure("destination-publication"));
-    }
-    if let Err(error) = fs::rename(&temporary, &destination) {
-        remove_native_artifact(&temporary);
-        return Err(SqliteStoreOpenError::Path(error));
-    }
-    sync_parent(&destination)?;
-    Ok(destination)
+    result
 }
 
 /// Restores a previously verified migration backup into a new destination.
@@ -10002,77 +11705,165 @@ pub fn restore_verified_migration_backup(
     source: &Path,
     destination: &Path,
 ) -> Result<(), SqliteStoreOpenError> {
-    let source = normalized_path(source)?;
-    let destination = normalized_path(destination)?;
-    if fs::symlink_metadata(&destination).is_ok() {
-        return Err(migration_backup_failure("restore-destination"));
-    }
-    let source_connection = Connection::open_with_flags(
-        &source,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|_| migration_backup_failure("restore-source"))?;
-    let source_witness = native_migration_witness(&source_connection)?;
-    let (temporary, _) = migration_backup_paths(&destination)?;
-    let mut destination_connection = Connection::open(&temporary)
-        .map_err(|_| migration_backup_failure("restore-destination"))?;
-    let backup = Backup::new(&source_connection, &mut destination_connection)
-        .map_err(|_| migration_backup_failure("restore"))?;
-    backup
-        .run_to_completion(128, Duration::from_millis(10), None)
-        .map_err(|_| migration_backup_failure("restore"))?;
-    drop(backup);
-    destination_connection
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(|_| migration_backup_failure("restore-checkpoint"))?;
-    drop(destination_connection);
-    remove_sqlite_sidecars(&temporary)?;
-    sync_file(&temporary)?;
-    let destination_connection = Connection::open_with_flags(
-        &temporary,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|_| migration_backup_failure("restore-verification"))?;
-    if native_migration_witness(&destination_connection)? != source_witness {
-        remove_native_artifact(&temporary);
-        return Err(migration_backup_failure("restore-verification"));
-    }
-    drop(destination_connection);
-    remove_sqlite_sidecars(&temporary)?;
-    if let Err(error) = fs::rename(&temporary, &destination) {
-        remove_native_artifact(&temporary);
-        return Err(SqliteStoreOpenError::Path(error));
-    }
-    sync_parent(&destination)?;
-    Ok(())
+    restore_verified_migration_backup_with_hooks(source, destination, |_, _| Ok(()), |_| Ok(()))
 }
 
-fn migration_backup_paths(path: &Path) -> Result<(PathBuf, PathBuf), SqliteStoreOpenError> {
+#[cfg(test)]
+fn restore_verified_migration_backup_with_hook<F>(
+    source: &Path,
+    destination: &Path,
+    before_publish: F,
+) -> Result<(), SqliteStoreOpenError>
+where
+    F: FnOnce(&Path) -> Result<(), SqliteStoreOpenError>,
+{
+    restore_verified_migration_backup_with_hooks(source, destination, |_, _| Ok(()), before_publish)
+}
+
+fn restore_verified_migration_backup_with_hooks<F, G>(
+    source: &Path,
+    destination: &Path,
+    before_sqlite_open: F,
+    before_publish: G,
+) -> Result<(), SqliteStoreOpenError>
+where
+    F: FnOnce(&Path, &Path) -> Result<(), SqliteStoreOpenError>,
+    G: FnOnce(&Path) -> Result<(), SqliteStoreOpenError>,
+{
+    let source = normalized_path(source)?;
+    let destination = normalized_path(destination)?;
+    let publication_parent = SqlitePublicationParent::open(&destination)
+        .map_err(|_| migration_backup_failure("restore-destination"))?;
+    publication_parent
+        .require_relative_absent(publication_parent.name())
+        .map_err(|_| migration_backup_failure("restore-destination"))?;
+    let (source_file, source_identity) = retain_sqlite_file(&source, false)
+        .map_err(|_| migration_backup_failure("restore-source"))?;
+    let temporary_name = format!(
+        ".{}.worldstream-migration-restore-{}.tmp",
+        destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| migration_backup_failure("restore-destination"))?,
+        publication_nonce().map_err(|_| migration_backup_failure("restore-destination"))?
+    );
+    let temporary = publication_parent.path_for(OsStr::new(&temporary_name));
+    let mut temporary_file = publication_parent
+        .create_staging(OsStr::new(&temporary_name))
+        .map_err(|_| migration_backup_failure("restore-destination"))?;
+    let temporary_identity = publication_file_identity(&temporary_file)
+        .map_err(|_| migration_backup_failure("restore-destination"))?;
+    let result = (|| {
+        before_sqlite_open(&source, &temporary)?;
+        require_retained_sqlite_name(&source, &source_file, source_identity)
+            .map_err(|_| migration_backup_failure("restore-source"))?;
+        publication_parent
+            .require_named()
+            .and_then(|()| {
+                publication_parent
+                    .require_relative_identity(OsStr::new(&temporary_name), temporary_identity)
+            })
+            .map_err(|_| migration_backup_failure("restore-destination"))?;
+        let source_connection = open_retained_sqlite(
+            &source_file,
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| migration_backup_failure("restore-source"))?;
+        let source_witness = native_migration_witness(&source_connection)?;
+        let mut destination_connection = open_retained_sqlite(
+            &temporary_file,
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| migration_backup_failure("restore-destination"))?;
+        destination_connection
+            .execute_batch("PRAGMA journal_mode=MEMORY;")
+            .map_err(|_| migration_backup_failure("restore-destination"))?;
+        let backup = Backup::new(&source_connection, &mut destination_connection)
+            .map_err(|_| migration_backup_failure("restore"))?;
+        backup
+            .run_to_completion(128, Duration::from_millis(10), None)
+            .map_err(|_| migration_backup_failure("restore"))?;
+        drop(backup);
+        require_standalone_delete_journal(&destination_connection)
+            .map_err(|_| migration_backup_failure("restore"))?;
+        drop(destination_connection);
+        remove_sqlite_sidecars(&temporary)?;
+        temporary_file
+            .sync_all()
+            .map_err(|_| migration_backup_failure("backup-sync"))?;
+        let destination_connection = open_retained_sqlite(
+            &temporary_file,
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| migration_backup_failure("restore-verification"))?;
+        if native_migration_witness(&destination_connection)? != source_witness {
+            return Err(migration_backup_failure("restore-verification"));
+        }
+        drop(destination_connection);
+        remove_sqlite_sidecars(&temporary)?;
+        temporary_file = publication_parent
+            .reopen_staging_for_publication(
+                OsStr::new(&temporary_name),
+                &temporary_file,
+                temporary_identity,
+            )
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        publish_migration_staging(
+            &publication_parent,
+            &temporary,
+            &mut temporary_file,
+            temporary_identity,
+            before_publish,
+        )
+    })();
+    if result.is_err() && !scrub_migration_staging(&temporary_file, temporary_identity) {
+        return Err(migration_backup_failure("publication-cleanup"));
+    }
+    result
+}
+
+fn migration_backup_paths(
+    path: &Path,
+) -> Result<(SqlitePublicationParent, PathBuf, File, TransferFileIdentity), SqliteStoreOpenError> {
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| migration_backup_failure("path"))?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    for attempt in 0..100_u64 {
-        let suffix = format!(
-            ".{file_name}.{MIGRATION_BACKUP_PREFIX}.{}-{attempt}",
-            std::process::id()
-        );
-        let destination = parent.join(&suffix);
-        if fs::symlink_metadata(&destination).is_ok() {
+    let parent_path = path.parent().unwrap_or_else(|| Path::new("."));
+    for _ in 0..100_u64 {
+        let nonce =
+            publication_nonce().map_err(|_| migration_backup_failure("temporary-publication"))?;
+        let suffix = format!(".{file_name}.{MIGRATION_BACKUP_PREFIX}.{nonce}");
+        let destination = parent_path.join(&suffix);
+        let publication_parent = SqlitePublicationParent::open(&destination)
+            .map_err(|_| migration_backup_failure("temporary-publication"))?;
+        if publication_parent
+            .require_relative_absent(publication_parent.name())
+            .is_err()
+        {
             continue;
         }
-        let temporary = parent.join(format!("{suffix}.tmp"));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
-            Ok(_) => return Ok((temporary, destination)),
+        let temporary_name = format!(
+            "{suffix}.{}.tmp",
+            publication_nonce()
+                .map_err(|_| { migration_backup_failure("temporary-publication") })?
+        );
+        let temporary = publication_parent.path_for(OsStr::new(&temporary_name));
+        match publication_parent.create_staging(OsStr::new(&temporary_name)) {
+            Ok(file) => {
+                let identity = publication_file_identity(&file)
+                    .map_err(|_| migration_backup_failure("temporary-publication"))?;
+                return Ok((publication_parent, temporary, file, identity));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(_) => return Err(migration_backup_failure("temporary-publication")),
         }
@@ -10080,27 +11871,109 @@ fn migration_backup_paths(path: &Path) -> Result<(PathBuf, PathBuf), SqliteStore
     Err(migration_backup_failure("temporary-publication"))
 }
 
-fn sync_file(path: &Path) -> Result<(), SqliteStoreOpenError> {
-    File::open(path)
-        .and_then(|file| file.sync_all())
-        .map_err(|_| migration_backup_failure("backup-sync"))
+fn publish_migration_staging<F>(
+    parent: &SqlitePublicationParent,
+    temporary: &Path,
+    temporary_file: &mut File,
+    temporary_identity: TransferFileIdentity,
+    before_publish: F,
+) -> Result<(), SqliteStoreOpenError>
+where
+    F: FnOnce(&Path) -> Result<(), SqliteStoreOpenError>,
+{
+    let temporary_name = temporary
+        .file_name()
+        .ok_or_else(|| migration_backup_failure("destination-publication"))?;
+    parent
+        .require_named()
+        .and_then(|()| parent.require_relative_identity(temporary_name, temporary_identity))
+        .map_err(|_| migration_backup_failure("destination-publication"))?;
+    let expected = transfer_file_fingerprint(temporary_file)
+        .map_err(|_| migration_backup_failure("destination-publication"))?;
+    let (mut publication_file, publication_identity) =
+        prepare_transfer_publication_source(parent, temporary_file, expected)
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+    let mut published: Option<(File, TransferFileIdentity)> = None;
+    let mut source_moved = false;
+    let result = (|| {
+        before_publish(&parent.path_for(parent.name()))?;
+        parent
+            .require_named()
+            .and_then(|()| parent.require_relative_identity(temporary_name, temporary_identity))
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        let (moved, mut final_file) = parent
+            .publish_noreplace(&publication_file)
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        source_moved = moved;
+        let final_identity = publication_file_identity(&final_file)
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        published = Some((
+            final_file
+                .try_clone()
+                .map_err(|_| migration_backup_failure("destination-publication"))?,
+            final_identity,
+        ));
+        require_transfer_file_fingerprint(&mut publication_file, publication_identity, expected)
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        require_transfer_file_fingerprint(&mut final_file, final_identity, expected)
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        parent
+            .require_relative_identity(parent.name(), final_identity)
+            .and_then(|()| parent.require_named())
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        if source_moved {
+            parent
+                .require_relative_absent(temporary_name)
+                .map_err(|_| migration_backup_failure("destination-publication"))?;
+        } else {
+            finish_transfer_staging(parent, temporary_name, temporary_file, temporary_identity)
+                .map_err(|_| migration_backup_failure("destination-publication"))?;
+        }
+        parent
+            .sync()
+            .and_then(|()| parent.require_named())
+            .map_err(|_| migration_backup_failure("publication-sync"))?;
+        parent
+            .require_relative_identity(parent.name(), final_identity)
+            .map_err(|_| migration_backup_failure("destination-publication"))?;
+        require_transfer_file_fingerprint(&mut final_file, final_identity, expected)
+            .map_err(|_| migration_backup_failure("destination-publication"))
+    })();
+    if result.is_err() {
+        let mut complete = scrub_migration_staging(temporary_file, temporary_identity);
+        complete &= scrub_transfer_file(&publication_file, publication_identity);
+        if let Some((file, identity)) = published.as_ref() {
+            complete &= scrub_transfer_file(file, *identity);
+        }
+        complete &= parent.sync().is_ok();
+        if !complete {
+            return Err(migration_backup_failure("publication-cleanup"));
+        }
+    }
+    result
+}
+
+fn scrub_migration_staging(file: &File, identity: TransferFileIdentity) -> bool {
+    scrub_transfer_file(file, identity)
 }
 
 fn remove_sqlite_sidecars(path: &Path) -> Result<(), SqliteStoreOpenError> {
     for suffix in ["-wal", "-shm"] {
         let sidecar = PathBuf::from(format!("{}{}", path.display(), suffix));
-        match fs::remove_file(sidecar) {
-            Ok(()) => {}
+        match fs::symlink_metadata(sidecar) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(migration_backup_failure("sidecar-cleanup")),
+            Ok(_) | Err(_) => return Err(migration_backup_failure("sidecar-cleanup")),
         }
     }
     Ok(())
 }
 
-fn remove_native_artifact(path: &Path) {
-    let _ = fs::remove_file(path);
-    let _ = remove_sqlite_sidecars(path);
+fn require_standalone_delete_journal(connection: &Connection) -> rusqlite::Result<()> {
+    let mode: String = connection.query_row("PRAGMA journal_mode=DELETE", (), |row| row.get(0))?;
+    if mode != "delete" {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(())
 }
 
 fn sync_parent(path: &Path) -> Result<(), SqliteStoreOpenError> {
@@ -10114,6 +11987,1142 @@ fn sync_parent(path: &Path) -> Result<(), SqliteStoreOpenError> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+fn secure_transfer_backup(file: &File) -> Result<(), SqliteSourceTransferErrorV1> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if !metadata.file_type().is_file() {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o400))
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(true);
+        file.set_permissions(permissions)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    }
+    file.sync_all()
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    Ok(())
+}
+
+fn create_verified_transfer_backup(
+    source: &Connection,
+    destination: &Path,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1> {
+    create_verified_transfer_backup_with_hooks(source, destination, |_| Ok(()), |_| Ok(()))
+}
+
+#[allow(clippy::too_many_lines)]
+#[cfg(test)]
+fn create_verified_transfer_backup_with_publish_hook<F>(
+    source: &Connection,
+    destination: &Path,
+    before_publish: F,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1>
+where
+    F: FnOnce(&Path) -> Result<(), SqliteSourceTransferErrorV1>,
+{
+    create_verified_transfer_backup_with_hooks(source, destination, |_| Ok(()), before_publish)
+}
+
+#[allow(clippy::too_many_lines)]
+fn create_verified_transfer_backup_with_hooks<F, G>(
+    source: &Connection,
+    destination: &Path,
+    before_sqlite_open: F,
+    before_publish: G,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1>
+where
+    F: FnOnce(&Path) -> Result<(), SqliteSourceTransferErrorV1>,
+    G: FnOnce(&Path) -> Result<(), SqliteSourceTransferErrorV1>,
+{
+    let publication_parent = SqlitePublicationParent::open(destination)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    publication_parent
+        .require_relative_absent(publication_parent.name())
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    let destination_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    let temporary_name = format!(
+        ".{destination_name}.worldstream-transfer-{}.tmp",
+        publication_nonce().map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?
+    );
+    let temporary = publication_parent.path_for(OsStr::new(&temporary_name));
+    let mut temporary_file = publication_parent
+        .create_staging(OsStr::new(&temporary_name))
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    let temporary_identity = transfer_file_identity(&temporary_file)?;
+
+    let mut published: Option<(File, TransferFileIdentity)> = None;
+    let mut source_moved = false;
+    let result = (|| {
+        let source_export = read_canonical_export_from_connection(source)
+            .map_err(|_| SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)?;
+        let source_digest = durable_transfer_point_digest(source)?;
+        before_sqlite_open(&temporary)?;
+        publication_parent
+            .require_named()
+            .and_then(|()| {
+                publication_parent
+                    .require_relative_identity(OsStr::new(&temporary_name), temporary_identity)
+            })
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let mut destination_connection = open_retained_sqlite(
+            &temporary_file,
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        destination_connection
+            .execute_batch("PRAGMA journal_mode=MEMORY;")
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        let backup = Backup::new(source, &mut destination_connection)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        backup
+            .run_to_completion(128, Duration::from_millis(10), None)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        drop(backup);
+        require_standalone_delete_journal(&destination_connection)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        drop(destination_connection);
+        remove_sqlite_sidecars(&temporary)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        temporary_file
+            .sync_all()
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+
+        let destination_connection = open_retained_sqlite(
+            &temporary_file,
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+        native_migration_witness(&destination_connection)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+        verify_schema(&destination_connection)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+        let foreign_key_violation = destination_connection
+            .prepare("PRAGMA foreign_key_check")
+            .and_then(|mut statement| statement.exists(()))
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+        if foreign_key_violation
+            || durable_transfer_point_digest(&destination_connection)? != source_digest
+            || read_canonical_export_from_connection(&destination_connection)
+                .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?
+                != source_export
+        {
+            return Err(SqliteSourceTransferErrorV1::BackupVerificationFailed);
+        }
+        drop(destination_connection);
+        temporary_file
+            .sync_all()
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        temporary_file = publication_parent
+            .reopen_staging_for_publication(
+                OsStr::new(&temporary_name),
+                &temporary_file,
+                temporary_identity,
+            )
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        publication_parent
+            .require_named()
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        publication_parent
+            .require_relative_identity(OsStr::new(&temporary_name), temporary_identity)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let expected = transfer_file_fingerprint(&mut temporary_file)?;
+        let (mut publication_file, publication_identity) = prepare_transfer_publication_source(
+            &publication_parent,
+            &mut temporary_file,
+            expected,
+        )?;
+        before_publish(&temporary)?;
+        publication_parent
+            .require_named()
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        publication_parent
+            .require_relative_identity(OsStr::new(&temporary_name), temporary_identity)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let (moved, mut final_file) =
+            publish_transfer_handle_noreplace(&publication_file, &publication_parent)?;
+        source_moved = moved;
+        let final_identity = transfer_file_identity(&final_file)?;
+        published = Some((
+            final_file
+                .try_clone()
+                .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?,
+            final_identity,
+        ));
+        require_transfer_file_fingerprint(&mut publication_file, publication_identity, expected)?;
+        require_transfer_file_fingerprint(&mut final_file, final_identity, expected)?;
+        publication_parent
+            .require_relative_identity(publication_parent.name(), final_identity)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        if source_moved {
+            publication_parent
+                .require_relative_absent(OsStr::new(&temporary_name))
+                .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        } else {
+            publication_parent
+                .require_relative_identity(OsStr::new(&temporary_name), temporary_identity)
+                .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        }
+        secure_transfer_backup(&final_file)?;
+        publication_parent
+            .sync()
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        if !source_moved {
+            finish_transfer_staging(
+                &publication_parent,
+                OsStr::new(&temporary_name),
+                &temporary_file,
+                temporary_identity,
+            )?;
+        }
+        publication_parent
+            .sync()
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        publication_parent
+            .require_named()
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        publication_parent
+            .require_relative_identity(publication_parent.name(), final_identity)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        require_transfer_file_fingerprint(&mut final_file, final_identity, expected)?;
+        Ok(VerifiedTransferBackup {
+            digest: source_digest,
+            identity: persisted_transfer_identity(final_identity),
+        })
+    })();
+    if result.is_err()
+        && !cleanup_transfer_publication(
+            &temporary,
+            temporary_identity,
+            &temporary_file,
+            &publication_parent,
+            published.as_ref(),
+            source_moved,
+        )
+    {
+        return Err(SqliteSourceTransferErrorV1::BackupFailed);
+    }
+    result
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TransferFileFingerprint {
+    byte_len: u64,
+    digest: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TransferBackupIdentity {
+    storage_id: u64,
+    file_id: u128,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VerifiedTransferBackup {
+    digest: DigestV1,
+    identity: TransferBackupIdentity,
+}
+
+#[cfg(unix)]
+type TransferFileIdentity = (u64, u64);
+
+#[cfg(windows)]
+type TransferFileIdentity = fs_id::FileID;
+
+#[cfg(unix)]
+const fn public_sqlite_file_identity(identity: TransferFileIdentity) -> SqliteFileIdentityV1 {
+    SqliteFileIdentityV1 {
+        storage_id: identity.0,
+        file_id: identity.1 as u128,
+    }
+}
+
+#[cfg(windows)]
+const fn public_sqlite_file_identity(identity: TransferFileIdentity) -> SqliteFileIdentityV1 {
+    SqliteFileIdentityV1 {
+        storage_id: identity.storage_id(),
+        file_id: identity.internal_file_id(),
+    }
+}
+
+fn decode_fixed_hex_u64(value: &str) -> Result<u64, SqliteSourceTransferErrorV1> {
+    if value.len() != 16
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+    {
+        return Err(SqliteSourceTransferErrorV1::Corrupt);
+    }
+    u64::from_str_radix(value, 16).map_err(|_| SqliteSourceTransferErrorV1::Corrupt)
+}
+
+fn decode_fixed_hex_u128(value: &str) -> Result<u128, SqliteSourceTransferErrorV1> {
+    if value.len() != 32
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+    {
+        return Err(SqliteSourceTransferErrorV1::Corrupt);
+    }
+    u128::from_str_radix(value, 16).map_err(|_| SqliteSourceTransferErrorV1::Corrupt)
+}
+
+#[cfg(unix)]
+const fn persisted_transfer_identity(identity: TransferFileIdentity) -> TransferBackupIdentity {
+    TransferBackupIdentity {
+        storage_id: identity.0,
+        file_id: identity.1 as u128,
+    }
+}
+
+#[cfg(windows)]
+const fn persisted_transfer_identity(identity: TransferFileIdentity) -> TransferBackupIdentity {
+    TransferBackupIdentity {
+        storage_id: identity.storage_id(),
+        file_id: identity.internal_file_id(),
+    }
+}
+
+fn prepare_transfer_publication_source(
+    parent: &SqlitePublicationParent,
+    staging: &mut File,
+    expected: TransferFileFingerprint,
+) -> Result<(File, TransferFileIdentity), SqliteSourceTransferErrorV1> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::fs::{Mode, OFlags};
+        use std::io::Write as _;
+
+        let descriptor = rustix::fs::openat(
+            parent.directory(),
+            ".",
+            OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        let mut publication = File::from(descriptor);
+        staging
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        let mut remaining = expected.byte_len;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while remaining != 0 {
+            let limit = usize::try_from(remaining.min(buffer.len() as u64))
+                .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+            let read = staging
+                .read(&mut buffer[..limit])
+                .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+            if read == 0 {
+                return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+            }
+            publication
+                .write_all(&buffer[..read])
+                .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+            remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
+        }
+        let mut extra = [0_u8; 1];
+        if staging
+            .read(&mut extra)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?
+            != 0
+        {
+            return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+        }
+        publication
+            .sync_all()
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        let identity = transfer_file_identity(&publication)?;
+        require_transfer_file_fingerprint(&mut publication, identity, expected)?;
+        return Ok((publication, identity));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        parent
+            .require_named()
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let mut publication = staging
+            .try_clone()
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        let identity = transfer_file_identity(&publication)?;
+        require_transfer_file_fingerprint(&mut publication, identity, expected)?;
+        Ok((publication, identity))
+    }
+}
+
+fn transfer_file_fingerprint(
+    file: &mut File,
+) -> Result<TransferFileFingerprint, SqliteSourceTransferErrorV1> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut byte_len = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+        if read == 0 {
+            break;
+        }
+        byte_len = byte_len
+            .checked_add(u64::try_from(read).unwrap_or(u64::MAX))
+            .ok_or(SqliteSourceTransferErrorV1::BackupFailed)?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok(TransferFileFingerprint {
+        byte_len,
+        digest: *hasher.finalize().as_bytes(),
+    })
+}
+
+fn require_transfer_file_fingerprint(
+    file: &mut File,
+    identity: TransferFileIdentity,
+    expected: TransferFileFingerprint,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    if transfer_file_identity(file)? != identity || transfer_file_fingerprint(file)? != expected {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn transfer_file_identity(
+    file: &File,
+) -> Result<TransferFileIdentity, SqliteSourceTransferErrorV1> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    file.metadata()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)
+}
+
+#[cfg(windows)]
+fn transfer_file_identity(
+    file: &File,
+) -> Result<TransferFileIdentity, SqliteSourceTransferErrorV1> {
+    fs_id::FileID::new(file).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)
+}
+
+#[cfg(unix)]
+fn transfer_file_has_single_link(file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    file.metadata().is_ok_and(|metadata| metadata.nlink() == 1)
+}
+
+#[cfg(windows)]
+fn transfer_file_has_single_link(file: &File) -> bool {
+    worldstream_windows_handle::hard_link_count(file).is_ok_and(|count| count == 1)
+}
+
+fn scrub_transfer_file(file: &File, expected: TransferFileIdentity) -> bool {
+    if publication_file_identity(file).ok() != Some(expected)
+        || !transfer_file_has_single_link(file)
+    {
+        return false;
+    }
+    if file.set_len(0).and_then(|()| file.sync_all()).is_err() {
+        return false;
+    }
+    publication_file_identity(file).ok() == Some(expected)
+        && transfer_file_has_single_link(file)
+        && file.metadata().is_ok_and(|metadata| metadata.len() == 0)
+}
+
+#[cfg(unix)]
+fn transfer_path_identity(path: &Path) -> io::Result<TransferFileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(io::Error::other("transfer backup is not a regular file"));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn transfer_path_identity(path: &Path) -> io::Result<TransferFileIdentity> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(io::Error::other("transfer backup is not a regular file"));
+    }
+    fs_id::FileID::new(path)
+}
+
+fn retain_sqlite_file(path: &Path, writable: bool) -> io::Result<(File, TransferFileIdentity)> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(io::Error::other(
+            "retained SQLite object is not a regular file",
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(writable);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+        let flags =
+            i32::try_from(flags.bits()).map_err(|_| io::Error::other("retained SQLite flags"))?;
+        options.custom_flags(flags);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
+    let file = options.open(path)?;
+    let identity = publication_file_identity(&file)?;
+    require_retained_sqlite_name(path, &file, identity)?;
+    Ok((file, identity))
+}
+
+fn retain_or_create_writer_database(
+    path: &Path,
+) -> Result<(File, TransferFileIdentity), SqliteStoreOpenError> {
+    match retain_sqlite_file(path, true) {
+        Ok(retained) => Ok(retained),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut options = OpenOptions::new();
+            options
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+                let flags =
+                    i32::try_from(flags.bits()).map_err(|_| SqliteStoreOpenError::UnsafePath)?;
+                options.mode(0o600).custom_flags(flags);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt as _;
+                use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+                options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+            }
+            let file = options.open(path).map_err(SqliteStoreOpenError::Path)?;
+            if !file
+                .metadata()
+                .map_err(SqliteStoreOpenError::Path)?
+                .file_type()
+                .is_file()
+            {
+                return Err(SqliteStoreOpenError::UnsafePath);
+            }
+            let identity = publication_file_identity(&file).map_err(SqliteStoreOpenError::Path)?;
+            require_retained_sqlite_name(path, &file, identity)
+                .map_err(SqliteStoreOpenError::Path)?;
+            Ok((file, identity))
+        }
+        Err(error) => Err(SqliteStoreOpenError::Path(error)),
+    }
+}
+
+fn require_retained_sqlite_name(
+    path: &Path,
+    file: &File,
+    identity: TransferFileIdentity,
+) -> io::Result<()> {
+    if publication_file_identity(file)? != identity || transfer_path_identity(path)? != identity {
+        return Err(io::Error::other("retained SQLite identity changed"));
+    }
+    Ok(())
+}
+
+fn reopen_retained_sqlite_writable(
+    retained: &File,
+    path: &Path,
+    identity: TransferFileIdentity,
+) -> io::Result<File> {
+    if publication_file_identity(retained)? != identity || !transfer_file_has_single_link(retained)
+    {
+        return Err(io::Error::other("retained SQLite cleanup is not exclusive"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+        retained.set_permissions(fs::Permissions::from_mode(0o600))?;
+        if publication_file_identity(retained)? != identity
+            || !transfer_file_has_single_link(retained)
+        {
+            return Err(io::Error::other("retained SQLite cleanup changed identity"));
+        }
+        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+        let flags = i32::try_from(flags.bits())
+            .map_err(|_| io::Error::other("writable SQLite cleanup flags"))?;
+        let writable = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(flags)
+            .open(path)?;
+        if publication_file_identity(&writable)? != identity
+            || !transfer_file_has_single_link(&writable)
+        {
+            return Err(io::Error::other("writable SQLite cleanup identity changed"));
+        }
+        return Ok(writable);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let mut permissions = retained.metadata()?.permissions();
+        permissions.set_readonly(false);
+        retained.set_permissions(permissions)?;
+        if publication_file_identity(retained)? != identity
+            || !transfer_file_has_single_link(retained)
+        {
+            return Err(io::Error::other("retained SQLite cleanup changed identity"));
+        }
+        let writable = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(path)?;
+        if publication_file_identity(&writable)? != identity
+            || !transfer_file_has_single_link(&writable)
+        {
+            return Err(io::Error::other("writable SQLite cleanup identity changed"));
+        }
+        return Ok(writable);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (retained, path, identity);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported retained SQLite cleanup platform",
+        ))
+    }
+}
+
+fn open_retained_sqlite(
+    file: &File,
+    path: &Path,
+    flags: OpenFlags,
+) -> Result<ExactSqliteConnection, ExactSqliteOpenError> {
+    let retained = file
+        .try_clone()
+        .map_err(ExactSqliteOpenError::RetainedFile)?;
+    open_exact(retained, path, flags)
+}
+
+#[cfg(test)]
+fn require_transfer_named_identity(
+    path: &Path,
+    expected: TransferFileIdentity,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    if transfer_path_identity(path).ok() != Some(expected) {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    Ok(())
+}
+
+fn finish_transfer_staging(
+    parent: &SqlitePublicationParent,
+    name: &OsStr,
+    file: &File,
+    identity: TransferFileIdentity,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    parent
+        .require_relative_identity(name, identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if !scrub_transfer_file(file, identity) {
+        return Err(SqliteSourceTransferErrorV1::BackupFailed);
+    }
+    parent
+        .require_relative_identity(name, identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if file
+        .metadata()
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?
+        .len()
+        != 0
+    {
+        return Err(SqliteSourceTransferErrorV1::BackupFailed);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn remove_transfer_named_identity_with_hook<F>(
+    path: &Path,
+    identity: TransferFileIdentity,
+    after_identity_check: F,
+) -> Result<(), SqliteSourceTransferErrorV1>
+where
+    F: FnOnce() -> Result<(), SqliteSourceTransferErrorV1>,
+{
+    require_transfer_named_identity(path, identity)?;
+    after_identity_check()?;
+    if transfer_path_identity(path).ok() != Some(identity) {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    Err(SqliteSourceTransferErrorV1::BackupFailed)
+}
+
+fn publish_transfer_handle_noreplace(
+    source: &File,
+    publication_parent: &SqlitePublicationParent,
+) -> Result<(bool, File), SqliteSourceTransferErrorV1> {
+    match publication_parent.publish_noreplace(source) {
+        Ok(value) => Ok(value),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            Err(SqliteSourceTransferErrorV1::UnsafeBackupPath)
+        }
+        Err(_) => Err(SqliteSourceTransferErrorV1::BackupFailed),
+    }
+}
+
+fn cleanup_transfer_publication(
+    temporary: &Path,
+    temporary_identity: TransferFileIdentity,
+    temporary_file: &File,
+    publication_parent: &SqlitePublicationParent,
+    published: Option<&(File, TransferFileIdentity)>,
+    source_moved: bool,
+) -> bool {
+    let source_scrubbed = scrub_transfer_file(temporary_file, temporary_identity);
+    let mut complete = source_scrubbed;
+    if let Some((final_file, final_identity)) = published {
+        let final_scrubbed = scrub_transfer_file(final_file, *final_identity);
+        let final_bound = publication_parent
+            .require_relative_identity(publication_parent.name(), *final_identity)
+            .is_ok()
+            && final_file
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() == 0);
+        complete &= final_scrubbed && final_bound;
+    }
+    if source_moved {
+        complete &= temporary
+            .file_name()
+            .is_some_and(|name| publication_parent.require_relative_absent(name).is_ok());
+    } else {
+        complete &= transfer_file_identity(temporary_file).ok() == Some(temporary_identity)
+            && temporary_file
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() == 0);
+    }
+    complete &= publication_parent.sync().is_ok();
+    complete
+}
+
+fn open_verified_transfer_backup(
+    status: &SqliteSourceTransferStatusV1,
+) -> Result<ExactSqliteConnection, SqliteSourceTransferErrorV1> {
+    let path = status
+        .backup_path()
+        .ok_or(SqliteSourceTransferErrorV1::Corrupt)?;
+    let normalized =
+        normalized_path(path).map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if normalized != path {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    let expected_identity = status
+        .backup_identity
+        .ok_or(SqliteSourceTransferErrorV1::Corrupt)?;
+    let (retained, identity) = retain_sqlite_file(path, false)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if persisted_transfer_identity(identity) != expected_identity {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    let connection = open_retained_sqlite(
+        &retained,
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    native_migration_witness(&connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    verify_schema(&connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    let expected = status
+        .backup_digest()
+        .ok_or(SqliteSourceTransferErrorV1::Corrupt)?;
+    if durable_transfer_point_digest(&connection)? != expected {
+        return Err(SqliteSourceTransferErrorV1::BackupFailed);
+    }
+    require_retained_sqlite_name(path, &retained, identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if persisted_transfer_identity(identity) != expected_identity {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    Ok(connection)
+}
+
+fn remove_verified_transfer_backup(
+    path: &Path,
+    expected: VerifiedTransferBackup,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    remove_verified_transfer_backup_with_hook(path, expected, || Ok(()))
+}
+
+fn remove_verified_transfer_backup_with_hook<F>(
+    path: &Path,
+    expected: VerifiedTransferBackup,
+    after_verification: F,
+) -> Result<(), SqliteSourceTransferErrorV1>
+where
+    F: FnOnce() -> Result<(), SqliteSourceTransferErrorV1>,
+{
+    let (retained, identity) = retain_sqlite_file(path, false)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    if persisted_transfer_identity(identity) != expected.identity {
+        return Err(SqliteSourceTransferErrorV1::UnsafeBackupPath);
+    }
+    let connection = open_retained_sqlite(
+        &retained,
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    if durable_transfer_point_digest(&connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?
+        != expected.digest
+    {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    drop(connection);
+    after_verification()?;
+    require_retained_sqlite_name(path, &retained, identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    remove_sqlite_sidecars(path).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    if !transfer_file_has_single_link(&retained) {
+        return Err(SqliteSourceTransferErrorV1::BackupFailed);
+    }
+    let writable = reopen_retained_sqlite_writable(&retained, path, identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    if !scrub_transfer_file(&writable, identity) {
+        return Err(SqliteSourceTransferErrorV1::BackupFailed);
+    }
+    require_retained_sqlite_name(path, &writable, identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    sync_parent(path).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+    if writable
+        .metadata()
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?
+        .len()
+        != 0
+    {
+        return Err(SqliteSourceTransferErrorV1::BackupFailed);
+    }
+    Ok(())
+}
+
+fn begin_source_transfer(
+    connection: &mut Connection,
+    backup_path: &Path,
+) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+    begin_source_transfer_with_hook(connection, backup_path, || Ok(()))
+}
+
+#[allow(clippy::too_many_lines)]
+fn begin_source_transfer_with_hook<F>(
+    connection: &mut Connection,
+    backup_path: &Path,
+    after_verified_backup: F,
+) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>
+where
+    F: FnOnce() -> Result<(), SqliteSourceTransferErrorV1>,
+{
+    let current = read_source_transfer_status(connection)?;
+    if current.state() != SqliteSourceTransferStateV1::SourceAuthoritative {
+        return Err(
+            if current.state() == SqliteSourceTransferStateV1::SourceRetired {
+                SqliteSourceTransferErrorV1::SourceRetired
+            } else {
+                SqliteSourceTransferErrorV1::NotSourceAuthoritative {
+                    actual: current.state(),
+                }
+            },
+        );
+    }
+    let export = read_canonical_export_from_connection(connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)?;
+    let source_epoch = export.storage_epoch();
+    let target_epoch = source_epoch
+        .checked_add(1)
+        .filter(|value| *value <= MAX_SAFE_INTEGER as u64)
+        .ok_or(SqliteSourceTransferErrorV1::StorageEpochExhausted)?;
+    let source_epoch_i64 =
+        i64::try_from(source_epoch).map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?;
+    let target_epoch_i64 =
+        i64::try_from(target_epoch).map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?;
+    let backup_path_text = backup_path
+        .to_str()
+        .ok_or(SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    let backup = create_verified_transfer_backup(connection, backup_path)?;
+    let backup_storage_id = format!("{:016x}", backup.identity.storage_id);
+    let backup_file_id = format!("{:032x}", backup.identity.file_id);
+    let mut commit_attempted = false;
+    let freeze_result = (|| {
+        after_verified_backup()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        let frozen_digest = durable_transfer_point_digest(&transaction)?;
+        let frozen_export = read_canonical_export_from_connection(&transaction)
+            .map_err(|_| SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)?;
+        if frozen_digest != backup.digest || frozen_export != export {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE source_transfer_lifecycle SET state = 'transfer_pending', \
+                 source_epoch = ?1, target_epoch = ?2, backup_path = ?3, backup_digest = ?4, \
+                 backup_storage_id = ?5, backup_file_id = ?6, \
+                 bundle_hash = NULL, target_fingerprint = NULL, \
+                 last_aborted_bundle_hash = NULL, last_aborted_target_fingerprint = NULL \
+                 WHERE lifecycle_id = 1 AND state = 'source_authoritative'",
+                params![
+                    source_epoch_i64,
+                    target_epoch_i64,
+                    backup_path_text,
+                    backup.digest.as_bytes().as_slice(),
+                    backup_storage_id,
+                    backup_file_id,
+                ],
+            )
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        if changed != 1 {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        commit_attempted = true;
+        transaction
+            .commit()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)
+    })();
+    if let Err(error) = freeze_result {
+        if !commit_attempted {
+            remove_verified_transfer_backup(backup_path, backup)?;
+            return Err(error);
+        }
+        let status = read_source_transfer_status(connection)?;
+        if status.state() == SqliteSourceTransferStateV1::SourceAuthoritative {
+            remove_verified_transfer_backup(backup_path, backup)?;
+            return Err(error);
+        }
+        if status.state() != SqliteSourceTransferStateV1::TransferPending
+            || status.source_epoch() != Some(source_epoch)
+            || status.target_epoch() != Some(target_epoch)
+            || status.backup_path() != Some(backup_path)
+            || status.backup_digest() != Some(backup.digest)
+            || status.backup_identity != Some(backup.identity)
+        {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+    }
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    let status = read_source_transfer_status(connection)?;
+    if status.state() != SqliteSourceTransferStateV1::TransferPending
+        || status.source_epoch() != Some(source_epoch)
+        || status.target_epoch() != Some(target_epoch)
+        || status.backup_path() != Some(backup_path)
+        || status.backup_digest() != Some(backup.digest)
+        || status.backup_identity != Some(backup.identity)
+    {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    Ok(status)
+}
+
+fn verify_provider_binding_at_frozen_source(
+    connection: &Connection,
+    current: &SqliteSourceTransferStatusV1,
+    binding: &SqliteVerifiedTargetBindingV1,
+) -> Result<(), SqliteSourceTransferErrorV1> {
+    if current.source_epoch() != Some(binding.source_epoch)
+        || current.target_epoch() != Some(binding.target_epoch)
+        || binding.source_epoch.checked_add(1) != Some(binding.target_epoch)
+        || current
+            .bundle_hash()
+            .is_some_and(|value| value != binding.bundle_hash)
+        || current
+            .target_fingerprint()
+            .is_some_and(|value| value != binding.target_fingerprint)
+    {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    let backup = open_verified_transfer_backup(current)?;
+    let export = read_canonical_export_from_connection(&backup)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    if export.storage_epoch() != binding.source_epoch
+        || export.deployment_lineage() != binding.lineage_id
+        || durable_transfer_point_digest(connection)? != durable_transfer_point_digest(&backup)?
+    {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    Ok(())
+}
+
+fn restore_source_after_abort(
+    connection: &mut Connection,
+    binding: &SqliteVerifiedTargetBindingV1,
+) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+    let current = read_source_transfer_status(connection)?;
+    if current.state() == SqliteSourceTransferStateV1::SourceAuthoritative {
+        return if current.last_aborted_bundle_hash == Some(binding.bundle_hash)
+            && current.last_aborted_target_fingerprint == Some(binding.target_fingerprint)
+        {
+            Ok(current)
+        } else {
+            Err(SqliteSourceTransferErrorV1::EvidenceMismatch)
+        };
+    }
+    if current.state() != SqliteSourceTransferStateV1::TransferPending {
+        return Err(
+            if current.state() == SqliteSourceTransferStateV1::SourceRetired {
+                SqliteSourceTransferErrorV1::SourceRetired
+            } else {
+                SqliteSourceTransferErrorV1::NotTransferPending {
+                    actual: current.state(),
+                }
+            },
+        );
+    }
+    verify_provider_binding_at_frozen_source(connection, &current, binding)?;
+    connection
+        .pragma_update(None, "query_only", false)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    let changed = transaction
+        .execute(
+            "UPDATE source_transfer_lifecycle SET state = 'source_authoritative', \
+             source_epoch = NULL, target_epoch = NULL, backup_path = NULL, backup_digest = NULL, \
+             backup_storage_id = NULL, backup_file_id = NULL, \
+             bundle_hash = NULL, target_fingerprint = NULL, \
+             last_aborted_bundle_hash = ?1, last_aborted_target_fingerprint = ?2 \
+             WHERE lifecycle_id = 1 AND state = 'transfer_pending' \
+             AND source_epoch = ?3 AND target_epoch = ?4 \
+             AND (bundle_hash IS NULL OR bundle_hash = ?1) \
+             AND (target_fingerprint IS NULL OR target_fingerprint = ?2)",
+            params![
+                binding.bundle_hash.as_bytes().as_slice(),
+                binding.target_fingerprint.as_bytes().as_slice(),
+                i64::try_from(binding.source_epoch)
+                    .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+                i64::try_from(binding.target_epoch)
+                    .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+            ],
+        )
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    if changed != 1 {
+        return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+    }
+    transaction
+        .commit()
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    read_source_transfer_status(connection)
+}
+
+fn retire_source_after_finalization(
+    connection: &mut Connection,
+    binding: &SqliteVerifiedTargetBindingV1,
+) -> Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1> {
+    let current = read_source_transfer_status(connection)?;
+    if current.state() == SqliteSourceTransferStateV1::SourceRetired {
+        return if current.bundle_hash() == Some(binding.bundle_hash)
+            && current.target_fingerprint() == Some(binding.target_fingerprint)
+            && current.source_epoch() == Some(binding.source_epoch)
+            && current.target_epoch() == Some(binding.target_epoch)
+        {
+            verify_provider_binding_at_frozen_source(connection, &current, binding)?;
+            Ok(current)
+        } else {
+            Err(SqliteSourceTransferErrorV1::SourceRetired)
+        };
+    }
+    if current.state() != SqliteSourceTransferStateV1::TransferPending {
+        return Err(SqliteSourceTransferErrorV1::NotTransferPending {
+            actual: current.state(),
+        });
+    }
+    verify_provider_binding_at_frozen_source(connection, &current, binding)?;
+    connection
+        .pragma_update(None, "query_only", false)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    let result = (|| {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        let changed = transaction
+            .execute(
+                "UPDATE source_transfer_lifecycle SET state = 'source_retired', \
+                 bundle_hash = ?1, target_fingerprint = ?2 \
+                 WHERE lifecycle_id = 1 AND state = 'transfer_pending' \
+                 AND source_epoch = ?3 AND target_epoch = ?4 \
+                 AND (bundle_hash IS NULL OR bundle_hash = ?1) \
+                 AND (target_fingerprint IS NULL OR target_fingerprint = ?2)",
+                params![
+                    binding.bundle_hash.as_bytes().as_slice(),
+                    binding.target_fingerprint.as_bytes().as_slice(),
+                    i64::try_from(binding.source_epoch)
+                        .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+                    i64::try_from(binding.target_epoch)
+                        .map_err(|_| SqliteSourceTransferErrorV1::Corrupt)?,
+                ],
+            )
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        if changed != 1 {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        transaction
+            .commit()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        read_source_transfer_status(connection)
+    })();
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+    result
+}
+
+fn export_verified_transfer_point(
+    connection: &Connection,
+) -> Result<SqliteCanonicalExportV1, SqliteCanonicalExportErrorV1> {
+    let status = read_source_transfer_status(connection)
+        .map_err(|_| SqliteCanonicalExportErrorV1::BackupEvidenceMismatch)?;
+    if status.state() != SqliteSourceTransferStateV1::TransferPending {
+        return Err(SqliteCanonicalExportErrorV1::SourceNotTransferPending);
+    }
+    let backup = open_verified_transfer_backup(&status)
+        .map_err(|_| SqliteCanonicalExportErrorV1::BackupEvidenceMismatch)?;
+    read_canonical_export_from_connection(&backup)
 }
 
 const fn migration_backup_failure(operation: &'static str) -> SqliteStoreOpenError {
@@ -10145,6 +13154,8 @@ enum MigrationFailpoint {
     MigrationChecksums,
     DeploymentIdentities,
     TransferRecoveryCompleteness,
+    TransferLifecycle,
+    TransferBackupIdentity,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -10337,6 +13348,22 @@ fn migrate_with_failpoint_and_telemetry(
         fail_migration_at(failpoint, MigrationFailpoint::TransferRecoveryCompleteness)?;
         insert_migration(&transaction, history[8], has_checksum_column)?;
     }
+    if migrations.len() < 10 {
+        validate_transfer_lifecycle_upgrade_data(&transaction)?;
+        transaction
+            .execute_batch(history[9].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        fail_migration_at(failpoint, MigrationFailpoint::TransferLifecycle)?;
+        insert_migration(&transaction, history[9], has_checksum_column)?;
+    }
+    if migrations.len() < 11 {
+        validate_transfer_backup_identity_upgrade_data(&transaction)?;
+        transaction
+            .execute_batch(history[10].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        fail_migration_at(failpoint, MigrationFailpoint::TransferBackupIdentity)?;
+        insert_migration(&transaction, history[10], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -10353,6 +13380,45 @@ fn migrate_with_failpoint_and_telemetry(
     } else {
         SqliteMigrationPhaseV1::Applied
     });
+    Ok(())
+}
+
+fn validate_transfer_lifecycle_upgrade_data(
+    transaction: &Transaction<'_>,
+) -> Result<(), SqliteStoreOpenError> {
+    for table in [
+        "deployment_resource_identities",
+        "deployment_resource_blobs",
+    ] {
+        let duplicate_identity: bool = transaction
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {table} GROUP BY resource_identity HAVING count(*) > 1)"
+                ),
+                (),
+                |row| row.get(0),
+            )
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        if duplicate_identity {
+            return Err(SqliteStoreOpenError::MigrationData);
+        }
+    }
+    Ok(())
+}
+
+fn validate_transfer_backup_identity_upgrade_data(
+    transaction: &Transaction<'_>,
+) -> Result<(), SqliteStoreOpenError> {
+    let state: String = transaction
+        .query_row(
+            "SELECT state FROM source_transfer_lifecycle WHERE lifecycle_id = 1",
+            (),
+            |row| row.get(0),
+        )
+        .map_err(SqliteStoreOpenError::Sqlite)?;
+    if state != "source_authoritative" {
+        return Err(SqliteStoreOpenError::MigrationData);
+    }
     Ok(())
 }
 
@@ -10468,6 +13534,8 @@ fn fail_migration_at(
             MigrationFailpoint::TransferRecoveryCompleteness => {
                 "after-transfer-recovery-completeness-schema"
             }
+            MigrationFailpoint::TransferLifecycle => "after-transfer-lifecycle-schema",
+            MigrationFailpoint::TransferBackupIdentity => "after-transfer-backup-identity-schema",
         };
         return Err(SqliteStoreOpenError::MigrationInterrupted { boundary });
     }
@@ -11360,6 +14428,7 @@ fn activation_result(
 
 #[allow(clippy::too_many_lines, clippy::type_complexity)]
 fn prepare_activation_claim_readonly(
+    file: &File,
     path: &Path,
     registry: &PackRegistryV1,
     authority: &AuthorizedRunnerControlV1,
@@ -11384,7 +14453,8 @@ fn prepare_activation_claim_readonly(
         .ok_or(SqliteActivationErrorV1::InvalidRequest)?;
     let room_id = authority.target().room_id.to_string();
     let member_id = authority.target().member_id.to_string();
-    let connection = Connection::open_with_flags(
+    let connection = open_retained_sqlite(
+        file,
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -13663,6 +16733,7 @@ fn captured_replay_head_is_still_anchored(
 
 #[allow(clippy::too_many_lines)]
 fn read_authorized_replay_slice(
+    file: &File,
     path: &Path,
     registry: &PackRegistryV1,
     paging: &mut AuthorizedReplayPagingStateV1,
@@ -13681,9 +16752,12 @@ fn read_authorized_replay_slice(
     let started = Instant::now();
     let row_budget = replay_slice_row_budget(path);
     let mut rows_read = 0_usize;
-    let mut connection = Connection::open_with_flags(
+    let mut connection = open_retained_sqlite(
+        file,
         path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(|_| SqliteAuthorizedReplayErrorV1::StorageUnavailable)?;
     connection
@@ -14870,6 +17944,8 @@ pub enum SqliteAuthorizedReplayErrorV1 {
 pub enum SqliteStoreOpenError {
     #[error("SQLite error: {0}")]
     Sqlite(#[source] rusqlite::Error),
+    #[error("exact SQLite main-database admission failed: {0}")]
+    ExactOpen(#[source] ExactSqliteOpenError),
     #[error("SQLite path error: {0}")]
     Path(#[source] std::io::Error),
     #[error("failed to spawn SQLite writer thread: {0}")]
@@ -14880,7 +17956,7 @@ pub enum SqliteStoreOpenError {
     WriterRegistryPoisoned,
     #[error("SQLite path is not a local regular owner-bound file")]
     UnsafePath,
-    #[error("another process already owns the SQLite writer lease")]
+    #[error("another process already owns the retained SQLite data-directory writer lease")]
     WriterAlreadyOwned,
     #[error(
         "bundled SQLite identity mismatch: version {actual_version}, source {actual_source_id}"
@@ -14903,6 +17979,8 @@ pub enum SqliteStoreOpenError {
     IntegrityCheck(String),
     #[error("SQLite foreign_key_check reported a violation")]
     ForeignKeyCheck,
+    #[error("SQLite source transfer lifecycle state is absent or corrupt")]
+    SourceTransferState,
     #[error("migration version {version} is {found}, expected {expected}")]
     MigrationIdentity {
         version: i64,
@@ -14937,14 +18015,18 @@ mod tests {
         collections::BTreeMap,
         fmt::Display,
         fs,
-        path::Path,
+        path::{Path, PathBuf},
         str::FromStr,
         sync::{Arc, Barrier, Mutex, mpsc},
         thread,
         time::Duration,
     };
+    #[cfg(unix)]
+    use std::{env, process::Command};
 
-    use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, types::ValueRef};
+    use rusqlite::{
+        Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, types::ValueRef,
+    };
     use tempfile::{NamedTempFile, tempdir};
     use worldstream_core::{
         AccessModeV1, ActivationIntentStateV1, ActivationOperationRequestV1,
@@ -14992,7 +18074,10 @@ mod tests {
         counter_v2_semantic_mismatch_registry_for_conformance, recover_room_from_storage,
     };
     use worldstream_transfer::{
-        DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceKindV1, ResourcePayloadV1,
+        BundleProfileV1, DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceKindV1,
+        ResourcePayloadV1, SessionStatePolicyV1, TargetFingerprintV1, TransferBundleV1,
+        TransferChunkDispositionV1, TransferDestinationV1, TransferImportSessionV1,
+        abort_whole_deployment, finalize_whole_deployment,
     };
 
     use super::{
@@ -15009,18 +18094,25 @@ mod tests {
         SqliteObservationDeliveryV1, SqliteObservationErrorV1, SqliteObservationFrameV1,
         SqliteObservationPositionsV1, SqliteObservationResetReasonV1, SqliteRecoveryPhaseV1,
         SqliteRoomDiagnosticRecordKindV1, SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1,
-        SqliteRoomStore, SqliteTelemetryEventV1, SqliteTelemetrySink, SqliteTimerStateV1,
-        StoredPairedSnapshotRow, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TestAuthorityClock,
-        WriteBoundary, arm_guarded_commit_pause, arm_recovery_install_pause,
-        arm_replay_projection_pause, arm_writer_queue_pause, canonical_history_digest,
-        clear_replay_slice_row_budget, expire_deferred_replay_sessions,
+        SqliteRoomStore, SqliteSourceTransferErrorV1, SqliteSourceTransferStateV1,
+        SqliteTelemetryEventV1, SqliteTelemetrySink, SqliteTimerStateV1, StoredPairedSnapshotRow,
+        TRANSFER_BACKUP_IDENTITY_MIGRATION_ID, TRANSFER_LIFECYCLE_MIGRATION_ID,
+        TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TestAuthorityClock, WriteBoundary,
+        arm_guarded_commit_pause, arm_recovery_install_pause, arm_replay_projection_pause,
+        arm_writer_exact_open_hook, arm_writer_post_command_hook, arm_writer_queue_pause,
+        canonical_history_digest, clear_replay_slice_row_budget,
+        create_verified_transfer_backup_with_hooks,
+        create_verified_transfer_backup_with_publish_hook, expire_deferred_replay_sessions,
         load_current_paired_snapshot_materializations, lookup_activation_receipt,
         migrate_with_failpoint, migration_history, native_migration_witness,
-        publish_verified_migration_backup, read_migration_rows, release_guarded_commit,
+        publish_verified_migration_backup, publish_verified_migration_backup_with_hook,
+        publish_verified_migration_backup_with_hooks, read_migration_rows, release_guarded_commit,
         release_recovery_install, release_replay_projection, release_writer_queue,
-        restore_verified_migration_backup, retire_activation_context,
-        serialize_replay_projection_test, set_replay_slice_row_budget, verify_migration_prefix,
-        verify_migration_records, wait_until_authority_change_enqueued,
+        remove_transfer_named_identity_with_hook, remove_verified_transfer_backup_with_hook,
+        restore_verified_migration_backup, restore_verified_migration_backup_with_hook,
+        restore_verified_migration_backup_with_hooks, retire_activation_context,
+        serialize_replay_projection_test, set_replay_slice_row_budget, transfer_file_identity,
+        verify_migration_prefix, verify_migration_records, wait_until_authority_change_enqueued,
         wait_until_guarded_commit_pauses, wait_until_recovery_install_pauses,
         wait_until_replay_projection_pauses, wait_until_writer_queue_pauses,
     };
@@ -17535,7 +20627,7 @@ mod tests {
         let history = migration_history();
         assert_eq!(
             history.map(|migration| migration.version),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
         assert_eq!(
             history.map(|migration| migration.id),
@@ -17549,6 +20641,8 @@ mod tests {
                 MIGRATION_CHECKSUMS_MIGRATION_ID,
                 DEPLOYMENT_IDENTITIES_MIGRATION_ID,
                 TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
+                TRANSFER_LIFECYCLE_MIGRATION_ID,
+                TRANSFER_BACKUP_IDENTITY_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -17561,6 +20655,8 @@ mod tests {
             "blake3:ed00960ddbbfbb6a6cb8fde52ce44631ce41c3e0b7dd2e46968552f7538eb33a",
             "blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb",
             "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1",
+            "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3",
+            "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
         ];
         for (migration, expected) in history.iter().zip(expected_checksums) {
             assert_eq!(migration.checksum().to_string(), expected);
@@ -17606,10 +20702,10 @@ mod tests {
         ));
 
         let mut too_long = complete.clone();
-        too_long.push((9, "0009-future-schema".to_owned()));
+        too_long.push((11, "0012-future-schema".to_owned()));
         assert!(matches!(
             verify_migration_prefix(&too_long),
-            Err(super::MigrationVerificationError::Unsupported { version: 9 })
+            Err(super::MigrationVerificationError::Unsupported { version: 11 })
         ));
 
         let downgraded = vec![(0, "0000-downgraded-schema".to_owned())];
@@ -18906,6 +22002,202 @@ mod tests {
         assert_eq!(store.engine_identity(), (SQLITE_VERSION, SQLITE_SOURCE_ID));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn retained_writer_rejects_path_substitution_before_vfs_open() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let held = root.join("held-source.sqlite3");
+        let replacement = root.join("replacement.sqlite3");
+        drop(
+            SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("create source: {error}")),
+        );
+        drop(
+            SqliteRoomStore::open(&replacement)
+                .unwrap_or_else(|error| panic!("create replacement: {error}")),
+        );
+        let retained = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&source)
+            .unwrap_or_else(|error| panic!("retain source: {error}"));
+        let hook_source = source.clone();
+        let hook_held = held.clone();
+        let hook_replacement = replacement.clone();
+        arm_writer_exact_open_hook(&source, move || {
+            fs::rename(&hook_source, &hook_held)?;
+            fs::rename(&hook_replacement, &hook_source)
+        });
+
+        let result = SqliteRoomStore::open_with_retained_file(&source, retained);
+        assert!(matches!(
+            result,
+            Err(SqliteStoreOpenError::ExactOpen(
+                worldstream_sqlite_open::ExactSqliteOpenError::MainDatabaseIdentityMismatch
+            ))
+        ));
+        assert_eq!(
+            Connection::open(&held)
+                .and_then(|connection| connection
+                    .query_row("PRAGMA integrity_check", (), |row| row.get::<_, String>(0)))
+                .unwrap_or_else(|error| panic!("held source integrity: {error}")),
+            "ok"
+        );
+        assert_eq!(
+            Connection::open(&source)
+                .and_then(|connection| connection
+                    .query_row("PRAGMA integrity_check", (), |row| row.get::<_, String>(0)))
+                .unwrap_or_else(|error| panic!("replacement integrity: {error}")),
+            "ok"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_start_database_substitution_fails_reads_and_the_next_write_closed() {
+        fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+            let mut value = path.as_os_str().to_owned();
+            value.push(suffix);
+            PathBuf::from(value)
+        }
+
+        let source_directory =
+            tempdir().unwrap_or_else(|error| panic!("source directory: {error}"));
+        let replacement_directory =
+            tempdir().unwrap_or_else(|error| panic!("replacement directory: {error}"));
+        let source = fs::canonicalize(source_directory.path())
+            .unwrap_or_else(|error| panic!("canonical source directory: {error}"))
+            .join("database.sqlite3");
+        let held = source.with_file_name("held-database.sqlite3");
+        let replacement = fs::canonicalize(replacement_directory.path())
+            .unwrap_or_else(|error| panic!("canonical replacement directory: {error}"))
+            .join("replacement.sqlite3");
+
+        let store = SqliteRoomStore::open(&source)
+            .unwrap_or_else(|error| panic!("open retained source: {error}"));
+        let original_identity = store.database_identity();
+        let replacement_store = SqliteRoomStore::open(&replacement)
+            .unwrap_or_else(|error| panic!("open replacement: {error}"));
+        seed_real_host_authority(&replacement_store);
+        let replacement_identity = replacement_store.database_identity();
+        drop(replacement_store);
+
+        fs::rename(&source, &held)
+            .unwrap_or_else(|error| panic!("retain original database name: {error}"));
+        for suffix in ["-wal", "-shm"] {
+            let original_sidecar = sidecar(&source, suffix);
+            if original_sidecar.exists() {
+                fs::rename(&original_sidecar, sidecar(&held, suffix))
+                    .unwrap_or_else(|error| panic!("retain original {suffix}: {error}"));
+            }
+        }
+        fs::rename(&replacement, &source)
+            .unwrap_or_else(|error| panic!("install replacement database: {error}"));
+        for suffix in ["-wal", "-shm"] {
+            let replacement_sidecar = sidecar(&replacement, suffix);
+            if replacement_sidecar.exists() {
+                fs::rename(&replacement_sidecar, sidecar(&source, suffix))
+                    .unwrap_or_else(|error| panic!("install replacement {suffix}: {error}"));
+            }
+        }
+
+        assert!(matches!(
+            store.authenticate_bearer(CapabilityBearerV1::from_bytes([0xA7; 32])),
+            Err(SqliteGatewayErrorV1::StorageUnavailable)
+        ));
+        assert!(matches!(
+            store.source_transfer_status(),
+            Err(SqliteSourceTransferErrorV1::StorageUnavailable)
+        ));
+        assert!(matches!(
+            store.initialize_canonical_metadata("must-not-commit", 1),
+            Err(SqliteCanonicalMetadataInitializationErrorV1::StorageUnavailable)
+        ));
+        assert!(matches!(
+            SqliteRoomStore::open(&source),
+            Err(SqliteStoreOpenError::UnsafePath)
+        ));
+
+        drop(store);
+        let replacement_store = SqliteRoomStore::open(&source)
+            .unwrap_or_else(|error| panic!("open distinct replacement after release: {error}"));
+        assert_eq!(replacement_store.database_identity(), replacement_identity);
+        assert_ne!(replacement_store.database_identity(), original_identity);
+        replacement_store
+            .authenticate_bearer(CapabilityBearerV1::from_bytes([0xA7; 32]))
+            .unwrap_or_else(|error| panic!("replacement authority remains intact: {error}"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mid_command_parent_substitution_cannot_acknowledge_the_retained_commit() {
+        let outer = tempdir().unwrap_or_else(|error| panic!("outer directory: {error}"));
+        let requested_data_directory = outer.path().join("data");
+        fs::create_dir(&requested_data_directory)
+            .unwrap_or_else(|error| panic!("create data directory: {error}"));
+        let data_directory = fs::canonicalize(&requested_data_directory)
+            .unwrap_or_else(|error| panic!("canonical data directory: {error}"));
+        let held_directory = data_directory.with_file_name("held-data");
+        let database = data_directory.join("worldstream.sqlite3");
+        let store = SqliteRoomStore::open(&database)
+            .unwrap_or_else(|error| panic!("open retained source: {error}"));
+
+        let hook_data_directory = data_directory.clone();
+        let hook_held_directory = held_directory.clone();
+        arm_writer_post_command_hook(&database, move || {
+            fs::rename(&hook_data_directory, &hook_held_directory)?;
+            fs::create_dir(&hook_data_directory)
+        });
+
+        assert!(matches!(
+            store.initialize_canonical_metadata("deployment/unacknowledged", 7),
+            Err(SqliteCanonicalMetadataInitializationErrorV1::StorageUnavailable)
+        ));
+        assert!(!database.exists());
+        drop(store);
+
+        let retained_database = held_directory.join("worldstream.sqlite3");
+        let committed: (String, i64) = Connection::open(&retained_database)
+            .and_then(|connection| {
+                connection.query_row(
+                    "SELECT deployment_lineage, storage_epoch \
+                     FROM canonical_export_metadata WHERE metadata_id = 1",
+                    (),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
+            .unwrap_or_else(|error| panic!("inspect unacknowledged retained commit: {error}"));
+        assert_eq!(committed, ("deployment/unacknowledged".to_owned(), 7));
+    }
+
+    #[test]
+    fn writer_registry_never_reuses_a_path_for_another_file_identity() {
+        let source = NamedTempFile::new().unwrap_or_else(|error| panic!("source: {error}"));
+        let other = NamedTempFile::new().unwrap_or_else(|error| panic!("other: {error}"));
+        let store = SqliteRoomStore::open(source.path())
+            .unwrap_or_else(|error| panic!("open source: {error}"));
+        let other_file = other
+            .reopen()
+            .unwrap_or_else(|error| panic!("retain other: {error}"));
+        let other_identity = super::publication_file_identity(&other_file).map_or_else(
+            |error| panic!("other identity: {error}"),
+            super::public_sqlite_file_identity,
+        );
+        let path = super::normalized_path(source.path())
+            .unwrap_or_else(|error| panic!("source path: {error}"));
+        let result = SqliteRoomStore::open_with_retained_authority(
+            path,
+            other_file,
+            other_identity,
+            Arc::new(TestAuthorityClock::at("2026-08-15T12:00:10Z")),
+            None,
+        );
+        assert!(matches!(result, Err(SqliteStoreOpenError::UnsafePath)));
+        assert_ne!(store.database_identity(), other_identity);
+    }
+
     #[test]
     fn opens_issued_v1_database_through_forward_authority_migration() {
         let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp DB: {error}"));
@@ -19091,6 +22383,8 @@ mod tests {
                 (7, MIGRATION_CHECKSUMS_MIGRATION_ID.to_owned()),
                 (8, DEPLOYMENT_IDENTITIES_MIGRATION_ID.to_owned()),
                 (9, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID.to_owned()),
+                (10, TRANSFER_LIFECYCLE_MIGRATION_ID.to_owned()),
+                (11, TRANSFER_BACKUP_IDENTITY_MIGRATION_ID.to_owned()),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection
@@ -19230,7 +22524,247 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("read restarted migration ledger: {error}"));
+        assert_eq!(migration_count, 11);
+    }
+
+    #[test]
+    fn transfer_lifecycle_upgrade_accepts_valid_v9_and_atomically_rejects_ambiguous_resources() {
+        fn seed_v9(connection: &Connection) {
+            connection
+                .execute_batch(
+                    "CREATE TABLE schema_migrations (\
+                     version INTEGER PRIMARY KEY, migration_id TEXT NOT NULL UNIQUE\
+                     ) STRICT;",
+                )
+                .unwrap_or_else(|error| panic!("v9 migration ledger: {error}"));
+            let history = migration_history();
+            for migration in &history[..9] {
+                connection
+                    .execute_batch(migration.sql)
+                    .unwrap_or_else(|error| panic!("v9 schema {}: {error}", migration.id));
+                if migration.version == 7 {
+                    for prior in &history[..6] {
+                        connection
+                            .execute(
+                                "UPDATE schema_migrations SET source_checksum = ?1 \
+                                 WHERE version = ?2",
+                                params![prior.checksum().to_string(), prior.version],
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!("v9 checksum backfill {}: {error}", prior.id)
+                            });
+                    }
+                }
+                let has_checksum = migration.version >= 7;
+                if has_checksum {
+                    connection
+                        .execute(
+                            "INSERT INTO schema_migrations(version, migration_id, source_checksum) \
+                             VALUES (?1, ?2, ?3)",
+                            params![
+                                migration.version,
+                                migration.id,
+                                migration.checksum().to_string()
+                            ],
+                        )
+                        .unwrap_or_else(|error| panic!("v9 ledger {}: {error}", migration.id));
+                } else {
+                    connection
+                        .execute(
+                            "INSERT INTO schema_migrations(version, migration_id) VALUES (?1, ?2)",
+                            params![migration.version, migration.id],
+                        )
+                        .unwrap_or_else(|error| panic!("v9 ledger {}: {error}", migration.id));
+                }
+            }
+        }
+
+        let valid = NamedTempFile::new().unwrap_or_else(|error| panic!("valid v9 DB: {error}"));
+        let mut valid_connection = Connection::open(valid.path())
+            .unwrap_or_else(|error| panic!("open valid v9 DB: {error}"));
+        seed_v9(&valid_connection);
+        migrate(&mut valid_connection)
+            .unwrap_or_else(|error| panic!("forward migrate valid v9 DB: {error}"));
+        assert_eq!(
+            super::read_source_transfer_status(&valid_connection)
+                .unwrap_or_else(|error| panic!("valid migrated lifecycle: {error}"))
+                .state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+
+        let ambiguous =
+            NamedTempFile::new().unwrap_or_else(|error| panic!("ambiguous v9 DB: {error}"));
+        let mut ambiguous_connection = Connection::open(ambiguous.path())
+            .unwrap_or_else(|error| panic!("open ambiguous v9 DB: {error}"));
+        seed_v9(&ambiguous_connection);
+        for kind in ["artifact", "schema"] {
+            ambiguous_connection
+                .execute(
+                    "INSERT INTO deployment_resource_identities \
+                     (resource_kind, resource_identity, size_bytes, resource_digest) \
+                     VALUES (?1, 'shared-resource', 1, ?2)",
+                    params![kind, [0xA5_u8; 32].as_slice()],
+                )
+                .unwrap_or_else(|error| panic!("ambiguous resource identity: {error}"));
+            ambiguous_connection
+                .execute(
+                    "INSERT INTO deployment_resource_blobs \
+                     (resource_kind, resource_identity, resource_bytes, resource_digest) \
+                     VALUES (?1, 'shared-resource', x'A5', ?2)",
+                    params![kind, [0xA5_u8; 32].as_slice()],
+                )
+                .unwrap_or_else(|error| panic!("ambiguous resource bytes: {error}"));
+        }
+        assert!(matches!(
+            migrate(&mut ambiguous_connection),
+            Err(SqliteStoreOpenError::MigrationData)
+        ));
+        let migration_count: i64 = ambiguous_connection
+            .query_row("SELECT count(*) FROM schema_migrations", (), |row| {
+                row.get(0)
+            })
+            .unwrap_or_else(|error| panic!("ambiguous migration count: {error}"));
         assert_eq!(migration_count, 9);
+        let lifecycle_exists: bool = ambiguous_connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'source_transfer_lifecycle')",
+                (),
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("ambiguous lifecycle catalog: {error}"));
+        assert!(!lifecycle_exists);
+    }
+
+    #[test]
+    fn transfer_backup_identity_upgrade_rejects_active_v10_lifecycle_rows_atomically() {
+        fn seed_v10(connection: &Connection) {
+            connection
+                .execute_batch(
+                    "CREATE TABLE schema_migrations (\
+                     version INTEGER PRIMARY KEY, migration_id TEXT NOT NULL UNIQUE\
+                     ) STRICT;",
+                )
+                .unwrap_or_else(|error| panic!("v10 migration ledger: {error}"));
+            let history = migration_history();
+            for migration in &history[..10] {
+                connection
+                    .execute_batch(migration.sql)
+                    .unwrap_or_else(|error| panic!("v10 schema {}: {error}", migration.id));
+                if migration.version == 7 {
+                    for prior in &history[..6] {
+                        connection
+                            .execute(
+                                "UPDATE schema_migrations SET source_checksum = ?1 \
+                                 WHERE version = ?2",
+                                params![prior.checksum().to_string(), prior.version],
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!("v10 checksum backfill {}: {error}", prior.id)
+                            });
+                    }
+                }
+                if migration.version >= 7 {
+                    connection
+                        .execute(
+                            "INSERT INTO schema_migrations(version, migration_id, source_checksum) \
+                             VALUES (?1, ?2, ?3)",
+                            params![
+                                migration.version,
+                                migration.id,
+                                migration.checksum().to_string()
+                            ],
+                        )
+                        .unwrap_or_else(|error| panic!("v10 ledger {}: {error}", migration.id));
+                } else {
+                    connection
+                        .execute(
+                            "INSERT INTO schema_migrations(version, migration_id) VALUES (?1, ?2)",
+                            params![migration.version, migration.id],
+                        )
+                        .unwrap_or_else(|error| panic!("v10 ledger {}: {error}", migration.id));
+                }
+            }
+        }
+
+        for state in ["transfer_pending", "source_retired"] {
+            let file =
+                NamedTempFile::new().unwrap_or_else(|error| panic!("active v10 database: {error}"));
+            let mut connection = Connection::open(file.path())
+                .unwrap_or_else(|error| panic!("open active v10 database: {error}"));
+            seed_v10(&connection);
+            let (bundle_hash, target_fingerprint) = if state == "source_retired" {
+                (Some([0xA5_u8; 32]), Some([0x5A_u8; 32]))
+            } else {
+                (None, None)
+            };
+            connection
+                .execute(
+                    "UPDATE source_transfer_lifecycle SET state = ?1, source_epoch = 1, \
+                     target_epoch = 2, backup_path = 'legacy-transfer.sqlite3', \
+                     backup_digest = ?2, bundle_hash = ?3, target_fingerprint = ?4 \
+                     WHERE lifecycle_id = 1",
+                    params![state, [0x11_u8; 32], bundle_hash, target_fingerprint],
+                )
+                .unwrap_or_else(|error| panic!("seed {state} lifecycle: {error}"));
+
+            assert!(matches!(
+                migrate(&mut connection),
+                Err(SqliteStoreOpenError::MigrationData)
+            ));
+            let migration_count: i64 = connection
+                .query_row("SELECT count(*) FROM schema_migrations", (), |row| {
+                    row.get(0)
+                })
+                .unwrap_or_else(|error| panic!("{state} migration count: {error}"));
+            assert_eq!(migration_count, 10);
+            let identity_column_count: i64 = connection
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('source_transfer_lifecycle') \
+                     WHERE name IN ('backup_storage_id', 'backup_file_id')",
+                    (),
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("{state} identity columns: {error}"));
+            assert_eq!(identity_column_count, 0);
+        }
+    }
+
+    #[test]
+    fn startup_rejects_retired_source_without_exact_bundle_and_target_witnesses() {
+        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("retired DB: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("initialize retired DB: {error}"));
+        drop(store);
+
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open corrupt retired DB: {error}"));
+        connection
+            .pragma_update(None, "ignore_check_constraints", true)
+            .unwrap_or_else(|error| panic!("disable fixture checks: {error}"));
+        connection
+            .execute(
+                "UPDATE source_transfer_lifecycle SET state = 'source_retired', \
+                 source_epoch = 7, target_epoch = 8, \
+                 backup_path = '/verified/source.sqlite3', backup_digest = zeroblob(32), \
+                 backup_storage_id = '0000000000000001', \
+                 backup_file_id = '00000000000000000000000000000001', \
+                 bundle_hash = NULL, target_fingerprint = NULL WHERE lifecycle_id = 1",
+                (),
+            )
+            .unwrap_or_else(|error| panic!("seed corrupt retired state: {error}"));
+        assert_eq!(
+            super::read_source_transfer_status(&connection),
+            Err(SqliteSourceTransferErrorV1::Corrupt)
+        );
+        drop(connection);
+
+        match SqliteRoomStore::open(file.path()) {
+            Err(
+                SqliteStoreOpenError::SourceTransferState | SqliteStoreOpenError::IntegrityCheck(_),
+            ) => {}
+            Err(error) => panic!("unexpected corrupt-retired startup error: {error}"),
+            Ok(_) => panic!("corrupt retired source unexpectedly opened"),
+        }
     }
 
     #[test]
@@ -19283,7 +22817,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("restored migration ledger: {error}"));
-        assert_eq!(restored_migrations, 9);
+        assert_eq!(restored_migrations, 11);
 
         let startup_dir = tempdir().unwrap_or_else(|error| panic!("startup directory: {error}"));
         let startup = startup_dir.path().join("startup.sqlite3");
@@ -19340,19 +22874,321 @@ mod tests {
         let _ = fs::remove_file(backup);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn migration_publication_never_replaces_a_concurrent_sentinel() {
+        let source = NamedTempFile::new().unwrap_or_else(|error| panic!("temp DB: {error}"));
+        let connection = Connection::open(source.path())
+            .unwrap_or_else(|error| panic!("open v1 backup fixture: {error}"));
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (\
+                 version INTEGER PRIMARY KEY, migration_id TEXT NOT NULL UNIQUE\
+                 ) STRICT;\
+                 INSERT INTO schema_migrations(version, migration_id) VALUES \
+                 (1, '0001-initial-storage-schema');\
+                 ",
+            )
+            .unwrap_or_else(|error| panic!("v1 backup ledger: {error}"));
+        connection
+            .execute_batch(INITIAL_MIGRATION_SCHEMA)
+            .unwrap_or_else(|error| panic!("v1 backup schema: {error}"));
+        drop(connection);
+        let sentinel = b"concurrent migration backup";
+        let mut published_path = None;
+
+        let result = publish_verified_migration_backup_with_hook(source.path(), |destination| {
+            published_path = Some(destination.to_owned());
+            fs::write(destination, sentinel).map_err(SqliteStoreOpenError::Path)
+        });
+
+        assert!(result.is_err());
+        let published_path =
+            published_path.unwrap_or_else(|| panic!("migration publication destination"));
+        assert_eq!(
+            fs::read(&published_path)
+                .unwrap_or_else(|error| panic!("read migration sentinel: {error}")),
+            sentinel
+        );
+
+        let backup = publish_verified_migration_backup(source.path())
+            .unwrap_or_else(|error| panic!("publish restore source: {error:?}"));
+        let restore_dir = tempdir().unwrap_or_else(|error| panic!("restore directory: {error}"));
+        let restored = restore_dir.path().join("restored.sqlite3");
+        let restore_result =
+            restore_verified_migration_backup_with_hook(&backup, &restored, |destination| {
+                fs::write(destination, sentinel).map_err(SqliteStoreOpenError::Path)
+            });
+        assert!(restore_result.is_err());
+        assert_eq!(
+            fs::read(&restored).unwrap_or_else(|error| panic!("read restore sentinel: {error}")),
+            sentinel
+        );
+        let _ = fs::remove_file(backup);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migration_backup_sqlite_open_is_bound_to_the_retained_staging_file() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        drop(
+            SqliteRoomStore::open(&source)
+                .unwrap_or_else(|error| panic!("create canonical source: {error}")),
+        );
+        let victim = root.join("victim");
+        let held = root.join("held-staging");
+        let sentinel = b"migration staging victim must survive";
+        fs::write(&victim, sentinel).unwrap_or_else(|error| panic!("victim: {error}"));
+        let mut staging = None;
+
+        let result = publish_verified_migration_backup_with_hooks(
+            &source,
+            None,
+            |_, temporary| {
+                staging = Some(temporary.to_owned());
+                fs::rename(temporary, &held).map_err(SqliteStoreOpenError::Path)?;
+                fs::hard_link(&victim, temporary).map_err(SqliteStoreOpenError::Path)
+            },
+            |_| Ok(()),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&victim).unwrap_or_else(|error| panic!("victim bytes: {error}")),
+            sentinel
+        );
+        let staging = staging.unwrap_or_else(|| panic!("staging hook ran"));
+        assert_eq!(
+            fs::read(&staging).unwrap_or_else(|error| panic!("staging alias bytes: {error}")),
+            sentinel
+        );
+        assert_eq!(
+            fs::metadata(&held)
+                .unwrap_or_else(|error| panic!("held staging metadata: {error}"))
+                .len(),
+            0
+        );
+        let stem = staging
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".tmp"))
+            .and_then(|name| name.rsplit_once('.').map(|(prefix, _)| prefix))
+            .unwrap_or_else(|| panic!("migration staging name"));
+        assert!(!root.join(stem).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migration_backup_rejects_source_substitution_before_sqlite_open() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let held = root.join("held-source.sqlite3");
+        let replacement = root.join("replacement.sqlite3");
+        drop(
+            SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("create source: {error}")),
+        );
+        drop(
+            SqliteRoomStore::open(&replacement)
+                .unwrap_or_else(|error| panic!("create replacement: {error}")),
+        );
+        let replacement_bytes = fs::read(&replacement)
+            .unwrap_or_else(|error| panic!("replacement bytes before: {error}"));
+
+        let result = publish_verified_migration_backup_with_hooks(
+            &source,
+            None,
+            |admitted_source, _| {
+                fs::rename(admitted_source, &held).map_err(SqliteStoreOpenError::Path)?;
+                fs::rename(&replacement, admitted_source).map_err(SqliteStoreOpenError::Path)
+            },
+            |_| Ok(()),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&source).unwrap_or_else(|error| panic!("replacement bytes after: {error}")),
+            replacement_bytes
+        );
+        assert!(held.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migration_restore_sqlite_open_is_bound_to_the_retained_staging_file() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        drop(
+            SqliteRoomStore::open(&source)
+                .unwrap_or_else(|error| panic!("create canonical source: {error}")),
+        );
+        let backup = publish_verified_migration_backup(&source)
+            .unwrap_or_else(|error| panic!("migration backup: {error}"));
+        let destination = root.join("restored.sqlite3");
+        let held = root.join("held-restore-staging");
+        let victim = root.join("restore-victim");
+        let sentinel = b"migration restore victim must survive";
+        fs::write(&victim, sentinel).unwrap_or_else(|error| panic!("victim: {error}"));
+        let mut staging = None;
+
+        let result = restore_verified_migration_backup_with_hooks(
+            &backup,
+            &destination,
+            |_, temporary| {
+                staging = Some(temporary.to_owned());
+                fs::rename(temporary, &held).map_err(SqliteStoreOpenError::Path)?;
+                fs::hard_link(&victim, temporary).map_err(SqliteStoreOpenError::Path)
+            },
+            |_| Ok(()),
+        );
+
+        assert!(result.is_err());
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::read(&victim).unwrap_or_else(|error| panic!("victim bytes: {error}")),
+            sentinel
+        );
+        assert_eq!(
+            fs::read(staging.unwrap_or_else(|| panic!("staging hook ran")))
+                .unwrap_or_else(|error| panic!("staging alias bytes: {error}")),
+            sentinel
+        );
+        assert_eq!(
+            fs::metadata(&held)
+                .unwrap_or_else(|error| panic!("held staging metadata: {error}"))
+                .len(),
+            0
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn migration_publication_never_scrubs_a_replacement_staging_victim() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        drop(
+            SqliteRoomStore::open(&source)
+                .unwrap_or_else(|error| panic!("create canonical source: {error}")),
+        );
+        let victim = root.join("victim.sqlite3");
+        let held = root.join("held-staging.sqlite3");
+        let sentinel = b"replacement staging victim must never be scrubbed";
+        fs::write(&victim, sentinel).unwrap_or_else(|error| panic!("victim: {error}"));
+        let observed_staging = Arc::new(Mutex::new(None::<PathBuf>));
+        let hook_observed_staging = Arc::clone(&observed_staging);
+        let hook_victim = victim.clone();
+        let hook_held = held.clone();
+        arm_windows_staging_reopen_hook(&root, move |staging| {
+            *hook_observed_staging
+                .lock()
+                .map_err(|_| io::Error::other("observed staging mutex"))? =
+                Some(staging.to_owned());
+            fs::rename(staging, &hook_held)?;
+            fs::hard_link(&hook_victim, staging)
+        });
+
+        assert!(publish_verified_migration_backup(&source).is_err());
+        assert_eq!(
+            fs::read(&victim).unwrap_or_else(|error| panic!("victim bytes: {error}")),
+            sentinel
+        );
+        let staging = observed_staging
+            .lock()
+            .unwrap_or_else(|_| panic!("observed staging mutex"))
+            .clone()
+            .unwrap_or_else(|| panic!("Windows staging reopen hook ran"));
+        assert_eq!(
+            fs::read(&staging).unwrap_or_else(|error| panic!("replacement bytes: {error}")),
+            sentinel
+        );
+        assert_eq!(
+            fs::metadata(&held)
+                .unwrap_or_else(|error| panic!("held staging metadata: {error}"))
+                .len(),
+            0
+        );
+    }
+
     #[test]
     fn writer_lock_rejects_a_second_owner_and_releases_for_restart() {
         let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp DB: {error}"));
-        let first = acquire_writer_lock(file.path())
+        let first = acquire_writer_lock(file.path(), file.as_file())
             .unwrap_or_else(|error| panic!("first writer lock: {error}"));
         assert!(matches!(
-            acquire_writer_lock(file.path()),
+            acquire_writer_lock(file.path(), file.as_file()),
             Err(SqliteStoreOpenError::WriterAlreadyOwned)
         ));
         drop(first);
-        let second = acquire_writer_lock(file.path())
+        let second = acquire_writer_lock(file.path(), file.as_file())
             .unwrap_or_else(|error| panic!("writer lock after restart: {error}"));
         drop(second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_lock_path_substitution_cannot_grant_a_second_process() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let database = root.join("database.sqlite3");
+        let database_file = fs::File::create(&database)
+            .unwrap_or_else(|error| panic!("create exact database: {error}"));
+        let first = acquire_writer_lock(&database, &database_file)
+            .unwrap_or_else(|error| panic!("first exact writer lease: {error}"));
+        let lock_path = root.join(".database.sqlite3.worldstream-writer.lock");
+        let held_lock = root.join("held-writer-lock");
+        fs::rename(&lock_path, &held_lock)
+            .unwrap_or_else(|error| panic!("rename held writer lock: {error}"));
+        fs::File::create(&lock_path)
+            .unwrap_or_else(|error| panic!("install replacement writer lock: {error}"));
+
+        assert!(first.require_named().is_err());
+        let output = Command::new(
+            env::current_exe().unwrap_or_else(|error| panic!("current test binary: {error}")),
+        )
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("tests::writer_lock_subprocess_probe")
+        .env("WORLDSTREAM_SQLITE_WRITER_LOCK_PROBE", &database)
+        .output()
+        .unwrap_or_else(|error| panic!("writer-lock subprocess: {error}"));
+        assert!(
+            output.status.success(),
+            "replacement lock admitted a concurrent writer: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        drop(first);
+        let restarted = acquire_writer_lock(&database, &database_file)
+            .unwrap_or_else(|error| panic!("exact writer lease after release: {error}"));
+        drop(restarted);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "subprocess probe invoked by the active writer-lease regression"]
+    fn writer_lock_subprocess_probe() {
+        let Some(database) = env::var_os("WORLDSTREAM_SQLITE_WRITER_LOCK_PROBE") else {
+            return;
+        };
+        let database = PathBuf::from(database);
+        let database_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database)
+            .unwrap_or_else(|error| panic!("open probe database: {error}"));
+        assert!(matches!(
+            acquire_writer_lock(&database, &database_file),
+            Err(SqliteStoreOpenError::WriterAlreadyOwned)
+        ));
     }
 
     #[test]
@@ -26235,9 +30071,13 @@ mod tests {
         connection
             .execute("DELETE FROM room_integrity WHERE room_id = ?1", [ROOM])
             .unwrap_or_else(|error| panic!("delete raced integrity row: {error}"));
-        let missing = super::capture_observed_recovery_fence(&store.writer.path, &parsed(ROOM))
-            .unwrap_or_else(|error| panic!("capture missing-integrity fence: {error}"))
-            .unwrap_or_else(|| panic!("Room fence remains observable"));
+        let missing = super::capture_observed_recovery_fence(
+            &store.writer.database_file,
+            &store.writer.path,
+            &parsed(ROOM),
+        )
+        .unwrap_or_else(|error| panic!("capture missing-integrity fence: {error}"))
+        .unwrap_or_else(|| panic!("Room fence remains observable"));
         connection
             .execute(
                 "INSERT INTO room_integrity(room_id, status, generation) \
@@ -27708,6 +31548,104 @@ mod tests {
         .unwrap_or_else(|error| panic!("fixture identity: {error}"))
     }
 
+    #[derive(Default)]
+    struct LifecycleFixtureDestination {
+        finalized: bool,
+        authoritative: bool,
+        aborted: bool,
+    }
+
+    impl TransferDestinationV1 for LifecycleFixtureDestination {
+        type Error = String;
+
+        fn apply_chunk(
+            &mut self,
+            _chunk: &worldstream_transfer::TransferChunkV1,
+        ) -> Result<TransferChunkDispositionV1, Self::Error> {
+            Ok(TransferChunkDispositionV1::Applied)
+        }
+
+        fn verify_complete(
+            &mut self,
+            bundle: &TransferBundleV1,
+            target: &TargetFingerprintV1,
+        ) -> Result<(), Self::Error> {
+            bundle
+                .verify_target(target)
+                .map_err(|error| error.to_string())
+        }
+
+        fn record_finalization(
+            &mut self,
+            _target: &TargetFingerprintV1,
+        ) -> Result<(), Self::Error> {
+            if self.aborted {
+                return Err("aborted target cannot finalize".to_owned());
+            }
+            self.finalized = true;
+            Ok(())
+        }
+
+        fn accept_target_write(
+            &mut self,
+            _target: &TargetFingerprintV1,
+        ) -> Result<(), Self::Error> {
+            if !self.finalized {
+                return Err("target write before finalization".to_owned());
+            }
+            self.authoritative = true;
+            Ok(())
+        }
+
+        fn abort_import(&mut self, _target: &TargetFingerprintV1) -> Result<(), Self::Error> {
+            if self.finalized || self.authoritative {
+                return Err("finalized target cannot abort".to_owned());
+            }
+            self.aborted = true;
+            Ok(())
+        }
+    }
+
+    fn lifecycle_fixture_bundle(lineage: &str, source_epoch: u64) -> TransferBundleV1 {
+        TransferBundleV1::new(
+            format!("bundle/{lineage}/{source_epoch}"),
+            lineage,
+            source_epoch,
+            BundleProfileV1::SqliteBundled,
+            BundleProfileV1::PostgresPrimary17,
+            PackIdentityV1::new("worldstream.fixture", "r1", DigestV1::hash(b"pack-r1"))
+                .unwrap_or_else(|error| panic!("fixture bundle pack: {error}")),
+            Vec::new(),
+            SessionStatePolicyV1::InvalidateAndRebuild,
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("fixture transfer bundle: {error}"))
+    }
+
+    fn verified_lifecycle_session(bundle: &TransferBundleV1) -> TransferImportSessionV1 {
+        let target = TargetFingerprintV1::for_bundle(bundle)
+            .unwrap_or_else(|error| panic!("fixture target: {error}"));
+        let mut session = TransferImportSessionV1::begin(bundle)
+            .unwrap_or_else(|error| panic!("fixture session: {error}"));
+        session
+            .verify_target(&target)
+            .unwrap_or_else(|error| panic!("verify fixture target: {error}"));
+        session
+    }
+
+    fn begin_fixture_transfer(store: &SqliteRoomStore, source: &Path) -> PathBuf {
+        let backup = source.with_extension("worldstream-transfer-backup.sqlite3");
+        let _ = fs::remove_file(&backup);
+        let status = store
+            .begin_source_transfer(&backup)
+            .unwrap_or_else(|error| panic!("begin source transfer: {error}"));
+        assert_eq!(status.state(), SqliteSourceTransferStateV1::TransferPending);
+        let normalized_backup = super::normalized_path(&backup)
+            .unwrap_or_else(|error| panic!("normalize backup: {error}"));
+        assert_eq!(status.backup_path(), Some(normalized_backup.as_path()));
+        backup
+    }
+
     #[test]
     fn deployment_resources_require_and_export_exact_immutable_bytes() {
         let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp file: {error}"));
@@ -27745,6 +31683,7 @@ mod tests {
             store.initialize_deployment_identity_with_resources(identity, vec![payload.clone()]),
             Ok(SqliteDeploymentIdentityInitializationV1::AlreadyInitialized)
         );
+        let _backup = begin_fixture_transfer(&store, file.path());
         let export = store
             .export_canonical_evidence()
             .unwrap_or_else(|error| panic!("export: {error}"));
@@ -27804,7 +31743,11 @@ mod tests {
             SqliteRoomStore::open(file.path()).unwrap_or_else(|error| panic!("open: {error}"));
         assert_eq!(
             store.export_canonical_evidence(),
-            Err(SqliteCanonicalExportErrorV1::MetadataAbsent)
+            Err(SqliteCanonicalExportErrorV1::SourceNotTransferPending)
+        );
+        assert_eq!(
+            store.begin_source_transfer(file.path().with_extension("missing-metadata.backup")),
+            Err(SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)
         );
     }
 
@@ -27861,7 +31804,7 @@ mod tests {
         );
         assert_eq!(
             store.export_canonical_evidence(),
-            Err(SqliteCanonicalExportErrorV1::MetadataAbsent)
+            Err(SqliteCanonicalExportErrorV1::SourceNotTransferPending)
         );
     }
 
@@ -27896,6 +31839,7 @@ mod tests {
         store
             .initialize_deployment_identity(fixture_deployment_identity())
             .unwrap_or_else(|error| panic!("identity: {error}"));
+        let _backup = begin_fixture_transfer(&store, file.path());
         let export = store
             .export_canonical_evidence()
             .unwrap_or_else(|error| panic!("export: {error}"));
@@ -27912,6 +31856,7 @@ mod tests {
         seed_canonical_export_fixture(file.path(), "healthy");
         let store =
             SqliteRoomStore::open(file.path()).unwrap_or_else(|error| panic!("reopen: {error}"));
+        let _backup = begin_fixture_transfer(&store, file.path());
         let export = store
             .export_canonical_evidence()
             .unwrap_or_else(|error| panic!("export: {error}"));
@@ -27945,6 +31890,7 @@ mod tests {
         seed_canonical_export_fixture(file.path(), "faulted");
         let store =
             SqliteRoomStore::open(file.path()).unwrap_or_else(|error| panic!("reopen: {error}"));
+        let _backup = begin_fixture_transfer(&store, file.path());
         let export = store
             .export_canonical_evidence()
             .unwrap_or_else(|error| panic!("export: {error}"));
@@ -27969,11 +31915,759 @@ mod tests {
         let store =
             SqliteRoomStore::open(file.path()).unwrap_or_else(|error| panic!("reopen: {error}"));
         assert_eq!(
+            store.begin_source_transfer(file.path().with_extension("incomplete.backup")),
+            Err(SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)
+        );
+    }
+
+    #[test]
+    fn source_transfer_lifecycle_persists_fences_aborts_and_retires_irreversibly() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let source = directory.path().join("source.sqlite3");
+        let first_backup = directory.path().join("source-transfer-1.sqlite3");
+        let store = SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("open: {error}"));
+        store
+            .initialize_canonical_metadata("deployment/lifecycle", 7)
+            .unwrap_or_else(|error| panic!("metadata: {error}"));
+        store
+            .initialize_deployment_identity(fixture_deployment_identity())
+            .unwrap_or_else(|error| panic!("identity: {error}"));
+        let witness = PreparedAuthorityWitnessV1::mint_for_conformance(
+            "transfer-fence-before",
+            parsed(PRINCIPAL),
+            1,
+            &canonical(br#"{"scope":"room:act","revoked":false}"#),
+        )
+        .unwrap_or_else(|error| panic!("witness: {error}"));
+        store
+            .seed_authority(&witness, true)
+            .unwrap_or_else(|error| panic!("seed before transfer: {error}"));
+
+        let pending = store
+            .begin_source_transfer(&first_backup)
+            .unwrap_or_else(|error| panic!("begin: {error}"));
+        assert_eq!(pending.source_epoch(), Some(7));
+        assert_eq!(pending.target_epoch(), Some(8));
+        assert!(pending.backup_digest().is_some());
+        assert!(pending.backup_storage_id().is_some());
+        assert!(pending.backup_file_id().is_some());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&first_backup)
+                    .unwrap_or_else(|error| panic!("backup metadata: {error}"))
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o400
+            );
+        }
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::TransferPending
+        );
+        let blocked = PreparedAuthorityWitnessV1::mint_for_conformance(
+            "transfer-fence-pending",
+            parsed(PRINCIPAL),
+            2,
+            &canonical(br#"{"scope":"room:act","revoked":false}"#),
+        )
+        .unwrap_or_else(|error| panic!("blocked witness: {error}"));
+        assert!(store.seed_authority(&blocked, true).is_err());
+        assert!(store.export_canonical_evidence().is_ok());
+
+        drop(store);
+        let reopened = SqliteRoomStore::open(&source)
+            .unwrap_or_else(|error| panic!("reopen pending: {error}"));
+        assert_eq!(
+            reopened.source_transfer_state(),
+            SqliteSourceTransferStateV1::TransferPending
+        );
+        assert!(reopened.seed_authority(&blocked, true).is_err());
+        let first_bundle = lifecycle_fixture_bundle("deployment/lifecycle", 7);
+        let mut first_session = verified_lifecycle_session(&first_bundle);
+        let first_session_bytes = first_session
+            .to_bytes()
+            .unwrap_or_else(|error| panic!("serialize abort session: {error}"));
+        let mut first_destination = LifecycleFixtureDestination::default();
+        abort_whole_deployment(
+            &mut first_session,
+            &mut first_destination,
+            &reopened,
+            &first_bundle,
+        )
+        .unwrap_or_else(|error| panic!("coordinated abort: {error}"));
+        assert_eq!(
+            reopened.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+        assert!(first_destination.aborted);
+        drop(reopened);
+
+        // A persisted pre-abort session is safe to retry after a process stop:
+        // both the provider tombstone and SQLite's exact abort witnesses are
+        // durably and idempotently reconfirmed.
+        let reopened = SqliteRoomStore::open(&source)
+            .unwrap_or_else(|error| panic!("reopen after abort: {error}"));
+        let mut resumed_abort =
+            TransferImportSessionV1::from_bytes(&first_bundle, &first_session_bytes)
+                .unwrap_or_else(|error| panic!("restore abort session: {error}"));
+        abort_whole_deployment(
+            &mut resumed_abort,
+            &mut first_destination,
+            &reopened,
+            &first_bundle,
+        )
+        .unwrap_or_else(|error| panic!("retry coordinated abort: {error}"));
+        reopened
+            .seed_authority(&blocked, true)
+            .unwrap_or_else(|error| panic!("write after abort: {error}"));
+
+        let second_backup = directory.path().join("source-transfer-2.sqlite3");
+        reopened
+            .begin_source_transfer(&second_backup)
+            .unwrap_or_else(|error| panic!("begin second: {error}"));
+        let second_bundle = lifecycle_fixture_bundle("deployment/lifecycle", 7);
+        let mut second_session = verified_lifecycle_session(&second_bundle);
+        let mut second_destination = LifecycleFixtureDestination::default();
+        finalize_whole_deployment(
+            &mut second_session,
+            &mut second_destination,
+            &reopened,
+            &second_bundle,
+        )
+        .unwrap_or_else(|error| panic!("coordinated retirement: {error}"));
+        assert_eq!(
+            reopened.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceRetired
+        );
+        assert!(second_destination.authoritative);
+        assert!(reopened.seed_authority(&witness, true).is_err());
+        assert!(
+            abort_whole_deployment(
+                &mut second_session,
+                &mut second_destination,
+                &reopened,
+                &second_bundle,
+            )
+            .is_err()
+        );
+        let finalized_session_bytes = second_session
+            .to_bytes()
+            .unwrap_or_else(|error| panic!("serialize finalized session: {error}"));
+        drop(reopened);
+
+        let retired = SqliteRoomStore::open(&source)
+            .unwrap_or_else(|error| panic!("reopen retired: {error}"));
+        assert_eq!(
+            retired.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceRetired
+        );
+        assert!(retired.seed_authority(&witness, true).is_err());
+        let mut resumed_finalization =
+            TransferImportSessionV1::from_bytes(&second_bundle, &finalized_session_bytes)
+                .unwrap_or_else(|error| panic!("restore finalized session: {error}"));
+        finalize_whole_deployment(
+            &mut resumed_finalization,
+            &mut second_destination,
+            &retired,
+            &second_bundle,
+        )
+        .unwrap_or_else(|error| panic!("retry coordinated retirement: {error}"));
+    }
+
+    #[test]
+    fn source_transfer_backup_never_replaces_an_existing_destination() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let source = directory.path().join("source.sqlite3");
+        let destination = directory.path().join("existing-backup.sqlite3");
+        let sentinel = b"operator-owned existing backup";
+        seed_canonical_export_fixture(&source, "healthy");
+        fs::write(&destination, sentinel)
+            .unwrap_or_else(|error| panic!("existing destination: {error}"));
+        let store =
+            SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("open source: {error}"));
+
+        assert_eq!(
+            store.begin_source_transfer(&destination),
+            Err(SqliteSourceTransferErrorV1::UnsafeBackupPath)
+        );
+        assert_eq!(
+            fs::read(&destination).unwrap_or_else(|error| panic!("read destination: {error}")),
+            sentinel
+        );
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_transfer_sqlite_open_is_bound_to_the_retained_staging_file() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let destination = root.join("transfer-backup.sqlite3");
+        let held = root.join("held-transfer-staging.sqlite3");
+        let victim = root.join("transfer-victim");
+        let sentinel = b"transfer staging victim must survive";
+        seed_canonical_export_fixture(&source, "healthy");
+        fs::write(&victim, sentinel).unwrap_or_else(|error| panic!("victim: {error}"));
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("open source connection: {error}"));
+        let mut staging = None;
+
+        let result = create_verified_transfer_backup_with_hooks(
+            &source_connection,
+            &destination,
+            |temporary| {
+                staging = Some(temporary.to_owned());
+                fs::rename(temporary, &held)
+                    .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+                fs::hard_link(&victim, temporary)
+                    .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)
+            },
+            |_| Ok(()),
+        );
+
+        assert_eq!(result, Err(SqliteSourceTransferErrorV1::UnsafeBackupPath));
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::read(&victim).unwrap_or_else(|error| panic!("victim bytes: {error}")),
+            sentinel
+        );
+        assert_eq!(
+            fs::read(staging.unwrap_or_else(|| panic!("staging hook ran")))
+                .unwrap_or_else(|error| panic!("staging alias bytes: {error}")),
+            sentinel
+        );
+        assert_eq!(
+            fs::metadata(&held)
+                .unwrap_or_else(|error| panic!("held staging metadata: {error}"))
+                .len(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_transfer_backup_descriptor_publication_rejects_substituted_temporary_name() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let destination = root.join("transfer-backup.sqlite3");
+        let held = root.join("held-admitted-backup.sqlite3");
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("open source connection: {error}"));
+        source_connection
+            .busy_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("source busy timeout: {error}"));
+        let mut substituted = None;
+
+        let result = create_verified_transfer_backup_with_publish_hook(
+            &source_connection,
+            &destination,
+            |temporary| {
+                substituted = Some(temporary.to_owned());
+                fs::rename(temporary, &held)
+                    .unwrap_or_else(|error| panic!("rename admitted temporary: {error}"));
+                fs::write(temporary, b"same-owner substituted backup bytes")
+                    .unwrap_or_else(|error| panic!("install substituted temporary: {error}"));
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err(SqliteSourceTransferErrorV1::UnsafeBackupPath));
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::metadata(&held)
+                .unwrap_or_else(|error| panic!("held backup metadata: {error}"))
+                .len(),
+            0
+        );
+        let substituted = substituted.unwrap_or_else(|| panic!("substitution hook path"));
+        assert_eq!(
+            fs::read(&substituted)
+                .unwrap_or_else(|error| panic!("read substituted temporary: {error}")),
+            b"same-owner substituted backup bytes"
+        );
+    }
+
+    #[test]
+    fn source_transfer_backup_publication_collision_preserves_existing_bytes() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let destination = root.join("transfer-backup.sqlite3");
+        let sentinel = b"concurrently published operator backup";
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("open source connection: {error}"));
+        source_connection
+            .busy_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("source busy timeout: {error}"));
+
+        let result = create_verified_transfer_backup_with_publish_hook(
+            &source_connection,
+            &destination,
+            |_| {
+                fs::write(&destination, sentinel)
+                    .map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)
+            },
+        );
+
+        assert_eq!(result, Err(SqliteSourceTransferErrorV1::UnsafeBackupPath));
+        assert_eq!(
+            fs::read(&destination)
+                .unwrap_or_else(|error| panic!("read collision destination: {error}")),
+            sentinel
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_transfer_backup_rejects_destination_parent_substitution() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let admitted_parent = root.join("admitted");
+        let held_parent = root.join("held-admitted");
+        fs::create_dir(&admitted_parent)
+            .unwrap_or_else(|error| panic!("create admitted parent: {error}"));
+        let source = root.join("source.sqlite3");
+        let destination = admitted_parent.join("transfer-backup.sqlite3");
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("open source connection: {error}"));
+        source_connection
+            .busy_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("source busy timeout: {error}"));
+
+        let result = create_verified_transfer_backup_with_publish_hook(
+            &source_connection,
+            &destination,
+            |temporary| {
+                let name = temporary
+                    .file_name()
+                    .unwrap_or_else(|| panic!("temporary name"))
+                    .to_owned();
+                fs::rename(&admitted_parent, &held_parent)
+                    .unwrap_or_else(|error| panic!("rename admitted parent: {error}"));
+                fs::create_dir(&admitted_parent)
+                    .unwrap_or_else(|error| panic!("recreate admitted parent: {error}"));
+                fs::rename(held_parent.join(&name), admitted_parent.join(&name))
+                    .unwrap_or_else(|error| panic!("move staging into replacement: {error}"));
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(
+            !destination.exists()
+                || fs::metadata(&destination)
+                    .unwrap_or_else(|error| panic!("replacement destination metadata: {error}"))
+                    .len()
+                    == 0,
+            "publication reached the replacement parent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_transfer_cleanup_never_unlinks_a_substituted_name() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let partial = directory.path().join("partial");
+        let held = directory.path().join("held-original");
+        let replacement = b"same-owner replacement";
+        fs::write(&partial, b"admitted")
+            .unwrap_or_else(|error| panic!("write admitted partial: {error}"));
+        let original = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&partial)
+            .unwrap_or_else(|error| panic!("open admitted partial: {error}"));
+        let identity = transfer_file_identity(&original)
+            .unwrap_or_else(|error| panic!("admitted identity: {error:?}"));
+
+        let result = remove_transfer_named_identity_with_hook(&partial, identity, || {
+            fs::rename(&partial, &held).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+            fs::write(&partial, replacement).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&partial).unwrap_or_else(|error| panic!("read replacement: {error}")),
+            replacement
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_transfer_cleanup_never_scrubs_a_substituted_backup() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let backup = root.join("backup.sqlite3");
+        let held = root.join("held-backup.sqlite3");
+        let victim = root.join("victim.sqlite3");
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("source connection: {error}"));
+        let digest = create_verified_transfer_backup_with_hooks(
+            &source_connection,
+            &backup,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|error| panic!("create verified backup: {error}"));
+        fs::copy(&backup, &victim).unwrap_or_else(|error| panic!("copy victim: {error}"));
+        let victim_bytes = fs::read(&victim)
+            .unwrap_or_else(|error| panic!("victim bytes before cleanup: {error}"));
+
+        let result = remove_verified_transfer_backup_with_hook(&backup, digest, || {
+            fs::rename(&backup, &held).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)?;
+            fs::rename(&victim, &backup).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)
+        });
+
+        assert_eq!(result, Err(SqliteSourceTransferErrorV1::UnsafeBackupPath));
+        assert_eq!(
+            fs::read(&backup).unwrap_or_else(|error| panic!("substituted victim bytes: {error}")),
+            victim_bytes
+        );
+        assert_eq!(
+            fs::read(&held).unwrap_or_else(|error| panic!("held backup bytes: {error}")),
+            victim_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_transfer_cleanup_requires_the_creation_bound_identity_before_retention() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let backup = root.join("backup.sqlite3");
+        let held = root.join("held-genuine-backup.sqlite3");
+        let victim = root.join("replacement-victim.sqlite3");
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("source connection: {error}"));
+        let expected = create_verified_transfer_backup_with_hooks(
+            &source_connection,
+            &backup,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|error| panic!("create verified backup: {error}"));
+        fs::copy(&backup, &victim).unwrap_or_else(|error| panic!("copy victim: {error}"));
+        let victim_bytes = fs::read(&victim)
+            .unwrap_or_else(|error| panic!("victim bytes before substitution: {error}"));
+        fs::rename(&backup, &held).unwrap_or_else(|error| panic!("hold genuine backup: {error}"));
+        fs::rename(&victim, &backup)
+            .unwrap_or_else(|error| panic!("install replacement victim: {error}"));
+
+        assert_eq!(
+            remove_verified_transfer_backup_with_hook(&backup, expected, || Ok(())),
+            Err(SqliteSourceTransferErrorV1::UnsafeBackupPath)
+        );
+        assert_eq!(
+            fs::read(&backup).unwrap_or_else(|error| panic!("replacement bytes: {error}")),
+            victim_bytes
+        );
+        assert_eq!(
+            fs::read(&held).unwrap_or_else(|error| panic!("genuine backup bytes: {error}")),
+            victim_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_transfer_cleanup_refuses_a_concurrent_hardlink_alias() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let backup = root.join("backup.sqlite3");
+        let alias = root.join("backup-alias.sqlite3");
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("source connection: {error}"));
+        let digest = create_verified_transfer_backup_with_hooks(
+            &source_connection,
+            &backup,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|error| panic!("create verified backup: {error}"));
+        let expected = fs::read(&backup)
+            .unwrap_or_else(|error| panic!("backup bytes before cleanup: {error}"));
+
+        let result = remove_verified_transfer_backup_with_hook(&backup, digest, || {
+            fs::hard_link(&backup, &alias).map_err(|_| SqliteSourceTransferErrorV1::BackupFailed)
+        });
+
+        assert_eq!(result, Err(SqliteSourceTransferErrorV1::BackupFailed));
+        assert_eq!(
+            fs::read(&backup).unwrap_or_else(|error| panic!("backup bytes: {error}")),
+            expected
+        );
+        assert_eq!(
+            fs::read(&alias).unwrap_or_else(|error| panic!("alias bytes: {error}")),
+            expected
+        );
+    }
+
+    #[test]
+    fn verified_transfer_cleanup_refuses_an_unadmitted_sidecar_without_mutation() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let backup = root.join("backup.sqlite3");
+        let sidecar = PathBuf::from(format!("{}-wal", backup.display()));
+        let sidecar_sentinel = b"unadmitted sidecar victim";
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("source connection: {error}"));
+        let digest = create_verified_transfer_backup_with_hooks(
+            &source_connection,
+            &backup,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|error| panic!("create verified backup: {error}"));
+        let expected = fs::read(&backup)
+            .unwrap_or_else(|error| panic!("backup bytes before cleanup: {error}"));
+        fs::write(&sidecar, sidecar_sentinel)
+            .unwrap_or_else(|error| panic!("sidecar sentinel: {error}"));
+
+        assert_eq!(
+            remove_verified_transfer_backup_with_hook(&backup, digest, || Ok(())),
+            Err(SqliteSourceTransferErrorV1::BackupFailed)
+        );
+        assert_eq!(
+            fs::read(&backup).unwrap_or_else(|error| panic!("backup bytes: {error}")),
+            expected
+        );
+        assert_eq!(
+            fs::read(&sidecar).unwrap_or_else(|error| panic!("sidecar bytes: {error}")),
+            sidecar_sentinel
+        );
+    }
+
+    #[test]
+    fn verified_transfer_cleanup_retains_an_exact_zero_placeholder() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let root = fs::canonicalize(directory.path())
+            .unwrap_or_else(|error| panic!("canonical temp directory: {error}"));
+        let source = root.join("source.sqlite3");
+        let backup = root.join("backup.sqlite3");
+        seed_canonical_export_fixture(&source, "healthy");
+        let source_connection = Connection::open_with_flags(
+            &source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|error| panic!("source connection: {error}"));
+        let digest = create_verified_transfer_backup_with_hooks(
+            &source_connection,
+            &backup,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|error| panic!("create verified backup: {error}"));
+
+        remove_verified_transfer_backup_with_hook(&backup, digest, || Ok(()))
+            .unwrap_or_else(|error| panic!("exact cleanup: {error}"));
+        assert_eq!(
+            fs::metadata(&backup)
+                .unwrap_or_else(|error| panic!("placeholder metadata: {error}"))
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn source_transfer_rejects_a_write_between_verified_backup_and_source_freeze() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let source = directory.path().join("source.sqlite3");
+        let backup = directory.path().join("source-transfer.sqlite3");
+        let store =
+            SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("open source: {error}"));
+        store
+            .initialize_canonical_metadata("deployment/inter-window", 7)
+            .unwrap_or_else(|error| panic!("metadata: {error}"));
+        store
+            .initialize_deployment_identity(fixture_deployment_identity())
+            .unwrap_or_else(|error| panic!("identity: {error}"));
+
+        let concurrent_source = source.clone();
+        let result = store.begin_source_transfer_with_test_hook(&backup, move || {
+            let concurrent = Connection::open(&concurrent_source)
+                .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+            concurrent
+                .execute(
+                    "UPDATE canonical_export_metadata SET storage_epoch = 8 \
+                     WHERE metadata_id = 1",
+                    (),
+                )
+                .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+            Ok(())
+        });
+
+        assert_eq!(result, Err(SqliteSourceTransferErrorV1::EvidenceMismatch));
+        assert_eq!(
+            fs::metadata(&backup)
+                .unwrap_or_else(|error| panic!("scrubbed backup metadata: {error}"))
+                .len(),
+            0
+        );
+        assert_eq!(
+            store
+                .source_transfer_status()
+                .unwrap_or_else(|error| panic!("source lifecycle: {error}"))
+                .state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+    }
+
+    #[test]
+    fn source_transfer_cleans_verified_backup_when_pre_freeze_step_fails() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let source = directory.path().join("source.sqlite3");
+        let backup = directory.path().join("source-transfer.sqlite3");
+        let store =
+            SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("open source: {error}"));
+        store
+            .initialize_canonical_metadata("deployment/failing-pre-freeze", 11)
+            .unwrap_or_else(|error| panic!("metadata: {error}"));
+        store
+            .initialize_deployment_identity(fixture_deployment_identity())
+            .unwrap_or_else(|error| panic!("identity: {error}"));
+
+        assert_eq!(
+            store.begin_source_transfer_with_test_hook(&backup, || {
+                Err(SqliteSourceTransferErrorV1::StorageUnavailable)
+            }),
+            Err(SqliteSourceTransferErrorV1::StorageUnavailable)
+        );
+        assert_eq!(
+            fs::metadata(&backup)
+                .unwrap_or_else(|error| panic!("scrubbed backup metadata: {error}"))
+                .len(),
+            0
+        );
+        assert_eq!(
+            store
+                .source_transfer_status()
+                .unwrap_or_else(|error| panic!("source lifecycle: {error}"))
+                .state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+    }
+
+    #[test]
+    fn pending_export_and_abort_reject_changed_backup_bytes() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let source = directory.path().join("source.sqlite3");
+        let backup = directory.path().join("source-transfer.sqlite3");
+        let store = SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("open: {error}"));
+        store
+            .initialize_canonical_metadata("deployment/tamper", 3)
+            .unwrap_or_else(|error| panic!("metadata: {error}"));
+        store
+            .initialize_deployment_identity(fixture_deployment_identity())
+            .unwrap_or_else(|error| panic!("identity: {error}"));
+        store
+            .begin_source_transfer(&backup)
+            .unwrap_or_else(|error| panic!("begin: {error}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&backup, fs::Permissions::from_mode(0o600))
+                .unwrap_or_else(|error| panic!("make test backup writable: {error}"));
+        }
+        #[cfg(not(unix))]
+        {
+            let mut permissions = fs::metadata(&backup)
+                .unwrap_or_else(|error| panic!("backup metadata: {error}"))
+                .permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&backup, permissions)
+                .unwrap_or_else(|error| panic!("make test backup writable: {error}"));
+        }
+        let backup_connection = Connection::open(&backup)
+            .unwrap_or_else(|error| panic!("open backup for tamper: {error}"));
+        backup_connection
+            .execute(
+                "UPDATE canonical_export_metadata SET deployment_lineage = 'deployment/changed'",
+                (),
+            )
+            .unwrap_or_else(|error| panic!("tamper backup: {error}"));
+        drop(backup_connection);
+        assert_eq!(
             store.export_canonical_evidence(),
-            Err(SqliteCanonicalExportErrorV1::RoomIncomplete {
-                room_id: "room-a".to_owned(),
-                what: "core"
-            })
+            Err(SqliteCanonicalExportErrorV1::BackupEvidenceMismatch)
+        );
+        let bundle = lifecycle_fixture_bundle("deployment/tamper", 3);
+        let mut session = verified_lifecycle_session(&bundle);
+        let mut destination = LifecycleFixtureDestination::default();
+        assert!(abort_whole_deployment(&mut session, &mut destination, &store, &bundle).is_err());
+        assert!(destination.aborted);
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::TransferPending
         );
     }
 
@@ -28014,11 +32708,11 @@ mod tests {
             vec![
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 9,
+                    schema_version: 11,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Applied,
-                    schema_version: 9,
+                    schema_version: 11,
                 },
             ]
         );
@@ -28058,16 +32752,16 @@ mod tests {
             [
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 9,
+                    schema_version: 11,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::AlreadyCurrent,
-                    schema_version: 9,
+                    schema_version: 11,
                 },
             ]
         );
         assert!(final_events.iter().all(|event| match event {
-            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 9,
+            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 11,
             SqliteTelemetryEventV1::Recovery { .. }
             | SqliteTelemetryEventV1::Integrity { .. }
             | SqliteTelemetryEventV1::StorageDiagnostic { .. } => true,
