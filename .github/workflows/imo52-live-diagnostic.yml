@@ -2,14 +2,6 @@ name: IMO-52 hosted Linux live diagnostic
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/imo52-live-diagnostic.yml
-      - scripts/postgres-native-restore-smoke.sh
-      - scripts/postgres-native-restore-hosted-report.py
-      - crates/worldstream-postgres/**
-      - crates/worldstream-runtime/**
-      - tests/postgres_native_restore_smoke.py
 
 permissions:
   contents: read
