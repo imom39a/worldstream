@@ -2245,11 +2245,13 @@ pub trait TransferDestinationV1 {
     /// authorizes the coordinator to attempt source retirement.
     fn record_finalization(&mut self, target: &TargetFingerprintV1) -> Result<(), Self::Error>;
 
-    /// Revokes the exact non-serving finalization record after the source has
-    /// durably proven that retirement did not commit. Implementations must
-    /// transition only the same fenced target back to its verified, abortable
-    /// state; this is not a permissive rollback after ambiguous retirement.
-    fn revoke_finalization_after_definite_source_failure(
+    /// Reconciles an exact non-serving provider import after the source has
+    /// durably proven that retirement did not commit. A matching finalized
+    /// record is revoked back to its verified, abortable state; matching
+    /// pending, verified, absent, or already-aborted state is an idempotent
+    /// no-op. Authoritative or mismatched state must fail closed. This recovery
+    /// is independent of the caller's potentially stale serialized session.
+    fn reconcile_finalization_after_definite_source_failure(
         &mut self,
         target: &TargetFingerprintV1,
     ) -> Result<(), Self::Error>;
@@ -3331,9 +3333,9 @@ where
             Ok(TransferSourceAuthorityStateV1::SourceRetired) => {}
             Ok(TransferSourceAuthorityStateV1::TransferPending) => {
                 destination
-                    .revoke_finalization_after_definite_source_failure(&target)
+                    .reconcile_finalization_after_definite_source_failure(&target)
                     .map_err(|error| WholeDeploymentTransferErrorV1::Destination {
-                        operation: "revoke finalization after definite source failure",
+                        operation: "reconcile finalization after definite source failure",
                         error,
                     })?;
                 session
@@ -3404,18 +3406,22 @@ where
     if source_state == TransferSourceAuthorityStateV1::SourceRetired {
         return Err(TransferError::SourceRetired.into());
     }
-    if session.state() == TransferStateV1::Finalized
-        && source_state == TransferSourceAuthorityStateV1::TransferPending
+    if matches!(
+        session.state(),
+        TransferStateV1::TargetVerified | TransferStateV1::Finalized
+    ) && source_state == TransferSourceAuthorityStateV1::TransferPending
     {
         destination
-            .revoke_finalization_after_definite_source_failure(&target)
+            .reconcile_finalization_after_definite_source_failure(&target)
             .map_err(|error| WholeDeploymentTransferErrorV1::Destination {
-                operation: "revoke finalization before abort",
+                operation: "reconcile finalization before abort",
                 error,
             })?;
-        session
-            .lifecycle
-            .reopen_verified_after_definite_source_failure()?;
+        if session.state() == TransferStateV1::Finalized {
+            session
+                .lifecycle
+                .reopen_verified_after_definite_source_failure()?;
+        }
     }
     destination.abort_import(&target).map_err(|error| {
         WholeDeploymentTransferErrorV1::Destination {
@@ -4111,17 +4117,16 @@ mod tests {
             Ok(())
         }
 
-        fn revoke_finalization_after_definite_source_failure(
+        fn reconcile_finalization_after_definite_source_failure(
             &mut self,
             _target: &TargetFingerprintV1,
         ) -> Result<(), Self::Error> {
             if self.authoritative {
                 return Err("authoritative target cannot revoke finalization".to_owned());
             }
-            if !self.finalized {
-                return Err("target finalization is not durable".to_owned());
+            if self.finalized {
+                self.finalized = false;
             }
-            self.finalized = false;
             Ok(())
         }
 
@@ -4824,6 +4829,47 @@ mod tests {
             }
         })?;
         assert_eq!(session.state(), TransferStateV1::SourceAuthoritative);
+        assert!(destination.aborted);
+        assert!(
+            source
+                .state
+                .lock()
+                .expect("source state")
+                .restored
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn whole_deployment_abort_reconciles_provider_finalization_hidden_by_stale_checkpoint()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let mut destination = FixtureDestination::default();
+        let mut session = complete_fixture_import(&bundle, &mut destination)?;
+        let target = session.target().clone();
+        destination
+            .verify_complete(&bundle, &target)
+            .map_err(|_| TransferError::InvalidValue {
+                what: "fixture provider verification",
+            })?;
+        destination
+            .record_finalization(&target)
+            .map_err(|_| TransferError::InvalidValue {
+                what: "fixture provider-only finalization",
+            })?;
+        assert_eq!(session.state(), TransferStateV1::TargetVerified);
+        assert!(destination.finalized);
+
+        let source = FixtureSource::default();
+        abort_whole_deployment(&mut session, &mut destination, &source, &bundle).map_err(|_| {
+            TransferError::InvalidValue {
+                what: "abort with stale target-verified checkpoint",
+            }
+        })?;
+
+        assert_eq!(session.state(), TransferStateV1::SourceAuthoritative);
+        assert!(!destination.finalized);
         assert!(destination.aborted);
         assert!(
             source

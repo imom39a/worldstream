@@ -74,6 +74,7 @@ $PassfileScrubComplete = $false
 $WorkParentHandle = $null
 $TransferDsnStreams = @()
 $TransferDsnScrubComplete = $false
+$TransferDsnCleanupFailure = $null
 
 Add-Type -TypeDefinition @'
 using System;
@@ -341,16 +342,46 @@ function Clear-WorldstreamTransferDsnFiles {
     if ($script:TransferDsnScrubComplete) {
         return
     }
-    foreach ($Stream in $script:TransferDsnStreams) {
-        $Stream.SetLength(0)
-        $Stream.Flush($true)
-        if ($Stream.Length -ne 0) {
-            throw 'Windows transfer DSN exact scrub failed'
-        }
-        $Stream.Dispose()
+    if ($null -ne $script:TransferDsnCleanupFailure) {
+        throw $script:TransferDsnCleanupFailure
     }
-    $script:TransferDsnStreams = @()
-    $script:TransferDsnScrubComplete = $true
+    $Failures = [Collections.Generic.List[object]]::new()
+    $Remaining = [Collections.Generic.List[object]]::new()
+    foreach ($Stream in $script:TransferDsnStreams) {
+        try {
+            $Stream.SetLength(0)
+        }
+        catch {
+            [void]$Failures.Add($_)
+        }
+        try {
+            $Stream.Flush($true)
+        }
+        catch {
+            [void]$Failures.Add($_)
+        }
+        try {
+            if ($Stream.Length -ne 0L) {
+                throw 'Windows transfer DSN exact scrub failed'
+            }
+        }
+        catch {
+            [void]$Failures.Add($_)
+        }
+        try {
+            $Stream.Dispose()
+        }
+        catch {
+            [void]$Failures.Add($_)
+            [void]$Remaining.Add($Stream)
+        }
+    }
+    $script:TransferDsnStreams = @($Remaining)
+    $script:TransferDsnScrubComplete = $Failures.Count -eq 0
+    if ($Failures.Count -ne 0) {
+        $script:TransferDsnCleanupFailure = $Failures[0]
+        throw $script:TransferDsnCleanupFailure
+    }
 }
 
 try {

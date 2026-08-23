@@ -1509,6 +1509,13 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
         self.assertIn("WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION", harness)
         self.assertIn("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE", harness)
         self.assertIn("Clear-WorldstreamTransferDsnFiles", harness)
+        self.assertIn("$Failures = [Collections.Generic.List[object]]::new()", harness)
+        self.assertIn("$Remaining = [Collections.Generic.List[object]]::new()", harness)
+        self.assertIn("[void]$Failures.Add($_)", harness)
+        self.assertIn("[void]$Remaining.Add($Stream)", harness)
+        self.assertIn(
+            "$script:TransferDsnScrubComplete = $Failures.Count -eq 0", harness
+        )
         self.assertNotIn("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN =", harness)
         self.assertIn("$SourceDatabase = 'worldstream_native_source'", harness)
         self.assertIn("CREATE DATABASE $SourceDatabase", harness)
@@ -1542,6 +1549,108 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
         self.assertNotIn("scripts/postgres-native-restore-smoke.sh", harness)
         self.assertIn("native-windows-postgres-restore.json", harness)
         self.assertIn("$Report.native_restore.native_witness_minted", harness)
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell fault injection")
+    def test_windows_transfer_dsn_cleanup_attempts_every_stream_operation(self) -> None:
+        harness = ROOT / "scripts" / "postgres-native-restore-windows-live.ps1"
+        command = r"""
+$Tokens = $null
+$Errors = $null
+$Ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:WORLDSTREAM_WINDOWS_HARNESS,
+    [ref]$Tokens,
+    [ref]$Errors
+)
+if ($Errors.Count -ne 0) { throw $Errors[0] }
+$Function = $Ast.FindAll(
+    {
+        param($Node)
+        $Node -is [Management.Automation.Language.FunctionDefinitionAst] `
+            -and $Node.Name -eq 'Clear-WorldstreamTransferDsnFiles'
+    },
+    $true
+)
+if ($Function.Count -ne 1) { throw 'cleanup function AST not unique' }
+Invoke-Expression $Function[0].Extent.Text
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+
+public sealed class FaultingWorldstreamDsnStream {
+    public static readonly List<string> Log = new List<string>();
+    private readonly int id;
+    private long length = 7;
+
+    public FaultingWorldstreamDsnStream(int id) { this.id = id; }
+    public long Length {
+        get { Log.Add(id + ":Length"); return length; }
+    }
+    public void SetLength(long value) {
+        Log.Add(id + ":SetLength");
+        if (id == 0) throw new InvalidOperationException("first setlength");
+        length = value;
+    }
+    public void Flush(bool durable) { Log.Add(id + ":Flush"); }
+    public void Dispose() {
+        Log.Add(id + ":Dispose");
+        if (id == 1) throw new InvalidOperationException("second dispose");
+    }
+}
+'@
+$script:TransferDsnStreams = @(
+    [FaultingWorldstreamDsnStream]::new(0),
+    [FaultingWorldstreamDsnStream]::new(1),
+    [FaultingWorldstreamDsnStream]::new(2)
+)
+$script:TransferDsnScrubComplete = $false
+$script:TransferDsnCleanupFailure = $null
+$Observed = $null
+try { Clear-WorldstreamTransferDsnFiles } catch { $Observed = $_.Exception.Message }
+$FirstLogCount = [FaultingWorldstreamDsnStream]::Log.Count
+try { Clear-WorldstreamTransferDsnFiles } catch { }
+[ordered]@{
+    observed = $Observed
+    log = @([FaultingWorldstreamDsnStream]::Log)
+    first_log_count = $FirstLogCount
+    final_log_count = [FaultingWorldstreamDsnStream]::Log.Count
+    remaining = $script:TransferDsnStreams.Count
+    complete = $script:TransferDsnScrubComplete
+} | ConvertTo-Json -Compress
+"""
+        environment = os.environ.copy()
+        environment["WORLDSTREAM_WINDOWS_HARNESS"] = str(harness)
+        result = subprocess.run(
+            ["pwsh", "-NoLogo", "-NoProfile", "-Command", command],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observation = json.loads(result.stdout)
+        self.assertIn("first setlength", observation["observed"])
+        self.assertEqual(
+            observation["log"],
+            [
+                "0:SetLength",
+                "0:Flush",
+                "0:Length",
+                "0:Dispose",
+                "1:SetLength",
+                "1:Flush",
+                "1:Length",
+                "1:Dispose",
+                "2:SetLength",
+                "2:Flush",
+                "2:Length",
+                "2:Dispose",
+            ],
+        )
+        self.assertEqual(observation["first_log_count"], 12)
+        self.assertEqual(observation["final_log_count"], 12)
+        self.assertEqual(observation["remaining"], 1)
+        self.assertFalse(observation["complete"])
 
     def test_release_linux_runner_executes_exact_hosted_native_restore(self) -> None:
         workflow = (

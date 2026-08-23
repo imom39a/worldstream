@@ -2172,14 +2172,16 @@ mod tests {
             Ok(())
         }
 
-        fn revoke_finalization_after_definite_source_failure(
+        fn reconcile_finalization_after_definite_source_failure(
             &mut self,
             _target: &TargetFingerprintV1,
         ) -> Result<(), Self::Error> {
-            if self.authoritative || !self.finalized {
-                return Err("target finalization cannot be revoked");
+            if self.authoritative {
+                return Err("target finalization cannot be reconciled");
             }
-            self.finalized = false;
+            if self.finalized {
+                self.finalized = false;
+            }
             Ok(())
         }
 

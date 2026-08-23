@@ -3562,13 +3562,13 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
         Self::commit_transaction(transaction)
     }
 
-    fn revoke_finalization_after_definite_source_failure(
+    fn reconcile_finalization_after_definite_source_failure(
         &mut self,
         target: &TargetFingerprintV1,
     ) -> Result<(), Self::Error> {
         if target != &self.target {
             return Err(PostgresTransferError::TargetMismatch(
-                "finalization revocation target fingerprint",
+                "finalization reconciliation target fingerprint",
             ));
         }
         let bundle_hash = self.bundle_key();
@@ -3578,13 +3578,33 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
             .connect()
             .map_err(PostgresTransferError::Connection)?;
         let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
-        let row = transaction
+        // The serialized session is only a retry hint: it can still say
+        // `TargetVerified` when the provider's finalization transaction won
+        // immediately before a process stop. Serialize with first publication
+        // and reconcile every exact non-serving provider disposition.
+        Self::lock_target_preflight(&mut transaction)?;
+        let fence_state = self.lock_abort_fence(&mut transaction)?;
+        if fence_state == AbortFenceStateV1::AlreadyAborted {
+            Self::verify_aborted_import_empty(&mut transaction)?;
+            Self::commit_transaction(transaction)?;
+            return Ok(());
+        }
+        let Some(row) = transaction
             .query_opt(
                 "SELECT target_fingerprint, state FROM worldstream_transfer_imports WHERE bundle_hash = $1 FOR UPDATE",
                 &[&bundle_hash.as_slice()],
             )
             .map_err(PostgresTransferError::Sql)?
-            .ok_or(PostgresTransferError::MissingImport)?;
+        else {
+            if fence_state == AbortFenceStateV1::Importing {
+                return Err(PostgresTransferError::MissingImport);
+            }
+            Self::commit_transaction(transaction)?;
+            return Ok(());
+        };
+        if fence_state == AbortFenceStateV1::Missing {
+            return Err(PostgresTransferError::MissingTargetFence);
+        }
         let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
         if stored_target != target_digest {
             return Err(PostgresTransferError::TargetMismatch(
@@ -3608,11 +3628,11 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
                     });
                 }
             }
-            "verified" => self.verify_target_fence(&mut transaction)?,
+            "pending" | "verified" => self.verify_target_fence(&mut transaction)?,
             "authoritative" => return Err(PostgresTransferError::RollbackRefused),
             actual => {
                 return Err(PostgresTransferError::InvalidImportState {
-                    expected: "finalized or verified",
+                    expected: "pending, verified, or finalized",
                     actual: actual.to_owned(),
                 });
             }
