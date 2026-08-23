@@ -1463,6 +1463,8 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("scripts/postgres-native-restore-smoke.sh", diagnostic)
+        self.assertIn("pull_request:", diagnostic)
+        self.assertIn("crates/worldstream-postgres/**", diagnostic)
         self.assertIn(
             "--evidence reports/imo52-native-postgres-restore-smoke.json",
             diagnostic,
