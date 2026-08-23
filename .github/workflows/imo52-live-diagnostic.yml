@@ -6,9 +6,6 @@ on:
 permissions:
   contents: read
 
-env:
-  WORLDSTREAM_BUILD_REVISION: ${{ github.sha }}
-
 jobs:
   native-postgres-restore:
     name: PostgreSQL 17.11 native backup restore and recovery
@@ -29,48 +26,26 @@ jobs:
       - name: Install pinned Python
         run: |
           uv python install 3.14.7
-          uv sync --project sdk/python --locked
-      - name: Install byte-pinned PostgreSQL 17.11 provider clients
-        run: scripts/gates-install-postgres-client.sh
-      - name: Build source control binary for the non-release diagnostic
+      - name: Run standalone PostgreSQL native restore smoke diagnostic
+        shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --locked -p worldstream-server --bin worldstreamctl
-          printf 'WORLDSTREAM_PACKAGED_CTL=%s\n' "$(realpath target/release/worldstreamctl)" >> "$GITHUB_ENV"
-      - name: Start pinned PostgreSQL 17.11
-        run: |
-          set -euo pipefail
-          postgres_secret_dir="$RUNNER_TEMP/worldstream-postgres-bootstrap"
-          postgres_password_file="$postgres_secret_dir/password"
-          umask 077
-          mkdir -p "$postgres_secret_dir"
-          openssl rand -hex 24 > "$postgres_password_file"
-          chmod 600 "$postgres_password_file"
-          docker run --detach --name worldstream-postgres \
-            --env POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password \
-            --env POSTGRES_DB=worldstream \
-            --volume "$postgres_password_file:/run/secrets/postgres-password:ro" \
-            --publish 127.0.0.1:5432:5432 \
-            postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
-          for attempt in $(seq 1 60); do
-            if docker exec worldstream-postgres pg_isready --username postgres --dbname worldstream; then
-              break
-            fi
-            if [[ "$attempt" = 60 ]]; then
-              docker logs worldstream-postgres
-              exit 1
-            fi
-            sleep 1
+          mkdir -p reports
+          python_bin="$(uv python find 3.14.7)"
+          cargo_bin="$(rustup which --toolchain 1.97.1 cargo)"
+          docker_bin=/usr/bin/docker
+          for executable in "$python_bin" "$cargo_bin" "$docker_bin"; do
+            test -x "$executable"
           done
-          printf 'WORLDSTREAM_POSTGRES_PASSWORD_FILE=%s\n' "$postgres_password_file" >> "$GITHUB_ENV"
-      - name: Run hosted Linux PostgreSQL native backup restore and recovery
-        run: scripts/postgres-native-restore-linux-live.sh
+          WORLDSTREAM_NATIVE_PG_PYTHON="$python_bin" \
+          WORLDSTREAM_NATIVE_PG_CARGO="$cargo_bin" \
+          WORLDSTREAM_NATIVE_PG_DOCKER="$docker_bin" \
+            scripts/postgres-native-restore-smoke.sh \
+              --evidence reports/imo52-native-postgres-restore-smoke.json
       - name: Upload the non-release diagnostic
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: imo52-hosted-linux-${{ github.sha }}-${{ github.run_attempt }}
-          path: |
-            reports/native-linux-postgres-restore.json
-            reports/native-linux-transfer-seed.json
+          path: reports/imo52-native-postgres-restore-smoke.json
           if-no-files-found: warn

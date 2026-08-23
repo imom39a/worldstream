@@ -72,6 +72,8 @@ $PassfileWriteStream = $null
 $PassfileReadStream = $null
 $PassfileScrubComplete = $false
 $WorkParentHandle = $null
+$TransferDsnStreams = @()
+$TransferDsnScrubComplete = $false
 
 Add-Type -TypeDefinition @'
 using System;
@@ -335,6 +337,22 @@ function Close-WorldstreamPassfileHandles {
     }
 }
 
+function Clear-WorldstreamTransferDsnFiles {
+    if ($script:TransferDsnScrubComplete) {
+        return
+    }
+    foreach ($Stream in $script:TransferDsnStreams) {
+        $Stream.SetLength(0)
+        $Stream.Flush($true)
+        if ($Stream.Length -ne 0) {
+            throw 'Windows transfer DSN exact scrub failed'
+        }
+        $Stream.Dispose()
+    }
+    $script:TransferDsnStreams = @()
+    $script:TransferDsnScrubComplete = $true
+}
+
 try {
 
 $env:PGPASSWORD = $AdminPassword
@@ -429,8 +447,40 @@ function Protect-WorldstreamPath {
 $SecretRoot = Join-Path $env:RUNNER_TEMP 'worldstream-native-restore-secrets'
 $WorkParent = Join-Path $env:RUNNER_TEMP 'worldstream-native-restore-work'
 $Passfile = Join-Path $SecretRoot 'operator.pgpass'
+$TransferAdminDsnFile = Join-Path $SecretRoot 'transfer-admin.dsn'
+$TransferRuntimeDsnFile = Join-Path $SecretRoot 'transfer-runtime.dsn'
+$TransferAbortAdminDsnFile = Join-Path $SecretRoot 'transfer-abort-admin.dsn'
 if ((Test-Path -LiteralPath $SecretRoot) -or (Test-Path -LiteralPath $WorkParent)) {
     throw 'hosted Windows native restore refuses a preexisting private root'
+}
+
+New-Item -ItemType Directory -Path $SecretRoot | Out-Null
+New-Item -ItemType Directory -Path $WorkParent | Out-Null
+Protect-WorldstreamPath -Path $SecretRoot -Directory
+Protect-WorldstreamPath -Path $WorkParent -Directory
+
+$Utf8NoBom = [Text.UTF8Encoding]::new($false)
+foreach ($Secret in @(
+    @($TransferAdminDsnFile, "host=127.0.0.1 port=5432 user=$AdminUser password=$AdminPassword dbname=$SourceDatabase"),
+    @($TransferRuntimeDsnFile, "host=127.0.0.1 port=5432 user=$RuntimeRole password=$RuntimePassword dbname=$SourceDatabase"),
+    @($TransferAbortAdminDsnFile, "host=127.0.0.1 port=5432 user=$AdminUser password=$AdminPassword dbname=$AbortDatabase")
+)) {
+    $Stream = [IO.FileStream]::new(
+        $Secret[0],
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::ReadWrite,
+        [IO.FileShare]::Read
+    )
+    $TransferDsnStreams += $Stream
+    $Bytes = $Utf8NoBom.GetBytes($Secret[1])
+    try {
+        $Stream.Write($Bytes, 0, $Bytes.Length)
+        $Stream.Flush($true)
+        Protect-WorldstreamPath -Path $Secret[0]
+    }
+    finally {
+        [Array]::Clear($Bytes, 0, $Bytes.Length)
+    }
 }
 
 $Bash = (Get-Command bash.exe).Source
@@ -440,9 +490,9 @@ if (-not $WorkspacePosix) {
 }
 
 $env:WORLDSTREAM_PG_TRANSFER_MODE = 'external'
-$env:WORLDSTREAM_PG_TRANSFER_ADMIN_DSN = "host=127.0.0.1 port=5432 user=$AdminUser password=$AdminPassword dbname=$SourceDatabase"
-$env:WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN = "host=127.0.0.1 port=5432 user=$RuntimeRole password=$RuntimePassword dbname=$SourceDatabase"
-$env:WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN = "host=127.0.0.1 port=5432 user=$AdminUser password=$AdminPassword dbname=$AbortDatabase"
+$env:WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE = $TransferAdminDsnFile
+$env:WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE = $TransferRuntimeDsnFile
+$env:WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE = $TransferAbortAdminDsnFile
 $env:WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE = $RuntimeRole
 $env:WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION = $env:WORLDSTREAM_BUILD_REVISION
 try {
@@ -450,11 +500,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Windows live source fixture construction failed' }
 }
 finally {
-    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ADMIN_DSN -ErrorAction SilentlyContinue
-    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN -ErrorAction SilentlyContinue
-    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN -ErrorAction SilentlyContinue
+    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE -ErrorAction SilentlyContinue
     Remove-Item Env:WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE -ErrorAction SilentlyContinue
     Remove-Item Env:WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION -ErrorAction SilentlyContinue
+    Clear-WorldstreamTransferDsnFiles
 }
 
 $Version = ([regex]::Match((Get-Content compatibility.toml -Raw), '(?m)^product\s*=\s*"([^"]+)"')).Groups[1].Value
@@ -463,10 +514,6 @@ if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) {
     throw 'hosted Windows native restore archive is absent'
 }
 
-New-Item -ItemType Directory -Path $SecretRoot | Out-Null
-New-Item -ItemType Directory -Path $WorkParent | Out-Null
-Protect-WorldstreamPath -Path $SecretRoot -Directory
-Protect-WorldstreamPath -Path $WorkParent -Directory
 $WorkParentHandle = [WorldstreamRetainedWindowsIdentity]::OpenDirectory($WorkParent)
 $WorkParentIdentity = [WorldstreamRetainedWindowsIdentity]::Identity($WorkParentHandle).Split("`t")
 if ($WorkParentIdentity.Count -ne 3) {
@@ -586,6 +633,18 @@ if ($PassfileItem.PSIsContainer `
     -or $PassfileItem.Length -ne 0) {
     throw 'Windows hosted native restore passfile was not scrubbed'
 }
+foreach ($TransferDsnFile in @(
+    $TransferAdminDsnFile,
+    $TransferRuntimeDsnFile,
+    $TransferAbortAdminDsnFile
+)) {
+    $TransferDsnItem = Get-Item -LiteralPath $TransferDsnFile -Force
+    if ($TransferDsnItem.PSIsContainer `
+        -or ($TransferDsnItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 `
+        -or $TransferDsnItem.Length -ne 0) {
+        throw 'Windows hosted transfer DSN was not scrubbed'
+    }
+}
 $PrivateRoots = @(Get-ChildItem -LiteralPath $WorkParent -Force)
 $BindingRoots = @($PrivateRoots | Where-Object {
     $_.Name -ceq 'worldstream-native-platform-binding'
@@ -635,11 +694,17 @@ Clear-WorldstreamPassfile
 finally {
     $CleanupFailure = $null
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
-    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ADMIN_DSN -ErrorAction SilentlyContinue
-    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN -ErrorAction SilentlyContinue
-    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN -ErrorAction SilentlyContinue
+    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE -ErrorAction SilentlyContinue
     Remove-Item Env:WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE -ErrorAction SilentlyContinue
     Remove-Item Env:WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION -ErrorAction SilentlyContinue
+    try {
+        Clear-WorldstreamTransferDsnFiles
+    }
+    catch {
+        $CleanupFailure = $_
+    }
     if (-not $PreserveRecovery) {
         try {
             Invoke-WorldstreamProviderCleanup

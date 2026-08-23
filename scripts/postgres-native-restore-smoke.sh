@@ -94,6 +94,7 @@ artifact_plan=(
   docker.env pgpass mount-authority restore-input.dump restore-concurrency.observation
   target-marker.stdout target-marker.stderr runtime-role.stdout runtime-role.stderr
   transfer-abort-database.stdout transfer-abort-database.stderr
+  transfer-admin.dsn transfer-runtime.dsn transfer-abort-admin.dsn
   source-seed.stdout source-seed.stderr source-prepare.stdout source-prepare.stderr
   target-seal.stderr target-restore-role-cleanup.stderr driver.stderr
   pg_dump pg_restore psql
@@ -1414,6 +1415,12 @@ if [[ -z "$source_host" || -z "$source_port" || -z "$target_host" || -z "$target
   fi
   close_artifact_fd "$transfer_abort_stdout_fd"
   close_artifact_fd "$transfer_abort_stderr_fd"
+  printf '%s' "host=$source_host port=$source_port user=$source_user password=$password dbname=$source_db" \
+    | write_artifact transfer-admin.dsn
+  printf '%s' "host=$source_host port=$source_port user=$runtime_role password=$runtime_password dbname=$source_db" \
+    | write_artifact transfer-runtime.dsn
+  printf '%s' "host=$source_host port=$source_port user=$source_user password=$password dbname=$transfer_abort_db" \
+    | write_artifact transfer-abort-admin.dsn
   open_artifact_fd source-seed.stdout seed_stdout_fd 1
   open_artifact_fd source-seed.stderr seed_stderr_fd 1
   set +e
@@ -1421,9 +1428,9 @@ if [[ -z "$source_host" || -z "$source_port" || -z "$target_host" || -z "$target
     WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE=1 \
     WORLDSTREAM_PG_TRANSFER_CARGO="$cargo_bin" \
     WORLDSTREAM_PG_TRANSFER_PYTHON="$python_bin" \
-    WORLDSTREAM_PG_TRANSFER_ADMIN_DSN="host=$source_host port=$source_port user=$source_user password=$password dbname=$source_db" \
-    WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN="host=$source_host port=$source_port user=$runtime_role password=$runtime_password dbname=$source_db" \
-    WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN="host=$source_host port=$source_port user=$source_user password=$password dbname=$transfer_abort_db" \
+    WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE="$artifact_root/transfer-admin.dsn" \
+    WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE="$artifact_root/transfer-runtime.dsn" \
+    WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE="$artifact_root/transfer-abort-admin.dsn" \
     WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE="$runtime_role" \
     "$transfer_smoke_bin" --build-source >&"$seed_stdout_fd" 2>&"$seed_stderr_fd"
   seed_code=$?

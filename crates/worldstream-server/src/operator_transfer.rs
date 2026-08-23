@@ -2172,6 +2172,17 @@ mod tests {
             Ok(())
         }
 
+        fn revoke_finalization_after_definite_source_failure(
+            &mut self,
+            _target: &TargetFingerprintV1,
+        ) -> Result<(), Self::Error> {
+            if self.authoritative || !self.finalized {
+                return Err("target finalization cannot be revoked");
+            }
+            self.finalized = false;
+            Ok(())
+        }
+
         fn accept_target_write(
             &mut self,
             _target: &TargetFingerprintV1,

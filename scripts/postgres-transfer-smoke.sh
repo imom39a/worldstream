@@ -31,9 +31,9 @@ evidence_file="${WORLDSTREAM_PG_TRANSFER_EVIDENCE_FILE:-}"
 source_file="${WORLDSTREAM_PG_TRANSFER_SQLITE:-}"
 build_source=0
 requested_mode="${WORLDSTREAM_PG_TRANSFER_MODE:-docker}"
-admin_dsn="${WORLDSTREAM_PG_TRANSFER_ADMIN_DSN:-}"
-runtime_dsn="${WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN:-}"
-abort_admin_dsn="${WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN:-}"
+admin_dsn_file="${WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE:-}"
+runtime_dsn_file="${WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE:-}"
+abort_admin_dsn_file="${WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE:-}"
 runtime_role="${WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE:-}"
 docker_bin="${WORLDSTREAM_PG_TRANSFER_DOCKER:-}"
 cargo_bin="${WORLDSTREAM_PG_TRANSFER_CARGO:-}"
@@ -57,8 +57,9 @@ usage() {
     "Default mode creates a digest-pinned disposable postgres:17.11-alpine target with" \
     "separate admin/runtime credentials. Set" \
     "WORLDSTREAM_PG_TRANSFER_MODE=external together with" \
-    "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN, WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN, and" \
-    "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN to use explicitly supplied," \
+    "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE, WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE, and" \
+    "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE to use bounded owner-only files for" \
+    "explicitly supplied," \
     "already-isolated success and abort-probe databases. The abort database" \
     "must be distinct because a provider abort permanently tombstones it." \
     "" \
@@ -193,6 +194,7 @@ evidence = {
     "transfer": {"status": "not_checked", "finalization": "not_attempted"},
     "cleanup": {"status": os.environ.get("CLEANUP", "not_started")},
 }
+
 encoded = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
 if sys.argv[1]:
     destination = Path(sys.argv[1])
@@ -201,6 +203,16 @@ if sys.argv[1]:
 print(encoded)
 PY
 }
+
+if [[ -n "${WORLDSTREAM_PG_TRANSFER_ADMIN_DSN+x}" \
+    || -n "${WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN+x}" \
+    || -n "${WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN+x}" ]]; then
+  status="incomplete"
+  reason="plaintext_dsn_environment_rejected"
+  provider_mode="$requested_mode"
+  EXIT_CODE="$EXIT_CONFIGURATION" write_static_evidence "$EXIT_CONFIGURATION"
+  exit "$EXIT_CONFIGURATION"
+fi
 
 if [[ ! "$helper_timeout" =~ ^[1-9][0-9]*$ ]]; then
   status="incomplete"
@@ -260,13 +272,13 @@ trap cleanup EXIT
 
 if [[ "$requested_mode" == "external" ]]; then
   provider_mode="external"
-  if [[ -z "$admin_dsn" || -z "$runtime_dsn" || -z "$abort_admin_dsn" ]]; then
+  if [[ -z "$admin_dsn_file" || -z "$runtime_dsn_file" || -z "$abort_admin_dsn_file" ]]; then
     status="incomplete"
     reason="external_target_credentials_missing"
     EXIT_CODE="$EXIT_CONFIGURATION" write_static_evidence "$EXIT_CONFIGURATION"
     exit "$EXIT_CONFIGURATION"
   fi
-  if [[ "$abort_admin_dsn" == "$admin_dsn" || "$abort_admin_dsn" == "$runtime_dsn" ]]; then
+  if [[ "$abort_admin_dsn_file" == "$admin_dsn_file" || "$abort_admin_dsn_file" == "$runtime_dsn_file" ]]; then
     status="incomplete"
     reason="external_abort_target_not_distinct"
     EXIT_CODE="$EXIT_CONFIGURATION" write_static_evidence "$EXIT_CONFIGURATION"
@@ -343,9 +355,15 @@ PY
     EXIT_CODE="$EXIT_UNAVAILABLE" write_static_evidence "$EXIT_UNAVAILABLE"
     exit "$EXIT_UNAVAILABLE"
   fi
-  admin_dsn="host=127.0.0.1 port=$port user=admin password=$admin_password dbname=worldstream"
-  runtime_dsn="host=127.0.0.1 port=$port user=runtime password=$runtime_password dbname=worldstream"
-  abort_admin_dsn="host=127.0.0.1 port=$port user=admin password=$admin_password dbname=worldstream_abort_probe"
+  admin_dsn_file="$temp_root/admin.dsn"
+  runtime_dsn_file="$temp_root/runtime.dsn"
+  abort_admin_dsn_file="$temp_root/abort-admin.dsn"
+  umask 077
+  printf '%s' "host=127.0.0.1 port=$port user=admin password=$admin_password dbname=worldstream" >"$admin_dsn_file"
+  printf '%s' "host=127.0.0.1 port=$port user=runtime password=$runtime_password dbname=worldstream" >"$runtime_dsn_file"
+  printf '%s' "host=127.0.0.1 port=$port user=admin password=$admin_password dbname=worldstream_abort_probe" >"$abort_admin_dsn_file"
+  chmod 600 "$admin_dsn_file" "$runtime_dsn_file" "$abort_admin_dsn_file"
+  unset admin_password runtime_password
 elif [[ "$requested_mode" != "external" ]]; then
   status="incomplete"
   reason="unsupported_mode"
@@ -374,9 +392,11 @@ publish = false
 postgres = "=0.19.14"
 rusqlite = { git = "https://github.com/rusqlite/rusqlite.git", rev = "229140734a4a60cc9fa34507fe79cb2277142f49", default-features = false, features = ["bundled"] }
 serde_json = "=1.0.151"
+zeroize = "=1.9.0"
 worldstream-core = { path = "$workspace_dir/crates/worldstream-core", features = ["conformance-tracer"] }
 worldstream-backup = { path = "$workspace_dir/crates/worldstream-backup" }
 worldstream-postgres = { path = "$workspace_dir/crates/worldstream-postgres" }
+worldstream-runtime = { path = "$workspace_dir/crates/worldstream-runtime" }
 worldstream-sqlite = { path = "$workspace_dir/crates/worldstream-sqlite" }
 worldstream-transfer = { path = "$workspace_dir/crates/worldstream-transfer" }
 EOF
@@ -384,11 +404,16 @@ EOF
 cat >"$helper_source" <<'RS'
 #![recursion_limit = "256"]
 
-use std::{collections::{BTreeMap, BTreeSet}, env, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env,
+    path::{Path, PathBuf},
+};
 
 use postgres::{Client, NoTls};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 use worldstream_core::{
     agent_heist_digest, builtin_counter_registry, builtin_worldstream_registry, AccessModeV1,
     CanonicalJsonV1, CanonicalRequestHashV1, CompleteHeadV1, CoreRoomStateV1, CoreTraceV1,
@@ -411,6 +436,7 @@ use worldstream_postgres::{
     PostgresAdmin, PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore,
     PostgresTransferDestination, postgres_backend_fingerprint,
 };
+use worldstream_runtime::SecretSource;
 use worldstream_sqlite::{
     SqliteCanonicalRecordKindV1, SqliteRoomStore, SqliteSourceTransferStateV1,
 };
@@ -428,6 +454,27 @@ const EXIT_WRONG_VERSION: i32 = 11;
 const EXIT_PROVIDER: i32 = 14;
 const MAX_SOURCE_ROOMS: usize = 100_000;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DSN_BYTES: usize = 64 * 1024;
+
+fn read_dsn_file(variable: &str) -> Result<Zeroizing<String>, ()> {
+    let path = env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .ok_or(())?;
+    let bytes = Zeroizing::new(
+        SecretSource::File(PathBuf::from(path))
+            .read_bounded(MAX_DSN_BYTES)
+            .map_err(|_| ())?,
+    );
+    let value = Zeroizing::new(
+        std::str::from_utf8(bytes.as_slice())
+            .map_err(|_| ())?
+            .to_owned(),
+    );
+    if value.trim().is_empty() || value.as_bytes().contains(&0) {
+        return Err(());
+    }
+    Ok(value)
+}
 
 struct RoomEvidenceRow {
     room_id: String,
@@ -1975,19 +2022,38 @@ fn build_transfer_bundle(
 }
 
 fn main() {
-    let mode = env::var("WORLDSTREAM_PG_TRANSFER_PROVIDER_MODE").unwrap_or_else(|_| "external".to_owned());
+    let mode = env::var("WORLDSTREAM_PG_TRANSFER_PROVIDER_MODE")
+        .unwrap_or_else(|_| "external".to_owned());
     let source = env::var("WORLDSTREAM_PG_TRANSFER_SQLITE").unwrap_or_default();
     let abort_backup =
         env::var("WORLDSTREAM_PG_TRANSFER_ABORT_BACKUP").unwrap_or_default();
     let transfer_backup =
         env::var("WORLDSTREAM_PG_TRANSFER_BACKUP").unwrap_or_default();
-    let admin_dsn = env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN").unwrap_or_default();
-    let runtime_dsn = env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default();
-    let abort_admin_dsn =
-        env::var("WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN").unwrap_or_default();
     let built_generalized_fixture =
         env::var("WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE").as_deref() == Ok("1");
     let mut evidence = base(&mode);
+
+    let admin_dsn = read_dsn_file("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE")
+        .unwrap_or_else(|_| {
+            provider_failure(&mode, "admin_dsn_file_rejected", evidence.clone())
+        });
+    let runtime_dsn = read_dsn_file("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE")
+        .unwrap_or_else(|_| {
+            provider_failure(&mode, "runtime_dsn_file_rejected", evidence.clone())
+        });
+    let abort_admin_dsn = read_dsn_file("WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE")
+        .unwrap_or_else(|_| {
+            provider_failure(
+                &mode,
+                "abort_admin_dsn_file_rejected",
+                evidence.clone(),
+            )
+        });
+    if abort_admin_dsn.as_str() == admin_dsn.as_str()
+        || abort_admin_dsn.as_str() == runtime_dsn.as_str()
+    {
+        provider_failure(&mode, "external_abort_target_not_distinct", evidence);
+    }
 
     if built_generalized_fixture && build_disposable_source(Path::new(&source)).is_err()
     {
@@ -2061,11 +2127,11 @@ fn main() {
         Err(_) => incomplete(&mode, "abort_bundle_construction_failed", evidence),
     };
 
-    let success_database = Client::connect(&admin_dsn, NoTls)
+    let success_database = Client::connect(admin_dsn.as_str(), NoTls)
         .ok()
         .and_then(|mut client| client.query_one("SELECT current_database()", &[]).ok())
         .and_then(|row| row.try_get::<_, String>(0).ok());
-    let abort_database = Client::connect(&abort_admin_dsn, NoTls)
+    let abort_database = Client::connect(abort_admin_dsn.as_str(), NoTls)
         .ok()
         .and_then(|mut client| client.query_one("SELECT current_database()", &[]).ok())
         .and_then(|row| row.try_get::<_, String>(0).ok());
@@ -2075,7 +2141,9 @@ fn main() {
     {
         provider_failure(&mode, "postgres_abort_target_not_isolated", evidence);
     }
-    let abort_admin_config = match PostgresConnectionConfig::direct_admin(&abort_admin_dsn) {
+    let abort_admin_config = match PostgresConnectionConfig::direct_admin(
+        abort_admin_dsn.as_str().to_owned(),
+    ) {
         Ok(config) => config,
         Err(_) => provider_failure(&mode, "abort_admin_dsn_rejected", evidence),
     };
@@ -2167,7 +2235,7 @@ fn main() {
     };
     let abort_bundle_key = abort_bundle_hash.as_bytes().to_vec();
     let abort_target_key = abort_target_digest.as_bytes().to_vec();
-    let missing_state_tombstone_verified = Client::connect(&abort_admin_dsn, NoTls)
+    let missing_state_tombstone_verified = Client::connect(abort_admin_dsn.as_str(), NoTls)
         .ok()
         .and_then(|mut client| {
             client
@@ -2203,7 +2271,7 @@ fn main() {
             evidence,
         );
     }
-    let missing_state_probe_reset = Client::connect(&abort_admin_dsn, NoTls)
+    let missing_state_probe_reset = Client::connect(abort_admin_dsn.as_str(), NoTls)
         .ok()
         .and_then(|mut client| {
             client
@@ -2274,7 +2342,7 @@ fn main() {
         == TransferStateV1::SourceAuthoritative
         && restarted_after_abort.source_transfer_state()
             == SqliteSourceTransferStateV1::SourceAuthoritative;
-    let abort_provider_tombstone_verified = Client::connect(&abort_admin_dsn, NoTls)
+    let abort_provider_tombstone_verified = Client::connect(abort_admin_dsn.as_str(), NoTls)
         .ok()
         .and_then(|mut client| {
             client
@@ -2428,7 +2496,7 @@ fn main() {
         );
     }
 
-    let mut version_client = match Client::connect(&admin_dsn, NoTls) {
+    let mut version_client = match Client::connect(admin_dsn.as_str(), NoTls) {
         Ok(client) => client,
         Err(_) => provider_failure(&mode, "postgres_admin_connection_failed", evidence),
     };
@@ -2559,7 +2627,9 @@ fn main() {
         Err(_) => incomplete(&mode, "target_fingerprint_digest_failed", evidence),
     };
 
-    let admin_config = match PostgresConnectionConfig::direct_admin(admin_dsn) {
+    let admin_config = match PostgresConnectionConfig::direct_admin(
+        admin_dsn.as_str().to_owned(),
+    ) {
         Ok(config) => config,
         Err(_) => provider_failure(&mode, "admin_dsn_rejected", evidence),
     };
@@ -2588,7 +2658,7 @@ fn main() {
             provider_failure(&mode, "postgres_runtime_role_identifier_rejected", evidence);
         }
         let mut privilege_client = match Client::connect(
-            &env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN").unwrap_or_default(),
+            admin_dsn.as_str(),
             NoTls,
         ) {
             Ok(client) => client,
@@ -2611,7 +2681,7 @@ fn main() {
         provider_failure(&mode, "postgres_admin_read_only_verification_failed", evidence);
     }
     let runtime_config = match PostgresConnectionConfig::runtime(
-        runtime_dsn,
+        runtime_dsn.as_str().to_owned(),
         PostgresConnectionPath::Direct,
     ) {
         Ok(config) => config,
@@ -2629,7 +2699,7 @@ fn main() {
     }
     let runtime_transfer_control_denied = if mode == "docker" {
         Client::connect(
-            &env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default(),
+            runtime_dsn.as_str(),
             NoTls,
         )
         .ok()
@@ -2700,7 +2770,7 @@ fn main() {
         Err(_) => incomplete(&mode, "transfer_target_epoch_out_of_range", evidence),
     };
     let mut preseed_client = match Client::connect(
-        &env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN").unwrap_or_default(),
+        admin_dsn.as_str(),
         NoTls,
     ) {
         Ok(client) => client,
@@ -2991,7 +3061,7 @@ fn main() {
     let target_room_count = source_evidence.canonical_rooms.len();
     let mut verified_room_count = 0usize;
     let mut read_client = match Client::connect(
-        &env::var("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN").unwrap_or_default(),
+        runtime_dsn.as_str(),
         NoTls,
     ) {
         Ok(client) => client,
@@ -3463,9 +3533,9 @@ helper_env=(
   "WORLDSTREAM_PG_TRANSFER_ABORT_BACKUP=$source_abort_backup"
   "WORLDSTREAM_PG_TRANSFER_BACKUP=$source_transfer_backup"
   "WORLDSTREAM_PG_TRANSFER_BUILD_SOURCE=$build_source"
-  "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN=$admin_dsn"
-  "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN=$runtime_dsn"
-  "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN=$abort_admin_dsn"
+  "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE=$admin_dsn_file"
+  "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE=$runtime_dsn_file"
+  "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE=$abort_admin_dsn_file"
   "WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE=$runtime_role"
 )
 

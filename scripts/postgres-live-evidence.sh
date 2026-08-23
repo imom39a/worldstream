@@ -86,6 +86,9 @@ pooler_dsn=""
 transfer_admin_dsn=""
 transfer_runtime_dsn=""
 transfer_abort_admin_dsn=""
+transfer_admin_dsn_file=""
+transfer_runtime_dsn_file=""
+transfer_abort_admin_dsn_file=""
 source_mode="not_supplied"
 imo50_shared_direct_status="not_run"
 imo50_shared_pooler_status="not_run"
@@ -313,6 +316,12 @@ PY
 
 cleanup() {
   local failed=0
+  local dsn_file
+  for dsn_file in "$transfer_admin_dsn_file" "$transfer_runtime_dsn_file" "$transfer_abort_admin_dsn_file"; do
+    if [[ -n "$dsn_file" && -f "$dsn_file" && ! -L "$dsn_file" ]]; then
+      : >"$dsn_file" || failed=1
+    fi
+  done
   if [[ -n "${WORLDSTREAM_PG_LIVE_DEBUG_DIR:-}" && -n "$temp_root" && -d "$temp_root" ]]; then
     mkdir -p "$WORLDSTREAM_PG_LIVE_DEBUG_DIR"
     cp -R "$temp_root"/. "$WORLDSTREAM_PG_LIVE_DEBUG_DIR"/ 2>/dev/null || failed=1
@@ -438,6 +447,13 @@ runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream user=runtime 
 transfer_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer user=admin password=$admin_password"
 transfer_runtime_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer user=runtime password=$runtime_password"
 transfer_abort_admin_dsn="host=127.0.0.1 port=$postgres_port dbname=worldstream_transfer_abort user=admin password=$admin_password"
+transfer_admin_dsn_file="$temp_root/transfer-admin.dsn"
+transfer_runtime_dsn_file="$temp_root/transfer-runtime.dsn"
+transfer_abort_admin_dsn_file="$temp_root/transfer-abort-admin.dsn"
+printf '%s' "$transfer_admin_dsn" >"$transfer_admin_dsn_file"
+printf '%s' "$transfer_runtime_dsn" >"$transfer_runtime_dsn_file"
+printf '%s' "$transfer_abort_admin_dsn" >"$transfer_abort_admin_dsn_file"
+chmod 600 "$transfer_admin_dsn_file" "$transfer_runtime_dsn_file" "$transfer_abort_admin_dsn_file"
 
 run_admin_sql() {
   printf '%s\n' "$1" | PGPASSWORD="$admin_password" "$psql_bin" "host=127.0.0.1 port=$postgres_port dbname=postgres user=admin" --no-psqlrc --quiet --no-align --tuples-only --no-password --set=ON_ERROR_STOP=1 >/dev/null 2>&1
@@ -743,8 +759,8 @@ if [[ -n "$sqlite_source" || -z "$sqlite_source" ]]; then
   fi
   set +e
   WORLDSTREAM_PG_TRANSFER_MODE=external WORLDSTREAM_PG_TRANSFER_SQLITE="$sqlite_source" \
-    WORLDSTREAM_PG_TRANSFER_ADMIN_DSN="$transfer_admin_dsn" WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN="$transfer_runtime_dsn" \
-    WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN="$transfer_abort_admin_dsn" \
+    WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE="$transfer_admin_dsn_file" WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE="$transfer_runtime_dsn_file" \
+    WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE="$transfer_abort_admin_dsn_file" \
     WORLDSTREAM_PG_TRANSFER_EVIDENCE_FILE="$transfer_evidence" WORLDSTREAM_PG_TRANSFER_PSQL="$psql_bin" \
     WORLDSTREAM_PG_TRANSFER_CARGO="$cargo_bin" WORLDSTREAM_PG_TRANSFER_PYTHON="$python_bin" \
     scripts/postgres-transfer-smoke.sh "${transfer_args[@]}" >"$temp_root/transfer.log" 2>&1

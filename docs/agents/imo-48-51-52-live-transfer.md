@@ -31,14 +31,20 @@ caller:
 
 ```text
 WORLDSTREAM_PG_TRANSFER_MODE=external \
-WORLDSTREAM_PG_TRANSFER_ADMIN_DSN='...' \
-WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN='...' \
+WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE=/run/secrets/transfer-admin.dsn \
+WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE=/run/secrets/transfer-runtime.dsn \
+WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE=/run/secrets/transfer-abort-admin.dsn \
 WORLDSTREAM_PG_TRANSFER_SQLITE=/path/to/source.sqlite \
   scripts/postgres-transfer-smoke.sh
 ```
 
 The external mode does not claim to create or own the target. It fails closed
-when either credential is absent.
+when any credential file is absent, empty, oversized, a symlink/reparse point,
+or not owner-only. The success and abort-probe databases must be distinct.
+Legacy plaintext `WORLDSTREAM_PG_TRANSFER_*_DSN` environment variables are
+rejected even when file inputs are also present. Only secret-file paths enter
+the generated helper environment; the helper performs the bounded reads and
+keeps decoded DSNs inside its process.
 
 ## Provider path exercised
 

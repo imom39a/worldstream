@@ -2241,9 +2241,18 @@ pub trait TransferDestinationV1 {
         target: &TargetFingerprintV1,
     ) -> Result<(), Self::Error>;
 
-    /// Writes or idempotently confirms the durable finalization record that
-    /// retires source authority.
+    /// Writes or idempotently confirms the exact fenced provider record that
+    /// authorizes the coordinator to attempt source retirement.
     fn record_finalization(&mut self, target: &TargetFingerprintV1) -> Result<(), Self::Error>;
+
+    /// Revokes the exact non-serving finalization record after the source has
+    /// durably proven that retirement did not commit. Implementations must
+    /// transition only the same fenced target back to its verified, abortable
+    /// state; this is not a permissive rollback after ambiguous retirement.
+    fn revoke_finalization_after_definite_source_failure(
+        &mut self,
+        target: &TargetFingerprintV1,
+    ) -> Result<(), Self::Error>;
 
     /// Performs or idempotently confirms the first authoritative target write
     /// in the next epoch.
@@ -2263,6 +2272,64 @@ struct ProviderDerivedTargetBindingV1 {
     source_epoch: u64,
     target_epoch: u64,
     lineage_id: String,
+}
+
+/// Exact cross-provider binding used to inspect durable source authority before
+/// mutating the target during finalize or abort recovery.
+///
+/// Fields are private so callers cannot substitute labels for the bundle and
+/// target fingerprint already admitted by the coordinator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferSourceAuthorityBindingV1(ProviderDerivedTargetBindingV1);
+
+impl TransferSourceAuthorityBindingV1 {
+    fn verified(
+        bundle: &TransferBundleV1,
+        target: &TargetFingerprintV1,
+    ) -> Result<Self, TransferError> {
+        ProviderDerivedTargetBindingV1::verified(bundle, target).map(Self)
+    }
+
+    /// Returns the exact bundle hash.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> DigestV1 {
+        self.0.bundle_hash
+    }
+
+    /// Returns the digest of every target fingerprint field.
+    #[must_use]
+    pub const fn target_fingerprint(&self) -> DigestV1 {
+        self.0.target_fingerprint
+    }
+
+    /// Returns the source epoch.
+    #[must_use]
+    pub const fn source_epoch(&self) -> u64 {
+        self.0.source_epoch
+    }
+
+    /// Returns the next target epoch.
+    #[must_use]
+    pub const fn target_epoch(&self) -> u64 {
+        self.0.target_epoch
+    }
+
+    /// Returns the exact deployment lineage.
+    #[must_use]
+    pub fn lineage_id(&self) -> &str {
+        &self.0.lineage_id
+    }
+}
+
+/// Durable source-side disposition for one exact transfer binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferSourceAuthorityStateV1 {
+    /// The source is fenced but not retired; finalize may retry or abort may win.
+    TransferPending,
+    /// The source is irreversibly retired for this exact target binding.
+    SourceRetired,
+    /// The same import was already aborted and source authority was restored.
+    SourceAuthoritativeAfterAbort,
 }
 
 impl ProviderDerivedTargetBindingV1 {
@@ -2285,80 +2352,80 @@ impl ProviderDerivedTargetBindingV1 {
 }
 
 /// Opaque proof that the destination provider semantically verified and
-/// durably finalized one exact whole-deployment import.
+/// durably finalized one exact non-serving whole-deployment import.
 ///
 /// Its fields are intentionally private. Only the coordinator can construct
 /// this proof, after the destination implementation has confirmed its actual
 /// durable state; callers cannot substitute bundle or target digest labels.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VerifiedTargetFinalizationV1(ProviderDerivedTargetBindingV1);
+pub struct VerifiedTargetFinalizationV1(TransferSourceAuthorityBindingV1);
 
 impl VerifiedTargetFinalizationV1 {
     /// Returns the exact verified bundle hash.
     #[must_use]
     pub const fn bundle_hash(&self) -> DigestV1 {
-        self.0.bundle_hash
+        self.0.bundle_hash()
     }
 
     /// Returns the digest of every verified target fingerprint field.
     #[must_use]
     pub const fn target_fingerprint(&self) -> DigestV1 {
-        self.0.target_fingerprint
+        self.0.target_fingerprint()
     }
 
     /// Returns the source epoch captured by the verified bundle.
     #[must_use]
     pub const fn source_epoch(&self) -> u64 {
-        self.0.source_epoch
+        self.0.source_epoch()
     }
 
     /// Returns the next target epoch admitted by the provider.
     #[must_use]
     pub const fn target_epoch(&self) -> u64 {
-        self.0.target_epoch
+        self.0.target_epoch()
     }
 
     /// Returns the exact deployment lineage admitted by the provider.
     #[must_use]
     pub fn lineage_id(&self) -> &str {
-        &self.0.lineage_id
+        self.0.lineage_id()
     }
 }
 
 /// Opaque proof that the destination provider discarded or durably tombstoned
 /// one exact incomplete whole-deployment import.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VerifiedTargetAbortV1(ProviderDerivedTargetBindingV1);
+pub struct VerifiedTargetAbortV1(TransferSourceAuthorityBindingV1);
 
 impl VerifiedTargetAbortV1 {
     /// Returns the exact aborted bundle hash.
     #[must_use]
     pub const fn bundle_hash(&self) -> DigestV1 {
-        self.0.bundle_hash
+        self.0.bundle_hash()
     }
 
     /// Returns the fingerprint of the exact discarded target import.
     #[must_use]
     pub const fn target_fingerprint(&self) -> DigestV1 {
-        self.0.target_fingerprint
+        self.0.target_fingerprint()
     }
 
     /// Returns the source epoch captured by the discarded bundle.
     #[must_use]
     pub const fn source_epoch(&self) -> u64 {
-        self.0.source_epoch
+        self.0.source_epoch()
     }
 
     /// Returns the target epoch that was discarded before source restoration.
     #[must_use]
     pub const fn target_epoch(&self) -> u64 {
-        self.0.target_epoch
+        self.0.target_epoch()
     }
 
     /// Returns the exact deployment lineage of the discarded import.
     #[must_use]
     pub fn lineage_id(&self) -> &str {
-        &self.0.lineage_id
+        self.0.lineage_id()
     }
 }
 
@@ -2369,6 +2436,13 @@ impl VerifiedTargetAbortV1 {
 pub trait TransferSourceAuthorityV1 {
     /// Provider-specific source error.
     type Error: fmt::Debug + fmt::Display;
+
+    /// Reads and exactly binds the durable source disposition before any
+    /// recovery action touches the target.
+    fn inspect_source_authority(
+        &self,
+        binding: &TransferSourceAuthorityBindingV1,
+    ) -> Result<TransferSourceAuthorityStateV1, Self::Error>;
 
     /// Binds the exact provider finalization and permanently retires the source.
     fn retire_after_verified_target(
@@ -2688,7 +2762,8 @@ impl TransferLifecycleV1 {
         Ok(())
     }
 
-    /// Writes the explicit finalization record and retires source writes.
+    /// Records the explicit, still non-serving target finalization decision.
+    /// Durable source state determines whether it may be revoked or published.
     pub fn finalize(&mut self) -> Result<(), TransferError> {
         if self.target.scope == TransferScopeV1::CanonicalExport {
             return Err(TransferError::CanonicalExportNotAuthoritative);
@@ -2698,6 +2773,40 @@ impl TransferLifecycleV1 {
         }
         self.state = TransferStateV1::Finalized;
         Ok(())
+    }
+
+    fn reopen_verified_after_definite_source_failure(&mut self) -> Result<(), TransferError> {
+        if self.state != TransferStateV1::Finalized {
+            return Err(self.invalid_state("reopen verified target"));
+        }
+        self.state = TransferStateV1::TargetVerified;
+        Ok(())
+    }
+
+    fn confirm_source_retired(&mut self) -> Result<(), TransferError> {
+        match self.state {
+            TransferStateV1::TargetVerified => {
+                self.state = TransferStateV1::Finalized;
+                Ok(())
+            }
+            TransferStateV1::Finalized | TransferStateV1::TargetAuthoritative => Ok(()),
+            _ => Err(self.invalid_state("confirm retired source")),
+        }
+    }
+
+    fn confirm_source_authoritative_after_abort(&mut self) -> Result<(), TransferError> {
+        match self.state {
+            TransferStateV1::TransferPending
+            | TransferStateV1::TargetVerified
+            | TransferStateV1::Finalized => {
+                self.state = TransferStateV1::SourceAuthoritative;
+                Ok(())
+            }
+            TransferStateV1::SourceAuthoritative => Ok(()),
+            TransferStateV1::TargetAuthoritative => {
+                Err(self.invalid_state("confirm source authority after abort"))
+            }
+        }
     }
 
     /// Records the first target write in the next epoch; rollback is now fenced.
@@ -2719,7 +2828,7 @@ impl TransferLifecycleV1 {
         Ok(())
     }
 
-    /// Aborts only while no finalization record exists.
+    /// Records abort after any durable provider finalization was revoked.
     pub fn abort(&mut self) -> Result<(), TransferError> {
         match self.state {
             TransferStateV1::TransferPending | TransferStateV1::TargetVerified => {
@@ -3086,6 +3195,85 @@ impl TransferImportSessionV1 {
 /// retry. A stop after target finalization leaves the source pending; a stop
 /// after source retirement leaves the target finalization retryable but does
 /// not restore source authority.
+fn publish_after_source_retirement<S, D>(
+    session: &mut TransferImportSessionV1,
+    destination: &mut D,
+    target: &TargetFingerprintV1,
+) -> Result<(), WholeDeploymentTransferErrorV1<D::Error, S>>
+where
+    S: fmt::Debug + fmt::Display,
+    D: TransferDestinationV1,
+{
+    session.lifecycle.confirm_source_retired()?;
+    if session.state() == TransferStateV1::Finalized {
+        session
+            .accept_target_write(destination)
+            .map_err(|error| match error {
+                TransferRunError::Contract(error) => {
+                    WholeDeploymentTransferErrorV1::Contract(error)
+                }
+                TransferRunError::Destination { operation, error } => {
+                    WholeDeploymentTransferErrorV1::Destination { operation, error }
+                }
+            })?;
+    } else {
+        // A serialized authoritative label is not evidence. Reconfirm only the
+        // exact provider publication marker; semantic verification is forbidden
+        // after durable source retirement.
+        destination.accept_target_write(target).map_err(|error| {
+            WholeDeploymentTransferErrorV1::Destination {
+                operation: "confirm target authority",
+                error,
+            }
+        })?;
+    }
+    Ok(())
+}
+
+fn prepare_target_before_source_retirement<S, D>(
+    session: &mut TransferImportSessionV1,
+    destination: &mut D,
+    bundle: &TransferBundleV1,
+    target: &TargetFingerprintV1,
+) -> Result<(), WholeDeploymentTransferErrorV1<D::Error, S>>
+where
+    S: fmt::Debug + fmt::Display,
+    D: TransferDestinationV1,
+{
+    if session.state() == TransferStateV1::TargetVerified {
+        return session
+            .finalize(destination, bundle)
+            .map_err(|error| match error {
+                TransferRunError::Contract(error) => {
+                    WholeDeploymentTransferErrorV1::Contract(error)
+                }
+                TransferRunError::Destination { operation, error } => {
+                    WholeDeploymentTransferErrorV1::Destination { operation, error }
+                }
+            });
+    }
+    if session.state() != TransferStateV1::Finalized {
+        return Err(session
+            .lifecycle
+            .invalid_state("prepare target before source retirement")
+            .into());
+    }
+    // Serialized state is only a retry hint. Re-run both provider checks
+    // before minting source-retirement proof.
+    destination
+        .verify_complete(bundle, target)
+        .map_err(|error| WholeDeploymentTransferErrorV1::Destination {
+            operation: "confirm complete import",
+            error,
+        })?;
+    destination.record_finalization(target).map_err(|error| {
+        WholeDeploymentTransferErrorV1::Destination {
+            operation: "confirm finalization",
+            error,
+        }
+    })
+}
+
 pub fn finalize_whole_deployment<S, D>(
     session: &mut TransferImportSessionV1,
     destination: &mut D,
@@ -3118,63 +3306,59 @@ where
     }
     bundle.verify_target(session.target())?;
     let target = session.target().clone();
-    if session.state() == TransferStateV1::TargetVerified {
-        session
-            .finalize(destination, bundle)
-            .map_err(|error| match error {
-                TransferRunError::Contract(error) => {
-                    WholeDeploymentTransferErrorV1::Contract(error)
-                }
-                TransferRunError::Destination { operation, error } => {
-                    WholeDeploymentTransferErrorV1::Destination { operation, error }
-                }
-            })?;
-    } else {
-        // Serialized state is only a retry hint. Re-run both provider checks
-        // before minting source-retirement proof.
-        destination
-            .verify_complete(bundle, &target)
-            .map_err(|error| WholeDeploymentTransferErrorV1::Destination {
-                operation: "confirm complete import",
-                error,
-            })?;
-        destination.record_finalization(&target).map_err(|error| {
-            WholeDeploymentTransferErrorV1::Destination {
-                operation: "confirm finalization",
-                error,
-            }
-        })?;
-    }
-    let proof =
-        VerifiedTargetFinalizationV1(ProviderDerivedTargetBindingV1::verified(bundle, &target)?);
-    source
-        .retire_after_verified_target(&proof)
+    let source_binding = TransferSourceAuthorityBindingV1::verified(bundle, &target)?;
+    match source
+        .inspect_source_authority(&source_binding)
         .map_err(|error| WholeDeploymentTransferErrorV1::Source {
-            operation: "retire verified source",
+            operation: "inspect source authority before finalize",
             error,
-        })?;
-    if session.state() == TransferStateV1::Finalized {
-        session
-            .accept_target_write(destination)
-            .map_err(|error| match error {
-                TransferRunError::Contract(error) => {
-                    WholeDeploymentTransferErrorV1::Contract(error)
-                }
-                TransferRunError::Destination { operation, error } => {
-                    WholeDeploymentTransferErrorV1::Destination { operation, error }
-                }
-            })?;
-    } else {
-        // A serialized authoritative label is not evidence. Reconfirm the
-        // provider's durable first-write marker on every retry.
-        destination.accept_target_write(&target).map_err(|error| {
-            WholeDeploymentTransferErrorV1::Destination {
-                operation: "confirm target authority",
-                error,
+        })? {
+        TransferSourceAuthorityStateV1::SourceRetired => {
+            return publish_after_source_retirement::<S::Error, D>(session, destination, &target);
+        }
+        TransferSourceAuthorityStateV1::SourceAuthoritativeAfterAbort => {
+            return Err(TransferError::InvalidValue {
+                what: "finalize after verified source abort",
             }
-        })?;
+            .into());
+        }
+        TransferSourceAuthorityStateV1::TransferPending => {}
     }
-    Ok(())
+    prepare_target_before_source_retirement::<S::Error, D>(session, destination, bundle, &target)?;
+    let proof = VerifiedTargetFinalizationV1(source_binding.clone());
+    if let Err(retirement_error) = source.retire_after_verified_target(&proof) {
+        match source.inspect_source_authority(&source_binding) {
+            Ok(TransferSourceAuthorityStateV1::SourceRetired) => {}
+            Ok(TransferSourceAuthorityStateV1::TransferPending) => {
+                destination
+                    .revoke_finalization_after_definite_source_failure(&target)
+                    .map_err(|error| WholeDeploymentTransferErrorV1::Destination {
+                        operation: "revoke finalization after definite source failure",
+                        error,
+                    })?;
+                session
+                    .lifecycle
+                    .reopen_verified_after_definite_source_failure()?;
+                return Err(WholeDeploymentTransferErrorV1::Source {
+                    operation: "retire verified source",
+                    error: retirement_error,
+                });
+            }
+            Ok(TransferSourceAuthorityStateV1::SourceAuthoritativeAfterAbort) => {
+                return Err(TransferError::InvalidValue {
+                    what: "source abort raced target finalization",
+                }
+                .into());
+            }
+            Err(error) => {
+                return Err(WholeDeploymentTransferErrorV1::Source {
+                    operation: "inspect failed source retirement",
+                    error,
+                });
+            }
+        }
+    }
+    publish_after_source_retirement::<S::Error, D>(session, destination, &target)
 }
 
 /// Discards or tombstones the exact provider target before restoring `SQLite`
@@ -3200,6 +3384,7 @@ where
         session.state(),
         TransferStateV1::TransferPending
             | TransferStateV1::TargetVerified
+            | TransferStateV1::Finalized
             | TransferStateV1::SourceAuthoritative
     ) {
         return Err(session
@@ -3209,22 +3394,45 @@ where
     }
     bundle.verify_target(session.target())?;
     let target = session.target().clone();
+    let source_binding = TransferSourceAuthorityBindingV1::verified(bundle, &target)?;
+    let source_state = source
+        .inspect_source_authority(&source_binding)
+        .map_err(|error| WholeDeploymentTransferErrorV1::Source {
+            operation: "inspect source authority before abort",
+            error,
+        })?;
+    if source_state == TransferSourceAuthorityStateV1::SourceRetired {
+        return Err(TransferError::SourceRetired.into());
+    }
+    if session.state() == TransferStateV1::Finalized
+        && source_state == TransferSourceAuthorityStateV1::TransferPending
+    {
+        destination
+            .revoke_finalization_after_definite_source_failure(&target)
+            .map_err(|error| WholeDeploymentTransferErrorV1::Destination {
+                operation: "revoke finalization before abort",
+                error,
+            })?;
+        session
+            .lifecycle
+            .reopen_verified_after_definite_source_failure()?;
+    }
     destination.abort_import(&target).map_err(|error| {
         WholeDeploymentTransferErrorV1::Destination {
             operation: "abort import",
             error,
         }
     })?;
-    let proof = VerifiedTargetAbortV1(ProviderDerivedTargetBindingV1::verified(bundle, &target)?);
+    let proof = VerifiedTargetAbortV1(source_binding);
     source
         .restore_after_verified_abort(&proof)
         .map_err(|error| WholeDeploymentTransferErrorV1::Source {
             operation: "restore verified source",
             error,
         })?;
-    if session.state() != TransferStateV1::SourceAuthoritative {
-        session.lifecycle.abort()?;
-    }
+    session
+        .lifecycle
+        .confirm_source_authoritative_after_abort()?;
     Ok(())
 }
 
@@ -3296,6 +3504,8 @@ pub enum TransferError {
     TargetMismatch { what: &'static str },
     #[error("canonical-export evidence cannot retire source or accept target authority")]
     CanonicalExportNotAuthoritative,
+    #[error("source is already retired for this transfer; abort is refused")]
+    SourceRetired,
     #[error("deployment epoch mismatch")]
     EpochMismatch,
     #[error("lifecycle operation {operation:?} is invalid in state {state:?}")]
@@ -3601,7 +3811,8 @@ mod tests {
         ResourceIdentityV1, ResourceKindV1, SchemaMigrationContractV1, SessionStatePolicyV1,
         TargetFingerprintV1, TransferBundleV1, TransferCheckpointV1, TransferChunkDispositionV1,
         TransferDestinationV1, TransferError, TransferImportSessionV1, TransferLifecycleV1,
-        TransferRunError, TransferScopeV1, TransferSourceAuthorityV1, TransferStateV1,
+        TransferRunError, TransferScopeV1, TransferSourceAuthorityBindingV1,
+        TransferSourceAuthorityStateV1, TransferSourceAuthorityV1, TransferStateV1,
         VerifiedTargetAbortV1, VerifiedTargetFinalizationV1, WholeDeploymentTransferErrorV1,
         abort_whole_deployment, default_backend_fingerprint, finalize_whole_deployment,
     };
@@ -3636,18 +3847,54 @@ mod tests {
         events: Option<Arc<Mutex<Vec<&'static str>>>>,
     }
 
+    #[allow(clippy::struct_excessive_bools)]
     #[derive(Default)]
     struct FixtureSourceState {
         retired: Option<(DigestV1, DigestV1, u64, u64, String)>,
         restored: Option<(DigestV1, DigestV1, u64, u64, String)>,
         retire_calls: usize,
         restore_calls: usize,
+        fail_retire_before_commit_once: bool,
         fail_retire_after_commit_once: bool,
+        fail_inspect_after_retire_once: bool,
         fail_restore_after_commit_once: bool,
     }
 
     impl TransferSourceAuthorityV1 for FixtureSource {
         type Error = String;
+
+        fn inspect_source_authority(
+            &self,
+            binding: &TransferSourceAuthorityBindingV1,
+        ) -> Result<TransferSourceAuthorityStateV1, Self::Error> {
+            let expected = (
+                binding.bundle_hash(),
+                binding.target_fingerprint(),
+                binding.source_epoch(),
+                binding.target_epoch(),
+                binding.lineage_id().to_owned(),
+            );
+            let mut state = self.state.lock().map_err(|_| "source lock".to_owned())?;
+            if state.fail_inspect_after_retire_once && state.retired.is_some() {
+                state.fail_inspect_after_retire_once = false;
+                return Err("source retirement result remains unknown".to_owned());
+            }
+            if let Some(retired) = &state.retired {
+                return if retired == &expected {
+                    Ok(TransferSourceAuthorityStateV1::SourceRetired)
+                } else {
+                    Err("source retirement binding mismatch".to_owned())
+                };
+            }
+            if let Some(restored) = &state.restored {
+                return if restored == &expected {
+                    Ok(TransferSourceAuthorityStateV1::SourceAuthoritativeAfterAbort)
+                } else {
+                    Err("source abort binding mismatch".to_owned())
+                };
+            }
+            Ok(TransferSourceAuthorityStateV1::TransferPending)
+        }
 
         fn retire_after_verified_target(
             &self,
@@ -3672,9 +3919,14 @@ mod tests {
             {
                 return Err("source retirement binding mismatch".to_owned());
             }
+            if state.fail_retire_before_commit_once {
+                state.fail_retire_before_commit_once = false;
+                return Err("source retirement failed before commit".to_owned());
+            }
             state.retired = Some(binding);
             if state.fail_retire_after_commit_once {
                 state.fail_retire_after_commit_once = false;
+                state.fail_inspect_after_retire_once = true;
                 return Err("source retirement result lost after commit".to_owned());
             }
             Ok(())
@@ -3856,6 +4108,20 @@ mod tests {
                 return Err("target finalization failed before commit".to_owned());
             }
             self.finalized = true;
+            Ok(())
+        }
+
+        fn revoke_finalization_after_definite_source_failure(
+            &mut self,
+            _target: &TargetFingerprintV1,
+        ) -> Result<(), Self::Error> {
+            if self.authoritative {
+                return Err("authoritative target cannot revoke finalization".to_owned());
+            }
+            if !self.finalized {
+                return Err("target finalization is not durable".to_owned());
+            }
+            self.finalized = false;
             Ok(())
         }
 
@@ -4482,7 +4748,7 @@ mod tests {
         assert!(matches!(
             finalize_whole_deployment(&mut session, &mut destination, &source, &bundle),
             Err(WholeDeploymentTransferErrorV1::Source {
-                operation: "retire verified source",
+                operation: "inspect failed source retirement",
                 ..
             })
         ));
@@ -4490,10 +4756,25 @@ mod tests {
         assert!(destination.finalized);
         assert!(!destination.authoritative);
         assert!(source.state.lock().expect("source state").retired.is_some());
+        let verification_calls_before_retry = destination.verification_calls;
+        let finalization_calls_before_retry = destination.finalization_calls;
+        let abort_calls_before_retry = destination.abort_calls;
+
+        // A target-finalized checkpoint is not enough to authorize rollback.
+        // The durable source probe wins and refuses the abort before the
+        // destination can discard a verified target.
+        assert!(matches!(
+            abort_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Contract(
+                TransferError::SourceRetired
+            ))
+        ));
+        assert_eq!(destination.abort_calls, abort_calls_before_retry);
+        assert!(destination.finalized);
 
         // Model a process stop before the mutated in-memory session could be
-        // persisted. The old target-verified checkpoint must safely replay
-        // both durable provider and source transitions.
+        // persisted. The old target-verified checkpoint must inspect the
+        // retired source and perform only target-authority publication.
         let mut resumed = TransferImportSessionV1::from_bytes(&bundle, &pending_bytes)?;
         finalize_whole_deployment(&mut resumed, &mut destination, &source, &bundle).map_err(
             |_| TransferError::InvalidValue {
@@ -4503,8 +4784,55 @@ mod tests {
         assert_eq!(resumed.state(), TransferStateV1::TargetAuthoritative);
         assert!(destination.authoritative);
         let source_state = source.state.lock().expect("source state");
-        assert_eq!(source_state.retire_calls, 2);
-        assert_eq!(destination.finalization_calls, 2);
+        assert_eq!(source_state.retire_calls, 1);
+        assert_eq!(
+            destination.verification_calls,
+            verification_calls_before_retry
+        );
+        assert_eq!(
+            destination.finalization_calls,
+            finalization_calls_before_retry
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn whole_deployment_definite_source_retirement_failure_remains_abortable()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let mut destination = FixtureDestination::default();
+        let mut session = complete_fixture_import(&bundle, &mut destination)?;
+        let source = FixtureSource::default();
+        source
+            .state
+            .lock()
+            .expect("source state")
+            .fail_retire_before_commit_once = true;
+
+        assert!(matches!(
+            finalize_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Source {
+                operation: "retire verified source",
+                ..
+            })
+        ));
+        assert!(source.state.lock().expect("source state").retired.is_none());
+
+        abort_whole_deployment(&mut session, &mut destination, &source, &bundle).map_err(|_| {
+            TransferError::InvalidValue {
+                what: "abort after definite source retirement failure",
+            }
+        })?;
+        assert_eq!(session.state(), TransferStateV1::SourceAuthoritative);
+        assert!(destination.aborted);
+        assert!(
+            source
+                .state
+                .lock()
+                .expect("source state")
+                .restored
+                .is_some()
+        );
         Ok(())
     }
 
@@ -4548,8 +4876,8 @@ mod tests {
             },
         )?;
         assert_eq!(resumed.state(), TransferStateV1::TargetAuthoritative);
-        assert_eq!(source.state.lock().expect("source state").retire_calls, 2);
-        assert_eq!(destination.finalization_calls, 3);
+        assert_eq!(source.state.lock().expect("source state").retire_calls, 1);
+        assert_eq!(destination.finalization_calls, 2);
         Ok(())
     }
 
@@ -4777,6 +5105,59 @@ mod tests {
     }
 
     #[test]
+    fn whole_deployment_abort_reconciles_stale_finalized_checkpoint_after_source_restore()
+    -> Result<(), TransferError> {
+        let bundle = fixture_bundle()?;
+        let mut destination = FixtureDestination::default();
+        let mut session = complete_fixture_import(&bundle, &mut destination)?;
+        session
+            .finalize(&mut destination, &bundle)
+            .map_err(|_| TransferError::InvalidValue {
+                what: "fixture target finalization",
+            })?;
+        let finalized_bytes = session.to_bytes()?;
+        let source = FixtureSource::default();
+        source
+            .state
+            .lock()
+            .expect("source state")
+            .fail_restore_after_commit_once = true;
+
+        assert!(matches!(
+            abort_whole_deployment(&mut session, &mut destination, &source, &bundle),
+            Err(WholeDeploymentTransferErrorV1::Source {
+                operation: "restore verified source",
+                ..
+            })
+        ));
+        assert_eq!(session.state(), TransferStateV1::TargetVerified);
+        assert!(destination.aborted);
+        assert!(
+            source
+                .state
+                .lock()
+                .expect("source state")
+                .restored
+                .is_some()
+        );
+
+        // The last durable operator checkpoint may still say `Finalized` even
+        // though target abort and source restoration both committed. Exact
+        // source and target witnesses make that retry converge without trying
+        // to revoke the already-aborted target.
+        let mut resumed = TransferImportSessionV1::from_bytes(&bundle, &finalized_bytes)?;
+        abort_whole_deployment(&mut resumed, &mut destination, &source, &bundle).map_err(|_| {
+            TransferError::InvalidValue {
+                what: "resumed finalized abort",
+            }
+        })?;
+        assert_eq!(resumed.state(), TransferStateV1::SourceAuthoritative);
+        assert_eq!(destination.abort_calls, 2);
+        assert_eq!(source.state.lock().expect("source state").restore_calls, 2);
+        Ok(())
+    }
+
+    #[test]
     fn import_session_does_not_finalize_unverified_destination() -> Result<(), TransferError> {
         let bundle = fixture_bundle()?;
         let target = TargetFingerprintV1::for_bundle(&bundle)?;
@@ -4825,20 +5206,21 @@ mod tests {
             .map_err(|_| TransferError::InvalidValue {
                 what: "fixture publication",
             })?;
-        session
-            .finalize(&mut destination, &bundle)
-            .map_err(|_| TransferError::InvalidValue {
-                what: "fixture finalization",
-            })?;
+        let source = FixtureSource::default();
+        finalize_whole_deployment(&mut session, &mut destination, &source, &bundle).map_err(
+            |_| TransferError::InvalidValue {
+                what: "fixture authority handoff",
+            },
+        )?;
+        assert_eq!(session.state(), TransferStateV1::TargetAuthoritative);
         assert!(destination.abort_import(&target).is_err());
         assert_eq!(destination.records, bundle.records);
-        let source = FixtureSource::default();
         assert!(matches!(
             abort_whole_deployment(&mut session, &mut destination, &source, &bundle),
             Err(WholeDeploymentTransferErrorV1::Contract(
                 TransferError::InvalidLifecycleState {
                     operation: "abort whole deployment",
-                    state: TransferStateV1::Finalized,
+                    state: TransferStateV1::TargetAuthoritative,
                 }
             ))
         ));

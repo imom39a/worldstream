@@ -3562,18 +3562,17 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
         Self::commit_transaction(transaction)
     }
 
-    fn accept_target_write(&mut self, target: &TargetFingerprintV1) -> Result<(), Self::Error> {
+    fn revoke_finalization_after_definite_source_failure(
+        &mut self,
+        target: &TargetFingerprintV1,
+    ) -> Result<(), Self::Error> {
         if target != &self.target {
             return Err(PostgresTransferError::TargetMismatch(
-                "authority target fingerprint",
+                "finalization revocation target fingerprint",
             ));
         }
-        let native_summary = Self::verify_native_semantic_evidence(&self.bundle)?;
         let bundle_hash = self.bundle_key();
         let target_digest = self.target_key();
-        self.admin
-            .verify_schema()
-            .map_err(PostgresTransferError::Schema)?;
         let mut client = self
             .admin
             .connect()
@@ -3596,7 +3595,61 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
         match state.as_str() {
             "finalized" => {
                 self.verify_target_fence(&mut transaction)?;
-                self.verify_staged_chunks(&mut transaction, &self.bundle)?;
+                let updated = transaction
+                    .execute(
+                        "UPDATE worldstream_transfer_imports SET state = 'verified' WHERE bundle_hash = $1 AND target_fingerprint = $2 AND state = 'finalized'",
+                        &[&bundle_hash.as_slice(), &target_digest.as_slice()],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+                if updated != 1 {
+                    return Err(PostgresTransferError::InvalidImportState {
+                        expected: "finalized",
+                        actual: state,
+                    });
+                }
+            }
+            "verified" => self.verify_target_fence(&mut transaction)?,
+            "authoritative" => return Err(PostgresTransferError::RollbackRefused),
+            actual => {
+                return Err(PostgresTransferError::InvalidImportState {
+                    expected: "finalized or verified",
+                    actual: actual.to_owned(),
+                });
+            }
+        }
+        Self::commit_transaction(transaction)
+    }
+
+    fn accept_target_write(&mut self, target: &TargetFingerprintV1) -> Result<(), Self::Error> {
+        if target != &self.target {
+            return Err(PostgresTransferError::TargetMismatch(
+                "authority target fingerprint",
+            ));
+        }
+        let bundle_hash = self.bundle_key();
+        let target_digest = self.target_key();
+        let mut client = self
+            .admin
+            .connect()
+            .map_err(PostgresTransferError::Connection)?;
+        let mut transaction = client.transaction().map_err(PostgresTransferError::Sql)?;
+        let row = transaction
+            .query_opt(
+                "SELECT target_fingerprint, state FROM worldstream_transfer_imports WHERE bundle_hash = $1 FOR UPDATE",
+                &[&bundle_hash.as_slice()],
+            )
+            .map_err(PostgresTransferError::Sql)?
+            .ok_or(PostgresTransferError::MissingImport)?;
+        let stored_target: Vec<u8> = row.try_get(0).map_err(PostgresTransferError::Sql)?;
+        if stored_target != target_digest {
+            return Err(PostgresTransferError::TargetMismatch(
+                "persisted target fingerprint",
+            ));
+        }
+        let state: String = row.try_get(1).map_err(PostgresTransferError::Sql)?;
+        match state.as_str() {
+            "finalized" => {
+                self.verify_target_fence(&mut transaction)?;
                 // Hydration and full replay were committed with the exact
                 // verified marker before source retirement. The importing
                 // fence made that state immutable to runtime writes, so the
@@ -3611,11 +3664,6 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
                 if removed != 1 {
                     return Err(PostgresTransferError::MissingTargetFence);
                 }
-                // This is a non-repairing upgrade/retry check. If an older
-                // binary persisted `finalized` without hydrating the target,
-                // the transaction fails and rolls the fence deletion back.
-                self.verify_native_operational_rows(&mut transaction)?;
-                self.verify_hydrated_target(&mut transaction, native_summary.as_ref())?;
                 let updated = transaction
                     .execute(
                         "UPDATE worldstream_transfer_imports SET state = 'authoritative' WHERE bundle_hash = $1 AND target_fingerprint = $2 AND state = 'finalized'",
@@ -3630,8 +3678,18 @@ impl TransferDestinationV1 for PostgresTransferDestination<'_> {
                 }
             }
             "authoritative" => {
-                self.verify_native_operational_rows(&mut transaction)?;
-                self.verify_hydrated_target(&mut transaction, native_summary.as_ref())?;
+                if transaction
+                    .query_opt(
+                        "SELECT 1 FROM worldstream_transfer_target_fence WHERE fence_id = true FOR UPDATE",
+                        &[],
+                    )
+                    .map_err(PostgresTransferError::Sql)?
+                    .is_some()
+                {
+                    return Err(PostgresTransferError::TargetMismatch(
+                        "authoritative target retains a transfer fence",
+                    ));
+                }
             }
             actual => {
                 return Err(PostgresTransferError::InvalidImportState {
@@ -4141,7 +4199,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_retry_uses_non_repairing_native_verification() {
+    fn pre_retirement_native_reconfirmation_requires_existing_rows() {
         assert!(NativePublicationMode::VerifyOnly.requires_existing_row());
         assert!(!NativePublicationMode::Hydrate.requires_existing_row());
     }

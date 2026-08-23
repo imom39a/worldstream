@@ -89,6 +89,12 @@ authoritative.
 
 Provider commands accept credentials only through an owner-only DSN file. Do
 not place a DSN or password on the command line or in an environment variable.
+The operational SQLite-to-PostgreSQL smoke uses the same boundary in external
+mode: set `WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE`,
+`WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE`, and
+`WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE` to three owner-only files. The
+abort file must select a database distinct from both success-path files;
+plaintext `WORLDSTREAM_PG_TRANSFER_*_DSN` variables are rejected.
 
 ```text
 worldstreamctl postgres transfer resume \

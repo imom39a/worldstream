@@ -592,11 +592,12 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
             script,
         )
         self.assertIn(
-            'WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN="host=$source_host '
-            "port=$source_port user=$source_user password=$password "
-            'dbname=$transfer_abort_db"',
+            'WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE="$artifact_root/'
+            'transfer-abort-admin.dsn"',
             script,
         )
+        self.assertIn("transfer-abort-admin.dsn", script)
+        self.assertNotIn("WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN=", script)
         self.assertIn("native_source_abort_database_setup_failed", script)
 
     def test_native_driver_uses_explicit_tls_and_sanitized_provider_environment(
@@ -1453,6 +1454,40 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
                 b"child victim sentinel",
             )
 
+    def test_manual_imo52_workflow_uses_standalone_non_release_lane(self) -> None:
+        diagnostic = (
+            ROOT / ".github" / "workflows" / "imo52-live-diagnostic.yml"
+        ).read_text(encoding="utf-8")
+        release = (
+            ROOT / ".github" / "workflows" / "compatibility-gates.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("scripts/postgres-native-restore-smoke.sh", diagnostic)
+        self.assertIn(
+            "--evidence reports/imo52-native-postgres-restore-smoke.json",
+            diagnostic,
+        )
+        self.assertIn(
+            "path: reports/imo52-native-postgres-restore-smoke.json",
+            diagnostic,
+        )
+        self.assertIn('python_bin="$(uv python find 3.14.7)"', diagnostic)
+        self.assertIn(
+            'cargo_bin="$(rustup which --toolchain 1.97.1 cargo)"', diagnostic
+        )
+        self.assertIn("docker_bin=/usr/bin/docker", diagnostic)
+        self.assertIn('WORLDSTREAM_NATIVE_PG_PYTHON="$python_bin"', diagnostic)
+        self.assertIn('WORLDSTREAM_NATIVE_PG_CARGO="$cargo_bin"', diagnostic)
+        self.assertIn('WORLDSTREAM_NATIVE_PG_DOCKER="$docker_bin"', diagnostic)
+        self.assertNotIn("postgres-native-restore-linux-live.sh", diagnostic)
+        self.assertNotIn("scripts/gates-install-postgres-client.sh", diagnostic)
+        self.assertNotIn("WORLDSTREAM_PACKAGED_CTL", diagnostic)
+        self.assertNotIn("docker run --detach", diagnostic)
+        self.assertNotIn("reports/native-linux-postgres-restore.json", diagnostic)
+        self.assertNotIn("reports/native-linux-transfer-seed.json", diagnostic)
+        self.assertNotIn("dist/", diagnostic)
+        self.assertIn("scripts/postgres-native-restore-linux-live.sh", release)
+
     def test_release_windows_runner_executes_live_native_restore(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "compatibility-gates.yml"
@@ -1472,6 +1507,9 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
         self.assertIn("scripts/postgres-native-restore-hosted-report.py", harness)
         self.assertIn("'--packaged-control', $env:WORLDSTREAM_PACKAGED_CTL", harness)
         self.assertIn("WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION", harness)
+        self.assertIn("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE", harness)
+        self.assertIn("Clear-WorldstreamTransferDsnFiles", harness)
+        self.assertNotIn("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN =", harness)
         self.assertIn("$SourceDatabase = 'worldstream_native_source'", harness)
         self.assertIn("CREATE DATABASE $SourceDatabase", harness)
         self.assertIn("CONNECTION LIMIT 0", harness)
@@ -1524,6 +1562,9 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
         self.assertIn("scripts/postgres-native-restore-hosted-report.py", harness)
         self.assertIn('--packaged-control "$WORLDSTREAM_PACKAGED_CTL"', harness)
         self.assertIn("WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION", harness)
+        self.assertIn("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE", harness)
+        self.assertIn("scrub_transfer_dsn_files", harness)
+        self.assertNotIn("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN=", harness)
         self.assertIn("source_database='worldstream_native_source'", harness)
         self.assertIn("CREATE DATABASE $source_database", harness)
         self.assertIn("CONNECTION LIMIT 0", harness)
@@ -1567,9 +1608,18 @@ class NativePostgresRestoreSmokeTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 97, result.stderr)
             self.assertNotIn("passed", result.stdout.lower())
-            self.assertFalse(
-                (runner_temp / "worldstream-native-restore-secrets").exists(),
-                "credentials must not exist before the supervised operation",
+            secret_root = runner_temp / "worldstream-native-restore-secrets"
+            self.assertEqual(
+                sorted(path.name for path in secret_root.iterdir()),
+                [
+                    "transfer-abort-admin.dsn",
+                    "transfer-admin.dsn",
+                    "transfer-runtime.dsn",
+                ],
+            )
+            self.assertTrue(
+                all(path.read_bytes() == b"" for path in secret_root.iterdir()),
+                "failed fixture credentials must be scrubbed through retained handles",
             )
             cleanup_sql = cleanup_log.read_text(encoding="utf-8")
             for identity in ("123456789", "16384", "16385", "16386", "16387"):

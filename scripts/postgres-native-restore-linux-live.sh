@@ -29,6 +29,12 @@ readonly target_marker='worldstream/native-postgres-disposable-target/v1'
 readonly release_python="$(uv python find 3.14.7)"
 readonly report_path='reports/native-linux-postgres-restore.json'
 readonly fixture_path='reports/native-linux-transfer-seed.json'
+readonly secret_root="$RUNNER_TEMP/worldstream-native-restore-secrets"
+readonly passfile="$secret_root/operator.pgpass"
+readonly transfer_admin_dsn_file="$secret_root/transfer-admin.dsn"
+readonly transfer_runtime_dsn_file="$secret_root/transfer-runtime.dsn"
+readonly transfer_abort_admin_dsn_file="$secret_root/transfer-abort-admin.dsn"
+readonly work_parent="$RUNNER_TEMP/worldstream-native-restore-work"
 
 for executable in \
   "$WORLDSTREAM_PACKAGED_CTL" \
@@ -50,9 +56,9 @@ runtime_password="$(openssl rand -hex 24)"
 
 clear_secrets() {
   unset PGPASSWORD
-  unset WORLDSTREAM_PG_TRANSFER_ADMIN_DSN
-  unset WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN
-  unset WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN
+  unset WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE
+  unset WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE
+  unset WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE
   unset WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE
   unset WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION
   admin_password=''
@@ -69,11 +75,36 @@ operator_passfile_storage_id=''
 operator_passfile_file_id=''
 operator_passfile_size=''
 operator_passfile_sha256=''
+transfer_admin_dsn_fd=-1
+transfer_runtime_dsn_fd=-1
+transfer_abort_admin_dsn_fd=-1
 work_parent_storage_id=''
 work_parent_file_id=''
 preserve_recovery=0
 provider_cleanup_complete=0
 passfile_scrub_complete=0
+
+scrub_transfer_dsn_files() {
+  local descriptor
+  for descriptor in "$transfer_admin_dsn_fd" "$transfer_runtime_dsn_fd" "$transfer_abort_admin_dsn_fd"; do
+    if [[ "$descriptor" -ge 0 ]]; then
+      "$release_python" -I - "$descriptor" <<'PY'
+import os
+import stat
+import sys
+
+descriptor = int(sys.argv[1])
+metadata = os.fstat(descriptor)
+if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+    raise SystemExit("transfer DSN cleanup authority changed")
+os.ftruncate(descriptor, 0)
+os.fsync(descriptor)
+if os.fstat(descriptor).st_size != 0:
+    raise SystemExit("transfer DSN exact scrub failed")
+PY
+    fi
+  done
+}
 
 export PGPASSWORD="$admin_password"
 psql_admin=(
@@ -195,15 +226,21 @@ cleanup_on_exit() {
   local cleanup_status=0
   trap - EXIT
   set +e
-  unset WORLDSTREAM_PG_TRANSFER_ADMIN_DSN
-  unset WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN
-  unset WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN
+  unset WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE
+  unset WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE
+  unset WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE
   unset WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE
   unset WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION
   if [[ "$preserve_recovery" != '1' ]]; then
     cleanup_provider_fixtures || cleanup_status=1
     scrub_operator_passfile || cleanup_status=1
   fi
+  scrub_transfer_dsn_files || cleanup_status=1
+  for descriptor in "$transfer_admin_dsn_fd" "$transfer_runtime_dsn_fd" "$transfer_abort_admin_dsn_fd"; do
+    if [[ "$descriptor" -ge 0 ]]; then
+      exec {descriptor}>&-
+    fi
+  done
   if [[ "$operator_passfile_fd" -ge 0 ]]; then
     exec {operator_passfile_fd}>&-
   fi
@@ -241,31 +278,44 @@ runtime_role_oid="$("${psql_admin[@]}" --dbname postgres --tuples-only --no-alig
   "COMMENT ON DATABASE $target_database IS '$target_marker'; ALTER DATABASE $target_database CONNECTION LIMIT 0"
 unset PGPASSWORD
 
-readonly secret_root="$RUNNER_TEMP/worldstream-native-restore-secrets"
-readonly passfile="$secret_root/operator.pgpass"
-readonly work_parent="$RUNNER_TEMP/worldstream-native-restore-work"
 test ! -e "$secret_root"
 test ! -e "$work_parent"
 
+umask 077
+mkdir -m 700 "$secret_root"
+set -o noclobber
+exec {transfer_admin_dsn_fd}> "$transfer_admin_dsn_file"
+exec {transfer_runtime_dsn_fd}> "$transfer_runtime_dsn_file"
+exec {transfer_abort_admin_dsn_fd}> "$transfer_abort_admin_dsn_file"
+set +o noclobber
+printf '%s' "host=127.0.0.1 port=5432 user=$admin_user password=$admin_password dbname=$source_database" >&$transfer_admin_dsn_fd
+printf '%s' "host=127.0.0.1 port=5432 user=$runtime_role password=$runtime_password dbname=$source_database" >&$transfer_runtime_dsn_fd
+printf '%s' "host=127.0.0.1 port=5432 user=$admin_user password=$admin_password dbname=$abort_database" >&$transfer_abort_admin_dsn_fd
+
 export WORLDSTREAM_PG_TRANSFER_MODE='external'
-export WORLDSTREAM_PG_TRANSFER_ADMIN_DSN="host=127.0.0.1 port=5432 user=$admin_user password=$admin_password dbname=$source_database"
-export WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN="host=127.0.0.1 port=5432 user=$runtime_role password=$runtime_password dbname=$source_database"
-export WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN="host=127.0.0.1 port=5432 user=$admin_user password=$admin_password dbname=$abort_database"
+export WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE="$transfer_admin_dsn_file"
+export WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE="$transfer_runtime_dsn_file"
+export WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE="$transfer_abort_admin_dsn_file"
 export WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE="$runtime_role"
 export WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION="$WORLDSTREAM_BUILD_REVISION"
 scripts/postgres-transfer-smoke.sh --build-source --evidence "$fixture_path"
-unset WORLDSTREAM_PG_TRANSFER_ADMIN_DSN
-unset WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN
-unset WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN
+unset WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE
+unset WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE
+unset WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE
 unset WORLDSTREAM_PG_TRANSFER_RUNTIME_ROLE
 unset WORLDSTREAM_PG_TRANSFER_SOURCE_REVISION
+scrub_transfer_dsn_files
+exec {transfer_admin_dsn_fd}>&-
+exec {transfer_runtime_dsn_fd}>&-
+exec {transfer_abort_admin_dsn_fd}>&-
+transfer_admin_dsn_fd=-1
+transfer_runtime_dsn_fd=-1
+transfer_abort_admin_dsn_fd=-1
 
 version="$($release_python -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')"
 archive="dist/linux/worldstream-${version}-linux-x86_64.tar.gz"
 test -f "$archive"
 
-umask 077
-mkdir -m 700 "$secret_root"
 mkdir -m 700 "$work_parent"
 set -o noclobber
 exec {operator_passfile_fd}> "$passfile"
@@ -401,14 +451,18 @@ PY
 
 cleanup_provider_fixtures
 
-"$release_python" -I - "$secret_root" "$passfile" "$work_parent" "$report_path" <<'PY'
+"$release_python" -I - "$secret_root" "$passfile" "$work_parent" "$report_path" \
+  "$transfer_admin_dsn_file" "$transfer_runtime_dsn_file" \
+  "$transfer_abort_admin_dsn_file" <<'PY'
 import json
 import os
 import stat
 import sys
 from pathlib import Path
 
-secret_root, passfile, work_parent, report_path = map(Path, sys.argv[1:])
+secret_root, passfile, work_parent, report_path, *transfer_dsn_files = map(
+    Path, sys.argv[1:]
+)
 report = json.loads(report_path.read_text(encoding="utf-8"))
 expected_count = report["cleanup"]["private_artifact_placeholder_count"]
 binding = report.get("private_binding", {})
@@ -423,6 +477,16 @@ if (
     or passfile_metadata.st_size != 0
 ):
     raise SystemExit("Linux hosted native restore passfile was not scrubbed")
+if sorted(secret_root.iterdir()) != sorted([passfile, *transfer_dsn_files]):
+    raise SystemExit("Linux hosted native restore secret inventory changed")
+for transfer_dsn_file in transfer_dsn_files:
+    metadata = transfer_dsn_file.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or transfer_dsn_file.is_symlink()
+        or metadata.st_size != 0
+    ):
+        raise SystemExit("Linux hosted transfer DSN was not scrubbed")
 roots = list(work_parent.iterdir())
 binding_root = work_parent / "worldstream-native-platform-binding"
 scrubbed_roots = [item for item in roots if item != binding_root]

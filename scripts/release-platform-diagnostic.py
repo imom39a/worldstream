@@ -206,6 +206,7 @@ PRIVATE_NATIVE_BINDING_FILES = {
     "native_dump": "native-restore.dump",
 }
 MAX_RELEASE_JSON_BYTES = 64 * 1024 * 1024
+MAX_RELEASE_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
 MAX_PRIVATE_DUMP_BYTES = 8 * 1024 * 1024 * 1024
 ASCII_DECIMAL = re.compile(r"^[0-9]+$")
 MAX_POSTGRES_SYSTEM_IDENTIFIER = (1 << 64) - 1
@@ -367,6 +368,35 @@ def regular_file(path: Path, label: str) -> Path:
     return path
 
 
+def _attempt_retained_closes(retained_inputs: list[Any]) -> list[BaseException]:
+    """Attempt every retained close and return failures without masking a primary."""
+
+    errors: list[BaseException] = []
+    for retained in reversed(retained_inputs):
+        try:
+            retained.close()
+        except BaseException as error:  # noqa: BLE001 - cleanup must continue
+            errors.append(error)
+    return errors
+
+
+def _finish_retained_scope(
+    *,
+    primary_error: BaseException | None,
+    cleanup_errors: list[BaseException],
+    label: str,
+) -> None:
+    """Preserve validation failures, otherwise fail closed on any cleanup failure."""
+
+    if primary_error is not None:
+        if isinstance(primary_error, OSError):
+            raise DiagnosticError(f"{label} failed: {primary_error}") from primary_error
+        raise primary_error
+    if cleanup_errors:
+        error = cleanup_errors[0]
+        raise DiagnosticError(f"{label} cleanup failed closed: {error}") from error
+
+
 @dataclass
 class RetainedJsonInput:
     """A strict JSON object, digest, and size from one retained byte authority."""
@@ -392,11 +422,11 @@ class RetainedJsonInput:
             return cls(retained=retained, raw=raw, value=value)
         except BUILD_IDENTITY.IdentityError as error:
             if retained is not None:
-                retained.close()
+                _attempt_retained_closes([retained])
             raise DiagnosticError(str(error)) from error
         except (NATIVE_AUTHORITY.HostedReportError, OSError) as error:
             if retained is not None:
-                retained.close()
+                _attempt_retained_closes([retained])
             raise DiagnosticError(f"cannot retain {label}: {error}") from error
 
     @property
@@ -418,6 +448,48 @@ class RetainedJsonInput:
                 f"{self.retained.label} changed while retained: {error}"
             ) from error
         require(raw == self.raw, f"{self.retained.label} changed while retained")
+
+    def close(self) -> None:
+        self.retained.close()
+
+
+@dataclass
+class RetainedArtifactInput:
+    """One bounded release-artifact fingerprint with retained pathname identity."""
+
+    retained: Any
+
+    @classmethod
+    def open(cls, path: Path, label: str):
+        retained = None
+        try:
+            retained = NATIVE_AUTHORITY.RetainedFile.open(
+                path,
+                label,
+                maximum_size=MAX_RELEASE_ARTIFACT_BYTES,
+            )
+            retained.verify()
+            return cls(retained=retained)
+        except (NATIVE_AUTHORITY.HostedReportError, OSError) as error:
+            if retained is not None:
+                _attempt_retained_closes([retained])
+            raise DiagnosticError(f"cannot retain {label}: {error}") from error
+
+    @property
+    def sha256(self) -> str:
+        return self.retained.sha256
+
+    @property
+    def size_bytes(self) -> int:
+        return self.retained.size_bytes
+
+    def verify(self) -> None:
+        try:
+            self.retained.verify()
+        except (NATIVE_AUTHORITY.HostedReportError, OSError) as error:
+            raise DiagnosticError(
+                f"{self.retained.label} changed while retained: {error}"
+            ) from error
 
     def close(self) -> None:
         self.retained.close()
@@ -673,22 +745,47 @@ class PrivateNativeBinding:
 
 
 def read_json(path: Path, label: str) -> dict[str, Any]:
-    regular_file(path, label)
+    retained = None
+    value = None
+    primary_error: BaseException | None = None
     try:
-        content = path.read_bytes()
-    except OSError as error:
-        raise DiagnosticError(f"{label} is not valid JSON: {error}") from error
-    try:
-        return BUILD_IDENTITY.strict_json(content, label)
-    except BUILD_IDENTITY.IdentityError as error:
-        raise DiagnosticError(str(error)) from error
+        retained = RetainedJsonInput.open(path, label)
+        retained.verify()
+        value = retained.value
+    except BaseException as error:  # noqa: BLE001 - close retained input on interrupts
+        primary_error = error
+    cleanup_errors = _attempt_retained_closes(
+        [retained] if retained is not None else []
+    )
+    _finish_retained_scope(
+        primary_error=primary_error,
+        cleanup_errors=cleanup_errors,
+        label=label,
+    )
+    assert value is not None
+    return value
 
 
 def digest(path: Path) -> str:
+    retained = None
+    value = None
+    primary_error: BaseException | None = None
     try:
-        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as error:
-        raise DiagnosticError(f"cannot hash {path}: {error}") from error
+        retained = RetainedArtifactInput.open(path, f"digest input {path.name}")
+        retained.verify()
+        value = retained.sha256
+    except BaseException as error:  # noqa: BLE001 - close retained input on interrupts
+        primary_error = error
+    cleanup_errors = _attempt_retained_closes(
+        [retained] if retained is not None else []
+    )
+    _finish_retained_scope(
+        primary_error=primary_error,
+        cleanup_errors=cleanup_errors,
+        label=f"cannot hash {path}",
+    )
+    assert value is not None
+    return value
 
 
 def load_script(name: str, path: Path):
@@ -908,6 +1005,9 @@ def verify_archive_report(
     source_id: str,
     contract: dict[str, Any],
     independently_verified: dict[str, Any],
+    *,
+    artifact_sha256: str,
+    artifact_size_bytes: int,
 ) -> None:
     target = {
         "native-linux": "linux-x86_64",
@@ -930,17 +1030,16 @@ def verify_archive_report(
         and report.get("inventory", {}).get("release_evidence") is False,
         "package archive verification boundary is incomplete",
     )
-    regular_file(artifact, "release archive")
     require(
         report.get("artifact") == artifact.name, "package report artifact name mismatch"
     )
     require(
-        report.get("sha256") == digest(artifact),
+        report.get("sha256") == artifact_sha256,
         "package report archive digest mismatch",
     )
     require(
         report.get("path") == artifact.name
-        and report.get("size_bytes") == artifact.stat().st_size,
+        and report.get("size_bytes") == artifact_size_bytes,
         "package report archive size mismatch",
     )
     require(
@@ -957,6 +1056,9 @@ def verify_native_runtime_report(
     artifact: Path,
     source_id: str,
     archive_binaries: dict[str, Any],
+    *,
+    artifact_sha256: str,
+    artifact_size_bytes: int,
 ) -> dict[str, Any]:
     expected_target = {
         "native-linux": "linux-x86_64",
@@ -1021,8 +1123,8 @@ def verify_native_runtime_report(
         and binding.get("artifact") == artifact.name
         and binding.get("target") == expected_target
         and binding.get("version") == package_identity.get("version")
-        and binding.get("archive_sha256") == digest(artifact)
-        and binding.get("archive_size_bytes") == artifact.stat().st_size
+        and binding.get("archive_sha256") == artifact_sha256
+        and binding.get("archive_size_bytes") == artifact_size_bytes
         and binding.get("package_report_sha256") == package_report_sha256
         and binding.get("package_report_size_bytes") == package_report_size_bytes
         and binding.get("manifest_sha256")
@@ -1867,32 +1969,38 @@ def emit_native(args: argparse.Namespace) -> None:
         f"hosted {expected_system} native PostgreSQL input was substituted by another input",
     )
     retained_inputs: dict[str, RetainedJsonInput] = {}
+    retained_artifact: RetainedArtifactInput | None = None
     private_binding = PrivateNativeBinding()
     pending_outputs: list[tuple[Path, dict[str, Any]]] = []
     primary_error: BaseException | None = None
-    cleanup_error: BaseException | None = None
     try:
-        retained_inputs = {
-            "package": RetainedJsonInput.open(args.package_report, "package report"),
-            "gate": RetainedJsonInput.open(args.gate_report, "platform gate report"),
-            "runtime": RetainedJsonInput.open(
-                args.runtime_report, "native packaged runtime report"
-            ),
-            "hosted": RetainedJsonInput.open(
+        for key, path, label in (
+            ("package", args.package_report, "package report"),
+            ("gate", args.gate_report, "platform gate report"),
+            ("runtime", args.runtime_report, "native packaged runtime report"),
+            (
+                "hosted",
                 args.native_restore_report,
                 f"hosted {expected_system} native PostgreSQL restore report",
             ),
-            "fixture": RetainedJsonInput.open(
+            (
+                "fixture",
                 args.native_fixture_report,
                 f"hosted {expected_system} native PostgreSQL source fixture report",
             ),
-        }
-        artifact_metadata = regular_file(args.artifact, "release archive").lstat()
+        ):
+            retained_inputs[key] = RetainedJsonInput.open(path, label)
+        retained_artifact = RetainedArtifactInput.open(args.artifact, "release archive")
         retained_identities = {
             (value.retained.admitted.st_dev, value.retained.admitted.st_ino)
             for value in retained_inputs.values()
         }
-        retained_identities.add((artifact_metadata.st_dev, artifact_metadata.st_ino))
+        retained_identities.add(
+            (
+                retained_artifact.retained.admitted.st_dev,
+                retained_artifact.retained.admitted.st_ino,
+            )
+        )
         require(
             len(retained_identities) == len(retained_inputs) + 1,
             f"hosted {expected_system} native PostgreSQL inputs must have distinct file identities",
@@ -1939,18 +2047,22 @@ def emit_native(args: argparse.Namespace) -> None:
             },
         }
 
+        retained_artifact.verify()
         verified_package_report, archive_binaries = independently_verify_native_archive(
             args.artifact, source_id, contract["release_candidate"]
         )
+        retained_artifact.verify()
         verify_archive_report(
             package_report,
             args.artifact,
             source_id,
             contract,
             verified_package_report,
+            artifact_sha256=retained_artifact.sha256,
+            artifact_size_bytes=retained_artifact.size_bytes,
         )
-        artifact_sha256 = digest(args.artifact)
-        artifact_size_bytes = args.artifact.stat().st_size
+        artifact_sha256 = retained_artifact.sha256
+        artifact_size_bytes = retained_artifact.size_bytes
         runtime_binding = verify_native_runtime_report(
             runtime_report,
             package_report,
@@ -1959,6 +2071,8 @@ def emit_native(args: argparse.Namespace) -> None:
             args.artifact,
             source_id,
             archive_binaries,
+            artifact_sha256=artifact_sha256,
+            artifact_size_bytes=artifact_size_bytes,
         )
         native_restore_facts = verify_hosted_native_restore_report(
             hosted_native_restore,
@@ -2014,6 +2128,7 @@ def emit_native(args: argparse.Namespace) -> None:
         )
         for retained in retained_inputs.values():
             retained.verify()
+        retained_artifact.verify()
 
         output = args.output_dir
         pending_outputs.append(
@@ -2115,41 +2230,53 @@ def emit_native(args: argparse.Namespace) -> None:
         )
     except BaseException as error:  # noqa: BLE001 - preserve cleanup on interrupts
         primary_error = error
-    finally:
-        try:
-            private_binding.scrub_exact()
-        except BaseException as error:  # noqa: BLE001 - cleanup failure wins fail-closed
-            cleanup_error = error
-        finally:
-            private_binding.close()
-            for retained in retained_inputs.values():
-                retained.close()
-    if cleanup_error is not None:
-        raise DiagnosticError(
-            f"native private binding cleanup failed closed: {cleanup_error}"
-        ) from cleanup_error
-    if primary_error is not None:
-        raise primary_error
+    cleanup_errors: list[BaseException] = []
+    try:
+        private_binding.scrub_exact()
+    except BaseException as error:  # noqa: BLE001 - cleanup must continue
+        cleanup_errors.append(error)
+    try:
+        private_binding.close()
+    except BaseException as error:  # noqa: BLE001 - cleanup must continue
+        cleanup_errors.append(error)
+    retained_resources: list[Any] = list(retained_inputs.values())
+    if retained_artifact is not None:
+        retained_resources.append(retained_artifact)
+    cleanup_errors.extend(_attempt_retained_closes(retained_resources))
+    _finish_retained_scope(
+        primary_error=primary_error,
+        cleanup_errors=cleanup_errors,
+        label="native diagnostic retained authority",
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for path, value in pending_outputs:
         atomic_write(path, value)
 
 
-def emit_oci(args: argparse.Namespace) -> None:
-    contract = manifest()
-    context = read_json(args.context_report, "OCI context report")
-    runtime = read_json(args.runtime_report, "OCI runtime report")
-    metadata = read_json(args.context_metadata, "OCI context metadata")
+def _build_oci_output(
+    args: argparse.Namespace,
+    contract: dict[str, Any],
+    retained_inputs: dict[str, RetainedJsonInput],
+    retained_artifact: RetainedArtifactInput,
+) -> dict[str, Any]:
+    context_input = retained_inputs["context"]
+    runtime_input = retained_inputs["runtime"]
+    supplied_metadata = retained_inputs["supplied_metadata"]
+    verified_metadata = retained_inputs["verified_metadata"]
+    context = context_input.value
+    runtime = runtime_input.value
+    metadata = supplied_metadata.value
     verified_context = independently_verify_oci_context(args.context)
     require(
         context == verified_context,
         "OCI context report is not the exact independently verified context projection",
     )
     expected_metadata = args.context / "oci-metadata.json"
-    regular_file(expected_metadata, "verified OCI context metadata")
+    supplied_metadata.verify()
+    verified_metadata.verify()
     require(
         args.context_metadata.resolve() == expected_metadata.resolve()
-        and args.context_metadata.read_bytes() == expected_metadata.read_bytes(),
+        and supplied_metadata.raw == verified_metadata.raw,
         "OCI context metadata is not the exact metadata inside the verified context",
     )
     runtime_binding = runtime.get("artifact_binding")
@@ -2164,14 +2291,19 @@ def emit_oci(args: argparse.Namespace) -> None:
         is not None,
         "OCI runtime diagnostic has no tested image config digest",
     )
+    retained_artifact.verify()
     verified_artifact = independently_verify_oci_archive(
         args.artifact, tested_image_config_digest
     )
+    retained_artifact.verify()
     require(
-        runtime_binding == verified_artifact,
+        runtime_binding == verified_artifact
+        and verified_artifact.get("artifact_sha256") == retained_artifact.sha256
+        and verified_artifact.get("artifact_size_bytes")
+        == retained_artifact.size_bytes,
         "OCI runtime artifact binding is not the exact independently verified archive projection",
     )
-    artifact_digest = verified_artifact["artifact_sha256"]
+    artifact_digest = retained_artifact.sha256
     profiles = runtime.get("profiles")
     secret_scan = runtime.get("secret_scan")
     sqlite_volume = runtime.get("sqlite_volume")
@@ -2308,38 +2440,83 @@ def emit_oci(args: argparse.Namespace) -> None:
         and metadata.get("target") == "linux/amd64",
         "OCI metadata identity or pinned base image is invalid",
     )
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write(
-        args.output_dir / "oci-linux-oci.json",
-        diagnostic(
-            "oci-linux",
-            "oci",
-            {
-                "platform_identity": "oci-linux-amd64",
-                "release_candidate": contract["release_candidate"],
-                "pinned_base_image": base_image,
-                "image_digest": artifact_digest,
-                "tested_image_config_digest": tested_image_config_digest,
-                "context_inventory_sha256": verified_context["sha256"],
-                "context_report_sha256": digest(args.context_report),
-                "context_metadata_sha256": digest(expected_metadata),
-                "runtime_report_sha256": digest(args.runtime_report),
-                "runtime_smoke": "healthy non-root read-only runtime with verified local persistent volume",
-                "storage_profiles": "sqlite-bundled and postgres-primary passed",
-                "postgres_provider_image": OCI_POSTGRES_IMAGE,
-                "postgres_engine_identity": OCI_POSTGRES_IDENTITY,
-                "postgres_packaged_administration": "migrate and verify passed",
-                "postgres_runtime_role": "least privilege verified",
-                "postgres_network": "disabled network with local Unix socket",
-                "secrets": "not emitted",
-                "filesystem_policy": "ext4/xfs local block source, local driver without options, and negative layout probes passed",
-            },
-            contract,
-        ),
+    return diagnostic(
+        "oci-linux",
+        "oci",
+        {
+            "platform_identity": "oci-linux-amd64",
+            "release_candidate": contract["release_candidate"],
+            "pinned_base_image": base_image,
+            "image_digest": artifact_digest,
+            "tested_image_config_digest": tested_image_config_digest,
+            "context_inventory_sha256": verified_context["sha256"],
+            "context_report_sha256": context_input.sha256,
+            "context_metadata_sha256": verified_metadata.sha256,
+            "runtime_report_sha256": runtime_input.sha256,
+            "runtime_smoke": "healthy non-root read-only runtime with verified local persistent volume",
+            "storage_profiles": "sqlite-bundled and postgres-primary passed",
+            "postgres_provider_image": OCI_POSTGRES_IMAGE,
+            "postgres_engine_identity": OCI_POSTGRES_IDENTITY,
+            "postgres_packaged_administration": "migrate and verify passed",
+            "postgres_runtime_role": "least privilege verified",
+            "postgres_network": "disabled network with local Unix socket",
+            "secrets": "not emitted",
+            "filesystem_policy": "ext4/xfs local block source, local driver without options, and negative layout probes passed",
+        },
+        contract,
     )
 
 
-def verify_macos_browser_story(value: Any, architecture: str) -> None:
+def emit_oci(args: argparse.Namespace) -> None:
+    contract = manifest()
+    retained_inputs: dict[str, RetainedJsonInput] = {}
+    retained_artifact: RetainedArtifactInput | None = None
+    pending_output: dict[str, Any] | None = None
+    primary_error: BaseException | None = None
+    try:
+        expected_metadata = args.context / "oci-metadata.json"
+        for key, path, label in (
+            ("context", args.context_report, "OCI context report"),
+            ("runtime", args.runtime_report, "OCI runtime report"),
+            ("supplied_metadata", args.context_metadata, "OCI context metadata"),
+            (
+                "verified_metadata",
+                expected_metadata,
+                "verified OCI context metadata",
+            ),
+        ):
+            retained_inputs[key] = RetainedJsonInput.open(path, label)
+        retained_artifact = RetainedArtifactInput.open(
+            args.artifact, "OCI release archive"
+        )
+        pending_output = _build_oci_output(
+            args, contract, retained_inputs, retained_artifact
+        )
+        for retained in retained_inputs.values():
+            retained.verify()
+        retained_artifact.verify()
+    except BaseException as error:  # noqa: BLE001 - close retained input on interrupts
+        primary_error = error
+    retained_resources: list[Any] = list(retained_inputs.values())
+    if retained_artifact is not None:
+        retained_resources.append(retained_artifact)
+    cleanup_errors = _attempt_retained_closes(retained_resources)
+    _finish_retained_scope(
+        primary_error=primary_error,
+        cleanup_errors=cleanup_errors,
+        label="OCI diagnostic retained authority",
+    )
+    assert pending_output is not None
+    atomic_write(args.output_dir / "oci-linux-oci.json", pending_output)
+
+
+def verify_macos_browser_story(
+    value: Any,
+    architecture: str,
+    *,
+    adapter_sha256: str,
+    adapter_size_bytes: int,
+) -> None:
     expected_checks = {
         "browser_identity_verified": True,
         "catch_up_or_reset_installed": True,
@@ -2547,8 +2724,8 @@ def verify_macos_browser_story(value: Any, architecture: str) -> None:
         == {
             "name": "worldstream-cdp-browser",
             "protocol": "Chrome DevTools Protocol",
-            "sha256": digest(ROOT / "scripts/cdp-browser.py"),
-            "size_bytes": (ROOT / "scripts/cdp-browser.py").stat().st_size,
+            "sha256": adapter_sha256,
+            "size_bytes": adapter_size_bytes,
         }
         and tools.get("python")
         == {
@@ -2589,8 +2766,14 @@ def emit_macos(args: argparse.Namespace) -> None:
     )
     expected_toolchains = pinned_macos_toolchains()
     retained: list[RetainedJsonInput] = []
+    retained_adapter: RetainedArtifactInput | None = None
     quickstarts: dict[str, RetainedJsonInput] = {}
+    pending_outputs: list[tuple[Path, dict[str, Any]]] = []
+    primary_error: BaseException | None = None
     try:
+        retained_adapter = RetainedArtifactInput.open(
+            ROOT / "scripts/cdp-browser.py", "macOS browser adapter"
+        )
         for report_path in args.quickstart_report:
             observed = RetainedJsonInput.open(report_path, "macOS quickstart report")
             retained.append(observed)
@@ -2651,7 +2834,10 @@ def emit_macos(args: argparse.Namespace) -> None:
                 "macOS source quickstart diagnostic is incomplete",
             )
             verify_macos_browser_story(
-                quickstart["browser_story"], observed_architecture
+                quickstart["browser_story"],
+                observed_architecture,
+                adapter_sha256=retained_adapter.sha256,
+                adapter_size_bytes=retained_adapter.size_bytes,
             )
             quickstarts[observed_architecture] = observed
         require(
@@ -2690,41 +2876,59 @@ def emit_macos(args: argparse.Namespace) -> None:
                 for architecture in MACOS_ARCHITECTURES
             ],
         }
-    finally:
+        pending_outputs = [
+            (args.artifact_output, artifact),
+            (
+                args.output_dir / "macos-source-source-quickstart.json",
+                diagnostic(
+                    "macos-source",
+                    "source-quickstart",
+                    {
+                        "platform_identity": "macos-source",
+                        "release_candidate": contract["release_candidate"],
+                        "architectures": list(MACOS_ARCHITECTURES),
+                        "source_revision": args.source_revision,
+                        "pinned_toolchain": expected_toolchains,
+                        "source_build": "workspace, Python SDK, and UI source builds passed on arm64 and x86_64",
+                        "quickstart": "pinned real browser completed the six-phase Heist reference-client story through the source-built daemon and embedded UI, including stale/resync, privacy, replay, and final reveal, in under ten minutes on arm64 and x86_64",
+                    },
+                    contract,
+                ),
+            ),
+        ]
         for item in retained:
-            item.close()
-    atomic_write(args.artifact_output, artifact)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write(
-        args.output_dir / "macos-source-source-quickstart.json",
-        diagnostic(
-            "macos-source",
-            "source-quickstart",
-            {
-                "platform_identity": "macos-source",
-                "release_candidate": contract["release_candidate"],
-                "architectures": list(MACOS_ARCHITECTURES),
-                "source_revision": args.source_revision,
-                "pinned_toolchain": expected_toolchains,
-                "source_build": "workspace, Python SDK, and UI source builds passed on arm64 and x86_64",
-                "quickstart": "pinned real browser completed the six-phase Heist reference-client story through the source-built daemon and embedded UI, including stale/resync, privacy, replay, and final reveal, in under ten minutes on arm64 and x86_64",
-            },
-            contract,
-        ),
+            item.verify()
+        retained_adapter.verify()
+    except BaseException as error:  # noqa: BLE001 - close retained input on interrupts
+        primary_error = error
+    retained_resources: list[Any] = list(retained)
+    if retained_adapter is not None:
+        retained_resources.append(retained_adapter)
+    cleanup_errors = _attempt_retained_closes(retained_resources)
+    _finish_retained_scope(
+        primary_error=primary_error,
+        cleanup_errors=cleanup_errors,
+        label="macOS diagnostic retained authority",
     )
+    for path, value in pending_outputs:
+        atomic_write(path, value)
 
 
-def emit_security(args: argparse.Namespace) -> None:
-    contract = manifest()
-    linux = read_json(args.linux_gate_report, "Linux platform gate report")
-    windows = read_json(args.windows_gate_report, "Windows platform gate report")
-    linux_runtime = read_json(
-        args.linux_runtime_report, "Linux native packaged runtime report"
-    )
-    windows_runtime = read_json(
-        args.windows_runtime_report, "Windows native packaged runtime report"
-    )
-    https = read_json(args.https_report, "telemetry HTTPS report")
+def _build_security_outputs(
+    args: argparse.Namespace,
+    contract: dict[str, Any],
+    retained_inputs: dict[str, RetainedJsonInput],
+) -> list[tuple[Path, dict[str, Any]]]:
+    linux_input = retained_inputs["linux_gate"]
+    windows_input = retained_inputs["windows_gate"]
+    linux_runtime_input = retained_inputs["linux_runtime"]
+    windows_runtime_input = retained_inputs["windows_runtime"]
+    https_input = retained_inputs["https"]
+    linux = linux_input.value
+    windows = windows_input.value
+    linux_runtime = linux_runtime_input.value
+    windows_runtime = windows_runtime_input.value
+    https = https_input.value
     required = {
         "secret-scan",
         "evidence-privacy-local",
@@ -2817,28 +3021,28 @@ def emit_security(args: argparse.Namespace) -> None:
     inputs = [
         {
             "platform": "native-linux-x86_64",
-            "sha256": digest(args.linux_gate_report),
-            "size_bytes": args.linux_gate_report.stat().st_size,
+            "sha256": linux_input.sha256,
+            "size_bytes": linux_input.size_bytes,
         },
         {
             "platform": "native-windows-x64",
-            "sha256": digest(args.windows_gate_report),
-            "size_bytes": args.windows_gate_report.stat().st_size,
+            "sha256": windows_input.sha256,
+            "size_bytes": windows_input.size_bytes,
         },
         {
             "platform": "native-linux-x86_64/telemetry-https",
-            "sha256": digest(args.https_report),
-            "size_bytes": args.https_report.stat().st_size,
+            "sha256": https_input.sha256,
+            "size_bytes": https_input.size_bytes,
         },
         {
             "platform": "native-linux-x86_64/config-contract",
-            "sha256": digest(args.linux_runtime_report),
-            "size_bytes": args.linux_runtime_report.stat().st_size,
+            "sha256": linux_runtime_input.sha256,
+            "size_bytes": linux_runtime_input.size_bytes,
         },
         {
             "platform": "native-windows-x64/config-contract",
-            "sha256": digest(args.windows_runtime_report),
-            "size_bytes": args.windows_runtime_report.stat().st_size,
+            "sha256": windows_runtime_input.sha256,
+            "size_bytes": windows_runtime_input.size_bytes,
         },
     ]
     artifact = {
@@ -2852,47 +3056,92 @@ def emit_security(args: argparse.Namespace) -> None:
             required | {"telemetry-failure-pressure", "filesystem-acl-policy"}
         ),
     }
-    atomic_write(args.artifact_output, artifact)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write(
-        args.output_dir / "security-observability-config-redaction-observability.json",
-        diagnostic(
-            "security-observability",
-            "config-redaction-observability",
-            {
-                "platform_identity": "all-supported-platforms",
-                "config_validation": {
-                    "gate": "config-contract",
-                    "linux_gate": linux_outcomes["config-contract"]["detail"],
-                    "windows_gate": windows_outcomes["config-contract"]["detail"],
-                    "linux_runtime_sha256": digest(args.linux_runtime_report),
-                    "windows_runtime_sha256": digest(args.windows_runtime_report),
-                    "packaged_commands": [
-                        "config validate",
-                        "config effective",
-                        "doctor",
-                    ],
-                },
-                "secret_redaction": "secret-scan and privacy fixtures passed on Linux and Windows",
-                "observability_bounds": "telemetry fixtures and Linux failure-pressure probe passed",
+    config_diagnostic = diagnostic(
+        "security-observability",
+        "config-redaction-observability",
+        {
+            "platform_identity": "all-supported-platforms",
+            "config_validation": {
+                "gate": "config-contract",
+                "linux_gate": linux_outcomes["config-contract"]["detail"],
+                "windows_gate": windows_outcomes["config-contract"]["detail"],
+                "linux_runtime_sha256": linux_runtime_input.sha256,
+                "windows_runtime_sha256": windows_runtime_input.sha256,
+                "packaged_commands": [
+                    "config validate",
+                    "config effective",
+                    "doctor",
+                ],
             },
-            contract,
-        ),
+            "secret_redaction": "secret-scan and privacy fixtures passed on Linux and Windows",
+            "observability_bounds": "telemetry fixtures and Linux failure-pressure probe passed",
+        },
+        contract,
     )
-    atomic_write(
-        args.output_dir / "security-observability-security.json",
-        diagnostic(
-            "security-observability",
-            "security",
-            {
-                "platform_identity": "all-supported-platforms",
-                "security_probes": "capability, lease, privacy, and secret probes passed",
-                "remote_tls": "trusted-CA and hostname-verified OTLP HTTPS delivery passed; untrusted CA, hostname mismatch, invalid endpoints, non-success, oversized, and slow responses were rejected or bounded",
-                "filesystem_policy": "native POSIX and Windows DACL policies passed",
-            },
-            contract,
-        ),
+    security_diagnostic = diagnostic(
+        "security-observability",
+        "security",
+        {
+            "platform_identity": "all-supported-platforms",
+            "security_probes": "capability, lease, privacy, and secret probes passed",
+            "remote_tls": "trusted-CA and hostname-verified OTLP HTTPS delivery passed; untrusted CA, hostname mismatch, invalid endpoints, non-success, oversized, and slow responses were rejected or bounded",
+            "filesystem_policy": "native POSIX and Windows DACL policies passed",
+        },
+        contract,
     )
+    return [
+        (args.artifact_output, artifact),
+        (
+            args.output_dir
+            / "security-observability-config-redaction-observability.json",
+            config_diagnostic,
+        ),
+        (
+            args.output_dir / "security-observability-security.json",
+            security_diagnostic,
+        ),
+    ]
+
+
+def emit_security(args: argparse.Namespace) -> None:
+    contract = manifest()
+    retained_inputs: dict[str, RetainedJsonInput] = {}
+    pending_outputs: list[tuple[Path, dict[str, Any]]] = []
+    primary_error: BaseException | None = None
+    try:
+        for key, path, label in (
+            ("linux_gate", args.linux_gate_report, "Linux platform gate report"),
+            (
+                "windows_gate",
+                args.windows_gate_report,
+                "Windows platform gate report",
+            ),
+            (
+                "linux_runtime",
+                args.linux_runtime_report,
+                "Linux native packaged runtime report",
+            ),
+            (
+                "windows_runtime",
+                args.windows_runtime_report,
+                "Windows native packaged runtime report",
+            ),
+            ("https", args.https_report, "telemetry HTTPS report"),
+        ):
+            retained_inputs[key] = RetainedJsonInput.open(path, label)
+        pending_outputs = _build_security_outputs(args, contract, retained_inputs)
+        for retained in retained_inputs.values():
+            retained.verify()
+    except BaseException as error:  # noqa: BLE001 - close retained input on interrupts
+        primary_error = error
+    cleanup_errors = _attempt_retained_closes(list(retained_inputs.values()))
+    _finish_retained_scope(
+        primary_error=primary_error,
+        cleanup_errors=cleanup_errors,
+        label="security diagnostic retained authority",
+    )
+    for path, value in pending_outputs:
+        atomic_write(path, value)
 
 
 def parser() -> argparse.ArgumentParser:

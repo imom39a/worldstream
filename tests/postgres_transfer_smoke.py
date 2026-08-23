@@ -39,12 +39,41 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         extra: dict[str, str] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
         environment = os.environ.copy()
+        for variable in (
+            "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN",
+            "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN",
+            "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN",
+            "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE",
+            "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE",
+            "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE",
+        ):
+            environment.pop(variable, None)
+        secret_directory = tempfile.TemporaryDirectory(
+            prefix="worldstream-transfer-dsn-boundary-"
+        )
+        self.addCleanup(secret_directory.cleanup)
+        secret_root = Path(secret_directory.name)
+        paths_by_dsn: dict[str, Path] = {}
+        paths_by_role: dict[str, Path] = {}
+        for label, value in (
+            ("admin", admin_dsn),
+            ("runtime", runtime_dsn),
+            ("abort-admin", abort_admin_dsn),
+        ):
+            if not value:
+                continue
+            existing = paths_by_dsn.get(value)
+            if existing is not None:
+                paths_by_role[label] = existing
+                continue
+            path = secret_root / f"{label}.dsn"
+            path.write_text(value, encoding="utf-8")
+            path.chmod(0o600)
+            paths_by_dsn[value] = path
+            paths_by_role[label] = path
         environment.update(
             {
                 "WORLDSTREAM_PG_TRANSFER_MODE": mode,
-                "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN": admin_dsn,
-                "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN": runtime_dsn,
-                "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN": abort_admin_dsn,
                 "WORLDSTREAM_PG_TRANSFER_CARGO": str(cargo or ROOT / "no-such-cargo"),
                 "WORLDSTREAM_PG_TRANSFER_DOCKER": str(
                     docker or ROOT / "no-such-docker"
@@ -54,6 +83,14 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
                 ),
             }
         )
+        for variable, label in (
+            ("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE", "admin"),
+            ("WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE", "runtime"),
+            ("WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE", "abort-admin"),
+        ):
+            path = paths_by_role.get(label)
+            if path is not None:
+                environment[variable] = str(path)
         if source is not None:
             environment["WORLDSTREAM_PG_TRANSFER_SQLITE"] = str(source)
         if evidence is not None:
@@ -169,6 +206,19 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         for secret in ("ADMIN_SECRET", "RUNTIME_SECRET", "password=", "host=admin"):
             self.assertNotIn(secret, output)
 
+    def test_legacy_plaintext_dsn_environment_is_rejected_without_echo(self) -> None:
+        sentinel = "LEGACY_PLAINTEXT_DSN_SECRET"
+        completed, evidence = self.run_harness(
+            extra={
+                "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN": (
+                    f"host=legacy user=admin password={sentinel}"
+                )
+            }
+        )
+        self.assertEqual(completed.returncode, 12)
+        self.assertEqual(evidence["reason"], "plaintext_dsn_environment_rejected")
+        self.assertNotIn(sentinel, completed.stdout + completed.stderr)
+
     def test_external_abort_target_must_be_explicitly_distinct(self) -> None:
         with tempfile.TemporaryDirectory(
             prefix="worldstream-transfer-boundary-"
@@ -191,6 +241,20 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         self.assertIn("sys.version_info[:3] != (3, 14, 7)", script)
         self.assertIn("uv run --python 3.14.7 --no-project python", script)
         self.assertNotIn("python3_unavailable", script)
+
+    def test_helper_reads_only_bounded_owner_only_dsn_files(self) -> None:
+        script = HARNESS.read_text(encoding="utf-8")
+        self.assertIn("worldstream_runtime::SecretSource", script)
+        self.assertIn("const MAX_DSN_BYTES: usize = 64 * 1024", script)
+        self.assertIn(".read_bounded(MAX_DSN_BYTES)", script)
+        for variable in (
+            "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE",
+            "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE",
+            "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE",
+        ):
+            self.assertIn(variable, script)
+        self.assertNotIn('"WORLDSTREAM_PG_TRANSFER_ADMIN_DSN=$admin_dsn"', script)
+        self.assertNotIn('env::var("WORLDSTREAM_PG_TRANSFER_ADMIN_DSN")', script)
 
     def test_transfer_preserves_exact_postgres_operation_guards(self) -> None:
         implementation = (
@@ -224,6 +288,26 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
             "ResolveOutcomeV1::Conflict",
         ):
             self.assertIn(witness, script)
+
+    def test_post_retirement_accept_is_publication_only(self) -> None:
+        implementation = (
+            ROOT / "crates" / "worldstream-postgres" / "src" / "transfer.rs"
+        ).read_text(encoding="utf-8")
+        start = implementation.index("    fn accept_target_write(")
+        end = implementation.index("\n    fn abort_import(", start)
+        publication = implementation[start:end]
+
+        for forbidden in (
+            "verify_schema",
+            "verify_native_semantic_evidence",
+            "verify_staged_chunks",
+            "verify_native_operational_rows",
+            "verify_hydrated_target",
+            "reconfirm_hydrated_target_behind_fence",
+        ):
+            self.assertNotIn(forbidden, publication)
+        self.assertIn("DELETE FROM worldstream_transfer_target_fence", publication)
+        self.assertIn("SET state = 'authoritative'", publication)
 
     def test_docker_absence_is_unavailable_not_incomplete_provider_evidence(
         self,
@@ -456,22 +540,36 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
             cargo, "cargo is required for the generated-source boundary"
         )
         environment = os.environ.copy()
+        for variable in (
+            "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN",
+            "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN",
+            "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN",
+            "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN_FILE",
+            "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN_FILE",
+            "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE",
+        ):
+            environment.pop(variable, None)
         environment.update(
             {
                 "WORLDSTREAM_PG_TRANSFER_MODE": "external",
-                "WORLDSTREAM_PG_TRANSFER_ADMIN_DSN": (
-                    "host=127.0.0.1 port=1 user=admin dbname=success"
-                ),
-                "WORLDSTREAM_PG_TRANSFER_RUNTIME_DSN": (
-                    "host=127.0.0.1 port=1 user=runtime dbname=success"
-                ),
-                "WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN": (
-                    "host=127.0.0.1 port=1 user=admin dbname=abort"
-                ),
                 "WORLDSTREAM_PG_TRANSFER_CARGO": cargo,
                 "WORLDSTREAM_PG_TRANSFER_PYTHON": sys.executable,
             }
         )
+        secret_directory = tempfile.TemporaryDirectory(
+            prefix="worldstream-transfer-generated-source-dsn-"
+        )
+        self.addCleanup(secret_directory.cleanup)
+        for name, value in (
+            ("admin", "host=127.0.0.1 port=1 user=admin dbname=success"),
+            ("runtime", "host=127.0.0.1 port=1 user=runtime dbname=success"),
+            ("abort-admin", "host=127.0.0.1 port=1 user=admin dbname=abort"),
+        ):
+            path = Path(secret_directory.name) / f"{name}.dsn"
+            path.write_text(value, encoding="utf-8")
+            path.chmod(0o600)
+            variable = name.upper().replace("-", "_")
+            environment[f"WORLDSTREAM_PG_TRANSFER_{variable}_DSN_FILE"] = str(path)
         completed = subprocess.run(
             [str(HARNESS), "--build-source"],
             cwd=ROOT,
@@ -482,7 +580,11 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         )
         evidence = json.loads(completed.stdout.splitlines()[-1])
 
-        self.assertEqual(completed.returncode, 14)
+        self.assertEqual(
+            completed.returncode,
+            14,
+            completed.stdout + completed.stderr,
+        )
         self.assertEqual(evidence["reason"], "postgres_abort_target_not_isolated")
         self.assertNotEqual(
             evidence["reason"], "sqlite_abort_backup_verification_failed"

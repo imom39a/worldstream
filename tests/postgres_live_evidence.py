@@ -192,7 +192,7 @@ class PostgreSQLLiveEvidenceBoundaryTests(unittest.TestCase):
         self.assertIn("NOREPLICATION NOBYPASSRLS", script)
         self.assertIn("CREATE DATABASE worldstream_transfer_abort OWNER admin", script)
         self.assertIn(
-            'WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN="$transfer_abort_admin_dsn"',
+            'WORLDSTREAM_PG_TRANSFER_ABORT_ADMIN_DSN_FILE="$transfer_abort_admin_dsn_file"',
             script,
         )
 

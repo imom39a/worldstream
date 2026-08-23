@@ -38,11 +38,17 @@ seam.
 1. `TransferPending` blocks source writes while export/import are in progress.
 2. `TargetVerified` requires the next epoch, target profile, lineage, pack,
    resource identities, and complete bundle hash to match.
-3. `finalize` creates the explicit retirement boundary.
-4. Only the matching first target write in the next epoch can make the target
-   authoritative; after that, abort and SQLite writes are rejected.
-5. `abort` is safe only before the finalization record and restores the source
-   authoritative state.
+3. `finalize` persists the exact, fenced provider verification decision before
+   attempting source retirement.
+4. The coordinator reads the exact durable SQLite transfer disposition. A
+   definite pre-commit retirement failure revokes only that same provider
+   decision back to `verified`; an ambiguous result stays fenced until the
+   source disposition can be read.
+5. Only after SQLite is durably retired may the matching target marker/fence
+   transition publish PostgreSQL authority in the next epoch.
+6. `abort` is safe only while the exact source disposition is still pending.
+   It inspects SQLite before touching PostgreSQL, revokes a persisted provider
+   decision when necessary, discards the target, and restores source authority.
 
 The new destination contract adds resumable serialized import state, idempotent
 chunk replay handling, canonical record ordering and per-Room byte/digest
@@ -70,10 +76,12 @@ after the original foundation increment:
    identity/resource bytes, Room semantics, and executable replay without
    repairing the target. Only that reconfirmed provider state can authorize
    SQLite retirement.
-4. After SQLite retirement, `accept_target_write` is publication-only: it
-   removes the exact importing fence and advances the already hydrated target
-   to `authoritative`; its verification is non-repairing and cannot defer
-   hydration until after source retirement.
+4. After SQLite retirement, `accept_target_write` is publication-only: in one
+   transaction it matches the exact persisted bundle/target marker, removes
+   the exact importing fence, and advances the marker to `authoritative`. It
+   performs no schema, staged-chunk, native-row, hydration, or replay checks;
+   all such verification and persistent reconfirmation completed before
+   retirement.
 5. Before the retirement boundary, abort atomically discards every PostgreSQL
    user-truth domain and writes an exact durable tombstone before the source is
    restored. Missing-state abort is also tombstoned, preventing a stale
@@ -86,6 +94,13 @@ pre-retirement failure leaves source retirement uncalled and proves that the
 same import can still be coordinately aborted. A separate ordering witness
 asserts `hydrate and verify target` → `persist verified target` → `retire
 source` → `publish target authority`.
+
+Source-retirement recovery is source-state-aware rather than inferred from a
+serialized session label. A definite pre-commit failure proves `transfer_pending`,
+revokes the exact provider finalization, and leaves abort legal. A lost result
+after the SQLite commit leaves PostgreSQL fenced; retry observes the exact
+`source_retired` witness and performs only publication. Abort observes that
+same witness first and refuses without mutating PostgreSQL.
 
 The native SQLite bridge deliberately does not fill absent source metadata,
 pack/resource bytes, or hosted/native restore witnesses. The smoke lane must

@@ -81,6 +81,51 @@ def test_postgres_native_point_digest_matches_the_frozen_rust_shape() -> None:
     )
 
 
+def test_generic_json_input_is_retained_and_bounded(tmp_path, monkeypatch) -> None:
+    module = load_module()
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b'{"value":true}\n')
+    monkeypatch.setattr(module, "MAX_RELEASE_JSON_BYTES", 8)
+
+    with pytest.raises(
+        module.DiagnosticError, match="invalid or unexpected byte length"
+    ):
+        module.read_json(oversized, "oversized report")
+
+
+def test_generic_digest_streams_from_one_retained_file(tmp_path, monkeypatch) -> None:
+    module = load_module()
+    artifact = tmp_path / "artifact.tar"
+    content = b"streamed release artifact" * 1024
+    artifact.write_bytes(content)
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _self: (_ for _ in ()).throw(
+            AssertionError("release artifact digest must not use Path.read_bytes")
+        ),
+    )
+
+    assert module.digest(artifact) == ("sha256:" + hashlib.sha256(content).hexdigest())
+
+
+def test_cleanup_only_failure_is_translated_to_diagnostic_error(
+    tmp_path, monkeypatch
+) -> None:
+    module = load_module()
+    report = write_json(tmp_path / "report.json", {"status": "pass"})
+    actual_close = module.RetainedJsonInput.close
+
+    def close_then_fail(retained) -> None:
+        actual_close(retained)
+        raise OSError("injected close failure")
+
+    monkeypatch.setattr(module.RetainedJsonInput, "close", close_then_fail)
+
+    with pytest.raises(module.DiagnosticError, match="cleanup failed closed"):
+        module.read_json(report, "test report")
+
+
 def write_json(path: Path, value: object) -> Path:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return path
@@ -879,6 +924,46 @@ def test_native_parsed_input_path_substitution_fails_without_touching_victim(
     assert not args.output_dir.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Unix pathname substitution regression")
+def test_native_artifact_replacement_during_independent_verification_is_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    module = load_module()
+    args = native_args(tmp_path, module, "native-linux")
+    package_report = json.loads(args.package_report.read_text(encoding="utf-8"))
+    runtime_report = json.loads(args.runtime_report.read_text(encoding="utf-8"))
+    binding = runtime_report["package_binding"]
+    archive_binaries = {
+        key: binding[key]
+        for key in (
+            "worldstreamd_sha256",
+            "worldstreamd_size_bytes",
+            "worldstreamctl_sha256",
+            "worldstreamctl_size_bytes",
+        )
+    }
+    original = args.artifact.read_bytes()
+    victim = b"replacement archive must not become release evidence"
+
+    def verify_then_replace(_artifact, _source_id, _version):
+        held = args.artifact.with_name("held-release-archive")
+        args.artifact.rename(held)
+        args.artifact.write_bytes(victim)
+        assert held.read_bytes() == original
+        return package_report, archive_binaries
+
+    monkeypatch.setattr(
+        module, "independently_verify_native_archive", verify_then_replace
+    )
+
+    with pytest.raises(module.DiagnosticError, match="changed while retained"):
+        module.emit_native(args)
+
+    assert args.artifact.read_bytes() == victim
+    assert_private_binding_scrubbed(args, module)
+    assert not args.output_dir.exists()
+
+
 @pytest.mark.parametrize(
     ("section", "field", "message"),
     [
@@ -1496,6 +1581,53 @@ def test_macos_diagnostic_rejects_incomplete_browser_story(tmp_path, path, value
         module.emit_macos(args)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Unix pathname substitution regression")
+def test_macos_adapter_replacement_before_emission_is_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    module = load_module()
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    args = macos_args(reports_root, module, ["arm64", "x86_64"])
+    isolated_root = tmp_path / "isolated-root"
+    (isolated_root / "scripts").mkdir(parents=True)
+    for relative in (
+        "rust-toolchain.toml",
+        ".python-version",
+        ".node-version",
+        ".uv-version",
+        "package.json",
+        "scripts/cdp-browser.py",
+    ):
+        target = isolated_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    module.ROOT = isolated_root
+    adapter = isolated_root / "scripts/cdp-browser.py"
+    original = adapter.read_bytes()
+    victim = b"replacement browser adapter must not become evidence\n"
+    actual_verify = module.verify_macos_browser_story
+    replaced = False
+
+    def verify_then_replace(*verify_args, **verify_kwargs) -> None:
+        nonlocal replaced
+        actual_verify(*verify_args, **verify_kwargs)
+        if not replaced:
+            replaced = True
+            adapter.rename(adapter.with_name("held-cdp-browser.py"))
+            adapter.write_bytes(victim)
+
+    monkeypatch.setattr(module, "verify_macos_browser_story", verify_then_replace)
+
+    with pytest.raises(module.DiagnosticError, match="changed while retained"):
+        module.emit_macos(args)
+
+    assert adapter.read_bytes() == victim
+    assert adapter.with_name("held-cdp-browser.py").read_bytes() == original
+    assert not args.artifact_output.exists()
+    assert not args.output_dir.exists()
+
+
 @pytest.mark.parametrize(
     "package_manager",
     [
@@ -1643,6 +1775,73 @@ def test_security_diagnostic_rejects_missing_packaged_config_command(tmp_path, s
 
     with pytest.raises(module.DiagnosticError, match="config/effective/doctor"):
         module.emit_security(args)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix pathname substitution regression")
+def test_security_evidence_replacement_before_emission_is_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    module = load_module()
+    args = security_args(tmp_path, module, https_report(module))
+    actual_gate_outcomes = module.gate_outcomes
+    original = args.linux_gate_report.read_bytes()
+    victim = b'{"private_canary":"must-survive"}\n'
+    replaced = False
+
+    def validate_then_replace(report, expected_system, required):
+        nonlocal replaced
+        outcomes = actual_gate_outcomes(report, expected_system, required)
+        if not replaced:
+            replaced = True
+            held = args.linux_gate_report.with_name("held-linux-gate.json")
+            args.linux_gate_report.rename(held)
+            args.linux_gate_report.write_bytes(victim)
+            assert held.read_bytes() == original
+        return outcomes
+
+    monkeypatch.setattr(module, "gate_outcomes", validate_then_replace)
+
+    with pytest.raises(module.DiagnosticError, match="changed while retained"):
+        module.emit_security(args)
+
+    assert args.linux_gate_report.read_bytes() == victim
+    assert not args.artifact_output.exists()
+    assert not args.output_dir.exists()
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_security_cleanup_attempts_every_close_and_preserves_primary_failure(
+    tmp_path, monkeypatch, primary_failure
+) -> None:
+    module = load_module()
+    report = https_report(module)
+    if primary_failure:
+        report["checks"]["hostname_verification"] = False
+    args = security_args(tmp_path, module, report)
+    actual_close = module.RetainedJsonInput.close
+    closed_labels: list[str] = []
+
+    def close_then_fail(retained) -> None:
+        closed_labels.append(retained.retained.label)
+        actual_close(retained)
+        raise OSError(f"injected close failure: {retained.retained.label}")
+
+    monkeypatch.setattr(module.RetainedJsonInput, "close", close_then_fail)
+    expected = "telemetry HTTPS" if primary_failure else "cleanup failed closed"
+
+    with pytest.raises(module.DiagnosticError, match=expected):
+        module.emit_security(args)
+
+    assert set(closed_labels) == {
+        "Linux platform gate report",
+        "Windows platform gate report",
+        "Linux native packaged runtime report",
+        "Windows native packaged runtime report",
+        "telemetry HTTPS report",
+    }
+    assert len(closed_labels) == 5
+    assert not args.artifact_output.exists()
+    assert not args.output_dir.exists()
 
 
 def test_oci_diagnostic_requires_binary_healthcheck_to_fail_without_daemon(

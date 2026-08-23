@@ -104,8 +104,8 @@ use worldstream_core::{
 use worldstream_sqlite_open::{ExactSqliteConnection, ExactSqliteOpenError, open_exact};
 use worldstream_transfer::{
     DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceIdentityV1, ResourceKindV1,
-    ResourcePayloadV1, TransferSourceAuthorityV1, VerifiedTargetAbortV1,
-    VerifiedTargetFinalizationV1,
+    ResourcePayloadV1, TransferSourceAuthorityBindingV1, TransferSourceAuthorityStateV1,
+    TransferSourceAuthorityV1, VerifiedTargetAbortV1, VerifiedTargetFinalizationV1,
 };
 
 /// Frozen `SQLite` engine selected by the authored compatibility manifest.
@@ -2956,6 +2956,18 @@ impl From<&VerifiedTargetFinalizationV1> for SqliteVerifiedTargetBindingV1 {
     }
 }
 
+impl From<&TransferSourceAuthorityBindingV1> for SqliteVerifiedTargetBindingV1 {
+    fn from(binding: &TransferSourceAuthorityBindingV1) -> Self {
+        Self {
+            bundle_hash: binding.bundle_hash(),
+            target_fingerprint: binding.target_fingerprint(),
+            source_epoch: binding.source_epoch(),
+            target_epoch: binding.target_epoch(),
+            lineage_id: binding.lineage_id().to_owned(),
+        }
+    }
+}
+
 impl From<&VerifiedTargetAbortV1> for SqliteVerifiedTargetBindingV1 {
     fn from(proof: &VerifiedTargetAbortV1) -> Self {
         Self {
@@ -5393,6 +5405,42 @@ impl SqliteRoomStore {
 
 impl TransferSourceAuthorityV1 for SqliteRoomStore {
     type Error = SqliteSourceTransferErrorV1;
+
+    fn inspect_source_authority(
+        &self,
+        binding: &TransferSourceAuthorityBindingV1,
+    ) -> Result<TransferSourceAuthorityStateV1, Self::Error> {
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        let current = read_source_transfer_status(&connection)?;
+        let binding = SqliteVerifiedTargetBindingV1::from(binding);
+        match current.state() {
+            SqliteSourceTransferStateV1::TransferPending => {
+                verify_provider_binding_at_frozen_source(&connection, &current, &binding)?;
+                Ok(TransferSourceAuthorityStateV1::TransferPending)
+            }
+            SqliteSourceTransferStateV1::SourceRetired => {
+                if current.bundle_hash() != Some(binding.bundle_hash)
+                    || current.target_fingerprint() != Some(binding.target_fingerprint)
+                {
+                    return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+                }
+                verify_provider_binding_at_frozen_source(&connection, &current, &binding)?;
+                Ok(TransferSourceAuthorityStateV1::SourceRetired)
+            }
+            SqliteSourceTransferStateV1::SourceAuthoritative => {
+                if current.last_aborted_bundle_hash() == Some(binding.bundle_hash)
+                    && current.last_aborted_target_fingerprint() == Some(binding.target_fingerprint)
+                {
+                    Ok(TransferSourceAuthorityStateV1::SourceAuthoritativeAfterAbort)
+                } else {
+                    Err(SqliteSourceTransferErrorV1::EvidenceMismatch)
+                }
+            }
+        }
+    }
 
     fn retire_after_verified_target(
         &self,
@@ -31586,6 +31634,17 @@ mod tests {
             Ok(())
         }
 
+        fn revoke_finalization_after_definite_source_failure(
+            &mut self,
+            _target: &TargetFingerprintV1,
+        ) -> Result<(), Self::Error> {
+            if self.authoritative || !self.finalized {
+                return Err("target finalization cannot be revoked".to_owned());
+            }
+            self.finalized = false;
+            Ok(())
+        }
+
         fn accept_target_write(
             &mut self,
             _target: &TargetFingerprintV1,
@@ -32664,7 +32723,10 @@ mod tests {
         let mut session = verified_lifecycle_session(&bundle);
         let mut destination = LifecycleFixtureDestination::default();
         assert!(abort_whole_deployment(&mut session, &mut destination, &store, &bundle).is_err());
-        assert!(destination.aborted);
+        assert!(
+            !destination.aborted,
+            "source evidence mismatch must fail before destructive target abort"
+        );
         assert_eq!(
             store.source_transfer_state(),
             SqliteSourceTransferStateV1::TransferPending
