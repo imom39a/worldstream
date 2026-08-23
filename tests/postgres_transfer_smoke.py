@@ -309,6 +309,35 @@ class PostgreSQLTransferSmokeBoundaryTests(unittest.TestCase):
         self.assertIn("DELETE FROM worldstream_transfer_target_fence", publication)
         self.assertIn("SET state = 'authoritative'", publication)
 
+    def test_live_abort_reconciles_finalized_provider_from_stale_checkpoint(
+        self,
+    ) -> None:
+        script = HARNESS.read_text(encoding="utf-8")
+        start = script.index("let pre_abort_checkpoint")
+        end = script.index("let abort_restored_authority", start)
+        crash_window = script[start:end]
+
+        checkpoint = crash_window.index("abort_session.to_bytes()")
+        provider_finalization = crash_window.index(
+            "abort_destination\n            .record_finalization(&abort_target)"
+        )
+        provider_observation = crash_window.index(
+            'Some(("finalized".to_owned(), "importing".to_owned()))'
+        )
+        restored_checkpoint = crash_window.index("TransferImportSessionV1::from_bytes(")
+        coordinated_abort = crash_window.index("abort_whole_deployment(")
+        self.assertLess(checkpoint, provider_finalization)
+        self.assertLess(provider_finalization, provider_observation)
+        self.assertLess(provider_observation, restored_checkpoint)
+        self.assertLess(restored_checkpoint, coordinated_abort)
+
+        for witness in (
+            '"provider_finalized_while_source_pending": True',
+            '"stale_target_verified_checkpoint": True',
+            '"finalization_reconciled_to_tombstone": True',
+        ):
+            self.assertIn(witness, script)
+
     def test_docker_absence_is_unavailable_not_incomplete_provider_evidence(
         self,
     ) -> None:

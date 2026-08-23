@@ -2294,10 +2294,89 @@ fn main() {
     {
         provider_failure(&mode, "postgres_abort_probe_chunk_failed", evidence);
     }
+    let mut abort_next_ordinal = abort_chunk_end;
+    while abort_next_ordinal < abort_bundle.records().len() {
+        let end = (abort_next_ordinal + 64).min(abort_bundle.records().len());
+        let chunk = match abort_bundle.chunk(abort_next_ordinal, end) {
+            Ok(chunk) => chunk,
+            Err(_) => incomplete(&mode, "abort_probe_chunk_build_failed", evidence),
+        };
+        if abort_session
+            .apply_chunk(&mut abort_destination, &chunk)
+            .is_err()
+        {
+            provider_failure(&mode, "postgres_abort_probe_chunk_failed", evidence);
+        }
+        abort_next_ordinal = end;
+    }
+    if !abort_session.is_complete()
+        || abort_session.state() != TransferStateV1::TargetVerified
+    {
+        provider_failure(&mode, "postgres_abort_probe_checkpoint_incomplete", evidence);
+    }
     let pre_abort_checkpoint = match abort_session.to_bytes() {
         Ok(bytes) => bytes,
         Err(_) => incomplete(&mode, "abort_checkpoint_serialize_failed", evidence),
     };
+    // Model the exact crash window: the provider durably records its
+    // non-serving finalization, but the persisted session still says
+    // TargetVerified and the SQLite source remains TransferPending.
+    if abort_destination
+        .verify_complete(&abort_bundle, &abort_target)
+        .is_err()
+        || abort_destination
+            .record_finalization(&abort_target)
+            .is_err()
+    {
+        provider_failure(&mode, "postgres_abort_probe_finalization_failed", evidence);
+    }
+    let provider_finalized_while_source_pending = restarted_source.source_transfer_state()
+        == SqliteSourceTransferStateV1::TransferPending
+        && Client::connect(abort_admin_dsn.as_str(), NoTls)
+            .ok()
+            .and_then(|mut client| {
+                client
+                    .query_opt(
+                        "SELECT import.state, fence.state \
+                         FROM worldstream_transfer_imports AS import \
+                         CROSS JOIN worldstream_transfer_target_fence AS fence \
+                         WHERE import.bundle_hash = $1 \
+                         AND import.target_fingerprint = $2 \
+                         AND fence.fence_id = true \
+                         AND fence.bundle_hash = $1 \
+                         AND fence.target_fingerprint = $2",
+                        &[&abort_bundle_key.as_slice(), &abort_target_key.as_slice()],
+                    )
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|row| {
+                Some((
+                    row.try_get::<_, String>(0).ok()?,
+                    row.try_get::<_, String>(1).ok()?,
+                ))
+            })
+            == Some(("finalized".to_owned(), "importing".to_owned()));
+    if !provider_finalized_while_source_pending {
+        provider_failure(
+            &mode,
+            "postgres_abort_probe_crash_window_not_observed",
+            evidence,
+        );
+    }
+    drop(abort_session);
+    let mut abort_session = match TransferImportSessionV1::from_bytes(
+        &abort_bundle,
+        &pre_abort_checkpoint,
+    ) {
+        Ok(session) => session,
+        Err(_) => incomplete(&mode, "stale_abort_checkpoint_resume_failed", evidence),
+    };
+    let stale_target_verified_checkpoint = abort_session.is_complete()
+        && abort_session.state() == TransferStateV1::TargetVerified;
+    if !stale_target_verified_checkpoint {
+        incomplete(&mode, "stale_abort_checkpoint_state_changed", evidence);
+    }
     if let Err(error) = abort_whole_deployment(
         &mut abort_session,
         &mut abort_destination,
@@ -3456,10 +3535,13 @@ fn main() {
             "target_database_distinct": true,
             "provider_destination": "postgres",
             "provider_chunk_staged": true,
+            "provider_finalized_while_source_pending": provider_finalized_while_source_pending,
+            "stale_target_verified_checkpoint": stale_target_verified_checkpoint,
             "coordinated_abort": "pass",
             "source_authority_restored": abort_restored_authority,
             "restart_retry_idempotent": abort_idempotence_verified,
             "provider_tombstone_verified": abort_provider_tombstone_verified,
+            "finalization_reconciled_to_tombstone": abort_provider_tombstone_verified,
             "target_disposition": "discard_required"
         },
         "source_transfer_point": {
@@ -3686,10 +3768,13 @@ if status == "pass":
         "target_database_distinct": True,
         "provider_destination": "postgres",
         "provider_chunk_staged": True,
+        "provider_finalized_while_source_pending": True,
+        "stale_target_verified_checkpoint": True,
         "coordinated_abort": "pass",
         "source_authority_restored": True,
         "restart_retry_idempotent": True,
         "provider_tombstone_verified": True,
+        "finalization_reconciled_to_tombstone": True,
         "target_disposition": "discard_required",
     }
     if not isinstance(abort_probe, dict) or any(
