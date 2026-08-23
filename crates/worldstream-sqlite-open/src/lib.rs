@@ -18,7 +18,7 @@
 mod implementation {
     use std::{
         collections::HashMap,
-        ffi::{CStr, CString, c_int, c_void},
+        ffi::{CStr, CString, c_int},
         fmt,
         fs::File,
         io,
@@ -727,8 +727,9 @@ mod implementation {
 
     #[cfg(unix)]
     mod platform {
-        use super::{CStr, File, c_int, c_void, ffi, io};
+        use super::{CStr, File, c_int, ffi, io};
         use std::{
+            ffi::c_void,
             mem::{offset_of, size_of},
             os::{fd::BorrowedFd, unix::fs::MetadataExt as _},
         };
@@ -792,8 +793,13 @@ mod implementation {
             // duration of xOpen. BorrowedFd does not close or outlive it.
             let descriptor = unsafe { BorrowedFd::borrow_raw(prefix.descriptor) };
             let stat = rustix::fs::fstat(descriptor).map_err(|_| ())?;
+            // libc's st_dev ABI type varies by Unix target. The checked
+            // conversion is meaningful on some supported targets and an
+            // identity conversion on Linux.
+            #[allow(clippy::useless_conversion)]
+            let device = u64::try_from(stat.st_dev).map_err(|_| ())?;
             Ok(FileIdentity {
-                device: u64::try_from(stat.st_dev).map_err(|_| ())?,
+                device,
                 inode: stat.st_ino,
             })
         }
