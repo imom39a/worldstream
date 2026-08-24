@@ -283,7 +283,7 @@ impl RoomCreationSupervisorV1 {
         }
         let draft = self
             .drafts
-            .load(draft_id)
+            .load_for_operation(draft_id)
             .map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
         let mut operation = prepare_operation(&draft)?;
         self.persist_new(&operation)?;

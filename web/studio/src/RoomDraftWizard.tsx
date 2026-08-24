@@ -13,6 +13,7 @@ import {
   type RoomDraftStep,
 } from "./roomDrafts";
 import { assignAgentProfileRevision, type AgentProfileCatalog } from "./agentProfiles";
+import type { RunnerTemplateCatalog } from "./runnerTemplates";
 
 const steps: Array<{ id: RoomDraftStep; label: string }> = [
   { id: "activity", label: "Activity" },
@@ -27,6 +28,7 @@ export interface RoomDraftWizardProps {
   catalog: ActivityPackCatalog | null;
   detail: ActivityPackDetailResponse | null;
   agentProfiles?: AgentProfileCatalog | null;
+  runnerTemplates?: RunnerTemplateCatalog | null;
   activeStep: RoomDraftStep;
   fieldErrors?: RoomDraftFieldError[];
   saving?: boolean;
@@ -42,6 +44,7 @@ export function RoomDraftWizard({
   catalog,
   detail,
   agentProfiles = null,
+  runnerTemplates = null,
   activeStep,
   fieldErrors = [],
   saving = false,
@@ -60,7 +63,15 @@ export function RoomDraftWizard({
     : validateConfiguration(exactDetail.revision.configuration_schema.schema, draft.configuration);
   const errors = [...localErrors, ...fieldErrors].slice(0, 64);
   const activeIndex = steps.findIndex((step) => step.id === activeStep);
-  const canAdvance = stepIsValid(activeStep, draft, exactCatalogRevision !== undefined, exactDetail, errors);
+  const canAdvance = stepIsValid(
+    activeStep,
+    draft,
+    exactCatalogRevision !== undefined,
+    exactDetail,
+    errors,
+    agentProfiles,
+    runnerTemplates,
+  );
 
   const move = (offset: number) => {
     const next = steps[activeIndex + offset];
@@ -109,7 +120,13 @@ export function RoomDraftWizard({
           <ConfigurationStep draft={draft} detail={exactDetail} errors={errors} onChange={onDraftChange} />
         ) : null}
         {activeStep === "seats" ? (
-          <SeatsStep draft={draft} detail={exactDetail} profiles={agentProfiles} onChange={onDraftChange} />
+          <SeatsStep
+            draft={draft}
+            detail={exactDetail}
+            profiles={agentProfiles}
+            runners={runnerTemplates}
+            onChange={onDraftChange}
+          />
         ) : null}
         {activeStep === "readiness" ? <ReadinessStep draft={draft} /> : null}
         {activeStep === "review" ? (
@@ -281,11 +298,13 @@ function SeatsStep({
   draft,
   detail,
   profiles,
+  runners,
   onChange,
 }: {
   draft: RoomDraft;
   detail: ActivityPackDetailResponse | null;
   profiles: AgentProfileCatalog | null;
+  runners: RunnerTemplateCatalog | null;
   onChange?: (draft: RoomDraft) => void;
 }) {
   if (detail === null) return <p className="draft-warning">Exact revision Roles unavailable.</p>;
@@ -296,7 +315,20 @@ function SeatsStep({
       <h3>Declare stable seats</h3>
       <p>Required seats come from each Role minimum; remaining declared capacity is optional.</p>
       <div className="draft-seat-list">
-        {seats.map((seat) => (
+        {seats.map((seat) => {
+          const exactProfile = profiles?.profiles.find((candidate) =>
+            candidate.profile_id === seat.agent_profile?.profile_id &&
+            candidate.revision === seat.agent_profile.revision);
+          const profileReady = exactProfile !== undefined && exactProfile.secret_settings.every(
+            (setting) => setting.availability === "configured",
+          );
+          const compatibleRunners = (runners?.templates ?? []).filter((runner) =>
+            runner.compatibility.some((rule) => rule.activity_pack_id === draft.pack?.id &&
+              rule.exact_revisions.includes(draft.pack?.version ?? "")));
+          const exactRunnerReady = compatibleRunners.some((candidate) =>
+            candidate.template_id === seat.runner_template?.template_id &&
+            candidate.revision === seat.runner_template.revision);
+          return (
           <label key={seat.seat_id}>
             <span><strong>{seat.display_name}</strong><small>{seat.role} · {seat.required ? "Required" : "Optional"}</small></span>
             <span className="draft-seat-inputs">
@@ -314,7 +346,7 @@ function SeatsStep({
                 onChange={(event) => {
                   const principalId = event.currentTarget.value;
                   updateSeat(draft, seats, policy, seat.seat_id, principalId === ""
-                    ? { principal_id: undefined, principal_kind: undefined, agent_assignment: undefined, agent_profile: undefined }
+                    ? { principal_id: undefined, principal_kind: undefined, agent_assignment: undefined, agent_profile: undefined, runner_template: undefined }
                     : { principal_id: principalId, principal_kind: seat.principal_kind ?? "human" }, onChange);
                 }}
               />
@@ -328,6 +360,7 @@ function SeatsStep({
                       ? seat.agent_assignment ?? "external"
                       : undefined,
                     agent_profile: event.currentTarget.value === "agent" ? seat.agent_profile : undefined,
+                    runner_template: event.currentTarget.value === "agent" ? seat.runner_template : undefined,
                   }, onChange)}
                 >
                   <option value="human">Human</option>
@@ -340,6 +373,7 @@ function SeatsStep({
                   value={seat.agent_assignment ?? "external"}
                   onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
                     agent_assignment: event.currentTarget.value === "managed" ? "managed" : "external",
+                    runner_template: event.currentTarget.value === "managed" ? seat.runner_template : undefined,
                   }, onChange)}
                 >
                   <option value="external">External agent</option>
@@ -357,16 +391,59 @@ function SeatsStep({
                   }}
                 >
                   <option value="">Select exact Agent Profile</option>
+                  {seat.agent_profile !== undefined && !profileReady ? (
+                    <option
+                      value={`${seat.agent_profile.profile_id}:${seat.agent_profile.revision}`}
+                      disabled
+                    >
+                      Pinned exact Profile unavailable · {seat.agent_profile.profile_id} · {seat.agent_profile.revision}
+                    </option>
+                  ) : null}
                   {(profiles?.profiles ?? []).map((profile) => (
                     <option key={`${profile.profile_id}:${profile.revision}`} value={`${profile.profile_id}:${profile.revision}`}>
                       {profile.display_name} · {profile.revision}
                     </option>
                   ))}
-                </select></>
+                </select>
+                {seat.agent_assignment === "managed" ? (
+                  <select
+                    aria-label={`${seat.display_name} runner template`}
+                    value={seat.runner_template === undefined
+                      ? ""
+                      : `${seat.runner_template.template_id}:${seat.runner_template.revision}`}
+                    onChange={(event) => {
+                      const runner = runners?.templates.find((candidate) =>
+                        `${candidate.template_id}:${candidate.revision}` === event.currentTarget.value);
+                      if (runner === undefined) return;
+                      updateSeat(draft, seats, policy, seat.seat_id, {
+                        runner_template: {
+                          template_id: runner.template_id,
+                          revision: runner.revision,
+                        },
+                      }, onChange);
+                    }}
+                  >
+                    <option value="">Select exact Runner Template</option>
+                    {seat.runner_template !== undefined && !exactRunnerReady ? (
+                      <option
+                        value={`${seat.runner_template.template_id}:${seat.runner_template.revision}`}
+                        disabled
+                      >
+                        Pinned exact Runner unavailable or incompatible · {seat.runner_template.template_id} · {seat.runner_template.revision}
+                      </option>
+                    ) : null}
+                    {compatibleRunners.map((runner) => (
+                      <option key={`${runner.template_id}:${runner.revision}`} value={`${runner.template_id}:${runner.revision}`}>
+                        {runner.display_name} · {runner.revision}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}</>
               ) : null}
             </span>
           </label>
-        ))}
+          );
+        })}
       </div>
       {draft.seats.length === 0 ? (
         <button type="button" onClick={() => onChange?.({ ...draft, ...policy })}>Use declared seat policy</button>
@@ -444,14 +521,29 @@ function stepIsValid(
   exactAvailable: boolean,
   detail: ActivityPackDetailResponse | null,
   errors: RoomDraftFieldError[],
+  profiles: AgentProfileCatalog | null,
+  runners: RunnerTemplateCatalog | null,
 ): boolean {
   if (step === "activity") return draft.pack !== null && exactAvailable;
   if (step === "configuration") return detail !== null && errors.length === 0;
   if (step === "seats") {
     if (detail === null) return false;
     const policy = buildSeatPolicy(detail.revision.roles);
-    return sameSeatPolicy(draft, policy) && draft.seats.every((seat) =>
-      seat.principal_kind !== "agent" || seat.agent_profile !== undefined);
+    return sameSeatPolicy(draft, policy) && draft.seats.every((seat) => {
+      if (seat.principal_kind !== "agent") return true;
+      const profile = profiles?.profiles.find((candidate) =>
+        candidate.profile_id === seat.agent_profile?.profile_id &&
+        candidate.revision === seat.agent_profile.revision);
+      if (profile === undefined || profile.secret_settings.some(
+        (setting) => setting.availability !== "configured",
+      )) return false;
+      if (seat.agent_assignment !== "managed") return true;
+      return runners?.templates.some((runner) =>
+        runner.template_id === seat.runner_template?.template_id &&
+        runner.revision === seat.runner_template.revision &&
+        runner.compatibility.some((rule) => rule.activity_pack_id === draft.pack?.id &&
+          rule.exact_revisions.includes(draft.pack?.version ?? ""))) === true;
+    });
   }
   if (step === "readiness") return draft.readiness.length === draft.seats.length &&
     draft.readiness.every((readiness) => {

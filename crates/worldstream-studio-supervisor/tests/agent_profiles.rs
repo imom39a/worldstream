@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[path = "../src/secrets.rs"]
 mod secrets;
 

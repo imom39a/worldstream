@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[path = "../src/room_drafts.rs"]
 mod room_drafts;
 
@@ -324,6 +326,36 @@ async fn partial_draft_persists_only_through_its_last_valid_step() {
         .unwrap_or_else(|error| unreachable!("resume partial draft: {error:?}"));
     assert_eq!(resumed.last_valid_step, Some(RoomDraftStepV1::Activity));
     assert!(resumed.seats.is_empty());
+}
+
+#[test]
+fn native_atomic_replacement_drops_the_temp_handle_and_survives_restart() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+    let root = directory.path().join("drafts");
+    let store = RoomDraftStoreV1::open(&root, exact_validator())
+        .unwrap_or_else(|error| unreachable!("open draft store: {error:?}"));
+    let first: RoomDraftV1 = serde_json::from_value(draft())
+        .unwrap_or_else(|error| unreachable!("draft fixture: {error}"));
+    store
+        .save(&first)
+        .unwrap_or_else(|error| unreachable!("first save: {error:?}"));
+    let mut replacement = first;
+    replacement.configuration = json!({ "initial_value": 4, "maximum_value": 8 });
+    store
+        .save(&replacement)
+        .unwrap_or_else(|error| unreachable!("replacement save: {error:?}"));
+    assert!(!root.join(".launch-alpha.tmp").exists());
+    drop(store);
+
+    let reopened = RoomDraftStoreV1::open(&root, exact_validator())
+        .unwrap_or_else(|error| unreachable!("reopen draft store: {error:?}"));
+    assert_eq!(
+        reopened
+            .load("launch-alpha")
+            .unwrap_or_else(|error| unreachable!("load replacement: {error:?}"))
+            .configuration,
+        json!({ "initial_value": 4, "maximum_value": 8 })
+    );
 }
 
 #[tokio::test]

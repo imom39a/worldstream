@@ -19,8 +19,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tungstenite.workspace = true
+winsafe.workspace = true
 worldstream-runtime = { path = "../worldstream-runtime", version = "=0.1.0" }
 worldstream-protocol = { path = "../worldstream-protocol", version = "=0.1.0" }
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
 zeroize.workspace = true
 
 [dev-dependencies]
@@ -34,4 +36,9 @@ workspace = true
 [[bin]]
 name = "worldstream-studio-supervisor"
 path = "src/main.rs"
+test = false
+
+[[bin]]
+name = "worldstream-assignment-mcp"
+path = "src/assignment_mcp_main.rs"
 test = false

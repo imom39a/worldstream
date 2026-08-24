@@ -2442,6 +2442,8 @@ dependencies = [
  "tokio",
  "tower",
  "tungstenite",
+ "winsafe",
+ "worldstream-core",
  "worldstream-protocol",
  "worldstream-runtime",
  "zeroize",

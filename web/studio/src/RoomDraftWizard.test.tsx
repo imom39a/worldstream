@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { RoomDraftWizard } from "./RoomDraftWizard";
 import type { ActivityPackCatalog, ActivityPackDetailResponse } from "./activityPacks";
 import { buildSeatPolicy, type RoomDraft } from "./roomDrafts";
+import type { AgentProfileCatalog } from "./agentProfiles";
+import type { RunnerTemplateCatalog } from "./runnerTemplates";
 
 const digest = `blake3:${"a".repeat(64)}`;
 const pack = { id: "counter", version: "2.0.0", digest };
@@ -151,5 +153,40 @@ describe("five-step Room draft wizard", () => {
     expect(dom).toContain("does not create a Room");
     expect(dom).not.toContain("Create Room");
     expect(dom).not.toContain("Create authority");
+  });
+
+  it("keeps missing exact Profile and Runner pins visible and blocks progression", () => {
+    const base = configuredDraft();
+    const draft: RoomDraft = {
+      ...base,
+      seats: base.seats.map((seat, index) => index === 0 ? {
+        ...seat,
+        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        principal_kind: "agent",
+        agent_assignment: "managed",
+        agent_profile: { profile_id: "missing-profile", revision: "r2" },
+        runner_template: { template_id: "missing-runner", revision: "r3" },
+      } : seat),
+    };
+    const dom = renderToStaticMarkup(
+      <RoomDraftWizard
+        draft={draft}
+        catalog={catalog}
+        detail={detail}
+        agentProfiles={{
+          schema: "worldstream/studio-agent-profile-catalog/v1",
+          profiles: [],
+        } satisfies AgentProfileCatalog}
+        runnerTemplates={{
+          schema: "worldstream/studio-runner-template-catalog/v1",
+          templates: [],
+        } satisfies RunnerTemplateCatalog}
+        activeStep="seats"
+      />,
+    );
+
+    expect(dom).toContain("Pinned exact Profile unavailable · missing-profile · r2");
+    expect(dom).toContain("Pinned exact Runner unavailable or incompatible · missing-runner · r3");
+    expect(dom).toMatch(/<button[^>]*disabled=""[^>]*>Continue<\/button>/);
   });
 });

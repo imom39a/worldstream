@@ -65,6 +65,7 @@ import {
 } from "./taskSetup";
 import { loadAgentProfiles, type AgentProfileCatalog } from "./agentProfiles";
 import { openParticipantView } from "./participantViews";
+import { loadTaskTemplates, type TaskTemplateCatalog } from "./taskTemplates";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 5_000;
@@ -87,6 +88,7 @@ function LiveStudio() {
   const [roomInventory, setRoomInventory] = useState<RoomInventoryState>({ status: "loading" });
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const roomDetailRequest = useRef(0);
+  const [activeDraftId, setActiveDraftId] = useState(NEW_ROOM_DRAFT_ID);
   const [roomDraft, setRoomDraft] = useState<RoomDraft>(() => createRoomDraft(NEW_ROOM_DRAFT_ID));
   const [roomDraftStep, setRoomDraftStep] = useState<RoomDraftStep>("activity");
   const [roomDraftErrors, setRoomDraftErrors] = useState<RoomDraftFieldError[]>([]);
@@ -99,6 +101,7 @@ function LiveStudio() {
   const [taskSetupStatusAvailable, setTaskSetupStatusAvailable] = useState(false);
   const [taskSetupLoading, setTaskSetupLoading] = useState(false);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfileCatalog | null>(null);
+  const [taskTemplates, setTaskTemplates] = useState<TaskTemplateCatalog | null>(null);
   const [backupProfile, setBackupProfile] = useState<BackupProfileStatus | null>(null);
   const [backupOperation, setBackupOperation] = useState<BackupOperationStatus | null>(null);
   const [backupOperationId, setBackupOperationId] = useState<string | null>(
@@ -127,6 +130,7 @@ function LiveStudio() {
         nextBackupProfile,
         nextBackupOperation,
         nextAgentProfiles,
+        nextTaskTemplates,
       ] = await Promise.all([
         loadDaemonStatus(),
         loadDaemonLifecycle(),
@@ -135,13 +139,14 @@ function LiveStudio() {
         loadRunnerInstances(),
         loadActivityPackCatalog(),
         loadRoomInventory(),
-        loadRoomCreation(NEW_ROOM_DRAFT_ID),
-        loadTaskSetup(NEW_ROOM_DRAFT_ID),
+        loadRoomCreation(activeDraftId),
+        loadTaskSetup(activeDraftId),
         loadBackupProfile(),
         activeBackupOperationId === null
           ? Promise.resolve({ availability: "available" as const, operation: null })
           : loadBackupOperationState(activeBackupOperationId),
         loadAgentProfiles(),
+        loadTaskTemplates(),
       ]);
       if (active) {
         setStatus(nextStatus);
@@ -161,6 +166,7 @@ function LiveStudio() {
         setTaskSetup(nextTaskSetup.availability === "available" ? nextTaskSetup.setup : null);
         setTaskSetupStatusAvailable(nextTaskSetup.availability === "available");
         setAgentProfiles(nextAgentProfiles);
+        setTaskTemplates(nextTaskTemplates);
         setBackupProfile(nextBackupProfile);
         if (loadBackupOperationId() === activeBackupOperationId) {
           setBackupOperation(nextBackupOperation.operation);
@@ -175,11 +181,11 @@ function LiveStudio() {
       active = false;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [activeDraftId]);
 
   useEffect(() => {
     let active = true;
-    void loadRoomDraft(NEW_ROOM_DRAFT_ID).then(async (response) => {
+    void loadRoomDraft(activeDraftId).then(async (response) => {
       if (!active || response === null) return;
       setRoomDraft(response.draft);
       setRoomDraftSaved(true);
@@ -193,7 +199,7 @@ function LiveStudio() {
       }
     });
     return () => { active = false; };
-  }, []);
+  }, [activeDraftId]);
 
   const requestLifecycle = async (action: DaemonLifecycleAction) => {
     const next = await requestDaemonLifecycle(action);
@@ -309,7 +315,7 @@ function LiveStudio() {
 
   const runRoomCreation = async (action: "start" | "retry") => {
     setRoomCreationLoading(true);
-    const result = await requestRoomCreation(NEW_ROOM_DRAFT_ID, action);
+    const result = await requestRoomCreation(activeDraftId, action);
     setRoomCreation(result);
     setRoomCreationStatusAvailable(result !== null);
     setRoomCreationLoading(false);
@@ -317,7 +323,7 @@ function LiveStudio() {
 
   const runTaskSetup = async (action: "start" | "retry" | "launch") => {
     setTaskSetupLoading(true);
-    const result = await requestTaskSetup(NEW_ROOM_DRAFT_ID, action);
+    const result = await requestTaskSetup(activeDraftId, action);
     setTaskSetup(result);
     setTaskSetupStatusAvailable(result !== null);
     setTaskSetupLoading(false);
@@ -368,7 +374,23 @@ function LiveStudio() {
       onAgentProfilePublished={() => {
         void loadAgentProfiles().then(setAgentProfiles);
       }}
-      onOpenParticipantView={(seatId) => void openParticipantView(NEW_ROOM_DRAFT_ID, seatId)}
+      taskTemplates={taskTemplates}
+      onTaskTemplateCatalogChanged={() => {
+        void loadTaskTemplates().then(setTaskTemplates);
+      }}
+      onTaskTemplateDraftCreated={(draft) => {
+        setActiveDraftId(draft.draft_id);
+        setRoomDraft(draft);
+        setRoomDraftStep(resumeRoomDraftStep(draft));
+        setRoomDraftErrors([]);
+        setRoomDraftSaved(true);
+        setRoomCreation(null);
+        setRoomCreationStatusAvailable(false);
+        setTaskSetup(null);
+        setTaskSetupStatusAvailable(false);
+        if (draft.pack !== null) void inspectActivityPack(draft.pack.digest);
+      }}
+      onOpenParticipantView={(seatId) => void openParticipantView(activeDraftId, seatId)}
       backupProfile={backupProfile}
       backupOperation={backupOperation}
       backupOperationId={backupOperationId}

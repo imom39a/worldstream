@@ -187,4 +187,17 @@ describe("Studio Room drafts", () => {
     await expect(saveRoomDraft(unknownNested, fetcher)).resolves.toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it("rejects credential-shaped configuration values before the browser boundary", async () => {
+    const fetcher = vi.fn();
+    await expect(saveRoomDraft({
+      ...draft(),
+      configuration: { provider: "Bearer browser-private-value" },
+    }, fetcher)).resolves.toBeNull();
+    await expect(saveRoomDraft({
+      ...draft(),
+      configuration: { provider: "sk-live-123456789012345678901234567890" },
+    }, fetcher)).resolves.toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

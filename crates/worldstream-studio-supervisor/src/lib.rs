@@ -5,6 +5,7 @@
 
 pub mod activity_packs;
 pub mod agent_profiles;
+pub mod assignment_mcp;
 pub mod backups;
 pub mod lifecycle;
 pub mod participant_handoff;
@@ -15,6 +16,7 @@ pub mod runner_templates;
 
 pub mod secrets;
 pub mod task_setup;
+pub mod task_templates;
 
 use std::{
     io::{Read as _, Write as _},
@@ -399,6 +401,42 @@ pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_dra
     .merge(task_setup::task_setup_router(task_setup))
     .merge(agent_profiles::agent_profile_router(agent_profiles))
     .merge(participant_handoff::participant_handoff_router(participant_handoff))
+}
+
+/// Builds the complete Supervisor surface with immutable Task Template
+/// publication and draft-only instantiation. This route layer has no daemon
+/// Room-creation capability.
+#[allow(clippy::too_many_arguments)]
+pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+    runners: runner_templates::RunnerSupervisorV1,
+    activity_packs: impl activity_packs::DaemonActivityPackSource,
+    rooms: impl rooms::DaemonRoomSource,
+    drafts: room_drafts::RoomDraftStoreV1,
+    backups: backups::BackupOperationsV1,
+    room_creation: room_creation::RoomCreationSupervisorV1,
+    task_setup: task_setup::TaskSetupSupervisorV1,
+    agent_profiles: agent_profiles::AgentProfileStoreV1,
+    participant_handoff: participant_handoff::ParticipantHandoffBrokerV1,
+    task_templates: task_templates::TaskTemplateStoreV1,
+) -> Router {
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup(
+        source,
+        lifecycle,
+        vault,
+        runners,
+        activity_packs,
+        rooms,
+        drafts,
+        backups,
+        room_creation,
+        task_setup,
+        agent_profiles,
+        participant_handoff,
+    )
+    .merge(task_templates::task_template_router(task_templates))
 }
 
 async fn daemon_status(State(source): State<Arc<dyn DaemonStatusSource>>) -> Json<DaemonStatusV1> {

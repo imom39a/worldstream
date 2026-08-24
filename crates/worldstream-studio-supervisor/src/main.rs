@@ -7,6 +7,7 @@ use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
     agent_profiles::AgentProfileStoreV1,
+    assignment_mcp::{AssignmentMcpLaunchRegistryV1, assignment_mcp_launch_router},
     backups::{
         BackupOperationsV1, BackupStorageProfileV1, HttpDaemonBackupExecutorV1,
         prepare_shared_backup_root,
@@ -18,11 +19,12 @@ use worldstream_studio_supervisor::{
     rooms::HttpDaemonRoomSource,
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
-    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup,
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates,
     task_setup::{
-        HttpDaemonTaskRuntimeV1, HttpDaemonTaskSetupProvisionerV1, LiveTaskRunnerReadinessSourceV1,
-        TaskSetupSupervisorV1,
+        FileAssignedMembershipSourceV1, HttpDaemonTaskRuntimeV1, HttpDaemonTaskSetupProvisionerV1,
+        LiveTaskRunnerReadinessSourceV1, TaskSetupSupervisorV1,
     },
+    task_templates::{InstalledTaskTemplateDependenciesV1, TaskTemplateStoreV1},
 };
 
 #[derive(Debug, Parser)]
@@ -118,9 +120,30 @@ async fn main() -> Result<()> {
         vault.clone(),
         args.host_authority_reference.clone(),
     );
-    let draft_validator = ExactActivityPackDraftValidatorV1::new(activity_packs.clone());
-    let drafts = RoomDraftStoreV1::open(&args.state_dir.join("room-drafts"), draft_validator)
-        .context("Studio Supervisor protected Room draft store is unavailable")?;
+    let runner_registry = RunnerTemplateRegistryV1::open(
+        &args.state_dir.join("runner-templates/installed"),
+        &args.runner_templates_dir,
+    )
+    .context("Studio Supervisor Runner Template registry is unavailable")?;
+    let agent_profiles =
+        AgentProfileStoreV1::open(&args.state_dir.join("agent-profiles"), vault.clone())
+            .context("Studio Supervisor Agent Profile store is unavailable")?;
+    let draft_dependencies = InstalledTaskTemplateDependenciesV1::new(
+        ExactActivityPackDraftValidatorV1::new(activity_packs.clone()),
+        agent_profiles.clone(),
+        runner_registry.clone(),
+    );
+    let drafts = RoomDraftStoreV1::open(
+        &args.state_dir.join("room-drafts"),
+        draft_dependencies.clone(),
+    )
+    .context("Studio Supervisor protected Room draft store is unavailable")?;
+    let task_templates = TaskTemplateStoreV1::open(
+        &args.state_dir.join("task-templates"),
+        drafts.clone(),
+        draft_dependencies,
+    )
+    .context("Studio Supervisor protected Task Template store is unavailable")?;
     let rooms = HttpDaemonRoomSource::new(
         args.daemon,
         daemon_timeout,
@@ -151,11 +174,6 @@ async fn main() -> Result<()> {
             "Studio Supervisor protected backup operation store is unavailable: {error:?}"
         )
     })?;
-    let runner_registry = RunnerTemplateRegistryV1::open(
-        &args.state_dir.join("runner-templates/installed"),
-        &args.runner_templates_dir,
-    )
-    .context("Studio Supervisor Runner Template registry is unavailable")?;
     let runners = RunnerSupervisorV1::open(
         runner_registry,
         &args.state_dir.join("runner-templates/runtime"),
@@ -163,9 +181,6 @@ async fn main() -> Result<()> {
         Duration::from_millis(args.graceful_stop_timeout_ms),
     )
     .context("Studio Supervisor Runner instance state is unavailable")?;
-    let agent_profiles =
-        AgentProfileStoreV1::open(&args.state_dir.join("agent-profiles"), vault.clone())
-            .context("Studio Supervisor Agent Profile store is unavailable")?;
     let task_runtime = HttpDaemonTaskRuntimeV1::new(
         args.daemon,
         daemon_timeout,
@@ -200,25 +215,39 @@ async fn main() -> Result<()> {
         LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
         task_runtime,
     );
-    axum::serve(
-        listener,
-        supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup(
-            source,
-            lifecycle,
-            vault,
-            runners,
-            activity_packs,
-            rooms,
-            drafts,
-            backups,
-            room_creation,
-            task_setup,
-            agent_profiles,
-            participant_handoff,
-        ),
+    let assignment_launch_source = FileAssignedMembershipSourceV1::open(
+        &args.state_dir.join("task-setups"),
+        agent_profiles.clone(),
+        vault.clone(),
     )
-    .await
-    .context("Studio Supervisor server failed")
+    .context("assignment MCP launch source is unavailable")?;
+    let assignment_mcp_launches = AssignmentMcpLaunchRegistryV1::open(
+        &args.state_dir.join("assignment-mcp-launches"),
+        &args.state_dir.join("assignment-mcp-progress"),
+        assignment_launch_source,
+        args.daemon,
+        daemon_timeout,
+    )
+    .context("assignment MCP launch registry is unavailable")?;
+    let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates(
+        source,
+        lifecycle,
+        vault,
+        runners,
+        activity_packs,
+        rooms,
+        drafts,
+        backups,
+        room_creation,
+        task_setup,
+        agent_profiles,
+        participant_handoff,
+        task_templates,
+    )
+    .merge(assignment_mcp_launch_router(assignment_mcp_launches));
+    axum::serve(listener, router)
+        .await
+        .context("Studio Supervisor server failed")
 }
 
 fn parse_secret_reference(value: &str) -> Result<SecretReferenceV1, &'static str> {

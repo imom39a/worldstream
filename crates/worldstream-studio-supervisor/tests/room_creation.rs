@@ -13,7 +13,10 @@ mod room_creation;
 #[path = "../src/room_drafts.rs"]
 mod room_drafts;
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 use room_creation::{
     DaemonRoomCreatorV1, RoomCreationAttemptErrorV1, RoomCreationStateV1, RoomCreationSupervisorV1,
@@ -36,6 +39,26 @@ impl RoomDraftValidatorV1 for ValidDraft {
         _draft: &RoomDraftV1,
     ) -> Result<Vec<room_drafts::RoomDraftFieldErrorV1>, RoomDraftErrorV1> {
         Ok(Vec::new())
+    }
+}
+
+#[derive(Clone)]
+struct CurrentDependencies(Arc<AtomicBool>);
+
+impl RoomDraftValidatorV1 for CurrentDependencies {
+    fn validate(
+        &self,
+        _draft: &RoomDraftV1,
+    ) -> Result<Vec<room_drafts::RoomDraftFieldErrorV1>, RoomDraftErrorV1> {
+        Ok(if self.0.load(Ordering::SeqCst) {
+            Vec::new()
+        } else {
+            vec![room_drafts::RoomDraftFieldErrorV1 {
+                path: "/seats/0/runner_template".to_owned(),
+                code: "runner_template_missing".to_owned(),
+                message: "The exact Runner Template revision is unavailable.".to_owned(),
+            }]
+        })
     }
 }
 
@@ -277,6 +300,40 @@ fn setup(root: &std::path::Path, creator: impl DaemonRoomCreatorV1) -> RoomCreat
         .unwrap_or_else(|error| unreachable!("save reviewed draft: {error:?}"));
     RoomCreationSupervisorV1::open(&root.join("operations"), drafts, creator)
         .unwrap_or_else(|error| unreachable!("creation supervisor: {error:?}"))
+}
+
+#[test]
+fn dependency_disappearance_after_review_blocks_room_creation_before_daemon_call() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let available = Arc::new(AtomicBool::new(true));
+    let drafts = RoomDraftStoreV1::open(
+        &directory.path().join("drafts"),
+        CurrentDependencies(Arc::clone(&available)),
+    )
+    .unwrap_or_else(|error| unreachable!("draft store: {error:?}"));
+    drafts
+        .save(&reviewed_draft())
+        .unwrap_or_else(|error| unreachable!("save reviewed draft: {error:?}"));
+    available.store(false, Ordering::SeqCst);
+    let state = Arc::new(Mutex::new(CreatorState::default()));
+    let supervisor = RoomCreationSupervisorV1::open(
+        &directory.path().join("operations"),
+        drafts,
+        ExactOnceCreator(Arc::clone(&state)),
+    )
+    .unwrap_or_else(|error| unreachable!("creation supervisor: {error:?}"));
+
+    assert_eq!(
+        supervisor.start("launch-alpha"),
+        Err(room_creation::RoomCreationErrorV1::InvalidDraft)
+    );
+    assert!(
+        state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .requests
+            .is_empty()
+    );
 }
 
 #[test]

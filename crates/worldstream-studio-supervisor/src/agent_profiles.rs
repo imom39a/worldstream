@@ -334,6 +334,39 @@ impl AgentProfileStoreV1 {
         })
     }
 
+    /// Loads one exact immutable seat assignment for an internal bounded helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or a closed store validation failure.
+    pub fn assignment(
+        &self,
+        assignment_id: &str,
+    ) -> Result<AgentProfileSeatAssignmentV1, AgentProfileErrorV1> {
+        if assignment_id.parse::<UlidString>().is_err() {
+            return Err(AgentProfileErrorV1::InvalidAssignment);
+        }
+        let path = self.assignment_path(assignment_id);
+        if !path.exists() {
+            return Err(AgentProfileErrorV1::NotFound);
+        }
+        let assignment = read_record::<AgentProfileSeatAssignmentV1>(&path)?;
+        validate_assignment(&assignment)?;
+        if assignment.assignment_id != assignment_id {
+            return Err(AgentProfileErrorV1::Unavailable);
+        }
+        let profile = read_record::<AgentProfileRevisionV1>(
+            &self.profile_path(&assignment.profile.profile_id, &assignment.profile.revision),
+        )?;
+        validate_revision(&profile)?;
+        if profile.profile_id != assignment.profile.profile_id
+            || profile.revision != assignment.profile.revision
+        {
+            return Err(AgentProfileErrorV1::Unavailable);
+        }
+        Ok(assignment)
+    }
+
     fn view(&self, revision: &AgentProfileRevisionV1) -> AgentProfileRevisionViewV1 {
         AgentProfileRevisionViewV1 {
             profile_id: revision.profile_id.clone(),

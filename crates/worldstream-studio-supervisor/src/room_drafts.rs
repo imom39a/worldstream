@@ -23,7 +23,8 @@ use serde_json::Value;
 use thiserror::Error;
 use worldstream_protocol::{PackReference, PrincipalKind, UlidString};
 use worldstream_runtime::{
-    create_owner_only_file, prepare_data_directory, validate_owner_only_file,
+    create_owner_only_file, create_owner_only_renameable_file, prepare_data_directory,
+    validate_owner_only_file,
 };
 
 use crate::activity_packs::{ActivityPackProxyErrorV1, DaemonActivityPackSource};
@@ -66,6 +67,17 @@ pub struct AgentProfileRevisionReferenceV1 {
     pub revision: String,
 }
 
+/// Exact immutable Runner Template revision selected for a managed Agent seat.
+///
+/// This is assignment intent only. It carries no Runner authority or process
+/// identity and cannot authorize an Invocation or a domain Action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunnerTemplateRevisionReferenceV1 {
+    pub template_id: String,
+    pub revision: String,
+}
+
 /// One stable seat derived from an exact pack revision's declared Role.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +94,8 @@ pub struct RoomDraftSeatV1 {
     pub agent_assignment: Option<AgentAssignmentModeV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_profile: Option<AgentProfileRevisionReferenceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_template: Option<RunnerTemplateRevisionReferenceV1>,
 }
 
 /// Pre-Room readiness policy for one stable seat. This is not live presence.
@@ -135,7 +149,7 @@ pub struct RoomDraftResponseV1 {
 }
 
 impl RoomDraftResponseV1 {
-    fn from_draft(draft: RoomDraftV1) -> Self {
+    pub(crate) fn from_draft(draft: RoomDraftV1) -> Self {
         let review = RoomDraftReviewV1 {
             pack: draft.pack.clone(),
             configuration: draft.configuration.clone(),
@@ -161,6 +175,8 @@ pub enum RoomDraftErrorV1 {
     ValidationUnavailable,
     #[error("Room draft was not found")]
     NotFound,
+    #[error("Room draft identity already exists")]
+    Conflict,
     #[error("Room draft store is unavailable")]
     Unavailable,
 }
@@ -228,6 +244,13 @@ impl RoomDraftValidatorV1 for ExactActivityPackDraftValidatorV1 {
                 "/pack",
                 "revision_mismatch",
                 "The saved Activity Pack reference does not match the exact installed revision.",
+            )]);
+        }
+        if !detail.revision.summary.selectable_for_new_rooms {
+            return Ok(vec![field_error(
+                "/pack/digest",
+                "revision_not_selectable",
+                "The exact Activity Pack revision is not selectable for a new Room.",
             )]);
         }
         let mut errors = Vec::new();
@@ -304,6 +327,23 @@ impl RoomDraftStoreV1 {
         Ok(draft)
     }
 
+    /// Loads one exact draft and revalidates its current exact dependencies
+    /// immediately before an effectful operation.
+    pub(crate) fn load_for_operation(
+        &self,
+        draft_id: &str,
+    ) -> Result<RoomDraftV1, RoomDraftErrorV1> {
+        let draft = self.load(draft_id)?;
+        let field_errors = self.validator.validate(&draft)?;
+        if field_errors.is_empty() {
+            Ok(draft)
+        } else {
+            Err(RoomDraftErrorV1::ValidationFailed(bound_field_errors(
+                field_errors,
+            )))
+        }
+    }
+
     /// Atomically persists one validated editable draft.
     ///
     /// # Errors
@@ -329,12 +369,67 @@ impl RoomDraftStoreV1 {
         if temporary.exists() {
             fs::remove_file(&temporary).map_err(|_| RoomDraftErrorV1::Unavailable)?;
         }
+        let mut file = create_owner_only_renameable_file(&temporary)
+            .map_err(|_| RoomDraftErrorV1::Unavailable)?;
+        file.write_all(&encoded)
+            .and_then(|()| file.sync_all())
+            .map_err(|_| RoomDraftErrorV1::Unavailable)?;
+        drop(file);
+        let result = replace_file(&temporary, &target)
+            .and_then(|()| sync_directory(self.root.as_ref()))
+            .map_err(|_| RoomDraftErrorV1::Unavailable);
+        if result.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        result
+    }
+
+    /// Publishes one new independent draft without replacing an existing identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid/unsafe content, unavailable dependencies, an existing
+    /// draft identity, or protected-storage failure.
+    pub fn create(&self, draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
+        validate_draft(draft)?;
+        let field_errors = self.validator.validate(draft)?;
+        if !field_errors.is_empty() {
+            return Err(RoomDraftErrorV1::ValidationFailed(bound_field_errors(
+                field_errors,
+            )));
+        }
+        let encoded =
+            serde_json::to_vec_pretty(draft).map_err(|_| RoomDraftErrorV1::InvalidDraft)?;
+        if encoded.len() > MAX_DRAFT_BYTES {
+            return Err(RoomDraftErrorV1::InvalidDraft);
+        }
+        let _guard = self.lock();
+        let target = self.draft_path(&draft.draft_id);
+        if target.exists() {
+            return Err(RoomDraftErrorV1::Conflict);
+        }
+        let temporary = self.root.join(format!(".{}.create.tmp", draft.draft_id));
+        if temporary.exists() {
+            fs::remove_file(&temporary).map_err(|_| RoomDraftErrorV1::Unavailable)?;
+        }
         let mut file =
             create_owner_only_file(&temporary).map_err(|_| RoomDraftErrorV1::Unavailable)?;
         file.write_all(&encoded)
             .and_then(|()| file.sync_all())
             .map_err(|_| RoomDraftErrorV1::Unavailable)?;
-        fs::rename(temporary, target).map_err(|_| RoomDraftErrorV1::Unavailable)
+        drop(file);
+        let mut result = fs::hard_link(&temporary, &target).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                RoomDraftErrorV1::Conflict
+            } else {
+                RoomDraftErrorV1::Unavailable
+            }
+        });
+        if result.is_ok() {
+            result = sync_directory(self.root.as_ref()).map_err(|_| RoomDraftErrorV1::Unavailable);
+        }
+        let _ = fs::remove_file(temporary);
+        result
     }
 
     fn lock(&self) -> MutexGuard<'_, ()> {
@@ -424,6 +519,13 @@ impl IntoResponse for RoomDraftErrorV1 {
                 false,
                 Vec::new(),
             ),
+            Self::Conflict => (
+                StatusCode::CONFLICT,
+                "room_draft_identity_conflict",
+                "the Room draft identity already exists",
+                false,
+                Vec::new(),
+            ),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "room_draft_store_unavailable",
@@ -447,7 +549,7 @@ impl IntoResponse for RoomDraftErrorV1 {
     }
 }
 
-fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
+pub(crate) fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
     if draft.schema != DRAFT_SCHEMA_V1 {
         return Err(RoomDraftErrorV1::InvalidDraft);
     }
@@ -483,9 +585,17 @@ fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
                             !valid_profile_id(&profile.profile_id)
                                 || !valid_profile_revision(&profile.revision)
                         })
+                        || seat.runner_template.as_ref().is_some_and(|runner| {
+                            !valid_profile_id(&runner.template_id)
+                                || !valid_profile_revision(&runner.revision)
+                        })
+                        || (seat.agent_assignment == Some(AgentAssignmentModeV1::Managed))
+                            != seat.runner_template.is_some()
                 }
                 Some(PrincipalKind::Human) | None => {
-                    seat.agent_assignment.is_some() || seat.agent_profile.is_some()
+                    seat.agent_assignment.is_some()
+                        || seat.agent_profile.is_some()
+                        || seat.runner_template.is_some()
                 }
             }
         {
@@ -903,10 +1013,82 @@ fn contains_credential_field(value: &Value) -> bool {
     ];
     match value {
         Value::Object(object) => object.iter().any(|(key, value)| {
-            CREDENTIAL_KEYS.contains(&key.to_ascii_lowercase().as_str())
+            let normalized = key.replace('-', "_").to_ascii_lowercase();
+            CREDENTIAL_KEYS
+                .iter()
+                .any(|credential| normalized.contains(credential))
                 || contains_credential_field(value)
         }),
         Value::Array(values) => values.iter().any(contains_credential_field),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+        Value::String(value) => looks_like_credential_value(value),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
     }
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(unix)]
+fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    let source = source.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "source path is not Unicode",
+        )
+    })?;
+    let target = target.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "target path is not Unicode",
+        )
+    })?;
+    winsafe::MoveFileEx(
+        source,
+        Some(target),
+        winsafe::co::MOVEFILE::REPLACE_EXISTING,
+    )
+    .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt as _};
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?
+        .sync_all()
+}
+
+fn looks_like_credential_value(value: &str) -> bool {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("bearer ")
+        || lower.starts_with("sk-")
+        || lower.starts_with("sk_")
+        || lower.starts_with("ghp_")
+        || lower.starts_with("github_pat_")
+        || lower.starts_with("xoxb-")
+        || lower.starts_with("xoxp-")
+        || value.starts_with("AKIA")
+        || (value.starts_with("eyJ") && value.matches('.').count() == 2)
+    {
+        return true;
+    }
+    value.len() >= 32
+        && !value.bytes().any(|byte| byte.is_ascii_whitespace())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'+' | b'=')
+        })
+        && value.bytes().any(|byte| byte.is_ascii_alphabetic())
+        && value.bytes().any(|byte| byte.is_ascii_digit())
 }

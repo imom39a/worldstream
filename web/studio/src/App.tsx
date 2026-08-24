@@ -20,6 +20,8 @@ import { TaskSetupOperation } from "./TaskSetupOperation";
 import type { TaskSetupStatus } from "./taskSetup";
 import { AgentProfileBuild } from "./AgentProfileBuild";
 import type { AgentProfileCatalog, AgentProfileRevision } from "./agentProfiles";
+import { TaskTemplateBuild } from "./TaskTemplateBuild";
+import type { TaskTemplateCatalog } from "./taskTemplates";
 import type {
   RunnerInstanceLifecycleAction,
   RunnerInstanceStatusResponse,
@@ -76,6 +78,9 @@ export interface AppProps {
   onLaunchTask?: () => void;
   agentProfiles?: AgentProfileCatalog | null;
   onAgentProfilePublished?: (profile: AgentProfileRevision) => void;
+  taskTemplates?: TaskTemplateCatalog | null;
+  onTaskTemplateCatalogChanged?: () => void;
+  onTaskTemplateDraftCreated?: (draft: RoomDraft) => void;
   onOpenParticipantView?: (seatId: string) => void;
   backupProfile?: BackupProfileStatus | null;
   backupOperation?: BackupOperationStatus | null;
@@ -126,6 +131,9 @@ export function App({
   onLaunchTask,
   agentProfiles = null,
   onAgentProfilePublished,
+  taskTemplates = null,
+  onTaskTemplateCatalogChanged,
+  onTaskTemplateDraftCreated,
   onOpenParticipantView,
   backupProfile = null,
   backupOperation = null,
@@ -239,6 +247,7 @@ export function App({
             catalog={activityPackCatalog}
             detail={activityPackDetail}
             agentProfiles={agentProfiles}
+            runnerTemplates={runnerTemplates}
             activeStep={roomDraftStep}
             fieldErrors={roomDraftErrors}
             saving={roomDraftSaving}
@@ -249,6 +258,15 @@ export function App({
             onSave={onSaveRoomDraft}
           />
         ) : null}
+
+        <div className="task-template-build" id="task-templates">
+          <TaskTemplateBuild
+            catalog={taskTemplates}
+            reviewedDraft={roomDraft}
+            onCatalogChanged={onTaskTemplateCatalogChanged}
+            onDraftCreated={onTaskTemplateDraftCreated}
+          />
+        </div>
 
         <RoomCreationOperation
           status={roomCreation}

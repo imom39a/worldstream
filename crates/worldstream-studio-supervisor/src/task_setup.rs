@@ -36,13 +36,21 @@ use crate::{
         AgentExecutionBindingV1, AgentProfileErrorV1, AgentProfileMembershipBindingV1,
         AgentProfileSeatAssignmentV1, AgentProfileStoreV1,
     },
+    assignment_mcp::{
+        AssignedMembershipAuthorityV1, AssignedMembershipLaunchBindingV1,
+        AssignedMembershipLaunchSourceV1, AssignedMembershipSourceErrorV1,
+        AssignedMembershipSourceV1,
+    },
     participant_handoff::{
         HumanSeatAuthorityV1, ParticipantConsoleReadinessSourceV1,
         ParticipantConsoleSessionHealthV1, ParticipantHandoffAuthorityErrorV1,
         ParticipantHandoffAuthoritySourceV1,
     },
     room_creation::{RoomCreationStateV1, RoomCreationSupervisorV1},
-    room_drafts::{AgentAssignmentModeV1, AgentProfileRevisionReferenceV1, RoomDraftSeatV1},
+    room_drafts::{
+        AgentAssignmentModeV1, AgentProfileRevisionReferenceV1, RoomDraftSeatV1,
+        RunnerTemplateRevisionReferenceV1,
+    },
     runner_templates::{
         ManagedRunnerBindingErrorV1, RunnerFreshnessV1, RunnerInstanceHealthV1,
         RunnerInstanceStateV1, RunnerInstanceStatusV1, RunnerSupervisorV1,
@@ -335,7 +343,11 @@ pub enum TaskRunnerObservationV1 {
 pub trait TaskRunnerReadinessSourceV1: Send + Sync + 'static {
     fn presence(&self, runner_id: &str) -> TaskRunnerObservationV1;
 
-    fn select_managed(&self, _pack: &PackReference) -> Option<ManagedRunnerAssignmentV1> {
+    fn select_managed(
+        &self,
+        _pack: &PackReference,
+        _requested: Option<&RunnerTemplateRevisionReferenceV1>,
+    ) -> Option<ManagedRunnerAssignmentV1> {
         None
     }
 
@@ -552,13 +564,21 @@ impl TaskRunnerReadinessSourceV1 for LiveTaskRunnerReadinessSourceV1 {
         self.daemon.runner_presence(runner_id)
     }
 
-    fn select_managed(&self, pack: &PackReference) -> Option<ManagedRunnerAssignmentV1> {
+    fn select_managed(
+        &self,
+        pack: &PackReference,
+        requested: Option<&RunnerTemplateRevisionReferenceV1>,
+    ) -> Option<ManagedRunnerAssignmentV1> {
         self.managed
             .statuses()
             .instances
             .into_iter()
             .filter(|instance| {
                 managed_candidate_is_live_compatible(instance, pack)
+                    && requested.is_none_or(|requested| {
+                        instance.template_id == requested.template_id
+                            && instance.template_revision == requested.revision
+                    })
                     && self
                         .managed
                         .task_runner_binding_available(&instance.instance_id)
@@ -1270,7 +1290,7 @@ impl TaskSetupSupervisorV1 {
             let managed_assignment = if assignment == AgentAssignmentModeV1::Managed {
                 self.runners
                     .as_ref()
-                    .and_then(|runners| runners.select_managed(pack))
+                    .and_then(|runners| runners.select_managed(pack, seat.runner_template.as_ref()))
             } else {
                 None
             };
@@ -1538,21 +1558,7 @@ impl TaskSetupSupervisorV1 {
     }
 
     fn load_unlocked(&self, draft_id: &str) -> Result<TaskSetupOperationV1, TaskSetupErrorV1> {
-        validate_draft_id(draft_id)?;
-        let path = self.root.join(format!("{draft_id}.json"));
-        if !path.exists() {
-            return Err(TaskSetupErrorV1::NotFound);
-        }
-        validate_owner_only_file(&path).map_err(|_| TaskSetupErrorV1::Unavailable)?;
-        let metadata = fs::metadata(&path).map_err(|_| TaskSetupErrorV1::Unavailable)?;
-        if metadata.len() > u64::try_from(MAX_OPERATION_BYTES).unwrap_or(u64::MAX) {
-            return Err(TaskSetupErrorV1::Unavailable);
-        }
-        let operation: TaskSetupOperationV1 =
-            serde_json::from_slice(&fs::read(path).map_err(|_| TaskSetupErrorV1::Unavailable)?)
-                .map_err(|_| TaskSetupErrorV1::Unavailable)?;
-        validate_operation(&operation, draft_id)?;
-        Ok(operation)
+        load_task_setup_operation(&self.root, draft_id)
     }
 
     fn persist(&self, operation: &mut TaskSetupOperationV1) -> Result<(), TaskSetupErrorV1> {
@@ -1602,6 +1608,27 @@ impl TaskSetupSupervisorV1 {
     fn lock(&self) -> MutexGuard<'_, ()> {
         self.mutation.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+fn load_task_setup_operation(
+    root: &Path,
+    draft_id: &str,
+) -> Result<TaskSetupOperationV1, TaskSetupErrorV1> {
+    validate_draft_id(draft_id)?;
+    let path = root.join(format!("{draft_id}.json"));
+    if !path.exists() {
+        return Err(TaskSetupErrorV1::NotFound);
+    }
+    validate_owner_only_file(&path).map_err(|_| TaskSetupErrorV1::Unavailable)?;
+    let metadata = fs::metadata(&path).map_err(|_| TaskSetupErrorV1::Unavailable)?;
+    if metadata.len() > u64::try_from(MAX_OPERATION_BYTES).unwrap_or(u64::MAX) {
+        return Err(TaskSetupErrorV1::Unavailable);
+    }
+    let operation: TaskSetupOperationV1 =
+        serde_json::from_slice(&fs::read(path).map_err(|_| TaskSetupErrorV1::Unavailable)?)
+            .map_err(|_| TaskSetupErrorV1::Unavailable)?;
+    validate_operation(&operation, draft_id)?;
+    Ok(operation)
 }
 
 impl ParticipantHandoffAuthoritySourceV1 for TaskSetupSupervisorV1 {
@@ -1658,6 +1685,276 @@ impl ParticipantHandoffAuthoritySourceV1 for TaskSetupSupervisorV1 {
             SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
         )
     }
+}
+
+impl AssignedMembershipSourceV1 for TaskSetupSupervisorV1 {
+    fn resolve_assignment(
+        &self,
+        assignment_id: &str,
+    ) -> Result<AssignedMembershipAuthorityV1, AssignedMembershipSourceErrorV1> {
+        let _guard = self.lock();
+        let assignment = self
+            .profiles
+            .as_ref()
+            .ok_or(AssignedMembershipSourceErrorV1::Unavailable)?
+            .assignment(assignment_id)
+            .map_err(|error| match error {
+                AgentProfileErrorV1::NotFound => AssignedMembershipSourceErrorV1::NotFound,
+                AgentProfileErrorV1::InvalidAssignment
+                | AgentProfileErrorV1::ImmutableAssignmentConflict
+                | AgentProfileErrorV1::InvalidProfile
+                | AgentProfileErrorV1::ImmutableRevisionConflict => {
+                    AssignedMembershipSourceErrorV1::Invalid
+                }
+                AgentProfileErrorV1::Unavailable => AssignedMembershipSourceErrorV1::Unavailable,
+            })?;
+        let operation = self
+            .load_unlocked(&assignment.draft_id)
+            .map_err(|error| match error {
+                TaskSetupErrorV1::NotFound | TaskSetupErrorV1::InvalidCreation => {
+                    AssignedMembershipSourceErrorV1::NotFound
+                }
+                TaskSetupErrorV1::NotReady | TaskSetupErrorV1::Unavailable => {
+                    AssignedMembershipSourceErrorV1::Unavailable
+                }
+            })?;
+        let seat = operation
+            .seats
+            .iter()
+            .find(|seat| seat.seat_id == assignment.seat_id)
+            .ok_or(AssignedMembershipSourceErrorV1::NotFound)?;
+        if operation.state != TaskSetupStateV1::Ready
+            || operation.room_id != assignment.membership.room_id
+            || seat.principal_kind != Some(PrincipalKind::Agent)
+            || seat.member_id.as_deref() != Some(&assignment.membership.member_id)
+            || seat.principal_id.as_deref() != Some(&assignment.membership.principal_id)
+            || seat.role != assignment.membership.role
+            || seat.agent_profile.as_ref() != Some(&assignment.profile)
+        {
+            return Err(AssignedMembershipSourceErrorV1::Invalid);
+        }
+        let capability = seat
+            .member_capability
+            .as_ref()
+            .filter(|capability| capability.provisioned)
+            .ok_or(AssignedMembershipSourceErrorV1::Revoked)?;
+        let secret = self
+            .vault
+            .resolve(
+                SecretKindV1::MembershipAuthority,
+                &capability.secret_reference,
+            )
+            .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
+        let bytes: [u8; 32] = secret
+            .as_bytes()
+            .try_into()
+            .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
+        AssignedMembershipAuthorityV1::new(
+            &assignment.assignment_id,
+            &assignment.profile.profile_id,
+            &assignment.profile.revision,
+            &assignment.membership.role,
+            &assignment.membership.principal_id,
+            &assignment.membership.room_id,
+            &assignment.membership.member_id,
+            SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
+        )
+    }
+}
+
+/// Read-only production assignment resolver used by the local stdio MCP helper.
+#[derive(Clone)]
+pub struct FileAssignedMembershipSourceV1 {
+    root: Arc<PathBuf>,
+    profiles: AgentProfileStoreV1,
+    vault: FileSecretVaultV1,
+}
+
+impl FileAssignedMembershipSourceV1 {
+    /// Opens the exact protected Task setup store without provisioning effects.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe or unavailable owner-only data directory.
+    pub fn open(
+        root: &Path,
+        profiles: AgentProfileStoreV1,
+        vault: FileSecretVaultV1,
+    ) -> Result<Self, AssignedMembershipSourceErrorV1> {
+        let root = prepare_data_directory(root)
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+        Ok(Self {
+            root: Arc::new(root),
+            profiles,
+            vault,
+        })
+    }
+}
+
+impl AssignedMembershipSourceV1 for FileAssignedMembershipSourceV1 {
+    fn resolve_assignment(
+        &self,
+        assignment_id: &str,
+    ) -> Result<AssignedMembershipAuthorityV1, AssignedMembershipSourceErrorV1> {
+        let assignment = self
+            .profiles
+            .assignment(assignment_id)
+            .map_err(|error| match error {
+                AgentProfileErrorV1::NotFound => AssignedMembershipSourceErrorV1::NotFound,
+                AgentProfileErrorV1::InvalidAssignment
+                | AgentProfileErrorV1::ImmutableAssignmentConflict
+                | AgentProfileErrorV1::InvalidProfile
+                | AgentProfileErrorV1::ImmutableRevisionConflict => {
+                    AssignedMembershipSourceErrorV1::Invalid
+                }
+                AgentProfileErrorV1::Unavailable => AssignedMembershipSourceErrorV1::Unavailable,
+            })?;
+        let operation = load_task_setup_operation(&self.root, &assignment.draft_id).map_err(
+            |error| match error {
+                TaskSetupErrorV1::NotFound | TaskSetupErrorV1::InvalidCreation => {
+                    AssignedMembershipSourceErrorV1::NotFound
+                }
+                TaskSetupErrorV1::NotReady | TaskSetupErrorV1::Unavailable => {
+                    AssignedMembershipSourceErrorV1::Unavailable
+                }
+            },
+        )?;
+        resolve_file_assignment_authority(&operation, &assignment, &self.vault)
+    }
+}
+
+impl AssignedMembershipLaunchSourceV1 for FileAssignedMembershipSourceV1 {
+    fn resolve_launch_binding(
+        &self,
+        assignment_id: &str,
+    ) -> Result<AssignedMembershipLaunchBindingV1, AssignedMembershipSourceErrorV1> {
+        let assignment = self
+            .profiles
+            .assignment(assignment_id)
+            .map_err(map_profile_assignment_error)?;
+        let operation = load_task_setup_operation(&self.root, &assignment.draft_id)
+            .map_err(map_assignment_setup_error)?;
+        let seat = validated_agent_assignment_seat(&operation, &assignment)?;
+        let capability = seat
+            .member_capability
+            .as_ref()
+            .filter(|capability| capability.provisioned)
+            .ok_or(AssignedMembershipSourceErrorV1::Revoked)?;
+        if self
+            .vault
+            .inspect(
+                SecretKindV1::MembershipAuthority,
+                &capability.secret_reference,
+            )
+            .availability
+            != crate::secrets::SecretAvailabilityV1::Configured
+        {
+            return Err(AssignedMembershipSourceErrorV1::Revoked);
+        }
+        Ok(AssignedMembershipLaunchBindingV1 {
+            assignment_id: assignment.assignment_id,
+            profile_id: assignment.profile.profile_id,
+            profile_revision: assignment.profile.revision,
+            role: assignment.membership.role,
+            principal_id: assignment.membership.principal_id,
+            room_id: assignment.membership.room_id,
+            member_id: assignment.membership.member_id,
+            authority_reference: capability.secret_reference.clone(),
+        })
+    }
+}
+
+fn map_profile_assignment_error(error: AgentProfileErrorV1) -> AssignedMembershipSourceErrorV1 {
+    match error {
+        AgentProfileErrorV1::NotFound => AssignedMembershipSourceErrorV1::NotFound,
+        AgentProfileErrorV1::InvalidAssignment
+        | AgentProfileErrorV1::ImmutableAssignmentConflict
+        | AgentProfileErrorV1::InvalidProfile
+        | AgentProfileErrorV1::ImmutableRevisionConflict => {
+            AssignedMembershipSourceErrorV1::Invalid
+        }
+        AgentProfileErrorV1::Unavailable => AssignedMembershipSourceErrorV1::Unavailable,
+    }
+}
+
+fn map_assignment_setup_error(error: TaskSetupErrorV1) -> AssignedMembershipSourceErrorV1 {
+    match error {
+        TaskSetupErrorV1::NotFound | TaskSetupErrorV1::InvalidCreation => {
+            AssignedMembershipSourceErrorV1::NotFound
+        }
+        TaskSetupErrorV1::NotReady | TaskSetupErrorV1::Unavailable => {
+            AssignedMembershipSourceErrorV1::Unavailable
+        }
+    }
+}
+
+fn validated_agent_assignment_seat<'a>(
+    operation: &'a TaskSetupOperationV1,
+    assignment: &AgentProfileSeatAssignmentV1,
+) -> Result<&'a SetupSeatIntentV1, AssignedMembershipSourceErrorV1> {
+    let seat = operation
+        .seats
+        .iter()
+        .find(|seat| seat.seat_id == assignment.seat_id)
+        .ok_or(AssignedMembershipSourceErrorV1::NotFound)?;
+    if operation.state != TaskSetupStateV1::Ready
+        || operation.room_id != assignment.membership.room_id
+        || seat.principal_kind != Some(PrincipalKind::Agent)
+        || seat.member_id.as_deref() != Some(&assignment.membership.member_id)
+        || seat.principal_id.as_deref() != Some(&assignment.membership.principal_id)
+        || seat.role != assignment.membership.role
+        || seat.agent_profile.as_ref() != Some(&assignment.profile)
+    {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
+    Ok(seat)
+}
+
+fn resolve_file_assignment_authority(
+    operation: &TaskSetupOperationV1,
+    assignment: &AgentProfileSeatAssignmentV1,
+    vault: &FileSecretVaultV1,
+) -> Result<AssignedMembershipAuthorityV1, AssignedMembershipSourceErrorV1> {
+    let seat = operation
+        .seats
+        .iter()
+        .find(|seat| seat.seat_id == assignment.seat_id)
+        .ok_or(AssignedMembershipSourceErrorV1::NotFound)?;
+    if operation.state != TaskSetupStateV1::Ready
+        || operation.room_id != assignment.membership.room_id
+        || seat.principal_kind != Some(PrincipalKind::Agent)
+        || seat.member_id.as_deref() != Some(&assignment.membership.member_id)
+        || seat.principal_id.as_deref() != Some(&assignment.membership.principal_id)
+        || seat.role != assignment.membership.role
+        || seat.agent_profile.as_ref() != Some(&assignment.profile)
+    {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
+    let capability = seat
+        .member_capability
+        .as_ref()
+        .filter(|capability| capability.provisioned)
+        .ok_or(AssignedMembershipSourceErrorV1::Revoked)?;
+    let secret = vault
+        .resolve(
+            SecretKindV1::MembershipAuthority,
+            &capability.secret_reference,
+        )
+        .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
+    let bytes: [u8; 32] = secret
+        .as_bytes()
+        .try_into()
+        .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
+    AssignedMembershipAuthorityV1::new(
+        &assignment.assignment_id,
+        &assignment.profile.profile_id,
+        &assignment.profile.revision,
+        &assignment.membership.role,
+        &assignment.membership.principal_id,
+        &assignment.membership.room_id,
+        &assignment.membership.member_id,
+        SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
+    )
 }
 
 /// Builds the bounded setup status/start/retry API.

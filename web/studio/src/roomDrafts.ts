@@ -19,10 +19,16 @@ export interface RoomDraftSeat {
   principal_kind?: "human" | "agent";
   agent_assignment?: "external" | "managed";
   agent_profile?: AgentProfileRevisionReference;
+  runner_template?: RunnerTemplateRevisionReference;
 }
 
 export interface AgentProfileRevisionReference {
   profile_id: string;
+  revision: string;
+}
+
+export interface RunnerTemplateRevisionReference {
+  template_id: string;
   revision: string;
 }
 
@@ -248,7 +254,7 @@ function isRoomDraftResponse(value: unknown): value is RoomDraftResponse {
   );
 }
 
-function isRoomDraft(value: unknown): value is RoomDraft {
+export function isRoomDraft(value: unknown): value is RoomDraft {
   if (!isRecordWithKeys(value, [
     "schema", "draft_id", "pack", "configuration", "seats", "readiness", "last_valid_step",
   ])) return false;
@@ -256,6 +262,7 @@ function isRoomDraft(value: unknown): value is RoomDraft {
     value.schema !== "worldstream/studio-room-draft/v1" ||
     !isIdentifier(value.draft_id) ||
     !(value.pack === null || isPackReference(value.pack)) ||
+    containsCredentialMaterial(value.configuration) ||
     !Array.isArray(value.seats) || value.seats.length > maximumSeats ||
     !value.seats.every(isSeat) ||
     !Array.isArray(value.readiness) || value.readiness.length !== value.seats.length ||
@@ -279,18 +286,28 @@ function isSeat(value: unknown): value is RoomDraftSeat {
   const keys = Object.keys(value);
   if (!keys.every((key) => [
     "seat_id", "role", "required", "display_name", "principal_id", "principal_kind",
-    "agent_assignment", "agent_profile",
-  ].includes(key)) || ![4, 6, 7, 8].includes(keys.length)) return false;
+    "agent_assignment", "agent_profile", "runner_template",
+  ].includes(key)) || ![4, 6, 7, 8, 9].includes(keys.length)) return false;
   const assignmentAbsent = value.principal_id === undefined && value.principal_kind === undefined &&
-    value.agent_assignment === undefined && value.agent_profile === undefined;
+    value.agent_assignment === undefined && value.agent_profile === undefined &&
+    value.runner_template === undefined;
   const assignmentValid = typeof value.principal_id === "string" && isUlid(value.principal_id) &&
     (value.principal_kind === "human" && value.agent_assignment === undefined &&
-      value.agent_profile === undefined ||
+      value.agent_profile === undefined && value.runner_template === undefined ||
       value.principal_kind === "agent" &&
       (value.agent_assignment === "external" || value.agent_assignment === "managed") &&
-      (value.agent_profile === undefined || isAgentProfileReference(value.agent_profile)));
+      (value.agent_profile === undefined || isAgentProfileReference(value.agent_profile)) &&
+      (value.agent_assignment === "managed"
+        ? isRunnerTemplateReference(value.runner_template)
+        : value.runner_template === undefined));
   return isIdentifier(value.seat_id) && isText(value.role) && typeof value.required === "boolean" &&
     isText(value.display_name) && (assignmentAbsent || assignmentValid);
+}
+
+function isRunnerTemplateReference(value: unknown): value is RunnerTemplateRevisionReference {
+  return isRecordWithKeys(value, ["template_id", "revision"]) &&
+    typeof value.template_id === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value.template_id) &&
+    typeof value.revision === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.revision);
 }
 
 function isAgentProfileReference(value: unknown): value is AgentProfileRevisionReference {
@@ -341,6 +358,29 @@ function childPointer(parent: string, field: string): string {
 
 function jsonEquals(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function containsCredentialMaterial(value: unknown, seen = new Set<object>()): boolean {
+  if (typeof value === "string") return looksLikeCredentialValue(value);
+  if (Array.isArray(value)) return value.some((item) => containsCredentialMaterial(item, seen));
+  if (!isRecord(value) || seen.has(value)) return false;
+  seen.add(value);
+  return Object.entries(value).some(([key, child]) => {
+    const normalized = key.replaceAll("-", "_").toLowerCase();
+    return ["api_key", "authorization", "bearer", "credential", "password", "secret", "token"]
+      .some((credential) => normalized.includes(credential)) || containsCredentialMaterial(child, seen);
+  });
+}
+
+function looksLikeCredentialValue(value: string): boolean {
+  const exact = value.trim();
+  const lower = exact.toLowerCase();
+  if (lower.startsWith("bearer ") || lower.startsWith("sk-") || lower.startsWith("sk_") ||
+    lower.startsWith("ghp_") || lower.startsWith("github_pat_") ||
+    lower.startsWith("xoxb-") || lower.startsWith("xoxp-") || exact.startsWith("AKIA") ||
+    (exact.startsWith("eyJ") && exact.split(".").length === 3)) return true;
+  return exact.length >= 32 && !/\s/.test(exact) && /^[A-Za-z0-9._/+\-=]+$/.test(exact) &&
+    /[A-Za-z]/.test(exact) && /[0-9]/.test(exact);
 }
 
 function earlierStep(

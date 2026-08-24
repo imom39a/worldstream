@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { App } from "./App";
 import type { DaemonLifecycle } from "./daemonLifecycle";
 import type { DaemonStatus } from "./daemonStatus";
+import type { RoomDraft } from "./roomDrafts";
+import type { TaskTemplateCatalog } from "./taskTemplates";
 
 const connected: DaemonStatus = {
   schema: "worldstream/studio-daemon-status/v1",
@@ -142,5 +144,57 @@ describe("WorldStream Studio portal", () => {
     expect(dom).toContain("Stop it from its original process owner");
     expect(dom).not.toContain("Stop daemon");
     expect(dom).not.toContain("Restart daemon");
+  });
+
+  it("wires reviewed drafts and immutable Template usage into Build", () => {
+    const pack = {
+      id: "counter",
+      version: "2.0.0",
+      digest: `blake3:${"a".repeat(64)}`,
+    };
+    const reviewed: RoomDraft = {
+      schema: "worldstream/studio-room-draft/v1",
+      draft_id: "reviewed-draft",
+      pack,
+      configuration: { initial_value: 0 },
+      seats: [{
+        seat_id: "player-1", role: "player", required: true, display_name: "Player",
+        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", principal_kind: "human",
+      }],
+      readiness: [{ seat_id: "player-1", role: "player", required: true }],
+      last_valid_step: "review",
+    };
+    const taskTemplates: TaskTemplateCatalog = {
+      schema: "worldstream/studio-task-template-catalog/v1",
+      revisions: [{
+        revision: {
+          schema: "worldstream/studio-task-template/v1",
+          template_id: "counter-team",
+          revision: "r1",
+          display_name: "Counter team",
+          source_draft_id: reviewed.draft_id,
+          pack,
+          configuration: reviewed.configuration,
+          seats: reviewed.seats,
+          readiness: reviewed.readiness,
+        },
+        dependencies: { status: "ready", issues: [] },
+        used_by_draft_ids: ["task-from-template"],
+      }],
+    };
+    const dom = renderToStaticMarkup(
+      <App
+        status={connected}
+        lifecycle={managedRunning}
+        roomDraft={reviewed}
+        roomDraftSaved
+        taskTemplates={taskTemplates}
+      />,
+    );
+
+    expect(dom).toContain("Task Templates");
+    expect(dom).toContain("Source draft: reviewed-draft");
+    expect(dom).toContain("task-from-template");
+    expect(dom).toContain("Create editable draft");
   });
 });

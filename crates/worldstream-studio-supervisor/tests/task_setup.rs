@@ -12,6 +12,7 @@ use worldstream_protocol::{
     RoomHead, RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1,
 };
 use worldstream_runtime::prepare_data_directory;
+use worldstream_studio_supervisor::assignment_mcp::AssignedMembershipLaunchSourceV1;
 use worldstream_studio_supervisor::{
     agent_profiles::{AgentProfileRevisionV1, AgentProfileStoreV1},
     participant_handoff::{ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1},
@@ -19,10 +20,10 @@ use worldstream_studio_supervisor::{
     room_drafts::{RoomDraftErrorV1, RoomDraftStoreV1, RoomDraftV1, RoomDraftValidatorV1},
     secrets::FileSecretVaultV1,
     task_setup::{
-        DaemonTaskLaunchSourceV1, DaemonTaskSetupProvisionerV1, TaskLaunchAttemptErrorV1,
-        TaskLaunchStateV1, TaskRunnerObservationV1, TaskRunnerReadinessSourceV1,
-        TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1, TaskSetupStateV1,
-        TaskSetupSupervisorV1,
+        DaemonTaskLaunchSourceV1, DaemonTaskSetupProvisionerV1, FileAssignedMembershipSourceV1,
+        TaskLaunchAttemptErrorV1, TaskLaunchStateV1, TaskRunnerObservationV1,
+        TaskRunnerReadinessSourceV1, TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1,
+        TaskSetupStateV1, TaskSetupSupervisorV1,
     },
 };
 
@@ -422,11 +423,11 @@ fn transient_agent_profile_binding_unavailability_is_retryable() {
     let supervisor = TaskSetupSupervisorV1::open(
         &directory.path().join("setups"),
         open_creation(directory.path()),
-        vault,
+        vault.clone(),
         DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
     )
     .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
-    .with_agent_profiles(profiles);
+    .with_agent_profiles(profiles.clone());
 
     let blocked = supervisor
         .start("setup-alpha")
@@ -453,6 +454,24 @@ fn transient_agent_profile_binding_unavailability_is_retryable() {
         .retry("setup-alpha")
         .unwrap_or_else(|error| unreachable!("retry setup: {error:?}"));
     assert_eq!(ready.state, TaskSetupStateV1::Ready);
+
+    let assignment = profiles
+        .assignments()
+        .unwrap_or_else(|error| unreachable!("assignments: {error:?}"))
+        .assignments
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| unreachable!("Agent assignment"));
+    let launch_source =
+        FileAssignedMembershipSourceV1::open(&directory.path().join("setups"), profiles, vault)
+            .unwrap_or_else(|error| unreachable!("launch source: {error:?}"));
+    let binding = launch_source
+        .resolve_launch_binding(&assignment.assignment_id)
+        .unwrap_or_else(|error| unreachable!("launch binding: {error:?}"));
+    assert_eq!(binding.assignment_id, assignment.assignment_id);
+    assert_eq!(binding.room_id, assignment.membership.room_id);
+    assert_eq!(binding.member_id, assignment.membership.member_id);
+    assert_eq!(binding.principal_id, assignment.membership.principal_id);
 }
 
 #[test]
