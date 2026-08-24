@@ -7,6 +7,8 @@
     "node": "24.18.1"
   },
   "scripts": {
+    "studio:prototype": "pnpm --dir web/console prototype:studio",
+    "ui:dev": "pnpm --dir web/console dev",
     "ui:build": "pnpm --dir web/console build",
     "ui:lint": "pnpm --dir web/console lint",
     "ui:test": "pnpm --dir web/console test"
