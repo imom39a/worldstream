@@ -48,6 +48,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "deployment_pack_identities",
     "deployment_resource_blobs",
     "deployment_resource_identities",
+    "external_input_preparations",
     "integrity_incidents",
     "observation_consequences",
     "observation_frames",
@@ -79,6 +80,7 @@ const REQUIRED_MIGRATIONS: &[&str] = &[
     "0010-transfer-recovery-completeness-v1",
     "0011-transfer-lifecycle-and-resource-identity-v1",
     "0012-transfer-backup-file-identity-v1",
+    "0013-external-input-preparations-v1",
 ];
 const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:dd07208c71d7165b93861883b25411b1e7c33a6be36fc2be28a638e1ab5cd763",
@@ -92,6 +94,7 @@ const REQUIRED_MIGRATION_CHECKSUMS: &[&str] = &[
     "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1",
     "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3",
     "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
+    "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0",
 ];
 
 /// The `SQLite` engine selected by the workspace's bundled rusqlite build.
@@ -982,6 +985,10 @@ const OPERATIONAL_QUERIES: &[(&str, &str)] = &[
     (
         "semantic_receipts",
         "SELECT * FROM semantic_receipts ORDER BY operation_kind, operation_identity_bytes",
+    ),
+    (
+        "external_input_preparations",
+        "SELECT * FROM external_input_preparations ORDER BY operation_identity_bytes",
     ),
     (
         "integrity_incidents",

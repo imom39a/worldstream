@@ -49,13 +49,15 @@ use worldstream_protocol::{
     ActivationResultCode, ActivityPackCatalogAction, ActivityPackCatalogResponse,
     ActivityPackCatalogRevisionDetail, ActivityPackCatalogRevisionResponse,
     ActivityPackCatalogRevisionSummary, ActivityPackCatalogRole, ActivityPackCatalogSchema,
-    BROWSER_WS_TICKET_VERSION, BearerWireV1, BrowserWebSocketTicketIssueResponse, ClientHello,
-    ClientMode, CreateRoomRequest, CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
-    ObservationAck, ObservationDeliver, OperatorRoomInventoryPage, OperatorRoomInventoryRequest,
-    OperatorRoomSummary, PackReference, ProjectionReset, ProjectionResponse, ProtocolEnvelope,
-    ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome,
-    TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
-    decode_envelope,
+    ActivityPackLobbyCompatibility, BROWSER_WS_TICKET_VERSION, BearerWireV1,
+    BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateRoomRequest,
+    CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope, LobbyLaunchRequest,
+    LobbyLaunchResponse, ObservationAck, ObservationDeliver, OperatorBackupProfileStatus,
+    OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomInventoryPage,
+    OperatorRoomInventoryRequest, OperatorRoomSummary, PackReference, ProjectionReset,
+    ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck,
+    RunnerHello, RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString,
+    VersionedEnvelope, WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 use worldstream_runtime::{
     CompatibilitySummary, EffectiveConfig, ManifestError, StorageProfile, embedded_manifest,
@@ -349,6 +351,8 @@ pub enum BackendError {
     RoomFaulted,
     #[error("the room is quarantined")]
     RoomQuarantined,
+    #[error("the operation is not applicable in the current Activity phase")]
+    WrongPhase,
 }
 
 impl BackendError {
@@ -365,6 +369,7 @@ impl BackendError {
             Self::InvalidResult => ErrorCode::Internal,
             Self::RoomFaulted => ErrorCode::RoomFaulted,
             Self::RoomQuarantined => ErrorCode::RoomQuarantined,
+            Self::WrongPhase => ErrorCode::WrongPhase,
         }
     }
 }
@@ -504,9 +509,12 @@ const OPERATOR_ROOM_CREATE: &str = "room-create";
 const OPERATOR_MEMBER_CAPABILITY: &str = "member-capability-issue";
 const OPERATOR_RUNNER_CAPABILITY: &str = "runner-capability-issue";
 const OPERATOR_TIMER_FIRE: &str = "timer-fire";
+const OPERATOR_LOBBY_LAUNCH: &str = "lobby-launch";
 const OPERATOR_ACTIVITY_PACK_CATALOG: &str = "activity-pack-catalog";
 const OPERATOR_ROOM_INVENTORY: &str = "room-inventory";
 const OPERATOR_ROOM_DETAIL: &str = "room-detail";
+const OPERATOR_BACKUP_PROFILE: &str = "backup-profile";
+const OPERATOR_LIVE_BACKUP: &str = "live-backup";
 
 /// Fills a caller-owned buffer from the platform's operating-system CSPRNG.
 ///
@@ -759,6 +767,19 @@ pub trait GatewayBackend: Send + Sync + 'static {
         session: &GatewaySession,
         request: CreateRoomRequest,
     ) -> Result<CreateRoomResponse, BackendError>;
+    /// Authenticates and records one fixed host Lobby launch `ExternalInput`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed error for invalid authority, phase, identity reuse, or persistence.
+    fn launch_lobby(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+        _request: LobbyLaunchRequest,
+    ) -> Result<LobbyLaunchResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
     /// Reads the caller-authorized current Projection.
     ///
     /// # Errors
@@ -885,6 +906,33 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _session: &GatewaySession,
         _room_id: &str,
     ) -> Result<OperatorRoomSummary, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Reports the configured storage profile's live-backup health without
+    /// starting an operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed authority or storage failure.
+    fn operator_backup_profile(
+        &self,
+        _session: &GatewaySession,
+    ) -> Result<OperatorBackupProfileStatus, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Creates or reconciles one stable verified live-backup preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed authority, destination, verification, or storage
+    /// failure without changing the running source.
+    fn operator_live_backup(
+        &self,
+        _session: &GatewaySession,
+        _request: OperatorLiveBackupPrepareRequest,
+    ) -> Result<OperatorLiveBackupStatus, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
 
@@ -1090,6 +1138,11 @@ pub(crate) fn activity_pack_revision_from_registry(
         selectable_for_new_rooms: revision.selectable_for_new_rooms,
         runnable_for_retained_rooms: revision.runnable_for_retained_rooms,
     };
+    let lobby_compatibility = (revision_digest == worldstream_core::agent_heist_lobby_digest())
+        .then(|| ActivityPackLobbyCompatibility {
+            contract: worldstream_core::AGENT_HEIST_LOBBY_CONTRACT.to_owned(),
+            configuration_schema: configuration_schema.clone(),
+        });
     Ok(ActivityPackCatalogRevisionResponse {
         version: ACTIVITY_PACK_CATALOG_VERSION.to_owned(),
         revision: ActivityPackCatalogRevisionDetail {
@@ -1105,10 +1158,7 @@ pub(crate) fn activity_pack_revision_from_registry(
                 .collect(),
             configuration_schema,
             actions,
-            // Current embedded revisions do not declare a Lobby contract.
-            // A future seam may populate this only from an exact
-            // descriptor-bound declaration.
-            lobby_compatibility: None,
+            lobby_compatibility,
         },
     })
 }
@@ -1600,7 +1650,13 @@ pub fn operator_router(state: OperatorState) -> Router {
         )
         .route("/v1/operator/rooms", get(operator_room_inventory))
         .route("/v1/operator/rooms/{room_id}", get(operator_room_detail))
+        .route("/v1/operator/backups/health", get(operator_backup_profile))
+        .route("/v1/operator/backups", post(operator_live_backup))
         .route("/v1/operator/rooms/{room_id}/timers/fire", post(fire_timer))
+        .route(
+            "/v1/operator/rooms/{room_id}/lobby/launch",
+            post(launch_lobby),
+        )
         .route("/v1/rooms/{room_id}/projection", get(current_projection))
         .route("/v1/rooms/{room_id}/replay", get(historical_replay))
         .route(
@@ -2081,6 +2137,51 @@ async fn operator_room_detail(
     .map_err(ResponseError::from)
 }
 
+async fn operator_backup_profile(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+) -> ResponseResult<OperatorBackupProfileStatus> {
+    let session = Arc::new(authenticated_session(&headers)?);
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_BACKUP_PROFILE),
+        traceparent_correlation(&headers),
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.operator_backup_profile(&session)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
+}
+
+async fn operator_live_backup(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+    Json(request): Json<OperatorLiveBackupPrepareRequest>,
+) -> ResponseResult<OperatorLiveBackupStatus> {
+    let session = Arc::new(authenticated_session(&headers)?);
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_LIVE_BACKUP),
+        traceparent_correlation(&headers),
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.operator_live_backup(&session, request)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
+}
+
 fn parse_operator_room_inventory_query(
     raw_query: Option<&str>,
 ) -> Result<OperatorRoomInventoryRequest, ResponseError> {
@@ -2217,6 +2318,57 @@ async fn fire_timer(
             record_admission_with_correlation(state.telemetry.as_ref(), reason, correlation);
             record_commit_with_correlation(state.telemetry.as_ref(), reason, correlation);
             record_timer_with_correlation(state.telemetry.as_ref(), reason, correlation);
+            Err(ResponseError::from(error))
+        }
+    }
+}
+
+async fn launch_lobby(
+    State(state): State<OperatorState>,
+    Path(room_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ResponseResult<LobbyLaunchResponse> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    let request = strict_json::<LobbyLaunchRequest>(&body)?;
+    let targets = [AdmissionTarget {
+        room_id: &room_id,
+        member_id: None,
+    }];
+    admit_authenticated_http(
+        &state,
+        &session,
+        &targets,
+        Some(OPERATOR_LOBBY_LAUNCH),
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    let backend_room_id = room_id.clone();
+    match backend_call(backend, move |backend| {
+        backend.launch_lobby(&session, &backend_room_id, request)
+    })
+    .await
+    {
+        Ok(response) => {
+            publish_live_frames(Arc::clone(&state.backend), &state.live_streams, &room_id).await;
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            record_commit_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            Ok(Json(response))
+        }
+        Err(error) => {
+            let reason = reason_for_backend_error(&error);
+            record_admission_with_correlation(state.telemetry.as_ref(), reason, correlation);
+            record_commit_with_correlation(state.telemetry.as_ref(), reason, correlation);
             Err(ResponseError::from(error))
         }
     }
@@ -2496,7 +2648,7 @@ impl From<BackendError> for ResponseError {
                 StatusCode::NOT_FOUND
             }
             BackendError::Busy => StatusCode::TOO_MANY_REQUESTS,
-            BackendError::Conflict => StatusCode::CONFLICT,
+            BackendError::Conflict | BackendError::WrongPhase => StatusCode::CONFLICT,
             BackendError::StorageUnavailable
             | BackendError::Indeterminate
             | BackendError::RoomFaulted
@@ -2550,6 +2702,7 @@ fn safe_message(code: ErrorCode) -> &'static str {
             "the operation identity conflicts with an existing request"
         }
         ErrorCode::InvalidPayload => "the request payload is invalid",
+        ErrorCode::WrongPhase => "the Activity is not waiting in Lobby",
         _ => "the request could not be completed",
     }
 }
@@ -4453,7 +4606,7 @@ fn reason_for_backend_error(error: &BackendError) -> telemetry::ReasonCodeV1 {
         | BackendError::Rejected
         | BackendError::InvalidResult => telemetry::ReasonCodeV1::Invalid,
         BackendError::Busy => telemetry::ReasonCodeV1::Busy,
-        BackendError::Conflict => telemetry::ReasonCodeV1::Conflict,
+        BackendError::Conflict | BackendError::WrongPhase => telemetry::ReasonCodeV1::Conflict,
         BackendError::StorageUnavailable => telemetry::ReasonCodeV1::StorageUnavailable,
         BackendError::Indeterminate => telemetry::ReasonCodeV1::CommitIndeterminate,
         BackendError::RoomFaulted | BackendError::RoomQuarantined => {
@@ -4672,7 +4825,7 @@ mod tests {
     use axum::{
         body::Body,
         extract::ws::Message,
-        http::{HeaderMap, HeaderValue, Request, StatusCode, header},
+        http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -4683,9 +4836,10 @@ mod tests {
     use worldstream_protocol::{
         AccessMode, ActionSubmit, BEARER_WIRE_PREFIX, BearerWireV1,
         BrowserWebSocketTicketIssueResponse, ClientHello, CreateMember, CreateRoomRequest,
-        CreateRoomResponse, ErrorCode, ErrorEnvelope, ObservationAck, ObservationDeliver,
-        PackReference, PrincipalKind, Projection, ProjectionResponse, ReplayResponse, RoomAttach,
-        RoomHead, RoomSyncAck, RunnerHello, ServerWelcome, TimerFireResponse,
+        CreateRoomResponse, ErrorCode, ErrorEnvelope, LobbyLaunchResponse, ObservationAck,
+        ObservationDeliver, PackReference, PrincipalKind, Projection, ProjectionResponse,
+        ReplayResponse, RoomAttach, RoomHead, RoomSyncAck, RunnerHello, ServerWelcome,
+        TimerFireResponse,
     };
     use worldstream_runtime::{EffectiveConfig, StorageProfile};
     use worldstream_sqlite::SqliteRoomStore;
@@ -5012,6 +5166,36 @@ mod tests {
             })
         }
 
+        fn launch_lobby(
+            &self,
+            _: &super::GatewaySession,
+            room_id: &str,
+            request: worldstream_protocol::LobbyLaunchRequest,
+        ) -> Result<worldstream_protocol::LobbyLaunchResponse, super::BackendError> {
+            if room_id == "wrong-phase" {
+                return Err(super::BackendError::WrongPhase);
+            }
+            if room_id == "conflict" {
+                return Err(super::BackendError::Conflict);
+            }
+            Ok(worldstream_protocol::LobbyLaunchResponse {
+                room_id: room_id.to_owned(),
+                input_id: request.input_id,
+                transition_id: "01ARZ3NDEKTSV4RRFFQ69G5FC7".to_owned(),
+                room_head: RoomHead {
+                    room_id: room_id.to_owned(),
+                    room_seq: 1,
+                    genesis_or_transition_hash: "hash".to_owned(),
+                    core_schema_version: "schema".to_owned(),
+                    pack_digest: "digest".to_owned(),
+                    core_state_hash: "hash".to_owned(),
+                    activity_state_hash: "hash".to_owned(),
+                    authoritative_state_hash: "hash".to_owned(),
+                },
+                duplicate: room_id == "duplicate",
+            })
+        }
+
         fn projection(
             &self,
             _: &super::GatewaySession,
@@ -5194,6 +5378,46 @@ mod tests {
                 "01ARZ3NDEKTSV4RRFFQ69G5FQ1" => Ok(operator_room_fixture(room_id, 2)),
                 _ => Err(super::BackendError::NotFound),
             }
+        }
+
+        fn operator_backup_profile(
+            &self,
+            _: &super::GatewaySession,
+        ) -> Result<worldstream_protocol::OperatorBackupProfileStatus, super::BackendError>
+        {
+            Ok(worldstream_protocol::OperatorBackupProfileStatus {
+                storage_profile: worldstream_protocol::OperatorBackupStorageProfile::SqliteBundled,
+                storage_health: worldstream_protocol::OperatorBackupStorageHealth::Healthy,
+                live_backup_supported: true,
+                verification: worldstream_protocol::OperatorBackupVerification::Unavailable,
+                freshness: worldstream_protocol::OperatorDataFreshness::Unavailable {
+                    reason: "no_operation_selected".to_owned(),
+                },
+            })
+        }
+
+        fn operator_live_backup(
+            &self,
+            _: &super::GatewaySession,
+            request: worldstream_protocol::OperatorLiveBackupPrepareRequest,
+        ) -> Result<worldstream_protocol::OperatorLiveBackupStatus, super::BackendError> {
+            Ok(worldstream_protocol::OperatorLiveBackupStatus {
+                operation_id: request.operation_id,
+                storage_profile: worldstream_protocol::OperatorBackupStorageProfile::SqliteBundled,
+                storage_health: worldstream_protocol::OperatorBackupStorageHealth::Healthy,
+                native_verification: worldstream_protocol::OperatorBackupVerification::Pass,
+                semantic_verification: worldstream_protocol::OperatorBackupVerification::Pass,
+                freshness: worldstream_protocol::OperatorDataFreshness::Fresh {
+                    observed_at: "2026-08-23T20:00:00Z".to_owned(),
+                },
+                artifact: Some(worldstream_protocol::OperatorLiveBackupArtifactSummary {
+                    artifact_name: "backup.sqlite3".to_owned(),
+                    byte_length: 4096,
+                    blake3_digest: "a".repeat(64),
+                    semantic_digest: "b".repeat(64),
+                }),
+                unavailable_reason: None,
+            })
         }
     }
 
@@ -5615,6 +5839,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operator_live_backup_is_pathless_and_profile_health_is_independent() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/operator/backups/health")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("health request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("health response: {error}"));
+        assert_eq!(health.status(), StatusCode::OK);
+        let backup = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/operator/backups")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"operation_id":"stable-backup"}"#))
+                    .unwrap_or_else(|error| unreachable!("backup request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("backup response: {error}"));
+        assert_eq!(backup.status(), StatusCode::OK);
+        let bytes = backup
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("backup body: {error}"))
+            .to_bytes();
+        let status: worldstream_protocol::OperatorLiveBackupStatus = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|error| unreachable!("backup JSON: {error}"));
+        assert_eq!(status.operation_id, "stable-backup");
+        assert_eq!(
+            status.native_verification,
+            worldstream_protocol::OperatorBackupVerification::Pass
+        );
+
+        let rejected_path = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        )
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operator/backups")
+                .header(header::AUTHORIZATION, auth_header())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"operation_id":"stable-backup","destination":"/private/sentinel/backup.sqlite3"}"#,
+                ))
+                .unwrap_or_else(|error| unreachable!("path request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("path response: {error}"));
+        assert!(rejected_path.status().is_client_error());
+    }
+
+    #[tokio::test]
     async fn live_publication_does_not_duplicate_after_registered_catch_up() {
         let session_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
             .parse()
@@ -5938,7 +6229,120 @@ mod tests {
         )
     }
 
+    fn lobby_launch_body() -> Body {
+        Body::from(r#"{"input_id":"01ARZ3NDEKTSV4RRFFQ69G5FC6","based_on_room_seq":0}"#)
+    }
+
     #[tokio::test]
+    async fn lobby_launch_requires_authenticated_host_admission() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/room/lobby/launch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(lobby_launch_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn lobby_launch_has_bounded_success_and_wrong_phase_outcomes() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let success = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/room/lobby/launch")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(lobby_launch_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(success.status(), StatusCode::OK);
+
+        let duplicate = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/duplicate/lobby/launch")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(lobby_launch_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(duplicate.status(), StatusCode::OK);
+        let duplicate: LobbyLaunchResponse = serde_json::from_slice(
+            &duplicate
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("Lobby duplicate: {error}"));
+        assert!(duplicate.duplicate);
+
+        let conflict = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/conflict/lobby/launch")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(lobby_launch_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+
+        let wrong_phase = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/operator/rooms/wrong-phase/lobby/launch")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(lobby_launch_body())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(wrong_phase.status(), StatusCode::CONFLICT);
+        let envelope: ErrorEnvelope = serde_json::from_slice(
+            &wrong_phase
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("error envelope: {error}"));
+        assert_eq!(envelope.error.code, ErrorCode::WrongPhase);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn activity_pack_catalog_lists_and_reads_exact_revisions() {
         let app = operator_router(
             OperatorState::new(EffectiveConfig::default())
@@ -5970,7 +6374,7 @@ mod tests {
             list.version,
             worldstream_protocol::ACTIVITY_PACK_CATALOG_VERSION
         );
-        assert_eq!(list.revisions.len(), 4);
+        assert_eq!(list.revisions.len(), 5);
         assert!(
             list.revisions
                 .windows(2)
@@ -5986,6 +6390,7 @@ mod tests {
 
         let selected_digest = counter_v2_digest().to_string();
         let detail = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/v1/operator/activity-packs/{selected_digest}"))
@@ -6014,6 +6419,38 @@ mod tests {
             "counter/configuration/v1"
         );
         assert!(detail.revision.lobby_compatibility.is_none());
+
+        let lobby_digest = worldstream_core::agent_heist_lobby_digest().to_string();
+        let lobby_detail = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/operator/activity-packs/{lobby_digest}"))
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(lobby_detail.status(), StatusCode::OK);
+        let lobby_detail: worldstream_protocol::ActivityPackCatalogRevisionResponse =
+            serde_json::from_slice(
+                &lobby_detail
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap_or_else(|error| unreachable!("body: {error}"))
+                    .to_bytes(),
+            )
+            .unwrap_or_else(|error| unreachable!("Lobby detail: {error}"));
+        assert_eq!(lobby_detail.revision.summary.pack.digest, lobby_digest);
+        assert_eq!(
+            lobby_detail
+                .revision
+                .lobby_compatibility
+                .as_ref()
+                .map(|compatibility| compatibility.contract.as_str()),
+            Some(worldstream_core::AGENT_HEIST_LOBBY_CONTRACT)
+        );
     }
 
     #[tokio::test]

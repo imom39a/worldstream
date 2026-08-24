@@ -115,7 +115,13 @@ async fn main() -> Result<()> {
                 bootstrap_authority(&store, config.authority.bootstrap_secret.as_ref())
                     .context("SQLite authority bootstrap failed closed")?;
             let (sqlite_version, sqlite_source_id) = store.engine_identity();
-            let backend = Arc::new(SqliteGatewayBackend::new(store, Arc::new(registry)));
+            let backup_root = worldstream_runtime::prepare_live_backup_root(&data_dir)
+                .context("shared SQLite live-backup root initialization failed")?;
+            let backend = Arc::new(
+                SqliteGatewayBackend::new(store, Arc::new(registry))
+                    .with_live_backup_root(&backup_root)
+                    .context("SQLite live-backup root initialization failed")?,
+            );
             let state = OperatorState::new(config)
                 .context("operator state initialization failed")?
                 .with_backend(backend)

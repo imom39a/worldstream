@@ -323,6 +323,77 @@ pub struct OperatorRoomInventoryPage {
     pub next_after_room_id: Option<String>,
 }
 
+/// Durable storage profile relevant to live-backup capability.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorBackupStorageProfile {
+    SqliteBundled,
+    PostgresPrimary,
+    Ephemeral,
+}
+
+/// Storage health is independent from backup verification and freshness.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorBackupStorageHealth {
+    Healthy,
+    Unhealthy,
+    Unavailable,
+}
+
+/// Closed verification result for an exact backup artifact.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorBackupVerification {
+    Pass,
+    Failed,
+    Unavailable,
+}
+
+/// Profile-level health and support, queried without starting an operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorBackupProfileStatus {
+    pub storage_profile: OperatorBackupStorageProfile,
+    pub storage_health: OperatorBackupStorageHealth,
+    pub live_backup_supported: bool,
+    pub verification: OperatorBackupVerification,
+    pub freshness: OperatorDataFreshness,
+}
+
+/// Internal Host-authorized preparation request. The daemon derives the
+/// destination from its configured backup root and this stable operation ID;
+/// callers cannot supply a filesystem path.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorLiveBackupPrepareRequest {
+    pub operation_id: String,
+}
+
+/// Pathless summary of one exact verified native artifact.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorLiveBackupArtifactSummary {
+    pub artifact_name: String,
+    pub byte_length: u64,
+    pub blake3_digest: String,
+    pub semantic_digest: String,
+}
+
+/// Terminal result from a bounded daemon-side backup preparation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorLiveBackupStatus {
+    pub operation_id: String,
+    pub storage_profile: OperatorBackupStorageProfile,
+    pub storage_health: OperatorBackupStorageHealth,
+    pub native_verification: OperatorBackupVerification,
+    pub semantic_verification: OperatorBackupVerification,
+    pub freshness: OperatorDataFreshness,
+    pub artifact: Option<OperatorLiveBackupArtifactSummary>,
+    pub unavailable_reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateMember {
@@ -493,6 +564,25 @@ pub struct TimerFireResponse {
     pub room_id: String,
     pub timer_id: String,
     pub generation: u64,
+    pub transition_id: String,
+    pub room_head: RoomHead,
+    pub duplicate: bool,
+}
+
+/// Bounded host request to launch one Activity-defined Lobby.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LobbyLaunchRequest {
+    pub input_id: String,
+    pub based_on_room_seq: u64,
+}
+
+/// Safe result of one recorded Lobby launch `ExternalInput`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LobbyLaunchResponse {
+    pub room_id: String,
+    pub input_id: String,
     pub transition_id: String,
     pub room_head: RoomHead,
     pub duplicate: bool,

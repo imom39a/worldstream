@@ -2,15 +2,21 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
+use worldstream_runtime::{CliOverrides, ConfigLoader};
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
+    backups::{
+        BackupOperationsV1, BackupStorageProfileV1, HttpDaemonBackupExecutorV1,
+        prepare_shared_backup_root,
+    },
     lifecycle::ConfiguredDaemonLifecycle,
+    room_creation::{HttpDaemonRoomCreatorV1, RoomCreationSupervisorV1},
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
     rooms::HttpDaemonRoomSource,
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
-    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_and_drafts,
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_and_creation,
 };
 
 #[derive(Debug, Parser)]
@@ -55,11 +61,29 @@ struct Args {
     /// Owner-controlled directory of approved Runner Template manifests.
     #[arg(long, default_value = "config/runner-templates")]
     runner_templates_dir: PathBuf,
+
+    /// Storage profile configured for the controlled worldstreamd process.
+    #[arg(long, default_value = "sqlite-bundled", value_parser = parse_backup_profile)]
+    storage_profile: BackupStorageProfileV1,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let daemon_effective =
+        ConfigLoader::from_process(Some(args.daemon_config.clone()), CliOverrides::default())
+            .context("controlled worldstreamd configuration could not be selected")?
+            .load()
+            .context("controlled worldstreamd configuration is invalid")?;
+    let backup_root = prepare_shared_backup_root(
+        &args.state_dir,
+        &daemon_effective.storage.data_dir,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "Studio and worldstreamd must use one identical canonical backup root: {error:?}"
+        )
+    })?;
     let daemon_timeout = Duration::from_millis(args.probe_timeout_ms);
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
@@ -86,8 +110,32 @@ async fn main() -> Result<()> {
         args.daemon,
         daemon_timeout,
         vault.clone(),
+        args.host_authority_reference.clone(),
+    );
+    let room_creator = HttpDaemonRoomCreatorV1::new(
+        args.daemon,
+        daemon_timeout,
+        vault.clone(),
+        args.host_authority_reference.clone(),
+    );
+    let room_creation = RoomCreationSupervisorV1::open(
+        &args.state_dir.join("room-creations"),
+        drafts.clone(),
+        room_creator,
+    )
+    .context("Studio Supervisor protected Room creation store is unavailable")?;
+    let backup_executor = HttpDaemonBackupExecutorV1::new(
+        args.daemon,
+        daemon_timeout,
+        args.storage_profile,
+        vault.clone(),
         args.host_authority_reference,
     );
+    let backups = BackupOperationsV1::open(&backup_root, backup_executor).map_err(|error| {
+        anyhow::anyhow!(
+            "Studio Supervisor protected backup operation store is unavailable: {error:?}"
+        )
+    })?;
     let runner_registry = RunnerTemplateRegistryV1::open(
         &args.state_dir.join("runner-templates/installed"),
         &args.runner_templates_dir,
@@ -102,7 +150,7 @@ async fn main() -> Result<()> {
     .context("Studio Supervisor Runner instance state is unavailable")?;
     axum::serve(
         listener,
-        supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_and_drafts(
+        supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_and_creation(
             source,
             lifecycle,
             vault,
@@ -110,6 +158,8 @@ async fn main() -> Result<()> {
             activity_packs,
             rooms,
             drafts,
+            backups,
+            room_creation,
         ),
     )
     .await
@@ -119,4 +169,13 @@ async fn main() -> Result<()> {
 fn parse_secret_reference(value: &str) -> Result<SecretReferenceV1, &'static str> {
     SecretReferenceV1::parse(value.to_owned())
         .map_err(|_| "reference must be exactly 64 lowercase hexadecimal characters")
+}
+
+fn parse_backup_profile(value: &str) -> Result<BackupStorageProfileV1, &'static str> {
+    match value {
+        "sqlite-bundled" => Ok(BackupStorageProfileV1::SqliteBundled),
+        "postgres-primary" => Ok(BackupStorageProfileV1::PostgresPrimary),
+        "ephemeral" => Ok(BackupStorageProfileV1::Ephemeral),
+        _ => Err("profile must be sqlite-bundled, postgres-primary, or ephemeral"),
+    }
 }

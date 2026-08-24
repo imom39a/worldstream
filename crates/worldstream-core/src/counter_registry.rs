@@ -532,6 +532,7 @@ fn counter_corpus(revision: CounterRevision, pack_digest: PackDigestV1) -> PackG
                 admitted_at: parsed("2026-08-15T12:00:02Z"),
             },
         ],
+        external_inputs: Vec::new(),
         expected_transcript_digest: parsed(revision.transcript_digest()),
     }
 }

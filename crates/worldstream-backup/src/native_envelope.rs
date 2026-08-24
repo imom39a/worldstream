@@ -32,7 +32,7 @@ pub const NATIVE_SQLITE_BACKUP_ENVELOPE_SCHEMA_V1: &str =
     "worldstream/native-sqlite-backup-envelope/v1";
 
 const MAX_ENVELOPE_TEXT: usize = 512;
-const REQUIRED_COVERAGE_TABLES: [&str; 18] = [
+const REQUIRED_COVERAGE_TABLES: [&str; 19] = [
     "retired_authority_fences_v1",
     "principals",
     "runners",
@@ -50,6 +50,7 @@ const REQUIRED_COVERAGE_TABLES: [&str; 18] = [
     "activation_intents",
     "activation_operation_receipts",
     "semantic_receipts",
+    "external_input_preparations",
     "integrity_incidents",
 ];
 

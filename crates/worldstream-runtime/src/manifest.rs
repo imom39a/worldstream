@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn all_retained_pack_entries_are_resolved_and_current_heist_is_selectable() {
         let summary = manifest().summary();
-        assert_eq!(summary.pack_executors.len(), 4);
+        assert_eq!(summary.pack_executors.len(), 5);
         let counter: Vec<_> = summary
             .pack_executors
             .iter()
@@ -469,7 +469,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.pack_id == super::AGENT_HEIST_PACK_ID)
             .collect();
-        assert_eq!(heists.len(), 2);
+        assert_eq!(heists.len(), 3);
         assert!(heists.iter().all(|entry| {
             entry.status == "resolved"
                 && !entry.revision_digest.is_empty()
@@ -477,6 +477,9 @@ mod tests {
         }));
         assert!(heists.iter().any(|entry| {
             entry.explanatory_version == "0.1.0" && entry.selectable_for_new_rooms
+        }));
+        assert!(heists.iter().any(|entry| {
+            entry.explanatory_version == "0.2.0" && entry.selectable_for_new_rooms
         }));
         assert!(heists.iter().any(|entry| {
             entry.explanatory_version == "0.0.1" && !entry.selectable_for_new_rooms
@@ -513,7 +516,7 @@ mod tests {
     #[test]
     fn unresolved_entries_reject_release_manifests_or_partial_digests() {
         let mut release = manifest();
-        let unresolved = entry_mut(&mut release, super::AGENT_HEIST_PACK_ID, "0.1.0");
+        let unresolved = entry_mut(&mut release, super::AGENT_HEIST_PACK_ID, "0.2.0");
         unresolved.status = "unresolved".to_owned();
         for digest in [
             &mut unresolved.revision_digest,
@@ -528,7 +531,7 @@ mod tests {
         assert!(release.validate().is_err());
 
         let mut partial = manifest();
-        let partial_entry = entry_mut(&mut partial, super::AGENT_HEIST_PACK_ID, "0.1.0");
+        let partial_entry = entry_mut(&mut partial, super::AGENT_HEIST_PACK_ID, "0.2.0");
         partial_entry.status = "unresolved".to_owned();
         for digest in [
             &mut partial_entry.revision_digest,
@@ -614,17 +617,25 @@ mod tests {
         let heist = entry_mut(
             &mut no_selectable_release_activity,
             super::AGENT_HEIST_PACK_ID,
-            "0.1.0",
+            "0.2.0",
         );
         heist.selectable_for_new_rooms = false;
+        entry_mut(
+            &mut no_selectable_release_activity,
+            super::AGENT_HEIST_PACK_ID,
+            "0.1.0",
+        )
+        .selectable_for_new_rooms = false;
         assert!(no_selectable_release_activity.validate().is_err());
     }
 
     #[test]
     fn release_ready_manifest_requires_selectable_agent_heist_not_an_arbitrary_pack() {
         let mut invalid = manifest();
-        let heist = entry_mut(&mut invalid, super::AGENT_HEIST_PACK_ID, "0.1.0");
+        let heist = entry_mut(&mut invalid, super::AGENT_HEIST_PACK_ID, "0.2.0");
         heist.selectable_for_new_rooms = false;
+        entry_mut(&mut invalid, super::AGENT_HEIST_PACK_ID, "0.1.0").selectable_for_new_rooms =
+            false;
 
         let mut substitute = invalid
             .pack_executors

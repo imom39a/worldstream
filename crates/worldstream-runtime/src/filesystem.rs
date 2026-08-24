@@ -73,6 +73,25 @@ pub fn prepare_data_directory(path: &Path) -> Result<PathBuf, FilesystemError> {
     }
 }
 
+/// Prepares the one canonical Studio live-backup root associated with a
+/// daemon data directory. Both the daemon and Supervisor must use this exact
+/// helper so the artifact owner and durable operation owner cannot diverge.
+///
+/// # Errors
+///
+/// Returns an error when the data directory has no parent or the derived
+/// owner-only backup root cannot be securely prepared.
+pub fn prepare_live_backup_root(data_directory: &Path) -> Result<PathBuf, FilesystemError> {
+    let data_directory = prepare_data_directory(data_directory)?;
+    let parent = data_directory
+        .parent()
+        .ok_or_else(|| FilesystemError::UnsafePath {
+            path: data_directory.clone(),
+            reason: "data directory has no parent",
+        })?;
+    prepare_data_directory(&parent.join("studio/backups"))
+}
+
 /// Validates a secret file without reading or logging its contents.
 ///
 /// # Errors
@@ -1182,7 +1201,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        FilesystemError, create_owner_only_file, prepare_data_directory, validate_owner_only_file,
+        FilesystemError, create_owner_only_file, prepare_data_directory, prepare_live_backup_root,
+        validate_owner_only_file,
     };
 
     #[test]
@@ -1197,6 +1217,19 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn live_backup_root_is_canonical_and_shared_beside_the_data_directory() {
+        let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let root = prepare_live_backup_root(&parent.path().join("data"))
+            .unwrap_or_else(|error| unreachable!("backup root: {error}"));
+        assert_eq!(root, parent.path().join("studio/backups"));
+        assert_eq!(
+            prepare_live_backup_root(&parent.path().join("data"))
+                .unwrap_or_else(|error| unreachable!("reopen root: {error}")),
+            root
+        );
     }
 
     #[test]

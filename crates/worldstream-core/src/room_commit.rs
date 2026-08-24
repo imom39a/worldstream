@@ -14,18 +14,18 @@ use crate::{
     ACTION_OFFER_DOMAIN, AccessModeV1, ActionAdmittedAt, ActionId, ActionOfferV1,
     ActivityObservationOutcomeV1, AdministrationOperationIdentityV1, AuthorityCheckedAt,
     AuthorityErrorV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1, AuthorityStoreErrorV1,
-    AuthorityUseV1, AuthorityV1, AuthorizedCoreAdministrationV1, AuthorizedParticipantActionV1,
-    AuthorizedReceiptReadV1, AuthorizedRoomCreationV1, AuthorizedTimerFiredV1, Blake3DigestV1,
-    CanonicalJsonError, CanonicalJsonV1, ClassifiedCoreAdministrationV1, CompleteHeadV1,
-    CoreAdministrationClassV1, CoreChangeSetV1, CoreProposedKindV1, CoreProposedV1, CoreRecordedAt,
-    CoreRoomStateV1, CoreTraceV1, CreationRecordedAt, ExternalInputRecordedAt, ExternalInputV1,
-    GenesisV1, InputId, IntegrityGenerationV1, MemberAuthorityUseV1, MemberId,
-    MembershipChangeKindV1, MembershipStandingV1, MembershipV1, PackDigestV1, PackRegistryV1,
-    PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionV1,
-    PreparedNewRoomGenesisV1, PresentedCapabilityV1, PrincipalId, PrincipalKindV1,
-    RecordedStimulusV1, ReplayFailureClassV1, RoomId, RoomSequenceV1, RoomStatusV1, SourceId,
-    TimerChangeV1, TimerFiredV1, TimerGenerationV1, TimerId, TimerScheduledFor, TraceErrorV1,
-    TransitionId, TransitionV1,
+    AuthorityUseV1, AuthorityV1, AuthorizedCoreAdministrationV1, AuthorizedExternalInputV1,
+    AuthorizedParticipantActionV1, AuthorizedReceiptReadV1, AuthorizedRoomCreationV1,
+    AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonError, CanonicalJsonV1,
+    ClassifiedCoreAdministrationV1, CompleteHeadV1, CoreAdministrationClassV1, CoreChangeSetV1,
+    CoreProposedKindV1, CoreProposedV1, CoreRecordedAt, CoreRoomStateV1, CoreTraceV1,
+    CreationRecordedAt, ExternalInputRecordedAt, ExternalInputV1, GenesisV1, InputId,
+    IntegrityGenerationV1, MemberAuthorityUseV1, MemberId, MembershipChangeKindV1,
+    MembershipStandingV1, MembershipV1, PackDigestV1, PackRegistryV1, PackRevisionLockV1,
+    PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionV1, PreparedNewRoomGenesisV1,
+    PresentedCapabilityV1, PrincipalId, PrincipalKindV1, RecordedStimulusV1, ReplayFailureClassV1,
+    RoomId, RoomSequenceV1, RoomStatusV1, SourceId, TimerChangeV1, TimerFiredV1, TimerGenerationV1,
+    TimerId, TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1,
     activity_pack::{ValidatedPackObservationV1, ValidatedPackViewV1},
     authority::{AuthorityFenceFactsV1, ReceiptReadAdapterInputV1, ReceiptReadTargetPolicyV1},
     canonical::encode,
@@ -2347,6 +2347,17 @@ pub struct PreparedTimerInputWitnessV1 {
 }
 redacted_debug!(PreparedTimerInputWitnessV1);
 
+/// Exact `ExternalInput` facts used during pure preparation.
+#[derive(Clone)]
+pub struct PreparedExternalInputWitnessV1 {
+    pub room_id: RoomId,
+    pub based_on_room_seq: RoomSequenceV1,
+    pub input: ExternalInputV1,
+    pub canonical_core_before_bytes: Vec<u8>,
+    pub canonical_activity_before_bytes: Vec<u8>,
+}
+redacted_debug!(PreparedExternalInputWitnessV1);
+
 /// Exact normalized host-administration facts used during pure preparation.
 #[derive(Clone)]
 pub struct PreparedCoreAdministrationInputWitnessV1 {
@@ -2364,6 +2375,7 @@ redacted_debug!(PreparedCoreAdministrationInputWitnessV1);
 pub enum PreparedOperationInputWitnessV1 {
     ParticipantAction(Box<PreparedActionInputWitnessV1>),
     TimerFired(Box<PreparedTimerInputWitnessV1>),
+    ExternalInput(Box<PreparedExternalInputWitnessV1>),
     CoreAdministration(Box<PreparedCoreAdministrationInputWitnessV1>),
 }
 redacted_debug!(PreparedOperationInputWitnessV1);
@@ -2730,6 +2742,147 @@ impl PreparedRoomCommitV1 {
             authority_witness,
             current_frame_heads,
         )
+    }
+
+    /// Seals one exact host-authorized `ExternalInput` Advance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Room/basis/input/grant or prepared transition differs.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub fn for_authorized_external_input(
+        trace: &CoreTraceV1,
+        room_id: &RoomId,
+        based_on_room_seq: RoomSequenceV1,
+        input: &ExternalInputV1,
+        prepared: PreparedRoomTransitionV1,
+        transition_id: TransitionId,
+        integrity_generation: IntegrityGenerationV1,
+        authority: AuthorizedExternalInputV1,
+        current_frame_heads: &BTreeMap<MemberId, u64>,
+    ) -> Result<Self, PrepareRoomWriteErrorV1> {
+        if !prepared.is_new()
+            || prepared.basis_complete_head() != trace.head()
+            || trace.head().room_id() != room_id
+            || trace.head().room_seq() != based_on_room_seq
+        {
+            return Err(PrepareRoomWriteErrorV1::PreparedBasisMismatch);
+        }
+        let RecordedStimulusV1::ExternalInput(recorded) = prepared.recorded_stimulus() else {
+            return Err(PrepareRoomWriteErrorV1::NotExternalInput);
+        };
+        if recorded != input {
+            return Err(PrepareRoomWriteErrorV1::ExternalInputRequestMismatch);
+        }
+        let request_hash = external_input_request_hash(room_id, based_on_room_seq, input)?;
+        if authority.room_id() != room_id || authority.request_hash() != &request_hash {
+            return Err(PrepareRoomWriteErrorV1::AuthorityIdentityMismatch);
+        }
+        let expected_use = AuthorityUseV1::ExternalInput {
+            room_id: room_id.clone(),
+            request_hash: request_hash.clone(),
+        };
+        let authority_witness = PreparedAuthorityWitnessV1::from_fence_for_use(
+            authority.into_fence_facts(),
+            &expected_use,
+        )?;
+        let AdvanceDispositionV1::TransitionAccepted { transition, .. } = prepared.disposition()
+        else {
+            return Err(PrepareRoomWriteErrorV1::InvalidPreparedTransition);
+        };
+        let resulting_state = prepared
+            .resulting_state()
+            .ok_or(PrepareRoomWriteErrorV1::InvalidPreparedTransition)?;
+        let resulting_complete_head = transition.complete_head();
+        let basis_complete_head = trace.head().clone();
+        if resulting_state.head() != &resulting_complete_head
+            || transition.previous_lineage_hash()
+                != basis_complete_head.genesis_or_transition_hash()
+        {
+            return Err(PrepareRoomWriteErrorV1::InvalidPreparedTransition);
+        }
+        let delivery_consequences = prepare_transition_consequences(
+            trace,
+            &prepared,
+            resulting_state.core_state(),
+            transition.room_seq(),
+            current_frame_heads,
+        )?;
+        let resulting_memberships = resulting_state
+            .core_state()
+            .memberships()
+            .values()
+            .map(|membership| {
+                Ok(PreparedMembershipMaterializationV1 {
+                    membership: membership.clone(),
+                    canonical_membership_bytes: encode(membership)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CanonicalJsonError>>()?;
+        let persistence = PreparedAdvancePersistenceV1 {
+            transition_id: transition_id.clone(),
+            transition: (**transition).clone(),
+            canonical_transition_bytes: transition.canonical_bytes()?,
+            resulting_complete_head: resulting_complete_head.clone(),
+            canonical_resulting_head_bytes: encode(&resulting_complete_head)?,
+            resulting_core_state: resulting_state.core_state().clone(),
+            canonical_resulting_core_state_bytes: encode(resulting_state.core_state())?,
+            resulting_activity_state: resulting_state.activity_state().clone(),
+            canonical_resulting_activity_state_bytes: resulting_state
+                .activity_state()
+                .to_bytes()?,
+            resulting_memberships,
+            timer_changes: transition
+                .ordered_timer_changes()
+                .iter()
+                .map(PreparedTimerMutationV1::from_change)
+                .collect::<Result<Vec<_>, _>>()?,
+            delivery_consequences,
+            activation_decisions: prepare_activation_decisions(transition)?,
+        };
+        let identity =
+            OperationIdentityV1::ExternalInput(Box::new(ExternalInputOperationIdentityV1 {
+                room_id: room_id.clone(),
+                source_id: input.source_id.clone(),
+                input_id: input.input_id.clone(),
+            }));
+        let semantic_result = StoredSemanticResultV1::prepare(
+            identity.clone(),
+            Some(basis_complete_head.clone()),
+            ReceiptSemanticInputV1::ExternalInput {
+                room_id: room_id.clone(),
+                input: input.clone(),
+            },
+            SemanticResultV1::TransitionCommitted {
+                room_id: resulting_complete_head.room_id().clone(),
+                transition_id,
+                room_seq: resulting_complete_head.room_seq(),
+                previous_lineage_hash: transition.previous_lineage_hash().clone(),
+                complete_head: resulting_complete_head,
+            },
+        )?;
+        if semantic_result.canonical_request_hash() != &request_hash {
+            return Err(PrepareRoomWriteErrorV1::InvalidPreparedTransition);
+        }
+        Ok(Self {
+            identity,
+            request_hash,
+            basis_complete_head,
+            integrity_generation,
+            authority_witness,
+            input_witness: PreparedOperationInputWitnessV1::ExternalInput(Box::new(
+                PreparedExternalInputWitnessV1 {
+                    room_id: room_id.clone(),
+                    based_on_room_seq,
+                    input: input.clone(),
+                    canonical_core_before_bytes: encode(trace.core_state())?,
+                    canonical_activity_before_bytes: trace.activity_state().to_bytes()?,
+                },
+            )),
+            intent: PreparedExistingIntentV1::Advance(Box::new(persistence)),
+            semantic_result,
+            pending_transition: Some(prepared),
+        })
     }
 
     /// Authorizes, normalizes, reduces, and seals one exact existing-Room
@@ -3339,7 +3492,12 @@ fn timer_request_hash(
     Ok(CanonicalRequestHashV1(Blake3DigestV1::hash(&bytes)))
 }
 
-fn external_input_request_hash(
+/// Derives the stable request hash for one existing-Room `ExternalInput`.
+///
+/// # Errors
+///
+/// Returns an error if the bounded request cannot be canonically encoded.
+pub fn external_input_request_hash(
     room_id: &RoomId,
     based_on_room_seq: RoomSequenceV1,
     input: &ExternalInputV1,
@@ -4138,7 +4296,8 @@ fn attempt_existing_room_commit(
                     request_hash: prepared.request_hash.clone(),
                 }),
             ),
-            PreparedOperationInputWitnessV1::CoreAdministration(_) => None,
+            PreparedOperationInputWitnessV1::CoreAdministration(_)
+            | PreparedOperationInputWitnessV1::ExternalInput(_) => None,
         }
     } else {
         None
@@ -5717,6 +5876,10 @@ pub enum PrepareRoomWriteErrorV1 {
     NotTimerFired,
     #[error("prepared Timer stimulus does not match its immutable request")]
     TimerRequestMismatch,
+    #[error("prepared operation is not an exact ExternalInput")]
+    NotExternalInput,
+    #[error("prepared ExternalInput does not match its immutable request")]
+    ExternalInputRequestMismatch,
     #[error("normalized Action does not match its closed caller request")]
     ActionRequestMismatch,
     #[error("Action is currently admissible and cannot become a host disposition")]

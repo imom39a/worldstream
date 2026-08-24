@@ -33,6 +33,35 @@ Supervisor starts; requests cannot supply commands, arguments, environment
 values, or paths. The Supervisor does not expose arbitrary command execution or
 direct Room mutation.
 
+## Verified live backups
+
+The Backups Operations surface reports the configured storage profile's health,
+backup support, verification result, and freshness as separate facts. For the
+bundled SQLite profile, the Supervisor persists an idempotent operation beneath
+its fixed `<state-dir>/backups/<operation-id>` root and asks the live daemon to
+use SQLite's online backup mechanism. The daemon accepts only the stable
+operation ID: it derives the exact `backup.sqlite3` child beneath its
+startup-fixed owner-only backup root. At startup, both processes derive that
+root through the same runtime policy from the controlled daemon configuration;
+the Supervisor fails closed unless its canonical `<state-dir>/backups` is the
+identical directory. The daemon reopens the published bytes and verifies the
+native artifact, and compares deterministic source and destination exports as
+an artifact-consistency check. It returns only a bounded pathless
+name/size/checksum summary. That consistency digest is not the repository's
+full semantic restore verifier, so the API reports semantic restore verification
+as unavailable with the reason `full_semantic_restore_verification_not_run`.
+An intent without a terminal record remains retryable after restart, including
+the crash window where the artifact was published before the result record;
+retrying uses the original operation identity.
+
+PostgreSQL reports provider-managed backup as unsupported by this local live
+workflow; ephemeral storage also reports unsupported. Capability is not storage
+health. Studio does not browse or accept destination paths, schedule provider
+snapshots, restore data, or turn this artifact into an automatic recovery
+workflow. A failed or uncertain operation leaves the running store untouched;
+restore and full post-restore readiness verification remain separate operator
+workflows.
+
 ## Protected credential references
 
 Credentials retained by the Supervisor live under the owner-only state

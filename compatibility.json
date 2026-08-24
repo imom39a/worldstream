@@ -372,6 +372,12 @@
         "status": "implementation_verified"
       },
       {
+        "id": "0013-external-input-preparations-v1",
+        "postgresql_checksum": "blake3:7ec83a157ccdcfec733ceae17e74a0133355a1325103ae1b2c1e110b6aa04013",
+        "sqlite_checksum": "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0",
+        "status": "implementation_verified"
+      },
+      {
         "id": "0003-kernel-conformance-v1",
         "postgresql_checksum": "blake3:150c9c7049ad4b6dc4889f536f5418388afdc888fb2819b2506881d9d163b9e4",
         "sqlite_checksum": "",
@@ -419,7 +425,7 @@
     "old_binary_after_migration_supported": false,
     "postgresql_production_mode": "explicit_offline_direct_admin",
     "rollback": "restore_preupgrade_backend_and_previous_binary",
-    "schema_contract_fingerprint": "blake3:16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb",
+    "schema_contract_fingerprint": "blake3:a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26",
     "schema_contract_fingerprint_status": "implementation_verified",
     "sqlite_production_mode": "exclusive_startup_after_verified_backup"
   },
@@ -514,6 +520,23 @@
       "pack_id": "worldstream.agent-heist",
       "required_for_release": true,
       "revision_digest": "blake3:b05a682f0923001914a800072ee68348e68b979453c93e033cba7916b99a4407",
+      "revision_digest_algorithm": "blake3",
+      "revision_lock_id": "worldstream/pack-revision-lock/v1",
+      "runnable_for_retained_rooms": true,
+      "schema_bundle_digest": "blake3:6dfb0613326e19f27ede58048ccb4804d6d5832b59e3d0c5ee697bd6f7df1a4f",
+      "selectable_for_new_rooms": true,
+      "status": "resolved"
+    },
+    {
+      "codec_bundle_digest": "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30",
+      "descriptor_digest": "blake3:9e291aa11550f380ab8e38defab6a4d83cdc0f2c84ab144354d5cb83632b6a92",
+      "executor_artifact_digest": "blake3:067d6d9816315d26234219d6ac34757beb3dac67c76648b2b2901a5da6fc9067",
+      "explanatory_version": "0.2.0",
+      "golden_corpus_digest": "blake3:15eb416c0567eb3dd3726ad4f931d1b1297d46a83f2a5fbe1fabff2574ffff7a",
+      "host_contract_id": "worldstream/activity-pack/v1",
+      "pack_id": "worldstream.agent-heist",
+      "required_for_release": true,
+      "revision_digest": "blake3:44899f1f2f061a6c1b487df0222db233cf1f44429a20e8b5e56c67bd9016c378",
       "revision_digest_algorithm": "blake3",
       "revision_lock_id": "worldstream/pack-revision-lock/v1",
       "runnable_for_retained_rooms": true,

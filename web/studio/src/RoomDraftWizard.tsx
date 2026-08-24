@@ -294,15 +294,38 @@ function SeatsStep({
         {seats.map((seat) => (
           <label key={seat.seat_id}>
             <span><strong>{seat.display_name}</strong><small>{seat.role} · {seat.required ? "Required" : "Optional"}</small></span>
-            <input
-              value={seat.display_name}
-              onChange={(event) => {
-                const nextSeats = seats.map((current) => current.seat_id === seat.seat_id
-                  ? { ...current, display_name: event.currentTarget.value }
-                  : current);
-                onChange?.({ ...draft, seats: nextSeats, readiness: policy.readiness });
-              }}
-            />
+            <span className="draft-seat-inputs">
+              <input
+                aria-label={`${seat.display_name} label`}
+                value={seat.display_name}
+                onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
+                  display_name: event.currentTarget.value,
+                }, onChange)}
+              />
+              <input
+                aria-label={`${seat.display_name} principal ID`}
+                placeholder={seat.required ? "Required principal ULID" : "Optional principal ULID"}
+                value={seat.principal_id ?? ""}
+                onChange={(event) => {
+                  const principalId = event.currentTarget.value;
+                  updateSeat(draft, seats, policy, seat.seat_id, principalId === ""
+                    ? { principal_id: undefined, principal_kind: undefined }
+                    : { principal_id: principalId, principal_kind: seat.principal_kind ?? "human" }, onChange);
+                }}
+              />
+              {seat.principal_id ? (
+                <select
+                  aria-label={`${seat.display_name} principal kind`}
+                  value={seat.principal_kind ?? "human"}
+                  onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
+                    principal_kind: event.currentTarget.value === "agent" ? "agent" : "human",
+                  }, onChange)}
+                >
+                  <option value="human">Human</option>
+                  <option value="agent">Agent</option>
+                </select>
+              ) : null}
+            </span>
           </label>
         ))}
       </div>
@@ -322,7 +345,9 @@ function ReadinessStep({ draft }: { draft: RoomDraft }) {
         {draft.readiness.map((seat) => (
           <li key={seat.seat_id}>
             <strong>{seat.role}</strong>
-            <span>{seat.required ? "Required before later Room creation" : "Optional seat may remain unfilled"}</span>
+            <span>{seat.required
+              ? `Required before later Room creation · ${draft.seats.find((candidate) => candidate.seat_id === seat.seat_id)?.principal_id ?? "unassigned"}`
+              : "Optional seat may remain unfilled"}</span>
           </li>
         ))}
       </ul>
@@ -391,7 +416,8 @@ function stepIsValid(
   if (step === "readiness") return draft.readiness.length === draft.seats.length &&
     draft.readiness.every((readiness) => {
       const seat = draft.seats.find((candidate) => candidate.seat_id === readiness.seat_id);
-      return seat !== undefined && seat.role === readiness.role && seat.required === readiness.required;
+      return seat !== undefined && seat.role === readiness.role && seat.required === readiness.required &&
+        (!seat.required || (seat.principal_id !== undefined && seat.principal_kind !== undefined));
     });
   return true;
 }
@@ -426,4 +452,16 @@ function parseScalar(event: ChangeEvent<HTMLInputElement | HTMLSelectElement>, t
     return Number.isFinite(value) ? value : event.currentTarget.value;
   }
   return event.currentTarget.value;
+}
+
+function updateSeat(
+  draft: RoomDraft,
+  seats: RoomDraft["seats"],
+  policy: ReturnType<typeof buildSeatPolicy>,
+  seatId: string,
+  patch: Partial<RoomDraft["seats"][number]>,
+  onChange?: (draft: RoomDraft) => void,
+) {
+  const nextSeats = seats.map((seat) => seat.seat_id === seatId ? { ...seat, ...patch } : seat);
+  onChange?.({ ...draft, seats: nextSeats, readiness: policy.readiness });
 }

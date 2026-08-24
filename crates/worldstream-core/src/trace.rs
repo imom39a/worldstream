@@ -88,7 +88,7 @@ impl CoreReducerV1 {
     fn from_retained_pack(retained_pack: &RetainedActivityPackV1) -> Self {
         let host = retained_pack.host();
         Self::new(move |state| {
-            host.validate_roles(state)
+            host.validate_runtime_roles(state)
                 .map_err(|error| error.to_string())
         })
     }

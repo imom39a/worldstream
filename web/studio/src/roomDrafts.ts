@@ -15,6 +15,8 @@ export interface RoomDraftSeat {
   role: string;
   required: boolean;
   display_name: string;
+  principal_id?: string;
+  principal_kind?: "human" | "agent";
 }
 
 export interface RoomDraftSeatReadinessPolicy {
@@ -71,6 +73,19 @@ export function createRoomDraft(draftId: string): RoomDraft {
     seats: [],
     readiness: [],
     last_valid_step: null,
+  };
+}
+
+export function invalidateRoomDraftReview(previous: RoomDraft, next: RoomDraft): RoomDraft {
+  let boundary: RoomDraftStep | null | undefined;
+  if (!jsonEquals(previous.pack, next.pack)) boundary = null;
+  else if (!jsonEquals(previous.configuration, next.configuration)) boundary = "activity";
+  else if (!jsonEquals(previous.seats, next.seats)) boundary = "configuration";
+  else if (!jsonEquals(previous.readiness, next.readiness)) boundary = "seats";
+  if (boundary === undefined) return next;
+  return {
+    ...next,
+    last_valid_step: earlierStep(previous.last_valid_step, boundary),
   };
 }
 
@@ -253,9 +268,16 @@ function isReview(value: unknown): value is RoomDraftReview {
 }
 
 function isSeat(value: unknown): value is RoomDraftSeat {
-  return isRecordWithKeys(value, ["seat_id", "role", "required", "display_name"]) &&
-    isIdentifier(value.seat_id) && isText(value.role) && typeof value.required === "boolean" &&
-    isText(value.display_name);
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (!keys.every((key) => [
+    "seat_id", "role", "required", "display_name", "principal_id", "principal_kind",
+  ].includes(key)) || ![4, 6].includes(keys.length)) return false;
+  const assignmentAbsent = value.principal_id === undefined && value.principal_kind === undefined;
+  const assignmentValid = typeof value.principal_id === "string" && isUlid(value.principal_id) &&
+    (value.principal_kind === "human" || value.principal_kind === "agent");
+  return isIdentifier(value.seat_id) && isText(value.role) && typeof value.required === "boolean" &&
+    isText(value.display_name) && (assignmentAbsent || assignmentValid);
 }
 
 function isReadiness(value: unknown): value is RoomDraftSeatReadinessPolicy {
@@ -302,6 +324,14 @@ function jsonEquals(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function earlierStep(
+  current: RoomDraftStep | null,
+  boundary: RoomDraftStep | null,
+): RoomDraftStep | null {
+  const order: Array<RoomDraftStep | null> = [null, "activity", "configuration", "seats", "readiness", "review"];
+  return order.indexOf(current) <= order.indexOf(boundary) ? current : boundary;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -312,6 +342,10 @@ function isRecordWithKeys(value: unknown, keys: readonly string[]): value is Rec
 
 function isIdentifier(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(value);
+}
+
+function isUlid(value: string): boolean {
+  return /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value);
 }
 
 function isText(value: unknown): value is string {

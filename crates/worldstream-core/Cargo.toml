@@ -29,5 +29,9 @@ required-features = ["conformance-tracer"]
 name = "registry_bound_trace"
 required-features = ["conformance-tracer"]
 
+[[test]]
+name = "agent_heist_lobby"
+required-features = ["conformance-tracer"]
+
 [lints]
 workspace = true

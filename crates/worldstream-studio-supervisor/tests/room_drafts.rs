@@ -25,7 +25,7 @@ fn draft() -> Value {
         "pack": { "id": "counter", "version": "1.0.0", "digest": DIGEST },
         "configuration": { "initial_value": 0, "maximum_value": 8 },
         "seats": [
-            { "seat_id": "player-1", "role": "player", "required": true, "display_name": "Player 1" },
+            { "seat_id": "player-1", "role": "player", "required": true, "display_name": "Player 1", "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "principal_kind": "human" },
             { "seat_id": "observer-1", "role": "observer", "required": false, "display_name": "Observer 1" }
         ],
         "readiness": [

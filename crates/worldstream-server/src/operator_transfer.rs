@@ -1182,6 +1182,9 @@ fn canonical_records(
             SqliteCanonicalRecordKindV1::PackRevisionLock => {
                 CanonicalRecordKindV1::ArtifactMetadata
             }
+            SqliteCanonicalRecordKindV1::ExternalInputPreparation => {
+                CanonicalRecordKindV1::ExternalInputPreparation
+            }
         };
         push_record(&mut records, kind, record.identity(), record.bytes())?;
     }

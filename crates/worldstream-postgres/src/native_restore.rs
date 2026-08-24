@@ -7853,7 +7853,7 @@ fn digest_from_bytes(bytes: &[u8]) -> Result<DigestV1, NativePostgresError> {
     DigestV1::parse(text).map_err(|_| NativePostgresError::MalformedRow)
 }
 
-const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 33] = [
+const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 34] = [
     (
         NativeRestoreDurableDomainV1::SchemaMigrations,
         "SELECT jsonb_build_array(version, migration_id, checksum, logical_history_id, schema_contract_fingerprint)::text FROM worldstream_schema_migrations ORDER BY version",
@@ -7861,6 +7861,10 @@ const DURABLE_DOMAIN_QUERIES: [(NativeRestoreDurableDomainV1, &str); 33] = [
     (
         NativeRestoreDurableDomainV1::OperationGuards,
         "SELECT jsonb_build_array(identity_bytes, request_hash, room_id, receipt_bytes)::text FROM worldstream_operation_guards ORDER BY identity_bytes",
+    ),
+    (
+        NativeRestoreDurableDomainV1::ExternalInputPreparations,
+        "SELECT jsonb_build_array(identity_bytes, canonical_request_hash, recorded_at)::text FROM worldstream_external_input_preparations ORDER BY identity_bytes",
     ),
     (
         NativeRestoreDurableDomainV1::RoomRoots,
@@ -10109,6 +10113,25 @@ mod tests {
             })
             .unwrap_or_else(|| unreachable!("transfer target fence domain"));
         assert!(query.contains("fence_id, bundle_hash, target_fingerprint, state"));
+    }
+
+    #[test]
+    fn external_input_preparations_are_exact_native_restore_evidence() {
+        assert!(
+            POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1
+                .contains(&NativeRestoreDurableDomainV1::ExternalInputPreparations)
+        );
+        let query = DURABLE_DOMAIN_QUERIES
+            .iter()
+            .find_map(|(domain, query)| {
+                (*domain == NativeRestoreDurableDomainV1::ExternalInputPreparations)
+                    .then_some(*query)
+            })
+            .unwrap_or_else(|| unreachable!("ExternalInput preparation domain"));
+        assert!(query.contains("identity_bytes, canonical_request_hash, recorded_at"));
+        assert!(
+            query.contains("FROM worldstream_external_input_preparations ORDER BY identity_bytes")
+        );
     }
 
     #[test]

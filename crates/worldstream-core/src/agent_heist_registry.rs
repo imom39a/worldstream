@@ -3,12 +3,13 @@
 use std::str::FromStr;
 
 use crate::{
-    AccessModeV1, CanonicalJsonV1, CoreRoomStateV1, MembershipStandingV1, MembershipV1,
-    PackDigestV1, PackGenesisRequestV1, PackGoldenActionV1, PackGoldenCorpusV1,
-    PackGoldenViewerKindV1, PackGoldenViewerV1, PackRegistryErrorV1, PackRegistryStatusV1,
-    PackRegistryV1, PrincipalKindV1,
+    AccessModeV1, CanonicalJsonV1, CoreRoomStateV1, ExternalInputV1, MembershipStandingV1,
+    MembershipV1, PackDigestV1, PackGenesisRequestV1, PackGoldenActionV1, PackGoldenCorpusV1,
+    PackGoldenExternalInputV1, PackGoldenViewerKindV1, PackGoldenViewerV1, PackRegistryErrorV1,
+    PackRegistryStatusV1, PackRegistryV1, PrincipalKindV1,
     activity_pack::{CanonicalPackCodecV1, PackRegistryArtifactsV1, PackRegistryEntryV1},
     agent_heist::{agent_heist_legacy_revision, agent_heist_revision},
+    agent_heist_lobby::agent_heist_lobby_revision,
 };
 
 const NAVIGATOR_MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
@@ -24,6 +25,8 @@ const TRANSCRIPT_DIGEST: &str =
     "blake3:6d5436e75793e167b7ef50efe05fd59310c67c29e84afcdb82a4db03b90850ed";
 const LEGACY_TRANSCRIPT_DIGEST: &str =
     "blake3:77a13c04178c6a0110d4b30ae3e6683730f2f6a5991e2a8e71d6db2d361d0d63";
+const LOBBY_TRANSCRIPT_DIGEST: &str =
+    "blake3:3f942386890a569c8f814d0383b549583161d929f66a5b1ae9062a167d9d438c";
 #[cfg(test)]
 const CORPUS_DIGEST: &str =
     "blake3:c79d1e0c37eb32e54924b4b42f9d3d2d790e456d7fc888698c4d0b2b467ad958";
@@ -38,6 +41,25 @@ const LEGACY_CORPUS_DIGEST: &str =
 /// Returns a registry error if the exact revision lock, codec bundle,
 /// executor provenance, or golden corpus does not verify.
 pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let (lobby_descriptor, lobby_lock, lobby_schemas, lobby_codecs, lobby_artifact_digest) =
+        agent_heist_lobby_revision();
+    let lobby_corpus = lobby_golden_corpus(
+        lobby_descriptor.revision_digest.clone(),
+        LOBBY_TRANSCRIPT_DIGEST,
+    );
+    let lobby_artifacts = PackRegistryArtifactsV1 {
+        expected_revision_digest: lobby_descriptor.revision_digest.clone(),
+        schemas: Some(lobby_schemas.clone()),
+        codecs: Some(lobby_codecs.clone()),
+        codec_implementation: Some(CanonicalPackCodecV1::canonical_v1()),
+        executor_artifact_digest: lobby_artifact_digest.clone(),
+        golden_corpus_digest: lobby_corpus.digest()?,
+        golden_corpus: Some(lobby_corpus),
+    };
+    let lobby_status = PackRegistryStatusV1 {
+        selectable_for_new_rooms: true,
+        runnable_for_retained_rooms: true,
+    };
     let (descriptor, lock, schemas, codecs, artifact_digest) = agent_heist_revision();
     let corpus = golden_corpus(descriptor.revision_digest.clone(), TRANSCRIPT_DIGEST);
     let artifacts = PackRegistryArtifactsV1 {
@@ -73,6 +95,12 @@ pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErro
         runnable_for_retained_rooms: true,
     };
     PackRegistryV1::try_new([
+        PackRegistryEntryV1::agent_heist_lobby_v2(
+            lobby_lock.clone(),
+            lobby_descriptor,
+            lobby_artifacts,
+            lobby_status,
+        ),
         PackRegistryEntryV1::agent_heist_v1(lock.clone(), descriptor, artifacts, status),
         PackRegistryEntryV1::agent_heist_v0(
             legacy_lock.clone(),
@@ -87,6 +115,12 @@ pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErro
 #[must_use]
 pub fn agent_heist_digest() -> PackDigestV1 {
     agent_heist_revision().0.revision_digest.clone()
+}
+
+/// Exact semantic digest selected for newly created Agent Heist Rooms.
+#[must_use]
+pub fn agent_heist_lobby_digest() -> PackDigestV1 {
+    agent_heist_lobby_revision().0.revision_digest.clone()
 }
 
 /// Exact semantic digest of the retained-only Agent Heist revision.
@@ -162,8 +196,34 @@ fn golden_corpus(
             canonical_payload: inspect_payload,
             admitted_at: parsed("2026-08-15T12:00:01Z"),
         }],
+        external_inputs: Vec::new(),
         expected_transcript_digest: parsed(expected_transcript_digest),
     }
+}
+
+fn lobby_golden_corpus(
+    pack_digest: PackDigestV1,
+    expected_transcript_digest: &str,
+) -> PackGoldenCorpusV1 {
+    let mut corpus = golden_corpus(pack_digest, expected_transcript_digest);
+    corpus.actions.clear();
+    corpus.external_inputs = vec![PackGoldenExternalInputV1 {
+        input: ExternalInputV1 {
+            source_id: parsed(crate::HOST_LOBBY_LAUNCH_SOURCE),
+            input_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC6"),
+            input_type: crate::HOST_LAUNCH_INPUT_TYPE.to_owned(),
+            recorded_at: parsed("2026-08-15T12:00:01Z"),
+            canonical_payload: canonical(br"{}"),
+            immutable_resource_references: Vec::new(),
+        },
+    }];
+    for viewer in &mut corpus.viewers {
+        if viewer.kind != PackGoldenViewerKindV1::FinalReveal {
+            viewer.available_after_action = 0;
+            viewer.denied_before_detail = None;
+        }
+    }
+    corpus
 }
 
 fn membership(
@@ -509,6 +569,23 @@ mod tests {
         );
         assert_eq!(digest, Ok(parsed(TRANSCRIPT_DIGEST)));
         assert!(builtin_agent_heist_registry().is_ok());
+    }
+
+    #[test]
+    fn lobby_registry_golden_transcript_is_fixed() {
+        let (descriptor, lock, schemas, codecs, artifact) = agent_heist_lobby_revision();
+        let corpus =
+            lobby_golden_corpus(descriptor.revision_digest.clone(), LOBBY_TRANSCRIPT_DIGEST);
+        let digest = author_golden_transcript_digest_for_test(
+            lock.clone(),
+            descriptor,
+            schemas.clone(),
+            codecs.clone(),
+            artifact.clone(),
+            &corpus,
+            crate::agent_heist_lobby::AgentHeistLobbyV2,
+        );
+        assert_eq!(digest, Ok(parsed(LOBBY_TRANSCRIPT_DIGEST)));
     }
 
     #[test]

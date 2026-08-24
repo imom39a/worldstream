@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildSeatPolicy,
   createRoomDraft,
+  invalidateRoomDraftReview,
   loadRoomDraft,
   saveRoomDraft,
   validateConfiguration,
@@ -18,7 +19,7 @@ function draft(): RoomDraft {
     pack: { id: "counter", version: "1.0.0", digest },
     configuration: { initial_value: 0, maximum_value: 8 },
     seats: [
-      { seat_id: "role-1-seat-1", role: "player", required: true, display_name: "Player 1" },
+      { seat_id: "role-1-seat-1", role: "player", required: true, display_name: "Player 1", principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", principal_kind: "human" },
     ],
     readiness: [
       { seat_id: "role-1-seat-1", role: "player", required: true },
@@ -119,5 +120,15 @@ describe("Studio Room drafts", () => {
       readiness: [],
       last_valid_step: null,
     });
+  });
+
+  it.each([
+    ["activity", (value: RoomDraft) => ({ ...value, pack: { id: "counter", version: "2.0.0", digest: `blake3:${"b".repeat(64)}` } }), null],
+    ["configuration", (value: RoomDraft) => ({ ...value, configuration: { initial_value: 1, maximum_value: 8 } }), "activity"],
+    ["seats", (value: RoomDraft) => ({ ...value, seats: value.seats.map((seat) => ({ ...seat, display_name: "Changed" })) }), "configuration"],
+    ["readiness", (value: RoomDraft) => ({ ...value, readiness: value.readiness.map((policy) => ({ ...policy, required: false })) }), "seats"],
+  ] as const)("invalidates persisted review after a %s edit", (_name, edit, expectedStep) => {
+    const reviewed = { ...draft(), last_valid_step: "review" as const };
+    expect(invalidateRoomDraftReview(reviewed, edit(reviewed)).last_valid_step).toBe(expectedStep);
   });
 });

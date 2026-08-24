@@ -11,11 +11,11 @@ use postgres::Transaction;
 use thiserror::Error;
 use worldstream_transfer::{
     BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DeploymentIdentityV1, DigestV1,
-    MigrationIdentityV1, NativeSqliteBundleSummaryV1, NativeSqliteRoomPolicyV1,
-    NativeSqliteTransferAdapterV1, NativeSqliteTransferError, PackIdentityV1, RecordKindV1,
-    ResourceIdentityV1, ResourceKindV1, TargetFingerprintV1, TransferBundleV1,
-    TransferChunkDispositionV1, TransferChunkV1, TransferDestinationV1, TransferError,
-    TransferScopeV1,
+    ExternalInputPreparationV1, MigrationIdentityV1, NativeSqliteBundleSummaryV1,
+    NativeSqliteRoomPolicyV1, NativeSqliteTransferAdapterV1, NativeSqliteTransferError,
+    PackIdentityV1, RecordKindV1, ResourceIdentityV1, ResourceKindV1, TargetFingerprintV1,
+    TransferBundleV1, TransferChunkDispositionV1, TransferChunkV1, TransferDestinationV1,
+    TransferError, TransferScopeV1,
 };
 
 use crate::{
@@ -118,6 +118,7 @@ const AUTHORITY_STATE_COUNT_SQL: &str =
 const TARGET_PREFLIGHT_LOCK_SQL: &str = r"
 LOCK TABLE
     worldstream_operation_guards,
+    worldstream_external_input_preparations,
     worldstream_room_roots,
     worldstream_genesis,
     worldstream_materializations,
@@ -156,6 +157,7 @@ IN ACCESS EXCLUSIVE MODE;
 const TARGET_EMPTY_DOMAIN_COUNTS_SQL: &str = r"
 SELECT domain, row_count FROM (
     SELECT 'worldstream_operation_guards' AS domain, count(*)::bigint AS row_count FROM worldstream_operation_guards
+    UNION ALL SELECT 'worldstream_external_input_preparations', count(*)::bigint FROM worldstream_external_input_preparations
     UNION ALL SELECT 'worldstream_room_roots', count(*)::bigint FROM worldstream_room_roots
     UNION ALL SELECT 'worldstream_genesis', count(*)::bigint FROM worldstream_genesis
     UNION ALL SELECT 'worldstream_materializations', count(*)::bigint FROM worldstream_materializations
@@ -200,6 +202,7 @@ SELECT domain, row_count FROM (
 const DISCARD_TRANSFER_TARGET_SQL: &str = r"
 TRUNCATE TABLE
     worldstream_operation_guards,
+    worldstream_external_input_preparations,
     worldstream_room_roots,
     worldstream_genesis,
     worldstream_materializations,
@@ -1465,7 +1468,60 @@ impl<'a> PostgresTransferDestination<'a> {
             &created_roots,
             NativePublicationMode::Hydrate,
         )?;
+        self.publish_external_input_preparations(transaction, NativePublicationMode::Hydrate)?;
         Ok(published_rooms)
+    }
+
+    fn publish_external_input_preparations(
+        &self,
+        transaction: &mut Transaction<'_>,
+        mode: NativePublicationMode,
+    ) -> Result<(), PostgresTransferError> {
+        for preparation in decode_external_input_preparation_records(self.bundle.records())? {
+            if transaction
+                .query_opt(
+                    "SELECT 1 FROM worldstream_room_roots WHERE room_id = $1 FOR SHARE",
+                    &[&preparation.room_id],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .is_none()
+            {
+                return Err(PostgresTransferError::Canonical(
+                    "ExternalInput preparation Room is absent",
+                ));
+            }
+            if mode == NativePublicationMode::Hydrate {
+                transaction
+                    .execute(
+                        "INSERT INTO worldstream_external_input_preparations(identity_bytes, canonical_request_hash, recorded_at) VALUES ($1, $2, $3) ON CONFLICT (identity_bytes) DO NOTHING",
+                        &[&preparation.identity_bytes, &preparation.request_hash, &preparation.recorded_at],
+                    )
+                    .map_err(PostgresTransferError::Sql)?;
+            }
+            let stored = transaction
+                .query_opt(
+                    "SELECT canonical_request_hash, recorded_at FROM worldstream_external_input_preparations WHERE identity_bytes = $1 FOR SHARE",
+                    &[&preparation.identity_bytes],
+                )
+                .map_err(PostgresTransferError::Sql)?
+                .ok_or(PostgresTransferError::Canonical(
+                    "ExternalInput preparation is absent",
+                ))?;
+            let stored_hash = stored
+                .try_get::<_, Vec<u8>>(0)
+                .map_err(PostgresTransferError::Sql)?;
+            let stored_recorded_at = stored
+                .try_get::<_, String>(1)
+                .map_err(PostgresTransferError::Sql)?;
+            if stored_hash != preparation.request_hash
+                || stored_recorded_at != preparation.recorded_at
+            {
+                return Err(PostgresTransferError::Canonical(
+                    "ExternalInput preparation conflicts with retained bytes",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Publishes the exact native operational rows carried by a native SQLite
@@ -1547,6 +1603,7 @@ impl<'a> PostgresTransferDestination<'a> {
         &self,
         transaction: &mut Transaction<'_>,
     ) -> Result<(), PostgresTransferError> {
+        self.publish_external_input_preparations(transaction, NativePublicationMode::VerifyOnly)?;
         self.publish_native_operational_rows(
             transaction,
             &BTreeSet::new(),
@@ -1898,6 +1955,68 @@ enum NativeValue {
 struct NativeRow {
     table: String,
     values: Vec<NativeValue>,
+}
+
+struct DecodedExternalInputPreparation {
+    room_id: String,
+    identity_bytes: Vec<u8>,
+    request_hash: Vec<u8>,
+    recorded_at: String,
+}
+
+fn decode_external_input_preparation_record(
+    record: &worldstream_transfer::LogicalRecordV1,
+) -> Result<DecodedExternalInputPreparation, PostgresTransferError> {
+    let preparation = ExternalInputPreparationV1::from_canonical_bytes(record.bytes())
+        .map_err(|_| PostgresTransferError::Canonical("ExternalInput preparation bytes"))?;
+    let identity = worldstream_core::CanonicalJsonV1::decode_canonical::<
+        worldstream_core::OperationIdentityV1,
+    >(preparation.operation_identity_bytes())
+    .map_err(|_| PostgresTransferError::Canonical("ExternalInput preparation identity"))?;
+    let worldstream_core::OperationIdentityV1::ExternalInput(identity) = identity else {
+        return Err(PostgresTransferError::Canonical(
+            "ExternalInput preparation identity kind",
+        ));
+    };
+    let recorded_at = preparation
+        .recorded_at()
+        .parse::<worldstream_core::ExternalInputRecordedAt>()
+        .map_err(|_| PostgresTransferError::Canonical("ExternalInput preparation Recorded Time"))?;
+    let expected_record_identity = format!(
+        "room/{}/external-input-preparation/{}",
+        identity.room_id,
+        crate::hex_bytes(preparation.operation_identity_bytes())
+    );
+    if record.identity() != expected_record_identity {
+        return Err(PostgresTransferError::Canonical(
+            "ExternalInput preparation record identity",
+        ));
+    }
+    Ok(DecodedExternalInputPreparation {
+        room_id: identity.room_id.to_string(),
+        identity_bytes: preparation.operation_identity_bytes().to_vec(),
+        request_hash: preparation.canonical_request_hash().as_bytes().to_vec(),
+        recorded_at: recorded_at.as_str().to_owned(),
+    })
+}
+
+fn decode_external_input_preparation_records(
+    records: &[worldstream_transfer::LogicalRecordV1],
+) -> Result<Vec<DecodedExternalInputPreparation>, PostgresTransferError> {
+    let mut decoded = Vec::new();
+    let mut previous_record_identity: Option<&str> = None;
+    for record in records.iter().filter(|record| {
+        record.kind() == RecordKindV1::Canonical(CanonicalRecordKindV1::ExternalInputPreparation)
+    }) {
+        if previous_record_identity.is_some_and(|previous| previous >= record.identity()) {
+            return Err(PostgresTransferError::Canonical(
+                "ExternalInput preparations are duplicate or out of order",
+            ));
+        }
+        previous_record_identity = Some(record.identity());
+        decoded.push(decode_external_input_preparation_record(record)?);
+    }
+    Ok(decoded)
 }
 
 fn decode_native_operational_row(bytes: &[u8]) -> Result<NativeRow, PostgresTransferError> {
@@ -3914,14 +4033,113 @@ mod tests {
         )?)
     }
 
+    fn external_input_preparation_record(
+        ordinal: u64,
+        room_id: &str,
+        input_id: &str,
+        recorded_at: &str,
+    ) -> Result<LogicalRecordV1, Box<dyn std::error::Error>> {
+        let identity = worldstream_core::OperationIdentityV1::ExternalInput(Box::new(
+            worldstream_core::ExternalInputOperationIdentityV1 {
+                room_id: room_id.parse()?,
+                source_id: "worldstream.host.lobby".parse()?,
+                input_id: input_id.parse()?,
+            },
+        ));
+        let identity_bytes = identity.canonical_bytes()?;
+        let preparation = ExternalInputPreparationV1::new(
+            identity_bytes.clone(),
+            DigestV1::hash(b"request"),
+            recorded_at,
+        )?;
+        Ok(LogicalRecordV1::canonical(
+            ordinal,
+            CanonicalRecordKindV1::ExternalInputPreparation,
+            format!(
+                "room/{room_id}/external-input-preparation/{}",
+                crate::hex_bytes(&identity_bytes)
+            ),
+            &preparation.canonical_bytes()?,
+        )?)
+    }
+
+    #[test]
+    fn external_input_preparation_transfer_accepts_room_first_source_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let first = external_input_preparation_record(
+            0,
+            "01ARZ3NDEKTSV4RRFFQ69G5FY0",
+            "01ARZ3NDEKTSV4RRFFQ69G5FZ9",
+            "2026-08-24T12:00:00Z",
+        )?;
+        let second = external_input_preparation_record(
+            1,
+            "01ARZ3NDEKTSV4RRFFQ69G5FY1",
+            "01ARZ3NDEKTSV4RRFFQ69G5FY2",
+            "2026-08-24T12:01:00Z",
+        )?;
+        assert!(first.identity() < second.identity());
+        let decoded = decode_external_input_preparation_records(&[first.clone(), second.clone()])?;
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].room_id, "01ARZ3NDEKTSV4RRFFQ69G5FY0");
+        assert_eq!(decoded[1].room_id, "01ARZ3NDEKTSV4RRFFQ69G5FY1");
+        assert!(decoded[0].identity_bytes > decoded[1].identity_bytes);
+        assert_eq!(decoded[0].recorded_at, "2026-08-24T12:00:00Z");
+        assert_eq!(
+            decoded[0].request_hash,
+            DigestV1::hash(b"request").as_bytes()
+        );
+
+        assert!(matches!(
+            decode_external_input_preparation_records(&[second, first.clone()]),
+            Err(PostgresTransferError::Canonical(
+                "ExternalInput preparations are duplicate or out of order"
+            ))
+        ));
+        assert!(matches!(
+            decode_external_input_preparation_records(&[first.clone(), first.clone()]),
+            Err(PostgresTransferError::Canonical(
+                "ExternalInput preparations are duplicate or out of order"
+            ))
+        ));
+
+        let wrong_identity = LogicalRecordV1::canonical(
+            2,
+            CanonicalRecordKindV1::ExternalInputPreparation,
+            "room/01ARZ3NDEKTSV4RRFFQ69G5FY0/external-input-preparation/00",
+            first.bytes(),
+        )?;
+        assert!(matches!(
+            decode_external_input_preparation_records(&[wrong_identity]),
+            Err(PostgresTransferError::Canonical(
+                "ExternalInput preparation record identity"
+            ))
+        ));
+
+        let invalid_time = external_input_preparation_record(
+            2,
+            "01ARZ3NDEKTSV4RRFFQ69G5FY2",
+            "01ARZ3NDEKTSV4RRFFQ69G5FY3",
+            "not-a-time",
+        )?;
+        assert!(matches!(
+            decode_external_input_preparation_records(&[invalid_time]),
+            Err(PostgresTransferError::Canonical(
+                "ExternalInput preparation Recorded Time"
+            ))
+        ));
+        Ok(())
+    }
+
     #[test]
     fn reviewed_backend_fingerprint_includes_transfer_migration()
     -> Result<(), Box<dyn std::error::Error>> {
         let fingerprint = postgres_backend_fingerprint()?;
         assert_eq!(fingerprint.profile(), BundleProfileV1::PostgresPrimary17);
-        assert_eq!(fingerprint.schema().migrations().len(), 11);
+        assert_eq!(fingerprint.schema().migrations().len(), 12);
         assert_eq!(fingerprint.schema().migrations()[5].version(), 6);
         assert_eq!(fingerprint.schema().migrations()[10].version(), 11);
+        assert_eq!(fingerprint.schema().migrations()[11].version(), 12);
         Ok(())
     }
 
@@ -3970,6 +4188,7 @@ mod tests {
     fn aborted_target_discard_covers_every_user_truth_domain() {
         let discarded_domains = [
             "worldstream_operation_guards",
+            "worldstream_external_input_preparations",
             "worldstream_room_roots",
             "worldstream_genesis",
             "worldstream_materializations",

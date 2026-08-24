@@ -10,8 +10,12 @@ import type {
   ActivityPackReference,
 } from "./activityPacks";
 import { RunnerOperations } from "./RunnerOperations";
+import { BackupOperations } from "./BackupOperations";
+import type { BackupOperationStatus, BackupProfileStatus } from "./backups";
 import { RoomOperations } from "./RoomOperations";
 import { RoomDraftWizard } from "./RoomDraftWizard";
+import { RoomCreationOperation } from "./RoomCreationOperation";
+import type { RoomCreationStatus } from "./roomCreation";
 import type {
   RunnerInstanceLifecycleAction,
   RunnerInstanceStatusResponse,
@@ -55,6 +59,18 @@ export interface AppProps {
   onRoomDraftChange?: (draft: RoomDraft) => void;
   onRoomDraftStepChange?: (step: RoomDraftStep) => void;
   onSaveRoomDraft?: (draft: RoomDraft) => void;
+  roomCreation?: RoomCreationStatus | null;
+  roomCreationStatusAvailable?: boolean;
+  roomCreationLoading?: boolean;
+  onStartRoomCreation?: () => void;
+  onRetryRoomCreation?: () => void;
+  backupProfile?: BackupProfileStatus | null;
+  backupOperation?: BackupOperationStatus | null;
+  backupOperationId?: string | null;
+  backupOperationStatusAvailable?: boolean;
+  backupLoading?: boolean;
+  onStartBackup?: () => void;
+  onRetryBackup?: () => void;
 }
 
 export function App({
@@ -84,6 +100,18 @@ export function App({
   onRoomDraftChange,
   onRoomDraftStepChange,
   onSaveRoomDraft,
+  roomCreation = null,
+  roomCreationStatusAvailable = false,
+  roomCreationLoading = false,
+  onStartRoomCreation,
+  onRetryRoomCreation,
+  backupProfile = null,
+  backupOperation = null,
+  backupOperationId = null,
+  backupOperationStatusAvailable = true,
+  backupLoading = false,
+  onStartBackup,
+  onRetryBackup,
 }: AppProps) {
   const connected = status?.connectivity === "connected";
   const loading = status === null;
@@ -192,6 +220,15 @@ export function App({
           />
         ) : null}
 
+        <RoomCreationOperation
+          status={roomCreation}
+          statusAvailable={roomCreationStatusAvailable}
+          reviewed={roomDraftSaved && roomDraft?.last_valid_step === "review"}
+          loading={roomCreationLoading}
+          onStart={onStartRoomCreation}
+          onRetry={onRetryRoomCreation}
+        />
+
         <ActivityPackCatalogView
           catalog={activityPackCatalog}
           detail={activityPackDetail}
@@ -201,6 +238,16 @@ export function App({
           onInspect={onInspectActivityPack}
           onSelect={onSelectActivityPack}
           onClearSelection={onClearActivityPackSelection}
+        />
+
+        <BackupOperations
+          profile={backupProfile}
+          operation={backupOperation}
+          operationId={backupOperationId}
+          operationStatusAvailable={backupOperationStatusAvailable}
+          loading={backupLoading}
+          onStart={onStartBackup}
+          onRetry={onRetryBackup}
         />
 
         <RunnerOperations

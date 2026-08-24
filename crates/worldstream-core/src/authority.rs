@@ -1070,6 +1070,10 @@ pub enum AuthorityUseV1 {
         room_id: RoomId,
         request_hash: CanonicalRequestHashV1,
     },
+    ExternalInput {
+        room_id: RoomId,
+        request_hash: CanonicalRequestHashV1,
+    },
     Replay {
         room_id: RoomId,
         member_id: MemberId,
@@ -1109,6 +1113,7 @@ impl fmt::Debug for AuthorityUseV1 {
             Self::CreateRoom { .. } => "AuthorityUseV1::CreateRoom([REDACTED])",
             Self::CoreAdministration { .. } => "AuthorityUseV1::CoreAdministration([REDACTED])",
             Self::TimerFired { .. } => "AuthorityUseV1::TimerFired([REDACTED])",
+            Self::ExternalInput { .. } => "AuthorityUseV1::ExternalInput([REDACTED])",
             Self::Replay { .. } => "AuthorityUseV1::Replay([REDACTED])",
             Self::HostDiagnostic { .. } => "AuthorityUseV1::HostDiagnostic([REDACTED])",
             Self::RunnerControl { .. } => "AuthorityUseV1::RunnerControl([REDACTED])",
@@ -1152,6 +1157,7 @@ impl AuthorityUseV1 {
             Self::CreateRoom { .. }
             | Self::CoreAdministration { .. }
             | Self::TimerFired { .. }
+            | Self::ExternalInput { .. }
             | Self::HostDiagnostic { .. } => None,
         }
     }
@@ -1582,6 +1588,28 @@ impl AuthorizedTimerFiredV1 {
     }
 }
 
+/// Present `HostOperator` authority for one exact `ExternalInput` request.
+pub struct AuthorizedExternalInputV1 {
+    fence: AuthorityFenceFactsV1,
+    room_id: RoomId,
+    request_hash: CanonicalRequestHashV1,
+}
+opaque_grant_debug!(AuthorizedExternalInputV1);
+
+impl AuthorizedExternalInputV1 {
+    pub(crate) const fn room_id(&self) -> &RoomId {
+        &self.room_id
+    }
+
+    pub(crate) const fn request_hash(&self) -> &CanonicalRequestHashV1 {
+        &self.request_hash
+    }
+
+    pub(crate) fn into_fence_facts(self) -> AuthorityFenceFactsV1 {
+        self.fence
+    }
+}
+
 /// Present gate plus current Membership; historical Replay still reauthorizes N.
 pub struct AuthorizedReplayV1 {
     #[allow(dead_code)]
@@ -1888,6 +1916,7 @@ pub enum AuthorityGrantV1 {
     RoomCreation(AuthorizedRoomCreationV1),
     CoreAdministration(AuthorizedCoreAdministrationV1),
     TimerFired(AuthorizedTimerFiredV1),
+    ExternalInput(AuthorizedExternalInputV1),
     Replay(AuthorizedReplayV1),
     Diagnostic(AuthorizedDiagnosticV1),
     RunnerControl(AuthorizedRunnerControlV1),
@@ -1902,6 +1931,7 @@ impl fmt::Debug for AuthorityGrantV1 {
             Self::RoomCreation(_) => "AuthorityGrantV1::RoomCreation([OPAQUE])",
             Self::CoreAdministration(_) => "AuthorityGrantV1::CoreAdministration([OPAQUE])",
             Self::TimerFired(_) => "AuthorityGrantV1::TimerFired([OPAQUE])",
+            Self::ExternalInput(_) => "AuthorityGrantV1::ExternalInput([OPAQUE])",
             Self::Replay(_) => "AuthorityGrantV1::Replay([OPAQUE])",
             Self::Diagnostic(_) => "AuthorityGrantV1::Diagnostic([OPAQUE])",
             Self::RunnerControl(_) => "AuthorityGrantV1::RunnerControl([OPAQUE])",
@@ -3235,7 +3265,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3278,7 +3309,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3314,7 +3346,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3346,7 +3379,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::CoreAdministration(_)
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3384,7 +3418,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::CoreAdministration(_)
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
-            | AuthorityGrantV1::Diagnostic(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::Diagnostic(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3429,7 +3464,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3478,7 +3514,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3518,7 +3555,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3556,7 +3594,33 @@ impl AuthorityV1 {
             | AuthorityGrantV1::CoreAdministration(_)
             | AuthorityGrantV1::Replay(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
+        }
+    }
+
+    /// Authorizes one exact host `ExternalInput` request for its Room root.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same closed authority failures as [`Self::authorize`].
+    pub fn authorize_external_input(
+        &self,
+        presented: &PresentedCapabilityV1,
+        room_id: RoomId,
+        request_hash: CanonicalRequestHashV1,
+        checked_at: AuthorityCheckedAt,
+    ) -> Result<AuthorizedExternalInputV1, AuthorityErrorV1> {
+        match self.authorize(
+            presented,
+            AuthorityUseV1::ExternalInput {
+                room_id,
+                request_hash,
+            },
+            checked_at,
+        )? {
+            AuthorityGrantV1::ExternalInput(grant) => Ok(grant),
+            _ => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3596,7 +3660,8 @@ impl AuthorityV1 {
             | AuthorityGrantV1::CoreAdministration(_)
             | AuthorityGrantV1::TimerFired(_)
             | AuthorityGrantV1::Diagnostic(_)
-            | AuthorityGrantV1::RunnerControl(_) => Err(AuthorityErrorV1::Unavailable),
+            | AuthorityGrantV1::RunnerControl(_)
+            | AuthorityGrantV1::ExternalInput(_) => Err(AuthorityErrorV1::Unavailable),
         }
     }
 
@@ -3717,6 +3782,16 @@ impl AuthorityV1 {
                 room_id,
                 request_hash,
             } => authorize_timer_fired(snapshot, &room_id, request_hash, checked_at, purpose_bytes),
+            AuthorityUseV1::ExternalInput {
+                room_id,
+                request_hash,
+            } => authorize_external_input(
+                snapshot,
+                &room_id,
+                request_hash,
+                checked_at,
+                purpose_bytes,
+            ),
             AuthorityUseV1::Replay {
                 room_id,
                 member_id,
@@ -4569,6 +4644,26 @@ fn authorize_timer_fired(
     )?;
     let fence = build_fence(snapshot, None, None, purpose, checked_at)?;
     Ok(AuthorityGrantV1::TimerFired(AuthorizedTimerFiredV1 {
+        fence,
+        room_id: room_id.clone(),
+        request_hash,
+    }))
+}
+
+fn authorize_external_input(
+    snapshot: &AuthoritySnapshotV1,
+    room_id: &RoomId,
+    request_hash: CanonicalRequestHashV1,
+    checked_at: AuthorityCheckedAt,
+    purpose: &[u8],
+) -> Result<AuthorityGrantV1, AuthorityErrorV1> {
+    require_host_scope(
+        snapshot,
+        Some(room_id),
+        CapabilityScopeV1::OperatorRoomAdmin,
+    )?;
+    let fence = build_fence(snapshot, None, None, purpose, checked_at)?;
+    Ok(AuthorityGrantV1::ExternalInput(AuthorizedExternalInputV1 {
         fence,
         room_id: room_id.clone(),
         request_hash,

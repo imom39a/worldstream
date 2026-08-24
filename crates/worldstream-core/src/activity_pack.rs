@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::{
     AccessModeV1, ActionAdmittedAt, ActionId, ActivityDispositionV1, ActivityReduceInputV1,
     Blake3DigestV1, CANONICAL_CODEC_ID, CanonicalJsonError, CanonicalJsonV1, CompleteHeadV1,
-    CoreRoomStateV1, CoreTraceV1, CreationRecordedAt, GenesisInputV1, MemberId,
+    CoreRoomStateV1, CoreTraceV1, CreationRecordedAt, ExternalInputV1, GenesisInputV1, MemberId,
     MembershipChangeKindV1, MembershipStandingV1, PackDigestV1, PackFaultV1, ParticipantActionV1,
     PrincipalKindV1, RecordedStimulusV1, RoomId, RoomSeedV1, RoomSequenceV1, ScheduledTimerV1,
     TimerGenerationV1, TimerRequestV1, TimestampParseError,
@@ -1732,6 +1732,13 @@ pub struct PackGoldenActionV1 {
     pub admitted_at: ActionAdmittedAt,
 }
 
+/// One exact recorded `ExternalInput` in a retained behavioral corpus.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackGoldenExternalInputV1 {
+    pub input: ExternalInputV1,
+}
+
 /// Exact typed viewer exercised by a retained behavioral corpus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1785,6 +1792,8 @@ pub struct PackGoldenCorpusV1 {
     pub genesis: PackGenesisRequestV1,
     pub viewers: Vec<PackGoldenViewerV1>,
     pub actions: Vec<PackGoldenActionV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_inputs: Vec<PackGoldenExternalInputV1>,
     pub expected_transcript_digest: Blake3DigestV1,
 }
 
@@ -1854,6 +1863,7 @@ struct EmbeddedExecutorBindingV1 {
 enum ReviewedExecutorProvenanceV1 {
     CounterV1,
     CounterV2,
+    AgentHeistLobbyV2,
     AgentHeistV1,
     AgentHeistV0,
     #[cfg(test)]
@@ -1869,6 +1879,7 @@ impl ReviewedExecutorProvenanceV1 {
         match self {
             Self::CounterV1 => TypeId::of::<crate::counter::CounterV1>(),
             Self::CounterV2 => TypeId::of::<crate::counter::CounterV2>(),
+            Self::AgentHeistLobbyV2 => TypeId::of::<crate::agent_heist_lobby::AgentHeistLobbyV2>(),
             Self::AgentHeistV1 => TypeId::of::<crate::agent_heist::AgentHeistV1>(),
             Self::AgentHeistV0 => TypeId::of::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
@@ -1882,6 +1893,9 @@ impl ReviewedExecutorProvenanceV1 {
         match self {
             Self::CounterV1 => std::any::type_name::<crate::counter::CounterV1>(),
             Self::CounterV2 => std::any::type_name::<crate::counter::CounterV2>(),
+            Self::AgentHeistLobbyV2 => {
+                std::any::type_name::<crate::agent_heist_lobby::AgentHeistLobbyV2>()
+            }
             Self::AgentHeistV1 => std::any::type_name::<crate::agent_heist::AgentHeistV1>(),
             Self::AgentHeistV0 => std::any::type_name::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
@@ -1896,6 +1910,9 @@ impl ReviewedExecutorProvenanceV1 {
         match self {
             Self::CounterV1 => crate::counter::counter_artifact_digest_v1(),
             Self::CounterV2 => crate::counter::counter_artifact_digest_v2(),
+            Self::AgentHeistLobbyV2 => {
+                crate::agent_heist_lobby::agent_heist_lobby_artifact_digest()
+            }
             Self::AgentHeistV1 => crate::agent_heist::agent_heist_artifact_digest(),
             Self::AgentHeistV0 => crate::agent_heist::agent_heist_legacy_artifact_digest(),
             #[cfg(test)]
@@ -1985,6 +2002,22 @@ impl PackRegistryEntryV1 {
             artifacts,
             ReviewedExecutorProvenanceV1::AgentHeistV1,
             crate::agent_heist::AgentHeistV1,
+            status,
+        )
+    }
+
+    pub(crate) fn agent_heist_lobby_v2(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
+            ReviewedExecutorProvenanceV1::AgentHeistLobbyV2,
+            crate::agent_heist_lobby::AgentHeistLobbyV2,
             status,
         )
     }
@@ -2222,7 +2255,7 @@ impl ActivityPackHostV1 {
     /// Action Offer, output-bound, callback, or panic validation fails.
     pub fn view(&self, input: &ViewInputV1<'_>) -> Result<ValidatedPackViewV1, PackFaultV1> {
         self.validate_bound_head(input.core, input.activity_state, input.complete_head)?;
-        self.validate_roles(input.core)?;
+        self.validate_runtime_roles(input.core)?;
         self.validate_value(
             &self.retained.descriptor().state_schema,
             input.activity_state,
@@ -2413,8 +2446,8 @@ impl ActivityPackHostV1 {
             )
             .into());
         }
-        self.validate_roles(input.core_before)?;
-        self.validate_roles(input.proposed_core_after)?;
+        self.validate_runtime_roles(input.core_before)?;
+        self.validate_runtime_roles(input.proposed_core_after)?;
         self.validate_value(
             &self.retained.descriptor().state_schema,
             input.prior_activity_state,
@@ -2633,6 +2666,56 @@ impl ActivityPackHostV1 {
             if count < definition.minimum || count > definition.maximum {
                 return Err(PackFaultV1::InvalidOutput(format!(
                     "Role {} cardinality {count} is outside {}..={}",
+                    definition.role, definition.minimum, definition.maximum
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_runtime_roles(&self, core: &CoreRoomStateV1) -> Result<(), PackFaultV1> {
+        let descriptor = self.retained.descriptor();
+        let lobby_retains_departed_role_minima =
+            crate::agent_heist_lobby::LOBBY_RETAINS_DEPARTED_ROLE_MINIMA
+                && descriptor.pack_id == "worldstream.agent-heist"
+                && descriptor.explanatory_version == crate::AGENT_HEIST_LOBBY_VERSION
+                && descriptor
+                    .stimulus_schemas
+                    .contains_key(crate::HOST_LAUNCH_INPUT_TYPE);
+        if !lobby_retains_departed_role_minima {
+            return self.validate_roles(core);
+        }
+
+        let mut active_counts: BTreeMap<&str, u32> = descriptor
+            .roles
+            .iter()
+            .map(|role| (role.role.as_str(), 0))
+            .collect();
+        let mut retained_counts = active_counts.clone();
+        for membership in core.memberships().values() {
+            if membership.access_mode() != AccessModeV1::Participant {
+                continue;
+            }
+            let role = membership.role().ok_or_else(|| {
+                PackFaultV1::InvalidOutput("participant Membership has no Role".to_owned())
+            })?;
+            let retained = retained_counts.get_mut(role).ok_or_else(|| {
+                PackFaultV1::InvalidOutput(format!("undeclared participant Role {role}"))
+            })?;
+            *retained = retained.saturating_add(1);
+            if membership.standing() != MembershipStandingV1::Departed {
+                let active = active_counts
+                    .get_mut(role)
+                    .unwrap_or_else(|| unreachable!("retained Role was already validated"));
+                *active = active.saturating_add(1);
+            }
+        }
+        for definition in &descriptor.roles {
+            let active = active_counts[definition.role.as_str()];
+            let retained = retained_counts[definition.role.as_str()];
+            if retained < definition.minimum || active > definition.maximum {
+                return Err(PackFaultV1::InvalidOutput(format!(
+                    "Role {} retained/active cardinality {retained}/{active} is outside minimum {} and maximum {}",
                     definition.role, definition.minimum, definition.maximum
                 )));
             }
@@ -3337,7 +3420,7 @@ struct GoldenObservationTranscriptV1<'a> {
 
 #[derive(Serialize)]
 struct GoldenStepTranscriptV1<'a> {
-    action_id: &'a ActionId,
+    action_id: &'a str,
     before_views: Vec<GoldenViewTranscriptV1<'a>>,
     disposition: CanonicalJsonV1,
     transition: crate::TransitionV1,
@@ -3427,11 +3510,12 @@ fn execute_golden_corpus(
     if corpus.corpus_id != PACK_GOLDEN_CORPUS_DOMAIN
         || corpus.genesis.pack_digest != host.descriptor().revision_digest
         || corpus.viewers.is_empty()
-        || corpus.actions.is_empty()
+        || (corpus.actions.is_empty() && corpus.external_inputs.is_empty())
     {
         return Err(());
     }
-    let action_count = u32::try_from(corpus.actions.len()).map_err(|_| ())?;
+    let action_count =
+        u32::try_from(corpus.actions.len() + corpus.external_inputs.len()).map_err(|_| ())?;
     if corpus.viewers.iter().any(|viewer| {
         // A retained corpus may defer a post-Complete FinalReveal check one
         // checkpoint beyond its Action-only transcript. The runtime still
@@ -3487,15 +3571,19 @@ fn execute_golden_corpus(
         genesis.clone(),
         |_| Ok(()),
         move |input| {
-            let RecordedStimulusV1::ParticipantAction(action) = input.recorded_stimulus else {
-                return Err(PackFaultV1::Callback(
-                    "golden corpus contains a non-Action transition".to_owned(),
-                ));
+            let operation_id = match input.recorded_stimulus {
+                RecordedStimulusV1::ParticipantAction(action) => action.action_id.to_string(),
+                RecordedStimulusV1::ExternalInput(external) => external.input_id.to_string(),
+                _ => {
+                    return Err(PackFaultV1::Callback(
+                        "golden corpus contains an unsupported transition".to_owned(),
+                    ));
+                }
             };
             reducer_dispositions
                 .lock()
                 .map_err(|_| PackFaultV1::Callback("golden reducer lock poisoned".to_owned()))?
-                .get(&action.action_id.to_string())
+                .get(&operation_id)
                 .cloned()
                 .ok_or_else(|| {
                     PackFaultV1::Callback("golden disposition was not checked".to_owned())
@@ -3514,9 +3602,104 @@ fn execute_golden_corpus(
     .into_iter()
     .map(|(_, _, transcript)| transcript)
     .collect();
-    let mut steps = Vec::with_capacity(corpus.actions.len());
-    for (step_index, golden_action) in corpus.actions.iter().enumerate() {
+    let mut steps = Vec::with_capacity(corpus.actions.len() + corpus.external_inputs.len());
+    for (step_index, golden_external) in corpus.external_inputs.iter().enumerate() {
         let checkpoint = u32::try_from(step_index).map_err(|_| ())?;
+        let core_before = trace.core_state().clone();
+        let activity_before = trace.activity_state().clone();
+        let head_before = trace.head().clone();
+        let before_views = execute_golden_views(
+            host,
+            &core_before,
+            &activity_before,
+            &head_before,
+            &corpus.viewers,
+            checkpoint,
+        )?;
+        let stimulus = RecordedStimulusV1::ExternalInput(golden_external.input.clone());
+        let reduce_input = ActivityReduceInputV1 {
+            prior_activity_state: &activity_before,
+            core_before: &core_before,
+            proposed_core_after: &core_before,
+            scheduled_timers: trace.scheduled_timers(),
+            next_room_seq: head_before.room_seq().checked_successor().map_err(|_| ())?,
+            recorded_stimulus: &stimulus,
+        };
+        let disposition = host
+            .reduce(&reduce_input, &head_before, &corpus.genesis.room_seed, None)
+            .map_err(|_| ())?;
+        if !matches!(disposition, ActivityDispositionV1::Apply(_)) {
+            return Err(());
+        }
+        dispositions.lock().map_err(|_| ())?.insert(
+            golden_external.input.input_id.to_string(),
+            disposition.clone(),
+        );
+        trace.advance(stimulus.clone()).map_err(|_| ())?;
+        let transition = trace.transitions().last().cloned().ok_or(())?;
+        let mut observations = Vec::with_capacity(corpus.viewers.len());
+        for golden_viewer in &corpus.viewers {
+            let viewer = golden_viewer.to_pack_viewer();
+            let outcome = if checkpoint < golden_viewer.available_after_action {
+                CanonicalJsonV1::from_serialize(&GoldenObservationOutcomeV1 {
+                    outcome: if checkpoint.saturating_add(1) >= golden_viewer.available_after_action
+                    {
+                        "became_available"
+                    } else {
+                        "unavailable"
+                    },
+                    value: None,
+                })
+                .map_err(|_| ())?
+            } else {
+                canonical_golden_observation(
+                    &host
+                        .observe(&ObserveTransitionInputV1 {
+                            core_before: &core_before,
+                            activity_before: &activity_before,
+                            head_before: &head_before,
+                            core_after: trace.core_state(),
+                            activity_after: trace.activity_state(),
+                            head_after: trace.head(),
+                            recorded_stimulus: &stimulus,
+                            ordered_domain_events: transition.ordered_domain_events(),
+                            viewer: &viewer,
+                        })
+                        .map_err(|_| ())?,
+                )
+                .map_err(|_| ())?
+            };
+            observations.push(GoldenObservationTranscriptV1 {
+                viewer: golden_viewer,
+                observation: outcome,
+            });
+        }
+        let after_views = execute_golden_views(
+            host,
+            trace.core_state(),
+            trace.activity_state(),
+            trace.head(),
+            &corpus.viewers,
+            checkpoint.checked_add(1).ok_or(())?,
+        )?
+        .into_iter()
+        .map(|(_, _, transcript)| transcript)
+        .collect();
+        steps.push(GoldenStepTranscriptV1 {
+            action_id: golden_external.input.input_id.as_str(),
+            before_views: before_views
+                .into_iter()
+                .map(|(_, _, transcript)| transcript)
+                .collect(),
+            disposition: canonical_golden_disposition(&disposition).map_err(|_| ())?,
+            transition,
+            observations,
+            after_views,
+        });
+    }
+    for (step_index, golden_action) in corpus.actions.iter().enumerate() {
+        let checkpoint =
+            u32::try_from(step_index + corpus.external_inputs.len()).map_err(|_| ())?;
         let core_before = trace.core_state().clone();
         let activity_before = trace.activity_state().clone();
         let head_before = trace.head().clone();
@@ -3619,7 +3802,7 @@ fn execute_golden_corpus(
         .map(|(_, _, transcript)| transcript)
         .collect();
         steps.push(GoldenStepTranscriptV1 {
-            action_id: &golden_action.action_id,
+            action_id: golden_action.action_id.as_str(),
             before_views: before_views
                 .into_iter()
                 .map(|(_, _, transcript)| transcript)
@@ -4916,6 +5099,7 @@ mod tests {
                     admitted_at: parsed(admitted_at),
                 })
                 .collect(),
+                external_inputs: Vec::new(),
                 expected_transcript_digest: Blake3DigestV1::hash(b"uninitialized"),
             };
             let transcript =

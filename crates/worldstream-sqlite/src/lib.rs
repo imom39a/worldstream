@@ -70,24 +70,26 @@ use worldstream_core::{
     AuthorityChangeStatePartsV1, AuthorityChangeStateV1, AuthorityChangeTargetV1,
     AuthorityChangeV1, AuthorityCheckedAt, AuthorityErrorV1, AuthorityGenerationV1,
     AuthorityReasonCodeV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1, AuthorityStoreErrorV1,
-    AuthorityStoreV1, AuthorizedDiagnosticV1, AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1,
-    AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, AuthorizedViewerV1,
-    Blake3DigestV1, CanonicalJsonV1, CanonicalRequestHashV1, CapabilityAuthoritySnapshotPartsV1,
-    CapabilityAuthoritySnapshotV1, CapabilityBearerV1, CapabilityExpiresAt, CapabilityId,
-    CapabilityProfileV1, CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1,
-    CapabilityTokenHashV1, CompleteHeadV1, CoreRoomStateV1, CoreTraceV1, DiagnosticAdapterInputV1,
-    DiagnosticOperationV1, DiagnosticTargetV1, GenesisV1, HistoricalReplayAccumulatorV1,
-    HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1, HistoricalReplayProjectionV1,
-    HostClockErrorV1, HostClockSampleV1, HostClockV1, IntegrityGenerationV1, MemberId,
-    MemberReadOperationV1, MembershipAuthoritySnapshotV1, MembershipGenerationV1,
-    MembershipStandingV1, MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1,
-    PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
-    PreparedAdvancePersistenceV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
-    PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1, PreparedExistingIntentV1,
-    PreparedObservationConsequenceV1, PreparedOperationInputWitnessV1, PreparedRoomCommitV1,
-    PreparedRoomWriteV1, PreparedTimerMutationKindV1, PresentedCapabilityV1,
-    PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1, PrincipalGenerationV1, PrincipalId,
-    PrincipalKindV1, ReceiptSemanticInputV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
+    AuthorityStoreV1, AuthorizedDiagnosticV1, AuthorizedExternalInputV1, AuthorizedReceiptReadV1,
+    AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
+    AuthorizedTimerFiredV1, AuthorizedViewerV1, Blake3DigestV1, CanonicalJsonV1,
+    CanonicalRequestHashV1, CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1,
+    CapabilityBearerV1, CapabilityExpiresAt, CapabilityId, CapabilityProfileV1,
+    CapabilityRevokedAt, CapabilityScopeSetV1, CapabilityScopeV1, CapabilityTokenHashV1,
+    CompleteHeadV1, CoreRoomStateV1, CoreTraceV1, DiagnosticAdapterInputV1, DiagnosticOperationV1,
+    DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1, GenesisV1,
+    HistoricalReplayAccumulatorV1, HistoricalReplayErrorV1, HistoricalReplayProjectionRequestV1,
+    HistoricalReplayProjectionV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
+    IntegrityGenerationV1, MemberId, MemberReadOperationV1, MembershipAuthoritySnapshotV1,
+    MembershipGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1,
+    PackRegistryV1, PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1,
+    ParticipantActionRequestV1, ParticipantActionV1, PreparedAdvancePersistenceV1,
+    PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1, PreparedAuthorityWitnessV1,
+    PreparedCreationPersistenceV1, PreparedExistingIntentV1, PreparedObservationConsequenceV1,
+    PreparedOperationInputWitnessV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
+    PreparedTimerMutationKindV1, PresentedCapabilityV1, PrincipalAuthoritySnapshotV1,
+    PrincipalAuthorityStatusV1, PrincipalGenerationV1, PrincipalId, PrincipalKindV1,
+    ReceiptSemanticInputV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
     RecoveredRoomMaterializationsV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
     ReplayAdapterInputV1, ReplayFailureClassV1, ReplayProjectionKindV1, ResolutionStatusV1,
     ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomId, RoomIntegrityStateV1,
@@ -135,6 +137,7 @@ const DEPLOYMENT_IDENTITIES_MIGRATION_ID: &str = "0009-deployment-identities-v1"
 const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID: &str = "0010-transfer-recovery-completeness-v1";
 const TRANSFER_LIFECYCLE_MIGRATION_ID: &str = "0011-transfer-lifecycle-and-resource-identity-v1";
 const TRANSFER_BACKUP_IDENTITY_MIGRATION_ID: &str = "0012-transfer-backup-file-identity-v1";
+const EXTERNAL_INPUT_PREPARATION_MIGRATION_ID: &str = "0013-external-input-preparations-v1";
 const OPERATION_RECEIPT_CODEC_ID: &str = "worldstream/operation-receipt/v1";
 const PAIRED_SNAPSHOT_SCHEMA_VERSION: &str = "worldstream/paired-snapshot/v1";
 const MIGRATION_BACKUP_PREFIX: &str = "worldstream-migration-backup";
@@ -703,6 +706,24 @@ BEGIN
 END;
 ";
 
+/// Retains the host-owned semantic time sampled for the first preparation of
+/// one exact `ExternalInput` operation identity across retry and restart.
+const EXTERNAL_INPUT_PREPARATION_MIGRATION_SCHEMA: &str = r"
+CREATE TABLE external_input_preparations (
+    operation_identity_bytes BLOB PRIMARY KEY,
+    canonical_request_hash BLOB NOT NULL CHECK (length(canonical_request_hash) = 32),
+    recorded_at TEXT NOT NULL
+) STRICT;
+CREATE TRIGGER external_input_preparations_immutable_update
+BEFORE UPDATE ON external_input_preparations BEGIN
+    SELECT RAISE(ABORT, 'ExternalInput preparation is immutable');
+END;
+CREATE TRIGGER external_input_preparations_immutable_delete
+BEFORE DELETE ON external_input_preparations BEGIN
+    SELECT RAISE(ABORT, 'ExternalInput preparation is immutable');
+END;
+";
+
 const INITIAL_MIGRATION_SCHEMA: &str = r"
 CREATE TABLE authority_fences (
     witness_id TEXT PRIMARY KEY,
@@ -1033,6 +1054,42 @@ pub struct SqliteFileIdentityV1 {
     file_id: u128,
 }
 
+/// Verified, immutable result of an online backup created from the exact live
+/// store connection. Paths remain outside this receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteLiveBackupReceiptV1 {
+    /// BLAKE3 digest of the exact published native database bytes.
+    artifact_digest: String,
+    /// Exact published native database byte length.
+    artifact_bytes: u64,
+    /// Canonical deployment evidence digest captured by the backup.
+    semantic_digest: DigestV1,
+    /// Stable native identity of the published artifact.
+    identity: SqliteFileIdentityV1,
+}
+
+impl SqliteLiveBackupReceiptV1 {
+    #[must_use]
+    pub fn artifact_digest(&self) -> &str {
+        &self.artifact_digest
+    }
+
+    #[must_use]
+    pub const fn artifact_bytes(&self) -> u64 {
+        self.artifact_bytes
+    }
+
+    #[must_use]
+    pub const fn semantic_digest(&self) -> &DigestV1 {
+        &self.semantic_digest
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> SqliteFileIdentityV1 {
+        self.identity
+    }
+}
+
 impl SqliteFileIdentityV1 {
     /// Returns the filesystem/volume identity containing the database.
     #[must_use]
@@ -1059,6 +1116,7 @@ pub enum SqliteCanonicalRecordKindV1 {
     CoreMaterialization,
     ActivityMaterialization,
     PackRevisionLock,
+    ExternalInputPreparation,
 }
 
 /// One exact canonical Room record read from `SQLite`.
@@ -1604,6 +1662,18 @@ pub enum SqliteTimerCommitErrorV1 {
     Rejected,
     #[error("Timer transition preparation failed")]
     InvalidResult,
+}
+
+/// Closed failures while durably binding one `ExternalInput` operation identity
+/// to its first host-sampled semantic time.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum SqliteExternalInputPreparationErrorV1 {
+    #[error("ExternalInput preparation conflicts with an existing request hash")]
+    Conflict,
+    #[error("SQLite ExternalInput preparation storage is unavailable")]
+    StorageUnavailable,
+    #[error("durable ExternalInput preparation is corrupt")]
+    Corrupt,
 }
 
 #[derive(serde::Deserialize)]
@@ -2807,6 +2877,10 @@ enum WriterCommand {
         backup_path: PathBuf,
         reply: mpsc::Sender<Result<SqliteSourceTransferStatusV1, SqliteSourceTransferErrorV1>>,
     },
+    LiveBackup {
+        destination: PathBuf,
+        reply: mpsc::Sender<Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1>>,
+    },
     #[cfg(test)]
     BeginSourceTransferWithHook {
         backup_path: PathBuf,
@@ -2841,6 +2915,12 @@ enum WriterCommand {
         identity_bytes: Vec<u8>,
         request_hash: CanonicalRequestHashV1,
         reply: mpsc::Sender<ResolveOutcomeV1>,
+    },
+    ReserveExternalInputPreparation {
+        identity_bytes: Vec<u8>,
+        request_hash: CanonicalRequestHashV1,
+        proposed_recorded_at: ExternalInputRecordedAt,
+        reply: mpsc::Sender<Result<ExternalInputRecordedAt, SqliteExternalInputPreparationErrorV1>>,
     },
     ResolveAuthorized {
         authority: AuthorizedReceiptReadV1,
@@ -3299,9 +3379,64 @@ type StoredPairedSnapshotRow = (
 );
 type PairedSnapshotMaterializations = (Vec<u8>, Vec<u8>);
 
+fn read_external_input_preparation_export_records(
+    connection: &Connection,
+) -> Result<BTreeMap<String, Vec<SqliteCanonicalRecordV1>>, SqliteCanonicalExportErrorV1> {
+    let mut statement = connection
+        .prepare(
+            "SELECT operation_identity_bytes, canonical_request_hash, recorded_at \
+             FROM external_input_preparations ORDER BY operation_identity_bytes",
+        )
+        .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?;
+    let rows = statement
+        .query_map((), |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|_| SqliteCanonicalExportErrorV1::StorageUnavailable)?;
+    let mut records = BTreeMap::<String, Vec<SqliteCanonicalRecordV1>>::new();
+    for row in rows {
+        let (identity_bytes, request_hash, recorded_at) =
+            row.map_err(|_| SqliteCanonicalExportErrorV1::Corrupt)?;
+        let identity = CanonicalJsonV1::decode_canonical::<OperationIdentityV1>(&identity_bytes)
+            .map_err(|_| SqliteCanonicalExportErrorV1::Corrupt)?;
+        let room_id = identity
+            .room_id()
+            .ok_or(SqliteCanonicalExportErrorV1::Corrupt)?
+            .to_string();
+        let request_hash = DigestV1::from_bytes(&request_hash)
+            .map_err(|_| SqliteCanonicalExportErrorV1::Corrupt)?;
+        let preparation = worldstream_transfer::ExternalInputPreparationV1::new(
+            identity_bytes.clone(),
+            request_hash,
+            recorded_at,
+        )
+        .and_then(|preparation| preparation.canonical_bytes())
+        .map_err(|_| SqliteCanonicalExportErrorV1::Corrupt)?;
+        records
+            .entry(room_id.clone())
+            .or_default()
+            .push(SqliteCanonicalRecordV1 {
+                kind: SqliteCanonicalRecordKindV1::ExternalInputPreparation,
+                identity: format!(
+                    "room/{room_id}/external-input-preparation/{}",
+                    encode_lower_hex(&identity_bytes)
+                ),
+                bytes: preparation,
+            });
+    }
+    Ok(records)
+}
+
+#[allow(clippy::too_many_lines)]
 fn read_canonical_export_rooms(
     connection: &Connection,
 ) -> Result<(Vec<String>, Vec<SqliteCanonicalRecordV1>), SqliteCanonicalExportErrorV1> {
+    let mut external_input_preparations =
+        read_external_input_preparation_export_records(connection)?;
     let mut statement = connection
         .prepare(
             "SELECT r.room_id, i.status, g.pack_revision_lock_bytes, g.genesis_bytes, \
@@ -3394,6 +3529,12 @@ fn read_canonical_export_rooms(
                 bytes: required(pack_revision_lock, "pack revision lock")?,
             },
         ]);
+        if let Some(preparations) = external_input_preparations.remove(&room_id) {
+            records.extend(preparations);
+        }
+    }
+    if !external_input_preparations.is_empty() {
+        return Err(SqliteCanonicalExportErrorV1::Corrupt);
     }
     Ok((isolated_rooms, records))
 }
@@ -3844,6 +3985,55 @@ impl SqliteRoomStore {
     #[must_use]
     pub fn database_identity(&self) -> SqliteFileIdentityV1 {
         self.writer.database_identity
+    }
+
+    /// Creates and atomically publishes a standalone online backup from the
+    /// exact database object retained by this live store. The source remains
+    /// authoritative and writable throughout; only a new destination is
+    /// created. Failure scrubs the staging artifact and never mutates source
+    /// state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed transfer error when source authority is unavailable,
+    /// the destination is unsafe or already exists, native backup fails, or
+    /// destination canonical evidence does not match the captured source.
+    pub fn create_live_backup(
+        &self,
+        destination: &Path,
+    ) -> Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1> {
+        if self.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative {
+            return Err(SqliteSourceTransferErrorV1::NotSourceAuthoritative {
+                actual: self.source_transfer_state(),
+            });
+        }
+        let destination = normalized_path(destination)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::LiveBackup { destination, reply })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
+    /// Reopens and verifies an already-published live backup without mutating
+    /// the running source. This reconciles a crash after artifact publication
+    /// but before the Supervisor persisted its terminal result.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed error if the object is absent or substituted, or its
+    /// schema, referential integrity, canonical evidence, or bytes fail checks.
+    pub fn verify_live_backup(
+        &self,
+        destination: &Path,
+    ) -> Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1> {
+        let destination = normalized_path(destination)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        verify_published_live_backup(&destination)
     }
 
     /// Returns the exact runtime engine identity verified at open.
@@ -4629,6 +4819,92 @@ impl SqliteRoomStore {
             prepared_transition,
             transition_id,
             integrity_generation,
+            authority,
+            &frame_heads,
+        )
+        .map_err(map_timer_commit_preparation_error)?;
+        Ok(commit_existing_room(self, &mut trace, prepared)
+            .into_parts()
+            .0)
+    }
+
+    /// Durably binds one `ExternalInput` operation identity and request hash to
+    /// its first host-sampled semantic time. Same identity/hash retries reuse
+    /// the original value across process restart; a changed hash conflicts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit conflict, storage-unavailable, or corrupt-row
+    /// failure without resampling semantic time.
+    pub fn reserve_external_input_recorded_at(
+        &self,
+        identity: &OperationIdentityV1,
+        request_hash: &CanonicalRequestHashV1,
+        proposed_recorded_at: &ExternalInputRecordedAt,
+    ) -> Result<ExternalInputRecordedAt, SqliteExternalInputPreparationErrorV1> {
+        if !matches!(identity, OperationIdentityV1::ExternalInput(_)) {
+            return Err(SqliteExternalInputPreparationErrorV1::Corrupt);
+        }
+        let identity_bytes = identity
+            .canonical_bytes()
+            .map_err(|_| SqliteExternalInputPreparationErrorV1::Corrupt)?;
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::ReserveExternalInputPreparation {
+                identity_bytes,
+                request_hash: request_hash.clone(),
+                proposed_recorded_at: proposed_recorded_at.clone(),
+                reply,
+            })
+            .map_err(|_| SqliteExternalInputPreparationErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteExternalInputPreparationErrorV1::StorageUnavailable)?
+    }
+
+    /// Commits one exact host-authorized `ExternalInput` through Core's existing
+    /// recorded-stimulus and semantic-receipt coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed preparation, recovery, concurrency, or storage error
+    /// without installing a partial Transition.
+    pub fn commit_authorized_external_input(
+        &self,
+        registry: &PackRegistryV1,
+        authority: AuthorizedExternalInputV1,
+        room_id: &RoomId,
+        based_on_room_seq: RoomSequenceV1,
+        input: &ExternalInputV1,
+        transition_id: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, SqliteTimerCommitErrorV1> {
+        let snapshot = self
+            .gateway_room_snapshot(registry, room_id)
+            .map_err(|error| map_timer_commit_gateway_error(&error))?
+            .ok_or(SqliteTimerCommitErrorV1::RoomUnavailable)?;
+        let SqliteGatewayRoomSnapshotV1 {
+            mut trace,
+            integrity,
+            frame_heads,
+        } = snapshot;
+        if integrity.status() == RoomIntegrityStatusV1::Faulted {
+            return Err(SqliteTimerCommitErrorV1::RoomFaulted);
+        }
+        if integrity.status() == RoomIntegrityStatusV1::Quarantined {
+            return Err(SqliteTimerCommitErrorV1::IntegrityUnavailable);
+        }
+        let prepared_transition = trace
+            .prepare(RecordedStimulusV1::ExternalInput(input.clone()))
+            .map_err(|error| map_timer_commit_trace_error(&error))?;
+        let prepared = PreparedRoomCommitV1::for_authorized_external_input(
+            &trace,
+            room_id,
+            based_on_room_seq,
+            input,
+            prepared_transition,
+            transition_id,
+            integrity.generation(),
             authority,
             &frame_heads,
         )
@@ -9082,6 +9358,11 @@ fn writer_main(
                 }
                 reply_after_namespace_check!(reply, result);
             }
+            WriterCommand::LiveBackup { destination, reply } => {
+                let result = create_verified_transfer_backup(&connection, &destination)
+                    .map(live_backup_receipt);
+                reply_after_namespace_check!(reply, result);
+            }
             #[cfg(test)]
             WriterCommand::BeginSourceTransferWithHook {
                 backup_path,
@@ -9135,6 +9416,22 @@ fn writer_main(
                 #[cfg(not(test))]
                 let resolution = commit_prepared(&mut connection, *prepared, clock);
                 reply_after_namespace_check!(reply, resolution);
+            }
+            WriterCommand::ReserveExternalInputPreparation {
+                identity_bytes,
+                request_hash,
+                proposed_recorded_at,
+                reply,
+            } => {
+                reply_after_namespace_check!(
+                    reply,
+                    reserve_external_input_preparation(
+                        &mut connection,
+                        &identity_bytes,
+                        &request_hash,
+                        &proposed_recorded_at,
+                    )
+                );
             }
             WriterCommand::Resolve {
                 identity,
@@ -12381,6 +12678,7 @@ where
         Ok(VerifiedTransferBackup {
             digest: source_digest,
             identity: persisted_transfer_identity(final_identity),
+            fingerprint: expected,
         })
     })();
     if result.is_err()
@@ -12414,6 +12712,67 @@ struct TransferBackupIdentity {
 struct VerifiedTransferBackup {
     digest: DigestV1,
     identity: TransferBackupIdentity,
+    fingerprint: TransferFileFingerprint,
+}
+
+fn live_backup_receipt(backup: VerifiedTransferBackup) -> SqliteLiveBackupReceiptV1 {
+    SqliteLiveBackupReceiptV1 {
+        artifact_digest: encode_lower_hex(&backup.fingerprint.digest),
+        artifact_bytes: backup.fingerprint.byte_len,
+        semantic_digest: backup.digest,
+        identity: SqliteFileIdentityV1 {
+            storage_id: backup.identity.storage_id,
+            file_id: backup.identity.file_id,
+        },
+    }
+}
+
+fn verify_published_live_backup(
+    path: &Path,
+) -> Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1> {
+    let (mut file, identity) = retain_sqlite_file(path, false)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    let connection = open_retained_sqlite(
+        &file,
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    native_migration_witness(&connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    verify_schema(&connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    let foreign_key_violation = connection
+        .prepare("PRAGMA foreign_key_check")
+        .and_then(|mut statement| statement.exists(()))
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    if foreign_key_violation {
+        return Err(SqliteSourceTransferErrorV1::BackupVerificationFailed);
+    }
+    read_canonical_export_from_connection(&connection)
+        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    let semantic_digest = durable_transfer_point_digest(&connection)?;
+    drop(connection);
+    let fingerprint = transfer_file_fingerprint(&mut file)?;
+    require_retained_sqlite_name(path, &file, identity)
+        .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+    Ok(live_backup_receipt(VerifiedTransferBackup {
+        digest: semantic_digest,
+        identity: persisted_transfer_identity(identity),
+        fingerprint,
+    }))
+}
+
+fn encode_lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 #[cfg(unix)]
@@ -13330,6 +13689,7 @@ enum MigrationFailpoint {
     TransferRecoveryCompleteness,
     TransferLifecycle,
     TransferBackupIdentity,
+    ExternalInputPreparation,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -13538,6 +13898,13 @@ fn migrate_with_failpoint_and_telemetry(
         fail_migration_at(failpoint, MigrationFailpoint::TransferBackupIdentity)?;
         insert_migration(&transaction, history[10], has_checksum_column)?;
     }
+    if migrations.len() < 12 {
+        transaction
+            .execute_batch(history[11].sql)
+            .map_err(SqliteStoreOpenError::Sqlite)?;
+        fail_migration_at(failpoint, MigrationFailpoint::ExternalInputPreparation)?;
+        insert_migration(&transaction, history[11], has_checksum_column)?;
+    }
     let persisted = read_migration_rows(&transaction, has_checksum_column)?;
     let persisted = persisted
         .into_iter()
@@ -13710,6 +14077,9 @@ fn fail_migration_at(
             }
             MigrationFailpoint::TransferLifecycle => "after-transfer-lifecycle-schema",
             MigrationFailpoint::TransferBackupIdentity => "after-transfer-backup-identity-schema",
+            MigrationFailpoint::ExternalInputPreparation => {
+                "after-external-input-preparation-schema"
+            }
         };
         return Err(SqliteStoreOpenError::MigrationInterrupted { boundary });
     }
@@ -14209,7 +14579,8 @@ fn commit_existing(
 
     let timer_is_applicable = match input_witness {
         PreparedOperationInputWitnessV1::ParticipantAction(_)
-        | PreparedOperationInputWitnessV1::CoreAdministration(_) => true,
+        | PreparedOperationInputWitnessV1::CoreAdministration(_)
+        | PreparedOperationInputWitnessV1::ExternalInput(_) => true,
         PreparedOperationInputWitnessV1::TimerFired(witness) => {
             timer_witness_matches(transaction, &room_id, witness)?
         }
@@ -14298,6 +14669,10 @@ fn verify_existing_materializations(
             witness.canonical_activity_before_bytes.as_slice(),
         ),
         PreparedOperationInputWitnessV1::CoreAdministration(witness) => (
+            witness.canonical_core_before_bytes.as_slice(),
+            witness.canonical_activity_before_bytes.as_slice(),
+        ),
+        PreparedOperationInputWitnessV1::ExternalInput(witness) => (
             witness.canonical_core_before_bytes.as_slice(),
             witness.canonical_activity_before_bytes.as_slice(),
         ),
@@ -17362,6 +17737,47 @@ fn resolve_in_transaction(
     }
 }
 
+fn reserve_external_input_preparation(
+    connection: &mut Connection,
+    identity_bytes: &[u8],
+    request_hash: &CanonicalRequestHashV1,
+    proposed_recorded_at: &ExternalInputRecordedAt,
+) -> Result<ExternalInputRecordedAt, SqliteExternalInputPreparationErrorV1> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| SqliteExternalInputPreparationErrorV1::StorageUnavailable)?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO external_input_preparations(\
+             operation_identity_bytes, canonical_request_hash, recorded_at\
+             ) VALUES (?1, ?2, ?3)",
+            params![
+                identity_bytes,
+                request_hash.as_bytes().as_slice(),
+                proposed_recorded_at.as_str(),
+            ],
+        )
+        .map_err(|_| SqliteExternalInputPreparationErrorV1::StorageUnavailable)?;
+    let (stored_hash, stored_recorded_at): (Vec<u8>, String) = transaction
+        .query_row(
+            "SELECT canonical_request_hash, recorded_at \
+             FROM external_input_preparations WHERE operation_identity_bytes = ?1",
+            [identity_bytes],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| SqliteExternalInputPreparationErrorV1::StorageUnavailable)?;
+    let outcome = if stored_hash.as_slice() == request_hash.as_bytes() {
+        ExternalInputRecordedAt::from_str(&stored_recorded_at)
+            .map_err(|_| SqliteExternalInputPreparationErrorV1::Corrupt)
+    } else {
+        Err(SqliteExternalInputPreparationErrorV1::Conflict)
+    };
+    transaction
+        .commit()
+        .map_err(|_| SqliteExternalInputPreparationErrorV1::StorageUnavailable)?;
+    outcome
+}
+
 fn resolve_guarded(
     connection: &mut Connection,
     identity: &OperationIdentityV1,
@@ -18217,24 +18633,25 @@ mod tests {
         CoreAdministrationRequestV1, CoreAuthorityAttributionV1, CoreAuthorityKindV1,
         CoreChangeSetV1, CoreProposedKindV1, CoreProposedV1, CoreRoomStateV1, CoreTraceV1,
         DeterministicContextV1, DiagnosticOperationV1, DiagnosticTargetV1,
-        ExistingRoomPendingAttemptV1, ExistingRoomReprepareV1, GenesisInputV1,
-        HistoricalReplayErrorV1, HostClockSampleV1, InitialMembershipProposalV1,
-        IntegrityGenerationV1, MemberAuthorityUseV1, MemberReadOperationV1, MembershipChangeV1,
-        MembershipStandingV1, MembershipV1, NewCapabilityV1, OperationIdentityV1,
-        PackGenesisRequestV1, PackRegistryV1, PackViewerV1, ParticipantActionAuthorityV1,
-        ParticipantActionOperationIdentityV1, ParticipantActionRequestV1, ParticipantActionV1,
-        PrepareRoomWriteErrorV1, PreparedAuthorityWitnessV1, PreparedExistingIntentV1,
-        PreparedNewRoomGenesisV1, PreparedObservationConsequenceV1, PreparedRoomCommitV1,
-        PreparedRoomCreationV1, PreparedRoomWriteV1, PresentedCapabilityV1,
-        PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1, PrincipalGenerationV1,
-        PrincipalKindV1, RecordedStimulusV1, RecoveredRoomMaterializationsV1,
-        RecoveryIntegrityDispositionV1, ReplayFailureClassV1, ReplayProjectionKindV1,
-        ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1, RoomCommitStorageV1,
-        RoomCreationIngressV1, RoomCreationPendingAttemptV1, RoomCreationRequestV1, RoomId,
-        RoomIntegrityStateV1, RoomIntegrityStatusV1, RoomMembershipKeyV1, RoomRecoveryErrorV1,
-        RoomRecoveryStorageV1, RoomSeedV1, RoomSequenceV1, RoomStatusV1, RunnerControlOperationV1,
-        RunnerGenerationV1, RunnerMembershipSetV1, ScheduledTimerV1, SemanticResultV1,
-        SessionFrameV1, SessionPublishOutcomeV1, SessionStateV1, SessionV1, StoredSemanticResultV1,
+        ExistingRoomPendingAttemptV1, ExistingRoomReprepareV1, ExternalInputOperationIdentityV1,
+        ExternalInputRecordedAt, ExternalInputV1, GenesisInputV1, HistoricalReplayErrorV1,
+        HostClockSampleV1, InitialMembershipProposalV1, InputId, IntegrityGenerationV1,
+        MemberAuthorityUseV1, MemberReadOperationV1, MembershipChangeV1, MembershipStandingV1,
+        MembershipV1, NewCapabilityV1, OperationIdentityV1, PackGenesisRequestV1, PackRegistryV1,
+        PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionOperationIdentityV1,
+        ParticipantActionRequestV1, ParticipantActionV1, PrepareRoomWriteErrorV1,
+        PreparedAuthorityWitnessV1, PreparedExistingIntentV1, PreparedNewRoomGenesisV1,
+        PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomCreationV1,
+        PreparedRoomWriteV1, PresentedCapabilityV1, PrincipalAuthoritySnapshotV1,
+        PrincipalAuthorityStatusV1, PrincipalGenerationV1, PrincipalKindV1, RecordedStimulusV1,
+        RecoveredRoomMaterializationsV1, RecoveryIntegrityDispositionV1, ReplayFailureClassV1,
+        ReplayProjectionKindV1, ResolutionStatusV1, ResolveOutcomeV1, RoomCommitResolutionV1,
+        RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationPendingAttemptV1,
+        RoomCreationRequestV1, RoomId, RoomIntegrityStateV1, RoomIntegrityStatusV1,
+        RoomMembershipKeyV1, RoomRecoveryErrorV1, RoomRecoveryStorageV1, RoomSeedV1,
+        RoomSequenceV1, RoomStatusV1, RunnerControlOperationV1, RunnerGenerationV1,
+        RunnerMembershipSetV1, ScheduledTimerV1, SemanticResultV1, SessionFrameV1,
+        SessionPublishOutcomeV1, SessionStateV1, SessionV1, SourceId, StoredSemanticResultV1,
         TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TransitionId, TransitionV1,
         ValidatedPackViewV1, ViewInputV1, agent_heist_digest, agent_heist_retained_digest,
         authorize_core_administration_operation, authorize_room_creation_operation,
@@ -18245,7 +18662,8 @@ mod tests {
         counter_v2_malformed_output_registry_for_conformance,
         counter_v2_returned_fault_registry_for_conformance,
         counter_v2_runtime_fault_registry_for_conformance,
-        counter_v2_semantic_mismatch_registry_for_conformance, recover_room_from_storage,
+        counter_v2_semantic_mismatch_registry_for_conformance, external_input_request_hash,
+        recover_room_from_storage,
     };
     use worldstream_transfer::{
         BundleProfileV1, DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceKindV1,
@@ -18256,20 +18674,22 @@ mod tests {
 
     use super::{
         ACTIVATION_MIGRATION_ID, AUTHORITY_MIGRATION_ID, CANONICAL_EXPORT_MIGRATION_ID,
-        DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1, INITIAL_MIGRATION_ID,
-        INITIAL_MIGRATION_SCHEMA, MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID,
-        MigrationFailpoint, OBSERVATION_MIGRATION_ID, PAIRED_SNAPSHOT_SCHEMA_VERSION,
-        SNAPSHOT_MIGRATION_ID, SQLITE_SOURCE_ID, SQLITE_VERSION, SqliteActivationErrorV1,
-        SqliteAuthorizedReplayErrorV1, SqliteAuthorizedReplayOutcomeV1,
-        SqliteAuthorizedReplayProjectionV1, SqliteCanonicalExportErrorV1,
-        SqliteCanonicalMetadataInitializationErrorV1, SqliteCanonicalMetadataInitializationV1,
-        SqliteCanonicalRecordKindV1, SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
-        SqliteDeploymentIdentityInitializationV1, SqliteGatewayErrorV1, SqliteMigrationPhaseV1,
-        SqliteObservationDeliveryV1, SqliteObservationErrorV1, SqliteObservationFrameV1,
-        SqliteObservationPositionsV1, SqliteObservationResetReasonV1, SqliteRecoveryPhaseV1,
-        SqliteRoomDiagnosticRecordKindV1, SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1,
-        SqliteRoomStore, SqliteSourceTransferErrorV1, SqliteSourceTransferStateV1,
-        SqliteTelemetryEventV1, SqliteTelemetrySink, SqliteTimerStateV1, StoredPairedSnapshotRow,
+        DEPLOYMENT_IDENTITIES_MIGRATION_ID, DiagnosticHistoryV1,
+        EXTERNAL_INPUT_PREPARATION_MIGRATION_ID, INITIAL_MIGRATION_ID, INITIAL_MIGRATION_SCHEMA,
+        MAX_SAFE_INTEGER, MIGRATION_CHECKSUMS_MIGRATION_ID, MigrationFailpoint,
+        OBSERVATION_MIGRATION_ID, PAIRED_SNAPSHOT_SCHEMA_VERSION, SNAPSHOT_MIGRATION_ID,
+        SQLITE_SOURCE_ID, SQLITE_VERSION, SqliteActivationErrorV1, SqliteAuthorizedReplayErrorV1,
+        SqliteAuthorizedReplayOutcomeV1, SqliteAuthorizedReplayProjectionV1,
+        SqliteCanonicalExportErrorV1, SqliteCanonicalMetadataInitializationErrorV1,
+        SqliteCanonicalMetadataInitializationV1, SqliteCanonicalRecordKindV1,
+        SqliteCanonicalRecordV1, SqliteDeploymentIdentityErrorV1,
+        SqliteDeploymentIdentityInitializationV1, SqliteExternalInputPreparationErrorV1,
+        SqliteGatewayErrorV1, SqliteMigrationPhaseV1, SqliteObservationDeliveryV1,
+        SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationPositionsV1,
+        SqliteObservationResetReasonV1, SqliteRecoveryPhaseV1, SqliteRoomDiagnosticRecordKindV1,
+        SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1, SqliteRoomStore,
+        SqliteSourceTransferErrorV1, SqliteSourceTransferStateV1, SqliteTelemetryEventV1,
+        SqliteTelemetrySink, SqliteTimerStateV1, StoredPairedSnapshotRow,
         TRANSFER_BACKUP_IDENTITY_MIGRATION_ID, TRANSFER_LIFECYCLE_MIGRATION_ID,
         TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TestAuthorityClock, WriteBoundary,
         arm_guarded_commit_pause, arm_recovery_install_pause, arm_replay_projection_pause,
@@ -18389,6 +18809,71 @@ mod tests {
     fn canonical(bytes: &[u8]) -> CanonicalJsonV1 {
         CanonicalJsonV1::parse(bytes)
             .unwrap_or_else(|error| panic!("fixture canonical JSON: {error}"))
+    }
+
+    #[test]
+    fn external_input_preparation_reuses_first_semantic_time_after_restart_and_conflicts() {
+        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("database file: {error}"));
+        let room_id = parsed::<RoomId>(ROOM);
+        let source_id = parsed::<SourceId>("01ARZ3NDEKTSV4RRFFQ69G5FH1");
+        let input_id = parsed::<InputId>("01ARZ3NDEKTSV4RRFFQ69G5FJ0");
+        let identity =
+            OperationIdentityV1::ExternalInput(Box::new(ExternalInputOperationIdentityV1 {
+                room_id: room_id.clone(),
+                source_id: source_id.clone(),
+                input_id: input_id.clone(),
+            }));
+        let input = ExternalInputV1 {
+            source_id,
+            input_id,
+            input_type: "host_launch".to_owned(),
+            recorded_at: parsed("2026-08-24T12:00:00Z"),
+            canonical_payload: canonical(br"{}"),
+            immutable_resource_references: Vec::new(),
+        };
+        let request_hash = external_input_request_hash(
+            &room_id,
+            RoomSequenceV1::new(0).unwrap_or_else(|error| panic!("sequence: {error}")),
+            &input,
+        )
+        .unwrap_or_else(|error| panic!("request hash: {error}"));
+        let first = parsed::<ExternalInputRecordedAt>("2026-08-24T12:00:01.123456Z");
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open store: {error}"));
+        assert_eq!(
+            store.reserve_external_input_recorded_at(&identity, &request_hash, &first),
+            Ok(first.clone())
+        );
+        drop(store);
+
+        let reopened = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("reopen store: {error}"));
+        let resampled = parsed("2026-08-24T12:01:00Z");
+        assert_eq!(
+            reopened.reserve_external_input_recorded_at(&identity, &request_hash, &resampled),
+            Ok(first)
+        );
+        let conflicting_hash = external_input_request_hash(
+            &room_id,
+            RoomSequenceV1::new(1).unwrap_or_else(|error| panic!("sequence: {error}")),
+            &input,
+        )
+        .unwrap_or_else(|error| panic!("conflicting request hash: {error}"));
+        assert_eq!(
+            reopened.reserve_external_input_recorded_at(&identity, &conflicting_hash, &resampled,),
+            Err(SqliteExternalInputPreparationErrorV1::Conflict)
+        );
+        let administration =
+            OperationIdentityV1::Administration(Box::new(AdministrationOperationIdentityV1 {
+                authenticated_principal: parsed(PARTICIPANT),
+                versioned_operation_kind: CORE_OPERATION_KIND.to_owned(),
+                idempotency_key: "not-an-external-input".to_owned(),
+            }));
+        assert_eq!(
+            reopened
+                .reserve_external_input_recorded_at(&administration, &request_hash, &resampled,),
+            Err(SqliteExternalInputPreparationErrorV1::Corrupt)
+        );
     }
 
     fn commit_room_creation(
@@ -20801,7 +21286,7 @@ mod tests {
         let history = migration_history();
         assert_eq!(
             history.map(|migration| migration.version),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         assert_eq!(
             history.map(|migration| migration.id),
@@ -20817,6 +21302,7 @@ mod tests {
                 TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID,
                 TRANSFER_LIFECYCLE_MIGRATION_ID,
                 TRANSFER_BACKUP_IDENTITY_MIGRATION_ID,
+                EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
             ]
         );
         let expected_checksums = [
@@ -20831,6 +21317,7 @@ mod tests {
             "blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1",
             "blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3",
             "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9",
+            "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0",
         ];
         for (migration, expected) in history.iter().zip(expected_checksums) {
             assert_eq!(migration.checksum().to_string(), expected);
@@ -22559,6 +23046,7 @@ mod tests {
                 (9, TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID.to_owned()),
                 (10, TRANSFER_LIFECYCLE_MIGRATION_ID.to_owned()),
                 (11, TRANSFER_BACKUP_IDENTITY_MIGRATION_ID.to_owned()),
+                (12, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID.to_owned()),
             ]
         );
         let retired: (String, String, i64, Vec<u8>, Vec<u8>, i64) = connection
@@ -32791,6 +33279,49 @@ mod tests {
                 .source_transfer_status()
                 .unwrap_or_else(|error| panic!("source lifecycle: {error}"))
                 .state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+    }
+
+    #[test]
+    fn live_backup_publishes_verified_bytes_without_freezing_or_mutating_source() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let source = directory.path().join("source.sqlite3");
+        let backup = directory.path().join("live-backup.sqlite3");
+        let store =
+            SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("open source: {error}"));
+        store
+            .initialize_canonical_metadata("deployment/live-backup", 12)
+            .unwrap_or_else(|error| panic!("metadata: {error}"));
+        store
+            .initialize_deployment_identity(fixture_deployment_identity())
+            .unwrap_or_else(|error| panic!("identity: {error}"));
+
+        let before_identity = store.database_identity();
+        let receipt = store
+            .create_live_backup(&backup)
+            .unwrap_or_else(|error| panic!("live backup: {error}"));
+        let bytes = fs::read(&backup).unwrap_or_else(|error| panic!("backup bytes: {error}"));
+
+        assert_eq!(receipt.artifact_bytes(), bytes.len() as u64);
+        assert_eq!(
+            receipt.artifact_digest(),
+            blake3::hash(&bytes).to_hex().as_str()
+        );
+        assert_eq!(
+            store
+                .verify_live_backup(&backup)
+                .unwrap_or_else(|error| panic!("reconcile backup: {error}")),
+            receipt
+        );
+        assert_eq!(store.database_identity(), before_identity);
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+        assert!(store.create_live_backup(&backup).is_err());
+        assert_eq!(
+            store.source_transfer_state(),
             SqliteSourceTransferStateV1::SourceAuthoritative
         );
     }

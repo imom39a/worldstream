@@ -324,6 +324,7 @@ pub enum CanonicalRecordKindV1 {
     ArtifactBytes,
     IntegrityIncident,
     NativeOperationalRow,
+    ExternalInputPreparation,
 }
 
 impl CanonicalRecordKindV1 {
@@ -358,9 +359,114 @@ impl CanonicalRecordKindV1 {
             23 => Self::ArtifactBytes,
             24 => Self::IntegrityIncident,
             25 => Self::NativeOperationalRow,
+            26 => Self::ExternalInputPreparation,
             other => return Err(TransferError::UnknownRecordKind(other)),
         };
         Ok(kind)
+    }
+}
+
+const EXTERNAL_INPUT_PREPARATION_MAGIC: &[u8; 8] = b"WSXIPR01";
+
+/// Provider-neutral durable witness for one `ExternalInput`'s first prepared
+/// semantic time. The operation identity remains in its exact Core canonical
+/// bytes and the request hash is a fixed BLAKE3-256 value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalInputPreparationV1 {
+    operation_identity_bytes: Vec<u8>,
+    canonical_request_hash: DigestV1,
+    recorded_at: String,
+}
+
+impl ExternalInputPreparationV1 {
+    /// Constructs one bounded transfer witness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty/oversized identity bytes or invalid text.
+    pub fn new(
+        operation_identity_bytes: Vec<u8>,
+        canonical_request_hash: DigestV1,
+        recorded_at: impl Into<String>,
+    ) -> Result<Self, TransferError> {
+        if operation_identity_bytes.is_empty() || operation_identity_bytes.len() > MAX_BUNDLE_BYTES
+        {
+            return Err(TransferError::BoundExceeded {
+                what: "ExternalInput preparation identity",
+            });
+        }
+        let recorded_at = recorded_at.into();
+        validate_text(&recorded_at)?;
+        Ok(Self {
+            operation_identity_bytes,
+            canonical_request_hash,
+            recorded_at,
+        })
+    }
+
+    /// Returns the exact canonical Core operation-identity bytes.
+    #[must_use]
+    pub fn operation_identity_bytes(&self) -> &[u8] {
+        &self.operation_identity_bytes
+    }
+
+    /// Returns the canonical caller request hash.
+    #[must_use]
+    pub const fn canonical_request_hash(&self) -> DigestV1 {
+        self.canonical_request_hash
+    }
+
+    /// Returns the first host-sampled semantic time.
+    #[must_use]
+    pub fn recorded_at(&self) -> &str {
+        &self.recorded_at
+    }
+
+    /// Encodes the exact provider-neutral preparation witness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if a bounded length cannot be represented.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, TransferError> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(EXTERNAL_INPUT_PREPARATION_MAGIC);
+        write_u64(
+            &mut bytes,
+            u64::try_from(self.operation_identity_bytes.len()).map_err(|_| {
+                TransferError::BoundExceeded {
+                    what: "ExternalInput preparation identity",
+                }
+            })?,
+        );
+        bytes.extend_from_slice(&self.operation_identity_bytes);
+        bytes.extend_from_slice(&self.canonical_request_hash.as_bytes());
+        write_string(&mut bytes, &self.recorded_at)?;
+        Ok(bytes)
+    }
+
+    /// Decodes one exact preparation witness and rejects trailing bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, oversized, or trailing bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, TransferError> {
+        let mut reader = Reader::new(bytes);
+        if reader.read_exact(8)? != EXTERNAL_INPUT_PREPARATION_MAGIC {
+            return Err(TransferError::InvalidMagic);
+        }
+        let operation_identity_bytes = reader.read_blob(MAX_BUNDLE_BYTES)?;
+        let canonical_request_hash = reader.read_digest()?;
+        let recorded_at = reader.read_string()?;
+        if !reader.is_done() {
+            return Err(TransferError::TrailingBytes {
+                count: reader.remaining(),
+            });
+        }
+        Self::new(
+            operation_identity_bytes,
+            canonical_request_hash,
+            recorded_at,
+        )
     }
 }
 
@@ -3813,15 +3919,38 @@ mod tests {
 
     use super::{
         BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DeploymentIdentityV1,
-        DerivedRecordKindV1, DigestV1, LogicalRecordV1, MigrationIdentityV1, PackIdentityV1,
-        ResourceIdentityV1, ResourceKindV1, SchemaMigrationContractV1, SessionStatePolicyV1,
-        TargetFingerprintV1, TransferBundleV1, TransferCheckpointV1, TransferChunkDispositionV1,
-        TransferDestinationV1, TransferError, TransferImportSessionV1, TransferLifecycleV1,
-        TransferRunError, TransferScopeV1, TransferSourceAuthorityBindingV1,
-        TransferSourceAuthorityStateV1, TransferSourceAuthorityV1, TransferStateV1,
-        VerifiedTargetAbortV1, VerifiedTargetFinalizationV1, WholeDeploymentTransferErrorV1,
-        abort_whole_deployment, default_backend_fingerprint, finalize_whole_deployment,
+        DerivedRecordKindV1, DigestV1, ExternalInputPreparationV1, LogicalRecordV1,
+        MigrationIdentityV1, PackIdentityV1, ResourceIdentityV1, ResourceKindV1,
+        SchemaMigrationContractV1, SessionStatePolicyV1, TargetFingerprintV1, TransferBundleV1,
+        TransferCheckpointV1, TransferChunkDispositionV1, TransferDestinationV1, TransferError,
+        TransferImportSessionV1, TransferLifecycleV1, TransferRunError, TransferScopeV1,
+        TransferSourceAuthorityBindingV1, TransferSourceAuthorityStateV1,
+        TransferSourceAuthorityV1, TransferStateV1, VerifiedTargetAbortV1,
+        VerifiedTargetFinalizationV1, WholeDeploymentTransferErrorV1, abort_whole_deployment,
+        default_backend_fingerprint, finalize_whole_deployment,
     };
+
+    #[test]
+    fn external_input_preparation_encoding_is_exact_and_rejects_trailing_bytes() {
+        let preparation = ExternalInputPreparationV1::new(
+            b"exact-core-operation-identity".to_vec(),
+            DigestV1::hash(b"canonical-request"),
+            "2026-08-24T12:00:00.123456Z",
+        )
+        .expect("preparation");
+        let bytes = preparation.canonical_bytes().expect("canonical bytes");
+        assert_eq!(
+            ExternalInputPreparationV1::from_canonical_bytes(&bytes).expect("round trip"),
+            preparation
+        );
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(matches!(
+            ExternalInputPreparationV1::from_canonical_bytes(&trailing),
+            Err(TransferError::TrailingBytes { count: 1 })
+        ));
+    }
 
     #[allow(clippy::struct_excessive_bools)]
     #[derive(Default)]

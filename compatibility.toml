@@ -102,7 +102,7 @@ release_verified_patches_status = "resolved"
 
 [migrations]
 logical_history_id = "worldstream-storage-v1"
-schema_contract_fingerprint = "blake3:16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb"
+schema_contract_fingerprint = "blake3:a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26"
 schema_contract_fingerprint_status = "implementation_verified"
 direction = "forward_only"
 backend_specific_execution = true
@@ -177,6 +177,12 @@ status = "implementation_verified"
 id = "0012-transfer-backup-file-identity-v1"
 sqlite_checksum = "blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9"
 postgresql_checksum = ""
+status = "implementation_verified"
+
+[[migrations.entries]]
+id = "0013-external-input-preparations-v1"
+sqlite_checksum = "blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0"
+postgresql_checksum = "blake3:7ec83a157ccdcfec733ceae17e74a0133355a1325103ae1b2c1e110b6aa04013"
 status = "implementation_verified"
 
 [[migrations.entries]]
@@ -488,6 +494,23 @@ executor_artifact_digest = "blake3:6a4c9682b9d3702e7c1283348883214919cf53e4570ce
 schema_bundle_digest = "blake3:6dfb0613326e19f27ede58048ccb4804d6d5832b59e3d0c5ee697bd6f7df1a4f"
 codec_bundle_digest = "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30"
 golden_corpus_digest = "blake3:c79d1e0c37eb32e54924b4b42f9d3d2d790e456d7fc888698c4d0b2b467ad958"
+selectable_for_new_rooms = true
+runnable_for_retained_rooms = true
+status = "resolved"
+required_for_release = true
+
+[[pack_executors]]
+pack_id = "worldstream.agent-heist"
+explanatory_version = "0.2.0"
+host_contract_id = "worldstream/activity-pack/v1"
+revision_lock_id = "worldstream/pack-revision-lock/v1"
+revision_digest_algorithm = "blake3"
+revision_digest = "blake3:44899f1f2f061a6c1b487df0222db233cf1f44429a20e8b5e56c67bd9016c378"
+descriptor_digest = "blake3:9e291aa11550f380ab8e38defab6a4d83cdc0f2c84ab144354d5cb83632b6a92"
+executor_artifact_digest = "blake3:067d6d9816315d26234219d6ac34757beb3dac67c76648b2b2901a5da6fc9067"
+schema_bundle_digest = "blake3:6dfb0613326e19f27ede58048ccb4804d6d5832b59e3d0c5ee697bd6f7df1a4f"
+codec_bundle_digest = "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30"
+golden_corpus_digest = "blake3:15eb416c0567eb3dd3726ad4f931d1b1297d46a83f2a5fbe1fabff2574ffff7a"
 selectable_for_new_rooms = true
 runnable_for_retained_rooms = true
 status = "resolved"

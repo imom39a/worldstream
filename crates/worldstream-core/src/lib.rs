@@ -10,6 +10,7 @@
 mod activation;
 mod activity_pack;
 mod agent_heist;
+mod agent_heist_lobby;
 mod agent_heist_registry;
 mod authority;
 mod canonical;
@@ -41,12 +42,12 @@ pub use activity_pack::{
     InitialOutputV1, NamedDigestV1, ObserveInputV1, PACK_REVISION_LOCK_ID,
     PROJECTION_HASH_DOMAIN_V1, PROJECTION_SCHEMA_V1, PackCodecBundleV1, PackCodecKindV1,
     PackGenesisErrorV1, PackGenesisRequestV1, PackGoldenActionV1, PackGoldenCorpusV1,
-    PackGoldenViewerKindV1, PackGoldenViewerV1, PackLimitsV1, PackObservationV1,
-    PackRegistryErrorV1, PackRegistryStatusV1, PackRegistryV1, PackRevisionDescriptorV1,
-    PackRevisionLockV1, PackSchemaBundleV1, PackSchemaV1, PackViewV1, PackViewerClassV1,
-    PackViewerV1, PreparedNewRoomGenesisV1, RetainedActivityPackV1, RoleDefinitionV1,
-    SchemaReferenceV1, ValidatedPackObservationV1, ValidatedPackViewV1, ViewInputV1,
-    projection_hash_for_canonical_bytes,
+    PackGoldenExternalInputV1, PackGoldenViewerKindV1, PackGoldenViewerV1, PackLimitsV1,
+    PackObservationV1, PackRegistryErrorV1, PackRegistryStatusV1, PackRegistryV1,
+    PackRevisionDescriptorV1, PackRevisionLockV1, PackSchemaBundleV1, PackSchemaV1, PackViewV1,
+    PackViewerClassV1, PackViewerV1, PreparedNewRoomGenesisV1, RetainedActivityPackV1,
+    RoleDefinitionV1, SchemaReferenceV1, ValidatedPackObservationV1, ValidatedPackViewV1,
+    ViewInputV1, projection_hash_for_canonical_bytes,
 };
 pub use agent_heist::{
     ACCEPT_EXCHANGE, ACKNOWLEDGE_RESULT, AGENT_HEIST_PACK_ID, AGENT_HEIST_RETAINED_VERSION,
@@ -54,8 +55,14 @@ pub use agent_heist::{
     ENDORSE_PLAN, INSIDER, INSPECT_CLUE, NAVIGATOR, OFFER_EXCHANGE, PROPOSE_PLAN, PUBLISH_CLUE,
     ROLES, outcome_for_matrix,
 };
+pub use agent_heist_lobby::{
+    AGENT_HEIST_LOBBY_CONTRACT, AGENT_HEIST_LOBBY_VERSION, AgentHeistLobbyV2,
+    HOST_LAUNCH_INPUT_TYPE, HOST_LOBBY_LAUNCH_SOURCE, agent_heist_lobby_contract_declared,
+    agent_heist_lobby_launch_applicable,
+};
 pub use agent_heist_registry::{
-    agent_heist_digest, agent_heist_retained_digest, builtin_agent_heist_registry,
+    agent_heist_digest, agent_heist_lobby_digest, agent_heist_retained_digest,
+    builtin_agent_heist_registry,
 };
 #[cfg(any(test, feature = "conformance-tracer"))]
 pub use authority::InMemoryAuthorityStoreV1;
@@ -65,14 +72,14 @@ pub use authority::{
     AuthorityChangeTargetV1, AuthorityChangeV1, AuthorityErrorV1, AuthorityGrantV1,
     AuthorityReasonCodeV1, AuthorityShapeErrorV1, AuthoritySnapshotQueryV1, AuthoritySnapshotV1,
     AuthorityStoreErrorV1, AuthorityStoreV1, AuthorityUseV1, AuthorityV1,
-    AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1, AuthorizedParticipantActionV1,
-    AuthorizedReceiptReadV1, AuthorizedReplayV1, AuthorizedRoomCreationV1,
-    AuthorizedRunnerControlV1, AuthorizedStableActionDispositionV1, AuthorizedTimerFiredV1,
-    AuthorizedViewerV1, CapabilityAuthoritySnapshotPartsV1, CapabilityAuthoritySnapshotV1,
-    CapabilityBearerV1, CapabilityProfileV1, CapabilityScopeSetV1, CapabilityScopeV1,
-    CapabilityTokenHashV1, ClassifiedCoreAdministrationV1, CoreAdministrationClassV1,
-    DiagnosticAdapterInputV1, DiagnosticOperationV1, DiagnosticTargetV1, MemberAuthorityUseV1,
-    MemberReadOperationV1, MembershipAuthoritySnapshotV1, NewCapabilityV1,
+    AuthorizedCoreAdministrationV1, AuthorizedDiagnosticV1, AuthorizedExternalInputV1,
+    AuthorizedParticipantActionV1, AuthorizedReceiptReadV1, AuthorizedReplayV1,
+    AuthorizedRoomCreationV1, AuthorizedRunnerControlV1, AuthorizedStableActionDispositionV1,
+    AuthorizedTimerFiredV1, AuthorizedViewerV1, CapabilityAuthoritySnapshotPartsV1,
+    CapabilityAuthoritySnapshotV1, CapabilityBearerV1, CapabilityProfileV1, CapabilityScopeSetV1,
+    CapabilityScopeV1, CapabilityTokenHashV1, ClassifiedCoreAdministrationV1,
+    CoreAdministrationClassV1, DiagnosticAdapterInputV1, DiagnosticOperationV1, DiagnosticTargetV1,
+    MemberAuthorityUseV1, MemberReadOperationV1, MembershipAuthoritySnapshotV1, NewCapabilityV1,
     ParticipantActionAuthorityV1, PreparedAuthorityBootstrapV1, PreparedAuthorityChangeV1,
     PresentedCapabilityV1, PrincipalAuthoritySnapshotV1, PrincipalAuthorityStatusV1,
     ReceiptReadAdapterInputV1, ReplayAdapterInputV1, ReplayProjectionKindV1, RoomMembershipKeyV1,
@@ -128,7 +135,7 @@ pub use room_commit::{
     ParticipantActionRequestV1, PrepareRoomWriteErrorV1, PreparedActionInputWitnessV1,
     PreparedActivationDecisionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
     PreparedCoreAdministrationInputWitnessV1, PreparedCreationPersistenceV1,
-    PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
+    PreparedExistingIntentV1, PreparedExternalInputWitnessV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedObservationFrameV1, PreparedOperationInputWitnessV1,
     PreparedRoomCommitV1, PreparedRoomCreationV1, PreparedRoomWriteV1, PreparedTimerInputWitnessV1,
     PreparedTimerMaterializationV1, PreparedTimerMutationKindV1, PreparedTimerMutationV1,
@@ -143,7 +150,7 @@ pub use room_commit::{
     TimerReprepareOutcomeV1, VerifiedCurrentRoomMaterializationV1,
     authorize_core_administration_operation, authorize_participant_action_operation,
     authorize_room_creation_operation, commit_existing_room, commit_room_creation,
-    resolve_authorized_room_operation_for_adapter,
+    external_input_request_hash, resolve_authorized_room_operation_for_adapter,
 };
 pub use semantic_time::{
     ActionLaneReservationV1, ActionRoomAdmissionV1, AdmissionLaneClassV1, AdmissionLaneErrorV1,

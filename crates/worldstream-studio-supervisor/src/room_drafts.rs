@@ -21,7 +21,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use worldstream_protocol::PackReference;
+use worldstream_protocol::{PackReference, PrincipalKind, UlidString};
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
 };
@@ -54,6 +54,10 @@ pub struct RoomDraftSeatV1 {
     pub role: String,
     pub required: bool,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_kind: Option<PrincipalKind>,
 }
 
 /// Pre-Room readiness policy for one stable seat. This is not live presence.
@@ -441,13 +445,23 @@ fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
         return Err(RoomDraftErrorV1::InvalidDraft);
     }
     let mut seats = BTreeMap::new();
+    let mut principals = BTreeSet::new();
     for seat in &draft.seats {
         validate_identifier(&seat.seat_id)?;
         if !is_bounded_text(&seat.role)
             || !is_bounded_text(&seat.display_name)
             || seats.insert(seat.seat_id.as_str(), seat).is_some()
+            || seat.principal_id.is_some() != seat.principal_kind.is_some()
         {
             return Err(RoomDraftErrorV1::InvalidDraft);
+        }
+        if let Some(principal_id) = &seat.principal_id {
+            principal_id
+                .parse::<UlidString>()
+                .map_err(|_| RoomDraftErrorV1::InvalidDraft)?;
+            if !principals.insert(principal_id.as_str()) {
+                return Err(RoomDraftErrorV1::InvalidDraft);
+            }
         }
     }
     let mut readiness_ids = BTreeSet::new();
@@ -469,6 +483,16 @@ fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
         .last_valid_step
         .is_some_and(|step| step >= RoomDraftStepV1::Activity)
         && draft.pack.is_none()
+    {
+        return Err(RoomDraftErrorV1::InvalidDraft);
+    }
+    if draft
+        .last_valid_step
+        .is_some_and(|step| step >= RoomDraftStepV1::Readiness)
+        && draft
+            .seats
+            .iter()
+            .any(|seat| seat.required && seat.principal_id.is_none())
     {
         return Err(RoomDraftErrorV1::InvalidDraft);
     }

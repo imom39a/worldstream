@@ -3,7 +3,7 @@ use std::mem::size_of;
 use worldstream_core::{
     CoreReducerV1, PackRegistryErrorV1, PreparedCoreStateV1, PreparedRoomTransitionV1,
     RoomTransitionPreparerV1, RoomTransitionStateV1, TimerRequestV1, VerifiedCoreStateV1,
-    builtin_worldstream_registry, counter_v1_digest, counter_v2_digest,
+    agent_heist_lobby_digest, builtin_worldstream_registry, counter_v1_digest, counter_v2_digest,
 };
 
 #[test]
@@ -23,7 +23,12 @@ fn activity_pack_catalog_preserves_exact_revision_identity_and_schema_bytes() {
         .unwrap_or_else(|error| unreachable!("built-in registry: {error}"));
 
     let revisions = registry.catalog_revisions().collect::<Vec<_>>();
-    assert_eq!(revisions.len(), 4);
+    assert_eq!(revisions.len(), 5);
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision.revision_digest == agent_heist_lobby_digest())
+    );
     assert!(
         revisions.windows(2).all(|pair| {
             pair[0].revision_digest.to_string() < pair[1].revision_digest.to_string()

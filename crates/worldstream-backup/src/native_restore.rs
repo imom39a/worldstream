@@ -22,9 +22,10 @@ use crate::{
 
 /// Fixed provider-neutral durable domains required for a `PostgreSQL` native
 /// restore to qualify as full semantic evidence.
-pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomainV1; 33] = [
+pub const POSTGRES_NATIVE_RESTORE_DURABLE_DOMAINS_V1: [NativeRestoreDurableDomainV1; 34] = [
     NativeRestoreDurableDomainV1::SchemaMigrations,
     NativeRestoreDurableDomainV1::OperationGuards,
+    NativeRestoreDurableDomainV1::ExternalInputPreparations,
     NativeRestoreDurableDomainV1::RoomRoots,
     NativeRestoreDurableDomainV1::Genesis,
     NativeRestoreDurableDomainV1::Materializations,
@@ -79,6 +80,8 @@ pub enum NativeRestoreDurableDomainV1 {
     SchemaMigrations,
     /// Operation identities, request hashes, Rooms, and indeterminate receipts.
     OperationGuards,
+    /// `ExternalInput` identities, request hashes, and first sampled Recorded Times.
+    ExternalInputPreparations,
     /// Current Room Heads and integrity state/generation.
     RoomRoots,
     /// Exact retained Pack lock and Genesis bytes.
@@ -150,6 +153,7 @@ impl NativeRestoreDurableDomainV1 {
         match self {
             Self::SchemaMigrations => "schema_migrations",
             Self::OperationGuards => "operation_guards",
+            Self::ExternalInputPreparations => "external_input_preparations",
             Self::RoomRoots => "room_roots",
             Self::Genesis => "genesis",
             Self::Materializations => "materializations",

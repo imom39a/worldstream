@@ -16,9 +16,9 @@ use worldstream_backup::native_sqlite::{
 };
 
 use crate::{
-    BackendFingerprintV1, CanonicalRecordKindV1, DeploymentIdentityV1, DigestV1, LogicalRecordV1,
-    PackIdentityV1, ResourceIdentityV1, ResourceKindV1, ResourcePayloadV1, SessionStatePolicyV1,
-    TransferBundleV1, TransferError,
+    BackendFingerprintV1, CanonicalRecordKindV1, DeploymentIdentityV1, DigestV1,
+    ExternalInputPreparationV1, LogicalRecordV1, PackIdentityV1, ResourceIdentityV1,
+    ResourceKindV1, ResourcePayloadV1, SessionStatePolicyV1, TransferBundleV1, TransferError,
 };
 
 const MANIFEST_MAGIC: &[u8; 8] = b"WSNSMF01";
@@ -45,6 +45,7 @@ const TABLES: &[(&str, usize)] = &[
     ("room_integrity", 3),
     ("room_members", 13),
     ("semantic_receipts", 12),
+    ("external_input_preparations", 3),
     ("timers", 6),
     ("integrity_incidents", 6),
 ];
@@ -396,6 +397,10 @@ impl NativeSqliteTransferAdapterV1 {
                         what: "native operational rows",
                     })?;
         }
+        tables.insert(
+            "external_input_preparations".to_owned(),
+            external_input_preparation_rows(&canonical_records)?,
+        );
         if operational_row_count + canonical_records.len() + 1 != bundle.records().len() {
             return Err(NativeSqliteTransferError::ManifestMismatch {
                 what: "record count",
@@ -552,7 +557,20 @@ impl NativeSqliteTransferAdapterV1 {
             encode_manifest(summary),
         ));
         let prepared = prepare_rows(rows)?;
+        let expected_preparations = rows.tables.get("external_input_preparations").ok_or(
+            NativeSqliteTransferError::MissingRelation {
+                relation: "external_input_preparations",
+            },
+        )?;
+        if external_input_preparation_rows(canonical_records)? != *expected_preparations {
+            return Err(NativeSqliteTransferError::CanonicalEvidence {
+                what: "ExternalInput preparation coverage",
+            });
+        }
         for row in prepared {
+            if row.table == "external_input_preparations" {
+                continue;
+            }
             records.push((
                 CanonicalRecordKindV1::NativeOperationalRow,
                 row.identity,
@@ -587,6 +605,34 @@ impl NativeSqliteTransferAdapterV1 {
         )
         .map_err(Into::into)
     }
+}
+
+fn external_input_preparation_rows(
+    records: &[LogicalRecordV1],
+) -> Result<Vec<NativeSqliteRowV1>, NativeSqliteTransferError> {
+    records
+        .iter()
+        .filter(|record| {
+            record.kind()
+                == crate::RecordKindV1::Canonical(CanonicalRecordKindV1::ExternalInputPreparation)
+        })
+        .map(|record| {
+            let preparation = ExternalInputPreparationV1::from_canonical_bytes(record.bytes())
+                .map_err(|_| NativeSqliteTransferError::CanonicalEvidence {
+                    what: "ExternalInput preparation encoding",
+                })?;
+            Ok(NativeSqliteRowV1 {
+                table: "external_input_preparations".to_owned(),
+                values: vec![
+                    NativeSqliteValueV1::Blob(preparation.operation_identity_bytes().to_vec()),
+                    NativeSqliteValueV1::Blob(
+                        preparation.canonical_request_hash().as_bytes().to_vec(),
+                    ),
+                    NativeSqliteValueV1::Text(preparation.recorded_at().to_owned()),
+                ],
+            })
+        })
+        .collect()
 }
 
 fn validate_canonical_records(
@@ -1274,6 +1320,14 @@ fn validate_relations(
                     validate_semantic_receipt(row)?;
                 }
             }
+            "external_input_preparations" => {
+                let identity = blob(&row.values, 0, row.table)?;
+                let request_hash = blob(&row.values, 1, row.table)?;
+                let _ = text(&row.values, 2, row.table)?;
+                if identity.is_empty() || request_hash.len() != 32 {
+                    return invalid(row.table, "ExternalInput preparation");
+                }
+            }
             "integrity_incidents" => {
                 if integer(&row.values, 1, row.table)? <= 0
                     || integer(&row.values, 2, row.table)? <= 0
@@ -1521,6 +1575,10 @@ fn row_identity(
             text(values, 0, table)?,
             hex(blob(values, 2, table)?)
         ),
+        "external_input_preparations" => format!(
+            "external-input-preparation/{}",
+            hex(blob(values, 0, table)?)
+        ),
         "integrity_incidents" => format!(
             "room/{}/integrity-incident/{}",
             text(values, 0, table)?,
@@ -1556,7 +1614,8 @@ fn room_id(
         | "capability_scopes"
         | "runner_capability_memberships"
         | "authority_change_receipts"
-        | "authority_audit" => None,
+        | "authority_audit"
+        | "external_input_preparations" => None,
         _ => return Err(NativeSqliteTransferError::RowTableMismatch),
     };
     index
@@ -2170,6 +2229,7 @@ mod tests {
             "runner_capability_memberships",
             "authority_change_receipts",
             "authority_audit",
+            "external_input_preparations",
             "integrity_incidents",
         ] {
             tables.insert(table.to_owned(), Vec::new());
@@ -2575,6 +2635,66 @@ mod tests {
             assert_eq!(carried.bytes(), source.bytes());
             assert_eq!(carried.digest(), source.digest());
         }
+    }
+
+    #[test]
+    fn external_input_preparation_is_carried_once_as_canonical_evidence() {
+        let identity_bytes = b"exact-core-operation-identity".to_vec();
+        let request_hash = DigestV1::hash(b"canonical-request");
+        let recorded_at = "2026-08-24T12:00:00Z";
+        let mut rows = healthy_rows();
+        rows.tables.insert(
+            "external_input_preparations".to_owned(),
+            vec![row(
+                "external_input_preparations",
+                vec![
+                    Value::Blob(identity_bytes.clone()),
+                    Value::Blob(request_hash.as_bytes().to_vec()),
+                    Value::Text(recorded_at.to_owned()),
+                ],
+            )],
+        );
+        let preparation =
+            ExternalInputPreparationV1::new(identity_bytes, request_hash, recorded_at)
+                .expect("preparation");
+        let mut canonical = canonical_records();
+        canonical.push(
+            LogicalRecordV1::canonical(
+                7,
+                CanonicalRecordKindV1::ExternalInputPreparation,
+                "room/room-1/external-input-preparation/identity",
+                &preparation.canonical_bytes().expect("preparation bytes"),
+            )
+            .expect("canonical preparation"),
+        );
+
+        let bundle = NativeSqliteTransferAdapterV1::from_operational_rows_with_canonical_records(
+            &rows,
+            &fixture_spec(),
+            &canonical,
+        )
+        .expect("canonical-only preparation bundle");
+        let summary = NativeSqliteTransferAdapterV1::validate_bundle(&bundle).expect("valid");
+
+        assert_eq!(summary.table_counts()["external_input_preparations"], 1);
+        assert_eq!(
+            bundle
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.kind()
+                        == crate::RecordKindV1::Canonical(
+                            CanonicalRecordKindV1::ExternalInputPreparation,
+                        )
+                })
+                .count(),
+            1
+        );
+        assert!(bundle.records().iter().all(|record| {
+            !record
+                .identity()
+                .starts_with("native-sqlite/row/external_input_preparations/")
+        }));
     }
 
     #[test]

@@ -28,12 +28,13 @@ mod transfer;
 pub use authority::{PostgresAuthenticatedCapabilityV1, PostgresAuthorityAuthenticationError};
 pub use migrations::{
     AUTHORITY_FACTS_MIGRATION_ID, AUTHORITY_MIGRATION_ID, DEPLOYMENT_IDENTITY_MIGRATION_ID,
-    DEPLOYMENT_METADATA_MIGRATION_ID, FixtureMigrationProvider, INITIAL_MIGRATION_ID,
-    KERNEL_CONFORMANCE_MIGRATION_ID, KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID,
-    MIGRATION_0002_SQL, MIGRATION_0003_SQL, MIGRATION_0004_SQL, MIGRATION_0005_SQL,
-    MIGRATION_0006_SQL, MIGRATION_0007_SQL, MIGRATION_0008_SQL, MIGRATION_0009_SQL,
-    MIGRATION_0010_SQL, MIGRATION_0011_SQL, MigrationDescriptor, MigrationFailpoint,
-    MigrationRecord, MigrationVerification, MigrationVerificationError, SCHEMA_CONTRACT_ID,
+    DEPLOYMENT_METADATA_MIGRATION_ID, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
+    FixtureMigrationProvider, INITIAL_MIGRATION_ID, KERNEL_CONFORMANCE_MIGRATION_ID,
+    KERNEL_PARITY_MIGRATION_ID, LOGICAL_HISTORY_ID, MIGRATION_0002_SQL, MIGRATION_0003_SQL,
+    MIGRATION_0004_SQL, MIGRATION_0005_SQL, MIGRATION_0006_SQL, MIGRATION_0007_SQL,
+    MIGRATION_0008_SQL, MIGRATION_0009_SQL, MIGRATION_0010_SQL, MIGRATION_0011_SQL,
+    MIGRATION_0012_SQL, MigrationDescriptor, MigrationFailpoint, MigrationRecord,
+    MigrationVerification, MigrationVerificationError, SCHEMA_CONTRACT_ID,
     SCHEMA_FINGERPRINT_MATERIAL, TRANSFER_PUBLICATION_MIGRATION_ID,
     TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
     migration_history, schema_contract_fingerprint, verify_migration_prefix,
@@ -73,15 +74,16 @@ use worldstream_core::{
     AccessModeV1, ActivationContextInputV1, ActivationDeliveryV1, ActivationFrameV1,
     ActivationIntentStateV1, ActivationInvocationContextV1, ActivationOperationRequestV1,
     ActivationOperationResultV1, ActivationResultCodeV1, AuthorityCheckedAt, AuthorityErrorV1,
-    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedDiagnosticV1, AuthorizedReceiptReadV1,
-    AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
-    AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonV1, CanonicalRequestHashV1,
-    CompleteHeadV1, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1, GenesisV1,
-    HistoricalReplayErrorV1, HistoricalReplayProjectionV1, HostClockSampleV1,
-    IntegrityGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1, PackRegistryV1,
-    PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1,
-    ParticipantActionV1, PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1,
-    PreparedCreationPersistenceV1, PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
+    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedDiagnosticV1, AuthorizedExternalInputV1,
+    AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1, AuthorizedReplayV1,
+    AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonV1,
+    CanonicalRequestHashV1, CompleteHeadV1, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1,
+    ExternalInputRecordedAt, ExternalInputV1, GenesisV1, HistoricalReplayErrorV1,
+    HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1, MembershipStandingV1,
+    MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
+    ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
+    PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
+    PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
     PreparedTimerMutationKindV1, RecordedStimulusV1, RecoveredObservationConsequenceV1,
     RecoveredRoomMaterializationsV1, RecoveredTimerStateV1, RecoveryIntegrityDispositionV1,
@@ -612,6 +614,20 @@ pub enum PostgresAuthorityClockError {
     #[error("PostgreSQL authority clock is unavailable")]
     Unavailable,
     #[error("PostgreSQL authority clock returned an invalid timestamp")]
+    Corrupt,
+}
+
+/// Closed outcomes from durable ExternalInput Semantic Time preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum PostgresExternalInputPreparationErrorV1 {
+    /// The stable operation identity is already bound to another request hash.
+    #[error("ExternalInput preparation identity conflicts with another request")]
+    Conflict,
+    /// PostgreSQL could not durably reserve or read the preparation row.
+    #[error("ExternalInput preparation storage is unavailable")]
+    StorageUnavailable,
+    /// The requested identity or retained preparation row is malformed.
+    #[error("ExternalInput preparation identity is corrupt")]
     Corrupt,
 }
 
@@ -2829,6 +2845,7 @@ fn read_current_migration_records<C: GenericClient>(
 const SCHEMA_TABLE_ORDER: &[&str] = &[
     "worldstream_schema_migrations",
     "worldstream_operation_guards",
+    "worldstream_external_input_preparations",
     "worldstream_room_roots",
     "worldstream_genesis",
     "worldstream_materializations",
@@ -2905,10 +2922,14 @@ const GLOBAL_RESOURCE_IDENTITY_INDEXES: [(&str, &str); 2] = [
     ),
 ];
 
-const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 30] = [
+const TRANSFER_FENCE_TRIGGER_TABLES: [(&str, &str); 31] = [
     (
         "worldstream_transfer_fence_operation_guards",
         "worldstream_operation_guards",
+    ),
+    (
+        "worldstream_transfer_fence_external_input_preparations",
+        "worldstream_external_input_preparations",
     ),
     (
         "worldstream_transfer_fence_room_roots",
@@ -3617,6 +3638,73 @@ impl PostgresRoomStore {
         })
     }
 
+    /// Durably binds the first sampled Recorded Time to one exact
+    /// ExternalInput operation identity and canonical request hash.
+    ///
+    /// Identical retries, including after a process restart, return the first
+    /// stored value. Reusing the identity with another hash fails closed and
+    /// never replaces the retained Semantic Time.
+    pub fn reserve_external_input_recorded_at(
+        &self,
+        identity: &OperationIdentityV1,
+        request_hash: &CanonicalRequestHashV1,
+        sampled_recorded_at: &ExternalInputRecordedAt,
+    ) -> Result<ExternalInputRecordedAt, PostgresExternalInputPreparationErrorV1> {
+        if !matches!(identity, OperationIdentityV1::ExternalInput(_)) {
+            return Err(PostgresExternalInputPreparationErrorV1::Corrupt);
+        }
+        let identity_bytes = identity
+            .canonical_bytes()
+            .map_err(|_| PostgresExternalInputPreparationErrorV1::Corrupt)?;
+        let request_hash_bytes = request_hash.as_bytes().as_slice();
+        let mut client = self.connect().map_err(|error| {
+            self.record_error(&error);
+            PostgresExternalInputPreparationErrorV1::StorageUnavailable
+        })?;
+        let mut transaction = client.transaction().map_err(|error| {
+            self.record_error(&error);
+            PostgresExternalInputPreparationErrorV1::StorageUnavailable
+        })?;
+        transaction
+            .execute(
+                "INSERT INTO worldstream_external_input_preparations(identity_bytes, canonical_request_hash, recorded_at) VALUES ($1, $2, $3) ON CONFLICT (identity_bytes) DO NOTHING",
+                &[&identity_bytes, &request_hash_bytes, &sampled_recorded_at.as_str()],
+            )
+            .map_err(|error| {
+                self.record_error(&error);
+                PostgresExternalInputPreparationErrorV1::StorageUnavailable
+            })?;
+        let row = transaction
+            .query_opt(
+                "SELECT canonical_request_hash, recorded_at FROM worldstream_external_input_preparations WHERE identity_bytes = $1",
+                &[&identity_bytes],
+            )
+            .map_err(|error| {
+                self.record_error(&error);
+                PostgresExternalInputPreparationErrorV1::StorageUnavailable
+            })?
+            .ok_or(PostgresExternalInputPreparationErrorV1::Corrupt)?;
+        let stored_hash = row
+            .try_get::<_, Vec<u8>>(0)
+            .map_err(|_| PostgresExternalInputPreparationErrorV1::Corrupt)?;
+        if stored_hash.len() != 32 {
+            return Err(PostgresExternalInputPreparationErrorV1::Corrupt);
+        }
+        if stored_hash.as_slice() != request_hash_bytes {
+            return Err(PostgresExternalInputPreparationErrorV1::Conflict);
+        }
+        let stored_recorded_at = row
+            .try_get::<_, String>(1)
+            .map_err(|_| PostgresExternalInputPreparationErrorV1::Corrupt)?
+            .parse::<ExternalInputRecordedAt>()
+            .map_err(|_| PostgresExternalInputPreparationErrorV1::Corrupt)?;
+        transaction.commit().map_err(|error| {
+            self.record_error(&error);
+            PostgresExternalInputPreparationErrorV1::StorageUnavailable
+        })?;
+        Ok(stored_recorded_at)
+    }
+
     /// Lists Rooms in stable Room-ID order after revalidating a
     /// deployment-scoped safe-summary diagnostic grant.
     pub fn diagnostic_inventory_page(
@@ -3978,6 +4066,60 @@ impl PostgresRoomStore {
         let prepared = PreparedRoomCommitV1::for_authorized_timer_fired(
             &trace,
             request,
+            prepared_transition,
+            transition_id,
+            integrity_generation,
+            authority,
+            &frame_heads,
+        )
+        .map_err(|_| PostgresRoomCommitError::Preparation)?;
+        Ok(commit_existing_room(self, &mut trace, prepared)
+            .into_parts()
+            .0)
+    }
+
+    /// Commits one exact host-authorized ExternalInput through Core's existing
+    /// recorded-stimulus and semantic-receipt coordinator.
+    pub fn commit_authorized_external_input(
+        &self,
+        registry: &PackRegistryV1,
+        authority: AuthorizedExternalInputV1,
+        room_id: &RoomId,
+        based_on_room_seq: RoomSequenceV1,
+        input: &ExternalInputV1,
+        transition_id: TransitionId,
+    ) -> Result<RoomCommitResolutionV1, PostgresRoomCommitError> {
+        let room_id_text = room_id.to_string();
+        let verification = self.verify_room(&room_id_text).map_err(|_| {
+            PostgresRoomCommitError::Recovery(RoomRecoveryErrorV1::StorageUnavailable)
+        })?;
+        if verification.integrity_status != "healthy" {
+            return Err(PostgresRoomCommitError::Recovery(
+                RoomRecoveryErrorV1::IntegrityUnavailable,
+            ));
+        }
+        let mut trace = self
+            .recover_room(registry, &room_id_text)
+            .map_err(PostgresRoomCommitError::Recovery)?
+            .ok_or(PostgresRoomCommitError::Recovery(
+                RoomRecoveryErrorV1::StorageUnavailable,
+            ))?;
+        if trace.head() != &verification.head {
+            return Err(PostgresRoomCommitError::Recovery(
+                RoomRecoveryErrorV1::ConcurrentChange,
+            ));
+        }
+        let frame_heads = postgres_frame_heads(&trace, &verification);
+        let integrity_generation = IntegrityGenerationV1::new(verification.integrity_generation)
+            .map_err(|_| PostgresRoomCommitError::Preparation)?;
+        let prepared_transition = trace
+            .prepare(RecordedStimulusV1::ExternalInput(input.clone()))
+            .map_err(|_| PostgresRoomCommitError::Preparation)?;
+        let prepared = PreparedRoomCommitV1::for_authorized_external_input(
+            &trace,
+            room_id,
+            based_on_room_seq,
+            input,
             prepared_transition,
             transition_id,
             integrity_generation,
@@ -7873,6 +8015,7 @@ mod native_hydration_tests {
 
     #[test]
     fn transfer_safety_catalog_contract_matches_the_reviewed_migration() {
+        let transfer_fence_migrations = format!("{MIGRATION_0011_SQL}{MIGRATION_0012_SQL}");
         for (index, table) in GLOBAL_RESOURCE_IDENTITY_INDEXES {
             assert!(
                 MIGRATION_0011_SQL.contains(&format!("CREATE UNIQUE INDEX {index}")),
@@ -7885,11 +8028,11 @@ mod native_hydration_tests {
         }
         for (trigger, table) in TRANSFER_FENCE_TRIGGER_TABLES {
             assert!(
-                MIGRATION_0011_SQL.contains(&format!("CREATE TRIGGER {trigger}")),
+                transfer_fence_migrations.contains(&format!("CREATE TRIGGER {trigger}")),
                 "missing reviewed transfer-fence trigger {trigger}"
             );
             assert!(
-                MIGRATION_0011_SQL.contains(&format!(
+                transfer_fence_migrations.contains(&format!(
                     "BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON {table}"
                 )),
                 "transfer-fence trigger {trigger} no longer protects {table}"
@@ -8405,6 +8548,68 @@ mod native_hydration_tests {
                     store.last_failure()
                 )
             });
+    }
+
+    #[test]
+    fn live_external_input_preparation_survives_restart_and_reuses_first_time() {
+        let Ok(dsn) = std::env::var("WORLDSTREAM_POSTGRES_TEST_DSN") else {
+            return;
+        };
+        let runtime = || {
+            PostgresRoomStore::new(
+                PostgresConnectionConfig::runtime(dsn.clone(), PostgresConnectionPath::Direct)
+                    .unwrap_or_else(|error| unreachable!("live runtime config: {error}")),
+            )
+            .unwrap_or_else(|error| unreachable!("live runtime store: {error}"))
+        };
+        let identity = OperationIdentityV1::ExternalInput(Box::new(
+            worldstream_core::ExternalInputOperationIdentityV1 {
+                room_id: "01ARZ3NDEKTSV4RRFFQ69G5FZ0"
+                    .parse()
+                    .unwrap_or_else(|error| unreachable!("Room ID: {error}")),
+                source_id: "worldstream.host.lobby"
+                    .parse()
+                    .unwrap_or_else(|error| unreachable!("Source ID: {error}")),
+                input_id: "01ARZ3NDEKTSV4RRFFQ69G5FZ1"
+                    .parse()
+                    .unwrap_or_else(|error| unreachable!("Input ID: {error}")),
+            },
+        ));
+        let request_hash = CanonicalRequestHashV1::from_str(&format!("blake3:{}", "11".repeat(32)))
+            .unwrap_or_else(|error| unreachable!("request hash: {error}"));
+        let conflicting_hash =
+            CanonicalRequestHashV1::from_str(&format!("blake3:{}", "22".repeat(32)))
+                .unwrap_or_else(|error| unreachable!("conflicting hash: {error}"));
+        let first_sample = "2026-08-24T12:00:00Z"
+            .parse::<worldstream_core::ExternalInputRecordedAt>()
+            .unwrap_or_else(|error| unreachable!("first sample: {error}"));
+        let later_sample = "2026-08-24T12:05:00Z"
+            .parse::<worldstream_core::ExternalInputRecordedAt>()
+            .unwrap_or_else(|error| unreachable!("later sample: {error}"));
+
+        let first = runtime();
+        first
+            .verify_schema()
+            .unwrap_or_else(|error| unreachable!("live schema: {error}"));
+        assert_eq!(
+            first.reserve_external_input_recorded_at(&identity, &request_hash, &first_sample,),
+            Ok(first_sample.clone())
+        );
+        drop(first);
+
+        let restarted = runtime();
+        assert_eq!(
+            restarted.reserve_external_input_recorded_at(&identity, &request_hash, &later_sample,),
+            Ok(first_sample)
+        );
+        assert_eq!(
+            restarted.reserve_external_input_recorded_at(
+                &identity,
+                &conflicting_hash,
+                &later_sample,
+            ),
+            Err(PostgresExternalInputPreparationErrorV1::Conflict)
+        );
     }
 
     #[test]

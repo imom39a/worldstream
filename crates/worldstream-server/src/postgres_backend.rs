@@ -24,21 +24,23 @@ use worldstream_core::{
     AuthorityErrorV1, AuthorityStoreV1, AuthorityV1, AuthorizedRunnerControlV1,
     CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1, CapabilityExpiresAt,
     CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1, CreationRecordedAt,
-    DiagnosticOperationV1, DiagnosticTargetV1, HistoricalReplayErrorV1, HostClockErrorV1,
-    HostClockSampleV1, HostClockV1, InitialMembershipProposalV1, MemberReadOperationV1,
-    MembershipStandingV1, MembershipV1, MonotonicHostClockV1, NewCapabilityV1,
-    PackGenesisRequestV1, PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1,
-    ParticipantActionIngressV1, ParticipantActionRequestV1, PreparedRoomCreationV1,
-    PrincipalKindV1, ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1,
-    RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1,
-    RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1,
-    SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
+    DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1,
+    HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
+    InitialMembershipProposalV1, InputId, MemberReadOperationV1, MembershipStandingV1,
+    MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackGenesisRequestV1, PackRegistryV1,
+    PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
+    ParticipantActionRequestV1, PreparedRoomCreationV1, PrincipalKindV1, ReplayProjectionKindV1,
+    RoomAdmissionLanesV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1,
+    RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1,
+    RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1,
+    SessionFrameV1, SessionSyncTokenV1, SessionV1, SourceId, StoredSemanticResultV1,
+    TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
     authorize_participant_action_operation, authorize_room_creation_operation,
-    commit_room_creation,
+    commit_room_creation, external_input_request_hash,
 };
 use worldstream_postgres::{
-    PostgresActivationError, PostgresAuthorityAuthenticationError, PostgresFrameEvidenceV1,
+    PostgresActivationError, PostgresAuthorityAuthenticationError,
+    PostgresExternalInputPreparationErrorV1, PostgresFrameEvidenceV1,
     PostgresObservationDeliveryV1, PostgresObservationError, PostgresRoomCommitError,
     PostgresRoomDiagnosticErrorV1, PostgresRoomDiagnosticSummaryV1, PostgresRoomStore,
     PostgresSchemaVerificationError, PostgresTimerStateV1,
@@ -47,13 +49,16 @@ use worldstream_protocol::{
     AccessMode, ActionAccepted, ActionRejected, ActionSubmit, ActivationClaim, ActivationDelivery,
     ActivationFrame, ActivationIntentState, ActivationLeaseOperation, ActivationOffer,
     ActivationOfferRequest, ActivationOffers, ActivationOperationReply, ActivationResultCode,
-    BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse, MAX_MESSAGE_BYTES,
-    ObservationAck, ObservationDeliver, OperatorActivityPhase, OperatorDataFreshness,
-    OperatorRoomIntegrity, OperatorRoomIntegrityStatus, OperatorRoomInventoryPage,
-    OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal,
-    PrincipalKind, Projection, ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach,
-    RoomAttached, RoomHead, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome, SyncBranch,
-    TimerFireRequest, TimerFireResponse,
+    BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse, LobbyLaunchRequest,
+    LobbyLaunchResponse, MAX_MESSAGE_BYTES, ObservationAck, ObservationDeliver,
+    OperatorActivityPhase, OperatorBackupProfileStatus, OperatorBackupStorageHealth,
+    OperatorBackupStorageProfile, OperatorBackupVerification, OperatorDataFreshness,
+    OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomIntegrity,
+    OperatorRoomIntegrityStatus, OperatorRoomInventoryPage, OperatorRoomInventoryRequest,
+    OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal, PrincipalKind, Projection,
+    ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach, RoomAttached, RoomHead,
+    RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome, SyncBranch, TimerFireRequest,
+    TimerFireResponse,
 };
 use worldstream_runtime::SecretSource;
 
@@ -690,6 +695,29 @@ impl PostgresGatewayBackend {
             .revalidate_current(&snapshot, &self.checked_at()?)
             .map_err(map_authority_error)?;
         Ok(())
+    }
+
+    fn authorize_backup(&self, session: &GatewaySession) -> Result<(), BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let checked_at = self.checked_at()?;
+        let grant = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Deployment,
+                DiagnosticOperationV1::Backup,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let adapter_input = grant.into_adapter_input();
+        let snapshot = self
+            .store
+            .snapshot(&adapter_input.authority_snapshot_query())
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::Forbidden)?;
+        adapter_input
+            .revalidate_current(&snapshot, &checked_at)
+            .map_err(map_authority_error)
     }
 
     fn creation_attempt(
@@ -1391,6 +1419,128 @@ impl GatewayBackend for PostgresGatewayBackend {
         timer_response_from_resolution(timer_request, &resolution)
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn launch_lobby(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        request: LobbyLaunchRequest,
+    ) -> Result<LobbyLaunchResponse, BackendError> {
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        let input_id = InputId::from_str(&request.input_id).map_err(|_| BackendError::Rejected)?;
+        let based_on_room_seq =
+            RoomSequenceV1::new(request.based_on_room_seq).map_err(|_| BackendError::Rejected)?;
+        let checked_at = self.checked_at()?;
+        let mut input = ExternalInputV1 {
+            source_id: SourceId::from_str(worldstream_core::HOST_LOBBY_LAUNCH_SOURCE)
+                .map_err(|_| BackendError::InvalidResult)?,
+            input_id,
+            input_type: worldstream_core::HOST_LAUNCH_INPUT_TYPE.to_owned(),
+            recorded_at: ExternalInputRecordedAt::from_str(checked_at.as_str())
+                .map_err(|_| BackendError::StorageUnavailable)?,
+            canonical_payload: CanonicalJsonV1::parse(br"{}")
+                .map_err(|_| BackendError::InvalidResult)?,
+            immutable_resource_references: Vec::new(),
+        };
+        let identity = worldstream_core::OperationIdentityV1::ExternalInput(Box::new(
+            worldstream_core::ExternalInputOperationIdentityV1 {
+                room_id: room_id.clone(),
+                source_id: input.source_id.clone(),
+                input_id: input.input_id.clone(),
+            },
+        ));
+        let request_hash = external_input_request_hash(&room_id, based_on_room_seq, &input)
+            .map_err(|_| BackendError::Rejected)?;
+        let authenticated = self.authenticate(session)?;
+        let authority = self
+            .authority()
+            .authorize_external_input(
+                &authenticated.into_presented(),
+                room_id.clone(),
+                request_hash.clone(),
+                checked_at,
+            )
+            .map_err(map_authority_error)?;
+        match RoomCommitStorageV1::resolve(self.store.as_ref(), &identity, &request_hash) {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                return lobby_response_from_result(&request.input_id, &result, true);
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
+                return Err(BackendError::Conflict);
+            }
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                return Err(BackendError::Indeterminate);
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
+        }
+        let _admission = self
+            .admission_lanes
+            .reserve_host_stimulus(&room_id)
+            .map_err(|error| map_admission_lane_error(&error))?;
+        match RoomCommitStorageV1::resolve(self.store.as_ref(), &identity, &request_hash) {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                return lobby_response_from_result(&request.input_id, &result, true);
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
+                return Err(BackendError::Conflict);
+            }
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                return Err(BackendError::Indeterminate);
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
+        }
+        let (trace, _) = self.verified_trace(&room_id)?;
+        if !worldstream_core::agent_heist_lobby_contract_declared(
+            self.registry()?,
+            trace.head().pack_digest(),
+        ) || !worldstream_core::agent_heist_lobby_launch_applicable(trace.activity_state())
+        {
+            return Err(BackendError::WrongPhase);
+        }
+        let proposed_recorded_at = self.checked_at()?;
+        input.recorded_at = ExternalInputRecordedAt::from_str(proposed_recorded_at.as_str())
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        input.recorded_at = self
+            .store
+            .reserve_external_input_recorded_at(&identity, &request_hash, &input.recorded_at)
+            .map_err(map_external_input_preparation_error)?;
+        match RoomCommitStorageV1::resolve(self.store.as_ref(), &identity, &request_hash) {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                return lobby_response_from_result(&request.input_id, &result, true);
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
+                return Err(BackendError::Conflict);
+            }
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                return Err(BackendError::Indeterminate);
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
+        }
+        let (trace, _) = self.verified_trace(&room_id)?;
+        if !worldstream_core::agent_heist_lobby_contract_declared(
+            self.registry()?,
+            trace.head().pack_digest(),
+        ) || !worldstream_core::agent_heist_lobby_launch_applicable(trace.activity_state())
+        {
+            return Err(BackendError::WrongPhase);
+        }
+        let resolution = match self.store.commit_authorized_external_input(
+            self.registry()?,
+            authority,
+            &room_id,
+            based_on_room_seq,
+            &input,
+            next_core_id::<TransitionId>()?,
+        ) {
+            Ok(resolution) => resolution,
+            Err(PostgresRoomCommitError::Recovery(
+                worldstream_core::RoomRecoveryErrorV1::ConcurrentChange,
+            )) => return Err(BackendError::WrongPhase),
+            Err(error) => return Err(map_room_commit_error(error)),
+        };
+        lobby_response_from_resolution(&request.input_id, &resolution)
+    }
+
     fn operator_room_inventory(
         &self,
         session: &GatewaySession,
@@ -1455,6 +1605,42 @@ impl GatewayBackend for PostgresGatewayBackend {
             .diagnostic_summary(authority, &checked_at)
             .map_err(|error| map_postgres_diagnostic_error(&error))?;
         operator_room_summary(&summary, checked_at.as_str())
+    }
+
+    fn operator_backup_profile(
+        &self,
+        session: &GatewaySession,
+    ) -> Result<OperatorBackupProfileStatus, BackendError> {
+        self.authorize_backup(session)?;
+        Ok(OperatorBackupProfileStatus {
+            storage_profile: OperatorBackupStorageProfile::PostgresPrimary,
+            storage_health: OperatorBackupStorageHealth::Healthy,
+            live_backup_supported: false,
+            verification: OperatorBackupVerification::Unavailable,
+            freshness: OperatorDataFreshness::Unavailable {
+                reason: "provider_managed_backup_required".to_owned(),
+            },
+        })
+    }
+
+    fn operator_live_backup(
+        &self,
+        session: &GatewaySession,
+        request: OperatorLiveBackupPrepareRequest,
+    ) -> Result<OperatorLiveBackupStatus, BackendError> {
+        self.authorize_backup(session)?;
+        Ok(OperatorLiveBackupStatus {
+            operation_id: request.operation_id,
+            storage_profile: OperatorBackupStorageProfile::PostgresPrimary,
+            storage_health: OperatorBackupStorageHealth::Healthy,
+            native_verification: OperatorBackupVerification::Unavailable,
+            semantic_verification: OperatorBackupVerification::Unavailable,
+            freshness: OperatorDataFreshness::Unavailable {
+                reason: "provider_managed_backup_required".to_owned(),
+            },
+            artifact: None,
+            unavailable_reason: Some("provider_managed_backup_required".to_owned()),
+        })
     }
 
     fn issue_member_capability(
@@ -2211,6 +2397,47 @@ fn timer_response_from_resolution(
     }
 }
 
+fn lobby_response_from_result(
+    input_id: &str,
+    result: &StoredSemanticResultV1,
+    duplicate: bool,
+) -> Result<LobbyLaunchResponse, BackendError> {
+    let SemanticResultV1::TransitionCommitted {
+        room_id,
+        transition_id,
+        complete_head,
+        ..
+    } = result.result()
+    else {
+        return Err(BackendError::InvalidResult);
+    };
+    Ok(LobbyLaunchResponse {
+        room_id: room_id.to_string(),
+        input_id: input_id.to_owned(),
+        transition_id: transition_id.to_string(),
+        room_head: room_head(complete_head),
+        duplicate,
+    })
+}
+
+fn lobby_response_from_resolution(
+    input_id: &str,
+    resolution: &RoomCommitResolutionV1,
+) -> Result<LobbyLaunchResponse, BackendError> {
+    if let Some(result) = resolution.stored_result() {
+        return lobby_response_from_result(input_id, result, resolution.duplicate());
+    }
+    match resolution {
+        RoomCommitResolutionV1::Conflict { .. } => Err(BackendError::Conflict),
+        RoomCommitResolutionV1::Fenced
+        | RoomCommitResolutionV1::Reprepare
+        | RoomCommitResolutionV1::RetryableKnownAbsent
+        | RoomCommitResolutionV1::NotApplicable => Err(BackendError::Busy),
+        RoomCommitResolutionV1::Indeterminate => Err(BackendError::Indeterminate),
+        _ => Err(BackendError::InvalidResult),
+    }
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn map_activation_error(error: PostgresActivationError) -> BackendError {
     match error {
@@ -2395,6 +2622,18 @@ fn map_admission_lane_error(error: &AdmissionLaneErrorV1) -> BackendError {
     }
 }
 
+fn map_external_input_preparation_error(
+    error: PostgresExternalInputPreparationErrorV1,
+) -> BackendError {
+    match error {
+        PostgresExternalInputPreparationErrorV1::Conflict => BackendError::Conflict,
+        PostgresExternalInputPreparationErrorV1::StorageUnavailable => {
+            BackendError::StorageUnavailable
+        }
+        PostgresExternalInputPreparationErrorV1::Corrupt => BackendError::InvalidResult,
+    }
+}
+
 fn map_recovery_error(error: worldstream_core::RoomRecoveryErrorV1) -> BackendError {
     match error {
         worldstream_core::RoomRecoveryErrorV1::IntegrityUnavailable => {
@@ -2545,15 +2784,16 @@ mod tests {
     };
     use worldstream_core::{
         AdmissionLaneErrorV1, AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1,
-        CapabilityBearerV1, CapabilityScopeV1, PrincipalKindV1, builtin_counter_registry,
-        counter_v2_digest,
+        CapabilityBearerV1, CapabilityScopeV1, PrincipalKindV1, agent_heist_lobby_digest,
+        builtin_agent_heist_registry, builtin_counter_registry, counter_v2_digest,
     };
     use worldstream_postgres::{
         PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore,
     };
     use worldstream_protocol::{
-        AccessMode, BearerWireV1, CreateMember, OperatorActivityPhase, OperatorRoomIntegrityStatus,
-        OperatorRoomInventoryRequest, PackReference, PrincipalKind,
+        AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, LobbyLaunchRequest,
+        OperatorActivityPhase, OperatorRoomIntegrityStatus, OperatorRoomInventoryRequest,
+        PackReference, PrincipalKind,
     };
     use worldstream_runtime::SecretSource;
 
@@ -2748,7 +2988,7 @@ mod tests {
                     "01ARZ3NDEKTSV4RRFFQ69G5FC4"
                         .parse()
                         .unwrap_or_else(|_| unreachable!("bootstrap change")),
-                    host_principal,
+                    host_principal.clone(),
                     PrincipalKindV1::Human,
                     "01ARZ3NDEKTSV4RRFFQ69G5FC3"
                         .parse()
@@ -2999,6 +3239,65 @@ mod tests {
         assert_eq!(stale.current_room_seq, 1);
         assert!(!stale.duplicate);
 
+        let heist_registry = builtin_agent_heist_registry()
+            .unwrap_or_else(|error| unreachable!("Agent Heist registry: {error}"));
+        let lobby_descriptor = heist_registry
+            .load_retained(&agent_heist_lobby_digest())
+            .unwrap_or_else(|error| unreachable!("Lobby revision: {error}"))
+            .descriptor()
+            .clone();
+        let lobby_room = backend
+            .create_room(
+                &host,
+                CreateRoomRequest {
+                    pack: PackReference {
+                        id: lobby_descriptor.pack_id,
+                        version: lobby_descriptor.explanatory_version,
+                        digest: agent_heist_lobby_digest().to_string(),
+                    },
+                    configuration: json!({
+                        "pack_id":"worldstream.agent-heist","pack_schema":1,
+                        "roles":["navigator","insider","broker"],
+                        "briefing_duration_seconds":30,"negotiation_duration_seconds":90,
+                        "commitment_duration_seconds":30,
+                        "commitment_reminder_seconds_before_deadline":10,
+                        "result_duration_seconds":20,"maximum_plans":12,
+                        "maximum_open_offers_per_role":4
+                    }),
+                    members: vec![
+                        CreateMember {
+                            principal_id: host_principal.to_string(),
+                            principal_kind: PrincipalKind::Human,
+                            role: Some("navigator".to_owned()),
+                            access_mode: AccessMode::Participant,
+                        },
+                        CreateMember {
+                            principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FE0".to_owned(),
+                            principal_kind: PrincipalKind::Human,
+                            role: Some("insider".to_owned()),
+                            access_mode: AccessMode::Participant,
+                        },
+                        CreateMember {
+                            principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FE1".to_owned(),
+                            principal_kind: PrincipalKind::Human,
+                            role: Some("broker".to_owned()),
+                            access_mode: AccessMode::Participant,
+                        },
+                    ],
+                    idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FE2".to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| unreachable!("create Lobby: {error:?}"));
+        let lobby_request = LobbyLaunchRequest {
+            input_id: "01ARZ3NDEKTSV4RRFFQ69G5FE3".to_owned(),
+            based_on_room_seq: 0,
+        };
+        let lobby_first = backend
+            .launch_lobby(&host, &lobby_room.room_id, lobby_request.clone())
+            .unwrap_or_else(|error| unreachable!("launch Lobby: {error:?}"));
+        assert_eq!(lobby_first.room_head.room_seq, 1);
+        assert!(!lobby_first.duplicate);
+
         drop(backend);
         let restarted = PostgresGatewayBackend::new(
             PostgresRoomStore::new(
@@ -3034,9 +3333,44 @@ mod tests {
             restarted.action(&member, conflicting_action),
             Err(BackendError::Conflict)
         ));
+        let lobby_duplicate = restarted
+            .launch_lobby(&host, &lobby_room.room_id, lobby_request.clone())
+            .unwrap_or_else(|error| unreachable!("restart duplicate Lobby launch: {error:?}"));
+        assert!(lobby_duplicate.duplicate);
+        assert_eq!(lobby_duplicate.transition_id, lobby_first.transition_id);
+        assert!(matches!(
+            restarted.launch_lobby(
+                &host,
+                &lobby_room.room_id,
+                LobbyLaunchRequest {
+                    based_on_room_seq: 1,
+                    ..lobby_request.clone()
+                },
+            ),
+            Err(BackendError::Conflict)
+        ));
+        assert!(matches!(
+            restarted.launch_lobby(
+                &host,
+                &lobby_room.room_id,
+                LobbyLaunchRequest {
+                    input_id: "01ARZ3NDEKTSV4RRFFQ69G5FE4".to_owned(),
+                    based_on_room_seq: 1,
+                },
+            ),
+            Err(BackendError::WrongPhase)
+        ));
+        assert!(matches!(
+            restarted.launch_lobby(
+                &session(0xab, "01ARZ3NDEKTSV4RRFFQ69G5FE5"),
+                &lobby_room.room_id,
+                lobby_request,
+            ),
+            Err(BackendError::Forbidden)
+        ));
 
         eprintln!(
-            "LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart"
+            "LIVE_POSTGRES_GATEWAY=PASS create+duplicate+conflict+projection+replay+attach+sync+resync+action+stale+live+ack+restart+lobby-launch"
         );
     }
 }

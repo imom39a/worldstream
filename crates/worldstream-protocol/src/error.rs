@@ -27,6 +27,7 @@ pub enum ErrorCode {
     CursorOutOfRange,
     SyncBarrierMismatch,
     IdempotencyConflict,
+    WrongPhase,
     CommitIndeterminate,
     InvalidPayload,
     ActivityFault,

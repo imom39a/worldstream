@@ -38,6 +38,9 @@ pub const TRANSFER_RECOVERY_COMPLETENESS_MIGRATION_ID: &str =
 /// The forward migration that globally closes resource identity across kinds.
 pub const TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID: &str =
     "0011-transfer-lifecycle-and-resource-identity-v1";
+/// The forward migration that durably retains the first sampled Semantic Time
+/// for one exact ExternalInput operation identity and request hash.
+pub const EXTERNAL_INPUT_PREPARATION_MIGRATION_ID: &str = "0013-external-input-preparations-v1";
 
 /// A migration body and its stable identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,6 +101,8 @@ pub const SCHEMA_FINGERPRINT_MATERIAL: &str = concat!(
     "schema_contract_fingerprint:bytea:YES);",
     "worldstream_operation_guards(",
     "identity_bytes:bytea:NO,request_hash:bytea:NO,room_id:text:YES,receipt_bytes:bytea:YES);",
+    "worldstream_external_input_preparations(",
+    "identity_bytes:bytea:NO,canonical_request_hash:bytea:NO,recorded_at:text:NO);",
     "worldstream_room_roots(",
     "room_id:text:NO,head_bytes:bytea:NO,integrity_generation:bigint:NO,integrity_status:text:NO);",
     "worldstream_genesis(",
@@ -206,7 +211,7 @@ pub fn schema_contract_fingerprint() -> Blake3DigestV1 {
 
 /// The complete ordered migration history.
 #[must_use]
-pub fn migration_history() -> [MigrationDescriptor; 11] {
+pub fn migration_history() -> [MigrationDescriptor; 12] {
     [
         MigrationDescriptor {
             version: 1,
@@ -262,6 +267,11 @@ pub fn migration_history() -> [MigrationDescriptor; 11] {
             version: 11,
             id: TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID,
             sql: MIGRATION_0011_SQL,
+        },
+        MigrationDescriptor {
+            version: 12,
+            id: EXTERNAL_INPUT_PREPARATION_MIGRATION_ID,
+            sql: MIGRATION_0012_SQL,
         },
     ]
 }
@@ -736,6 +746,23 @@ CREATE TRIGGER worldstream_transfer_fence_retired_authority_fences
     FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
 ";
 
+/// Persists one immutable ExternalInput preparation before pack reduction.
+/// The table is transfer-fenced because it is durable operation truth whose
+/// first sampled Semantic Time must survive process restarts and lost replies.
+pub const MIGRATION_0012_SQL: &str = r"
+CREATE TABLE worldstream_external_input_preparations (
+    identity_bytes bytea PRIMARY KEY,
+    canonical_request_hash bytea NOT NULL CHECK (octet_length(canonical_request_hash) = 32),
+    recorded_at text NOT NULL
+);
+CREATE TRIGGER worldstream_external_input_preparations_immutable_update
+    BEFORE UPDATE OR DELETE ON worldstream_external_input_preparations
+    FOR EACH ROW EXECUTE FUNCTION worldstream_reject_authority_fact_mutation();
+CREATE TRIGGER worldstream_transfer_fence_external_input_preparations
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON worldstream_external_input_preparations
+    FOR EACH STATEMENT EXECUTE FUNCTION worldstream_reject_write_while_transfer_fenced();
+";
+
 /// The result of checking an ordered migration prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationVerification {
@@ -984,6 +1011,28 @@ mod identity_tests {
     use super::*;
 
     #[test]
+    fn external_input_preparation_migration_is_forward_only_and_immutable() {
+        let migration = migration_history()[11];
+        assert_eq!(migration.version, 12);
+        assert_eq!(migration.id, EXTERNAL_INPUT_PREPARATION_MIGRATION_ID);
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE worldstream_external_input_preparations")
+        );
+        assert!(migration.sql.contains("identity_bytes bytea PRIMARY KEY"));
+        assert!(migration.sql.contains(
+            "canonical_request_hash bytea NOT NULL CHECK (octet_length(canonical_request_hash) = 32)"
+        ));
+        assert!(migration.sql.contains("recorded_at text NOT NULL"));
+        assert!(
+            migration
+                .sql
+                .contains("worldstream_external_input_preparations_immutable_update")
+        );
+    }
+
+    #[test]
     fn transfer_lifecycle_migration_and_schema_fingerprint_are_stable() {
         let migration = migration_history()[10];
         assert_eq!(migration.id, TRANSFER_RESOURCE_IDENTITY_MIGRATION_ID);
@@ -993,7 +1042,7 @@ mod identity_tests {
         );
         assert_eq!(
             schema_contract_fingerprint().to_string(),
-            "blake3:16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb"
+            "blake3:a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26"
         );
     }
 }

@@ -3,6 +3,16 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
 import {
+  loadBackupOperationId,
+  loadBackupOperationState,
+  loadBackupProfile,
+  newBackupOperationId,
+  runBackupOperation,
+  saveBackupOperationId,
+  type BackupOperationStatus,
+  type BackupProfileStatus,
+} from "./backups";
+import {
   loadActivityPackCatalog,
   loadActivityPackDetail,
   loadActivityPackSelection,
@@ -36,12 +46,18 @@ import {
 import { resumeRoomDraftStep } from "./RoomDraftWizard";
 import {
   createRoomDraft,
+  invalidateRoomDraftReview,
   loadRoomDraft,
   saveRoomDraft,
   type RoomDraft,
   type RoomDraftFieldError,
   type RoomDraftStep,
 } from "./roomDrafts";
+import {
+  loadRoomCreation,
+  requestRoomCreation,
+  type RoomCreationStatus,
+} from "./roomCreation";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 5_000;
@@ -69,10 +85,24 @@ function LiveStudio() {
   const [roomDraftErrors, setRoomDraftErrors] = useState<RoomDraftFieldError[]>([]);
   const [roomDraftSaving, setRoomDraftSaving] = useState(false);
   const [roomDraftSaved, setRoomDraftSaved] = useState(false);
+  const [roomCreation, setRoomCreation] = useState<RoomCreationStatus | null>(null);
+  const [roomCreationStatusAvailable, setRoomCreationStatusAvailable] = useState(false);
+  const [roomCreationLoading, setRoomCreationLoading] = useState(false);
+  const [backupProfile, setBackupProfile] = useState<BackupProfileStatus | null>(null);
+  const [backupOperation, setBackupOperation] = useState<BackupOperationStatus | null>(null);
+  const [backupOperationId, setBackupOperationId] = useState<string | null>(
+    () => loadBackupOperationId(),
+  );
+  const [backupOperationStatusAvailable, setBackupOperationStatusAvailable] = useState(
+    () => loadBackupOperationId() === null,
+  );
+  const [backupLoading, setBackupLoading] = useState(false);
+  const backupMutationInFlight = useRef(false);
 
   useEffect(() => {
     let active = true;
     const refresh = async () => {
+      const activeBackupOperationId = loadBackupOperationId();
       const [
         nextStatus,
         nextLifecycle,
@@ -81,6 +111,9 @@ function LiveStudio() {
         nextRunnerInstances,
         nextActivityPackCatalog,
         nextRoomInventory,
+        nextRoomCreation,
+        nextBackupProfile,
+        nextBackupOperation,
       ] = await Promise.all([
         loadDaemonStatus(),
         loadDaemonLifecycle(),
@@ -89,6 +122,11 @@ function LiveStudio() {
         loadRunnerInstances(),
         loadActivityPackCatalog(),
         loadRoomInventory(),
+        loadRoomCreation(NEW_ROOM_DRAFT_ID),
+        loadBackupProfile(),
+        activeBackupOperationId === null
+          ? Promise.resolve({ availability: "available" as const, operation: null })
+          : loadBackupOperationState(activeBackupOperationId),
       ]);
       if (active) {
         setStatus(nextStatus);
@@ -99,6 +137,14 @@ function LiveStudio() {
         setActivityPackCatalog(nextActivityPackCatalog);
         setActivityPackCatalogLoading(false);
         setRoomInventory((previous) => staleAfterFailedRefresh(previous, nextRoomInventory));
+        setRoomCreation(nextRoomCreation.operation);
+        setRoomCreationStatusAvailable(nextRoomCreation.availability === "available");
+        setBackupProfile(nextBackupProfile);
+        if (loadBackupOperationId() === activeBackupOperationId) {
+          setBackupOperation(nextBackupOperation.operation);
+          setBackupOperationId(activeBackupOperationId);
+          setBackupOperationStatusAvailable(nextBackupOperation.availability === "available");
+        }
       }
     };
     void refresh();
@@ -114,6 +160,7 @@ function LiveStudio() {
     void loadRoomDraft(NEW_ROOM_DRAFT_ID).then(async (response) => {
       if (!active || response === null) return;
       setRoomDraft(response.draft);
+      setRoomDraftSaved(true);
       setRoomDraftStep(resumeRoomDraftStep(response.draft));
       if (response.draft.pack !== null) {
         const detail = await loadActivityPackDetail(response.draft.pack.digest);
@@ -176,7 +223,7 @@ function LiveStudio() {
 
   const changeRoomDraft = (next: RoomDraft) => {
     const packChanged = next.pack?.digest !== roomDraft.pack?.digest;
-    setRoomDraft(next);
+    setRoomDraft(invalidateRoomDraftReview(roomDraft, next));
     setRoomDraftSaved(false);
     setRoomDraftErrors([]);
     if (packChanged && next.pack !== null) void inspectActivityPack(next.pack.digest);
@@ -194,6 +241,56 @@ function LiveStudio() {
     } else if (result?.version === "studio_room_draft_error.v1") {
       setRoomDraftErrors(result.field_errors);
     }
+  };
+
+  const startBackup = async () => {
+    if (backupMutationInFlight.current) return;
+    backupMutationInFlight.current = true;
+    const operationId = newBackupOperationId();
+    saveBackupOperationId(operationId);
+    setBackupOperationId(operationId);
+    setBackupOperation(null);
+    setBackupOperationStatusAvailable(false);
+    setBackupLoading(true);
+    try {
+      const result = await runBackupOperation(operationId);
+      if (result !== null) {
+        setBackupOperation(result);
+        setBackupOperationStatusAvailable(true);
+      }
+    } finally {
+      backupMutationInFlight.current = false;
+      setBackupLoading(false);
+    }
+  };
+
+  const retryBackup = async () => {
+    if (backupMutationInFlight.current) return;
+    const operationId = backupOperation?.operation_id ?? backupOperationId;
+    if (operationId === null || (backupOperation !== null && backupOperation.phase !== "retrying")) return;
+    backupMutationInFlight.current = true;
+    setBackupLoading(true);
+    try {
+      const result = await runBackupOperation(operationId);
+      if (result !== null) {
+        setBackupOperation(result);
+        setBackupOperationStatusAvailable(true);
+      } else {
+        setBackupOperation(null);
+        setBackupOperationStatusAvailable(false);
+      }
+    } finally {
+      backupMutationInFlight.current = false;
+      setBackupLoading(false);
+    }
+  };
+
+  const runRoomCreation = async (action: "start" | "retry") => {
+    setRoomCreationLoading(true);
+    const result = await requestRoomCreation(NEW_ROOM_DRAFT_ID, action);
+    setRoomCreation(result);
+    setRoomCreationStatusAvailable(result !== null);
+    setRoomCreationLoading(false);
   };
 
   return (
@@ -226,6 +323,18 @@ function LiveStudio() {
       onRoomDraftChange={changeRoomDraft}
       onRoomDraftStepChange={setRoomDraftStep}
       onSaveRoomDraft={(draft) => void persistRoomDraft(draft)}
+      roomCreation={roomCreation}
+      roomCreationStatusAvailable={roomCreationStatusAvailable}
+      roomCreationLoading={roomCreationLoading}
+      onStartRoomCreation={() => void runRoomCreation("start")}
+      onRetryRoomCreation={() => void runRoomCreation("retry")}
+      backupProfile={backupProfile}
+      backupOperation={backupOperation}
+      backupOperationId={backupOperationId}
+      backupOperationStatusAvailable={backupOperationStatusAvailable}
+      backupLoading={backupLoading}
+      onStartBackup={() => void startBackup()}
+      onRetryBackup={() => void retryBackup()}
     />
   );
 }

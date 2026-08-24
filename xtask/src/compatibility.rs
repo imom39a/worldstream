@@ -245,11 +245,13 @@ fn verify_embedded_agent_heist_registry(manifest: &Value) -> Result<()> {
         .collect();
     let registry =
         builtin_agent_heist_registry().context("embedded Agent Heist registry is invalid")?;
-    if heist_rows.len() != 2 {
-        bail!("manifest must contain exactly retained-only and active Agent Heist executor rows");
+    if heist_rows.len() != 3 {
+        bail!("manifest must contain all three exact Agent Heist executor rows");
     }
 
-    for (expected_version, expected_selectable) in [("0.0.1", false), ("0.1.0", true)] {
+    for (expected_version, expected_selectable) in
+        [("0.0.1", false), ("0.1.0", true), ("0.2.0", true)]
+    {
         let row = heist_rows
             .iter()
             .copied()

@@ -10,6 +10,7 @@
 use std::{
     collections::BTreeMap,
     fmt::{self, Write},
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
 };
@@ -22,40 +23,44 @@ use worldstream_core::{
     AuthorityCheckedAt, AuthorityErrorV1, AuthorityStoreV1, AuthorityV1, AuthorizedRunnerControlV1,
     AuthorizedTimerFiredV1, CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1,
     CapabilityExpiresAt, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
-    CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1, HistoricalReplayErrorV1,
-    HostClockErrorV1, HostClockSampleV1, HostClockV1, InitialMembershipProposalV1,
-    MemberReadOperationV1, MembershipStandingV1, MembershipV1, MonotonicHostClockV1,
-    NewCapabilityV1, PackDigestV1, PackGenesisRequestV1, PackRegistryV1, PackViewerV1,
-    ParticipantActionIngressErrorV1, ParticipantActionIngressV1, ParticipantActionRequestV1,
-    PreparedRoomCreationV1, PrincipalKindV1, ReceiptSemanticInputV1, ReceiptSemanticTimeV1,
-    ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1, RoomCommitStorageV1,
-    RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1,
-    RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1,
-    SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1, StoredSemanticResultV1,
-    TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
+    CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt,
+    ExternalInputV1, HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
+    InitialMembershipProposalV1, InputId, MemberReadOperationV1, MembershipStandingV1,
+    MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1,
+    PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
+    ParticipantActionRequestV1, PreparedRoomCreationV1, PrincipalKindV1, ReceiptSemanticInputV1,
+    ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1,
+    RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1,
+    RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1,
+    SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1, SourceId,
+    StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
     authorize_participant_action_operation, authorize_room_creation_operation,
-    commit_room_creation,
+    commit_room_creation, external_input_request_hash,
 };
 use worldstream_protocol::{
     AccessMode, ActionAccepted, ActionOffer, ActionRejected, ActionSubmit, ActivationClaim,
     ActivationDelivery, ActivationFrame, ActivationIntentState, ActivationLeaseOperation,
     ActivationOffer, ActivationOfferRequest, ActivationOffers, ActivationOperationReply,
     ActivationResultCode, BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse,
-    MAX_MESSAGE_BYTES, ObservationAck, ObservationDeliver, OperatorActivityPhase,
-    OperatorDataFreshness, OperatorRoomIntegrity, OperatorRoomIntegrityStatus,
-    OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION,
-    PackReference, Principal, PrincipalKind, Projection, ProjectionReset, ProjectionResponse,
-    ReplayResponse, RoomAttach, RoomAttached, RoomHead, RoomSyncAck, RunnerHello, RunnerReady,
-    ServerWelcome, SyncBranch, TimerFireRequest, TimerFireResponse,
+    LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES, ObservationAck, ObservationDeliver,
+    OperatorActivityPhase, OperatorBackupProfileStatus, OperatorBackupStorageHealth,
+    OperatorBackupStorageProfile, OperatorBackupVerification, OperatorDataFreshness,
+    OperatorLiveBackupArtifactSummary, OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus,
+    OperatorRoomIntegrity, OperatorRoomIntegrityStatus, OperatorRoomInventoryPage,
+    OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal,
+    PrincipalKind, Projection, ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach,
+    RoomAttached, RoomHead, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome, SyncBranch,
+    TimerFireRequest, TimerFireResponse,
 };
+use worldstream_runtime::prepare_data_directory;
 use worldstream_sqlite::{
     SqliteActivationErrorV1, SqliteAuthenticatedCapabilityV1, SqliteAuthorizedReplayErrorV1,
-    SqliteAuthorizedReplayOutcomeV1, SqliteGatewayErrorV1, SqliteObservationDeliveryV1,
-    SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationResetReasonV1,
-    SqliteParticipantActionErrorV1, SqliteRoomDiagnosticErrorV1, SqliteRoomDiagnosticSummaryV1,
-    SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1, SqliteRoomStore, SqliteRoomSupervisorErrorV1,
-    SqliteRoomSupervisorLeaseV1, SqliteRoomSupervisorOperationV1, SqliteRoomSupervisorV1,
-    SqliteTimerCommitErrorV1, SqliteTimerStateV1,
+    SqliteAuthorizedReplayOutcomeV1, SqliteExternalInputPreparationErrorV1, SqliteGatewayErrorV1,
+    SqliteObservationDeliveryV1, SqliteObservationErrorV1, SqliteObservationFrameV1,
+    SqliteObservationResetReasonV1, SqliteParticipantActionErrorV1, SqliteRoomDiagnosticErrorV1,
+    SqliteRoomDiagnosticSummaryV1, SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1, SqliteRoomStore,
+    SqliteRoomSupervisorErrorV1, SqliteRoomSupervisorLeaseV1, SqliteRoomSupervisorOperationV1,
+    SqliteRoomSupervisorV1, SqliteTimerCommitErrorV1, SqliteTimerStateV1,
 };
 
 use crate::{
@@ -84,6 +89,7 @@ pub struct SqliteGatewayBackend {
     recoveries: Mutex<BTreeMap<String, CatchingUpRoom>>,
     host_clock: Arc<dyn HostClockV1>,
     admission_lanes: RoomAdmissionLanesV1,
+    live_backup_root: Option<PathBuf>,
 }
 
 struct CatchingUpRoom {
@@ -113,6 +119,10 @@ impl fmt::Debug for SqliteGatewayBackend {
             .field("recoveries", &"[OPAQUE]")
             .field("host_clock", &"[OPAQUE]")
             .field("admission_lanes", &self.admission_lanes)
+            .field(
+                "live_backup_root",
+                &self.live_backup_root.as_ref().map(|_| "[OPAQUE]"),
+            )
             .finish()
     }
 }
@@ -144,6 +154,18 @@ impl SqliteGatewayBackend {
         Self::with_runtime(store, registry, host_clock, RoomAdmissionLanesV1::default())
     }
 
+    /// Enables live backup publication beneath one startup-fixed owner-only
+    /// root. Operator requests can select only a stable operation ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageUnavailable` when the root cannot be securely prepared.
+    pub fn with_live_backup_root(mut self, root: &Path) -> Result<Self, BackendError> {
+        self.live_backup_root =
+            Some(prepare_data_directory(root).map_err(|_| BackendError::StorageUnavailable)?);
+        Ok(self)
+    }
+
     fn with_runtime(
         store: SqliteRoomStore,
         registry: Arc<PackRegistryV1>,
@@ -158,6 +180,7 @@ impl SqliteGatewayBackend {
             recoveries: Mutex::new(BTreeMap::new()),
             host_clock,
             admission_lanes,
+            live_backup_root: None,
         }
     }
 
@@ -548,6 +571,29 @@ impl SqliteGatewayBackend {
             .revalidate_current(&snapshot, &Self::checked_at()?)
             .map_err(map_authority_error)?;
         Ok(())
+    }
+
+    fn authorize_backup(&self, session: &GatewaySession) -> Result<(), BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let checked_at = Self::checked_at()?;
+        let grant = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Deployment,
+                DiagnosticOperationV1::Backup,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let adapter_input = grant.into_adapter_input();
+        let snapshot = self
+            .store
+            .snapshot(&adapter_input.authority_snapshot_query())
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::Forbidden)?;
+        adapter_input
+            .revalidate_current(&snapshot, &checked_at)
+            .map_err(map_authority_error)
     }
 
     fn authority(&self) -> AuthorityV1 {
@@ -1387,6 +1433,18 @@ fn map_timer_commit_error(error: &SqliteTimerCommitErrorV1) -> BackendError {
     }
 }
 
+fn map_external_input_preparation_error(
+    error: SqliteExternalInputPreparationErrorV1,
+) -> BackendError {
+    match error {
+        SqliteExternalInputPreparationErrorV1::Conflict => BackendError::Conflict,
+        SqliteExternalInputPreparationErrorV1::StorageUnavailable => {
+            BackendError::StorageUnavailable
+        }
+        SqliteExternalInputPreparationErrorV1::Corrupt => BackendError::InvalidResult,
+    }
+}
+
 fn timer_response_from_resolution(
     request: &TimerFiredRequestV1,
     resolution: &RoomCommitResolutionV1,
@@ -1429,6 +1487,47 @@ fn timer_response_from_resolution(
         | RoomCommitResolutionV1::TransitionCommitted { .. }
         | RoomCommitResolutionV1::RejectionRecorded { .. }
         | RoomCommitResolutionV1::NoChangeRecorded { .. } => Err(BackendError::InvalidResult),
+    }
+}
+
+fn lobby_response_from_result(
+    input_id: &str,
+    result: &StoredSemanticResultV1,
+    duplicate: bool,
+) -> Result<LobbyLaunchResponse, BackendError> {
+    let SemanticResultV1::TransitionCommitted {
+        room_id,
+        transition_id,
+        complete_head,
+        ..
+    } = result.result()
+    else {
+        return Err(BackendError::InvalidResult);
+    };
+    Ok(LobbyLaunchResponse {
+        room_id: room_id.to_string(),
+        input_id: input_id.to_owned(),
+        transition_id: transition_id.to_string(),
+        room_head: room_head(complete_head),
+        duplicate,
+    })
+}
+
+fn lobby_response_from_resolution(
+    input_id: &str,
+    resolution: &RoomCommitResolutionV1,
+) -> Result<LobbyLaunchResponse, BackendError> {
+    if let Some(result) = resolution.stored_result() {
+        return lobby_response_from_result(input_id, result, resolution.duplicate());
+    }
+    match resolution {
+        RoomCommitResolutionV1::Conflict { .. } => Err(BackendError::Conflict),
+        RoomCommitResolutionV1::Fenced
+        | RoomCommitResolutionV1::Reprepare
+        | RoomCommitResolutionV1::RetryableKnownAbsent
+        | RoomCommitResolutionV1::NotApplicable => Err(BackendError::Busy),
+        RoomCommitResolutionV1::Indeterminate => Err(BackendError::Indeterminate),
+        _ => Err(BackendError::InvalidResult),
     }
 }
 
@@ -2104,6 +2203,141 @@ impl GatewayBackend for SqliteGatewayBackend {
         timer_response_from_resolution(timer_request, &resolution)
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn launch_lobby(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        request: LobbyLaunchRequest,
+    ) -> Result<LobbyLaunchResponse, BackendError> {
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::Rejected)?;
+        let input_id = InputId::from_str(&request.input_id).map_err(|_| BackendError::Rejected)?;
+        let based_on_room_seq =
+            RoomSequenceV1::new(request.based_on_room_seq).map_err(|_| BackendError::Rejected)?;
+        let checked_at = Self::checked_at()?;
+        let mut input = ExternalInputV1 {
+            source_id: SourceId::from_str(worldstream_core::HOST_LOBBY_LAUNCH_SOURCE)
+                .map_err(|_| BackendError::InvalidResult)?,
+            input_id,
+            input_type: worldstream_core::HOST_LAUNCH_INPUT_TYPE.to_owned(),
+            recorded_at: ExternalInputRecordedAt::from_str(checked_at.as_str())
+                .map_err(|_| BackendError::StorageUnavailable)?,
+            canonical_payload: CanonicalJsonV1::parse(br"{}")
+                .map_err(|_| BackendError::InvalidResult)?,
+            immutable_resource_references: Vec::new(),
+        };
+        let identity = worldstream_core::OperationIdentityV1::ExternalInput(Box::new(
+            worldstream_core::ExternalInputOperationIdentityV1 {
+                room_id: room_id.clone(),
+                source_id: input.source_id.clone(),
+                input_id: input.input_id.clone(),
+            },
+        ));
+        let request_hash = external_input_request_hash(&room_id, based_on_room_seq, &input)
+            .map_err(|_| BackendError::Rejected)?;
+        let authenticated = self.authenticate(session)?;
+        let authority = self
+            .authority()
+            .authorize_external_input(
+                &authenticated.into_presented(),
+                room_id.clone(),
+                request_hash.clone(),
+                checked_at,
+            )
+            .map_err(map_authority_error)?;
+        match RoomCommitStorageV1::resolve(&self.store, &identity, &request_hash) {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                return lobby_response_from_result(&request.input_id, &result, true);
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
+                return Err(BackendError::Conflict);
+            }
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                return Err(BackendError::Indeterminate);
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
+        }
+        self.ensure_verified_active(&room_id)?;
+        let operation = self.acquire_room_operation(&room_id)?;
+        let _admission = self
+            .admission_lanes
+            .reserve_host_stimulus(&room_id)
+            .map_err(|error| map_admission_lane_error(&error))?;
+        match RoomCommitStorageV1::resolve(&self.store, &identity, &request_hash) {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                return lobby_response_from_result(&request.input_id, &result, true);
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
+                return Err(BackendError::Conflict);
+            }
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                return Err(BackendError::Indeterminate);
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
+        }
+        let snapshot = self
+            .store
+            .gateway_room_snapshot(&self.registry, &room_id)
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::NotFound)?;
+        if !worldstream_core::agent_heist_lobby_contract_declared(
+            &self.registry,
+            snapshot.trace().head().pack_digest(),
+        ) || !worldstream_core::agent_heist_lobby_launch_applicable(
+            snapshot.trace().activity_state(),
+        ) {
+            return Err(BackendError::WrongPhase);
+        }
+        let proposed_recorded_at = Self::checked_at()?;
+        input.recorded_at = ExternalInputRecordedAt::from_str(proposed_recorded_at.as_str())
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        input.recorded_at = self
+            .store
+            .reserve_external_input_recorded_at(&identity, &request_hash, &input.recorded_at)
+            .map_err(map_external_input_preparation_error)?;
+        match RoomCommitStorageV1::resolve(&self.store, &identity, &request_hash) {
+            worldstream_core::ResolveOutcomeV1::StoredResolution(result) => {
+                return lobby_response_from_result(&request.input_id, &result, true);
+            }
+            worldstream_core::ResolveOutcomeV1::Conflict { .. } => {
+                return Err(BackendError::Conflict);
+            }
+            worldstream_core::ResolveOutcomeV1::ResolutionUnavailable => {
+                return Err(BackendError::Indeterminate);
+            }
+            worldstream_core::ResolveOutcomeV1::KnownAbsent => {}
+        }
+        let snapshot = self
+            .store
+            .gateway_room_snapshot(&self.registry, &room_id)
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::NotFound)?;
+        if !worldstream_core::agent_heist_lobby_contract_declared(
+            &self.registry,
+            snapshot.trace().head().pack_digest(),
+        ) || !worldstream_core::agent_heist_lobby_launch_applicable(
+            snapshot.trace().activity_state(),
+        ) {
+            return Err(BackendError::WrongPhase);
+        }
+        let resolution = match self.store.commit_authorized_external_input(
+            &self.registry,
+            authority,
+            &room_id,
+            based_on_room_seq,
+            &input,
+            next_core_id::<TransitionId>()?,
+        ) {
+            Ok(resolution) => resolution,
+            Err(SqliteTimerCommitErrorV1::ConcurrentChange) => {
+                return Err(BackendError::WrongPhase);
+            }
+            Err(error) => return Err(map_timer_commit_error(&error)),
+        };
+        operation.publish().map_err(Self::map_supervisor_error)?;
+        lobby_response_from_resolution(&request.input_id, &resolution)
+    }
+
     fn operator_room_inventory(
         &self,
         session: &GatewaySession,
@@ -2168,6 +2402,53 @@ impl GatewayBackend for SqliteGatewayBackend {
             .diagnostic_summary(authority, &checked_at)
             .map_err(|error| map_sqlite_diagnostic_error(&error))?;
         operator_room_summary(&summary, checked_at.as_str())
+    }
+
+    fn operator_backup_profile(
+        &self,
+        session: &GatewaySession,
+    ) -> Result<OperatorBackupProfileStatus, BackendError> {
+        self.authorize_backup(session)?;
+        Ok(OperatorBackupProfileStatus {
+            storage_profile: OperatorBackupStorageProfile::SqliteBundled,
+            storage_health: OperatorBackupStorageHealth::Healthy,
+            live_backup_supported: self.live_backup_root.is_some(),
+            verification: OperatorBackupVerification::Unavailable,
+            freshness: OperatorDataFreshness::Unavailable {
+                reason: "no_operation_selected".to_owned(),
+            },
+        })
+    }
+
+    fn operator_live_backup(
+        &self,
+        session: &GatewaySession,
+        request: OperatorLiveBackupPrepareRequest,
+    ) -> Result<OperatorLiveBackupStatus, BackendError> {
+        self.authorize_backup(session)?;
+        let destination = self.validated_live_backup_destination(&request.operation_id)?;
+        let receipt = if destination.exists() {
+            self.store.verify_live_backup(&destination)
+        } else {
+            self.store.create_live_backup(&destination)
+        }
+        .map_err(|_| BackendError::StorageUnavailable)?;
+        let observed_at = Self::checked_at()?.as_str().to_owned();
+        Ok(OperatorLiveBackupStatus {
+            operation_id: request.operation_id,
+            storage_profile: OperatorBackupStorageProfile::SqliteBundled,
+            storage_health: OperatorBackupStorageHealth::Healthy,
+            native_verification: OperatorBackupVerification::Pass,
+            semantic_verification: OperatorBackupVerification::Unavailable,
+            freshness: OperatorDataFreshness::Fresh { observed_at },
+            artifact: Some(OperatorLiveBackupArtifactSummary {
+                artifact_name: "backup.sqlite3".to_owned(),
+                byte_length: receipt.artifact_bytes(),
+                blake3_digest: receipt.artifact_digest().to_owned(),
+                semantic_digest: receipt.semantic_digest().to_string(),
+            }),
+            unavailable_reason: Some("full_semantic_restore_verification_not_run".to_owned()),
+        })
     }
 
     fn issue_member_capability(
@@ -2785,6 +3066,36 @@ fn map_sqlite_diagnostic_error(error: &SqliteRoomDiagnosticErrorV1) -> BackendEr
     }
 }
 
+impl SqliteGatewayBackend {
+    fn validated_live_backup_destination(
+        &self,
+        operation_id: &str,
+    ) -> Result<PathBuf, BackendError> {
+        if operation_id.is_empty()
+            || operation_id.len() > 64
+            || !operation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            || operation_id.starts_with('-')
+            || operation_id.ends_with('-')
+        {
+            return Err(BackendError::Rejected);
+        }
+        let root = self
+            .live_backup_root
+            .as_ref()
+            .ok_or(BackendError::StorageUnavailable)?;
+        let operation = prepare_data_directory(&root.join(operation_id))
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        let canonical_root =
+            std::fs::canonicalize(root).map_err(|_| BackendError::StorageUnavailable)?;
+        if operation.parent() != Some(canonical_root.as_path()) {
+            return Err(BackendError::Rejected);
+        }
+        Ok(operation.join("backup.sqlite3"))
+    }
+}
+
 fn map_activation_error(error: SqliteActivationErrorV1) -> BackendError {
     match error {
         SqliteActivationErrorV1::Authority(error) => map_authority_error(error),
@@ -2955,12 +3266,13 @@ fn map_replay_error(error: SqliteAuthorizedReplayErrorV1) -> BackendError {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, tempdir};
     use worldstream_core::{
         AuthorityBootstrapV1, AuthorityChangeV1, AuthorityCheckedAt, AuthorityV1,
         CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
         CapabilityScopeV1, NewCapabilityV1, PresentedCapabilityV1, PrincipalKindV1,
-        builtin_counter_registry, counter_v2_digest,
+        agent_heist_lobby_digest, builtin_agent_heist_registry, builtin_counter_registry,
+        counter_v2_digest,
     };
     use worldstream_protocol::{
         AccessMode, BearerWireV1, CreateMember, PackReference, PrincipalKind,
@@ -2986,6 +3298,34 @@ mod tests {
             self.calls.fetch_add(1, Ordering::Relaxed);
             RuntimeWallClock.sample()
         }
+    }
+
+    #[test]
+    fn live_backup_destination_is_derived_only_beneath_the_configured_root() {
+        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
+        let registry =
+            Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
+        let directory = tempdir().unwrap_or_else(|_| panic!("backup root"));
+        let root = directory.path().join("backups");
+        let backend = SqliteGatewayBackend::new(store, registry)
+            .with_live_backup_root(&root)
+            .unwrap_or_else(|_| panic!("secure backup root"));
+
+        let destination = backend
+            .validated_live_backup_destination("stable-backup")
+            .unwrap_or_else(|_| panic!("derived destination"));
+        assert_eq!(
+            destination,
+            std::fs::canonicalize(&root)
+                .unwrap_or_else(|_| panic!("canonical root"))
+                .join("stable-backup/backup.sqlite3")
+        );
+        assert!(
+            backend
+                .validated_live_backup_destination("../escape")
+                .is_err()
+        );
     }
 
     #[test]
@@ -3138,6 +3478,193 @@ mod tests {
             backend.create_room(&gateway_session, conflict),
             Err(BackendError::Conflict)
         ));
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn sqlite_lobby_launch_is_authorized_idempotent_phase_safe_and_recorded() {
+        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
+        let authority = AuthorityV1::new(Arc::new(store.clone()));
+        let bearer = CapabilityBearerV1::from_bytes([0xaa; 32]);
+        let principal = "01ARZ3NDEKTSV4RRFFQ69G5FD0"
+            .parse::<worldstream_core::PrincipalId>()
+            .unwrap_or_else(|_| panic!("principal"));
+        authority
+            .bootstrap(
+                AuthorityBootstrapV1::new(
+                    "01ARZ3NDEKTSV4RRFFQ69G5FD1"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("change")),
+                    principal.clone(),
+                    PrincipalKindV1::Human,
+                    "01ARZ3NDEKTSV4RRFFQ69G5FD2"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("capability")),
+                    bearer.token_hash(),
+                    None,
+                )
+                .unwrap_or_else(|_| panic!("bootstrap")),
+                "2026-08-15T12:00:00Z"
+                    .parse::<AuthorityCheckedAt>()
+                    .unwrap_or_else(|_| panic!("checked at")),
+            )
+            .unwrap_or_else(|_| panic!("apply bootstrap"));
+        let registry =
+            Arc::new(builtin_agent_heist_registry().unwrap_or_else(|_| panic!("Heist registry")));
+        let descriptor = registry
+            .load_retained(&agent_heist_lobby_digest())
+            .unwrap_or_else(|_| panic!("Lobby revision"))
+            .descriptor()
+            .clone();
+        let members = [
+            (principal.to_string(), "navigator"),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FD3".to_owned(), "insider"),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FD4".to_owned(), "broker"),
+        ]
+        .into_iter()
+        .map(|(principal_id, role)| CreateMember {
+            principal_id,
+            principal_kind: PrincipalKind::Human,
+            role: Some(role.to_owned()),
+            access_mode: AccessMode::Participant,
+        })
+        .collect();
+        let backend = SqliteGatewayBackend::new(store, registry);
+        let host = session(0xaa, "01ARZ3NDEKTSV4RRFFQ69G5FD5");
+        let room = backend
+            .create_room(
+                &host,
+                CreateRoomRequest {
+                    pack: PackReference {
+                        id: descriptor.pack_id,
+                        version: descriptor.explanatory_version,
+                        digest: agent_heist_lobby_digest().to_string(),
+                    },
+                    configuration: json!({
+                        "pack_id":"worldstream.agent-heist","pack_schema":1,
+                        "roles":["navigator","insider","broker"],
+                        "briefing_duration_seconds":30,"negotiation_duration_seconds":90,
+                        "commitment_duration_seconds":30,
+                        "commitment_reminder_seconds_before_deadline":10,
+                        "result_duration_seconds":20,"maximum_plans":12,
+                        "maximum_open_offers_per_role":4
+                    }),
+                    members,
+                    idempotency_key: "lobby-room".to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("create Lobby: {error:?}"));
+        let request = LobbyLaunchRequest {
+            input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD6".to_owned(),
+            based_on_room_seq: 0,
+        };
+        backend
+            .ensure_verified_active(
+                &room
+                    .room_id
+                    .parse()
+                    .unwrap_or_else(|_| panic!("created Room ID")),
+            )
+            .unwrap_or_else(|error| panic!("activate Lobby: {error:?}"));
+        let first = backend
+            .launch_lobby(&host, &room.room_id, request.clone())
+            .unwrap_or_else(|error| panic!("launch Lobby: {error:?}"));
+        assert_eq!(first.room_head.room_seq, 1);
+        assert!(!first.duplicate);
+        let duplicate = backend
+            .launch_lobby(&host, &room.room_id, request.clone())
+            .unwrap_or_else(|error| panic!("duplicate launch: {error:?}"));
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.transition_id, first.transition_id);
+        assert!(matches!(
+            backend.launch_lobby(
+                &host,
+                &room.room_id,
+                LobbyLaunchRequest {
+                    based_on_room_seq: 1,
+                    ..request.clone()
+                },
+            ),
+            Err(BackendError::Conflict)
+        ));
+        assert!(matches!(
+            backend.launch_lobby(
+                &host,
+                &room.room_id,
+                LobbyLaunchRequest {
+                    input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD7".to_owned(),
+                    based_on_room_seq: 1,
+                },
+            ),
+            Err(BackendError::WrongPhase)
+        ));
+        assert!(matches!(
+            backend.launch_lobby(
+                &session(0xab, "01ARZ3NDEKTSV4RRFFQ69G5FD8"),
+                &room.room_id,
+                request,
+            ),
+            Err(BackendError::Forbidden)
+        ));
+        assert!(matches!(
+            backend.launch_lobby(
+                &host,
+                "01ARZ3NDEKTSV4RRFFQ69G5FZ0",
+                LobbyLaunchRequest {
+                    input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD9".to_owned(),
+                    based_on_room_seq: 0,
+                },
+            ),
+            Err(BackendError::NotFound)
+        ));
+        let assert_unreserved = |room: &str, input_id: &str, based_on_room_seq: u64| {
+            let room_id = room
+                .parse::<RoomId>()
+                .unwrap_or_else(|_| panic!("test Room ID"));
+            let proposed = "2026-08-24T12:34:56Z"
+                .parse::<ExternalInputRecordedAt>()
+                .unwrap_or_else(|_| panic!("test recorded-at"));
+            let input = ExternalInputV1 {
+                source_id: SourceId::from_str(worldstream_core::HOST_LOBBY_LAUNCH_SOURCE)
+                    .unwrap_or_else(|_| panic!("host source")),
+                input_id: input_id.parse().unwrap_or_else(|_| panic!("test Input ID")),
+                input_type: worldstream_core::HOST_LAUNCH_INPUT_TYPE.to_owned(),
+                recorded_at: proposed.clone(),
+                canonical_payload: CanonicalJsonV1::parse(br"{}")
+                    .unwrap_or_else(|_| panic!("launch payload")),
+                immutable_resource_references: Vec::new(),
+            };
+            let identity = worldstream_core::OperationIdentityV1::ExternalInput(Box::new(
+                worldstream_core::ExternalInputOperationIdentityV1 {
+                    room_id: room_id.clone(),
+                    source_id: input.source_id.clone(),
+                    input_id: input.input_id.clone(),
+                },
+            ));
+            let request_hash = external_input_request_hash(
+                &room_id,
+                RoomSequenceV1::new(based_on_room_seq)
+                    .unwrap_or_else(|_| panic!("test Room sequence")),
+                &input,
+            )
+            .unwrap_or_else(|_| panic!("launch request hash"));
+            assert_eq!(
+                backend.store.reserve_external_input_recorded_at(
+                    &identity,
+                    &request_hash,
+                    &proposed,
+                ),
+                Ok(proposed),
+                "invalid fresh launches must not reserve semantic time",
+            );
+        };
+        assert_unreserved(&room.room_id, "01ARZ3NDEKTSV4RRFFQ69G5FD7", 1);
+        assert_unreserved(
+            "01ARZ3NDEKTSV4RRFFQ69G5FZ0",
+            "01ARZ3NDEKTSV4RRFFQ69G5FD9",
+            0,
+        );
     }
 
     #[test]
