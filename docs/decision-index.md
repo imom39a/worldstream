@@ -27,6 +27,7 @@ This is a normative locator, not a competing specification. The repository has t
 | [0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md) | Five-operation ActivityPackV1, PackRevisionLock, exact executor retention, and no in-place upgrade |
 | [0011](adr/0011-release-compatibility-recovery-and-supply-chain-gate.md) | Compatibility, migration, transfer, recovery, distribution, and evidence release gate |
 | [0012](adr/0012-detach-release-evidence-from-embedded-compatibility.md) | Embedded compatibility contract plus detached signed artifact/evidence inventory |
+| [0013](adr/0013-studio-companion-control-plane.md) | Studio companion control plane, Supervisor boundary, and unchanged daemon authority |
 
 ## Frozen invariants, evidence, and implementation ownership
 

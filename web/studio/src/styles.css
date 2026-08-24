@@ -1,0 +1,38 @@
+:root { color: #18221e; background: #f2f5f3; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.studio-shell { display: grid; min-height: 100vh; grid-template-columns: 230px minmax(0, 1fr); }
+.studio-sidebar { display: grid; position: sticky; top: 0; height: 100vh; grid-template-columns: 34px 1fr; grid-template-rows: auto 1fr auto; gap: 0 10px; padding: 28px 20px; color: #dbe6e1; background: #15201c; }
+.studio-sidebar > div:nth-child(2) { display: grid; gap: 4px; align-content: center; }
+.studio-sidebar strong { font-size: 14px; }
+.studio-sidebar span { color: #81a095; font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+.brand-mark { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid #55d3a7; border-radius: 9px; transform: rotate(45deg); }
+.brand-mark span { width: 10px; height: 10px; border-radius: 3px; background: #55d3a7; }
+.studio-sidebar nav { display: grid; align-content: start; gap: 5px; grid-column: 1 / -1; margin-top: 36px; }
+.studio-sidebar nav a, .studio-sidebar nav span { padding: 11px 13px; border-radius: 8px; color: #788e86; text-decoration: none; font-size: 11px; letter-spacing: normal; text-transform: none; }
+.studio-sidebar nav a { color: #f2f8f5; background: #263630; box-shadow: inset 3px 0 #55d3a7; }
+.studio-sidebar > p { grid-column: 1 / -1; margin: 0; color: #71867e; font-size: 10px; }
+.studio-content { width: min(1040px, calc(100% - 72px)); margin: 0 auto; padding: 60px 0; }
+.studio-content > header { display: flex; justify-content: space-between; gap: 32px; align-items: flex-start; }
+.eyebrow { margin: 0 0 8px; color: #56796c; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+h1 { margin: 0; font-size: clamp(32px, 5vw, 54px); letter-spacing: -.05em; }
+header p:last-child { color: #738079; }
+.top-status { padding: 8px 11px; border-radius: 999px; font-size: 11px; font-weight: 800; }
+.top-status.good { color: #176d51; background: #dff4ea; }
+.top-status.muted { color: #716f68; background: #e8e8e4; }
+.daemon-card { margin-top: 42px; padding: 28px; border: 1px solid #d7dfdb; border-radius: 18px; background: rgba(255,255,255,.86); box-shadow: 0 18px 45px rgba(29,52,43,.08); }
+.daemon-card.is-unavailable { border-color: #e2d7cd; background: #fffaf5; }
+.daemon-heading { display: flex; align-items: center; justify-content: space-between; }
+.daemon-heading h2 { margin: 0; font-size: 24px; }
+.status-orb { width: 12px; height: 12px; border-radius: 50%; background: #d78d58; box-shadow: 0 0 0 7px rgba(215,141,88,.13); }
+.is-connected .status-orb { background: #45c793; box-shadow: 0 0 0 7px rgba(69,199,147,.13); }
+.status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 28px 0 0; }
+.status-grid div { padding: 16px; border: 1px solid #e1e7e4; border-radius: 12px; background: #f7faf8; }
+.status-grid dt { color: #79867f; font-size: 10px; }
+.status-grid dd { margin: 7px 0 0; font-size: 13px; font-weight: 800; }
+.status-message, .unavailable-message { margin: 26px 0 0; color: #6d7772; }
+.unavailable-message p { margin-bottom: 0; }
+.authority-note { max-width: 650px; margin-top: 48px; }
+.authority-note h2 { margin: 0 0 10px; }
+.authority-note p:last-child { color: #68756f; line-height: 1.65; }
+@media (max-width: 760px) { .studio-shell { grid-template-columns: 1fr; } .studio-sidebar { position: static; height: auto; grid-template-columns: 34px 1fr; grid-template-rows: auto; } .studio-sidebar nav, .studio-sidebar > p { display: none; } .studio-content { width: min(100% - 36px, 1040px); padding: 36px 0; } .status-grid { grid-template-columns: repeat(2, 1fr); } }

@@ -11,6 +11,7 @@ members = [
     "crates/worldstream-backup",
     "crates/worldstream-transfer",
     "crates/worldstream-windows-handle",
+    "crates/worldstream-studio-supervisor",
     "xtask",
 ]
 resolver = "3"

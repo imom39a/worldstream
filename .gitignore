@@ -3,6 +3,8 @@
 /node_modules/
 /web/console/node_modules/
 /web/console/dist/
+/web/studio/node_modules/
+/web/studio/dist/
 /sdk/python/.venv/
 /.pnpm-store/
 

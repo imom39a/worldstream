@@ -8,6 +8,10 @@
   },
   "scripts": {
     "studio:prototype": "pnpm --dir web/console prototype:studio",
+    "studio:dev": "scripts/studio-dev.sh",
+    "studio:supervisor": "cargo run -p worldstream-studio-supervisor --",
+    "studio:build": "pnpm --dir web/studio build",
+    "studio:test": "pnpm --dir web/studio test",
     "ui:dev": "pnpm --dir web/console dev",
     "ui:build": "pnpm --dir web/console build",
     "ui:lint": "pnpm --dir web/console lint",
