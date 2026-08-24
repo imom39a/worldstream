@@ -12,12 +12,24 @@ export interface AgentProfileSecretSetting {
   availability: AgentProfileSecretAvailability;
 }
 
+export type AgentHostContract =
+  | { kind: "generic_mcp" }
+  | {
+      kind: "managed_reference";
+      host_contract_revision: string;
+      runner_template: { template_id: string; revision: string };
+      provider: "open_ai_compatible";
+      provider_address: string;
+      model_id: string;
+    };
+
 export interface AgentProfileRevision {
   profile_id: string;
   revision: string;
   display_name: string;
   non_secret_configuration: Record<string, string>;
   secret_settings: AgentProfileSecretSetting[];
+  host_contract: AgentHostContract;
 }
 
 export interface AgentProfileCatalog {
@@ -38,6 +50,7 @@ export interface AgentProfilePublishRequest {
   display_name: string;
   non_secret_configuration: Record<string, string>;
   secret_settings: AgentProfileSecretSettingInput[];
+  host_contract: AgentHostContract;
 }
 
 export type AgentProfilePublishOutcome =
@@ -55,7 +68,14 @@ export interface AgentProfileMembershipBinding {
 
 export type AgentExecutionBinding =
   | { kind: "external" }
-  | { kind: "managed"; runner_id: string };
+  | { kind: "managed"; runner_id: string }
+  | {
+      kind: "managed_reference";
+      runner_id: string;
+      instance_id: string;
+      template_id: string;
+      template_revision: string;
+    };
 
 export interface AgentProfileSeatAssignment {
   schema: "worldstream/studio-agent-profile-assignment/v1";
@@ -146,6 +166,7 @@ export function createAgentProfileRevisionDraft(
       kind: setting.kind,
       reference: "",
     })),
+    host_contract: source?.host_contract ?? { kind: "generic_mcp" },
   };
 }
 
@@ -195,7 +216,7 @@ function isAgentProfileCatalog(value: unknown): value is AgentProfileCatalog {
 
 function isAgentProfilePublishRequest(value: unknown): value is AgentProfilePublishRequest {
   return isExactRecord(value, [
-    "schema", "profile_id", "revision", "display_name", "non_secret_configuration", "secret_settings",
+    "schema", "profile_id", "revision", "display_name", "non_secret_configuration", "secret_settings", "host_contract",
   ])
     && value.schema === "worldstream/studio-agent-profile/v1"
     && isProfileId(value.profile_id)
@@ -203,7 +224,8 @@ function isAgentProfilePublishRequest(value: unknown): value is AgentProfilePubl
     && isText(value.display_name)
     && isConfiguration(value.non_secret_configuration)
     && isBoundedArray(value.secret_settings, isSecretSettingInput)
-    && unique(value.secret_settings.map((setting) => setting.key));
+    && unique(value.secret_settings.map((setting) => setting.key))
+    && isAgentHostContract(value.host_contract, value.secret_settings);
 }
 
 function isSecretSettingInput(value: unknown): value is AgentProfileSecretSettingInput {
@@ -217,14 +239,34 @@ function isSecretSettingInput(value: unknown): value is AgentProfileSecretSettin
 
 function isAgentProfileRevision(value: unknown): value is AgentProfileRevision {
   return isExactRecord(value, [
-    "profile_id", "revision", "display_name", "non_secret_configuration", "secret_settings",
+    "profile_id", "revision", "display_name", "non_secret_configuration", "secret_settings", "host_contract",
   ])
     && isProfileId(value.profile_id)
     && isRevision(value.revision)
     && isText(value.display_name)
     && isConfiguration(value.non_secret_configuration)
     && isBoundedArray(value.secret_settings, isSecretSetting)
-    && unique(value.secret_settings.map((setting) => setting.key));
+    && unique(value.secret_settings.map((setting) => setting.key))
+    && isAgentHostContract(value.host_contract, value.secret_settings);
+}
+
+function isAgentHostContract(
+  value: unknown,
+  settings: Array<AgentProfileSecretSetting | AgentProfileSecretSettingInput>,
+): value is AgentHostContract {
+  if (!isRecord(value)) return false;
+  if (value.kind === "generic_mcp") return isExactRecord(value, ["kind"]);
+  if (value.kind !== "managed_reference" || !isExactRecord(value, [
+    "kind", "host_contract_revision", "runner_template", "provider", "provider_address", "model_id",
+  ])) return false;
+  return isRevision(value.host_contract_revision)
+    && isRunnerTemplateReference(value.runner_template)
+    && value.provider === "open_ai_compatible"
+    && isLoopbackSocket(value.provider_address)
+    && isText(value.model_id)
+    && settings.length === 1
+    && settings[0]?.kind === "model_provider"
+    && settings[0]?.key === "MODEL_PROVIDER_TOKEN";
 }
 
 function isSecretSetting(value: unknown): value is AgentProfileSecretSetting {
@@ -263,6 +305,14 @@ function isProfileReference(value: unknown): value is AgentProfileRevisionRefere
     && isRevision(value.revision);
 }
 
+function isRunnerTemplateReference(
+  value: unknown,
+): value is { template_id: string; revision: string } {
+  return isExactRecord(value, ["template_id", "revision"])
+    && isProfileId(value.template_id)
+    && isRevision(value.revision);
+}
+
 function isMembership(value: unknown): value is AgentProfileMembershipBinding {
   return isExactRecord(value, ["room_id", "member_id", "principal_id", "role"])
     && isUlid(value.room_id)
@@ -274,9 +324,17 @@ function isMembership(value: unknown): value is AgentProfileMembershipBinding {
 function isExecution(value: unknown): value is AgentExecutionBinding {
   if (!isRecord(value)) return false;
   if (value.kind === "external") return isExactRecord(value, ["kind"]);
-  return value.kind === "managed"
-    && isExactRecord(value, ["kind", "runner_id"])
-    && isUlid(value.runner_id);
+  if (value.kind === "managed") {
+    return isExactRecord(value, ["kind", "runner_id"]) && isUlid(value.runner_id);
+  }
+  return value.kind === "managed_reference"
+    && isExactRecord(value, [
+      "kind", "runner_id", "instance_id", "template_id", "template_revision",
+    ])
+    && isUlid(value.runner_id)
+    && isProfileId(value.instance_id)
+    && isProfileId(value.template_id)
+    && isRevision(value.template_revision);
 }
 
 function isConfiguration(value: unknown): value is Record<string, string> {
@@ -304,6 +362,7 @@ function publishedRevisionMatches(
     && response.revision === request.revision
     && response.display_name === request.display_name
     && exactStringRecord(response.non_secret_configuration, request.non_secret_configuration)
+    && JSON.stringify(response.host_contract) === JSON.stringify(request.host_contract)
     && response.secret_settings.length === request.secret_settings.length
     && response.secret_settings.every((setting, index) => {
       const requested = request.secret_settings[index];
@@ -311,6 +370,14 @@ function publishedRevisionMatches(
         && setting.key === requested.key
         && setting.kind === requested.kind;
     });
+}
+
+function isLoopbackSocket(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(?:127(?:\.\d{1,3}){3}|\[::1\]):([0-9]{1,5})$/.exec(value);
+  if (match === null) return false;
+  const port = Number(match[1]);
+  return Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
 function exactStringRecord(left: Record<string, string>, right: Record<string, string>): boolean {

@@ -496,6 +496,8 @@ fn production_dependencies_enforce_pack_schema_profile_secret_and_runner_compati
                 kind: SecretKindV1::ModelProvider,
                 reference: reference.clone(),
             }],
+            host_contract:
+                worldstream_studio_supervisor::agent_profiles::AgentHostContractV1::default(),
         })
         .unwrap_or_else(|error| unreachable!("publish profile: {error:?}"));
     let compatible = runner_registry(&directory.path().join("compatible-runner"), "2.0.0");

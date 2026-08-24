@@ -4071,6 +4071,19 @@ mod tests {
             ),
             Err(BackendError::Conflict)
         ));
+        let mut mismatched_principal = sealed_runner_request(&room_id, &member_id, 0xd1);
+        mismatched_principal.owner_principal_id = "01ARZ3NDEKTSV4RRFFQ69G5FC7".to_owned();
+        assert!(matches!(
+            resumed.provision_runner_capability(&host, mismatched_principal),
+            Err(BackendError::Forbidden)
+        ));
+        let mut mismatched_principal_change = sealed_runner_request(&room_id, &member_id, 0xd1);
+        mismatched_principal_change.principal_idempotency_key =
+            "01ARZ3NDEKTSV4RRFFQ69G5FE9".to_owned();
+        assert!(matches!(
+            resumed.provision_runner_capability(&host, mismatched_principal_change),
+            Err(BackendError::Conflict)
+        ));
         drop(resumed);
 
         let final_restart = SqliteGatewayBackend::new(
@@ -4962,5 +4975,35 @@ mod tests {
             ),
             Err(BackendError::InvalidResult)
         ));
+    }
+
+    #[test]
+    fn projection_wire_preserves_exact_hash_input_for_unbounded_offer() {
+        let source = worldstream_core::CanonicalJsonV1::parse(
+            br#"{"action_offers":[{"action_type":"inspect","domain":"worldstream/action-offer/v1","eligibility_window":null,"payload_schema_digest":"blake3:fixture"}],"authorized_core":{"access_mode":"participant"},"projection":{"phase":"briefing"},"projection_schema":"agent-heist/projection/v1"}"#,
+        )
+        .and_then(|value| value.to_bytes())
+        .unwrap_or_else(|error| unreachable!("canonical view: {error}"));
+        let projection = projection_from_canonical_bytes(&source)
+            .unwrap_or_else(|error| unreachable!("projection conversion: {error:?}"));
+        let wire = serde_json::to_value(&projection)
+            .unwrap_or_else(|error| unreachable!("projection wire: {error}"));
+        assert_eq!(wire["action_offers"][0]["eligibility_window"], Value::Null);
+        let reconstructed = worldstream_core::CanonicalJsonV1::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "action_offers": projection.action_offers,
+                "authorized_core": projection.core,
+                "projection": projection.activity,
+                "projection_schema": "agent-heist/projection/v1",
+            }))
+            .unwrap_or_else(|error| unreachable!("reconstructed JSON: {error}")),
+        )
+        .and_then(|value| value.to_bytes())
+        .unwrap_or_else(|error| unreachable!("reconstructed view: {error}"));
+        assert_eq!(source, reconstructed);
+        assert_eq!(
+            worldstream_core::projection_hash_for_canonical_bytes(&source),
+            worldstream_core::projection_hash_for_canonical_bytes(&reconstructed)
+        );
     }
 }

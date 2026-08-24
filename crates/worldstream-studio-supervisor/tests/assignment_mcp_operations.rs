@@ -155,7 +155,7 @@ fn retained_remote_reply_finishes_after_restart_without_another_remote_call() {
 #[test]
 fn activation_completion_binds_lease_cursor_and_completion_identity() {
     let request = format!(
-        "{{\"activation_id\":\"{ACTIVATION_ID}\",\"assignment_id\":\"{ASSIGNMENT_ID}\",\"claim_id\":\"{CLAIM_ID}\",\"completion\":{{\"disposition\":\"completed\"}},\"completion_id\":\"{COMPLETION_ID}\",\"context_hash\":\"blake3:{}\",\"cursor\":21,\"lease_generation\":3,\"operation_id\":\"{OPERATION_ID}\",\"request_id\":\"{REMOTE_REQUEST_ID}\"}}",
+        "{{\"activation_id\":\"{ACTIVATION_ID}\",\"assignment_id\":\"{ASSIGNMENT_ID}\",\"claim_id\":\"{CLAIM_ID}\",\"completion\":{{\"disposition\":\"handled\"}},\"completion_id\":\"{COMPLETION_ID}\",\"context_hash\":\"blake3:{}\",\"cursor\":21,\"lease_generation\":3,\"operation_id\":\"{OPERATION_ID}\",\"request_id\":\"{REMOTE_REQUEST_ID}\"}}",
         "b".repeat(64)
     );
     let intent = AssignmentMcpOperationIntentV1::new_activation_completion(
@@ -189,7 +189,7 @@ fn activation_completion_binds_lease_cursor_and_completion_identity() {
         .unwrap_or_else(|error| unreachable!("completion should reserve: {error:?}"));
     let altered_request = String::from_utf8(intent.canonical_request().to_vec())
         .unwrap_or_else(|error| unreachable!("fixture should be UTF-8: {error}"))
-        .replace("\"completed\"", "\"failed\"");
+        .replace("\"handled\"", "\"failed\"");
     let altered = AssignmentMcpOperationIntentV1::new_activation_completion(
         identity(),
         ACTIVATION_ID,

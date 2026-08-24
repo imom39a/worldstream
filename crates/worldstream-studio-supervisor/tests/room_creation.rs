@@ -244,6 +244,12 @@ fn permanent_rejection_cannot_be_retried_or_replaced() {
         .reconcile("launch-alpha")
         .unwrap_or_else(|error| unreachable!("terminal status: {error:?}"));
     assert_eq!(repeated, rejected);
+    let statuses = supervisor
+        .statuses()
+        .unwrap_or_else(|error| unreachable!("creation statuses: {error:?}"));
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].draft_id, "launch-alpha");
+    assert_eq!(statuses[0].state, RoomCreationStateV1::NeedsAttention);
     assert_eq!(
         state
             .lock()

@@ -65,6 +65,35 @@ fn core() -> CoreRoomStateV1 {
         .unwrap_or_else(|error| unreachable!("fixture Core: {error}"))
 }
 
+fn two_seat_core() -> CoreRoomStateV1 {
+    let mut memberships = [(NAVIGATOR, "navigator"), (INSIDER, "insider")]
+        .map(|(member_id, role)| {
+            MembershipV1::new(
+                parsed(member_id),
+                parsed(member_id),
+                PrincipalKindV1::Agent,
+                MembershipStandingV1::Enabled,
+                AccessModeV1::Participant,
+                Some(role.to_owned()),
+            )
+            .unwrap_or_else(|error| unreachable!("two-seat Membership: {error}"))
+        })
+        .to_vec();
+    memberships.push(
+        MembershipV1::new(
+            parsed(OPERATOR),
+            parsed(OPERATOR),
+            PrincipalKindV1::Human,
+            MembershipStandingV1::Enabled,
+            AccessModeV1::Operator,
+            None,
+        )
+        .unwrap_or_else(|error| unreachable!("two-seat operator Membership: {error}")),
+    );
+    CoreRoomStateV1::active(memberships)
+        .unwrap_or_else(|error| unreachable!("two-seat Core: {error}"))
+}
+
 fn trace_for(registry: &PackRegistryV1) -> CoreTraceV1 {
     let request = PackGenesisRequestV1 {
         room_id: parsed(ROOM),
@@ -79,6 +108,22 @@ fn trace_for(registry: &PackRegistryV1) -> CoreTraceV1 {
         .unwrap_or_else(|error| unreachable!("checked Heist Genesis: {error}"));
     CoreTraceV1::create_from_retained_for_conformance(prepared)
         .unwrap_or_else(|error| unreachable!("registry-bound trace: {error}"))
+}
+
+fn two_seat_trace_for(registry: &PackRegistryV1) -> CoreTraceV1 {
+    let request = PackGenesisRequestV1 {
+        room_id: parsed(ROOM),
+        pack_digest: agent_heist_lobby_digest(),
+        configuration: canonical(CONFIG),
+        room_seed: parsed(SEED),
+        created_at: parsed("2026-08-23T12:00:00Z"),
+        initial_core_state: two_seat_core(),
+    };
+    let prepared = registry
+        .prepare_genesis_for_new_room(&request)
+        .unwrap_or_else(|error| unreachable!("checked two-seat Heist Genesis: {error}"));
+    CoreTraceV1::create_from_retained_for_conformance(prepared)
+        .unwrap_or_else(|error| unreachable!("two-seat registry-bound trace: {error}"))
 }
 
 fn phase(trace: &CoreTraceV1) -> String {
@@ -151,6 +196,32 @@ fn new_exact_revision_waits_in_lobby_without_timer_or_gameplay_side_effects() {
         None
     );
     assert_eq!(trace.head().room_seq().get(), 0);
+}
+
+#[test]
+fn selectable_revision_requires_navigator_and_insider_but_allows_absent_broker() {
+    let registry = builtin_agent_heist_registry()
+        .unwrap_or_else(|error| unreachable!("Agent Heist registry: {error}"));
+    let retained = registry
+        .load_retained(&agent_heist_lobby_digest())
+        .unwrap_or_else(|error| unreachable!("selectable Heist revision: {error}"));
+    let minima = retained
+        .descriptor()
+        .roles
+        .iter()
+        .map(|role| (role.role.as_str(), role.minimum))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(minima.get("navigator"), Some(&1));
+    assert_eq!(minima.get("insider"), Some(&1));
+    assert_eq!(minima.get("broker"), Some(&0));
+
+    let mut trace = two_seat_trace_for(&registry);
+    assert_eq!(phase(&trace), "lobby");
+    install(
+        &mut trace,
+        launch("01ARZ3NDEKTSV4RRFFQ69G5FA4", "2026-08-23T12:01:00Z"),
+    );
+    assert_eq!(phase(&trace), "briefing");
 }
 
 #[test]

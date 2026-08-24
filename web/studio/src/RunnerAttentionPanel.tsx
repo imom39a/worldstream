@@ -1,5 +1,6 @@
 import type {
   AgentSeatAttention,
+  ManagedAgentHostStatus,
   RunnerAttentionOperations,
   RunnerAttentionStatus,
   RunnerRestartOperation,
@@ -17,7 +18,7 @@ export function RunnerAttentionPanel({
 }) {
   return (
     <>
-      <section className="runner-attention" aria-labelledby="runner-attention-title">
+      <section className="runner-attention" id="runner-attention" aria-labelledby="runner-attention-title">
         <div className="runner-heading">
           <div>
             <p className="eyebrow">Operations · Agent execution</p>
@@ -42,6 +43,9 @@ export function RunnerAttentionPanel({
         )}
         {operations?.restart_attempts.map((attempt) => (
           <RestartRow key={attempt.operation_id} attempt={attempt} />
+        ))}
+        {operations?.managed_hosts.map((host) => (
+          <ManagedHostRow key={host.assignment_id} host={host} />
         ))}
       </section>
 
@@ -68,6 +72,22 @@ export function RunnerAttentionPanel({
         )}
       </section>
     </>
+  );
+}
+
+function ManagedHostRow({ host }: { host: ManagedAgentHostStatus }) {
+  return (
+    <article className={`runner-attention-row is-${host.state}`} role="status">
+      <div className="runner-instance-title">
+        <div><strong>{host.host_id}</strong><span>Managed reference · {host.host_revision}</span></div>
+        <span className={`freshness-chip is-${host.freshness}`}>{label(host.freshness)}</span>
+      </div>
+      <dl>
+        <Fact label="Host state" value={label(host.state)} />
+        <Fact label="Capacity" value={`${host.active_invocations} used · ${host.capacity - host.active_invocations} available`} />
+      </dl>
+      {host.failure ? <><p>{host.failure.message}</p><p>{host.failure.safe_action}</p></> : null}
+    </article>
   );
 }
 

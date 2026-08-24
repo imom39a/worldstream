@@ -2546,7 +2546,7 @@ mod tests {
                 migration_contract: MigrationContractV1 {
                     logical_history_id: "worldstream-storage-v1".to_owned(),
                     schema_contract_fingerprint: DigestV1::parse(
-                        "16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb"
+                        "a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26"
                             .to_owned(),
                     )?,
                     records: migrations,
@@ -2615,6 +2615,7 @@ mod tests {
             "activation_intents",
             "activation_operation_receipts",
             "semantic_receipts",
+            "external_input_preparations",
             "integrity_incidents",
         ]
         .into_iter()

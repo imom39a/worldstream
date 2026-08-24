@@ -42,11 +42,29 @@ export interface RunnerRestartOperation {
   next_action: string;
 }
 
+export interface ManagedAgentHostStatus {
+  schema: "worldstream/managed-agent-host-status/v1";
+  assignment_id: string;
+  host_id: string;
+  host_revision: string;
+  state: "stopped" | "starting" | "running" | "needs_attention";
+  ready: boolean;
+  capacity: number;
+  active_invocations: number;
+  freshness: "fresh" | "stale";
+  failure?: {
+    code: string;
+    message: string;
+    safe_action: string;
+  };
+}
+
 export interface RunnerAttentionOperations {
   schema: "worldstream/studio-runner-attention/v1";
   freshness: RunnerAttentionFreshness;
   observed_at_unix_ms: number | null;
   runners: RunnerAttentionStatus[];
+  managed_hosts: ManagedAgentHostStatus[];
   restart_attempts: RunnerRestartOperation[];
 }
 
@@ -170,16 +188,41 @@ async function loadJson<T>(
 
 export function isRunnerAttentionOperations(value: unknown): value is RunnerAttentionOperations {
   if (containsSensitiveField(value) || !isExactRecord(value, [
-    "schema", "freshness", "observed_at_unix_ms", "runners", "restart_attempts",
+    "schema", "freshness", "observed_at_unix_ms", "runners", "managed_hosts", "restart_attempts",
   ]) || value.schema !== "worldstream/studio-runner-attention/v1" ||
     !isFreshness(value.freshness) || !isObservedAt(value.observed_at_unix_ms) ||
     !isBoundedArray(value.runners, isRunnerStatus) ||
+    !isBoundedArray(value.managed_hosts, isManagedAgentHostStatus) ||
     !isBoundedArray(value.restart_attempts, isRunnerRestartOperation)) return false;
   if ((value.freshness === "unavailable") !== (value.observed_at_unix_ms === null)) return false;
   const runners = value.runners as RunnerAttentionStatus[];
+  const managedHosts = value.managed_hosts as ManagedAgentHostStatus[];
   const attempts = value.restart_attempts as RunnerRestartOperation[];
   return unique(runners.map((runner) => runner.runner_id))
+    && unique(managedHosts.map((host) => host.assignment_id))
     && unique(attempts.map((attempt) => attempt.operation_id));
+}
+
+function isManagedAgentHostStatus(value: unknown): value is ManagedAgentHostStatus {
+  if (!isRecord(value)) return false;
+  const keys = [
+    "schema", "assignment_id", "host_id", "host_revision", "state", "ready",
+    "capacity", "active_invocations", "freshness",
+  ];
+  const hasFailure = "failure" in value;
+  if (!isExactRecord(value, hasFailure ? [...keys, "failure"] : keys) ||
+    value.schema !== "worldstream/managed-agent-host-status/v1" ||
+    !isUlid(value.assignment_id) || !isIdentifier(value.host_id) ||
+    !isIdentifier(value.host_revision) ||
+    !["stopped", "starting", "running", "needs_attention"].includes(String(value.state)) ||
+    typeof value.ready !== "boolean" || !isPositiveCount(value.capacity) ||
+    !isCount(value.active_invocations) || Number(value.active_invocations) > Number(value.capacity) ||
+    !["fresh", "stale"].includes(String(value.freshness))) return false;
+  if (value.ready !== (value.state === "running" && value.freshness === "fresh")) return false;
+  if ((value.state === "running") !== (Number(value.active_invocations) === 1)) return false;
+  if (!hasFailure) return value.state !== "needs_attention";
+  return value.state === "needs_attention" && isExactRecord(value.failure, ["code", "message", "safe_action"])
+    && isIdentifier(value.failure.code) && isText(value.failure.message) && isText(value.failure.safe_action);
 }
 
 export function isTaskAgentAttention(value: unknown): value is TaskAgentAttention {

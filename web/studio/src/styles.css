@@ -195,3 +195,17 @@ header p:last-child { color: #738079; }
 .freshness-chip.is-stale { color: #9a4e18; }
 .freshness-chip.is-unavailable { color: #9b3f32; }
 .runner-heading small { display: block; margin-top: 6px; text-align: right; }
+.attention-inbox { margin: 24px 0; padding: 24px; border: 1px solid #d7dfdb; border-radius: 18px; background: rgba(255,255,255,.9); }
+.attention-inbox-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
+.attention-inbox-heading h2 { margin: 0 0 8px; }
+.attention-inbox-heading label { display: flex; gap: 8px; align-items: center; color: #586861; font-size: 12px; font-weight: 750; }
+.attention-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 20px; }
+.attention-item-list { display: grid; gap: 10px; }
+.attention-item { padding: 15px; border: 1px solid #e1e7e4; border-radius: 12px; background: #f8faf9; }
+.attention-item > div { display: flex; justify-content: space-between; gap: 12px; }
+.attention-item small { display: block; margin-top: 5px; color: #68756f; }
+.attention-item p { margin: 9px 0; color: #53645d; }
+.attention-item a { color: #176d51; font-weight: 800; }
+.attention-history { margin-top: 18px; color: #68756f; font-size: 12px; }
+.attention-boundary-note { margin: 18px 0 0; color: #68756f; font-size: 12px; }
+@media (max-width: 760px) { .attention-inbox-heading { display: block; } .attention-inbox-heading label { margin-top: 14px; } .attention-groups { grid-template-columns: 1fr; } }

@@ -82,6 +82,17 @@ function operations() {
       observed_at_unix_ms: 1_000,
       next_action: "No operator action is required.",
     }],
+    managed_hosts: [{
+      schema: "worldstream/managed-agent-host-status/v1",
+      assignment_id: "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+      host_id: "reference-agent-host",
+      host_revision: "r1",
+      state: "running",
+      ready: true,
+      capacity: 1,
+      active_invocations: 1,
+      freshness: "fresh",
+    }],
     restart_attempts: [restart()],
   };
 }

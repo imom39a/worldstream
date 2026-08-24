@@ -172,13 +172,13 @@ fn completion_ids_and_result_reconcile_exactly_across_restart() {
         .retain_lease(&prepared, &lease)
         .unwrap_or_else(|error| unreachable!("lease should retain: {error:?}"));
     let completion = ledger
-        .begin_completion(&lease, DIGEST, "completed")
+        .begin_completion(&lease, DIGEST, "handled")
         .unwrap_or_else(|error| unreachable!("completion should prepare: {error:?}"));
     drop(ledger);
 
     let restarted = open(&temporary);
     let replay = restarted
-        .begin_completion(&lease, DIGEST, "completed")
+        .begin_completion(&lease, DIGEST, "handled")
         .unwrap_or_else(|error| unreachable!("completion should replay: {error:?}"));
     assert_eq!(replay, completion);
     assert_eq!(
@@ -219,7 +219,7 @@ fn terminal_outcomes_are_durable_and_advanceable_after_restart() {
         .retain_lease(&prepared, &lease)
         .unwrap_or_else(|error| unreachable!("lease should retain: {error:?}"));
     ledger
-        .begin_completion(&lease, DIGEST, "completed")
+        .begin_completion(&lease, DIGEST, "handled")
         .unwrap_or_else(|error| unreachable!("completion should prepare: {error:?}"));
     ledger
         .retain_terminal(&lease, ActivationTerminalOutcomeV1::Stale)

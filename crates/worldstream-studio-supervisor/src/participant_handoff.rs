@@ -914,13 +914,16 @@ async fn local_cors(
         == Some(expected.as_str());
     if request.method() == Method::OPTIONS {
         if !origin_allowed || !valid_preflight(&request) {
-            return ParticipantHandoffErrorV1::OriginForbidden.into_response();
+            let mut response = ParticipantHandoffErrorV1::OriginForbidden.into_response();
+            apply_no_store(response.headers_mut());
+            return response;
         }
         let mut response = StatusCode::NO_CONTENT.into_response();
         apply_cors_headers(response.headers_mut(), expected);
         return response;
     }
     let mut response = next.run(request).await;
+    apply_no_store(response.headers_mut());
     if response.status() == StatusCode::UNAUTHORIZED
         && let Ok(cookie) = cleared_session_cookie()
     {
@@ -953,7 +956,10 @@ fn valid_preflight(request: &Request) -> bool {
             headers.split(',').all(|header| {
                 matches!(
                     header.trim().to_ascii_lowercase().as_str(),
-                    "content-type" | "x-worldstream-participant-handoff"
+                    "cache-control"
+                        | "pragma"
+                        | "content-type"
+                        | "x-worldstream-participant-handoff"
                 )
             })
         })
@@ -973,9 +979,19 @@ fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("Content-Type, X-WorldStream-Participant-Handoff"),
+        HeaderValue::from_static(
+            "Cache-Control, Pragma, Content-Type, X-WorldStream-Participant-Handoff",
+        ),
     );
     headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+    apply_no_store(headers);
+}
+
+fn apply_no_store(headers: &mut HeaderMap) {
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
 }
 
 async fn issue_handoff(

@@ -487,7 +487,7 @@ async fn allows_only_the_fixed_local_origins_through_browser_cors() {
                 .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                 .header(
                     header::ACCESS_CONTROL_REQUEST_HEADERS,
-                    "x-worldstream-participant-handoff",
+                    "cache-control, pragma, x-worldstream-participant-handoff",
                 )
                 .body(Body::empty())
                 .unwrap_or_else(|error| panic!("request: {error}")),
@@ -508,6 +508,52 @@ async fn allows_only_the_fixed_local_origins_through_browser_cors() {
             .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
             .and_then(|value| value.to_str().ok()),
         Some("true"),
+    );
+    assert_eq!(
+        preflight
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .and_then(|value| value.to_str().ok()),
+        Some("Cache-Control, Pragma, Content-Type, X-WorldStream-Participant-Handoff"),
+    );
+    assert_eq!(
+        preflight
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store, max-age=0"),
+    );
+
+    let unknown_header = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/api/v1/participant-console/handoffs:redeem")
+                .header(header::ORIGIN, CONSOLE_ORIGIN)
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(
+                    header::ACCESS_CONTROL_REQUEST_HEADERS,
+                    "cache-control, x-worldstream-private-routing",
+                )
+                .body(Body::empty())
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"));
+    assert_eq!(unknown_header.status(), StatusCode::FORBIDDEN);
+    assert!(
+        unknown_header
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none()
+    );
+    assert_eq!(
+        unknown_header
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store, max-age=0"),
     );
 
     let rejected = router

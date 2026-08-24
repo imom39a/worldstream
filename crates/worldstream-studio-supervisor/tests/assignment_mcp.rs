@@ -458,6 +458,12 @@ fn production_cli_accepts_only_launch_reference_and_ordinary_local_state() {
 
 #[test]
 fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("Runner fixture listener: {error}"));
+    let daemon = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("Runner fixture address: {error}"));
+    let runner_fixture = thread::spawn(move || serve_launch_runner_sessions(&listener, 2));
     let directory = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
     let state = directory.path().join("studio");
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
@@ -475,9 +481,7 @@ fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() 
             authority_reference,
             runner_authority_reference,
         },
-        "127.0.0.1:9410"
-            .parse()
-            .unwrap_or_else(|error| panic!("local daemon: {error}")),
+        daemon,
         Duration::from_millis(250),
     )
     .unwrap_or_else(|error| panic!("registry: {error:?}"));
@@ -515,7 +519,6 @@ fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() 
     .unwrap_or_else(|error| panic!("activation registration: {error}"));
     assert!(activation_registration.contains(RUNNER));
     assert!(!activation_registration.contains(BEARER));
-
     let first = open_registered_assignment_mcp(&state, &launch_reference)
         .unwrap_or_else(|error| panic!("open first: {error:?}"));
     assert!(open_registered_assignment_mcp(&state, &launch_reference).is_err());
@@ -542,10 +545,67 @@ fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() 
         restarted.list_assigned_tasks(json!({})),
         Err(assignment_mcp::AssignmentMcpErrorV1::AssignmentRevoked),
     );
+    drop(restarted);
     let replacement_reference = registry
         .issue(ASSIGNMENT)
         .unwrap_or_else(|error| panic!("replacement issue: {error:?}"));
     assert_ne!(replacement_reference, launch_reference);
+    runner_fixture
+        .join()
+        .unwrap_or_else(|_| panic!("Runner fixture thread"));
+}
+
+#[allow(clippy::result_large_err)]
+fn serve_launch_runner_sessions(listener: &TcpListener, sessions: usize) {
+    let expected_authorization = format!("Bearer wsb1:{}", "cd".repeat(32));
+    for _ in 0..sessions {
+        let (stream, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("accept Runner fixture: {error}"));
+        let expected = expected_authorization.clone();
+        let mut socket = accept_hdr(
+            stream,
+            move |request: &tungstenite::handshake::server::Request,
+                  mut response: tungstenite::handshake::server::Response| {
+                assert_eq!(request.uri().path(), "/v1/runner/stream");
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some(expected.as_str()),
+                );
+                response.headers_mut().insert(
+                    "Sec-WebSocket-Protocol",
+                    worldstream_protocol::WEBSOCKET_SUBPROTOCOL
+                        .parse()
+                        .unwrap_or_else(|error| panic!("Runner subprotocol: {error}")),
+                );
+                Ok(response)
+            },
+        )
+        .unwrap_or_else(|error| panic!("Runner fixture handshake: {error}"));
+        let _client_hello = socket
+            .read()
+            .unwrap_or_else(|error| panic!("read Runner client hello: {error}"));
+        send_fixture(
+            &mut socket,
+            "server.welcome",
+            &json!({
+                "session_id":"01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                "selected_protocol":worldstream_protocol::PROTOCOL_VERSION,
+                "server_version":"fixture",
+                "heartbeat_interval_ms":1000,
+                "maximum_message_bytes":worldstream_protocol::MAX_MESSAGE_BYTES,
+                "authenticated_principal":{"principal_id":"01ARZ3NDEKTSV4RRFFQ69G5FAY","kind":"agent"}
+            }),
+        );
+        let _runner_hello = socket
+            .read()
+            .unwrap_or_else(|error| panic!("read Runner hello: {error}"));
+        send_fixture(&mut socket, "runner.ready", &json!({"runner_id":RUNNER}));
+        while socket.read().is_ok() {}
+    }
 }
 
 #[test]
@@ -642,6 +702,9 @@ fn serve_reset_fixture(listener: &TcpListener, wrong_role: bool) {
     let (stream, _) = listener
         .accept()
         .unwrap_or_else(|error| panic!("accept fixture: {error}"));
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap_or_else(|error| panic!("fixture read timeout: {error}"));
     let mut socket = accept_hdr(stream, authorize_fixture_handshake)
         .unwrap_or_else(|error| panic!("fixture handshake: {error}"));
     let _hello = socket
@@ -672,8 +735,18 @@ fn serve_reset_fixture(listener: &TcpListener, wrong_role: bool) {
             eligibility_window: None,
         }],
     };
-    let projection_bytes =
-        serde_json::to_vec(&projection).unwrap_or_else(|error| panic!("projection JSON: {error}"));
+    let projection_bytes = serde_json::to_vec(&json!({
+        "action_offers": [{
+            "domain":"worldstream/action-offer/v1",
+            "action_type":"increment",
+            "payload_schema_digest":digest('a'),
+            "eligibility_window":null
+        }],
+        "authorized_core": &projection.core,
+        "projection": &projection.activity,
+        "projection_schema": "agent-heist/projection/v1",
+    }))
+    .unwrap_or_else(|error| panic!("projection JSON: {error}"));
     let canonical = worldstream_core::CanonicalJsonV1::parse(&projection_bytes)
         .and_then(|value| value.to_bytes())
         .unwrap_or_else(|error| panic!("projection canonical: {error}"));
@@ -702,7 +775,7 @@ fn serve_reset_fixture(listener: &TcpListener, wrong_role: bool) {
         &json!({
             "room_id":ROOM,"member_id":MEMBER,"room_head":fixture_head(),"room_health":"healthy",
             "integrity_generation":1,"baseline_frame_head":0,"reset_reason":"first_attach",
-            "projection_schema":worldstream_core::PROJECTION_SCHEMA_V1,
+            "projection_schema":"agent-heist/projection/v1",
             "projection":projection,"projection_hash":projection_hash
         }),
     );

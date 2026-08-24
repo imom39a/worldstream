@@ -7,6 +7,7 @@ import {
   loadAgentProfiles,
   publishAgentProfile,
   type AgentProfileCatalog,
+  type AgentProfileAssignmentCatalog,
   type AgentProfilePublishRequest,
 } from "./agentProfiles";
 import { createRoomDraft } from "./roomDrafts";
@@ -23,6 +24,7 @@ const catalog: AgentProfileCatalog = {
       kind: "model_provider",
       availability: "configured",
     }],
+    host_contract: { kind: "generic_mcp" },
   }],
 };
 
@@ -42,6 +44,21 @@ describe("Studio Agent Profile workflows", () => {
     }];
     const unsafeFetcher = vi.fn(async () => new Response(JSON.stringify(leaked), { status: 200 }));
     await expect(loadAgentProfiles(unsafeFetcher)).resolves.toBeNull();
+
+    const managed = structuredClone(catalog);
+    managed.profiles[0]!.host_contract = {
+      kind: "managed_reference",
+      host_contract_revision: "host-r1",
+      runner_template: { template_id: "reference-host", revision: "runner-r1" },
+      provider: "open_ai_compatible",
+      provider_address: "127.0.0.1:11434",
+      model_id: "bounded-model",
+    };
+    const managedFetcher = vi.fn(async () => new Response(JSON.stringify(managed), { status: 200 }));
+    await expect(loadAgentProfiles(managedFetcher)).resolves.toEqual(managed);
+    managed.profiles[0]!.host_contract.provider_address = "198.51.100.1:443";
+    const remoteFetcher = vi.fn(async () => new Response(JSON.stringify(managed), { status: 200 }));
+    await expect(loadAgentProfiles(remoteFetcher)).resolves.toBeNull();
   });
 
   it("selects one exact revision only for an Agent seat and changes no authority identity", () => {
@@ -72,7 +89,7 @@ describe("Studio Agent Profile workflows", () => {
   });
 
   it("keeps exact Membership binding and Runner execution binding as separate records", async () => {
-    const assignments = {
+    const assignments: AgentProfileAssignmentCatalog = {
       schema: "worldstream/studio-agent-profile-assignment-catalog/v1",
       assignments: [{
         schema: "worldstream/studio-agent-profile-assignment/v1",
@@ -92,6 +109,16 @@ describe("Studio Agent Profile workflows", () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify(assignments), { status: 200 }));
     await expect(loadAgentProfileAssignments(fetcher)).resolves.toEqual(assignments);
 
+    assignments.assignments[0]!.execution = {
+      kind: "managed_reference",
+      runner_id: "01ARZ3NDEKTSV4RRFFQ69G5FB4",
+      instance_id: "reference-host-01",
+      template_id: "reference-host",
+      template_revision: "runner-r1",
+    };
+    const managedFetcher = vi.fn(async () => new Response(JSON.stringify(assignments), { status: 200 }));
+    await expect(loadAgentProfileAssignments(managedFetcher)).resolves.toEqual(assignments);
+
     const merged = structuredClone(assignments);
     Object.assign(merged.assignments[0]!.membership, { runner_id: "01ARZ3NDEKTSV4RRFFQ69G5FB4" });
     const unsafeFetcher = vi.fn(async () => new Response(JSON.stringify(merged), { status: 200 }));
@@ -110,6 +137,7 @@ describe("Studio Agent Profile workflows", () => {
         kind: "model_provider",
         reference: "a".repeat(64),
       }],
+      host_contract: { kind: "generic_mcp" },
     };
     const published = {
       ...catalog.profiles[0]!,
@@ -161,6 +189,7 @@ describe("Studio Agent Profile workflows", () => {
         kind: "model_provider",
         reference: "",
       }],
+      host_contract: { kind: "generic_mcp" },
     });
   });
 });

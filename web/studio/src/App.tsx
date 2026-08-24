@@ -11,6 +11,8 @@ import type {
 } from "./activityPacks";
 import { RunnerOperations } from "./RunnerOperations";
 import { RunnerAttentionPanel } from "./RunnerAttentionPanel";
+import { AttentionInboxPanel } from "./AttentionInboxPanel";
+import type { AttentionInboxResponse } from "./attentionInbox";
 import type {
   RunnerAttentionOperations,
   TaskAgentAttention,
@@ -54,6 +56,10 @@ export interface AppProps {
   runnerAttention?: RunnerAttentionOperations | null;
   taskAgentAttention?: TaskAgentAttention | null;
   onRestartApprovedRunner?: (instanceId: string) => void;
+  attentionInbox?: AttentionInboxResponse | null;
+  attentionNotificationsEnabled?: boolean;
+  attentionNotificationsAvailable?: boolean;
+  onAttentionNotificationPreference?: (enabled: boolean) => void;
   activityPackCatalog?: ActivityPackCatalog | null;
   activityPackDetail?: ActivityPackDetailResponse | null;
   inspectedActivityPackDigest?: string | null;
@@ -110,6 +116,10 @@ export function App({
   runnerAttention = null,
   taskAgentAttention = null,
   onRestartApprovedRunner,
+  attentionInbox = null,
+  attentionNotificationsEnabled = false,
+  attentionNotificationsAvailable = false,
+  onAttentionNotificationPreference,
   activityPackCatalog = null,
   activityPackDetail = null,
   inspectedActivityPackDigest = null,
@@ -183,6 +193,13 @@ export function App({
           </div>
           <StatusBadge connected={connected} loading={loading} />
         </header>
+
+        <AttentionInboxPanel
+          inbox={attentionInbox}
+          notificationsEnabled={attentionNotificationsEnabled}
+          notificationsAvailable={attentionNotificationsAvailable}
+          onNotificationPreference={onAttentionNotificationPreference}
+        />
 
         <section
           className={`daemon-card ${connected ? "is-connected" : "is-unavailable"}`}

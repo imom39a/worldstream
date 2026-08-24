@@ -5055,6 +5055,7 @@ mod tests {
                  CREATE TABLE activation_intents(activation_id TEXT, room_id TEXT, cause_room_seq INTEGER, decision_id TEXT, target_member_id TEXT, reason_code TEXT, deduplication_key TEXT, priority INTEGER, semantic_deadline TEXT, policy_revision INTEGER, state TEXT, intent_generation INTEGER, lease_generation INTEGER, runner_id TEXT, claim_id TEXT, lease_until TEXT, context_hash BLOB, context_bytes BLOB, context_retired INTEGER);\
                  CREATE TABLE activation_operation_receipts(room_id TEXT, operation_id TEXT, operation_kind TEXT, canonical_request_hash BLOB, activation_id TEXT, result_code TEXT, result_bytes BLOB, context_hash BLOB, context_bytes BLOB);\
                  CREATE TABLE semantic_receipts(room_id TEXT, operation_kind TEXT, operation_identity_bytes BLOB, codec_id TEXT, canonical_request_hash BLOB, basis_complete_head_bytes BLOB, semantic_input_bytes BLOB, semantic_time_bytes BLOB, resolution_kind TEXT, transition_seq INTEGER, stored_resolution_bytes BLOB, committed_at TEXT);\
+                 CREATE TABLE external_input_preparations(operation_identity_bytes BLOB, canonical_request_hash BLOB, recorded_at TEXT);\
                  CREATE TABLE room_snapshots(room_id TEXT, room_seq INTEGER, snapshot_schema_version TEXT,\
                  genesis_or_transition_hash TEXT, core_schema_version TEXT, pack_digest TEXT,\
                  core_state_hash TEXT, activity_state_hash TEXT, authoritative_state_hash TEXT,\
@@ -5086,7 +5087,8 @@ mod tests {
                  (8, '0009-deployment-identities-v1', 'blake3:2a9eed1343ed423c12593b19e922ffeb44e009432131f018ef3a3b440213debb'),\
                  (9, '0010-transfer-recovery-completeness-v1', 'blake3:e0a4033bba6de7949af577a9e75b4d1994df61b250f27f013f3c3667afe862b1'),\
                  (10, '0011-transfer-lifecycle-and-resource-identity-v1', 'blake3:cd0fe750ca3ba68d2dad7254a60dddb887912d40db270e5562a19b3b3cced0a3'),\
-                 (11, '0012-transfer-backup-file-identity-v1', 'blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9');\
+                 (11, '0012-transfer-backup-file-identity-v1', 'blake3:4605547211cde35f16fecf1d156b91d9ca24c39fc24b9fe875f29dcb491965b9'),\
+                 (12, '0013-external-input-preparations-v1', 'blake3:2097e928196db3f2c572818b4ac87e436512df6f2e9f0cd098521a90366651f0');\
                  INSERT INTO canonical_export_metadata VALUES (1, 'deployment/fixture', 7);",
             )
             .map_err(|_| NativeSqliteError::NativeOperationFailed { operation: "fixture" })?;
@@ -5485,7 +5487,7 @@ mod tests {
             migration_contract: MigrationContractV1 {
                 logical_history_id: "worldstream-storage-v1".to_owned(),
                 schema_contract_fingerprint: DigestV1::parse(
-                    "16de6f848ff61583a6b0ad49c0aeeb15e0c6e8a696e21bbe61f41e2d06ad7fcb".to_owned(),
+                    "a7adbaff70625c037c84e066314db5b62c14f9243d2995c1fddba7f2284dce26".to_owned(),
                 )
                 .unwrap(),
                 records,
@@ -6075,7 +6077,7 @@ mod tests {
         assert!(TransitionV1::from_canonical_bytes(&records[1].bytes).is_ok());
         assert_eq!(evidence.newest_valid_snapshots.len(), 1);
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(11));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(12));
         assert_eq!(evidence.pack_metadata, None);
         assert_eq!(evidence.resource_metadata, None);
         let _ = fs::remove_file(path);
@@ -6310,7 +6312,7 @@ mod tests {
         let path = create_fixture("restore-evidence-absent-metadata")?;
         let evidence = extract_restore_evidence(&path, NativeSqliteLimits::default())?;
         assert_eq!(evidence.storage_epoch, Some(7));
-        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(11));
+        assert_eq!(evidence.migration_metadata.as_ref().map(Vec::len), Some(12));
         assert!(evidence.pack_metadata.is_none());
         assert!(evidence.resource_metadata.is_none());
         let readiness = assess_restore_readiness(&evidence);

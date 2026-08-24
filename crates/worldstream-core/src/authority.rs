@@ -2973,7 +2973,39 @@ impl AuthorityChangeReceiptV1 {
         resulting_generation: u64,
         changed_at: AuthorityCheckedAt,
     ) -> Result<Self, AuthorityStoreErrorV1> {
-        if compare_timestamp_text(changed_at.as_str(), change.authorized_at.as_str()).is_lt() {
+        Self::from_change(change, result, resulting_generation, changed_at, true)
+    }
+
+    /// Reconstructs an exact durable receipt for an idempotent retry.
+    ///
+    /// A retained change necessarily predates a later retry's authorization
+    /// sample. Storage adapters must call this only after exact change-ID,
+    /// request-hash, actor, target, and audit comparison against immutable
+    /// durable rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidChange` when the retained result, target, or generation
+    /// cannot describe the exact retried command.
+    pub fn from_retained_change(
+        change: &PreparedAuthorityChangeV1,
+        result: AuthorityChangeResultV1,
+        resulting_generation: u64,
+        changed_at: AuthorityCheckedAt,
+    ) -> Result<Self, AuthorityStoreErrorV1> {
+        Self::from_change(change, result, resulting_generation, changed_at, false)
+    }
+
+    fn from_change(
+        change: &PreparedAuthorityChangeV1,
+        result: AuthorityChangeResultV1,
+        resulting_generation: u64,
+        changed_at: AuthorityCheckedAt,
+        require_fresh_commit_time: bool,
+    ) -> Result<Self, AuthorityStoreErrorV1> {
+        if require_fresh_commit_time
+            && compare_timestamp_text(changed_at.as_str(), change.authorized_at.as_str()).is_lt()
+        {
             return Err(AuthorityStoreErrorV1::InvalidChange);
         }
         let (expected_result, target) = match change.command() {

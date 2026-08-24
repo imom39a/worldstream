@@ -138,5 +138,7 @@ reference with locally provisioned values):
 ```
 
 Runner instance lifecycle is operational only. Runner authority remains
-separate from participant Action authority, and the Supervisor never starts a
-model or mutates Authoritative Room State.
+separate from participant Action authority. The managed reference Agent Host
+is the only post-MVP workflow in which the Supervisor starts a model process;
+model execution never moves into `worldstreamd`, and the Supervisor never
+mutates Authoritative Room State.

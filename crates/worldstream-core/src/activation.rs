@@ -13,6 +13,52 @@ use crate::{
     MemberId, RoomSequenceV1, TimerScheduledFor, canonical::encode,
 };
 
+const ACTIVATION_ID_DOMAIN_V1: &str = "worldstream/activation-id/v1";
+const CROCKFORD_BASE32: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+#[derive(Serialize)]
+struct ActivationIdInputV1<'a> {
+    domain: &'static str,
+    cause_room_seq: u64,
+    target_member_id: &'a str,
+    deduplication_key: &'a str,
+}
+
+/// Derives the stable opaque ULID-shaped identity of one canonical Attention.
+///
+/// The identifier is deterministic for recovery, but its 128 hash-derived
+/// bits do not embed the Membership or pack-owned deduplication text.
+///
+/// # Errors
+///
+/// Returns an error if the canonical domain-separated input cannot be encoded.
+pub fn activation_id_for_attention_v1(
+    cause_room_seq: RoomSequenceV1,
+    target_member_id: &MemberId,
+    deduplication_key: &str,
+) -> Result<String, CanonicalJsonError> {
+    let input = CanonicalJsonV1::from_serialize(&ActivationIdInputV1 {
+        domain: ACTIVATION_ID_DOMAIN_V1,
+        cause_room_seq: cause_room_seq.get(),
+        target_member_id: target_member_id.as_str(),
+        deduplication_key,
+    })?
+    .to_bytes()?;
+    let digest = blake3::hash(&input);
+    let mut value_bytes = [0_u8; 16];
+    value_bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    let mut value = u128::from_be_bytes(value_bytes);
+    let mut encoded = [b'0'; 26];
+    for position in (0..encoded.len()).rev() {
+        let index =
+            usize::try_from(value & 31).unwrap_or_else(|_| unreachable!("five bits fit usize"));
+        encoded[position] = CROCKFORD_BASE32[index];
+        value >>= 5;
+    }
+    Ok(String::from_utf8(encoded.to_vec())
+        .unwrap_or_else(|_| unreachable!("Crockford alphabet is valid UTF-8")))
+}
+
 /// One deterministic Attention Signal normalized from pack output.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

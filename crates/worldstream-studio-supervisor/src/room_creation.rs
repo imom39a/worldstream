@@ -36,6 +36,7 @@ use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
 const OPERATION_SCHEMA_V1: &str = "worldstream/studio-room-creation-operation/v1";
 const RESPONSE_BINDING_DOMAIN_V1: &str = "worldstream/studio-room-creation-response/v1";
 const MAX_OPERATION_BYTES: usize = 256 * 1024;
+const MAX_OPERATIONS: usize = 256;
 
 /// Durable operation states visible to Studio.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -324,6 +325,52 @@ impl RoomCreationSupervisorV1 {
         self.load_unlocked(draft_id)
     }
 
+    /// Lists every retained browser-safe creation status in stable draft order.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for malformed, unexpected, excessive, or unavailable
+    /// protected operation records.
+    pub fn statuses(&self) -> Result<Vec<RoomCreationStatusV1>, RoomCreationErrorV1> {
+        let _guard = self.lock();
+        let mut draft_ids = Vec::new();
+        for entry in
+            fs::read_dir(self.root.as_ref()).map_err(|_| RoomCreationErrorV1::Unavailable)?
+        {
+            let path = entry.map_err(|_| RoomCreationErrorV1::Unavailable)?.path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            if name.starts_with('.')
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+            {
+                continue;
+            }
+            let draft_id = name
+                .strip_suffix(".json")
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            validate_draft_id(draft_id)?;
+            draft_ids.push(draft_id.to_owned());
+            if draft_ids.len() > MAX_OPERATIONS {
+                return Err(RoomCreationErrorV1::Unavailable);
+            }
+        }
+        draft_ids.sort();
+        if draft_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(RoomCreationErrorV1::Unavailable);
+        }
+        draft_ids
+            .into_iter()
+            .map(|draft_id| {
+                self.load_unlocked(&draft_id)
+                    .map(RoomCreationStatusV1::from)
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub fn fail_before_receipt_once_for_test(&self) {
         self.fail_before_receipt_once.store(true, Ordering::SeqCst);
@@ -464,11 +511,11 @@ pub fn room_creation_router(supervisor: RoomCreationSupervisorV1) -> Router {
     Router::new()
         .route("/api/v1/room-creations/{draft_id}", get(creation_status))
         .route(
-            "/api/v1/room-creations/{draft_id}:start",
+            "/api/v1/room-creations/{draft_id}/start",
             post(start_creation),
         )
         .route(
-            "/api/v1/room-creations/{draft_id}:retry",
+            "/api/v1/room-creations/{draft_id}/retry",
             post(retry_creation),
         )
         .with_state(supervisor)

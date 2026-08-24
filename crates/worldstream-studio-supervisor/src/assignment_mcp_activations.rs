@@ -7,7 +7,7 @@
 use std::{
     fmt,
     net::{SocketAddr, TcpStream},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,7 +33,6 @@ use worldstream_protocol::{
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_LABEL_BYTES: usize = 256;
-const MAX_DISPOSITION_BYTES: usize = 128;
 const MAX_RUNNER_SESSION_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RUNNER_SESSION_MESSAGES: usize = 64;
 const MAX_LEASE_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -898,7 +897,26 @@ pub struct ActivationCompletionArgumentsV1 {
     pub activation_cursor: u64,
     pub lease_generation: u64,
     pub context_hash: String,
-    pub disposition: String,
+    pub disposition: ActivationCompletionDispositionV1,
+}
+
+/// Closed disposition accepted by the daemon's Activation completion protocol.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationCompletionDispositionV1 {
+    Handled,
+    Declined,
+    Failed,
+}
+
+impl ActivationCompletionDispositionV1 {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Handled => "handled",
+            Self::Declined => "declined",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// Assignment-scoped generic Activation tools.
@@ -1017,7 +1035,7 @@ where
                 let request_hash = completion_request_hash(&arguments)?;
                 let prepared = self
                     .ledger
-                    .begin_completion(&lease, &request_hash, &arguments.disposition)
+                    .begin_completion(&lease, &request_hash, arguments.disposition.as_str())
                     .map_err(map_ledger_error)?;
                 (lease, prepared)
             }
@@ -1027,7 +1045,7 @@ where
                 let request_hash = completion_request_hash(&arguments)?;
                 if !prepared.matches_lease(&lease)
                     || prepared.canonical_request_hash() != request_hash
-                    || prepared.disposition() != arguments.disposition
+                    || prepared.disposition() != arguments.disposition.as_str()
                 {
                     return Err(ActivationToolErrorV1::IdempotencyConflict);
                 }
@@ -1281,12 +1299,15 @@ impl ActivationToolErrorV1 {
     }
 }
 
-/// Fixed-loopback production Runner transport. Each method reconnects and
-/// replays the stable durable operation identity supplied by the ledger.
+/// Fixed-loopback production Runner transport. One authenticated Runner
+/// session is retained across operations and re-established on transport
+/// failure before replaying the stable durable operation identity supplied by
+/// the ledger.
 #[derive(Clone)]
 pub struct FixedDaemonRunnerActivationGatewayV1 {
     address: SocketAddr,
     timeout: Duration,
+    connection: Arc<Mutex<Option<WebSocket<TcpStream>>>>,
 }
 
 impl FixedDaemonRunnerActivationGatewayV1 {
@@ -1302,7 +1323,26 @@ impl FixedDaemonRunnerActivationGatewayV1 {
         if !address.ip().is_loopback() || timeout.is_zero() || timeout > Duration::from_secs(30) {
             return Err(RunnerActivationGatewayErrorV1::InvalidData);
         }
-        Ok(Self { address, timeout })
+        Ok(Self {
+            address,
+            timeout,
+            connection: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Establishes and retains the exact sealed Runner session without issuing
+    /// an Activation operation. Helper startup uses this handshake as the
+    /// production Runner-presence boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed transport, authority, availability, or validation
+    /// failure when the exact Runner session cannot be established.
+    pub fn establish(
+        &self,
+        authority: &AssignedRunnerActivationAuthorityV1,
+    ) -> Result<(), RunnerActivationGatewayErrorV1> {
+        self.with_connection(authority, |_, _| Ok(()))
     }
 
     fn connect(
@@ -1325,7 +1365,7 @@ impl FixedDaemonRunnerActivationGatewayV1 {
                 .map_err(|_| RunnerActivationGatewayErrorV1::InvalidData)?;
         let request = http::Request::builder()
             .method("GET")
-            .uri(format!("ws://{}/v1/stream", self.address))
+            .uri(format!("ws://{}/v1/runner/stream", self.address))
             .header("Host", self.address.to_string())
             .header("Authorization", authorization)
             .header("Sec-WebSocket-Protocol", WEBSOCKET_SUBPROTOCOL)
@@ -1402,6 +1442,43 @@ impl FixedDaemonRunnerActivationGatewayV1 {
         }
         Ok((socket, budget))
     }
+
+    fn with_connection<T>(
+        &self,
+        authority: &AssignedRunnerActivationAuthorityV1,
+        operation: impl FnOnce(
+            &mut WebSocket<TcpStream>,
+            &mut RunnerReadBudgetV1,
+        ) -> Result<T, RunnerActivationGatewayErrorV1>,
+    ) -> Result<T, RunnerActivationGatewayErrorV1> {
+        let mut retained = self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if retained.is_none() {
+            let (socket, _) = self.connect(authority)?;
+            *retained = Some(socket);
+        }
+        let mut budget = RunnerReadBudgetV1::new(self.timeout);
+        let result = operation(
+            retained
+                .as_mut()
+                .ok_or(RunnerActivationGatewayErrorV1::Unavailable)?,
+            &mut budget,
+        );
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error,
+                RunnerActivationGatewayErrorV1::Disconnected
+                    | RunnerActivationGatewayErrorV1::Unavailable
+                    | RunnerActivationGatewayErrorV1::Revoked
+                    | RunnerActivationGatewayErrorV1::InvalidData
+            )
+        }) {
+            retained.take();
+        }
+        result
+    }
 }
 
 impl fmt::Debug for FixedDaemonRunnerActivationGatewayV1 {
@@ -1419,27 +1496,27 @@ impl RunnerActivationGatewayV1 for FixedDaemonRunnerActivationGatewayV1 {
         if operation_id.parse::<UlidString>().is_err() {
             return Err(RunnerActivationGatewayErrorV1::InvalidData);
         }
-        let (mut socket, mut budget) = self.connect(authority)?;
-        send_runner_message(
-            &mut socket,
-            "activation.offer",
-            &ActivationOfferRequest {
-                operation_id: operation_id.to_owned(),
-                runner_id: authority.runner_id().to_owned(),
-                room_id: authority.room_id().to_owned(),
-                member_id: authority.member_id().to_owned(),
-            },
-        )?;
-        let reply: ActivationOffers =
-            read_runner_type(&mut socket, &mut budget, "activation.offers")?;
-        if reply.operation_id != operation_id || reply.runner_id != authority.runner_id() {
-            return Err(RunnerActivationGatewayErrorV1::InvalidData);
-        }
-        for offer in &reply.offers {
-            validate_offer_scope(offer, authority)
-                .map_err(|_| RunnerActivationGatewayErrorV1::Revoked)?;
-        }
-        Ok(reply.offers)
+        self.with_connection(authority, |socket, budget| {
+            send_runner_message(
+                socket,
+                "activation.offer",
+                &ActivationOfferRequest {
+                    operation_id: operation_id.to_owned(),
+                    runner_id: authority.runner_id().to_owned(),
+                    room_id: authority.room_id().to_owned(),
+                    member_id: authority.member_id().to_owned(),
+                },
+            )?;
+            let reply: ActivationOffers = read_runner_type(socket, budget, "activation.offers")?;
+            if reply.operation_id != operation_id || reply.runner_id != authority.runner_id() {
+                return Err(RunnerActivationGatewayErrorV1::InvalidData);
+            }
+            for offer in &reply.offers {
+                validate_offer_scope(offer, authority)
+                    .map_err(|_| RunnerActivationGatewayErrorV1::Revoked)?;
+            }
+            Ok(reply.offers)
+        })
     }
 
     fn claim(
@@ -1452,19 +1529,20 @@ impl RunnerActivationGatewayV1 for FixedDaemonRunnerActivationGatewayV1 {
             .ok_or(RunnerActivationGatewayErrorV1::InvalidData)?;
         validate_offer_scope(offer, authority)
             .map_err(|_| RunnerActivationGatewayErrorV1::Revoked)?;
-        let (mut socket, mut budget) = self.connect(authority)?;
-        send_runner_message(
-            &mut socket,
-            "activation.claim",
-            &ActivationClaim {
-                activation_id: offer.activation_id.clone(),
-                runner_id: authority.runner_id().to_owned(),
-                claim_id: prepared.claim_id().to_owned(),
-                requested_lease_ms: offer.lease_duration_ms,
-            },
-        )?;
         let reply: ActivationOperationReply =
-            read_runner_type(&mut socket, &mut budget, "activation.claimed")?;
+            self.with_connection(authority, |socket, budget| {
+                send_runner_message(
+                    socket,
+                    "activation.claim",
+                    &ActivationClaim {
+                        activation_id: offer.activation_id.clone(),
+                        runner_id: authority.runner_id().to_owned(),
+                        claim_id: prepared.claim_id().to_owned(),
+                        requested_lease_ms: offer.lease_duration_ms,
+                    },
+                )?;
+                read_runner_type(socket, budget, "activation.claimed")
+            })?;
         validate_operation_reply(
             &reply,
             authority,
@@ -1520,23 +1598,24 @@ impl RunnerActivationGatewayV1 for FixedDaemonRunnerActivationGatewayV1 {
         if lease.assignment_id() != authority.assignment_id() || !prepared.matches_lease(lease) {
             return Err(RunnerActivationGatewayErrorV1::InvalidData);
         }
-        let (mut socket, mut budget) = self.connect(authority)?;
-        send_runner_message_with_request_id(
-            &mut socket,
-            "activation.complete",
-            prepared.remote_request_id(),
-            &ActivationLeaseOperation {
-                activation_id: lease.activation_id().to_owned(),
-                runner_id: authority.runner_id().to_owned(),
-                claim_id: lease.claim_id().to_owned(),
-                operation_id: prepared.operation_id().to_owned(),
-                lease_generation: lease.lease_generation(),
-                requested_lease_ms: None,
-                disposition: Some(prepared.disposition().to_owned()),
-            },
-        )?;
         let reply: ActivationOperationReply =
-            read_runner_type(&mut socket, &mut budget, "activation.completed")?;
+            self.with_connection(authority, |socket, budget| {
+                send_runner_message_with_request_id(
+                    socket,
+                    "activation.complete",
+                    prepared.remote_request_id(),
+                    &ActivationLeaseOperation {
+                        activation_id: lease.activation_id().to_owned(),
+                        runner_id: authority.runner_id().to_owned(),
+                        claim_id: lease.claim_id().to_owned(),
+                        operation_id: prepared.operation_id().to_owned(),
+                        lease_generation: lease.lease_generation(),
+                        requested_lease_ms: None,
+                        disposition: Some(prepared.disposition().to_owned()),
+                    },
+                )?;
+                read_runner_type(socket, budget, "activation.completed")
+            })?;
         validate_operation_reply(
             &reply,
             authority,
@@ -1639,6 +1718,14 @@ fn read_runner_type<T: DeserializeOwned>(
     budget: &mut RunnerReadBudgetV1,
     expected: &str,
 ) -> Result<T, RunnerActivationGatewayErrorV1> {
+    read_runner_type_inner(socket, budget, expected)
+}
+
+fn read_runner_type_inner<T: DeserializeOwned>(
+    socket: &mut WebSocket<TcpStream>,
+    budget: &mut RunnerReadBudgetV1,
+    expected: &str,
+) -> Result<T, RunnerActivationGatewayErrorV1> {
     loop {
         if Instant::now() >= budget.deadline
             || budget.messages >= MAX_RUNNER_SESSION_MESSAGES
@@ -1656,6 +1743,13 @@ fn read_runner_type<T: DeserializeOwned>(
                 budget.messages += 1;
                 let envelope = decode_envelope::<Value>(text.as_bytes())
                     .map_err(|_| RunnerActivationGatewayErrorV1::InvalidData)?;
+                if envelope.message_type == "server.ping" {
+                    if !matches!(&envelope.body, Value::Object(body) if body.is_empty()) {
+                        return Err(RunnerActivationGatewayErrorV1::InvalidData);
+                    }
+                    send_runner_message(socket, "client.pong", &serde_json::json!({}))?;
+                    continue;
+                }
                 if envelope.message_type == "error" {
                     return Err(classify_daemon_error(envelope.body));
                 }
@@ -1759,7 +1853,18 @@ pub fn canonical_activation_context_hash_v1(
     let room_head: CompleteHeadV1 =
         serde_json::from_value(serde_json::to_value(&context.room_head).map_err(|_| ())?)
             .map_err(|_| ())?;
-    let projection_bytes = canonical_bytes(&context.projection)?;
+    // The protocol Projection is a transport DTO. Core hashes the exact
+    // provider-neutral Pack View shape, so reconstruct that shape before
+    // validating the Invocation Context rather than hashing the lossy wire
+    // field names (`core`/`activity`). This is the same closed conversion used
+    // for membership Projection resets.
+    let projection_view = serde_json::json!({
+        "action_offers": &projection.action_offers,
+        "authorized_core": &projection.core,
+        "projection": &projection.activity,
+        "projection_schema": &context.projection_schema,
+    });
+    let projection_bytes = canonical_bytes(&projection_view)?;
     let action_offers_bytes = canonical_bytes(&context.action_offers)?;
     let runner_budget_bytes = canonical_bytes(&context.runner_budget)?;
     let runner_limits_bytes = canonical_bytes(&context.runner_limits)?;
@@ -1886,7 +1991,6 @@ fn validate_completion_arguments(
     if arguments.activation_cursor == 0
         || arguments.lease_generation == 0
         || !valid_digest(&arguments.context_hash)
-        || !bounded_disposition(&arguments.disposition)
     {
         return Err(ActivationToolErrorV1::InvalidArguments);
     }
@@ -1963,9 +2067,7 @@ fn bounded_label(value: &str) -> bool {
 }
 
 fn bounded_disposition(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_DISPOSITION_BYTES
-        && !value.chars().any(char::is_control)
+    matches!(value, "handled" | "declined" | "failed")
 }
 
 fn valid_digest(value: &str) -> bool {

@@ -20,7 +20,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use worldstream_protocol::{BearerWireV1, UlidString};
+use worldstream_protocol::{BearerWireV1, PackReference, UlidString};
 use worldstream_runtime::{create_owner_only_file, prepare_data_directory};
 use zeroize::Zeroize as _;
 
@@ -956,6 +956,45 @@ impl RunnerSupervisorV1 {
         })
     }
 
+    /// Resolves one exact approved reference-host launch target without
+    /// requiring it to be running or binding Runner authority into its process.
+    #[must_use]
+    pub(crate) fn managed_reference_launch_target(
+        &self,
+        template_id: &str,
+        template_revision: &str,
+        pack: &PackReference,
+    ) -> Option<RunnerInstanceStatusV1> {
+        self.statuses().instances.into_iter().find(|instance| {
+            instance.template_id == template_id
+                && instance.template_revision == template_revision
+                && matches!(
+                    instance.state,
+                    RunnerInstanceStateV1::Stopped | RunnerInstanceStateV1::Running
+                )
+                && instance.compatibility.iter().any(|rule| {
+                    rule.activity_pack_id == pack.id && rule.exact_revisions.contains(&pack.version)
+                })
+                && self.task_runner_binding_available(&instance.instance_id)
+        })
+    }
+
+    pub(crate) fn managed_reference_executable(
+        &self,
+        instance_id: &str,
+        template_id: &str,
+        template_revision: &str,
+    ) -> Option<PathBuf> {
+        let (manifest, _) = self.registry.template_for_instance(instance_id)?;
+        if manifest.template_id != template_id
+            || manifest.revision != template_revision
+            || executable_digest(&manifest.executable.path).ok()? != manifest.executable.blake3
+        {
+            return None;
+        }
+        Some(manifest.executable.path.clone())
+    }
+
     /// Durably binds and delivers one exact provisioned Runner identity and authority.
     ///
     /// An already-bound instance accepts only the identical identity/reference pair.
@@ -1586,7 +1625,7 @@ mod tests {
     use http_body_util::BodyExt as _;
     use tempfile::TempDir;
     use tower::ServiceExt as _;
-    use worldstream_protocol::BearerWireV1;
+    use worldstream_protocol::{BearerWireV1, PackReference};
 
     use super::{
         CompatibilityV1, ManagedRunner, ManagedRunnerBindingErrorV1, ProcessExit,
@@ -1636,6 +1675,30 @@ mod tests {
             registry.compatibility("local-mcp-helper", "r2", "agent-heist", "1.1"),
             CompatibilityV1::Compatible
         );
+    }
+
+    #[test]
+    fn exact_dormant_reference_host_is_selectable_without_runner_bearer_binding() {
+        let fixture = Fixture::new();
+        fixture.write_manifest("Local MCP Helper", "r2", &["1.1"]);
+        let supervisor = fixture.supervisor(FakeBackend::healthy());
+        let selected = supervisor
+            .managed_reference_launch_target(
+                "local-mcp-helper",
+                "r2",
+                &PackReference {
+                    id: "agent-heist".to_owned(),
+                    version: "1.1".to_owned(),
+                    digest:
+                        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                },
+            )
+            .unwrap_or_else(|| unreachable!("exact stopped reference host"));
+
+        assert_eq!(selected.instance_id, "local-mcp-01");
+        assert_eq!(selected.state, RunnerInstanceStateV1::Stopped);
+        assert!(supervisor.task_runner_binding_available(&selected.instance_id));
     }
 
     #[tokio::test]

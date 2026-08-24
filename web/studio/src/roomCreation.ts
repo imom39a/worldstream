@@ -56,7 +56,7 @@ export async function requestRoomCreation(
 ): Promise<RoomCreationStatus | null> {
   if (!isIdentifier(draftId)) return null;
   try {
-    const response = await fetcher(`/api/v1/room-creations/${draftId}:${action}`, {
+    const response = await fetcher(`/api/v1/room-creations/${draftId}/${action}`, {
       method: "POST",
       headers: { accept: "application/json" },
     });

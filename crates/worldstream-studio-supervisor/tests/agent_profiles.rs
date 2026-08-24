@@ -4,7 +4,9 @@
 mod secrets;
 
 mod room_drafts {
-    pub use worldstream_studio_supervisor::room_drafts::AgentProfileRevisionReferenceV1;
+    pub use worldstream_studio_supervisor::room_drafts::{
+        AgentProfileRevisionReferenceV1, RunnerTemplateRevisionReferenceV1,
+    };
 }
 
 #[path = "../src/agent_profiles.rs"]
@@ -42,6 +44,7 @@ fn revision(reference: secrets::SecretReferenceV1, revision: &str) -> AgentProfi
             kind: SecretKindV1::ModelProvider,
             reference,
         }],
+        host_contract: agent_profiles::AgentHostContractV1::default(),
     }
 }
 

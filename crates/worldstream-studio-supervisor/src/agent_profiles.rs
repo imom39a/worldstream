@@ -27,7 +27,7 @@ use worldstream_runtime::{
 };
 
 use crate::{
-    room_drafts::AgentProfileRevisionReferenceV1,
+    room_drafts::{AgentProfileRevisionReferenceV1, RunnerTemplateRevisionReferenceV1},
     secrets::{FileSecretVaultV1, SecretAvailabilityV1, SecretKindV1, SecretReferenceV1},
 };
 
@@ -59,6 +59,30 @@ pub struct AgentProfileRevisionV1 {
     pub display_name: String,
     pub non_secret_configuration: BTreeMap<String, String>,
     pub secret_settings: Vec<AgentProfileSecretSettingV1>,
+    #[serde(default)]
+    pub host_contract: AgentHostContractV1,
+}
+
+/// Exact execution contract pinned by one immutable Agent Profile revision.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentHostContractV1 {
+    #[default]
+    GenericMcp,
+    ManagedReference {
+        host_contract_revision: String,
+        runner_template: RunnerTemplateRevisionReferenceV1,
+        provider: ManagedReferenceProviderV1,
+        provider_address: std::net::SocketAddr,
+        model_id: String,
+    },
+}
+
+/// Closed provider adapter supported by the post-MVP reference host.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedReferenceProviderV1 {
+    OpenAiCompatible,
 }
 
 /// Browser-safe state of one required secret setting.
@@ -88,6 +112,7 @@ pub struct AgentProfileRevisionViewV1 {
     pub display_name: String,
     pub non_secret_configuration: BTreeMap<String, String>,
     pub secret_settings: Vec<AgentProfileSecretSettingViewV1>,
+    pub host_contract: AgentHostContractV1,
 }
 
 /// Bounded exact revision catalog.
@@ -113,7 +138,15 @@ pub struct AgentProfileMembershipBindingV1 {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentExecutionBindingV1 {
     External,
-    Managed { runner_id: String },
+    Managed {
+        runner_id: String,
+    },
+    ManagedReference {
+        runner_id: String,
+        instance_id: String,
+        template_id: String,
+        template_revision: String,
+    },
 }
 
 /// Immutable exact mapping from one reviewed seat to its resulting Membership.
@@ -271,6 +304,20 @@ impl AgentProfileStoreV1 {
         Ok(self.view(&record))
     }
 
+    pub(crate) fn retained_revision(
+        &self,
+        profile_id: &str,
+        revision: &str,
+    ) -> Result<AgentProfileRevisionV1, AgentProfileErrorV1> {
+        let path = self.profile_path(profile_id, revision);
+        let record: AgentProfileRevisionV1 = read_record(&path)?;
+        validate_revision(&record)?;
+        if record.profile_id != profile_id || record.revision != revision {
+            return Err(AgentProfileErrorV1::Unavailable);
+        }
+        Ok(record)
+    }
+
     /// Persists one immutable exact seat-to-Membership assignment.
     ///
     /// # Errors
@@ -397,6 +444,7 @@ impl AgentProfileStoreV1 {
                     }
                 })
                 .collect(),
+            host_contract: revision.host_contract.clone(),
         }
     }
 
@@ -571,6 +619,24 @@ fn validate_revision(revision: &AgentProfileRevisionV1) -> Result<(), AgentProfi
             return Err(AgentProfileErrorV1::InvalidProfile);
         }
     }
+    if let AgentHostContractV1::ManagedReference {
+        host_contract_revision,
+        runner_template,
+        provider_address,
+        model_id,
+        ..
+    } = &revision.host_contract
+        && (!valid_revision(host_contract_revision)
+            || !valid_id(&runner_template.template_id)
+            || !valid_revision(&runner_template.revision)
+            || !provider_address.ip().is_loopback()
+            || !bounded(model_id, MAX_TEXT_BYTES)
+            || revision.secret_settings.len() != 1
+            || revision.secret_settings[0].kind != SecretKindV1::ModelProvider
+            || revision.secret_settings[0].key != "MODEL_PROVIDER_TOKEN")
+    {
+        return Err(AgentProfileErrorV1::InvalidProfile);
+    }
     Ok(())
 }
 
@@ -595,15 +661,29 @@ fn validate_assignment(
             .parse::<UlidString>()
             .is_err()
         || !bounded(&assignment.membership.role, MAX_TEXT_BYTES)
-        || matches!(
-            &assignment.execution,
-            AgentExecutionBindingV1::Managed { runner_id }
-                if runner_id.parse::<UlidString>().is_err()
-        )
+        || !valid_execution_binding(&assignment.execution)
     {
         return Err(AgentProfileErrorV1::InvalidAssignment);
     }
     Ok(())
+}
+
+fn valid_execution_binding(binding: &AgentExecutionBindingV1) -> bool {
+    match binding {
+        AgentExecutionBindingV1::External => true,
+        AgentExecutionBindingV1::Managed { runner_id } => runner_id.parse::<UlidString>().is_ok(),
+        AgentExecutionBindingV1::ManagedReference {
+            runner_id,
+            instance_id,
+            template_id,
+            template_revision,
+        } => {
+            runner_id.parse::<UlidString>().is_ok()
+                && valid_id(instance_id)
+                && valid_id(template_id)
+                && valid_revision(template_revision)
+        }
+    }
 }
 
 fn json_files(root: &Path) -> Result<Vec<PathBuf>, AgentProfileErrorV1> {

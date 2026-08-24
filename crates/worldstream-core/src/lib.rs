@@ -31,7 +31,7 @@ pub use activation::{
     ActivationDecisionV1, ActivationDeliveryV1, ActivationFrameV1, ActivationIntentStateV1,
     ActivationInvocationContextV1, ActivationOperationRequestV1, ActivationOperationResultV1,
     ActivationPolicyDecisionV1, ActivationPolicyDispositionV1, ActivationResultCodeV1,
-    ActivationShapeErrorV1, prepare_activation_context,
+    ActivationShapeErrorV1, activation_id_for_attention_v1, prepare_activation_context,
 };
 pub use activity_pack::{
     ACTION_OFFER_DOMAIN, ACTIVITY_PACK_HOST_CONTRACT_ID, ActionAdmissionErrorV1,

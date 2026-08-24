@@ -5,12 +5,13 @@ use std::{str::FromStr, sync::OnceLock};
 use serde_json::Value;
 
 use crate::{
-    ActivityApplyV1, ActivityDispositionV1, ActivityGenesisInputV1, ActivityPackV1,
-    ActivityReduceInputV1, AgentHeistV1, Blake3DigestV1, CanonicalJsonV1, DeterministicContextV1,
-    InitialOutputV1, ObserveInputV1, PackCodecBundleV1, PackDigestV1, PackFaultV1,
-    PackObservationV1, PackRegistryV1, PackRevisionDescriptorV1, PackRevisionLockV1,
-    PackSchemaBundleV1, PackViewV1, RecordedStimulusV1, TimerId, TimerRequestV1, ViewInputV1,
-    agent_heist::agent_heist_revision,
+    AccessModeV1, ActivityApplyV1, ActivityDispositionV1, ActivityGenesisInputV1, ActivityPackV1,
+    ActivityReduceInputV1, AgentHeistV1, Blake3DigestV1, CanonicalJsonV1, CoreRoomStateV1,
+    DeterministicContextV1, InitialOutputV1, MemberId, MembershipStandingV1, MembershipV1,
+    ObserveInputV1, PackCodecBundleV1, PackDigestV1, PackFaultV1, PackObservationV1,
+    PackRegistryV1, PackRevisionDescriptorV1, PackRevisionLockV1, PackSchemaBundleV1, PackViewV1,
+    PrincipalId, PrincipalKindV1, RecordedStimulusV1, TimerId, TimerRequestV1, ViewInputV1,
+    agent_heist::{BROKER, agent_heist_revision},
 };
 
 /// Explanatory identity of the selectable Lobby revision.
@@ -23,8 +24,9 @@ pub const HOST_LAUNCH_INPUT_TYPE: &str = "host_launch";
 pub const AGENT_HEIST_LOBBY_CONTRACT: &str = "worldstream/agent-heist-lobby/v1";
 
 /// The Lobby revision retains a departed participant's declared Role solely
-/// as its mandatory Core-departure minimum-cardinality witness. Genesis still
-/// requires every active Role and active members still obey maximums.
+/// as its Core-departure cardinality witness. Genesis requires Navigator and
+/// Insider; Broker is the one optional MVP Role. Active members still obey
+/// every declared maximum.
 pub(crate) const LOBBY_RETAINS_DEPARTED_ROLE_MINIMA: bool = true;
 
 const PHASE_TIMER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FH0";
@@ -44,7 +46,7 @@ impl ActivityPackV1 for AgentHeistLobbyV2 {
         input: &ActivityGenesisInputV1<'_>,
         cx: &DeterministicContextV1<'_>,
     ) -> Result<InitialOutputV1, PackFaultV1> {
-        let mut output = AgentHeistV1.initialize(input, cx)?;
+        let mut output = initialize_with_optional_broker(input, cx)?;
         let mut state = json_value(&output.initial_activity_state)?;
         let object = state
             .as_object_mut()
@@ -171,6 +173,91 @@ impl ActivityPackV1 for AgentHeistLobbyV2 {
         }
         AgentHeistV1.observe(input)
     }
+}
+
+/// The frozen v0.1 executor requires all three seats. The selectable Lobby
+/// revision deliberately admits the two-role MVP without changing that
+/// retained executor: when Broker is absent, Genesis is evaluated against a
+/// private, transient validation witness and the witness seat is removed from
+/// the resulting Activity State before it can be persisted or projected.
+fn initialize_with_optional_broker(
+    input: &ActivityGenesisInputV1<'_>,
+    cx: &DeterministicContextV1<'_>,
+) -> Result<InitialOutputV1, PackFaultV1> {
+    let broker_count = input
+        .initial_core_state
+        .memberships()
+        .values()
+        .filter(|membership| {
+            membership.standing() == MembershipStandingV1::Enabled
+                && membership.access_mode() == AccessModeV1::Participant
+                && membership.role() == Some(BROKER)
+        })
+        .count();
+    if broker_count != 0 {
+        return AgentHeistV1.initialize(input, cx);
+    }
+
+    let broker = transient_broker(input.initial_core_state)?;
+    let core = CoreRoomStateV1::active(
+        input
+            .initial_core_state
+            .memberships()
+            .values()
+            .cloned()
+            .chain(std::iter::once(broker)),
+    )
+    .map_err(|error| PackFaultV1::InvalidOutput(error.to_string()))?;
+    let mut output = AgentHeistV1.initialize(
+        &ActivityGenesisInputV1 {
+            initial_core_state: &core,
+            ..*input
+        },
+        cx,
+    )?;
+    let mut state = json_value(&output.initial_activity_state)?;
+    let seats = state
+        .get_mut("seats")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| PackFaultV1::InvalidOutput("Heist seats are absent".to_owned()))?;
+    seats.retain(|seat| seat.get("role").and_then(Value::as_str) != Some(BROKER));
+    output.initial_activity_state = canonical(&state)?;
+    Ok(output)
+}
+
+fn transient_broker(core: &CoreRoomStateV1) -> Result<MembershipV1, PackFaultV1> {
+    // Bounded reserved candidates avoid colliding with hostile-but-valid IDs.
+    const CANDIDATES: [(&str, &str); 3] = [
+        ("01ARZ3NDEKTSV4RRFFQ69G5FA0", "01ARZ3NDEKTSV4RRFFQ69G5FB0"),
+        ("01ARZ3NDEKTSV4RRFFQ69G5FA1", "01ARZ3NDEKTSV4RRFFQ69G5FB1"),
+        ("01ARZ3NDEKTSV4RRFFQ69G5FA2", "01ARZ3NDEKTSV4RRFFQ69G5FB2"),
+    ];
+    for (member, principal) in CANDIDATES {
+        let member_id = MemberId::from_str(member)
+            .map_err(|error| PackFaultV1::InvalidOutput(error.to_string()))?;
+        let principal_id = PrincipalId::from_str(principal)
+            .map_err(|error| PackFaultV1::InvalidOutput(error.to_string()))?;
+        if core.membership(&member_id).is_some()
+            || core
+                .memberships()
+                .values()
+                .any(|membership| membership.principal_id() == &principal_id)
+        {
+            continue;
+        }
+        return MembershipV1::new(
+            member_id,
+            principal_id,
+            PrincipalKindV1::Agent,
+            MembershipStandingV1::Enabled,
+            AccessModeV1::Participant,
+            Some(BROKER.to_owned()),
+        )
+        .map_err(|error| PackFaultV1::InvalidOutput(error.to_string()));
+    }
+    Err(PackFaultV1::InvalidOutput(
+        "Lobby Genesis could not allocate its private Broker validation witness".to_owned(),
+    ))
 }
 
 fn reduce_lobby_core_proposed(
@@ -329,6 +416,12 @@ fn build_lobby_revision() -> LobbyRevisionV2 {
     let (prior_descriptor, prior_lock, schemas, codecs, _) = agent_heist_revision();
     let mut descriptor = prior_descriptor.clone();
     AGENT_HEIST_LOBBY_VERSION.clone_into(&mut descriptor.explanatory_version);
+    descriptor
+        .roles
+        .iter_mut()
+        .find(|role| role.role == crate::agent_heist::BROKER)
+        .unwrap_or_else(|| unreachable!("Agent Heist Broker Role"))
+        .minimum = 0;
     let empty_payload = descriptor
         .actions
         .last()

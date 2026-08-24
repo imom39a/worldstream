@@ -46,8 +46,8 @@ describe("Room creation operation client", () => {
     await requestRoomCreation("new-room", "retry", fetcher);
 
     expect(fetcher.mock.calls.map(([input]) => input)).toEqual([
-      "/api/v1/room-creations/new-room:start",
-      "/api/v1/room-creations/new-room:retry",
+      "/api/v1/room-creations/new-room/start",
+      "/api/v1/room-creations/new-room/retry",
     ]);
     expect(fetcher.mock.calls.every(([, init]) => init?.method === "POST" && init.body === undefined)).toBe(true);
   });

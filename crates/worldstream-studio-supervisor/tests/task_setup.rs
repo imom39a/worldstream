@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, mpsc},
+    thread,
+    time::Duration,
 };
 
 use serde_json::json;
@@ -14,16 +16,28 @@ use worldstream_protocol::{
 use worldstream_runtime::prepare_data_directory;
 use worldstream_studio_supervisor::assignment_mcp::AssignedMembershipLaunchSourceV1;
 use worldstream_studio_supervisor::{
-    agent_profiles::{AgentProfileRevisionV1, AgentProfileStoreV1},
-    participant_handoff::{ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1},
-    room_creation::{DaemonRoomCreatorV1, RoomCreationAttemptErrorV1, RoomCreationSupervisorV1},
-    room_drafts::{RoomDraftErrorV1, RoomDraftStoreV1, RoomDraftV1, RoomDraftValidatorV1},
-    secrets::FileSecretVaultV1,
+    agent_profiles::{
+        AgentHostContractV1, AgentProfileRevisionV1, AgentProfileSecretSettingV1,
+        AgentProfileStoreV1, ManagedReferenceProviderV1,
+    },
+    participant_handoff::{
+        ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1,
+        ParticipantHandoffAuthorityErrorV1, ParticipantHandoffAuthoritySourceV1,
+    },
+    room_creation::{
+        DaemonRoomCreatorV1, RoomCreationAttemptErrorV1, RoomCreationSupervisorV1,
+        room_creation_router,
+    },
+    room_drafts::{
+        RoomDraftErrorV1, RoomDraftStoreV1, RoomDraftV1, RoomDraftValidatorV1,
+        RunnerTemplateRevisionReferenceV1,
+    },
+    secrets::{FileSecretVaultV1, SecretKindV1},
     task_setup::{
         DaemonTaskLaunchSourceV1, DaemonTaskSetupProvisionerV1, FileAssignedMembershipSourceV1,
         TaskLaunchAttemptErrorV1, TaskLaunchStateV1, TaskRunnerObservationV1,
         TaskRunnerReadinessSourceV1, TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1,
-        TaskSetupStateV1, TaskSetupSupervisorV1,
+        TaskSetupStateV1, TaskSetupSupervisorV1, task_setup_router,
     },
 };
 
@@ -257,6 +271,20 @@ fn open_setup(root: &std::path::Path, provisioner: DurableProvisioner) -> TaskSe
 }
 
 #[test]
+fn action_routes_construct_with_distinct_path_segments() {
+    let creation_directory =
+        tempdir().unwrap_or_else(|error| unreachable!("temporary creation root: {error}"));
+    let _creation_router = room_creation_router(open_creation(creation_directory.path()));
+
+    let setup_directory =
+        tempdir().unwrap_or_else(|error| unreachable!("temporary setup root: {error}"));
+    let _setup_router = task_setup_router(open_setup(
+        setup_directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    ));
+}
+
+#[test]
 fn lost_response_and_supervisor_restart_reconcile_the_same_stable_stage() {
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
     let ledger = Arc::new(Mutex::new(ProvisionLedger {
@@ -416,6 +444,7 @@ fn transient_agent_profile_binding_unavailability_is_retryable() {
             display_name: "Analyst".to_owned(),
             non_secret_configuration: BTreeMap::new(),
             secret_settings: Vec::new(),
+            host_contract: AgentHostContractV1::default(),
         })
         .unwrap_or_else(|error| unreachable!("publish profile: {error:?}"));
     std::fs::remove_dir(profile_root.join("assignments"))
@@ -472,6 +501,66 @@ fn transient_agent_profile_binding_unavailability_is_retryable() {
     assert_eq!(binding.room_id, assignment.membership.room_id);
     assert_eq!(binding.member_id, assignment.membership.member_id);
     assert_eq!(binding.principal_id, assignment.membership.principal_id);
+}
+
+#[test]
+fn managed_reference_profile_is_rejected_for_an_external_agent_seat() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("vault: {error:?}"));
+    let credential = vault
+        .store(SecretKindV1::ModelProvider, b"provider-credential")
+        .unwrap_or_else(|error| unreachable!("model credential: {error:?}"));
+    let profiles =
+        AgentProfileStoreV1::open(&directory.path().join("agent-profiles"), vault.clone())
+            .unwrap_or_else(|error| unreachable!("profile store: {error:?}"));
+    profiles
+        .publish(&AgentProfileRevisionV1 {
+            schema: "worldstream/studio-agent-profile/v1".to_owned(),
+            profile_id: "analyst".to_owned(),
+            revision: "rev-1".to_owned(),
+            display_name: "Managed Analyst".to_owned(),
+            non_secret_configuration: BTreeMap::new(),
+            secret_settings: vec![AgentProfileSecretSettingV1 {
+                key: "MODEL_PROVIDER_TOKEN".to_owned(),
+                kind: SecretKindV1::ModelProvider,
+                reference: credential,
+            }],
+            host_contract: AgentHostContractV1::ManagedReference {
+                host_contract_revision: "v1".to_owned(),
+                runner_template: RunnerTemplateRevisionReferenceV1 {
+                    template_id: "reference-agent-host".to_owned(),
+                    revision: "r1".to_owned(),
+                },
+                provider: ManagedReferenceProviderV1::OpenAiCompatible,
+                provider_address: "127.0.0.1:11434"
+                    .parse()
+                    .unwrap_or_else(|error| unreachable!("provider address: {error}")),
+                model_id: "test-model".to_owned(),
+            },
+        })
+        .unwrap_or_else(|error| unreachable!("publish profile: {error:?}"));
+    let supervisor = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        open_creation(directory.path()),
+        vault,
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    )
+    .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_agent_profiles(profiles);
+
+    let rejected = supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("closed setup rejection: {error:?}"));
+    assert_eq!(rejected.state, TaskSetupStateV1::NeedsAttention);
+    assert_eq!(
+        rejected.attention.as_ref().map(|value| value.code.as_str()),
+        Some("setup_stage_rejected")
+    );
+    assert_eq!(
+        rejected.attention.as_ref().map(|value| value.retryable),
+        Some(false)
+    );
 }
 
 #[test]
@@ -534,6 +623,10 @@ fn corrupt_checkpoint_cannot_claim_ready_or_issue_another_daemon_effect() {
         supervisor.retry("setup-alpha"),
         Err(worldstream_studio_supervisor::task_setup::TaskSetupErrorV1::Unavailable)
     );
+    assert!(matches!(
+        supervisor.resolve_provisioned_human_seat("setup-alpha", "navigator-1"),
+        Err(ParticipantHandoffAuthorityErrorV1::Unavailable)
+    ));
     assert_eq!(
         ledger
             .lock()
@@ -555,6 +648,63 @@ impl ParticipantConsoleReadinessSourceV1 for ConsoleHealth {
     ) -> ParticipantConsoleSessionHealthV1 {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+#[derive(Clone)]
+struct TaskSetupBackedConsole(TaskSetupSupervisorV1);
+
+impl ParticipantConsoleReadinessSourceV1 for TaskSetupBackedConsole {
+    fn session_health(
+        &self,
+        _room_id: &str,
+        _member_id: &str,
+    ) -> ParticipantConsoleSessionHealthV1 {
+        match self
+            .0
+            .resolve_provisioned_human_seat("setup-alpha", "navigator-1")
+        {
+            Ok(_) => ParticipantConsoleSessionHealthV1::Usable,
+            Err(_) => ParticipantConsoleSessionHealthV1::Invalid,
+        }
+    }
+}
+
+#[test]
+fn task_setup_backed_console_authority_does_not_reenter_the_mutation_lock() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let base = open_setup(
+        directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    );
+    base.start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    let supervisor = base.clone().with_launch_readiness(
+        TaskSetupBackedConsole(base),
+        RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
+        Launcher(Arc::new(Mutex::new(LaunchLedger::default()))),
+    );
+    let (sender, receiver) = mpsc::channel();
+    let status_supervisor = supervisor.clone();
+    thread::spawn(move || {
+        sender
+            .send(status_supervisor.status("setup-alpha"))
+            .unwrap_or_else(|error| unreachable!("send status: {error}"));
+    });
+    let status = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or_else(|error| unreachable!("circular readiness source deadlocked: {error}"))
+        .unwrap_or_else(|error| unreachable!("status: {error:?}"));
+    assert_eq!(
+        status.readiness.seats[0].reason,
+        TaskSeatReadinessReasonV1::Ready
+    );
+    let launched = supervisor
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("launch: {error:?}"));
+    assert_eq!(
+        launched.launch.as_ref().map(|launch| launch.state),
+        Some(TaskLaunchStateV1::Launched)
+    );
 }
 
 #[derive(Clone, Copy)]

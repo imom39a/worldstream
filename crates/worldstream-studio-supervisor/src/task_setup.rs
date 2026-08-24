@@ -33,8 +33,8 @@ use zeroize::Zeroizing;
 
 use crate::{
     agent_profiles::{
-        AgentExecutionBindingV1, AgentProfileErrorV1, AgentProfileMembershipBindingV1,
-        AgentProfileSeatAssignmentV1, AgentProfileStoreV1,
+        AgentExecutionBindingV1, AgentHostContractV1, AgentProfileErrorV1,
+        AgentProfileMembershipBindingV1, AgentProfileSeatAssignmentV1, AgentProfileStoreV1,
     },
     assignment_mcp::{
         AssignedMembershipAuthorityV1, AssignedMembershipLaunchBindingV1,
@@ -61,6 +61,7 @@ use crate::{
 const SETUP_SCHEMA_V1: &str = "worldstream/studio-task-setup-operation/v1";
 const SETUP_STATUS_VERSION_V1: &str = "studio_task_setup.v1";
 const MAX_OPERATION_BYTES: usize = 256 * 1024;
+const MAX_SETUP_OPERATIONS: usize = 256;
 
 /// Operator-visible setup lifecycle, independent from Activity Phase.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -351,6 +352,14 @@ pub trait TaskRunnerReadinessSourceV1: Send + Sync + 'static {
         None
     }
 
+    fn select_managed_reference(
+        &self,
+        _pack: &PackReference,
+        _requested: &RunnerTemplateRevisionReferenceV1,
+    ) -> Option<ManagedRunnerAssignmentV1> {
+        None
+    }
+
     fn managed_reason(
         &self,
         _assignment: &ManagedRunnerAssignmentV1,
@@ -584,6 +593,20 @@ impl TaskRunnerReadinessSourceV1 for LiveTaskRunnerReadinessSourceV1 {
                         .task_runner_binding_available(&instance.instance_id)
             })
             .min_by(|left, right| left.instance_id.cmp(&right.instance_id))
+            .map(|instance| ManagedRunnerAssignmentV1 {
+                instance_id: instance.instance_id,
+                template_id: instance.template_id,
+                template_revision: instance.template_revision,
+            })
+    }
+
+    fn select_managed_reference(
+        &self,
+        pack: &PackReference,
+        requested: &RunnerTemplateRevisionReferenceV1,
+    ) -> Option<ManagedRunnerAssignmentV1> {
+        self.managed
+            .managed_reference_launch_target(&requested.template_id, &requested.revision, pack)
             .map(|instance| ManagedRunnerAssignmentV1 {
                 instance_id: instance.instance_id,
                 template_id: instance.template_id,
@@ -929,6 +952,50 @@ impl TaskSetupSupervisorV1 {
         let _guard = self.lock();
         let operation = self.load_unlocked(draft_id)?;
         Ok(self.status_for(operation))
+    }
+
+    /// Lists all retained browser-safe setup statuses in stable draft order.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for malformed, unexpected, excessive, or unavailable
+    /// protected operation records.
+    pub fn statuses(&self) -> Result<Vec<TaskSetupStatusV1>, TaskSetupErrorV1> {
+        let _guard = self.lock();
+        let mut draft_ids = Vec::new();
+        for entry in fs::read_dir(self.root.as_ref()).map_err(|_| TaskSetupErrorV1::Unavailable)? {
+            let path = entry.map_err(|_| TaskSetupErrorV1::Unavailable)?.path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or(TaskSetupErrorV1::Unavailable)?;
+            if name.starts_with('.')
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+            {
+                continue;
+            }
+            let draft_id = name
+                .strip_suffix(".json")
+                .ok_or(TaskSetupErrorV1::Unavailable)?;
+            validate_draft_id(draft_id)?;
+            draft_ids.push(draft_id.to_owned());
+            if draft_ids.len() > MAX_SETUP_OPERATIONS {
+                return Err(TaskSetupErrorV1::Unavailable);
+            }
+        }
+        draft_ids.sort();
+        if draft_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(TaskSetupErrorV1::Unavailable);
+        }
+        draft_ids
+            .into_iter()
+            .map(|draft_id| {
+                self.load_unlocked(&draft_id)
+                    .map(|operation| self.status_for(operation))
+            })
+            .collect()
     }
 
     /// Launches or reconciles only the original stable Lobby input.
@@ -1288,9 +1355,38 @@ impl TaskSetupSupervisorV1 {
                 .agent_assignment
                 .ok_or(TaskSetupErrorV1::InvalidCreation)?;
             let managed_assignment = if assignment == AgentAssignmentModeV1::Managed {
-                self.runners
-                    .as_ref()
-                    .and_then(|runners| runners.select_managed(pack, seat.runner_template.as_ref()))
+                let runners = self.runners.as_ref();
+                let managed_reference = match (self.profiles.as_ref(), seat.agent_profile.as_ref())
+                {
+                    (Some(profiles), Some(profile)) => {
+                        let profile = profiles
+                            .revision(&profile.profile_id, &profile.revision)
+                            .map_err(|error| match error {
+                                AgentProfileErrorV1::Unavailable => TaskSetupErrorV1::Unavailable,
+                                _ => TaskSetupErrorV1::InvalidCreation,
+                            })?;
+                        match profile.host_contract {
+                            AgentHostContractV1::ManagedReference {
+                                runner_template, ..
+                            } => Some(runner_template),
+                            AgentHostContractV1::GenericMcp => None,
+                        }
+                    }
+                    (None, _) => None,
+                    (Some(_), None) => return Err(TaskSetupErrorV1::InvalidCreation),
+                };
+                match managed_reference {
+                    Some(reference) => {
+                        if seat.runner_template.as_ref() != Some(&reference) {
+                            return Err(TaskSetupErrorV1::InvalidCreation);
+                        }
+                        runners
+                            .and_then(|runners| runners.select_managed_reference(pack, &reference))
+                    }
+                    None => runners.and_then(|runners| {
+                        runners.select_managed(pack, seat.runner_template.as_ref())
+                    }),
+                }
             } else {
                 None
             };
@@ -1480,31 +1576,66 @@ impl TaskSetupSupervisorV1 {
                 {
                     return Err(TaskSetupAttemptErrorV1::Ambiguous);
                 }
-                if let Some(assignment) = &runner.managed_assignment {
-                    self.runners
-                        .as_ref()
-                        .ok_or(TaskSetupAttemptErrorV1::Rejected)?
-                        .bind_managed(
-                            assignment,
-                            &operation.pack,
-                            &runner.runner_id,
-                            &runner.capability.secret_reference,
-                        )?;
-                }
                 if let Some(profiles) = &self.profiles {
                     let profile = seat
                         .agent_profile
                         .clone()
                         .ok_or(TaskSetupAttemptErrorV1::Rejected)?;
+                    let profile_contract = profiles
+                        .revision(&profile.profile_id, &profile.revision)
+                        .map_err(|error| match error {
+                            AgentProfileErrorV1::Unavailable => TaskSetupAttemptErrorV1::Ambiguous,
+                            _ => TaskSetupAttemptErrorV1::Rejected,
+                        })?
+                        .host_contract;
                     let member_id = seat
                         .member_id
                         .clone()
                         .ok_or(TaskSetupAttemptErrorV1::Rejected)?;
                     let execution = match seat.agent_assignment {
-                        Some(AgentAssignmentModeV1::External) => AgentExecutionBindingV1::External,
-                        Some(AgentAssignmentModeV1::Managed) => AgentExecutionBindingV1::Managed {
-                            runner_id: runner.runner_id.clone(),
-                        },
+                        Some(AgentAssignmentModeV1::External) => {
+                            if !matches!(profile_contract, AgentHostContractV1::GenericMcp) {
+                                return Err(TaskSetupAttemptErrorV1::Rejected);
+                            }
+                            AgentExecutionBindingV1::External
+                        }
+                        Some(AgentAssignmentModeV1::Managed) => {
+                            let managed = runner
+                                .managed_assignment
+                                .as_ref()
+                                .ok_or(TaskSetupAttemptErrorV1::Rejected)?;
+                            match profile_contract {
+                                AgentHostContractV1::GenericMcp => {
+                                    self.runners
+                                        .as_ref()
+                                        .ok_or(TaskSetupAttemptErrorV1::Rejected)?
+                                        .bind_managed(
+                                            managed,
+                                            &operation.pack,
+                                            &runner.runner_id,
+                                            &runner.capability.secret_reference,
+                                        )?;
+                                    AgentExecutionBindingV1::Managed {
+                                        runner_id: runner.runner_id.clone(),
+                                    }
+                                }
+                                AgentHostContractV1::ManagedReference {
+                                    runner_template, ..
+                                } => {
+                                    if runner_template.template_id != managed.template_id
+                                        || runner_template.revision != managed.template_revision
+                                    {
+                                        return Err(TaskSetupAttemptErrorV1::Rejected);
+                                    }
+                                    AgentExecutionBindingV1::ManagedReference {
+                                        runner_id: runner.runner_id.clone(),
+                                        instance_id: managed.instance_id.clone(),
+                                        template_id: managed.template_id.clone(),
+                                        template_revision: managed.template_revision.clone(),
+                                    }
+                                }
+                            }
+                        }
                         None => return Err(TaskSetupAttemptErrorV1::Rejected),
                     };
                     profiles
@@ -1533,6 +1664,16 @@ impl TaskSetupSupervisorV1 {
                             | AgentProfileErrorV1::ImmutableAssignmentConflict
                             | AgentProfileErrorV1::NotFound => TaskSetupAttemptErrorV1::Rejected,
                         })?;
+                } else if let Some(assignment) = &runner.managed_assignment {
+                    self.runners
+                        .as_ref()
+                        .ok_or(TaskSetupAttemptErrorV1::Rejected)?
+                        .bind_managed(
+                            assignment,
+                            &operation.pack,
+                            &runner.runner_id,
+                            &runner.capability.secret_reference,
+                        )?;
                 }
             }
         }
@@ -1637,7 +1778,11 @@ impl ParticipantHandoffAuthoritySourceV1 for TaskSetupSupervisorV1 {
         draft_id: &str,
         seat_id: &str,
     ) -> Result<HumanSeatAuthorityV1, ParticipantHandoffAuthorityErrorV1> {
-        let _guard = self.lock();
+        // Read the exact atomically published snapshot without taking the
+        // mutation lock: readiness calls this projection while status/launch
+        // already serialize the parent operation. `load_unlocked` accepts
+        // only the final owner-only path and validates the complete record and
+        // checkpoint, so a concurrent rename yields either whole revision.
         let operation = self.load_unlocked(draft_id).map_err(|error| match error {
             TaskSetupErrorV1::NotFound | TaskSetupErrorV1::InvalidCreation => {
                 ParticipantHandoffAuthorityErrorV1::SeatNotFound
@@ -1980,9 +2125,9 @@ fn resolve_file_assignment_authority(
 pub fn task_setup_router(supervisor: TaskSetupSupervisorV1) -> Router {
     Router::new()
         .route("/api/v1/task-setups/{draft_id}", get(setup_status))
-        .route("/api/v1/task-setups/{draft_id}:start", post(start_setup))
-        .route("/api/v1/task-setups/{draft_id}:retry", post(retry_setup))
-        .route("/api/v1/task-setups/{draft_id}:launch", post(launch_task))
+        .route("/api/v1/task-setups/{draft_id}/start", post(start_setup))
+        .route("/api/v1/task-setups/{draft_id}/retry", post(retry_setup))
+        .route("/api/v1/task-setups/{draft_id}/launch", post(launch_task))
         .with_state(supervisor)
 }
 

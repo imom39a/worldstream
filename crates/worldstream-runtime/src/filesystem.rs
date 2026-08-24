@@ -1224,7 +1224,9 @@ mod tests {
         let parent = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
         let root = prepare_live_backup_root(&parent.path().join("data"))
             .unwrap_or_else(|error| unreachable!("backup root: {error}"));
-        assert_eq!(root, parent.path().join("studio/backups"));
+        let canonical_parent = fs::canonicalize(parent.path())
+            .unwrap_or_else(|error| unreachable!("canonical temp dir: {error}"));
+        assert_eq!(root, canonical_parent.join("studio/backups"));
         assert_eq!(
             prepare_live_backup_root(&parent.path().join("data"))
                 .unwrap_or_else(|error| unreachable!("reopen root: {error}")),

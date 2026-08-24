@@ -25,7 +25,8 @@ use crate::{
     assignment_mcp_activation_ledger::FileActivationOperationLedgerV1,
     assignment_mcp_activations::{
         ActivationToolErrorV1, AssignedRunnerActivationAuthorityV1, AssignmentActivationToolsV1,
-        FixedDaemonRunnerActivationGatewayV1, SystemActivationLeaseClockV1,
+        FixedDaemonRunnerActivationGatewayV1, RunnerActivationGatewayErrorV1,
+        SystemActivationLeaseClockV1,
     },
     assignment_mcp_operations::FileAssignmentMcpOperationLedgerV1,
     secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1},
@@ -931,13 +932,17 @@ pub fn open_registered_assignment_mcp(
         )
         .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
     };
+    let activation_gateway = FixedDaemonRunnerActivationGatewayV1::new(
+        record.daemon,
+        Duration::from_millis(record.timeout_ms),
+    )
+    .map_err(map_runner_activation_open_error)?;
+    activation_gateway
+        .establish(&runner_authority)
+        .map_err(map_runner_activation_open_error)?;
     let activations = AssignmentActivationToolsV1::new(
         runner_authority,
-        FixedDaemonRunnerActivationGatewayV1::new(
-            record.daemon,
-            Duration::from_millis(record.timeout_ms),
-        )
-        .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+        activation_gateway,
         FileActivationOperationLedgerV1::open(
             state_dir
                 .join("assignment-mcp-activations")
@@ -959,6 +964,24 @@ pub fn open_registered_assignment_mcp(
         actions: Some(actions),
         activations: Some(activations),
     }))
+}
+
+const fn map_runner_activation_open_error(
+    error: RunnerActivationGatewayErrorV1,
+) -> AssignedMembershipSourceErrorV1 {
+    match error {
+        RunnerActivationGatewayErrorV1::Revoked => AssignedMembershipSourceErrorV1::Revoked,
+        RunnerActivationGatewayErrorV1::Disconnected
+        | RunnerActivationGatewayErrorV1::Unavailable => {
+            AssignedMembershipSourceErrorV1::Unavailable
+        }
+        RunnerActivationGatewayErrorV1::NotAvailable
+        | RunnerActivationGatewayErrorV1::Expired
+        | RunnerActivationGatewayErrorV1::StaleLease
+        | RunnerActivationGatewayErrorV1::AlreadyCompleted
+        | RunnerActivationGatewayErrorV1::IdempotencyConflict
+        | RunnerActivationGatewayErrorV1::InvalidData => AssignedMembershipSourceErrorV1::Invalid,
+    }
 }
 
 fn random_reference() -> Result<String, AssignedMembershipSourceErrorV1> {
@@ -1921,7 +1944,13 @@ fn validate_reset(
     baseline_frame_head: u64,
     reason: &str,
 ) -> Result<(), AssignedMembershipGatewayErrorV1> {
-    let encoded = serde_json::to_vec(&reset.projection)
+    let reconstructed = serde_json::json!({
+        "action_offers": &reset.projection.action_offers,
+        "authorized_core": &reset.projection.core,
+        "projection": &reset.projection.activity,
+        "projection_schema": &reset.projection_schema,
+    });
+    let encoded = serde_json::to_vec(&reconstructed)
         .map_err(|_| AssignedMembershipGatewayErrorV1::InvalidData)?;
     let canonical = worldstream_core::CanonicalJsonV1::parse(&encoded)
         .and_then(|value| value.to_bytes())
@@ -1936,7 +1965,7 @@ fn validate_reset(
         || reset.baseline_frame_head != baseline_frame_head
         || reset.baseline_frame_head != attached.frame_head
         || reset.reset_reason != reason
-        || reset.projection_schema != worldstream_core::PROJECTION_SCHEMA_V1
+        || reset.projection_schema.is_empty()
         || reset.projection_hash != computed.to_string()
     {
         return Err(AssignedMembershipGatewayErrorV1::InvalidData);
@@ -2866,7 +2895,7 @@ fn tool_definitions() -> Value {
         {"name":"worldstream.list_current_action_offers","description":"List exact current Action Offers and their pinned payload schemas.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"worldstream.submit_action","description":"Submit one exact currently offered Action using a stable operation identity.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string"},"offer_id":{"type":"string"},"precondition":{"type":"object","properties":{"room_seq":{"type":"integer","minimum":0},"head_hash":{"type":"string"}},"required":["room_seq","head_hash"],"additionalProperties":false},"payload":{}},"required":["operation_id","offer_id","precondition","payload"],"additionalProperties":false}},
         {"name":"worldstream.next_activation","description":"Acquire or resume the next Activation in this assignment's sealed Runner scope.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"worldstream.complete_activation","description":"Complete the exact currently leased Activation with its safe preconditions.","inputSchema":{"type":"object","properties":{"activation_cursor":{"type":"integer","minimum":1},"lease_generation":{"type":"integer","minimum":1},"context_hash":{"type":"string"},"disposition":{"type":"string"}},"required":["activation_cursor","lease_generation","context_hash","disposition"],"additionalProperties":false}}
+        {"name":"worldstream.complete_activation","description":"Complete the exact currently leased Activation with its safe preconditions.","inputSchema":{"type":"object","properties":{"activation_cursor":{"type":"integer","minimum":1},"lease_generation":{"type":"integer","minimum":1},"context_hash":{"type":"string"},"disposition":{"type":"string","enum":["handled","declined","failed"]}},"required":["activation_cursor","lease_generation","context_hash","disposition"],"additionalProperties":false}}
     ])
 }
 

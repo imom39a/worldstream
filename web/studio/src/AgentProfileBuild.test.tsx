@@ -16,6 +16,7 @@ const catalog: AgentProfileCatalog = {
       kind: "model_provider",
       availability: "configured",
     }],
+    host_contract: { kind: "generic_mcp" },
   }],
 };
 
@@ -29,8 +30,30 @@ describe("Agent Profile Build workflow", () => {
     expect(dom).toContain("Start new revision");
     expect(dom).toContain("Publish immutable revision");
     expect(dom).toContain("Model provider secret reference");
+    expect(dom).toContain("External assignment-bound MCP is the foundational execution path");
+    expect(dom).toContain("External or generic MCP · foundational");
     expect(dom).toContain("reference is used only for publication and is not returned to the browser");
     expect(dom).not.toContain("a".repeat(64));
+  });
+
+  it("labels the managed reference boundary as post-MVP", () => {
+    const managed: AgentProfileCatalog = {
+      ...catalog,
+      profiles: [{
+        ...catalog.profiles[0],
+        host_contract: {
+          kind: "managed_reference",
+          host_contract_revision: "1",
+          runner_template: { template_id: "reference-host", revision: "1" },
+          provider: "open_ai_compatible",
+          provider_address: "127.0.0.1:11434",
+          model_id: "test-model",
+        },
+      }],
+    };
+    const dom = renderToStaticMarkup(<AgentProfileBuild catalog={managed} />);
+
+    expect(dom).toContain("Managed reference · post-MVP");
   });
 
   it("fails closed when the profile catalog is unavailable", () => {

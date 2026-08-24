@@ -146,7 +146,6 @@ pub struct ActionOffer {
     pub domain: String,
     pub action_type: String,
     pub payload_schema_digest: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub eligibility_window: Option<Value>,
 }
 
@@ -923,8 +922,22 @@ pub struct ActivationFrame {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionSubmit, ClientHello, ClientMode};
+    use super::{ActionOffer, ActionSubmit, ClientHello, ClientMode};
     use serde_json::json;
+
+    #[test]
+    fn action_offer_preserves_absent_eligibility_as_canonical_null() {
+        let offer = ActionOffer {
+            domain: "worldstream/action-offer/v1".to_owned(),
+            action_type: "inspect".to_owned(),
+            payload_schema_digest: "blake3:fixture".to_owned(),
+            eligibility_window: None,
+        };
+        let value = serde_json::to_value(offer)
+            .unwrap_or_else(|error| unreachable!("action offer JSON: {error}"));
+        assert_eq!(value["eligibility_window"], serde_json::Value::Null);
+        assert!(value.as_object().is_some_and(|object| object.len() == 4));
+    }
 
     #[test]
     fn action_payload_bound_is_checked_before_backend_admission() {

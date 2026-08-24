@@ -8,19 +8,23 @@ use worldstream_studio_supervisor::{
     activity_packs::HttpDaemonActivityPackSource,
     agent_profiles::AgentProfileStoreV1,
     assignment_mcp::{AssignmentMcpLaunchRegistryV1, assignment_mcp_launch_router},
+    attention_inbox::{
+        AttentionInboxV1, FileAttentionHistoryV1, LiveAttentionInboxSourceV1,
+        attention_inbox_router,
+    },
     backups::{
         BackupOperationsV1, BackupStorageProfileV1, HttpDaemonBackupExecutorV1,
         prepare_shared_backup_root,
     },
     lifecycle::ConfiguredDaemonLifecycle,
+    managed_agent_host::{ManagedAgentHostOperationsV1, managed_agent_host_router},
     participant_handoff::{FixedDaemonParticipantConsoleGatewayV1, ParticipantHandoffBrokerV1},
     room_creation::{HttpDaemonRoomCreatorV1, RoomCreationSupervisorV1},
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
     rooms::HttpDaemonRoomSource,
     runner_attention::{
-        FileRunnerRestartStoreV1, HttpDaemonRunnerAttentionSourceV1,
-        LiveRunnerAttentionSourceV1, PersistedAgentSeatAssignmentSourceV1,
-        RunnerAttentionSupervisorV1, runner_attention_router,
+        FileRunnerRestartStoreV1, HttpDaemonRunnerAttentionSourceV1, LiveRunnerAttentionSourceV1,
+        PersistedAgentSeatAssignmentSourceV1, RunnerAttentionSupervisorV1, runner_attention_router,
     },
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
@@ -66,6 +70,10 @@ struct Args {
     /// Owner-only Supervisor state directory.
     #[arg(long, default_value = ".worldstream/studio")]
     state_dir: PathBuf,
+
+    /// Fixed assignment-bound MCP helper used for managed reference hosts.
+    #[arg(long, default_value = "target/debug/worldstream-assignment-mcp")]
+    assignment_mcp_executable: PathBuf,
 
     /// Exact retained Host authority reference used by bounded daemon proxies.
     #[arg(long, value_parser = parse_secret_reference)]
@@ -256,6 +264,37 @@ async fn main() -> Result<()> {
         FileRunnerRestartStoreV1::open(&args.state_dir.join("runner-attention/restarts"))
             .map_err(|error| anyhow::anyhow!("Runner attention store is unavailable: {error:?}"))?,
     );
+    let canonical_state_dir = args
+        .state_dir
+        .canonicalize()
+        .context("Studio Supervisor state directory is unavailable")?;
+    let assignment_mcp_executable = args
+        .assignment_mcp_executable
+        .canonicalize()
+        .context("fixed assignment MCP helper is unavailable")?;
+    let managed_agent_hosts = ManagedAgentHostOperationsV1::open_production(
+        &args.state_dir.join("managed-agent-hosts"),
+        &canonical_state_dir,
+        &assignment_mcp_executable,
+        agent_profiles.clone(),
+        runners.clone(),
+        assignment_mcp_launches.clone(),
+        vault.clone(),
+        task_setup.clone(),
+    )
+    .map_err(|error| anyhow::anyhow!("managed Agent Host operations are unavailable: {error:?}"))?;
+    let runner_attention = runner_attention.with_managed_hosts(managed_agent_hosts.clone());
+    let attention_inbox = AttentionInboxV1::new(
+        LiveAttentionInboxSourceV1::new(
+            lifecycle.clone(),
+            task_setup.clone(),
+            room_creation.clone(),
+            backups.clone(),
+            runner_attention.clone(),
+        ),
+        FileAttentionHistoryV1::open(&args.state_dir.join("attention-inbox"))
+            .map_err(|error| anyhow::anyhow!("attention inbox is unavailable: {error:?}"))?,
+    );
     let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates(
         source,
         lifecycle,
@@ -272,7 +311,9 @@ async fn main() -> Result<()> {
         task_templates,
     )
     .merge(assignment_mcp_launch_router(assignment_mcp_launches))
-    .merge(runner_attention_router(runner_attention));
+    .merge(managed_agent_host_router(managed_agent_hosts))
+    .merge(runner_attention_router(runner_attention))
+    .merge(attention_inbox_router(attention_inbox));
     axum::serve(listener, router)
         .await
         .context("Studio Supervisor server failed")

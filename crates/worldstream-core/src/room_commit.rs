@@ -1079,12 +1079,11 @@ impl PreparedActivationDecisionV1 {
                 cause_room_seq.get(),
                 attention.deduplication_key
             ),
-            activation_id: Some(format!(
-                "activation:{}:{}:{}",
-                cause_room_seq.get(),
-                attention.target_member_id,
-                attention.deduplication_key
-            )),
+            activation_id: Some(crate::activation_id_for_attention_v1(
+                cause_room_seq,
+                &attention.target_member_id,
+                &attention.deduplication_key,
+            )?),
             cause_room_seq,
             attention,
             policy: crate::ActivationPolicyDecisionV1 {

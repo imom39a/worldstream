@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useRef, useState } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
@@ -44,6 +44,15 @@ import {
   type RunnerAttentionOperations,
   type TaskAgentAttention,
 } from "./runnerAttention";
+import {
+  browserAttentionNotifications,
+  disableAttentionNotifications,
+  enableAttentionNotifications,
+  loadAttentionInbox,
+  notificationPreference,
+  notifyForAttention,
+  type AttentionInboxResponse,
+} from "./attentionInbox";
 import { loadSecretStatus, type SecretStatusResponse } from "./secretStatus";
 import {
   loadRoomDetail,
@@ -87,6 +96,11 @@ function LiveStudio() {
   const [runnerInstances, setRunnerInstances] = useState<RunnerInstanceStatusResponse | null>(null);
   const [runnerAttention, setRunnerAttention] = useState<RunnerAttentionOperations | null>(null);
   const [taskAgentAttention, setTaskAgentAttention] = useState<TaskAgentAttention | null>(null);
+  const [attentionInbox, setAttentionInbox] = useState<AttentionInboxResponse | null>(null);
+  const [attentionNotificationsEnabled, setAttentionNotificationsEnabled] = useState(
+    () => notificationPreference() === "enabled",
+  );
+  const attentionNotifications = useMemo(browserAttentionNotifications, []);
   const [activityPackCatalog, setActivityPackCatalog] = useState<ActivityPackCatalog | null>(null);
   const [activityPackCatalogLoading, setActivityPackCatalogLoading] = useState(true);
   const [activityPackDetail, setActivityPackDetail] = useState<ActivityPackDetailResponse | null>(null);
@@ -135,6 +149,7 @@ function LiveStudio() {
         nextRunnerInstances,
         nextRunnerAttention,
         nextTaskAgentAttention,
+        nextAttentionInbox,
         nextActivityPackCatalog,
         nextRoomInventory,
         nextRoomCreation,
@@ -151,6 +166,7 @@ function LiveStudio() {
         loadRunnerInstances(),
         loadRunnerAttention(),
         selectedRoomId === null ? Promise.resolve(null) : loadTaskAgentAttention(selectedRoomId),
+        loadAttentionInbox(),
         loadActivityPackCatalog(),
         loadRoomInventory(),
         loadRoomCreation(activeDraftId),
@@ -170,6 +186,10 @@ function LiveStudio() {
         setRunnerInstances(nextRunnerInstances);
         setRunnerAttention(nextRunnerAttention);
         setTaskAgentAttention(nextTaskAgentAttention);
+        setAttentionInbox(nextAttentionInbox);
+        if (nextAttentionInbox !== null && attentionNotifications !== null) {
+          notifyForAttention(nextAttentionInbox, attentionNotifications);
+        }
         setActivityPackCatalog(nextActivityPackCatalog);
         setActivityPackCatalogLoading(false);
         setRoomInventory((previous) => overlayTaskSetup(
@@ -240,6 +260,20 @@ function LiveStudio() {
     ]);
     setRunnerAttention(nextOperations);
     setTaskAgentAttention(nextTask);
+  };
+
+  const changeAttentionNotificationPreference = async (enabled: boolean) => {
+    if (!enabled) {
+      disableAttentionNotifications();
+      setAttentionNotificationsEnabled(false);
+      return;
+    }
+    if (attentionNotifications === null) return;
+    const granted = await enableAttentionNotifications(attentionNotifications);
+    setAttentionNotificationsEnabled(granted);
+    if (granted && attentionInbox !== null) {
+      notifyForAttention(attentionInbox, attentionNotifications);
+    }
   };
 
   const inspectActivityPack = async (digest: string) => {
@@ -365,6 +399,9 @@ function LiveStudio() {
       runnerInstances={runnerInstances}
       runnerAttention={runnerAttention}
       taskAgentAttention={taskAgentAttention}
+      attentionInbox={attentionInbox}
+      attentionNotificationsEnabled={attentionNotificationsEnabled}
+      attentionNotificationsAvailable={attentionNotifications !== null}
       activityPackCatalog={activityPackCatalog}
       activityPackCatalogLoading={activityPackCatalogLoading}
       activityPackDetail={activityPackDetail}
@@ -377,6 +414,9 @@ function LiveStudio() {
         void requestRunnerLifecycle(instanceId, action);
       }}
       onRestartApprovedRunner={(instanceId) => void restartApprovedRunner(instanceId)}
+      onAttentionNotificationPreference={(enabled) => {
+        void changeAttentionNotificationPreference(enabled);
+      }}
       onInspectActivityPack={(digest) => void inspectActivityPack(digest)}
       onSelectActivityPack={selectActivityPack}
       onClearActivityPackSelection={clearActivityPackSelection}

@@ -10,23 +10,29 @@
 mod assignment_mcp_activations;
 
 use std::{
+    io::ErrorKind,
     net::TcpListener,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use assignment_mcp_activations::{
-    ActivationCompletionArgumentsV1, ActivationCompletionReceiptV1, ActivationLeaseClockErrorV1,
-    ActivationLeaseClockV1, ActivationLedgerErrorV1, ActivationLedgerSnapshotV1,
-    ActivationOperationLedgerV1, ActivationTerminalOutcomeV1, ActivationToolErrorCodeV1,
-    AssignedActivationLeaseV1, AssignedRunnerActivationAuthorityV1, AssignmentActivationToolsV1,
+    ActivationCompletionArgumentsV1, ActivationCompletionDispositionV1,
+    ActivationCompletionReceiptV1, ActivationLeaseClockErrorV1, ActivationLeaseClockV1,
+    ActivationLedgerErrorV1, ActivationLedgerSnapshotV1, ActivationOperationLedgerV1,
+    ActivationTerminalOutcomeV1, ActivationToolErrorCodeV1, AssignedActivationLeaseV1,
+    AssignedRunnerActivationAuthorityV1, AssignmentActivationToolsV1,
     FixedDaemonRunnerActivationGatewayV1, PreparedActivationAbandonV1, PreparedActivationAcquireV1,
     PreparedActivationCompletionV1, RunnerActivationGatewayErrorV1, RunnerActivationGatewayV1,
     SystemActivationLeaseClockV1,
 };
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, accept_hdr};
+use worldstream_core::{
+    ActivationContextInputV1, ActivationDeliveryV1 as CoreActivationDeliveryV1, CanonicalJsonV1,
+    CompleteHeadV1, RoomSequenceV1, prepare_activation_context,
+};
 use worldstream_protocol::{
     ActionOffer, ActivationClaim, ActivationDelivery, ActivationInvocationContext,
     ActivationLeaseOperation, ActivationOffer, ActivationOfferRequest, ActivationOffers,
@@ -372,7 +378,7 @@ fn completion_binds_current_cursor_generation_context_and_reuses_operation_ident
         "activation_cursor": 1,
         "lease_generation": 7,
         "context_hash": activation_context_hash(),
-        "disposition": "completed"
+        "disposition": "handled"
     });
 
     let lost = tools
@@ -406,12 +412,25 @@ fn altered_or_duplicate_completion_cannot_target_a_different_activation() {
     let tools = AssignmentActivationToolsV1::new(authority(), gateway, ledger, FixedClock(false));
     tools.next_activation(&json!({})).expect("acquire");
 
+    let invalid_disposition = tools
+        .complete(json!({
+            "activation_cursor": 1,
+            "lease_generation": 7,
+            "context_hash": activation_context_hash(),
+            "disposition": "completed"
+        }))
+        .expect_err("completion disposition is a closed protocol value");
+    assert_eq!(
+        invalid_disposition.code(),
+        ActivationToolErrorCodeV1::InvalidArguments
+    );
+
     let wrong = tools
         .complete(json!({
             "activation_cursor": 2,
             "lease_generation": 7,
             "context_hash": activation_context_hash(),
-            "disposition": "completed"
+            "disposition": "handled"
         }))
         .expect_err("wrong cursor");
     assert_eq!(wrong.code(), ActivationToolErrorCodeV1::StaleCursor);
@@ -420,7 +439,7 @@ fn altered_or_duplicate_completion_cannot_target_a_different_activation() {
         activation_cursor: 1,
         lease_generation: 7,
         context_hash: activation_context_hash(),
-        disposition: "completed".to_owned(),
+        disposition: ActivationCompletionDispositionV1::Handled,
     };
     tools
         .complete(serde_json::to_value(&arguments).expect("arguments"))
@@ -539,6 +558,72 @@ fn daemon_context_is_hash_verified_and_bound_to_exact_room_pack_and_frame_order(
         ],
     };
     assert!(assignment_mcp_activations::canonical_activation_context_hash_v1(&unordered).is_err());
+}
+
+#[test]
+fn daemon_context_reconstructs_the_exact_authoritative_pack_view_before_hashing() {
+    let context = activation_context();
+    let protocol_projection: worldstream_protocol::Projection =
+        serde_json::from_value(context.projection.clone()).expect("protocol projection");
+    let exact_view = json!({
+        "action_offers": &protocol_projection.action_offers,
+        "authorized_core": &protocol_projection.core,
+        "projection": &protocol_projection.activity,
+        "projection_schema": &context.projection_schema,
+    });
+    let canonical = |value: &Value| {
+        CanonicalJsonV1::parse(&serde_json::to_vec(value).expect("json"))
+            .and_then(|value| value.to_bytes())
+            .expect("canonical")
+    };
+    let room_head: CompleteHeadV1 =
+        serde_json::from_value(serde_json::to_value(&context.room_head).expect("room head value"))
+            .expect("complete head");
+    let expected = prepare_activation_context(ActivationContextInputV1 {
+        activation_id: context.activation_id.clone(),
+        claim_id: context.claim_id.clone(),
+        cause_room_seq: RoomSequenceV1::new(context.cause_room_seq).expect("room sequence"),
+        reason_code: context.reason_code.clone(),
+        lease_generation: context.lease_generation,
+        lease_until: context.lease_until.clone(),
+        semantic_deadline: context
+            .deadline
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .expect("semantic deadline"),
+        room_head,
+        integrity_generation: context.integrity_generation,
+        policy_revision: context.policy_revision,
+        authority_generation: context.authority_generation,
+        membership_generation: context.membership_generation,
+        frame_head: context.frame_head,
+        retained_floor: context.retained_floor,
+        cursor: context.cursor,
+        projection_schema: context.projection_schema.clone(),
+        projection_bytes: canonical(&exact_view),
+        action_offers_bytes: canonical(
+            &serde_json::to_value(&context.action_offers).expect("offers value"),
+        ),
+        runner_budget_bytes: canonical(&context.runner_budget),
+        runner_limits_bytes: canonical(&context.runner_limits),
+        artifact_references: vec![],
+        delivery: CoreActivationDeliveryV1::RetainedFrames {
+            cursor_exclusive: 2,
+            through_frame_head: 2,
+            frames: vec![],
+        },
+    })
+    .expect("exact Core context");
+
+    assert_eq!(
+        assignment_mcp_activations::canonical_activation_context_hash_v1(&context)
+            .expect("wire context hash"),
+        expected
+            .context_hash()
+            .expect("Core context hash")
+            .to_string(),
+    );
 }
 
 #[test]
@@ -790,6 +875,7 @@ fn production_gateway_uses_runner_protocol_and_exact_sealed_scope() {
     let ledger = FakeLedger::new();
     let gateway = FixedDaemonRunnerActivationGatewayV1::new(address, Duration::from_secs(2))
         .expect("gateway");
+    gateway.establish(&authority()).expect("established Runner");
     let tools = AssignmentActivationToolsV1::new(
         authority(),
         gateway,
@@ -806,21 +892,18 @@ fn production_gateway_uses_runner_protocol_and_exact_sealed_scope() {
     server.join().expect("mock server");
 }
 
-fn serve_runner_sessions(listener: &TcpListener) {
-    for stage in 0..3 {
+#[test]
+fn production_gateway_establishes_presence_without_issuing_activation_work() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let (live_sender, live_receiver) = mpsc::channel();
+    let (closed_sender, closed_receiver) = mpsc::channel();
+    let server = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept");
         let mut socket = accept_hdr(
             stream,
-            |request: &tungstenite::handshake::server::Request,
+            |_: &tungstenite::handshake::server::Request,
              mut response: tungstenite::handshake::server::Response| {
-                assert_eq!(request.uri().path(), "/v1/stream");
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok()),
-                    Some(format!("Bearer {BEARER}").as_str())
-                );
                 response.headers_mut().insert(
                     "Sec-WebSocket-Protocol",
                     tungstenite::http::HeaderValue::from_static(
@@ -850,7 +933,6 @@ fn serve_runner_sessions(listener: &TcpListener) {
         );
         let runner: RunnerHello = read_client(&mut socket, "runner.hello");
         assert_eq!(runner.runner_id, RUNNER_ID);
-        assert_eq!(runner.supported_pack_revisions, vec![authority_pack()]);
         send_server(
             &mut socket,
             "runner.ready",
@@ -858,6 +940,96 @@ fn serve_runner_sessions(listener: &TcpListener) {
                 runner_id: RUNNER_ID.to_owned(),
             },
         );
+        socket
+            .get_ref()
+            .set_nonblocking(true)
+            .expect("nonblocking fixture");
+        let mut byte = [0_u8; 1];
+        assert!(matches!(
+            socket.get_ref().peek(&mut byte),
+            Err(error) if error.kind() == ErrorKind::WouldBlock
+        ));
+        live_sender.send(()).expect("live signal");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match socket.get_ref().peek(&mut byte) {
+                Ok(0) => {
+                    closed_sender.send(()).expect("closed signal");
+                    return;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                result => unreachable!("retained socket close: {result:?}"),
+            }
+        }
+        unreachable!("retained Runner socket did not close with the gateway");
+    });
+    let gateway = FixedDaemonRunnerActivationGatewayV1::new(address, Duration::from_secs(2))
+        .expect("gateway");
+    gateway.establish(&authority()).expect("established Runner");
+    live_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("Runner session retained");
+    drop(gateway);
+    closed_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("Runner session dropped");
+    server.join().expect("mock server");
+}
+
+fn serve_runner_sessions(listener: &TcpListener) {
+    let (stream, _) = listener.accept().expect("accept");
+    let mut socket = accept_hdr(
+        stream,
+        |request: &tungstenite::handshake::server::Request,
+         mut response: tungstenite::handshake::server::Response| {
+            assert_eq!(request.uri().path(), "/v1/runner/stream");
+            assert_eq!(
+                request
+                    .headers()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                Some(format!("Bearer {BEARER}").as_str())
+            );
+            response.headers_mut().insert(
+                "Sec-WebSocket-Protocol",
+                tungstenite::http::HeaderValue::from_static(
+                    worldstream_protocol::WEBSOCKET_SUBPROTOCOL,
+                ),
+            );
+            Ok(response)
+        },
+    )
+    .expect("websocket");
+    let hello: ClientHello = read_client(&mut socket, "client.hello");
+    assert_eq!(hello.mode, worldstream_protocol::ClientMode::Runner);
+    send_server(
+        &mut socket,
+        "server.welcome",
+        &ServerWelcome {
+            session_id: "01ARZ3NDEKTSV4RRFFQ69G5FB4".parse().expect("session"),
+            selected_protocol: PROTOCOL_VERSION.to_owned(),
+            server_version: "0.1.0".to_owned(),
+            heartbeat_interval_ms: 5_000,
+            maximum_message_bytes: MAX_MESSAGE_BYTES,
+            authenticated_principal: Principal {
+                principal_id: PRINCIPAL_ID.to_owned(),
+                kind: PrincipalKind::Agent,
+            },
+        },
+    );
+    let runner: RunnerHello = read_client(&mut socket, "runner.hello");
+    assert_eq!(runner.runner_id, RUNNER_ID);
+    assert_eq!(runner.supported_pack_revisions, vec![authority_pack()]);
+    send_server(
+        &mut socket,
+        "runner.ready",
+        &RunnerReady {
+            runner_id: RUNNER_ID.to_owned(),
+        },
+    );
+    for stage in 0..3 {
         match stage {
             0 => {
                 let request: ActivationOfferRequest = read_client(&mut socket, "activation.offer");
@@ -865,6 +1037,9 @@ fn serve_runner_sessions(listener: &TcpListener) {
                 assert_eq!(request.runner_id, RUNNER_ID);
                 assert_eq!(request.room_id, ROOM_ID);
                 assert_eq!(request.member_id, MEMBER_ID);
+                send_server(&mut socket, "server.ping", &json!({}));
+                let pong: Value = read_client(&mut socket, "client.pong");
+                assert_eq!(pong, json!({}));
                 send_server(
                     &mut socket,
                     "activation.offers",
@@ -1062,7 +1237,7 @@ fn completion_arguments() -> Value {
         "activation_cursor": 1,
         "lease_generation": 7,
         "context_hash": activation_context_hash(),
-        "disposition": "completed"
+        "disposition": "handled"
     })
 }
 

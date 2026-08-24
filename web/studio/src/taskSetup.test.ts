@@ -187,7 +187,7 @@ describe("Task setup client", () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(ready), { status: 200 }));
     await expect(requestTaskSetup("setup-alpha", "retry", fetcher)).resolves.toEqual(ready);
     expect(fetcher).toHaveBeenCalledWith(
-      "/api/v1/task-setups/setup-alpha:retry",
+      "/api/v1/task-setups/setup-alpha/retry",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -196,7 +196,7 @@ describe("Task setup client", () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(ready), { status: 200 }));
     await expect(requestTaskSetup("setup-alpha", "launch", fetcher)).resolves.toEqual(ready);
     expect(fetcher).toHaveBeenCalledWith(
-      "/api/v1/task-setups/setup-alpha:launch",
+      "/api/v1/task-setups/setup-alpha/launch",
       expect.objectContaining({ method: "POST" }),
     );
   });

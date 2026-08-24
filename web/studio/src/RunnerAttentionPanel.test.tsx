@@ -78,6 +78,17 @@ function operations(): RunnerAttentionOperations {
       observed_at_unix_ms: 1_000,
       next_action: "Restore Runner capacity or wait for active work to complete.",
     }],
+    managed_hosts: [{
+      schema: "worldstream/managed-agent-host-status/v1",
+      assignment_id: "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+      host_id: "reference-agent-host",
+      host_revision: "r1",
+      state: "running",
+      ready: true,
+      capacity: 1,
+      active_invocations: 1,
+      freshness: "fresh",
+    }],
     restart_attempts: [{
       schema: "worldstream/studio-runner-restart-operation/v1",
       operation_id: OPERATION,

@@ -86,4 +86,26 @@ fn attention_accepts_pack_declared_action_types() {
             .windows(b"action_types".len())
             .any(|window| window == b"action_types")
     );
+    let decoded = CanonicalJsonV1::decode_canonical::<ActivationDecisionV1>(
+        decision.canonical_decision_bytes(),
+    )
+    .unwrap_or_else(|error| panic!("Activation decision shape: {error}"));
+    let activation_id = decoded
+        .activation_id
+        .unwrap_or_else(|| panic!("Activation intent identity"));
+    assert!(
+        activation_id
+            .parse::<worldstream_protocol::UlidString>()
+            .is_ok()
+    );
+    assert!(!activation_id.contains(decoded.attention.target_member_id.as_str()));
+    assert_eq!(
+        activation_id,
+        activation_id_for_attention_v1(
+            decoded.cause_room_seq,
+            &decoded.attention.target_member_id,
+            &decoded.attention.deduplication_key,
+        )
+        .unwrap_or_else(|error| panic!("recovered Activation identity: {error}"))
+    );
 }

@@ -100,8 +100,9 @@ use worldstream_core::{
     StoredSemanticResultV1, TimerFiredRequestV1, TimerFiredV1, TimerGenerationV1, TimerId,
     TimerScheduledFor, TraceErrorV1, TransitionId, TransitionV1, ValidatedAuthorityBootstrapV1,
     ValidatedAuthorityChangeV1, ValidatedPackViewV1, VerifiedCurrentRoomMaterializationV1,
-    ViewerAdapterInputV1, commit_existing_room, prepare_activation_context,
-    recover_room_from_storage, resolve_authorized_room_operation_for_adapter,
+    ViewerAdapterInputV1, activation_id_for_attention_v1, commit_existing_room,
+    prepare_activation_context, recover_room_from_storage,
+    resolve_authorized_room_operation_for_adapter,
 };
 use worldstream_sqlite_open::{ExactSqliteConnection, ExactSqliteOpenError, open_exact};
 use worldstream_transfer::{
@@ -2347,6 +2348,7 @@ pub enum SqliteObservationResetReasonV1 {
 #[derive(Clone, Eq, PartialEq)]
 pub struct SqliteObservationProjectionResetV1 {
     complete_head: CompleteHeadV1,
+    projection_schema: String,
     canonical_bytes: Vec<u8>,
     projection_hash: Blake3DigestV1,
 }
@@ -2356,6 +2358,7 @@ impl fmt::Debug for SqliteObservationProjectionResetV1 {
         formatter
             .debug_struct("SqliteObservationProjectionResetV1")
             .field("complete_head", &self.complete_head)
+            .field("projection_schema", &self.projection_schema)
             .field("projection_hash", &self.projection_hash)
             .field("canonical_bytes_len", &self.canonical_bytes.len())
             .finish()
@@ -2369,8 +2372,8 @@ impl SqliteObservationProjectionResetV1 {
     }
 
     #[must_use]
-    pub const fn projection_schema(&self) -> &'static str {
-        worldstream_core::PROJECTION_SCHEMA_V1
+    pub fn projection_schema(&self) -> &str {
+        &self.projection_schema
     }
 
     #[must_use]
@@ -6593,7 +6596,7 @@ fn lookup_authority_change_receipt(
     let generation = parse_safe_authority_counter(row.resulting_generation)?;
     let changed_at = parse_authority_text::<AuthorityCheckedAt>(&row.checked_at)?;
     let receipt =
-        AuthorityChangeReceiptV1::from_applied_change(change, result, generation, changed_at)?;
+        AuthorityChangeReceiptV1::from_retained_change(change, result, generation, changed_at)?;
     let (target_kind, target_id, secondary_target_id) =
         authority_change_target_storage(receipt.target());
     let (change_kind, prior_generation, reason_code) = authority_change_audit_facts(change);
@@ -10576,12 +10579,14 @@ fn verify_recovery_activation_decisions(
                     transition.room_seq().get(),
                     attention.deduplication_key
                 ),
-                activation_id: Some(format!(
-                    "activation:{}:{}:{}",
-                    transition.room_seq().get(),
-                    attention.target_member_id,
-                    attention.deduplication_key
-                )),
+                activation_id: Some(
+                    activation_id_for_attention_v1(
+                        transition.room_seq(),
+                        &attention.target_member_id,
+                        &attention.deduplication_key,
+                    )
+                    .map_err(|_| RoomRecoveryErrorV1::Corrupt)?,
+                ),
                 cause_room_seq: transition.room_seq(),
                 attention,
                 policy: ActivationPolicyDecisionV1 {
@@ -16736,6 +16741,7 @@ fn reset_from_current_view(
         .map_err(|_| SqliteObservationErrorV1::Corrupt)?;
     Ok(Box::new(SqliteObservationProjectionResetV1 {
         complete_head: complete_head.clone(),
+        projection_schema: current_view.projection_schema().to_owned(),
         canonical_bytes: current_view.canonical_bytes().to_vec(),
         projection_hash,
     }))
@@ -20665,6 +20671,7 @@ mod tests {
         head: &CompleteHeadV1,
     ) {
         assert_eq!(reset.complete_head(), head);
+        assert_eq!(reset.projection_schema(), view.projection_schema());
         assert_eq!(reset.canonical_bytes(), view.canonical_bytes());
         assert_eq!(
             reset.projection_hash(),
@@ -21446,10 +21453,10 @@ mod tests {
         ));
 
         let mut too_long = complete.clone();
-        too_long.push((11, "0012-future-schema".to_owned()));
+        too_long.push((13, "0014-future-schema".to_owned()));
         assert!(matches!(
             verify_migration_prefix(&too_long),
-            Err(super::MigrationVerificationError::Unsupported { version: 11 })
+            Err(super::MigrationVerificationError::Unsupported { version: 13 })
         ));
 
         let downgraded = vec![(0, "0000-downgraded-schema".to_owned())];
@@ -23269,7 +23276,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("read restarted migration ledger: {error}"));
-        assert_eq!(migration_count, 11);
+        assert_eq!(migration_count, 12);
     }
 
     #[test]
@@ -23562,7 +23569,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap_or_else(|error| panic!("restored migration ledger: {error}"));
-        assert_eq!(restored_migrations, 11);
+        assert_eq!(restored_migrations, 12);
 
         let startup_dir = tempdir().unwrap_or_else(|error| panic!("startup directory: {error}"));
         let startup = startup_dir.path().join("startup.sqlite3");
@@ -30117,6 +30124,24 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("count committed activation decisions: {error}"));
         assert!(activation_count > 0);
+        let activation_id: String = connection
+            .query_row(
+                "SELECT activation_id FROM activation_intents WHERE room_id = ?1 LIMIT 1",
+                [ROOM],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("read committed Activation identity: {error}"));
+        assert_eq!(activation_id.len(), 26);
+        assert!(activation_id.as_bytes()[0].is_ascii_digit());
+        assert!(activation_id.as_bytes()[0] <= b'7');
+        assert!(activation_id.bytes().all(|byte| {
+            byte.is_ascii_digit()
+                || matches!(
+                    byte,
+                    b'A'..=b'H' | b'J'..=b'K' | b'M'..=b'N' | b'P'..=b'T' | b'V'..=b'Z'
+                )
+        }));
+        assert!(!activation_id.contains(PARTICIPANT));
 
         let registry = builtin_agent_heist_registry()
             .unwrap_or_else(|error| panic!("Agent Heist recovery registry: {error}"));
@@ -33640,11 +33665,11 @@ mod tests {
             vec![
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 11,
+                    schema_version: 12,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Applied,
-                    schema_version: 11,
+                    schema_version: 12,
                 },
             ]
         );
@@ -33684,16 +33709,16 @@ mod tests {
             [
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::Started,
-                    schema_version: 11,
+                    schema_version: 12,
                 },
                 SqliteTelemetryEventV1::Migration {
                     phase: SqliteMigrationPhaseV1::AlreadyCurrent,
-                    schema_version: 11,
+                    schema_version: 12,
                 },
             ]
         );
         assert!(final_events.iter().all(|event| match event {
-            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 11,
+            SqliteTelemetryEventV1::Migration { schema_version, .. } => *schema_version <= 12,
             SqliteTelemetryEventV1::Recovery { .. }
             | SqliteTelemetryEventV1::Integrity { .. }
             | SqliteTelemetryEventV1::StorageDiagnostic { .. } => true,

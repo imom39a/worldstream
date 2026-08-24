@@ -1156,7 +1156,7 @@ fn lookup_change_receipt<C: GenericClient>(
     let generation = parse_counter(receipt.resulting_generation)?;
     let changed_at = parse_text::<AuthorityCheckedAt>(&receipt.checked_at)?;
     let rebuilt =
-        AuthorityChangeReceiptV1::from_applied_change(change, result, generation, changed_at)?;
+        AuthorityChangeReceiptV1::from_retained_change(change, result, generation, changed_at)?;
     let (target_kind, target_id, secondary_target_id) = target_storage(rebuilt.target());
     let (change_kind, prior_generation, reason_code) = audit_facts(change);
     if receipt.authenticated_principal.as_deref() != Some(change.actor_principal_id().as_str())

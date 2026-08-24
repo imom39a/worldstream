@@ -42,3 +42,8 @@ test = false
 name = "worldstream-assignment-mcp"
 path = "src/assignment_mcp_main.rs"
 test = false
+
+[[bin]]
+name = "worldstream-managed-agent-host"
+path = "src/managed_agent_host_main.rs"
+test = false

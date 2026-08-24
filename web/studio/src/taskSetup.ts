@@ -100,7 +100,7 @@ export async function requestTaskSetup(
   if (!isIdentifier(draftId)) return null;
   try {
     const response = await fetcher(
-      `/api/v1/task-setups/${encodeURIComponent(draftId)}:${action}`,
+      `/api/v1/task-setups/${encodeURIComponent(draftId)}/${action}`,
       { method: "POST", headers: { Accept: "application/json" } },
     );
     if (!response.ok) return null;

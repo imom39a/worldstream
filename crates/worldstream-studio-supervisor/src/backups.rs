@@ -30,6 +30,7 @@ use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
 
 const OPERATION_SCHEMA_V1: &str = "worldstream/studio-backup-operation/v1";
 const MAX_OPERATION_ID_BYTES: usize = 64;
+const MAX_OPERATIONS: usize = 256;
 
 /// Storage profiles surfaced without pretending provider support exists.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -574,6 +575,61 @@ impl BackupOperationsV1 {
         &self,
         operation_id: &str,
     ) -> Result<Option<BackupOperationStatusV1>, BackupOperationErrorV1> {
+        let _guard = self
+            .serial
+            .lock()
+            .map_err(|_| BackupOperationErrorV1::Unavailable)?;
+        self.status_unlocked(operation_id)
+    }
+
+    /// Lists every retained browser-safe backup operation in stable order.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for malformed, unexpected, excessive, or unavailable
+    /// protected operation records.
+    pub fn statuses(&self) -> Result<Vec<BackupOperationStatusV1>, BackupOperationErrorV1> {
+        let _guard = self
+            .serial
+            .lock()
+            .map_err(|_| BackupOperationErrorV1::Unavailable)?;
+        let mut operation_ids = Vec::new();
+        for entry in fs::read_dir(&self.root).map_err(|_| BackupOperationErrorV1::Unavailable)? {
+            let entry = entry.map_err(|_| BackupOperationErrorV1::Unavailable)?;
+            if !entry
+                .file_type()
+                .map_err(|_| BackupOperationErrorV1::Unavailable)?
+                .is_dir()
+            {
+                return Err(BackupOperationErrorV1::Unavailable);
+            }
+            let operation_id = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| BackupOperationErrorV1::Unavailable)?;
+            validate_operation_id(&operation_id)?;
+            operation_ids.push(operation_id);
+            if operation_ids.len() > MAX_OPERATIONS {
+                return Err(BackupOperationErrorV1::Unavailable);
+            }
+        }
+        operation_ids.sort();
+        if operation_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(BackupOperationErrorV1::Unavailable);
+        }
+        operation_ids
+            .into_iter()
+            .map(|operation_id| {
+                self.status_unlocked(&operation_id)?
+                    .ok_or(BackupOperationErrorV1::Unavailable)
+            })
+            .collect()
+    }
+
+    fn status_unlocked(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<BackupOperationStatusV1>, BackupOperationErrorV1> {
         validate_operation_id(operation_id)?;
         let directory = self.operation_directory(operation_id);
         if let Some(result) = read_json_if_present(&directory.join("result.json"))? {
@@ -1057,6 +1113,12 @@ mod tests {
                 .map(|status| status.phase),
             Some(BackupOperationPhaseV1::Retrying)
         );
+        let statuses = reopened
+            .statuses()
+            .unwrap_or_else(|error| unreachable!("backup statuses: {error:?}"));
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].operation_id, "retry-original");
+        assert_eq!(statuses[0].phase, BackupOperationPhaseV1::Retrying);
         let complete = reopened
             .run("retry-original")
             .unwrap_or_else(|error| unreachable!("retry: {error:?}"));

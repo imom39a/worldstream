@@ -4042,7 +4042,7 @@ mod tests {
         let identity = worldstream_core::OperationIdentityV1::ExternalInput(Box::new(
             worldstream_core::ExternalInputOperationIdentityV1 {
                 room_id: room_id.parse()?,
-                source_id: "worldstream.host.lobby".parse()?,
+                source_id: worldstream_core::HOST_LOBBY_LAUNCH_SOURCE.parse()?,
                 input_id: input_id.parse()?,
             },
         ));

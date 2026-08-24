@@ -24,7 +24,7 @@ export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildPro
   if (catalog === null) {
     return (
       <section aria-labelledby="agent-profile-build-title">
-        <p className="eyebrow">Build · External Agent configuration</p>
+        <p className="eyebrow">Build · Agent execution configuration</p>
         <h2 id="agent-profile-build-title">Agent Profiles</h2>
         <div role="status">
           <strong>Agent Profile catalog unavailable</strong>
@@ -64,8 +64,9 @@ export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildPro
   return (
     <section aria-labelledby="agent-profile-build-title">
       <div>
-        <p className="eyebrow">Build · External Agent configuration</p>
+        <p className="eyebrow">Build · Agent execution configuration</p>
         <h2 id="agent-profile-build-title">Agent Profiles</h2>
+        <p>External assignment-bound MCP is the foundational execution path. Managed reference hosts are an explicit post-MVP option.</p>
         <p>Publish non-secret policy and exact kind-bound secret settings as an immutable revision.</p>
       </div>
 
@@ -77,6 +78,9 @@ export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildPro
             <li key={`${profile.profile_id}\0${profile.revision}`}>
               <strong>{profile.display_name}</strong>
               <span>{profile.profile_id} · Revision {profile.revision}</span>
+              <span>{profile.host_contract.kind === "managed_reference"
+                ? "Managed reference · post-MVP"
+                : "External or generic MCP · foundational"}</span>
               <span>{profile.secret_settings.every((setting) => setting.availability === "configured")
                 ? "Provider settings configured"
                 : "Provider settings need attention"}</span>

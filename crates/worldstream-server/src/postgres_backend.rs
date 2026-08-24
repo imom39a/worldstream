@@ -2336,6 +2336,7 @@ impl PostgresGatewayBackend {
                 projection_bytes,
             } => {
                 let projection = projection_from_canonical_bytes(projection_bytes)?;
+                let projection_schema = projection_schema_from_canonical_bytes(projection_bytes)?;
                 let projection_hash =
                     worldstream_core::projection_hash_for_canonical_bytes(projection_bytes)
                         .map_err(|_| BackendError::InvalidResult)?
@@ -2360,7 +2361,7 @@ impl PostgresGatewayBackend {
                         integrity_generation: verification.integrity_generation,
                         baseline_frame_head: *frame_head,
                         reset_reason: reset_reason.to_owned(),
-                        projection_schema: worldstream_core::PROJECTION_SCHEMA_V1.to_owned(),
+                        projection_schema,
                         projection,
                         projection_hash,
                     }),
@@ -2476,6 +2477,16 @@ fn projection_from_canonical_bytes(bytes: &[u8]) -> Result<Projection, BackendEr
         "action_offers": object.get("action_offers").cloned().ok_or(BackendError::InvalidResult)?,
     }))
     .map_err(|_| BackendError::InvalidResult)
+}
+
+fn projection_schema_from_canonical_bytes(bytes: &[u8]) -> Result<String, BackendError> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| BackendError::InvalidResult)?;
+    value
+        .get("projection_schema")
+        .and_then(Value::as_str)
+        .filter(|schema| !schema.is_empty())
+        .map(str::to_owned)
+        .ok_or(BackendError::InvalidResult)
 }
 
 fn replay_view_bytes(envelope: &CanonicalJsonV1) -> Result<Vec<u8>, BackendError> {
@@ -3132,7 +3143,8 @@ mod tests {
     use super::{
         ActionReply, ActionSubmit, AttachReply, BackendError, GatewayBackend, GatewaySession,
         MAX_DSN_BYTES, MemberCapabilityIssueRequest, ObservationAck, PostgresGatewayBackend,
-        RoomAttach, RoomSyncAck, creation_time, map_admission_lane_error, read_postgres_dsn,
+        RoomAttach, RoomSyncAck, creation_time, map_admission_lane_error,
+        projection_schema_from_canonical_bytes, read_postgres_dsn,
     };
     use worldstream_core::{
         AdmissionLaneErrorV1, AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1,
@@ -3150,6 +3162,21 @@ mod tests {
     };
     use worldstream_runtime::SecretSource;
 
+    #[test]
+    fn reset_uses_descriptor_projection_schema_from_exact_view() {
+        let bytes = br#"{"action_offers":[],"authorized_core":{},"projection":{},"projection_schema":"agent-heist/projection/v1"}"#;
+        assert_eq!(
+            projection_schema_from_canonical_bytes(bytes)
+                .unwrap_or_else(|error| unreachable!("descriptor schema: {error:?}")),
+            "agent-heist/projection/v1"
+        );
+        assert!(matches!(
+            projection_schema_from_canonical_bytes(
+                br#"{"action_offers":[],"authorized_core":{},"projection":{},"projection_schema":""}"#
+            ),
+            Err(BackendError::InvalidResult)
+        ));
+    }
     fn session(value: u8, id: &str) -> GatewaySession {
         let id = id
             .parse()
@@ -3801,6 +3828,31 @@ mod tests {
                 .unwrap_or_else(|error| unreachable!("replay sealed runner: {error:?}")),
             sealed_runner_first
         );
+        let mut mismatched_principal = sealed_runner.clone();
+        mismatched_principal["owner_principal_id"] = json!("01ARZ3NDEKTSV4RRFFQ69G5FC9");
+        assert!(matches!(
+            restarted.provision_runner_capability(
+                &host,
+                serde_json::from_value::<RunnerCapabilityProvisionRequestV1>(mismatched_principal,)
+                    .unwrap_or_else(|error| unreachable!("mismatched Runner principal: {error}")),
+            ),
+            Err(BackendError::Forbidden)
+        ));
+        let mut mismatched_principal_change = sealed_runner.clone();
+        mismatched_principal_change["principal_idempotency_key"] =
+            json!("01ARZ3NDEKTSV4RRFFQ69G5FE9");
+        assert!(matches!(
+            restarted.provision_runner_capability(
+                &host,
+                serde_json::from_value::<RunnerCapabilityProvisionRequestV1>(
+                    mismatched_principal_change,
+                )
+                .unwrap_or_else(|error| {
+                    unreachable!("mismatched Runner principal change: {error}")
+                }),
+            ),
+            Err(BackendError::Conflict)
+        ));
         let mut conflicting_runner = sealed_runner;
         conflicting_runner["capability"]["bearer"] =
             json!(BearerWireV1::from_bytes([0xc4; 32]).to_wire());
