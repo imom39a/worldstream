@@ -14,7 +14,13 @@ use serde_json::{Value, json};
 use tempfile::tempdir;
 use tungstenite::{Message, accept_hdr};
 use worldstream_protocol::{
-    ActionOffer, PackReference, Projection, RoomHead, SealedCapabilityBearerV1,
+    ActionOffer, ActivityPackCatalogAction, ActivityPackCatalogResponse,
+    ActivityPackCatalogRevisionDetail, ActivityPackCatalogRevisionResponse,
+    ActivityPackCatalogRevisionSummary, ActivityPackCatalogSchema, PackReference, Projection,
+    RoomHead, SealedCapabilityBearerV1,
+};
+use worldstream_studio_supervisor::activity_packs::{
+    ActivityPackProxyErrorV1, DaemonActivityPackSource,
 };
 use worldstream_studio_supervisor::assignment_mcp::{
     self, AssignedMembershipAuthorityV1, AssignedMembershipGatewayErrorV1,
@@ -30,6 +36,7 @@ const ASSIGNMENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 const OTHER_ASSIGNMENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const MEMBER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const RUNNER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB3";
 const BEARER: &str = "wsb1:abababababababababababababababababababababababababababababababab";
 
 #[derive(Clone)]
@@ -38,6 +45,53 @@ struct FakeSource;
 #[derive(Clone)]
 struct FakeLaunchSource {
     authority_reference: SecretReferenceV1,
+    runner_authority_reference: SecretReferenceV1,
+}
+
+#[derive(Clone)]
+struct OversizedPackSource;
+
+impl DaemonActivityPackSource for OversizedPackSource {
+    fn catalog(&self) -> Result<ActivityPackCatalogResponse, ActivityPackProxyErrorV1> {
+        Err(ActivityPackProxyErrorV1::InvalidResponse)
+    }
+
+    fn revision(
+        &self,
+        exact_digest: &str,
+    ) -> Result<ActivityPackCatalogRevisionResponse, ActivityPackProxyErrorV1> {
+        let pack = PackReference {
+            id: "worldstream.counter".to_owned(),
+            version: "1.0.0".to_owned(),
+            digest: exact_digest.to_owned(),
+        };
+        Ok(ActivityPackCatalogRevisionResponse {
+            version: "activity_pack_catalog.v1".to_owned(),
+            revision: ActivityPackCatalogRevisionDetail {
+                summary: ActivityPackCatalogRevisionSummary {
+                    pack,
+                    name: "Counter".to_owned(),
+                    selectable_for_new_rooms: true,
+                    runnable_for_retained_rooms: true,
+                },
+                roles: Vec::new(),
+                configuration_schema: ActivityPackCatalogSchema {
+                    schema_id: "config".to_owned(),
+                    schema_digest: digest('b'),
+                    schema: json!({"type":"object"}),
+                },
+                actions: vec![ActivityPackCatalogAction {
+                    action_type: "increment".to_owned(),
+                    payload_schema: ActivityPackCatalogSchema {
+                        schema_id: "increment".to_owned(),
+                        schema_digest: digest('a'),
+                        schema: json!({"type":"string","description":"x".repeat(70_000)}),
+                    },
+                }],
+                lobby_compatibility: None,
+            },
+        })
+    }
 }
 
 impl AssignedMembershipLaunchSourceV1 for FakeLaunchSource {
@@ -56,7 +110,14 @@ impl AssignedMembershipLaunchSourceV1 for FakeLaunchSource {
             principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY".to_owned(),
             room_id: ROOM.to_owned(),
             member_id: MEMBER.to_owned(),
+            pack: PackReference {
+                id: "worldstream.counter".to_owned(),
+                version: "1.0.0".to_owned(),
+                digest: digest('2'),
+            },
             authority_reference: self.authority_reference.clone(),
+            runner_id: RUNNER.to_owned(),
+            runner_authority_reference: self.runner_authority_reference.clone(),
         })
     }
 }
@@ -251,6 +312,10 @@ fn stdio_exposes_only_generic_bounded_tools_and_safe_errors() {
     assert!(output.contains("worldstream.list_assigned_tasks"));
     assert!(output.contains("worldstream.observe"));
     assert!(output.contains("worldstream.acknowledge"));
+    assert!(output.contains("worldstream.list_current_action_offers"));
+    assert!(output.contains("worldstream.submit_action"));
+    assert!(output.contains("worldstream.next_activation"));
+    assert!(output.contains("worldstream.complete_activation"));
     assert!(!output.contains(ROOM));
     assert!(!output.contains(MEMBER));
     assert!(!output.contains(BEARER));
@@ -400,11 +465,15 @@ fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() 
     let authority_reference = vault
         .store(SecretKindV1::MembershipAuthority, &[0xab; 32])
         .unwrap_or_else(|error| panic!("authority: {error:?}"));
+    let runner_authority_reference = vault
+        .store(SecretKindV1::RunnerAuthority, &[0xcd; 32])
+        .unwrap_or_else(|error| panic!("runner authority: {error:?}"));
     let registry = AssignmentMcpLaunchRegistryV1::open(
         &state.join("assignment-mcp-launches"),
         &state.join("assignment-mcp-progress"),
         FakeLaunchSource {
             authority_reference,
+            runner_authority_reference,
         },
         "127.0.0.1:9410"
             .parse()
@@ -412,9 +481,23 @@ fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() 
         Duration::from_millis(250),
     )
     .unwrap_or_else(|error| panic!("registry: {error:?}"));
-    let launch_reference = registry
-        .issue(ASSIGNMENT)
+    let first_registry = registry.clone();
+    let second_registry = registry.clone();
+    let first_issue = thread::spawn(move || first_registry.issue(ASSIGNMENT));
+    let second_issue = thread::spawn(move || second_registry.issue(ASSIGNMENT));
+    let launch_reference = first_issue
+        .join()
+        .unwrap_or_else(|_| panic!("first issue thread"))
         .unwrap_or_else(|error| panic!("issue: {error:?}"));
+    let concurrent_reference = second_issue
+        .join()
+        .unwrap_or_else(|_| panic!("second issue thread"))
+        .unwrap_or_else(|error| panic!("concurrent issue: {error:?}"));
+    assert_eq!(concurrent_reference, launch_reference);
+    let retried_reference = registry
+        .issue(ASSIGNMENT)
+        .unwrap_or_else(|error| panic!("retry issue: {error:?}"));
+    assert_eq!(retried_reference, launch_reference);
     let registration = fs::read_to_string(
         state
             .join("assignment-mcp-launches")
@@ -423,6 +506,15 @@ fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() 
     .unwrap_or_else(|error| panic!("registration: {error}"));
     assert!(!registration.contains(BEARER));
     assert!(!registration.contains("runner_authority"));
+    assert!(!registration.contains(RUNNER));
+    let activation_registration = fs::read_to_string(
+        state
+            .join("assignment-mcp-launches")
+            .join(format!("{launch_reference}.activation.json")),
+    )
+    .unwrap_or_else(|error| panic!("activation registration: {error}"));
+    assert!(activation_registration.contains(RUNNER));
+    assert!(!activation_registration.contains(BEARER));
 
     let first = open_registered_assignment_mcp(&state, &launch_reference)
         .unwrap_or_else(|error| panic!("open first: {error:?}"));
@@ -435,12 +527,63 @@ fn supervisor_issued_launch_is_exclusive_restartable_revocable_and_non_secret() 
         .unwrap_or_else(|error| panic!("list: {error:?}"));
     assert_eq!(tasks["tasks"][0]["task_id"], ASSIGNMENT);
     assert_safe(&tasks);
+    assert_eq!(
+        restarted.next_activation(&json!({"runner_id":RUNNER})),
+        Err(assignment_mcp::AssignmentMcpErrorV1::InvalidInput),
+    );
+    assert_eq!(
+        restarted.complete_activation(json!({"activation_id":ASSIGNMENT})),
+        Err(assignment_mcp::AssignmentMcpErrorV1::InvalidInput),
+    );
     registry
         .revoke(&launch_reference)
         .unwrap_or_else(|error| panic!("revoke: {error:?}"));
     assert_eq!(
         restarted.list_assigned_tasks(json!({})),
         Err(assignment_mcp::AssignmentMcpErrorV1::AssignmentRevoked),
+    );
+    let replacement_reference = registry
+        .issue(ASSIGNMENT)
+        .unwrap_or_else(|error| panic!("replacement issue: {error:?}"));
+    assert_ne!(replacement_reference, launch_reference);
+}
+
+#[test]
+fn oversized_pinned_schema_rejects_launch_before_any_reference_is_published() {
+    let directory = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let state = directory.path().join("studio");
+    let vault = FileSecretVaultV1::open(&state.join("secrets"))
+        .unwrap_or_else(|error| panic!("vault: {error:?}"));
+    let authority_reference = vault
+        .store(SecretKindV1::MembershipAuthority, &[0xab; 32])
+        .unwrap_or_else(|error| panic!("authority: {error:?}"));
+    let runner_authority_reference = vault
+        .store(SecretKindV1::RunnerAuthority, &[0xcd; 32])
+        .unwrap_or_else(|error| panic!("runner authority: {error:?}"));
+    let launches = state.join("assignment-mcp-launches");
+    let registry = AssignmentMcpLaunchRegistryV1::open(
+        &launches,
+        &state.join("assignment-mcp-progress"),
+        FakeLaunchSource {
+            authority_reference,
+            runner_authority_reference,
+        },
+        "127.0.0.1:9410"
+            .parse()
+            .unwrap_or_else(|error| panic!("local daemon: {error}")),
+        Duration::from_millis(250),
+    )
+    .unwrap_or_else(|error| panic!("registry: {error:?}"))
+    .with_activity_packs(OversizedPackSource);
+    assert_eq!(
+        registry.issue(ASSIGNMENT),
+        Err(AssignedMembershipSourceErrorV1::Invalid),
+    );
+    assert_eq!(
+        fs::read_dir(launches)
+            .unwrap_or_else(|error| panic!("launch directory: {error}"))
+            .count(),
+        0,
     );
 }
 

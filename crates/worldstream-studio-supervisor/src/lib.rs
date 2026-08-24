@@ -6,6 +6,10 @@
 pub mod activity_packs;
 pub mod agent_profiles;
 pub mod assignment_mcp;
+pub mod assignment_mcp_actions;
+pub mod assignment_mcp_activation_ledger;
+pub mod assignment_mcp_activations;
+pub mod assignment_mcp_operations;
 pub mod backups;
 pub mod lifecycle;
 pub mod participant_handoff;

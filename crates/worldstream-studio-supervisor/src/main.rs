@@ -228,7 +228,8 @@ async fn main() -> Result<()> {
         args.daemon,
         daemon_timeout,
     )
-    .context("assignment MCP launch registry is unavailable")?;
+    .context("assignment MCP launch registry is unavailable")?
+    .with_activity_packs(activity_packs.clone());
     let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates(
         source,
         lifecycle,

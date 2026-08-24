@@ -1851,6 +1851,22 @@ impl AssignedMembershipLaunchSourceV1 for FileAssignedMembershipSourceV1 {
         {
             return Err(AssignedMembershipSourceErrorV1::Revoked);
         }
+        let runner = seat
+            .runner
+            .as_ref()
+            .filter(|runner| runner.capability.provisioned)
+            .ok_or(AssignedMembershipSourceErrorV1::Revoked)?;
+        if self
+            .vault
+            .inspect(
+                SecretKindV1::RunnerAuthority,
+                &runner.capability.secret_reference,
+            )
+            .availability
+            != crate::secrets::SecretAvailabilityV1::Configured
+        {
+            return Err(AssignedMembershipSourceErrorV1::Revoked);
+        }
         Ok(AssignedMembershipLaunchBindingV1 {
             assignment_id: assignment.assignment_id,
             profile_id: assignment.profile.profile_id,
@@ -1859,7 +1875,10 @@ impl AssignedMembershipLaunchSourceV1 for FileAssignedMembershipSourceV1 {
             principal_id: assignment.membership.principal_id,
             room_id: assignment.membership.room_id,
             member_id: assignment.membership.member_id,
+            pack: operation.pack.clone(),
             authority_reference: capability.secret_reference.clone(),
+            runner_id: runner.runner_id.clone(),
+            runner_authority_reference: runner.capability.secret_reference.clone(),
         })
     }
 }

@@ -919,10 +919,13 @@ mod tests {
     fn startup_accepts_only_the_daemon_canonical_backup_root() {
         let temp = tempdir().unwrap_or_else(|error| unreachable!("temp: {error}"));
         let data = temp.path().join("data");
+        let expected = fs::canonicalize(temp.path())
+            .unwrap_or_else(|error| unreachable!("canonical temp: {error}"))
+            .join("studio/backups");
         assert_eq!(
             prepare_shared_backup_root(&temp.path().join("studio"), &data)
                 .unwrap_or_else(|error| unreachable!("shared root: {error:?}")),
-            temp.path().join("studio/backups")
+            expected
         );
         assert_eq!(
             prepare_shared_backup_root(&temp.path().join("different-studio"), &data),

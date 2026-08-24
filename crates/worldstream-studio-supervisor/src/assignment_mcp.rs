@@ -15,7 +15,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
+use crate::{
+    activity_packs::{ActivityPackProxyErrorV1, DaemonActivityPackSource},
+    assignment_mcp_actions::{
+        AssignmentMcpActionErrorV1, AssignmentMcpActionSchemaErrorV1,
+        AssignmentMcpActionSchemaSourceV1, AssignmentMcpSubmitActionV1,
+        FixedDaemonAssignmentMcpActionGatewayV1, list_current_action_offers, submit_current_action,
+    },
+    assignment_mcp_activation_ledger::FileActivationOperationLedgerV1,
+    assignment_mcp_activations::{
+        ActivationToolErrorV1, AssignedRunnerActivationAuthorityV1, AssignmentActivationToolsV1,
+        FixedDaemonRunnerActivationGatewayV1, SystemActivationLeaseClockV1,
+    },
+    assignment_mcp_operations::FileAssignmentMcpOperationLedgerV1,
+    secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1},
+};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -30,10 +44,10 @@ use thiserror::Error;
 use tungstenite::handshake::client::generate_key;
 use tungstenite::{Message, WebSocket, client, http};
 use worldstream_protocol::{
-    ActionOffer, BearerWireV1, ClientHello, ClientMode, ErrorCode, MAX_MESSAGE_BYTES,
-    ObservationDeliver, PROTOCOL_VERSION, PackReference, PrincipalKind, Projection,
-    ProjectionReset, ProtocolErrorBody, REQUIRED_CLIENT_CAPABILITIES, RoomAttached, RoomHead,
-    SealedCapabilityBearerV1, ServerWelcome, SyncBranch, UlidString, VersionedEnvelope,
+    ActionOffer, ActivityPackCatalogAction, BearerWireV1, ClientHello, ClientMode, ErrorCode,
+    MAX_MESSAGE_BYTES, ObservationDeliver, PROTOCOL_VERSION, PackReference, PrincipalKind,
+    Projection, ProjectionReset, ProtocolErrorBody, REQUIRED_CLIENT_CAPABILITIES, RoomAttached,
+    RoomHead, SealedCapabilityBearerV1, ServerWelcome, SyncBranch, UlidString, VersionedEnvelope,
     WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 use worldstream_runtime::{prepare_data_directory, validate_owner_only_file};
@@ -200,7 +214,10 @@ pub struct AssignedMembershipLaunchBindingV1 {
     pub principal_id: String,
     pub room_id: String,
     pub member_id: String,
+    pub pack: PackReference,
     pub authority_reference: SecretReferenceV1,
+    pub runner_id: String,
+    pub runner_authority_reference: SecretReferenceV1,
 }
 
 /// Supervisor-only source for an immutable launch registration.
@@ -228,10 +245,35 @@ struct AssignmentMcpLaunchRecordV1 {
     principal_id: String,
     room_id: String,
     member_id: String,
+    pack: PackReference,
+    action_schemas: Vec<ActivityPackCatalogAction>,
     authority_reference: SecretReferenceV1,
     daemon: SocketAddr,
     timeout_ms: u64,
+    activation_binding_hash: String,
     binding_hash: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AssignmentMcpActivationLaunchRecordV1 {
+    schema: String,
+    launch_reference: String,
+    assignment_id: String,
+    runner_id: String,
+    room_id: String,
+    member_id: String,
+    pack: PackReference,
+    authority_reference: SecretReferenceV1,
+    binding_hash: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AssignmentMcpActiveLaunchV1 {
+    schema: String,
+    assignment_id: String,
+    launch_reference: String,
 }
 
 #[derive(Serialize)]
@@ -245,9 +287,24 @@ struct LaunchBindingHashInputV1<'a> {
     principal_id: &'a str,
     room_id: &'a str,
     member_id: &'a str,
+    pack: &'a PackReference,
+    action_schemas: &'a [ActivityPackCatalogAction],
     authority_reference: &'a SecretReferenceV1,
     daemon: SocketAddr,
     timeout_ms: u64,
+    activation_binding_hash: &'a str,
+}
+
+#[derive(Serialize)]
+struct ActivationLaunchBindingHashInputV1<'a> {
+    domain: &'static str,
+    launch_reference: &'a str,
+    assignment_id: &'a str,
+    runner_id: &'a str,
+    room_id: &'a str,
+    member_id: &'a str,
+    pack: &'a PackReference,
+    authority_reference: &'a SecretReferenceV1,
 }
 
 /// Owner-only durable registry issuing opaque assignment MCP launch references.
@@ -255,6 +312,8 @@ pub struct AssignmentMcpLaunchRegistryV1<S> {
     root: PathBuf,
     continuity_root: PathBuf,
     source: Arc<S>,
+    activity_packs: Option<Arc<dyn DaemonActivityPackSource>>,
+    mutation: Arc<Mutex<()>>,
     daemon: SocketAddr,
     timeout: Duration,
 }
@@ -265,6 +324,8 @@ impl<S> Clone for AssignmentMcpLaunchRegistryV1<S> {
             root: self.root.clone(),
             continuity_root: self.continuity_root.clone(),
             source: self.source.clone(),
+            activity_packs: self.activity_packs.clone(),
+            mutation: self.mutation.clone(),
             daemon: self.daemon,
             timeout: self.timeout,
         }
@@ -378,9 +439,18 @@ where
             continuity_root: prepare_data_directory(continuity_root)
                 .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
             source: Arc::new(source),
+            activity_packs: None,
+            mutation: Arc::new(Mutex::new(())),
             daemon,
             timeout,
         })
+    }
+
+    /// Adds the Host-authorized exact Pack catalog used only while issuing a launch.
+    #[must_use]
+    pub fn with_activity_packs(mut self, activity_packs: impl DaemonActivityPackSource) -> Self {
+        self.activity_packs = Some(Arc::new(activity_packs));
+        self
     }
 
     /// Issues one immutable opaque launch reference for an exact assignment.
@@ -388,11 +458,25 @@ where
     /// # Errors
     ///
     /// Fails closed if assignment resolution or durable publication fails.
+    #[allow(clippy::too_many_lines)]
     pub fn issue(&self, assignment_id: &str) -> Result<String, AssignedMembershipSourceErrorV1> {
+        let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(existing) = self.active_launch(assignment_id)? {
+            return Ok(existing);
+        }
         let binding = self.source.resolve_launch_binding(assignment_id)?;
         if binding.assignment_id != assignment_id {
             return Err(AssignedMembershipSourceErrorV1::Invalid);
         }
+        let action_schemas = self.activity_packs.as_ref().map_or_else(
+            || Ok(Vec::new()),
+            |source| {
+                source
+                    .revision(&binding.pack.digest)
+                    .map(|response| response.revision.actions)
+                    .map_err(map_activity_pack_source_error)
+            },
+        )?;
         let launch_reference = random_reference()?;
         let mut record = AssignmentMcpLaunchRecordV1 {
             schema: "worldstream/assignment-mcp-launch/v1".to_owned(),
@@ -404,16 +488,45 @@ where
             principal_id: binding.principal_id,
             room_id: binding.room_id,
             member_id: binding.member_id,
+            pack: binding.pack.clone(),
+            action_schemas,
             authority_reference: binding.authority_reference,
             daemon: self.daemon,
             timeout_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
+            activation_binding_hash: String::new(),
             binding_hash: String::new(),
         };
+        let mut activation = AssignmentMcpActivationLaunchRecordV1 {
+            schema: "worldstream/assignment-mcp-activation-launch/v1".to_owned(),
+            launch_reference: launch_reference.clone(),
+            assignment_id: record.assignment_id.clone(),
+            runner_id: binding.runner_id,
+            room_id: record.room_id.clone(),
+            member_id: record.member_id.clone(),
+            pack: binding.pack,
+            authority_reference: binding.runner_authority_reference,
+            binding_hash: String::new(),
+        };
+        activation.binding_hash = activation_launch_binding_hash(&activation)?;
+        record
+            .activation_binding_hash
+            .clone_from(&activation.binding_hash);
         record.binding_hash = launch_binding_hash(&record)?;
         validate_launch_record(&record, &launch_reference)?;
+        validate_activation_launch_record(&activation, &launch_reference)?;
         let path = self.root.join(format!("{launch_reference}.json"));
+        let activation_path = self
+            .root
+            .join(format!("{launch_reference}.activation.json"));
         let bytes = serde_json::to_vec_pretty(&record)
             .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+        let activation_bytes = serde_json::to_vec_pretty(&activation)
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CONTINUITY_BYTES
+            || u64::try_from(activation_bytes.len()).unwrap_or(u64::MAX) > MAX_CONTINUITY_BYTES
+        {
+            return Err(AssignedMembershipSourceErrorV1::Invalid);
+        }
         let mut file = worldstream_runtime::create_owner_only_file(&path)
             .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
         if file
@@ -424,6 +537,28 @@ where
             let _ = fs::remove_file(path);
             return Err(AssignedMembershipSourceErrorV1::Unavailable);
         }
+        let Ok(mut activation_file) = worldstream_runtime::create_owner_only_file(&activation_path)
+        else {
+            let _ = fs::remove_file(path);
+            return Err(AssignedMembershipSourceErrorV1::Unavailable);
+        };
+        if activation_file
+            .write_all(&activation_bytes)
+            .and_then(|()| activation_file.sync_all())
+            .is_err()
+        {
+            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(activation_path);
+            return Err(AssignedMembershipSourceErrorV1::Unavailable);
+        }
+        sync_continuity_directory(&self.root)
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+        if let Err(error) = self.publish_active_launch(assignment_id, &launch_reference) {
+            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(activation_path);
+            let _ = sync_continuity_directory(&self.root);
+            return Err(error);
+        }
         Ok(launch_reference)
     }
 
@@ -433,11 +568,13 @@ where
     ///
     /// Rejects malformed references or unavailable durable storage.
     pub fn revoke(&self, launch_reference: &str) -> Result<(), AssignedMembershipSourceErrorV1> {
+        let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
         validate_reference(launch_reference)?;
         let path = self.root.join(format!("{launch_reference}.revoked"));
         match worldstream_runtime::create_owner_only_file(&path) {
             Ok(file) => file
                 .sync_all()
+                .and_then(|()| sync_continuity_directory(&self.root))
                 .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable),
             Err(_) if path.exists() => Ok(()),
             Err(_) => Err(AssignedMembershipSourceErrorV1::Unavailable),
@@ -447,6 +584,84 @@ where
     #[must_use]
     pub fn continuity_root(&self) -> &Path {
         &self.continuity_root
+    }
+
+    fn active_launch(
+        &self,
+        assignment_id: &str,
+    ) -> Result<Option<String>, AssignedMembershipSourceErrorV1> {
+        if assignment_id.parse::<UlidString>().is_err() {
+            return Err(AssignedMembershipSourceErrorV1::Invalid);
+        }
+        let path = self.root.join(format!("{assignment_id}.active.json"));
+        if !path.exists() {
+            return Ok(None);
+        }
+        validate_owner_only_file(&path)
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+        if fs::metadata(&path)
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?
+            .len()
+            > MAX_CONTINUITY_BYTES
+        {
+            return Err(AssignedMembershipSourceErrorV1::Invalid);
+        }
+        let active: AssignmentMcpActiveLaunchV1 = serde_json::from_slice(
+            &fs::read(path).map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+        )
+        .map_err(|_| AssignedMembershipSourceErrorV1::Invalid)?;
+        if active.schema != "worldstream/assignment-mcp-active-launch/v1"
+            || active.assignment_id != assignment_id
+            || validate_reference(&active.launch_reference).is_err()
+        {
+            return Err(AssignedMembershipSourceErrorV1::Invalid);
+        }
+        if self
+            .root
+            .join(format!("{}.revoked", active.launch_reference))
+            .exists()
+        {
+            return Ok(None);
+        }
+        let participant = read_launch_record(&self.root, &active.launch_reference)?;
+        let activation = read_activation_launch_record(&self.root, &active.launch_reference)?;
+        if participant.assignment_id != assignment_id
+            || activation.assignment_id != assignment_id
+            || participant.activation_binding_hash != activation.binding_hash
+        {
+            return Err(AssignedMembershipSourceErrorV1::Invalid);
+        }
+        Ok(Some(active.launch_reference))
+    }
+
+    fn publish_active_launch(
+        &self,
+        assignment_id: &str,
+        launch_reference: &str,
+    ) -> Result<(), AssignedMembershipSourceErrorV1> {
+        let record = AssignmentMcpActiveLaunchV1 {
+            schema: "worldstream/assignment-mcp-active-launch/v1".to_owned(),
+            assignment_id: assignment_id.to_owned(),
+            launch_reference: launch_reference.to_owned(),
+        };
+        let bytes = serde_json::to_vec_pretty(&record)
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+        let target = self.root.join(format!("{assignment_id}.active.json"));
+        let temporary = self
+            .root
+            .join(format!(".{assignment_id}.{launch_reference}.active.tmp"));
+        let mut file = worldstream_runtime::create_owner_only_renameable_file(&temporary)
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+        let published = file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| replace_continuity_file(&temporary, &target))
+            .and_then(|()| sync_continuity_directory(&self.root))
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable);
+        if published.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        published
     }
 }
 
@@ -491,6 +706,7 @@ impl AssignmentLeaseV1 for FileAssignmentLeaseV1 {
 /// # Errors
 ///
 /// Rejects unknown, concurrently active, revoked, corrupt, or unsafe registrations.
+#[allow(clippy::too_many_lines)]
 pub fn open_registered_assignment_mcp(
     state_dir: &Path,
     launch_reference: &str,
@@ -501,6 +717,18 @@ pub fn open_registered_assignment_mcp(
     let root = prepare_data_directory(&state_dir.join("assignment-mcp-launches"))
         .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
     let record = read_launch_record(&root, launch_reference)?;
+    if read_active_launch_reference(&root, &record.assignment_id)? != launch_reference {
+        return Err(AssignedMembershipSourceErrorV1::Revoked);
+    }
+    let activation_record = read_activation_launch_record(&root, launch_reference)?;
+    if activation_record.assignment_id != record.assignment_id
+        || activation_record.room_id != record.room_id
+        || activation_record.member_id != record.member_id
+        || activation_record.pack != record.pack
+        || activation_record.binding_hash != record.activation_binding_hash
+    {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
     if root.join(format!("{launch_reference}.revoked")).exists() {
         return Err(AssignedMembershipSourceErrorV1::Revoked);
     }
@@ -526,10 +754,12 @@ pub fn open_registered_assignment_mcp(
             &record.authority_reference,
         )
         .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
-    let bytes: [u8; 32] = secret
+    let mut bytes: [u8; 32] = secret
         .as_bytes()
         .try_into()
         .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
+    let membership_bearer = BearerWireV1::from_bytes(bytes);
+    bytes.zeroize();
     let authority = AssignedMembershipAuthorityV1::new(
         &record.assignment_id,
         &record.profile_id,
@@ -538,8 +768,30 @@ pub fn open_registered_assignment_mcp(
         &record.principal_id,
         &record.room_id,
         &record.member_id,
-        SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
+        SealedCapabilityBearerV1::from_wire(&membership_bearer),
     )?;
+    let runner_secret = vault
+        .resolve(
+            SecretKindV1::RunnerAuthority,
+            &activation_record.authority_reference,
+        )
+        .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
+    let mut runner_bytes: [u8; 32] = runner_secret
+        .as_bytes()
+        .try_into()
+        .map_err(|_| AssignedMembershipSourceErrorV1::Revoked)?;
+    let runner_bearer = BearerWireV1::from_bytes(runner_bytes);
+    runner_bytes.zeroize();
+    let runner_authority = AssignedRunnerActivationAuthorityV1::new(
+        &record.assignment_id,
+        &record.principal_id,
+        &activation_record.runner_id,
+        &record.room_id,
+        &record.member_id,
+        record.pack.clone(),
+        SealedCapabilityBearerV1::from_wire(&runner_bearer),
+    )
+    .map_err(|_| AssignedMembershipSourceErrorV1::Invalid)?;
     let gateway = FixedDaemonAssignedMembershipGatewayV1::open(
         record.daemon,
         Duration::from_millis(record.timeout_ms),
@@ -548,6 +800,38 @@ pub fn open_registered_assignment_mcp(
             .join(launch_reference),
     )
     .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+    let actions = AssignmentMcpActionToolsV1 {
+        schemas: PinnedAssignmentMcpActionSchemasV1 {
+            pack: record.pack.clone(),
+            actions: record.action_schemas.clone(),
+        },
+        gateway: FixedDaemonAssignmentMcpActionGatewayV1::new(
+            record.daemon,
+            Duration::from_millis(record.timeout_ms),
+        )
+        .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+        operations: FileAssignmentMcpOperationLedgerV1::open(
+            state_dir
+                .join("assignment-mcp-operations")
+                .join(launch_reference),
+        )
+        .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+    };
+    let activations = AssignmentActivationToolsV1::new(
+        runner_authority,
+        FixedDaemonRunnerActivationGatewayV1::new(
+            record.daemon,
+            Duration::from_millis(record.timeout_ms),
+        )
+        .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+        FileActivationOperationLedgerV1::open(
+            state_dir
+                .join("assignment-mcp-activations")
+                .join(launch_reference),
+        )
+        .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+        SystemActivationLeaseClockV1,
+    );
     let lease: Arc<dyn AssignmentLeaseV1> = Arc::new(FileAssignmentLeaseV1 {
         root,
         launch_reference: launch_reference.to_owned(),
@@ -558,6 +842,8 @@ pub fn open_registered_assignment_mcp(
         authority,
         gateway: Arc::new(gateway),
         lease,
+        actions: Some(actions),
+        activations: Some(activations),
     }))
 }
 
@@ -598,9 +884,32 @@ fn launch_binding_hash(
         principal_id: &record.principal_id,
         room_id: &record.room_id,
         member_id: &record.member_id,
+        pack: &record.pack,
+        action_schemas: &record.action_schemas,
         authority_reference: &record.authority_reference,
         daemon: record.daemon,
         timeout_ms: record.timeout_ms,
+        activation_binding_hash: &record.activation_binding_hash,
+    })
+    .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
+    let canonical = worldstream_core::CanonicalJsonV1::parse(&encoded)
+        .and_then(|value| value.to_bytes())
+        .map_err(|_| AssignedMembershipSourceErrorV1::Invalid)?;
+    Ok(format!("blake3:{}", blake3::hash(&canonical).to_hex()))
+}
+
+fn activation_launch_binding_hash(
+    record: &AssignmentMcpActivationLaunchRecordV1,
+) -> Result<String, AssignedMembershipSourceErrorV1> {
+    let encoded = serde_json::to_vec(&ActivationLaunchBindingHashInputV1 {
+        domain: "worldstream/assignment-mcp-activation-launch-binding/v1",
+        launch_reference: &record.launch_reference,
+        assignment_id: &record.assignment_id,
+        runner_id: &record.runner_id,
+        room_id: &record.room_id,
+        member_id: &record.member_id,
+        pack: &record.pack,
+        authority_reference: &record.authority_reference,
     })
     .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
     let canonical = worldstream_core::CanonicalJsonV1::parse(&encoded)
@@ -620,6 +929,14 @@ fn validate_launch_record(
         || record.principal_id.parse::<UlidString>().is_err()
         || record.room_id.parse::<UlidString>().is_err()
         || record.member_id.parse::<UlidString>().is_err()
+        || record
+            .pack
+            .digest
+            .parse::<worldstream_core::Blake3DigestV1>()
+            .is_err()
+        || !bounded_label(&record.pack.id)
+        || !bounded_label(&record.pack.version)
+        || record.action_schemas.len() > 256
         || !bounded_label(&record.profile_id)
         || !bounded_label(&record.profile_revision)
         || !bounded_label(&record.role)
@@ -631,6 +948,46 @@ fn validate_launch_record(
         return Err(AssignedMembershipSourceErrorV1::Invalid);
     }
     Ok(())
+}
+
+fn validate_activation_launch_record(
+    record: &AssignmentMcpActivationLaunchRecordV1,
+    launch_reference: &str,
+) -> Result<(), AssignedMembershipSourceErrorV1> {
+    validate_reference(launch_reference)?;
+    if record.schema != "worldstream/assignment-mcp-activation-launch/v1"
+        || record.launch_reference != launch_reference
+        || record.assignment_id.parse::<UlidString>().is_err()
+        || record.runner_id.parse::<UlidString>().is_err()
+        || record.room_id.parse::<UlidString>().is_err()
+        || record.member_id.parse::<UlidString>().is_err()
+        || record
+            .pack
+            .digest
+            .parse::<worldstream_core::Blake3DigestV1>()
+            .is_err()
+        || !bounded_label(&record.pack.id)
+        || !bounded_label(&record.pack.version)
+        || record.binding_hash != activation_launch_binding_hash(record)?
+    {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
+    Ok(())
+}
+
+const fn map_activity_pack_source_error(
+    error: ActivityPackProxyErrorV1,
+) -> AssignedMembershipSourceErrorV1 {
+    match error {
+        ActivityPackProxyErrorV1::InvalidRevision | ActivityPackProxyErrorV1::InvalidResponse => {
+            AssignedMembershipSourceErrorV1::Invalid
+        }
+        ActivityPackProxyErrorV1::AuthorityUnavailable
+        | ActivityPackProxyErrorV1::DaemonUnavailable
+        | ActivityPackProxyErrorV1::RevisionUnavailable => {
+            AssignedMembershipSourceErrorV1::Unavailable
+        }
+    }
 }
 
 fn read_launch_record(
@@ -653,6 +1010,57 @@ fn read_launch_record(
     .map_err(|_| AssignedMembershipSourceErrorV1::Invalid)?;
     validate_launch_record(&record, launch_reference)?;
     Ok(record)
+}
+
+fn read_activation_launch_record(
+    root: &Path,
+    launch_reference: &str,
+) -> Result<AssignmentMcpActivationLaunchRecordV1, AssignedMembershipSourceErrorV1> {
+    validate_reference(launch_reference)?;
+    let path = root.join(format!("{launch_reference}.activation.json"));
+    validate_owner_only_file(&path).map_err(|_| AssignedMembershipSourceErrorV1::NotFound)?;
+    if fs::metadata(&path)
+        .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?
+        .len()
+        > MAX_CONTINUITY_BYTES
+    {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
+    let record: AssignmentMcpActivationLaunchRecordV1 = serde_json::from_slice(
+        &fs::read(path).map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+    )
+    .map_err(|_| AssignedMembershipSourceErrorV1::Invalid)?;
+    validate_activation_launch_record(&record, launch_reference)?;
+    Ok(record)
+}
+
+fn read_active_launch_reference(
+    root: &Path,
+    assignment_id: &str,
+) -> Result<String, AssignedMembershipSourceErrorV1> {
+    if assignment_id.parse::<UlidString>().is_err() {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
+    let path = root.join(format!("{assignment_id}.active.json"));
+    validate_owner_only_file(&path).map_err(|_| AssignedMembershipSourceErrorV1::NotFound)?;
+    if fs::metadata(&path)
+        .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?
+        .len()
+        > MAX_CONTINUITY_BYTES
+    {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
+    let active: AssignmentMcpActiveLaunchV1 = serde_json::from_slice(
+        &fs::read(path).map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?,
+    )
+    .map_err(|_| AssignedMembershipSourceErrorV1::Invalid)?;
+    if active.schema != "worldstream/assignment-mcp-active-launch/v1"
+        || active.assignment_id != assignment_id
+        || validate_reference(&active.launch_reference).is_err()
+    {
+        return Err(AssignedMembershipSourceErrorV1::Invalid);
+    }
+    Ok(active.launch_reference)
 }
 
 /// Browser/tool-safe Projection Reset material retained below MCP handlers.
@@ -1590,6 +1998,8 @@ where
             authority,
             gateway,
             lease: Arc::new(StaticAssignmentLeaseV1),
+            actions: None,
+            activations: None,
         })
     }
 }
@@ -1599,6 +2009,42 @@ pub struct AssignmentMcpContextV1 {
     authority: AssignedMembershipAuthorityV1,
     gateway: Arc<dyn AssignedMembershipGatewayV1>,
     lease: Arc<dyn AssignmentLeaseV1>,
+    actions: Option<AssignmentMcpActionToolsV1>,
+    activations: Option<AssignmentMcpActivationToolsV1>,
+}
+
+type AssignmentMcpActivationToolsV1 = AssignmentActivationToolsV1<
+    FixedDaemonRunnerActivationGatewayV1,
+    FileActivationOperationLedgerV1,
+    SystemActivationLeaseClockV1,
+>;
+
+struct AssignmentMcpActionToolsV1 {
+    schemas: PinnedAssignmentMcpActionSchemasV1,
+    gateway: FixedDaemonAssignmentMcpActionGatewayV1,
+    operations: FileAssignmentMcpOperationLedgerV1,
+}
+
+struct PinnedAssignmentMcpActionSchemasV1 {
+    pack: PackReference,
+    actions: Vec<ActivityPackCatalogAction>,
+}
+
+impl AssignmentMcpActionSchemaSourceV1 for PinnedAssignmentMcpActionSchemasV1 {
+    fn exact_action(
+        &self,
+        pack: &PackReference,
+        action_type: &str,
+    ) -> Result<ActivityPackCatalogAction, AssignmentMcpActionSchemaErrorV1> {
+        if pack != &self.pack {
+            return Err(AssignmentMcpActionSchemaErrorV1::Missing);
+        }
+        self.actions
+            .iter()
+            .find(|action| action.action_type == action_type)
+            .cloned()
+            .ok_or(AssignmentMcpActionSchemaErrorV1::Missing)
+    }
 }
 
 impl fmt::Debug for AssignmentMcpContextV1 {
@@ -1618,6 +2064,17 @@ pub enum AssignmentMcpErrorV1 {
     DaemonUnavailable,
     InvalidDaemonData,
     AckBeyondDelivery,
+    ActionObservationRequired,
+    ActionUnoffered,
+    ActionPayloadInvalid,
+    ActionOperationConflict,
+    ActionAmbiguous,
+    NoActivation,
+    ActivationLeaseExpired,
+    ActivationStaleCursor,
+    ActivationAlreadyCompleted,
+    ActivationCompletionPending,
+    ActivationIdempotencyConflict,
 }
 
 impl AssignmentMcpErrorV1 {
@@ -1632,6 +2089,17 @@ impl AssignmentMcpErrorV1 {
             Self::DaemonUnavailable => "assignment_daemon_unavailable",
             Self::InvalidDaemonData => "assignment_daemon_data_invalid",
             Self::AckBeyondDelivery => "assignment_ack_beyond_delivery",
+            Self::ActionObservationRequired => "assignment_action_observation_required",
+            Self::ActionUnoffered => "assignment_action_unoffered",
+            Self::ActionPayloadInvalid => "assignment_action_payload_invalid",
+            Self::ActionOperationConflict => "assignment_action_operation_conflict",
+            Self::ActionAmbiguous => "assignment_action_response_ambiguous",
+            Self::NoActivation => "assignment_activation_none_available",
+            Self::ActivationLeaseExpired => "assignment_activation_lease_expired",
+            Self::ActivationStaleCursor => "assignment_activation_cursor_stale",
+            Self::ActivationAlreadyCompleted => "assignment_activation_already_completed",
+            Self::ActivationCompletionPending => "assignment_activation_completion_pending",
+            Self::ActivationIdempotencyConflict => "assignment_activation_operation_conflict",
         }
     }
 
@@ -1645,6 +2113,16 @@ impl AssignmentMcpErrorV1 {
             }
             Self::InvalidInput => "correct_tool_input",
             Self::AckBeyondDelivery => "observe_before_acknowledging",
+            Self::ActionObservationRequired => "observe_then_list_current_offers",
+            Self::ActionUnoffered | Self::ActionPayloadInvalid => "list_current_offers",
+            Self::ActionOperationConflict => "use_new_operation_id",
+            Self::ActionAmbiguous => "retry_same_operation_id",
+            Self::NoActivation => "wait_then_request_next_activation",
+            Self::ActivationLeaseExpired
+            | Self::ActivationStaleCursor
+            | Self::ActivationAlreadyCompleted => "request_next_activation",
+            Self::ActivationCompletionPending => "retry_same_completion",
+            Self::ActivationIdempotencyConflict => "restore_exact_completion_input",
         }
     }
 
@@ -1667,6 +2145,31 @@ impl AssignmentMcpErrorV1 {
             }
             Self::AckBeyondDelivery => {
                 "Acknowledge only an Observation Frame returned by this helper."
+            }
+            Self::ActionObservationRequired => {
+                "Observe the assigned Membership before listing or submitting Actions."
+            }
+            Self::ActionUnoffered => "The requested Action is not in the exact current offer list.",
+            Self::ActionPayloadInvalid => {
+                "The Action payload does not match the exact declared schema."
+            }
+            Self::ActionOperationConflict => {
+                "That operation identity is already bound to different Action input."
+            }
+            Self::ActionAmbiguous => {
+                "The Action response is uncertain; retry the exact same operation identity."
+            }
+            Self::NoActivation => "No pending Activation is available for this assignment.",
+            Self::ActivationLeaseExpired => "The exact Activation lease expired before completion.",
+            Self::ActivationStaleCursor => {
+                "The Activation Cursor or lease generation is no longer current."
+            }
+            Self::ActivationAlreadyCompleted => "The exact Activation was already completed.",
+            Self::ActivationCompletionPending => {
+                "Activation completion is pending; retry the same completion."
+            }
+            Self::ActivationIdempotencyConflict => {
+                "The completion input conflicts with the retained exact operation."
             }
         }
     }
@@ -1775,6 +2278,101 @@ impl AssignmentMcpServerV1 {
             "cursor": cursor,
             "next_action": "continue",
         }))
+    }
+
+    /// Lists exact current offers with their pinned Pack schemas.
+    ///
+    /// # Errors
+    ///
+    /// Requires a current valid observation, exact pinned schemas, and a live assignment lease.
+    pub fn list_current_action_offers(
+        &self,
+        arguments: Value,
+    ) -> Result<Value, AssignmentMcpErrorV1> {
+        decode_empty(arguments)?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        let tools = self
+            .context
+            .actions
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+        let snapshot = self
+            .current
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::ActionObservationRequired)?;
+        serde_json::to_value(
+            list_current_action_offers(snapshot, &tools.schemas).map_err(map_action_error)?,
+        )
+        .map_err(|_| AssignmentMcpErrorV1::InvalidDaemonData)
+    }
+
+    /// Submits one exact listed offer through the sealed participant authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns only closed input, authority, durability, transport, or daemon-data failures.
+    pub fn submit_action(&self, arguments: Value) -> Result<Value, AssignmentMcpErrorV1> {
+        let arguments: AssignmentMcpSubmitActionV1 =
+            serde_json::from_value(arguments).map_err(|_| AssignmentMcpErrorV1::InvalidInput)?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        let tools = self
+            .context
+            .actions
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+        let snapshot = self
+            .current
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::ActionObservationRequired)?;
+        let result = submit_current_action(
+            &self.context.authority,
+            snapshot,
+            &tools.schemas,
+            &tools.operations,
+            &tools.gateway,
+            arguments,
+        )
+        .map_err(map_action_error)?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        serde_json::to_value(result).map_err(|_| AssignmentMcpErrorV1::InvalidDaemonData)
+    }
+
+    /// Acquires or resumes only the next Activation in the sealed Runner scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns distinct safe lease, Cursor, authority, transport, or retained-state failures.
+    pub fn next_activation(&self, arguments: &Value) -> Result<Value, AssignmentMcpErrorV1> {
+        self.context.lease.validate().map_err(map_source_error)?;
+        let tools = self
+            .context
+            .activations
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+        let result = tools
+            .next_activation(arguments)
+            .map_err(|error| map_activation_error(&error))?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        serde_json::to_value(result).map_err(|_| AssignmentMcpErrorV1::InvalidDaemonData)
+    }
+
+    /// Completes only the exact currently retained Activation lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns distinct safe precondition, lease, authority, retry, or retained-state failures.
+    pub fn complete_activation(&self, arguments: Value) -> Result<Value, AssignmentMcpErrorV1> {
+        self.context.lease.validate().map_err(map_source_error)?;
+        let tools = self
+            .context
+            .activations
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+        let result = tools
+            .complete(arguments)
+            .map_err(|error| map_activation_error(&error))?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        serde_json::to_value(result).map_err(|_| AssignmentMcpErrorV1::InvalidDaemonData)
     }
 }
 
@@ -1918,6 +2516,47 @@ fn map_source_error(error: AssignedMembershipSourceErrorV1) -> AssignmentMcpErro
         AssignedMembershipSourceErrorV1::Revoked => AssignmentMcpErrorV1::AssignmentRevoked,
         AssignedMembershipSourceErrorV1::Invalid | AssignedMembershipSourceErrorV1::Unavailable => {
             AssignmentMcpErrorV1::DaemonUnavailable
+        }
+    }
+}
+
+const fn map_action_error(error: AssignmentMcpActionErrorV1) -> AssignmentMcpErrorV1 {
+    match error {
+        AssignmentMcpActionErrorV1::InvalidInput => AssignmentMcpErrorV1::InvalidInput,
+        AssignmentMcpActionErrorV1::Unoffered => AssignmentMcpErrorV1::ActionUnoffered,
+        AssignmentMcpActionErrorV1::InvalidPayload => AssignmentMcpErrorV1::ActionPayloadInvalid,
+        AssignmentMcpActionErrorV1::OperationConflict => {
+            AssignmentMcpErrorV1::ActionOperationConflict
+        }
+        AssignmentMcpActionErrorV1::AmbiguousRetrySameOperation => {
+            AssignmentMcpErrorV1::ActionAmbiguous
+        }
+        AssignmentMcpActionErrorV1::AssignmentRevoked => AssignmentMcpErrorV1::AssignmentRevoked,
+        AssignmentMcpActionErrorV1::OperationUnavailable
+        | AssignmentMcpActionErrorV1::SchemaUnavailable => AssignmentMcpErrorV1::DaemonUnavailable,
+        AssignmentMcpActionErrorV1::InvalidOfferData
+        | AssignmentMcpActionErrorV1::InvalidDaemonData => AssignmentMcpErrorV1::InvalidDaemonData,
+    }
+}
+
+const fn map_activation_error(error: &ActivationToolErrorV1) -> AssignmentMcpErrorV1 {
+    match error {
+        ActivationToolErrorV1::InvalidArguments => AssignmentMcpErrorV1::InvalidInput,
+        ActivationToolErrorV1::NoActivation => AssignmentMcpErrorV1::NoActivation,
+        ActivationToolErrorV1::LeaseExpired => AssignmentMcpErrorV1::ActivationLeaseExpired,
+        ActivationToolErrorV1::AuthorityRevoked => AssignmentMcpErrorV1::AssignmentRevoked,
+        ActivationToolErrorV1::StaleCursor => AssignmentMcpErrorV1::ActivationStaleCursor,
+        ActivationToolErrorV1::AlreadyCompleted => AssignmentMcpErrorV1::ActivationAlreadyCompleted,
+        ActivationToolErrorV1::CompletionPending => {
+            AssignmentMcpErrorV1::ActivationCompletionPending
+        }
+        ActivationToolErrorV1::IdempotencyConflict => {
+            AssignmentMcpErrorV1::ActivationIdempotencyConflict
+        }
+        ActivationToolErrorV1::Disconnected => AssignmentMcpErrorV1::Disconnected,
+        ActivationToolErrorV1::Unavailable => AssignmentMcpErrorV1::DaemonUnavailable,
+        ActivationToolErrorV1::InvalidRetainedState | ActivationToolErrorV1::InvalidDaemonData => {
+            AssignmentMcpErrorV1::InvalidDaemonData
         }
     }
 }
@@ -2088,6 +2727,12 @@ fn call_tool(server: &mut AssignmentMcpServerV1, id: &Value, params: Value) -> V
         "worldstream.list_assigned_tasks" => server.list_assigned_tasks(params.arguments),
         "worldstream.observe" => server.observe(params.arguments),
         "worldstream.acknowledge" => server.acknowledge(params.arguments),
+        "worldstream.list_current_action_offers" => {
+            server.list_current_action_offers(params.arguments)
+        }
+        "worldstream.submit_action" => server.submit_action(params.arguments),
+        "worldstream.next_activation" => server.next_activation(&params.arguments),
+        "worldstream.complete_activation" => server.complete_activation(params.arguments),
         _ => Err(AssignmentMcpErrorV1::InvalidInput),
     };
     match result {
@@ -2103,7 +2748,11 @@ fn tool_definitions() -> Value {
     serde_json::json!([
         {"name":"worldstream.list_assigned_tasks","description":"List only Tasks sealed into this assignment context.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"worldstream.observe","description":"Resume the assigned Membership Observation Stream from its durable Cursor.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"worldstream.acknowledge","description":"Durably acknowledge processed assigned Observation Frames.","inputSchema":{"type":"object","properties":{"through_frame_seq":{"type":"integer","minimum":0}},"required":["through_frame_seq"],"additionalProperties":false}}
+        {"name":"worldstream.acknowledge","description":"Durably acknowledge processed assigned Observation Frames.","inputSchema":{"type":"object","properties":{"through_frame_seq":{"type":"integer","minimum":0}},"required":["through_frame_seq"],"additionalProperties":false}},
+        {"name":"worldstream.list_current_action_offers","description":"List exact current Action Offers and their pinned payload schemas.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"worldstream.submit_action","description":"Submit one exact currently offered Action using a stable operation identity.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string"},"offer_id":{"type":"string"},"precondition":{"type":"object","properties":{"room_seq":{"type":"integer","minimum":0},"head_hash":{"type":"string"}},"required":["room_seq","head_hash"],"additionalProperties":false},"payload":{}},"required":["operation_id","offer_id","precondition","payload"],"additionalProperties":false}},
+        {"name":"worldstream.next_activation","description":"Acquire or resume the next Activation in this assignment's sealed Runner scope.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"worldstream.complete_activation","description":"Complete the exact currently leased Activation with its safe preconditions.","inputSchema":{"type":"object","properties":{"activation_cursor":{"type":"integer","minimum":1},"lease_generation":{"type":"integer","minimum":1},"context_hash":{"type":"string"},"disposition":{"type":"string"}},"required":["activation_cursor","lease_generation","context_hash","disposition"],"additionalProperties":false}}
     ])
 }
 
@@ -2131,7 +2780,7 @@ fn json_rpc_error(id: &Value, code: i32, message: &'static str) -> Value {
 fn safe_error(error: AssignmentMcpErrorV1) -> Value {
     serde_json::json!({
         "code":error.code(), "message":error.message(), "next_action":error.next_action(),
-        "retryable":matches!(error, AssignmentMcpErrorV1::Disconnected | AssignmentMcpErrorV1::StaleCursor | AssignmentMcpErrorV1::DaemonUnavailable)
+        "retryable":matches!(error, AssignmentMcpErrorV1::Disconnected | AssignmentMcpErrorV1::StaleCursor | AssignmentMcpErrorV1::DaemonUnavailable | AssignmentMcpErrorV1::ActionAmbiguous | AssignmentMcpErrorV1::NoActivation | AssignmentMcpErrorV1::ActivationCompletionPending)
     })
 }
 
@@ -2187,12 +2836,13 @@ mod tests {
             "wsb1:abababababababababababababababababababababababababababababababab";
 
         let directory = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let continuity_root = directory.path().join("continuity");
         let first = FixedDaemonAssignedMembershipGatewayV1::open(
             "127.0.0.1:9410"
                 .parse()
                 .unwrap_or_else(|error| panic!("local address: {error}")),
             Duration::from_millis(50),
-            directory.path(),
+            &continuity_root,
         )
         .unwrap_or_else(|error| panic!("first gateway: {error:?}"));
         first
@@ -2213,7 +2863,7 @@ mod tests {
                 .parse()
                 .unwrap_or_else(|error| panic!("local address: {error}")),
             Duration::from_millis(50),
-            directory.path(),
+            &continuity_root,
         )
         .unwrap_or_else(|error| panic!("restarted gateway: {error:?}"));
         let retained = restarted
@@ -2224,7 +2874,7 @@ mod tests {
         assert!(retained.initialized);
         assert_eq!(retained.pending_ack, Some((Some(7), 8)));
 
-        let persisted = fs::read_to_string(directory.path().join(format!("{ASSIGNMENT}.json")))
+        let persisted = fs::read_to_string(continuity_root.join(format!("{ASSIGNMENT}.json")))
             .unwrap_or_else(|error| panic!("read continuity: {error}"));
         for prohibited in [ROOM, MEMBER, BEARER, "room_id", "member_id", "bearer"] {
             assert!(!persisted.contains(prohibited), "leaked {prohibited}");
