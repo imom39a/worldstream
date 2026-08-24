@@ -33,9 +33,19 @@ import {
   staleAfterFailedRefresh,
   type RoomInventoryState,
 } from "./roomInventory";
+import { resumeRoomDraftStep } from "./RoomDraftWizard";
+import {
+  createRoomDraft,
+  loadRoomDraft,
+  saveRoomDraft,
+  type RoomDraft,
+  type RoomDraftFieldError,
+  type RoomDraftStep,
+} from "./roomDrafts";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 5_000;
+const NEW_ROOM_DRAFT_ID = "new-room";
 
 function LiveStudio() {
   const [status, setStatus] = useState<DaemonStatus | null>(null);
@@ -54,6 +64,11 @@ function LiveStudio() {
   const [roomInventory, setRoomInventory] = useState<RoomInventoryState>({ status: "loading" });
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const roomDetailRequest = useRef(0);
+  const [roomDraft, setRoomDraft] = useState<RoomDraft>(() => createRoomDraft(NEW_ROOM_DRAFT_ID));
+  const [roomDraftStep, setRoomDraftStep] = useState<RoomDraftStep>("activity");
+  const [roomDraftErrors, setRoomDraftErrors] = useState<RoomDraftFieldError[]>([]);
+  const [roomDraftSaving, setRoomDraftSaving] = useState(false);
+  const [roomDraftSaved, setRoomDraftSaved] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -92,6 +107,23 @@ function LiveStudio() {
       active = false;
       window.clearInterval(interval);
     };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void loadRoomDraft(NEW_ROOM_DRAFT_ID).then(async (response) => {
+      if (!active || response === null) return;
+      setRoomDraft(response.draft);
+      setRoomDraftStep(resumeRoomDraftStep(response.draft));
+      if (response.draft.pack !== null) {
+        const detail = await loadActivityPackDetail(response.draft.pack.digest);
+        if (active) {
+          setInspectedActivityPackDigest(response.draft.pack.digest);
+          setActivityPackDetail(detail);
+        }
+      }
+    });
+    return () => { active = false; };
   }, []);
 
   const requestLifecycle = async (action: DaemonLifecycleAction) => {
@@ -142,6 +174,28 @@ function LiveStudio() {
     } : current);
   };
 
+  const changeRoomDraft = (next: RoomDraft) => {
+    const packChanged = next.pack?.digest !== roomDraft.pack?.digest;
+    setRoomDraft(next);
+    setRoomDraftSaved(false);
+    setRoomDraftErrors([]);
+    if (packChanged && next.pack !== null) void inspectActivityPack(next.pack.digest);
+  };
+
+  const persistRoomDraft = async (next: RoomDraft) => {
+    setRoomDraftSaving(true);
+    setRoomDraftSaved(false);
+    setRoomDraftErrors([]);
+    const result = await saveRoomDraft(next);
+    setRoomDraftSaving(false);
+    if (result?.version === "studio_room_draft.v1") {
+      setRoomDraft(result.draft);
+      setRoomDraftSaved(true);
+    } else if (result?.version === "studio_room_draft_error.v1") {
+      setRoomDraftErrors(result.field_errors);
+    }
+  };
+
   return (
     <App
       status={status}
@@ -164,6 +218,14 @@ function LiveStudio() {
       onSelectActivityPack={selectActivityPack}
       onClearActivityPackSelection={clearActivityPackSelection}
       onSelectRoom={(roomId) => void inspectRoom(roomId)}
+      roomDraft={roomDraft}
+      roomDraftStep={roomDraftStep}
+      roomDraftErrors={roomDraftErrors}
+      roomDraftSaving={roomDraftSaving}
+      roomDraftSaved={roomDraftSaved}
+      onRoomDraftChange={changeRoomDraft}
+      onRoomDraftStepChange={setRoomDraftStep}
+      onSaveRoomDraft={(draft) => void persistRoomDraft(draft)}
     />
   );
 }

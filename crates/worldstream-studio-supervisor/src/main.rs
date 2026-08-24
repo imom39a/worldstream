@@ -6,10 +6,11 @@ use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
     lifecycle::ConfiguredDaemonLifecycle,
+    room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
     rooms::HttpDaemonRoomSource,
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
-    supervisor_router_with_lifecycle_secrets_runners_activity_packs_and_rooms,
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_and_drafts,
 };
 
 #[derive(Debug, Parser)]
@@ -78,6 +79,9 @@ async fn main() -> Result<()> {
         vault.clone(),
         args.host_authority_reference.clone(),
     );
+    let draft_validator = ExactActivityPackDraftValidatorV1::new(activity_packs.clone());
+    let drafts = RoomDraftStoreV1::open(&args.state_dir.join("room-drafts"), draft_validator)
+        .context("Studio Supervisor protected Room draft store is unavailable")?;
     let rooms = HttpDaemonRoomSource::new(
         args.daemon,
         daemon_timeout,
@@ -98,13 +102,14 @@ async fn main() -> Result<()> {
     .context("Studio Supervisor Runner instance state is unavailable")?;
     axum::serve(
         listener,
-        supervisor_router_with_lifecycle_secrets_runners_activity_packs_and_rooms(
+        supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_and_drafts(
             source,
             lifecycle,
             vault,
             runners,
             activity_packs,
             rooms,
+            drafts,
         ),
     )
     .await

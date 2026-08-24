@@ -5,6 +5,7 @@
 
 pub mod activity_packs;
 pub mod lifecycle;
+pub mod room_drafts;
 pub mod rooms;
 pub mod runner_templates;
 
@@ -286,6 +287,28 @@ pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_and_rooms
         activity_packs,
     )
     .merge(rooms::room_router(rooms))
+}
+
+/// Builds the complete Supervisor surface with owner-only planning drafts.
+/// Draft routes persist wizard state only and cannot create Rooms or authority.
+pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_and_drafts(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+    runners: runner_templates::RunnerSupervisorV1,
+    activity_packs: impl activity_packs::DaemonActivityPackSource,
+    rooms: impl rooms::DaemonRoomSource,
+    drafts: room_drafts::RoomDraftStoreV1,
+) -> Router {
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_and_rooms(
+        source,
+        lifecycle,
+        vault,
+        runners,
+        activity_packs,
+        rooms,
+    )
+    .merge(room_drafts::room_draft_router(drafts))
 }
 
 async fn daemon_status(State(source): State<Arc<dyn DaemonStatusSource>>) -> Json<DaemonStatusV1> {

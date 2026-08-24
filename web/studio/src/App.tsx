@@ -11,6 +11,7 @@ import type {
 } from "./activityPacks";
 import { RunnerOperations } from "./RunnerOperations";
 import { RoomOperations } from "./RoomOperations";
+import { RoomDraftWizard } from "./RoomDraftWizard";
 import type {
   RunnerInstanceLifecycleAction,
   RunnerInstanceStatusResponse,
@@ -18,6 +19,11 @@ import type {
 } from "./runnerTemplates";
 import type { SecretStatusResponse } from "./secretStatus";
 import type { RoomInventoryState } from "./roomInventory";
+import type {
+  RoomDraft,
+  RoomDraftFieldError,
+  RoomDraftStep,
+} from "./roomDrafts";
 
 export interface AppProps {
   status: DaemonStatus | null;
@@ -41,6 +47,14 @@ export interface AppProps {
   roomInventory?: RoomInventoryState;
   selectedRoomId?: string | null;
   onSelectRoom?: (roomId: string) => void;
+  roomDraft?: RoomDraft | null;
+  roomDraftStep?: RoomDraftStep;
+  roomDraftErrors?: RoomDraftFieldError[];
+  roomDraftSaving?: boolean;
+  roomDraftSaved?: boolean;
+  onRoomDraftChange?: (draft: RoomDraft) => void;
+  onRoomDraftStepChange?: (step: RoomDraftStep) => void;
+  onSaveRoomDraft?: (draft: RoomDraft) => void;
 }
 
 export function App({
@@ -62,6 +76,14 @@ export function App({
   roomInventory = { status: "loading" },
   selectedRoomId = null,
   onSelectRoom,
+  roomDraft = null,
+  roomDraftStep = "activity",
+  roomDraftErrors = [],
+  roomDraftSaving = false,
+  roomDraftSaved = false,
+  onRoomDraftChange,
+  onRoomDraftStepChange,
+  onSaveRoomDraft,
 }: AppProps) {
   const connected = status?.connectivity === "connected";
   const loading = status === null;
@@ -77,7 +99,7 @@ export function App({
         <nav aria-label="Studio navigation">
           <a aria-current="page" href="#home">Home</a>
           <a href="#tasks">Tasks</a>
-          <a href="#build">Build</a>
+          <a href="#room-draft">Build</a>
           <a href="#runner-processes">Operations</a>
         </nav>
         <p>Companion control plane</p>
@@ -153,6 +175,22 @@ export function App({
             onSelectRoom={onSelectRoom}
           />
         </div>
+
+        {roomDraft !== null ? (
+          <RoomDraftWizard
+            draft={roomDraft}
+            catalog={activityPackCatalog}
+            detail={activityPackDetail}
+            activeStep={roomDraftStep}
+            fieldErrors={roomDraftErrors}
+            saving={roomDraftSaving}
+            saved={roomDraftSaved}
+            onDraftChange={onRoomDraftChange}
+            onStepChange={onRoomDraftStepChange}
+            onInspectPack={onInspectActivityPack}
+            onSave={onSaveRoomDraft}
+          />
+        ) : null}
 
         <ActivityPackCatalogView
           catalog={activityPackCatalog}
