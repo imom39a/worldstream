@@ -1,7 +1,14 @@
-//! Bounded status boundary between `WorldStream` Studio and `worldstreamd`.
+//! Bounded local control-plane boundary between Studio and `worldstreamd`.
 //!
-//! The Supervisor deliberately exposes one typed read-only operation. Room
-//! authority and all Room mutations remain behind the daemon's supported APIs.
+//! Room authority and all Room mutations remain behind the daemon's supported
+//! APIs. Lifecycle control is limited to one fixed local daemon configuration.
+
+pub mod activity_packs;
+pub mod lifecycle;
+pub mod rooms;
+pub mod runner_templates;
+
+pub mod secrets;
 
 use std::{
     io::{Read as _, Write as _},
@@ -214,6 +221,71 @@ pub fn supervisor_router(source: impl DaemonStatusSource) -> Router {
     Router::new()
         .route("/api/v1/daemon/status", get(daemon_status))
         .with_state(source)
+}
+
+/// Builds the complete bounded status and configured-lifecycle surface.
+pub fn supervisor_router_with_lifecycle(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+) -> Router {
+    supervisor_router(source).merge(lifecycle::lifecycle_router(lifecycle))
+}
+
+/// Builds the complete bounded Supervisor surface, including browser-safe
+/// secret availability. Raw secret material has no route into this router.
+pub fn supervisor_router_with_lifecycle_and_secrets(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+) -> Router {
+    supervisor_router_with_lifecycle(source, lifecycle).merge(secrets::secret_status_router(vault))
+}
+
+/// Builds the bounded Supervisor surface with immutable installed Runner
+/// Template catalogs and typed instance lifecycle controls.
+pub fn supervisor_router_with_lifecycle_secrets_and_runners(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+    runners: runner_templates::RunnerSupervisorV1,
+) -> Router {
+    supervisor_router_with_lifecycle_and_secrets(source, lifecycle, vault)
+        .merge(runner_templates::runner_router(runners))
+}
+
+/// Builds the bounded Supervisor surface with the exact installed Activity
+/// Pack catalog. Host authority is retained and resolved only by the injected
+/// daemon source; it never crosses into the browser response.
+pub fn supervisor_router_with_lifecycle_secrets_runners_and_activity_packs(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+    runners: runner_templates::RunnerSupervisorV1,
+    activity_packs: impl activity_packs::DaemonActivityPackSource,
+) -> Router {
+    supervisor_router_with_lifecycle_secrets_and_runners(source, lifecycle, vault, runners)
+        .merge(activity_packs::activity_pack_router(activity_packs))
+}
+
+/// Builds the complete bounded Supervisor surface with host-authorized Room
+/// inventory/detail forwarding. The Room source retains its own exact opaque
+/// Host authority reference; no bearer or reference enters browser state.
+pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_and_rooms(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+    runners: runner_templates::RunnerSupervisorV1,
+    activity_packs: impl activity_packs::DaemonActivityPackSource,
+    rooms: impl rooms::DaemonRoomSource,
+) -> Router {
+    supervisor_router_with_lifecycle_secrets_runners_and_activity_packs(
+        source,
+        lifecycle,
+        vault,
+        runners,
+        activity_packs,
+    )
+    .merge(rooms::room_router(rooms))
 }
 
 async fn daemon_status(State(source): State<Arc<dyn DaemonStatusSource>>) -> Json<DaemonStatusV1> {

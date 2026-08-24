@@ -97,6 +97,32 @@ HTTP is used for:
 - v0.2 artifact upload and download;
 - host-operator backup and diagnostics through local tooling.
 
+### Host-operator Room inventory
+
+An authenticated `HostOperator` capability carrying `operator:room_admin` may
+read the privacy-bounded daemon inventory:
+
+```text
+GET /v1/operator/rooms?after_room_id=<RoomId>&limit=<1..100>
+GET /v1/operator/rooms/{room_id}
+```
+
+The list is ordered by stable Room ID and uses the last returned Room ID as its
+continuation. Each list row and detail contains the stable Room identity,
+complete Room Head, exact immutable Activity Pack revision identity, Room
+Integrity State and generation, and an explicit freshness observation. These
+fields are independent: freshness never substitutes for Room Integrity, and
+neither substitutes for Activity Phase.
+
+The host capability is not an Operator Membership. Consequently, Activity
+Phase is returned as explicitly `unavailable` with reason
+`operator_membership_required` unless a future supported API supplies a
+present-authorized Operator Membership projection. The inventory never returns
+Memberships, participant-private Projections, observation/cursor state,
+Activation or Invocation data, or raw Authoritative Room State. A
+deployment-scoped capability is required for list enumeration; Room-bound host
+capabilities may read only their authorized Room detail.
+
 All canonical Room-administration operations use the Operation Identity `(authenticated_principal, versioned_operation_kind, idempotency_key)`. For existing-Room administration, the versioned Canonical Request Hash binds target Room, expected basis, reason, and the complete ordered changeset. Room creation instead binds its exact pack digest, configuration, and ordered initial Membership proposal while excluding generated Room/Member IDs, Room seed, and recorded creation time. The server prepares exactly `Create(PreparedRoomCreationV1)` or `Existing(PreparedRoomCommitV1)` and submits it through `commit(PreparedRoomWriteV1)`; the only other storage-port operation is `resolve(identity, hash)`. Every branch and resolve acquires the same transaction-scoped Operation Identity serialization guard first. Genesis creation, an Advance, stable Rejection, or administrative NoChange and its Semantic Receipt reach one database COMMIT. Same identity/hash returns the original result; same identity/different hash returns `idempotency_conflict`.
 
 ## Common envelope
@@ -806,6 +832,31 @@ An explicit Membership departure is an authorized Room administration operation 
 ## HTTP resource APIs
 
 Exact route names may change before the first schema freeze. Required semantics are:
+
+### Installed Activity Pack catalog
+
+The daemon exposes its bounded, host-authorized embedded registry through:
+
+    GET /v1/operator/activity-packs
+    GET /v1/operator/activity-packs/{revision_digest}
+
+Both operations require a deployment-wide Host Operator capability with the
+`operator:room_admin` scope. The list is ordered by exact semantic revision
+digest and reports stable pack ID, explanatory version, digest, display name,
+and the independent `selectable_for_new_rooms` and
+`runnable_for_retained_rooms` statuses.
+
+The detail operation accepts only the exact BLAKE3 revision digest. It returns
+the descriptor-declared Roles, exact configuration schema document, declared
+Actions with their exact payload schema documents, and Lobby compatibility
+only when that exact revision declares it. A malformed or unknown digest
+returns `activity_pack_revision_unavailable`; the runtime never searches by
+pack ID or explanatory version and never substitutes another revision.
+
+The catalog has no upload, executable-code, marketplace, or filesystem
+discovery operation. Its values come only from registry rows that passed the
+runtime's embedded revision-lock, schema, codec, executor, and golden-corpus
+validation.
 
 ### Development administration
 

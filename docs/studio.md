@@ -6,13 +6,7 @@ authoritative Room runtime.
 
 ## Run locally
 
-Start `worldstreamd` with the development configuration in one terminal:
-
-```bash
-cargo run -p worldstream-server --bin worldstreamd -- --config config/development.toml
-```
-
-Then start the Studio Supervisor and separately served portal in another:
+Start the Studio Supervisor and separately served portal:
 
 ```bash
 pnpm studio:dev
@@ -20,8 +14,10 @@ pnpm studio:dev
 
 Open <http://127.0.0.1:5174>. The portal asks the Supervisor at
 `127.0.0.1:9420` for a live, typed daemon snapshot. The Supervisor probes the
-daemon at `127.0.0.1:9410` and exposes only
-`GET /api/v1/daemon/status`.
+daemon at `127.0.0.1:9410`. The Operations surface can start, gracefully stop,
+or restart only the configured `target/debug/worldstreamd` process with
+`config/development.toml`; `studio:dev` builds that daemon before serving the
+portal.
 
 To run only the Supervisor, use:
 
@@ -29,5 +25,89 @@ To run only the Supervisor, use:
 pnpm studio:supervisor
 ```
 
-The Supervisor accepts `--bind`, `--daemon`, and `--probe-timeout-ms` options.
-It does not expose arbitrary command execution or direct Room mutation.
+The Supervisor exposes typed status and configured-lifecycle routes under
+`/api/v1/daemon`. It accepts `--bind`, `--daemon`, `--probe-timeout-ms`,
+`--daemon-executable`, `--daemon-config`, `--graceful-stop-timeout-ms`, and
+`--state-dir` options. The executable and configuration are fixed when the
+Supervisor starts; requests cannot supply commands, arguments, environment
+values, or paths. The Supervisor does not expose arbitrary command execution or
+direct Room mutation.
+
+## Protected credential references
+
+Credentials retained by the Supervisor live under the owner-only state
+directory and are addressed by random opaque references. Host, Membership,
+Runner, and future model-provider credentials use distinct kind-bound files, so
+a reference cannot silently substitute authority from another boundary. Raw
+values are resolved only inside the Supervisor and the resolved buffer is
+zeroized when dropped.
+
+Studio calls the read-only `/api/v1/secrets` endpoint. That response contains
+exactly the configured, missing, or unavailable state for each supported kind;
+it contains no credential reference, filesystem path, or secret value. The
+exact-reference diagnostic endpoint is likewise metadata-only. Vault failures
+use a closed, pathless error vocabulary suitable for logs and diagnostics.
+
+## Owner-installed Runner Templates
+
+Runner Templates are installed from the owner-controlled directory selected by
+`--runner-templates-dir` (default `config/runner-templates`). Each JSON manifest
+binds a stable template identity and immutable exact revision to one local
+executable BLAKE3 digest. It also declares exact compatible Activity Pack
+revisions, bounded capacity, a loopback HTTP health contract, explicit
+non-secret environment settings, Supervisor secret references, and stable local
+instance identities.
+
+On first load the Supervisor verifies the executable bytes and copies the
+normalized manifest into owner-only state under
+`<state-dir>/runner-templates/installed`. Reusing the same template identity and
+revision with different content fails closed. Installed records are not a
+download catalog: Studio has no register, upload, marketplace, executable-path,
+shell, command, argument, or environment-value endpoint.
+
+The Build surface reads browser-safe immutable metadata from
+`GET /api/v1/runner-templates`. The Operations surface reads health, freshness,
+compatibility, capacity, and actionable failures from
+`GET /api/v1/runner-instances`, then requests only these closed workflows:
+
+```text
+POST /api/v1/runner-instances/{installed-instance-id}/start
+POST /api/v1/runner-instances/{installed-instance-id}/stop
+POST /api/v1/runner-instances/{installed-instance-id}/restart
+```
+
+Those requests have no launch body. The Supervisor always starts the exact
+owner-installed executable with its installed settings, resolves any secret
+references locally, and requests a graceful stop. Persistent expected state is
+reconciled after a Supervisor restart; a live instance is not launched again,
+and an unreconciled or unhealthy instance is shown with a safe next action.
+
+An owner manifest has this shape (replace the digest, path, and optional secret
+reference with locally provisioned values):
+
+```json
+{
+  "schema": "worldstream/runner-template/v1",
+  "template_id": "local-mcp-helper",
+  "revision": "r2",
+  "display_name": "Local MCP Helper",
+  "executable": {
+    "path": "/owner/approved/bin/local-mcp-helper",
+    "blake3": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "compatibility": [
+    { "activity_pack_id": "agent-heist", "exact_revisions": ["1.0", "1.1"] }
+  ],
+  "capacity": { "maximum_concurrent_invocations": 4 },
+  "health": { "path": "/healthz", "timeout_ms": 500, "stale_after_ms": 5000 },
+  "non_secret_environment": { "LOG_LEVEL": "info" },
+  "secret_environment": [],
+  "instances": [
+    { "instance_id": "local-mcp-helper-1", "health_address": "127.0.0.1:9501" }
+  ]
+}
+```
+
+Runner instance lifecycle is operational only. Runner authority remains
+separate from participant Action authority, and the Supervisor never starts a
+model or mutates Authoritative Room State.

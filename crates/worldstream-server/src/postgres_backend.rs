@@ -21,9 +21,10 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use worldstream_core::{
     AccessModeV1, ActivationIntentStateV1, ActivationOperationRequestV1, ActivationResultCodeV1,
     AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1, AuthorityCheckedAt,
-    AuthorityErrorV1, AuthorityV1, AuthorizedRunnerControlV1, CREATE_ROOM_OPERATION_KIND,
-    CanonicalJsonV1, CapabilityBearerV1, CapabilityExpiresAt, CapabilityId, CapabilityProfileV1,
-    CapabilityScopeSetV1, CreationRecordedAt, HistoricalReplayErrorV1, HostClockErrorV1,
+    AuthorityErrorV1, AuthorityStoreV1, AuthorityV1, AuthorizedRunnerControlV1,
+    CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1, CapabilityExpiresAt,
+    CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1, CreationRecordedAt,
+    DiagnosticOperationV1, DiagnosticTargetV1, HistoricalReplayErrorV1, HostClockErrorV1,
     HostClockSampleV1, HostClockV1, InitialMembershipProposalV1, MemberReadOperationV1,
     MembershipStandingV1, MembershipV1, MonotonicHostClockV1, NewCapabilityV1,
     PackGenesisRequestV1, PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1,
@@ -39,17 +40,20 @@ use worldstream_core::{
 use worldstream_postgres::{
     PostgresActivationError, PostgresAuthorityAuthenticationError, PostgresFrameEvidenceV1,
     PostgresObservationDeliveryV1, PostgresObservationError, PostgresRoomCommitError,
-    PostgresRoomStore, PostgresSchemaVerificationError, PostgresTimerStateV1,
+    PostgresRoomDiagnosticErrorV1, PostgresRoomDiagnosticSummaryV1, PostgresRoomStore,
+    PostgresSchemaVerificationError, PostgresTimerStateV1,
 };
 use worldstream_protocol::{
     AccessMode, ActionAccepted, ActionRejected, ActionSubmit, ActivationClaim, ActivationDelivery,
     ActivationFrame, ActivationIntentState, ActivationLeaseOperation, ActivationOffer,
     ActivationOfferRequest, ActivationOffers, ActivationOperationReply, ActivationResultCode,
     BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse, MAX_MESSAGE_BYTES,
-    ObservationAck, ObservationDeliver, PROTOCOL_VERSION, Principal, PrincipalKind, Projection,
-    ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach, RoomAttached, RoomHead,
-    RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome, SyncBranch, TimerFireRequest,
-    TimerFireResponse,
+    ObservationAck, ObservationDeliver, OperatorActivityPhase, OperatorDataFreshness,
+    OperatorRoomIntegrity, OperatorRoomIntegrityStatus, OperatorRoomInventoryPage,
+    OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal,
+    PrincipalKind, Projection, ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach,
+    RoomAttached, RoomHead, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome, SyncBranch,
+    TimerFireRequest, TimerFireResponse,
 };
 use worldstream_runtime::SecretSource;
 
@@ -656,6 +660,38 @@ impl PostgresGatewayBackend {
             .map_err(map_authentication_error)
     }
 
+    fn authorize_activity_pack_catalog(
+        &self,
+        session: &GatewaySession,
+    ) -> Result<(), BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let grant = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                worldstream_core::DiagnosticTargetV1::Deployment,
+                worldstream_core::DiagnosticOperationV1::ActivityPackCatalog,
+                self.checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        let adapter_input = grant.into_adapter_input();
+        if adapter_input.target() != &worldstream_core::DiagnosticTargetV1::Deployment
+            || adapter_input.operation()
+                != worldstream_core::DiagnosticOperationV1::ActivityPackCatalog
+        {
+            return Err(BackendError::InvalidResult);
+        }
+        let snapshot = self
+            .store
+            .snapshot(&adapter_input.authority_snapshot_query())
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::Forbidden)?;
+        adapter_input
+            .revalidate_current(&snapshot, &self.checked_at()?)
+            .map_err(map_authority_error)?;
+        Ok(())
+    }
+
     fn creation_attempt(
         &self,
         session: &GatewaySession,
@@ -1024,6 +1060,23 @@ impl GatewayBackend for PostgresGatewayBackend {
         Ok(self.authenticate(session)?.principal_id().to_string())
     }
 
+    fn activity_pack_catalog(
+        &self,
+        session: &GatewaySession,
+    ) -> Result<worldstream_protocol::ActivityPackCatalogResponse, BackendError> {
+        self.authorize_activity_pack_catalog(session)?;
+        Ok(crate::activity_pack_catalog_from_registry(self.registry()?))
+    }
+
+    fn activity_pack_revision(
+        &self,
+        session: &GatewaySession,
+        revision_digest: &str,
+    ) -> Result<worldstream_protocol::ActivityPackCatalogRevisionResponse, BackendError> {
+        self.authorize_activity_pack_catalog(session)?;
+        crate::activity_pack_revision_from_registry(self.registry()?, revision_digest)
+    }
+
     fn hello(
         &self,
         session: &GatewaySession,
@@ -1336,6 +1389,72 @@ impl GatewayBackend for PostgresGatewayBackend {
             )
             .map_err(map_room_commit_error)?;
         timer_response_from_resolution(timer_request, &resolution)
+    }
+
+    fn operator_room_inventory(
+        &self,
+        session: &GatewaySession,
+        request: OperatorRoomInventoryRequest,
+    ) -> Result<OperatorRoomInventoryPage, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let checked_at = self.checked_at()?;
+        let authority = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Deployment,
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let after_room_id = request
+            .after_room_id
+            .as_deref()
+            .map(RoomId::from_str)
+            .transpose()
+            .map_err(|_| BackendError::Rejected)?;
+        let page = self
+            .store
+            .diagnostic_inventory_page(
+                authority,
+                &checked_at,
+                after_room_id.as_ref(),
+                request.limit,
+            )
+            .map_err(|error| map_postgres_diagnostic_error(&error))?;
+        let rooms = page
+            .rooms()
+            .iter()
+            .map(|summary| operator_room_summary(summary, checked_at.as_str()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(OperatorRoomInventoryPage {
+            rooms,
+            next_after_room_id: page.next_after_room_id().map(ToString::to_string),
+        })
+    }
+
+    fn operator_room_detail(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+    ) -> Result<OperatorRoomSummary, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::NotFound)?;
+        let checked_at = self.checked_at()?;
+        let authority = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Room(room_id),
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let summary = self
+            .store
+            .diagnostic_summary(authority, &checked_at)
+            .map_err(|error| map_postgres_diagnostic_error(&error))?;
+        operator_room_summary(&summary, checked_at.as_str())
     }
 
     fn issue_member_capability(
@@ -1764,6 +1883,47 @@ fn room_head(head: &worldstream_core::CompleteHeadV1) -> RoomHead {
     }
 }
 
+fn operator_room_summary(
+    summary: &PostgresRoomDiagnosticSummaryV1,
+    observed_at: &str,
+) -> Result<OperatorRoomSummary, BackendError> {
+    if summary.head().room_id() != summary.room_id()
+        || summary.head().pack_digest()
+            != &summary
+                .pack_revision()
+                .revision_digest()
+                .map_err(|_| BackendError::InvalidResult)?
+    {
+        return Err(BackendError::InvalidResult);
+    }
+    let integrity_status = match summary.integrity().status() {
+        worldstream_core::RoomIntegrityStatusV1::Healthy => OperatorRoomIntegrityStatus::Healthy,
+        worldstream_core::RoomIntegrityStatusV1::Faulted => OperatorRoomIntegrityStatus::Faulted,
+        worldstream_core::RoomIntegrityStatusV1::Quarantined => {
+            OperatorRoomIntegrityStatus::Quarantined
+        }
+    };
+    Ok(OperatorRoomSummary {
+        room_id: summary.room_id().to_string(),
+        room_head: room_head(summary.head()),
+        pack: PackReference {
+            id: summary.pack_revision().pack_id.clone(),
+            version: summary.pack_revision().explanatory_version.clone(),
+            digest: summary.head().pack_digest().to_string(),
+        },
+        integrity: OperatorRoomIntegrity {
+            status: integrity_status,
+            generation: summary.integrity().generation().get(),
+        },
+        activity_phase: OperatorActivityPhase::Unavailable {
+            reason: "operator_membership_required".to_owned(),
+        },
+        freshness: OperatorDataFreshness::Fresh {
+            observed_at: observed_at.to_owned(),
+        },
+    })
+}
+
 fn projection_from_view(
     view: &worldstream_core::ValidatedPackViewV1,
 ) -> Result<Projection, BackendError> {
@@ -2061,6 +2221,17 @@ fn map_activation_error(error: PostgresActivationError) -> BackendError {
         PostgresActivationError::InvalidRequest => BackendError::Rejected,
         PostgresActivationError::IdempotencyConflict => BackendError::Conflict,
         PostgresActivationError::Fenced | PostgresActivationError::StaleLease => BackendError::Busy,
+    }
+}
+
+fn map_postgres_diagnostic_error(error: &PostgresRoomDiagnosticErrorV1) -> BackendError {
+    match error {
+        PostgresRoomDiagnosticErrorV1::Authority(error) => map_authority_error(*error),
+        PostgresRoomDiagnosticErrorV1::RoomUnavailable => BackendError::NotFound,
+        PostgresRoomDiagnosticErrorV1::InvalidTarget
+        | PostgresRoomDiagnosticErrorV1::InvalidBounds => BackendError::Rejected,
+        PostgresRoomDiagnosticErrorV1::StorageUnavailable
+        | PostgresRoomDiagnosticErrorV1::Corrupt => BackendError::StorageUnavailable,
     }
 }
 
@@ -2381,7 +2552,8 @@ mod tests {
         PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore,
     };
     use worldstream_protocol::{
-        AccessMode, BearerWireV1, CreateMember, PackReference, PrincipalKind,
+        AccessMode, BearerWireV1, CreateMember, OperatorActivityPhase, OperatorRoomIntegrityStatus,
+        OperatorRoomInventoryRequest, PackReference, PrincipalKind,
     };
     use worldstream_runtime::SecretSource;
 
@@ -2627,6 +2799,33 @@ mod tests {
         let created = backend
             .create_room(&host, create.clone())
             .unwrap_or_else(|error| unreachable!("create Room: {error:?}"));
+        let inventory = backend
+            .operator_room_inventory(
+                &host,
+                OperatorRoomInventoryRequest {
+                    after_room_id: None,
+                    limit: 100,
+                },
+            )
+            .unwrap_or_else(|error| unreachable!("operator inventory: {error:?}"));
+        assert!(
+            inventory
+                .rooms
+                .iter()
+                .any(|summary| summary.room_id == created.room_id)
+        );
+        let detail = backend
+            .operator_room_detail(&host, &created.room_id)
+            .unwrap_or_else(|error| unreachable!("operator detail: {error:?}"));
+        assert_eq!(detail.room_head, created.room_head);
+        assert_eq!(
+            detail.integrity.status,
+            OperatorRoomIntegrityStatus::Healthy
+        );
+        assert!(matches!(
+            detail.activity_phase,
+            OperatorActivityPhase::Unavailable { .. }
+        ));
         assert_eq!(
             backend
                 .create_room(&host, create.clone())

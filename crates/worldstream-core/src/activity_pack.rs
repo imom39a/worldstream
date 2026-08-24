@@ -1818,6 +1818,19 @@ pub struct PackRegistryStatusV1 {
     pub runnable_for_retained_rooms: bool,
 }
 
+/// Bounded read-only catalog metadata for one exact embedded revision.
+///
+/// This value deliberately excludes the executor and codecs. Catalog callers
+/// can inspect only validated identity, declarations, and availability; they
+/// cannot acquire an invocation or code-loading capability through this seam.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivityPackCatalogRevisionV1 {
+    pub revision_digest: PackDigestV1,
+    pub descriptor: PackRevisionDescriptorV1,
+    pub selectable_for_new_rooms: bool,
+    pub runnable_for_retained_rooms: bool,
+}
+
 /// Candidate embedded registry row. Construction alone confers no trust;
 /// [`PackRegistryV1::try_new`] recomputes and cross-checks every identity.
 #[derive(Clone)]
@@ -3999,6 +4012,77 @@ impl PackRegistryV1 {
     #[must_use]
     pub fn retained_revision_locks(&self) -> impl ExactSizeIterator<Item = &PackRevisionLockV1> {
         self.revisions.values().map(|entry| &entry.revision_lock)
+    }
+
+    /// Lists every exact embedded revision in semantic-digest order.
+    ///
+    /// The result is a metadata snapshot. It does not expose an executor and
+    /// cannot be used as a name/version selection path.
+    #[must_use]
+    pub fn catalog_revisions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = ActivityPackCatalogRevisionV1> + '_ {
+        self.revisions
+            .iter()
+            .map(|(revision_digest, entry)| ActivityPackCatalogRevisionV1 {
+                revision_digest: revision_digest.clone(),
+                descriptor: entry.descriptor.clone(),
+                selectable_for_new_rooms: entry.status.selectable_for_new_rooms,
+                runnable_for_retained_rooms: entry.status.runnable_for_retained_rooms,
+            })
+    }
+
+    /// Reads catalog metadata for one exact semantic digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackRegistryErrorV1::MissingRevision`] for an unknown digest.
+    /// No name, explanatory version, or neighboring digest is consulted.
+    pub fn catalog_revision(
+        &self,
+        revision_digest: &PackDigestV1,
+    ) -> Result<ActivityPackCatalogRevisionV1, PackRegistryErrorV1> {
+        let entry = self
+            .revisions
+            .get(revision_digest)
+            .ok_or_else(|| PackRegistryErrorV1::MissingRevision(revision_digest.clone()))?;
+        Ok(ActivityPackCatalogRevisionV1 {
+            revision_digest: revision_digest.clone(),
+            descriptor: entry.descriptor.clone(),
+            selectable_for_new_rooms: entry.status.selectable_for_new_rooms,
+            runnable_for_retained_rooms: entry.status.runnable_for_retained_rooms,
+        })
+    }
+
+    /// Resolves one exact schema reference within one exact embedded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit missing-revision, missing-schema, or wrong-schema
+    /// error. Resolution never crosses to another revision with the same
+    /// schema ID.
+    pub fn resolve_schema(
+        &self,
+        revision_digest: &PackDigestV1,
+        reference: &SchemaReferenceV1,
+    ) -> Result<&CanonicalJsonV1, PackRegistryErrorV1> {
+        let entry = self
+            .revisions
+            .get(revision_digest)
+            .ok_or_else(|| PackRegistryErrorV1::MissingRevision(revision_digest.clone()))?;
+        let schema = entry.schemas.get(&reference.schema_id).ok_or_else(|| {
+            PackRegistryErrorV1::MissingSchema {
+                revision_digest: revision_digest.clone(),
+                schema_id: reference.schema_id.clone(),
+            }
+        })?;
+        if schema.schema_digest != reference.schema_digest {
+            return Err(PackRegistryErrorV1::WrongSchema {
+                revision_digest: revision_digest.clone(),
+                schema_id: reference.schema_id.clone(),
+            });
+        }
+        Ok(schema.canonical_schema())
     }
 }
 

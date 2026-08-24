@@ -2426,12 +2426,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "blake3",
  "clap",
+ "getrandom 0.4.3",
  "http-body-util",
+ "rustix",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tower",
+ "worldstream-protocol",
+ "worldstream-runtime",
+ "zeroize",
 ]
 
 [[package]]

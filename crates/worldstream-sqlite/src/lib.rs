@@ -1209,6 +1209,7 @@ pub struct SqliteRoomDiagnosticSummaryV1 {
     room_id: RoomId,
     integrity: RoomIntegrityStateV1,
     head: CompleteHeadV1,
+    pack_revision: PackRevisionLockV1,
 }
 
 impl SqliteRoomDiagnosticSummaryV1 {
@@ -1225,6 +1226,32 @@ impl SqliteRoomDiagnosticSummaryV1 {
     #[must_use]
     pub const fn head(&self) -> &CompleteHeadV1 {
         &self.head
+    }
+
+    /// Returns the exact immutable Activity Pack Revision identity pinned by
+    /// the Room's Genesis.
+    #[must_use]
+    pub const fn pack_revision(&self) -> &PackRevisionLockV1 {
+        &self.pack_revision
+    }
+}
+
+/// One deterministic, bounded page of host-authorized Room summaries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteRoomDiagnosticInventoryPageV1 {
+    rooms: Vec<SqliteRoomDiagnosticSummaryV1>,
+    next_after_room_id: Option<RoomId>,
+}
+
+impl SqliteRoomDiagnosticInventoryPageV1 {
+    #[must_use]
+    pub fn rooms(&self) -> &[SqliteRoomDiagnosticSummaryV1] {
+        &self.rooms
+    }
+
+    #[must_use]
+    pub const fn next_after_room_id(&self) -> Option<&RoomId> {
+        self.next_after_room_id.as_ref()
     }
 }
 
@@ -4151,10 +4178,109 @@ impl SqliteRoomStore {
         let history =
             read_diagnostic_history(&self.writer.database_file, &self.writer.path, &room_id)?;
         let head = decode_diagnostic_head(&history.head_bytes, &room_id)?;
+        let pack_revision = PackRevisionLockV1::from_canonical_bytes(
+            &history.pack_revision_lock_bytes,
+            head.pack_digest(),
+        )
+        .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?;
         Ok(SqliteRoomDiagnosticSummaryV1 {
             room_id,
             integrity: history.integrity,
             head,
+            pack_revision,
+        })
+    }
+
+    /// Lists Rooms in stable Room-ID order through a deployment-scoped host
+    /// diagnostic grant. The adapter revalidates the grant immediately before
+    /// the bounded read and returns at most `limit` summaries plus one opaque
+    /// continuation identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed authority, bounds, storage, or corruption error.
+    pub fn diagnostic_inventory_page(
+        &self,
+        authority: AuthorizedDiagnosticV1,
+        checked_at: &AuthorityCheckedAt,
+        after_room_id: Option<&RoomId>,
+        limit: usize,
+    ) -> Result<SqliteRoomDiagnosticInventoryPageV1, SqliteRoomDiagnosticErrorV1> {
+        if limit == 0
+            || limit > 100
+            || authority.operation() != DiagnosticOperationV1::SafeRoomSummary
+        {
+            return Err(SqliteRoomDiagnosticErrorV1::UnsupportedOperation);
+        }
+        let authority = authority.into_adapter_input();
+        if !matches!(authority.target(), DiagnosticTargetV1::Deployment) {
+            return Err(SqliteRoomDiagnosticErrorV1::DeploymentTarget);
+        }
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let snapshot = load_authority_snapshot(&connection, &authority.authority_snapshot_query())
+            .map_err(|error| match error {
+                AuthorityStoreErrorV1::Corrupt => SqliteRoomDiagnosticErrorV1::Corrupt,
+                _ => SqliteRoomDiagnosticErrorV1::StorageUnavailable,
+            })?
+            .ok_or(SqliteRoomDiagnosticErrorV1::Authority(
+                AuthorityErrorV1::Unauthenticated,
+            ))?;
+        authority.revalidate_current(&snapshot, checked_at)?;
+
+        let row_limit = i64::try_from(limit + 1)
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::UnsupportedOperation)?;
+        let after = after_room_id.map_or("", RoomId::as_str);
+        let mut statement = connection
+            .prepare(
+                "SELECT r.room_id, r.complete_head_bytes, g.pack_revision_lock_bytes, \
+                 i.status, i.generation FROM rooms AS r \
+                 JOIN room_genesis AS g ON g.room_id = r.room_id \
+                 LEFT JOIN room_integrity AS i ON i.room_id = r.room_id \
+                 WHERE r.room_id > ?1 ORDER BY r.room_id LIMIT ?2",
+            )
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let rows = statement
+            .query_map(params![after, row_limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            })
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let mut summaries = Vec::with_capacity(limit + 1);
+        for row in rows {
+            let (room_id, head_bytes, pack_bytes, status, generation) =
+                row.map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?;
+            let room_id =
+                RoomId::from_str(&room_id).map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?;
+            let head = decode_diagnostic_head(&head_bytes, &room_id)?;
+            let pack_revision =
+                PackRevisionLockV1::from_canonical_bytes(&pack_bytes, head.pack_digest())
+                    .map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?;
+            let integrity = parse_integrity_state(status.as_deref(), generation)
+                .map_err(|()| SqliteRoomDiagnosticErrorV1::Corrupt)?;
+            summaries.push(SqliteRoomDiagnosticSummaryV1 {
+                room_id,
+                integrity,
+                head,
+                pack_revision,
+            });
+        }
+        let next_after_room_id = if summaries.len() > limit {
+            summaries.truncate(limit);
+            summaries.last().map(|summary| summary.room_id.clone())
+        } else {
+            None
+        };
+        Ok(SqliteRoomDiagnosticInventoryPageV1 {
+            rooms: summaries,
+            next_after_room_id,
         })
     }
 
@@ -29988,6 +30114,32 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("faulted summary: {error}"));
         assert_eq!(summary.integrity().status(), RoomIntegrityStatusV1::Faulted);
+        assert_eq!(
+            summary
+                .pack_revision()
+                .revision_digest()
+                .unwrap_or_else(|error| panic!("summary pack digest: {error}")),
+            *summary.head().pack_digest()
+        );
+
+        let inventory = store
+            .diagnostic_inventory_page(
+                authority
+                    .authorize_diagnostic(
+                        &presented_host_capability(),
+                        DiagnosticTargetV1::Deployment,
+                        DiagnosticOperationV1::SafeRoomSummary,
+                        parsed("2026-08-15T12:00:05Z"),
+                    )
+                    .unwrap_or_else(|error| panic!("authorize inventory: {error}")),
+                &parsed("2026-08-15T12:00:05Z"),
+                None,
+                1,
+            )
+            .unwrap_or_else(|error| panic!("Room inventory: {error}"));
+        assert_eq!(inventory.rooms().len(), 1);
+        assert_eq!(inventory.rooms()[0].room_id().as_str(), ROOM);
+        assert!(inventory.next_after_room_id().is_none());
 
         let export = store
             .diagnostic_raw_export(

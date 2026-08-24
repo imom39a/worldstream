@@ -17,6 +17,7 @@ pub enum ErrorCode {
     InvalidEnvelope,
     MessageTooLarge,
     RoomNotFound,
+    ActivityPackRevisionUnavailable,
     MembershipNotFound,
     MembershipNotEnabled,
     RoomFaulted,

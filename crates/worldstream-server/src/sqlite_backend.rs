@@ -19,19 +19,20 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use worldstream_core::{
     AccessModeV1, ActionOfferWitnessV1, ActivationIntentStateV1, ActivationOperationRequestV1,
     ActivationResultCodeV1, AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1,
-    AuthorityCheckedAt, AuthorityErrorV1, AuthorityV1, AuthorizedRunnerControlV1,
+    AuthorityCheckedAt, AuthorityErrorV1, AuthorityStoreV1, AuthorityV1, AuthorizedRunnerControlV1,
     AuthorizedTimerFiredV1, CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1,
     CapabilityExpiresAt, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
-    CreationRecordedAt, HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
-    InitialMembershipProposalV1, MemberReadOperationV1, MembershipStandingV1, MembershipV1,
-    MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1, PackRegistryV1,
-    PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
-    ParticipantActionRequestV1, PreparedRoomCreationV1, PrincipalKindV1, ReceiptSemanticInputV1,
-    ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1,
-    RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1,
-    RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1,
-    SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
+    CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1, HistoricalReplayErrorV1,
+    HostClockErrorV1, HostClockSampleV1, HostClockV1, InitialMembershipProposalV1,
+    MemberReadOperationV1, MembershipStandingV1, MembershipV1, MonotonicHostClockV1,
+    NewCapabilityV1, PackDigestV1, PackGenesisRequestV1, PackRegistryV1, PackViewerV1,
+    ParticipantActionIngressErrorV1, ParticipantActionIngressV1, ParticipantActionRequestV1,
+    PreparedRoomCreationV1, PrincipalKindV1, ReceiptSemanticInputV1, ReceiptSemanticTimeV1,
+    ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1, RoomCommitStorageV1,
+    RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1,
+    RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1, SemanticResultV1,
+    SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1, StoredSemanticResultV1,
+    TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
     authorize_participant_action_operation, authorize_room_creation_operation,
     commit_room_creation,
 };
@@ -40,19 +41,21 @@ use worldstream_protocol::{
     ActivationDelivery, ActivationFrame, ActivationIntentState, ActivationLeaseOperation,
     ActivationOffer, ActivationOfferRequest, ActivationOffers, ActivationOperationReply,
     ActivationResultCode, BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse,
-    MAX_MESSAGE_BYTES, ObservationAck, ObservationDeliver, PROTOCOL_VERSION, Principal,
-    PrincipalKind, Projection, ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach,
-    RoomAttached, RoomHead, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome, SyncBranch,
-    TimerFireRequest, TimerFireResponse,
+    MAX_MESSAGE_BYTES, ObservationAck, ObservationDeliver, OperatorActivityPhase,
+    OperatorDataFreshness, OperatorRoomIntegrity, OperatorRoomIntegrityStatus,
+    OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION,
+    PackReference, Principal, PrincipalKind, Projection, ProjectionReset, ProjectionResponse,
+    ReplayResponse, RoomAttach, RoomAttached, RoomHead, RoomSyncAck, RunnerHello, RunnerReady,
+    ServerWelcome, SyncBranch, TimerFireRequest, TimerFireResponse,
 };
 use worldstream_sqlite::{
     SqliteActivationErrorV1, SqliteAuthenticatedCapabilityV1, SqliteAuthorizedReplayErrorV1,
     SqliteAuthorizedReplayOutcomeV1, SqliteGatewayErrorV1, SqliteObservationDeliveryV1,
     SqliteObservationErrorV1, SqliteObservationFrameV1, SqliteObservationResetReasonV1,
-    SqliteParticipantActionErrorV1, SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1,
-    SqliteRoomStore, SqliteRoomSupervisorErrorV1, SqliteRoomSupervisorLeaseV1,
-    SqliteRoomSupervisorOperationV1, SqliteRoomSupervisorV1, SqliteTimerCommitErrorV1,
-    SqliteTimerStateV1,
+    SqliteParticipantActionErrorV1, SqliteRoomDiagnosticErrorV1, SqliteRoomDiagnosticSummaryV1,
+    SqliteRoomRecoveryV1, SqliteRoomRuntimeStateV1, SqliteRoomStore, SqliteRoomSupervisorErrorV1,
+    SqliteRoomSupervisorLeaseV1, SqliteRoomSupervisorOperationV1, SqliteRoomSupervisorV1,
+    SqliteTimerCommitErrorV1, SqliteTimerStateV1,
 };
 
 use crate::{
@@ -513,6 +516,38 @@ impl SqliteGatewayBackend {
             .authenticate_bearer(bearer)
             .map_err(|error| map_gateway_error(&error))?;
         Ok(authenticated)
+    }
+
+    fn authorize_activity_pack_catalog(
+        &self,
+        session: &GatewaySession,
+    ) -> Result<(), BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let grant = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                worldstream_core::DiagnosticTargetV1::Deployment,
+                worldstream_core::DiagnosticOperationV1::ActivityPackCatalog,
+                Self::checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        let adapter_input = grant.into_adapter_input();
+        if adapter_input.target() != &worldstream_core::DiagnosticTargetV1::Deployment
+            || adapter_input.operation()
+                != worldstream_core::DiagnosticOperationV1::ActivityPackCatalog
+        {
+            return Err(BackendError::InvalidResult);
+        }
+        let snapshot = self
+            .store
+            .snapshot(&adapter_input.authority_snapshot_query())
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::Forbidden)?;
+        adapter_input
+            .revalidate_current(&snapshot, &Self::checked_at()?)
+            .map_err(map_authority_error)?;
+        Ok(())
     }
 
     fn authority(&self) -> AuthorityV1 {
@@ -1618,6 +1653,23 @@ impl GatewayBackend for SqliteGatewayBackend {
         Ok(self.authenticate(session)?.principal_id().to_string())
     }
 
+    fn activity_pack_catalog(
+        &self,
+        session: &GatewaySession,
+    ) -> Result<worldstream_protocol::ActivityPackCatalogResponse, BackendError> {
+        self.authorize_activity_pack_catalog(session)?;
+        Ok(crate::activity_pack_catalog_from_registry(&self.registry))
+    }
+
+    fn activity_pack_revision(
+        &self,
+        session: &GatewaySession,
+        revision_digest: &str,
+    ) -> Result<worldstream_protocol::ActivityPackCatalogRevisionResponse, BackendError> {
+        self.authorize_activity_pack_catalog(session)?;
+        crate::activity_pack_revision_from_registry(&self.registry, revision_digest)
+    }
+
     fn hello(
         &self,
         session: &GatewaySession,
@@ -2050,6 +2102,72 @@ impl GatewayBackend for SqliteGatewayBackend {
             .map_err(|error| map_timer_commit_error(&error))?;
         operation.publish().map_err(Self::map_supervisor_error)?;
         timer_response_from_resolution(timer_request, &resolution)
+    }
+
+    fn operator_room_inventory(
+        &self,
+        session: &GatewaySession,
+        request: OperatorRoomInventoryRequest,
+    ) -> Result<OperatorRoomInventoryPage, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let checked_at = Self::checked_at()?;
+        let authority = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Deployment,
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let after_room_id = request
+            .after_room_id
+            .as_deref()
+            .map(RoomId::from_str)
+            .transpose()
+            .map_err(|_| BackendError::Rejected)?;
+        let page = self
+            .store
+            .diagnostic_inventory_page(
+                authority,
+                &checked_at,
+                after_room_id.as_ref(),
+                request.limit,
+            )
+            .map_err(|error| map_sqlite_diagnostic_error(&error))?;
+        let rooms = page
+            .rooms()
+            .iter()
+            .map(|summary| operator_room_summary(summary, checked_at.as_str()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(OperatorRoomInventoryPage {
+            rooms,
+            next_after_room_id: page.next_after_room_id().map(ToString::to_string),
+        })
+    }
+
+    fn operator_room_detail(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+    ) -> Result<OperatorRoomSummary, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::NotFound)?;
+        let checked_at = Self::checked_at()?;
+        let authority = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Room(room_id),
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let summary = self
+            .store
+            .diagnostic_summary(authority, &checked_at)
+            .map_err(|error| map_sqlite_diagnostic_error(&error))?;
+        operator_room_summary(&summary, checked_at.as_str())
     }
 
     fn issue_member_capability(
@@ -2589,6 +2707,50 @@ fn room_head(head: &worldstream_core::CompleteHeadV1) -> RoomHead {
     }
 }
 
+fn operator_room_summary(
+    summary: &SqliteRoomDiagnosticSummaryV1,
+    observed_at: &str,
+) -> Result<OperatorRoomSummary, BackendError> {
+    if summary.head().room_id() != summary.room_id()
+        || summary.head().pack_digest()
+            != &summary
+                .pack_revision()
+                .revision_digest()
+                .map_err(|_| BackendError::InvalidResult)?
+    {
+        return Err(BackendError::InvalidResult);
+    }
+    Ok(OperatorRoomSummary {
+        room_id: summary.room_id().to_string(),
+        room_head: room_head(summary.head()),
+        pack: PackReference {
+            id: summary.pack_revision().pack_id.clone(),
+            version: summary.pack_revision().explanatory_version.clone(),
+            digest: summary.head().pack_digest().to_string(),
+        },
+        integrity: OperatorRoomIntegrity {
+            status: match summary.integrity().status() {
+                worldstream_core::RoomIntegrityStatusV1::Healthy => {
+                    OperatorRoomIntegrityStatus::Healthy
+                }
+                worldstream_core::RoomIntegrityStatusV1::Faulted => {
+                    OperatorRoomIntegrityStatus::Faulted
+                }
+                worldstream_core::RoomIntegrityStatusV1::Quarantined => {
+                    OperatorRoomIntegrityStatus::Quarantined
+                }
+            },
+            generation: summary.integrity().generation().get(),
+        },
+        activity_phase: OperatorActivityPhase::Unavailable {
+            reason: "operator_membership_required".to_owned(),
+        },
+        freshness: OperatorDataFreshness::Fresh {
+            observed_at: observed_at.to_owned(),
+        },
+    })
+}
+
 fn protocol_principal_kind(kind: PrincipalKindV1) -> PrincipalKind {
     match kind {
         PrincipalKindV1::Human => PrincipalKind::Human,
@@ -2605,6 +2767,21 @@ fn map_gateway_error(error: &SqliteGatewayErrorV1) -> BackendError {
         SqliteGatewayErrorV1::RoomUnavailable => BackendError::NotFound,
         SqliteGatewayErrorV1::IntegrityUnavailable => BackendError::RoomQuarantined,
         SqliteGatewayErrorV1::ConcurrentChange => BackendError::Busy,
+    }
+}
+
+fn map_sqlite_diagnostic_error(error: &SqliteRoomDiagnosticErrorV1) -> BackendError {
+    match error {
+        SqliteRoomDiagnosticErrorV1::Authority(error) => map_authority_error(*error),
+        SqliteRoomDiagnosticErrorV1::RoomUnavailable => BackendError::NotFound,
+        SqliteRoomDiagnosticErrorV1::DeploymentTarget
+        | SqliteRoomDiagnosticErrorV1::UnsupportedOperation => BackendError::Rejected,
+        SqliteRoomDiagnosticErrorV1::StorageUnavailable
+        | SqliteRoomDiagnosticErrorV1::Corrupt
+        | SqliteRoomDiagnosticErrorV1::ExportTooLarge
+        | SqliteRoomDiagnosticErrorV1::RestoreDeploymentRequired => {
+            BackendError::StorageUnavailable
+        }
     }
 }
 
@@ -2817,6 +2994,58 @@ mod tests {
         assert_eq!(value.as_str().len(), 20);
         assert!(value.as_str().ends_with('Z'));
         assert!(!value.as_str().contains('.'));
+    }
+
+    #[test]
+    fn sqlite_host_operator_reads_only_exact_activity_pack_catalog_revisions() {
+        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
+        let authority = AuthorityV1::new(Arc::new(store.clone()));
+        let bearer = CapabilityBearerV1::from_bytes([0xb7; 32]);
+        let bootstrap = AuthorityBootstrapV1::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FB1"
+                .parse()
+                .unwrap_or_else(|_| panic!("change")),
+            "01ARZ3NDEKTSV4RRFFQ69G5FB2"
+                .parse()
+                .unwrap_or_else(|_| panic!("principal")),
+            PrincipalKindV1::Human,
+            "01ARZ3NDEKTSV4RRFFQ69G5FB3"
+                .parse()
+                .unwrap_or_else(|_| panic!("capability")),
+            bearer.token_hash(),
+            None,
+        )
+        .unwrap_or_else(|_| panic!("bootstrap"));
+        authority
+            .bootstrap(
+                bootstrap,
+                "2026-08-15T12:00:00Z"
+                    .parse::<AuthorityCheckedAt>()
+                    .unwrap_or_else(|_| panic!("checked at")),
+            )
+            .unwrap_or_else(|_| panic!("apply bootstrap"));
+        let registry =
+            Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
+        let backend = SqliteGatewayBackend::new(store, registry);
+        let gateway_session = session(0xb7, "01ARZ3NDEKTSV4RRFFQ69G5FB4");
+
+        let catalog = backend
+            .activity_pack_catalog(&gateway_session)
+            .unwrap_or_else(|error| panic!("catalog: {error:?}"));
+        assert_eq!(catalog.revisions.len(), 2);
+        assert!(catalog.revisions.iter().any(|revision| {
+            revision.pack.digest == counter_v2_digest().to_string()
+                && revision.selectable_for_new_rooms
+                && revision.runnable_for_retained_rooms
+        }));
+        assert!(matches!(
+            backend.activity_pack_revision(
+                &gateway_session,
+                "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            Err(BackendError::ActivityPackRevisionUnavailable)
+        ));
     }
 
     #[test]

@@ -44,11 +44,15 @@ use worldstream_core::{
     RoomAdmissionQueueSnapshotV1,
 };
 use worldstream_protocol::{
-    ActionAccepted, ActionRejected, ActionSubmit, ActivationClaim, ActivationLeaseOperation,
-    ActivationOfferRequest, ActivationOffers, ActivationOperationReply, ActivationResultCode,
+    ACTIVITY_PACK_CATALOG_VERSION, ActionAccepted, ActionRejected, ActionSubmit, ActivationClaim,
+    ActivationLeaseOperation, ActivationOfferRequest, ActivationOffers, ActivationOperationReply,
+    ActivationResultCode, ActivityPackCatalogAction, ActivityPackCatalogResponse,
+    ActivityPackCatalogRevisionDetail, ActivityPackCatalogRevisionResponse,
+    ActivityPackCatalogRevisionSummary, ActivityPackCatalogRole, ActivityPackCatalogSchema,
     BROWSER_WS_TICKET_VERSION, BearerWireV1, BrowserWebSocketTicketIssueResponse, ClientHello,
     ClientMode, CreateRoomRequest, CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
-    ObservationAck, ObservationDeliver, ProjectionReset, ProjectionResponse, ProtocolEnvelope,
+    ObservationAck, ObservationDeliver, OperatorRoomInventoryPage, OperatorRoomInventoryRequest,
+    OperatorRoomSummary, PackReference, ProjectionReset, ProjectionResponse, ProtocolEnvelope,
     ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome,
     TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
     decode_envelope,
@@ -329,6 +333,8 @@ pub enum BackendError {
     Forbidden,
     #[error("the requested room or membership is unavailable")]
     NotFound,
+    #[error("the exact Activity Pack revision is unavailable")]
+    ActivityPackRevisionUnavailable,
     #[error("the operation is temporarily busy")]
     Busy,
     #[error("the operation was rejected")]
@@ -351,6 +357,7 @@ impl BackendError {
             Self::StorageUnavailable => ErrorCode::StorageUnavailable,
             Self::Forbidden => ErrorCode::Forbidden,
             Self::NotFound => ErrorCode::RoomNotFound,
+            Self::ActivityPackRevisionUnavailable => ErrorCode::ActivityPackRevisionUnavailable,
             Self::Busy => ErrorCode::RoomBusy,
             Self::Rejected => ErrorCode::InvalidPayload,
             Self::Indeterminate => ErrorCode::CommitIndeterminate,
@@ -497,6 +504,9 @@ const OPERATOR_ROOM_CREATE: &str = "room-create";
 const OPERATOR_MEMBER_CAPABILITY: &str = "member-capability-issue";
 const OPERATOR_RUNNER_CAPABILITY: &str = "runner-capability-issue";
 const OPERATOR_TIMER_FIRE: &str = "timer-fire";
+const OPERATOR_ACTIVITY_PACK_CATALOG: &str = "activity-pack-catalog";
+const OPERATOR_ROOM_INVENTORY: &str = "room-inventory";
+const OPERATOR_ROOM_DETAIL: &str = "room-detail";
 
 /// Fills a caller-owned buffer from the platform's operating-system CSPRNG.
 ///
@@ -702,6 +712,33 @@ pub trait GatewayBackend: Send + Sync + 'static {
     /// unavailable. Callers must reject the operation before semantic work.
     fn admission_principal(&self, session: &GatewaySession) -> Result<String, BackendError>;
 
+    /// Lists exact Activity Pack revisions compiled into this runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed error unless the caller has host-operator authority or
+    /// the validated embedded registry is unavailable.
+    fn activity_pack_catalog(
+        &self,
+        _session: &GatewaySession,
+    ) -> Result<ActivityPackCatalogResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Reads one exact installed Activity Pack revision by semantic digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit unavailable result for malformed or unknown
+    /// digests. Implementations must not fall back by pack ID or version.
+    fn activity_pack_revision(
+        &self,
+        _session: &GatewaySession,
+        _revision_digest: &str,
+    ) -> Result<ActivityPackCatalogRevisionResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
     /// Authenticates a new Room-client handshake.
     ///
     /// # Errors
@@ -819,6 +856,35 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _room_id: &str,
         _request: TimerFireRequest,
     ) -> Result<TimerFireResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Lists the bounded host-authorized Room inventory in stable Room-ID
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed authority, bounds, storage, or canonical-identity
+    /// failure.
+    fn operator_room_inventory(
+        &self,
+        _session: &GatewaySession,
+        _request: OperatorRoomInventoryRequest,
+    ) -> Result<OperatorRoomInventoryPage, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Reads one bounded host-authorized Room detail by stable Room identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed authority, unavailable-Room, storage, or
+    /// canonical-identity failure.
+    fn operator_room_detail(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+    ) -> Result<OperatorRoomSummary, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
 
@@ -958,6 +1024,111 @@ pub trait GatewayBackend: Send + Sync + 'static {
 
 /// Runs one synchronous backend operation away from Tokio worker threads.
 ///
+pub(crate) fn activity_pack_catalog_from_registry(
+    registry: &worldstream_core::PackRegistryV1,
+) -> ActivityPackCatalogResponse {
+    ActivityPackCatalogResponse {
+        version: ACTIVITY_PACK_CATALOG_VERSION.to_owned(),
+        revisions: registry
+            .catalog_revisions()
+            .map(|revision| ActivityPackCatalogRevisionSummary {
+                pack: PackReference {
+                    id: revision.descriptor.pack_id,
+                    version: revision.descriptor.explanatory_version,
+                    digest: revision.revision_digest.to_string(),
+                },
+                name: revision.descriptor.name,
+                selectable_for_new_rooms: revision.selectable_for_new_rooms,
+                runnable_for_retained_rooms: revision.runnable_for_retained_rooms,
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn activity_pack_revision_from_registry(
+    registry: &worldstream_core::PackRegistryV1,
+    revision_digest: &str,
+) -> Result<ActivityPackCatalogRevisionResponse, BackendError> {
+    let revision_digest = revision_digest
+        .parse::<worldstream_core::PackDigestV1>()
+        .map_err(|_| BackendError::ActivityPackRevisionUnavailable)?;
+    let revision = registry
+        .catalog_revision(&revision_digest)
+        .map_err(|error| match error {
+            worldstream_core::PackRegistryErrorV1::MissingRevision(_) => {
+                BackendError::ActivityPackRevisionUnavailable
+            }
+            _ => BackendError::InvalidResult,
+        })?;
+    let descriptor = &revision.descriptor;
+    let configuration_schema = activity_pack_schema_from_registry(
+        registry,
+        &revision_digest,
+        &descriptor.configuration_schema,
+    )?;
+    let actions = descriptor
+        .actions
+        .iter()
+        .map(|action| {
+            Ok(ActivityPackCatalogAction {
+                action_type: action.action_type.clone(),
+                payload_schema: activity_pack_schema_from_registry(
+                    registry,
+                    &revision_digest,
+                    &action.payload_schema,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, BackendError>>()?;
+    let summary = ActivityPackCatalogRevisionSummary {
+        pack: PackReference {
+            id: descriptor.pack_id.clone(),
+            version: descriptor.explanatory_version.clone(),
+            digest: revision_digest.to_string(),
+        },
+        name: descriptor.name.clone(),
+        selectable_for_new_rooms: revision.selectable_for_new_rooms,
+        runnable_for_retained_rooms: revision.runnable_for_retained_rooms,
+    };
+    Ok(ActivityPackCatalogRevisionResponse {
+        version: ACTIVITY_PACK_CATALOG_VERSION.to_owned(),
+        revision: ActivityPackCatalogRevisionDetail {
+            summary,
+            roles: descriptor
+                .roles
+                .iter()
+                .map(|role| ActivityPackCatalogRole {
+                    role: role.role.clone(),
+                    minimum: role.minimum,
+                    maximum: role.maximum,
+                })
+                .collect(),
+            configuration_schema,
+            actions,
+            // Current embedded revisions do not declare a Lobby contract.
+            // A future seam may populate this only from an exact
+            // descriptor-bound declaration.
+            lobby_compatibility: None,
+        },
+    })
+}
+
+fn activity_pack_schema_from_registry(
+    registry: &worldstream_core::PackRegistryV1,
+    revision_digest: &worldstream_core::PackDigestV1,
+    reference: &worldstream_core::SchemaReferenceV1,
+) -> Result<ActivityPackCatalogSchema, BackendError> {
+    let schema = registry
+        .resolve_schema(revision_digest, reference)
+        .map_err(|_| BackendError::InvalidResult)?;
+    let schema = serde_json::to_value(schema).map_err(|_| BackendError::InvalidResult)?;
+    Ok(ActivityPackCatalogSchema {
+        schema_id: reference.schema_id.clone(),
+        schema_digest: reference.schema_digest.to_string(),
+        schema,
+    })
+}
+
 /// `GatewayBackend` is intentionally provider-neutral and synchronous, while
 /// `PostgreSQL`'s client is a synchronous client. Every HTTP/WebSocket caller
 /// must cross this boundary before invoking the backend so a provider cannot
@@ -1413,6 +1584,11 @@ pub fn operator_router(state: OperatorState) -> Router {
         .route("/readyz", get(readyz))
         .route("/version", get(version))
         .route("/metrics", get(metrics))
+        .route("/v1/operator/activity-packs", get(activity_pack_catalog))
+        .route(
+            "/v1/operator/activity-packs/{revision_digest}",
+            get(activity_pack_revision),
+        )
         .route("/v1/rooms", post(create_room))
         .route(
             "/v1/operator/member-capabilities",
@@ -1422,6 +1598,8 @@ pub fn operator_router(state: OperatorState) -> Router {
             "/v1/operator/runner-capabilities",
             post(issue_runner_capability),
         )
+        .route("/v1/operator/rooms", get(operator_room_inventory))
+        .route("/v1/operator/rooms/{room_id}", get(operator_room_detail))
         .route("/v1/operator/rooms/{room_id}/timers/fire", post(fire_timer))
         .route("/v1/rooms/{room_id}/projection", get(current_projection))
         .route("/v1/rooms/{room_id}/replay", get(historical_replay))
@@ -1588,6 +1766,53 @@ async fn version(State(state): State<OperatorState>) -> Json<VersionResponse> {
         manifest: state.compatibility,
         engine: state.engine,
     })
+}
+
+async fn activity_pack_catalog(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+) -> ResponseResult<ActivityPackCatalogResponse> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_ACTIVITY_PACK_CATALOG),
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.activity_pack_catalog(&session)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
+}
+
+async fn activity_pack_revision(
+    State(state): State<OperatorState>,
+    Path(revision_digest): Path<String>,
+    headers: HeaderMap,
+) -> ResponseResult<ActivityPackCatalogRevisionResponse> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_ACTIVITY_PACK_CATALOG),
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.activity_pack_revision(&session, &revision_digest)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
 }
 
 async fn create_room(
@@ -1803,6 +2028,97 @@ async fn issue_runner_capability(
             Err(ResponseError::from(error))
         }
     }
+}
+
+async fn operator_room_inventory(
+    State(state): State<OperatorState>,
+    RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
+) -> ResponseResult<OperatorRoomInventoryPage> {
+    let session = Arc::new(authenticated_session(&headers)?);
+    let request = parse_operator_room_inventory_query(raw_query.as_deref())?;
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_ROOM_INVENTORY),
+        traceparent_correlation(&headers),
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.operator_room_inventory(&session, request)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
+}
+
+async fn operator_room_detail(
+    State(state): State<OperatorState>,
+    Path(room_id): Path<String>,
+    headers: HeaderMap,
+) -> ResponseResult<OperatorRoomSummary> {
+    let session = Arc::new(authenticated_session(&headers)?);
+    let targets = [AdmissionTarget {
+        room_id: &room_id,
+        member_id: None,
+    }];
+    admit_authenticated_http(
+        &state,
+        &session,
+        &targets,
+        Some(OPERATOR_ROOM_DETAIL),
+        traceparent_correlation(&headers),
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.operator_room_detail(&session, &room_id)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
+}
+
+fn parse_operator_room_inventory_query(
+    raw_query: Option<&str>,
+) -> Result<OperatorRoomInventoryRequest, ResponseError> {
+    let mut request = OperatorRoomInventoryRequest {
+        after_room_id: None,
+        limit: worldstream_protocol::DEFAULT_OPERATOR_ROOM_PAGE_SIZE,
+    };
+    let Some(raw_query) = raw_query else {
+        return Ok(request);
+    };
+    if raw_query.is_empty() || raw_query.len() > 256 {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    let mut saw_after = false;
+    let mut saw_limit = false;
+    for part in raw_query.split('&') {
+        let Some((name, value)) = part.split_once('=') else {
+            return Err(ResponseError::from(BackendError::Rejected));
+        };
+        match name {
+            "after_room_id" if !saw_after && !value.is_empty() => {
+                saw_after = true;
+                request.after_room_id = Some(value.to_owned());
+            }
+            "limit" if !saw_limit => {
+                saw_limit = true;
+                request.limit = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|limit| {
+                        (1..=worldstream_protocol::MAX_OPERATOR_ROOM_PAGE_SIZE).contains(limit)
+                    })
+                    .ok_or_else(|| ResponseError::from(BackendError::Rejected))?;
+            }
+            _ => return Err(ResponseError::from(BackendError::Rejected)),
+        }
+    }
+    Ok(request)
 }
 
 async fn fire_timer(
@@ -2176,7 +2492,9 @@ impl From<BackendError> for ResponseError {
     fn from(error: BackendError) -> Self {
         let status = match &error {
             BackendError::Forbidden => StatusCode::FORBIDDEN,
-            BackendError::NotFound => StatusCode::NOT_FOUND,
+            BackendError::NotFound | BackendError::ActivityPackRevisionUnavailable => {
+                StatusCode::NOT_FOUND
+            }
             BackendError::Busy => StatusCode::TOO_MANY_REQUESTS,
             BackendError::Conflict => StatusCode::CONFLICT,
             BackendError::StorageUnavailable
@@ -2225,6 +2543,9 @@ fn safe_message(code: ErrorCode) -> &'static str {
         ErrorCode::RoomBusy => "the room is temporarily busy",
         ErrorCode::RateLimited => "gateway admission limit exceeded",
         ErrorCode::RoomNotFound => "the requested room is unavailable",
+        ErrorCode::ActivityPackRevisionUnavailable => {
+            "the exact Activity Pack revision is unavailable"
+        }
         ErrorCode::IdempotencyConflict => {
             "the operation identity conflicts with an existing request"
         }
@@ -4127,9 +4448,10 @@ fn traceparent_correlation(headers: &HeaderMap) -> telemetry::CorrelationV1 {
 fn reason_for_backend_error(error: &BackendError) -> telemetry::ReasonCodeV1 {
     match error {
         BackendError::Forbidden => telemetry::ReasonCodeV1::Unauthorized,
-        BackendError::NotFound | BackendError::Rejected | BackendError::InvalidResult => {
-            telemetry::ReasonCodeV1::Invalid
-        }
+        BackendError::NotFound
+        | BackendError::ActivityPackRevisionUnavailable
+        | BackendError::Rejected
+        | BackendError::InvalidResult => telemetry::ReasonCodeV1::Invalid,
         BackendError::Busy => telemetry::ReasonCodeV1::Busy,
         BackendError::Conflict => telemetry::ReasonCodeV1::Conflict,
         BackendError::StorageUnavailable => telemetry::ReasonCodeV1::StorageUnavailable,
@@ -4356,7 +4678,7 @@ mod tests {
     use tower::ServiceExt;
     use worldstream_core::{
         AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1, CapabilityBearerV1, CapabilityId,
-        PrincipalKindV1, builtin_worldstream_registry, counter_v2_digest,
+        PrincipalKindV1, builtin_worldstream_registry, counter_v1_digest, counter_v2_digest,
     };
     use worldstream_protocol::{
         AccessMode, ActionSubmit, BEARER_WIRE_PREFIX, BearerWireV1,
@@ -4640,6 +4962,27 @@ mod tests {
             Ok("test-principal".to_owned())
         }
 
+        fn activity_pack_catalog(
+            &self,
+            _: &super::GatewaySession,
+        ) -> Result<worldstream_protocol::ActivityPackCatalogResponse, super::BackendError>
+        {
+            let registry = builtin_worldstream_registry()
+                .map_err(|_| super::BackendError::StorageUnavailable)?;
+            Ok(super::activity_pack_catalog_from_registry(&registry))
+        }
+
+        fn activity_pack_revision(
+            &self,
+            _: &super::GatewaySession,
+            revision_digest: &str,
+        ) -> Result<worldstream_protocol::ActivityPackCatalogRevisionResponse, super::BackendError>
+        {
+            let registry = builtin_worldstream_registry()
+                .map_err(|_| super::BackendError::StorageUnavailable)?;
+            super::activity_pack_revision_from_registry(&registry, revision_digest)
+        }
+
         fn hello(
             &self,
             _: &super::GatewaySession,
@@ -4811,6 +5154,80 @@ mod tests {
                 },
                 duplicate: false,
             })
+        }
+
+        fn operator_room_inventory(
+            &self,
+            _: &super::GatewaySession,
+            request: worldstream_protocol::OperatorRoomInventoryRequest,
+        ) -> Result<worldstream_protocol::OperatorRoomInventoryPage, super::BackendError> {
+            let first = operator_room_fixture("01ARZ3NDEKTSV4RRFFQ69G5FQ0", 1);
+            let second = operator_room_fixture("01ARZ3NDEKTSV4RRFFQ69G5FQ1", 2);
+            match (request.after_room_id.as_deref(), request.limit) {
+                (None, 1) => Ok(worldstream_protocol::OperatorRoomInventoryPage {
+                    rooms: vec![first],
+                    next_after_room_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FQ0".to_owned()),
+                }),
+                (Some("01ARZ3NDEKTSV4RRFFQ69G5FQ0"), 1) => {
+                    Ok(worldstream_protocol::OperatorRoomInventoryPage {
+                        rooms: vec![second],
+                        next_after_room_id: None,
+                    })
+                }
+                (Some("01ARZ3NDEKTSV4RRFFQ69G5FQ1"), 1) => {
+                    Ok(worldstream_protocol::OperatorRoomInventoryPage {
+                        rooms: Vec::new(),
+                        next_after_room_id: None,
+                    })
+                }
+                _ => Err(super::BackendError::Rejected),
+            }
+        }
+
+        fn operator_room_detail(
+            &self,
+            _: &super::GatewaySession,
+            room_id: &str,
+        ) -> Result<worldstream_protocol::OperatorRoomSummary, super::BackendError> {
+            match room_id {
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ0" => Ok(operator_room_fixture(room_id, 1)),
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ1" => Ok(operator_room_fixture(room_id, 2)),
+                _ => Err(super::BackendError::NotFound),
+            }
+        }
+    }
+
+    fn operator_room_fixture(
+        room_id: &str,
+        room_seq: u64,
+    ) -> worldstream_protocol::OperatorRoomSummary {
+        worldstream_protocol::OperatorRoomSummary {
+            room_id: room_id.to_owned(),
+            room_head: RoomHead {
+                room_id: room_id.to_owned(),
+                room_seq,
+                genesis_or_transition_hash: "blake3:lineage".to_owned(),
+                core_schema_version: "worldstream.core-room-state.v1".to_owned(),
+                pack_digest: "blake3:pack".to_owned(),
+                core_state_hash: "blake3:core".to_owned(),
+                activity_state_hash: "blake3:activity".to_owned(),
+                authoritative_state_hash: "blake3:authoritative".to_owned(),
+            },
+            pack: PackReference {
+                id: "worldstream.counter".to_owned(),
+                version: "2.0.0".to_owned(),
+                digest: "blake3:pack".to_owned(),
+            },
+            integrity: worldstream_protocol::OperatorRoomIntegrity {
+                status: worldstream_protocol::OperatorRoomIntegrityStatus::Healthy,
+                generation: 1,
+            },
+            activity_phase: worldstream_protocol::OperatorActivityPhase::Unavailable {
+                reason: "operator_membership_required".to_owned(),
+            },
+            freshness: worldstream_protocol::OperatorDataFreshness::Fresh {
+                observed_at: "2026-08-23T20:00:00Z".to_owned(),
+            },
         }
     }
 
@@ -5017,6 +5434,184 @@ mod tests {
 
         let welcome = result.unwrap_or_else(|error| unreachable!("blocking backend call: {error}"));
         assert_eq!(welcome.selected_protocol, "room.v1");
+    }
+
+    #[tokio::test]
+    async fn operator_room_inventory_pages_by_stable_room_identity() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/operator/rooms?limit=1")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(first.status(), StatusCode::OK);
+        let body = first
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("body: {error}"))
+            .to_bytes();
+        let page: worldstream_protocol::OperatorRoomInventoryPage = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| unreachable!("inventory JSON: {error}"));
+        assert_eq!(page.rooms.len(), 1);
+        assert_eq!(page.rooms[0].room_id, "01ARZ3NDEKTSV4RRFFQ69G5FQ0");
+        assert_eq!(
+            page.next_after_room_id.as_deref(),
+            Some("01ARZ3NDEKTSV4RRFFQ69G5FQ0")
+        );
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/operator/rooms?after_room_id=01ARZ3NDEKTSV4RRFFQ69G5FQ0&limit=1")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(second.status(), StatusCode::OK);
+        let body = second
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("body: {error}"))
+            .to_bytes();
+        let page: worldstream_protocol::OperatorRoomInventoryPage = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| unreachable!("inventory JSON: {error}"));
+        assert_eq!(page.rooms[0].room_id, "01ARZ3NDEKTSV4RRFFQ69G5FQ1");
+        assert!(page.next_after_room_id.is_none());
+
+        let empty = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        )
+        .oneshot(
+            Request::builder()
+                .uri("/v1/operator/rooms?after_room_id=01ARZ3NDEKTSV4RRFFQ69G5FQ1&limit=1")
+                .header(header::AUTHORIZATION, auth_header())
+                .body(Body::empty())
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+        let body = empty
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("body: {error}"))
+            .to_bytes();
+        let page: worldstream_protocol::OperatorRoomInventoryPage = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| unreachable!("empty inventory JSON: {error}"));
+        assert!(page.rooms.is_empty());
+        assert!(page.next_after_room_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn operator_room_detail_is_privacy_bounded_and_phase_explicitly_unavailable() {
+        let response = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        )
+        .oneshot(
+            Request::builder()
+                .uri("/v1/operator/rooms/01ARZ3NDEKTSV4RRFFQ69G5FQ0")
+                .header(header::AUTHORIZATION, auth_header())
+                .body(Body::empty())
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("body: {error}"))
+            .to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| unreachable!("detail JSON: {error}"));
+        assert_eq!(value["room_head"]["room_seq"], 1);
+        assert_eq!(value["pack"]["id"], "worldstream.counter");
+        assert_eq!(value["integrity"]["status"], "healthy");
+        assert_eq!(value["activity_phase"]["status"], "unavailable");
+        assert_eq!(value["freshness"]["status"], "fresh");
+        let serialized = String::from_utf8(body.to_vec())
+            .unwrap_or_else(|error| unreachable!("UTF-8 body: {error}"));
+        for private_field in [
+            "member_id",
+            "principal_id",
+            "invocation",
+            "activation",
+            "cursor",
+        ] {
+            assert!(
+                !serialized.contains(private_field),
+                "leaked {private_field}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_room_inventory_rejects_unbounded_or_ambiguous_queries() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        for query in ["limit=0", "limit=101", "limit=1&limit=1", "unknown=1"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/v1/operator/rooms?{query}"))
+                        .header(header::AUTHORIZATION, auth_header())
+                        .body(Body::empty())
+                        .unwrap_or_else(|error| unreachable!("request: {error}")),
+                )
+                .await
+                .unwrap_or_else(|error| unreachable!("response: {error}"));
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_room_inventory_reports_storage_unavailable_without_synthetic_rooms() {
+        let response = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}")),
+        )
+        .oneshot(
+            Request::builder()
+                .uri("/v1/operator/rooms?limit=1")
+                .header(header::AUTHORIZATION, auth_header())
+                .body(Body::empty())
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("body: {error}"))
+            .to_bytes();
+        let error: ErrorEnvelope = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| unreachable!("unavailable JSON: {error}"));
+        assert_eq!(error.error.code, ErrorCode::StorageUnavailable);
     }
 
     #[tokio::test]
@@ -5341,6 +5936,115 @@ mod tests {
         Body::from(
             r#"{"pack":{"id":"pack","version":"1","digest":"digest"},"configuration":{},"members":[],"idempotency_key":"request"}"#,
         )
+    }
+
+    #[tokio::test]
+    async fn activity_pack_catalog_lists_and_reads_exact_revisions() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/operator/activity-packs")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(list.status(), StatusCode::OK);
+        let list: worldstream_protocol::ActivityPackCatalogResponse = serde_json::from_slice(
+            &list
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("catalog: {error}"));
+        assert_eq!(
+            list.version,
+            worldstream_protocol::ACTIVITY_PACK_CATALOG_VERSION
+        );
+        assert_eq!(list.revisions.len(), 4);
+        assert!(
+            list.revisions
+                .windows(2)
+                .all(|pair| { pair[0].pack.digest < pair[1].pack.digest })
+        );
+        let retained = list
+            .revisions
+            .iter()
+            .find(|revision| revision.pack.digest == counter_v1_digest().to_string())
+            .unwrap_or_else(|| unreachable!("retained Counter revision"));
+        assert!(!retained.selectable_for_new_rooms);
+        assert!(retained.runnable_for_retained_rooms);
+
+        let selected_digest = counter_v2_digest().to_string();
+        let detail = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/operator/activity-packs/{selected_digest}"))
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(detail.status(), StatusCode::OK);
+        let detail: worldstream_protocol::ActivityPackCatalogRevisionResponse =
+            serde_json::from_slice(
+                &detail
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap_or_else(|error| unreachable!("body: {error}"))
+                    .to_bytes(),
+            )
+            .unwrap_or_else(|error| unreachable!("detail: {error}"));
+        assert_eq!(detail.revision.summary.pack.digest, selected_digest);
+        assert!(!detail.revision.roles.is_empty());
+        assert!(!detail.revision.actions.is_empty());
+        assert_eq!(
+            detail.revision.configuration_schema.schema_id,
+            "counter/configuration/v1"
+        );
+        assert!(detail.revision.lobby_compatibility.is_none());
+    }
+
+    #[tokio::test]
+    async fn unknown_activity_pack_revision_is_explicitly_unavailable() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/operator/activity-packs/blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let error: ErrorEnvelope = serde_json::from_slice(
+            &response
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("error: {error}"));
+        assert_eq!(error.error.code, ErrorCode::ActivityPackRevisionUnavailable);
+        assert!(!error.error.retryable);
     }
 
     #[tokio::test]

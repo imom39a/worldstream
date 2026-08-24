@@ -10,13 +10,21 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+blake3.workspace = true
 clap.workspace = true
+getrandom.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+worldstream-runtime = { path = "../worldstream-runtime", version = "=0.1.0" }
+worldstream-protocol = { path = "../worldstream-protocol", version = "=0.1.0" }
+zeroize.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+tempfile.workspace = true
 tower.workspace = true
 
 [lints]
@@ -25,3 +33,4 @@ workspace = true
 [[bin]]
 name = "worldstream-studio-supervisor"
 path = "src/main.rs"
+test = false

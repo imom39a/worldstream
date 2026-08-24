@@ -1,10 +1,68 @@
+import type {
+  DaemonLifecycle,
+  DaemonLifecycleAction,
+} from "./daemonLifecycle";
 import type { DaemonStatus } from "./daemonStatus";
+import { ActivityPackCatalogView } from "./ActivityPackCatalog";
+import type {
+  ActivityPackCatalog,
+  ActivityPackDetailResponse,
+  ActivityPackReference,
+} from "./activityPacks";
+import { RunnerOperations } from "./RunnerOperations";
+import { RoomOperations } from "./RoomOperations";
+import type {
+  RunnerInstanceLifecycleAction,
+  RunnerInstanceStatusResponse,
+  RunnerTemplateCatalog,
+} from "./runnerTemplates";
+import type { SecretStatusResponse } from "./secretStatus";
+import type { RoomInventoryState } from "./roomInventory";
 
 export interface AppProps {
   status: DaemonStatus | null;
+  lifecycle: DaemonLifecycle | null;
+  onLifecycleAction?: (action: DaemonLifecycleAction) => void;
+  secretStatus?: SecretStatusResponse | null;
+  runnerTemplates?: RunnerTemplateCatalog | null;
+  runnerInstances?: RunnerInstanceStatusResponse | null;
+  onRunnerLifecycleAction?: (
+    instanceId: string,
+    action: RunnerInstanceLifecycleAction,
+  ) => void;
+  activityPackCatalog?: ActivityPackCatalog | null;
+  activityPackDetail?: ActivityPackDetailResponse | null;
+  inspectedActivityPackDigest?: string | null;
+  activityPackSelection?: ActivityPackReference | null;
+  activityPackCatalogLoading?: boolean;
+  onInspectActivityPack?: (digest: string) => void;
+  onSelectActivityPack?: (selection: ActivityPackReference) => void;
+  onClearActivityPackSelection?: () => void;
+  roomInventory?: RoomInventoryState;
+  selectedRoomId?: string | null;
+  onSelectRoom?: (roomId: string) => void;
 }
 
-export function App({ status }: AppProps) {
+export function App({
+  status,
+  lifecycle,
+  onLifecycleAction,
+  secretStatus,
+  runnerTemplates = null,
+  runnerInstances = null,
+  onRunnerLifecycleAction,
+  activityPackCatalog = null,
+  activityPackDetail = null,
+  inspectedActivityPackDigest = null,
+  activityPackSelection = null,
+  activityPackCatalogLoading = false,
+  onInspectActivityPack,
+  onSelectActivityPack,
+  onClearActivityPackSelection,
+  roomInventory = { status: "loading" },
+  selectedRoomId = null,
+  onSelectRoom,
+}: AppProps) {
   const connected = status?.connectivity === "connected";
   const loading = status === null;
 
@@ -18,9 +76,9 @@ export function App({ status }: AppProps) {
         </div>
         <nav aria-label="Studio navigation">
           <a aria-current="page" href="#home">Home</a>
-          <span aria-disabled="true">Tasks</span>
-          <span aria-disabled="true">Build</span>
-          <span aria-disabled="true">Operations</span>
+          <a href="#tasks">Tasks</a>
+          <a href="#build">Build</a>
+          <a href="#runner-processes">Operations</a>
         </nav>
         <p>Companion control plane</p>
       </aside>
@@ -35,11 +93,14 @@ export function App({ status }: AppProps) {
           <StatusBadge connected={connected} loading={loading} />
         </header>
 
-        <section className={`daemon-card ${connected ? "is-connected" : "is-unavailable"}`}>
+        <section
+          className={`daemon-card ${connected ? "is-connected" : "is-unavailable"}`}
+          id="operations"
+        >
           <div className="daemon-heading">
             <div>
               <p className="eyebrow">Authoritative runtime</p>
-              <h2>{loading ? "Checking worldstreamd…" : connected ? "worldstreamd connected" : "worldstreamd unavailable"}</h2>
+              <h2>{daemonHeading(connected, loading, lifecycle)}</h2>
             </div>
             <span className="status-orb" aria-hidden="true" />
           </div>
@@ -59,7 +120,56 @@ export function App({ status }: AppProps) {
               <p>The Supervisor cannot establish live health. No cached version is shown.</p>
             </div>
           )}
+
+          <LifecycleControls
+            lifecycle={lifecycle}
+            connected={connected}
+            onAction={onLifecycleAction}
+          />
         </section>
+
+        <section className="credential-card" id="settings">
+          <p className="eyebrow">Settings · Credentials</p>
+          <h2>Protected local references</h2>
+          <p>Studio receives configuration state only. Credential values stay inside the Supervisor.</p>
+          <dl className="credential-grid">
+            {(secretStatus?.credentials ?? []).map((credential) => (
+              <StatusFact
+                key={credential.kind}
+                label={credentialLabel(credential.kind)}
+                value={availabilityLabel(credential.availability)}
+              />
+            ))}
+          </dl>
+          {secretStatus === null || secretStatus === undefined ? (
+            <p className="status-message">Checking protected credential configuration…</p>
+          ) : null}
+        </section>
+
+        <div id="tasks">
+          <RoomOperations
+            inventory={roomInventory}
+            selectedRoomId={selectedRoomId}
+            onSelectRoom={onSelectRoom}
+          />
+        </div>
+
+        <ActivityPackCatalogView
+          catalog={activityPackCatalog}
+          detail={activityPackDetail}
+          inspectedDigest={inspectedActivityPackDigest}
+          selection={activityPackSelection}
+          loading={activityPackCatalogLoading}
+          onInspect={onInspectActivityPack}
+          onSelect={onSelectActivityPack}
+          onClearSelection={onClearActivityPackSelection}
+        />
+
+        <RunnerOperations
+          catalog={runnerTemplates}
+          instances={runnerInstances}
+          onLifecycleAction={onRunnerLifecycleAction}
+        />
 
         <section className="authority-note">
           <p className="eyebrow">Authority boundary</p>
@@ -70,6 +180,110 @@ export function App({ status }: AppProps) {
         </section>
       </section>
     </main>
+  );
+}
+
+function credentialLabel(kind: SecretStatusResponse["credentials"][number]["kind"]) {
+  if (kind === "host_authority") return "Host authority";
+  if (kind === "membership_authority") return "Membership authority";
+  if (kind === "runner_authority") return "Runner authority";
+  return "Model provider";
+}
+
+function availabilityLabel(
+  availability: SecretStatusResponse["credentials"][number]["availability"],
+) {
+  if (availability === "configured") return "Configured";
+  if (availability === "missing") return "Missing";
+  return "Unavailable";
+}
+
+function daemonHeading(
+  connected: boolean,
+  loading: boolean,
+  lifecycle: DaemonLifecycle | null,
+) {
+  if (lifecycle?.state === "starting") return "Starting worldstreamd…";
+  if (lifecycle?.state === "stopping") return "Stopping worldstreamd…";
+  if (lifecycle?.state === "stopped") return "worldstreamd stopped";
+  if (loading) return "Checking worldstreamd…";
+  return connected ? "worldstreamd connected" : "worldstreamd unavailable";
+}
+
+function LifecycleControls({
+  lifecycle,
+  connected,
+  onAction,
+}: {
+  lifecycle: DaemonLifecycle | null;
+  connected: boolean;
+  onAction?: (action: DaemonLifecycleAction) => void;
+}) {
+  if (lifecycle === null) {
+    return <p className="lifecycle-message">Checking configured lifecycle control…</p>;
+  }
+  if (lifecycle.state === "starting" || lifecycle.state === "stopping") {
+    return (
+      <div className="lifecycle-progress" role="status">
+        <strong>Lifecycle operation in progress</strong>
+        <p>Operation {lifecycle.operation_id} is being reconciled by the Supervisor.</p>
+      </div>
+    );
+  }
+
+  const failure = lifecycle.failure;
+  return (
+    <div className="lifecycle-controls">
+      {failure ? (
+        <div className="lifecycle-failure" role="alert">
+          <strong>Lifecycle control needs attention</strong>
+          <p>{failure.explanation}</p>
+          <p>{failure.next_action}</p>
+        </div>
+      ) : null}
+      {lifecycle.state === "running" && !lifecycle.managed_by_supervisor ? (
+        <div className="lifecycle-guidance" role="status">
+          <strong>Daemon reconciled after Supervisor restart</strong>
+          <p>It remains running, but this Supervisor session will not signal a process it does not own.</p>
+          <p>Stop it from its original process owner before starting it here.</p>
+        </div>
+      ) : null}
+      <div className="lifecycle-actions">
+        {lifecycle.state === "stopped" ||
+        (lifecycle.state === "failed" && !lifecycle.managed_by_supervisor && !connected) ? (
+          <LifecycleButton
+            label={lifecycle.state === "failed" ? "Retry start" : "Start daemon"}
+            action="start"
+            onAction={onAction}
+          />
+        ) : null}
+        {lifecycle.state === "running" && lifecycle.managed_by_supervisor ? (
+          <>
+            <LifecycleButton label="Stop daemon" action="stop" onAction={onAction} />
+            <LifecycleButton label="Restart daemon" action="restart" onAction={onAction} />
+          </>
+        ) : null}
+        {lifecycle.state === "failed" && lifecycle.managed_by_supervisor ? (
+          <LifecycleButton label="Retry stop" action="stop" onAction={onAction} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function LifecycleButton({
+  label,
+  action,
+  onAction,
+}: {
+  label: string;
+  action: DaemonLifecycleAction;
+  onAction?: (action: DaemonLifecycleAction) => void;
+}) {
+  return (
+    <button type="button" onClick={() => onAction?.(action)}>
+      {label}
+    </button>
   );
 }
 

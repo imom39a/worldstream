@@ -62,7 +62,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use native_tls::TlsConnector;
 use postgres::fallible_iterator::FallibleIterator as _;
 use postgres::{
-    Client, GenericClient, IsolationLevel, Transaction,
+    Client, GenericClient, IsolationLevel, Row, Transaction,
     config::{Host, SslMode},
 };
 use postgres_native_tls::MakeTlsConnector;
@@ -73,9 +73,10 @@ use worldstream_core::{
     AccessModeV1, ActivationContextInputV1, ActivationDeliveryV1, ActivationFrameV1,
     ActivationIntentStateV1, ActivationInvocationContextV1, ActivationOperationRequestV1,
     ActivationOperationResultV1, ActivationResultCodeV1, AuthorityCheckedAt, AuthorityErrorV1,
-    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedReceiptReadV1, AuthorizedReceiptResolverV1,
-    AuthorizedReplayV1, AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1,
-    CanonicalJsonV1, CanonicalRequestHashV1, CompleteHeadV1, CoreTraceV1, GenesisV1,
+    AuthorityStoreErrorV1, AuthorityStoreV1, AuthorizedDiagnosticV1, AuthorizedReceiptReadV1,
+    AuthorizedReceiptResolverV1, AuthorizedReplayV1, AuthorizedRunnerControlV1,
+    AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonV1, CanonicalRequestHashV1,
+    CompleteHeadV1, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1, GenesisV1,
     HistoricalReplayErrorV1, HistoricalReplayProjectionV1, HostClockSampleV1,
     IntegrityGenerationV1, MembershipStandingV1, MembershipV1, OperationIdentityV1, PackRegistryV1,
     PackRevisionLockV1, PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1,
@@ -339,6 +340,8 @@ pub const RUNTIME_VERIFICATION_STATEMENTS: &[&str] = &[
     "SELECT exact global resource-identity unique indexes from pg_catalog.pg_index",
     "SELECT exact transfer-fence triggers and trigger function from pg_catalog",
     "SELECT head_bytes, integrity_generation, integrity_status FROM worldstream_room_roots WHERE room_id = $1",
+    "SELECT bounded host-authorized Room inventory from worldstream_room_roots joined to worldstream_genesis ordered by room_id",
+    "SELECT host-authorized Room detail from worldstream_room_roots joined to worldstream_genesis by room_id",
     "SELECT pack_revision_lock_bytes, genesis_bytes FROM worldstream_genesis WHERE room_id = $1",
     "SELECT core_state_bytes, activity_state_bytes FROM worldstream_materializations WHERE room_id = $1",
     "SELECT room_seq, transition_bytes FROM worldstream_transitions WHERE room_id = $1 ORDER BY room_seq",
@@ -2071,6 +2074,73 @@ pub enum PostgresSchemaVerificationError {
     FingerprintDrift,
 }
 
+/// Closed failures for the authenticated PostgreSQL host diagnostic surface.
+#[derive(Debug, Error)]
+pub enum PostgresRoomDiagnosticErrorV1 {
+    #[error("diagnostic authority failed: {0}")]
+    Authority(#[from] AuthorityErrorV1),
+    #[error("diagnostic target does not match the requested operation")]
+    InvalidTarget,
+    #[error("diagnostic page bounds are invalid")]
+    InvalidBounds,
+    #[error("diagnostic Room is unavailable")]
+    RoomUnavailable,
+    #[error("diagnostic storage is unavailable")]
+    StorageUnavailable,
+    #[error("diagnostic canonical identity is corrupt")]
+    Corrupt,
+}
+
+/// Privacy-bounded PostgreSQL Room inventory row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgresRoomDiagnosticSummaryV1 {
+    room_id: RoomId,
+    integrity: RoomIntegrityStateV1,
+    head: CompleteHeadV1,
+    pack_revision: PackRevisionLockV1,
+}
+
+impl PostgresRoomDiagnosticSummaryV1 {
+    #[must_use]
+    pub const fn room_id(&self) -> &RoomId {
+        &self.room_id
+    }
+
+    #[must_use]
+    pub const fn integrity(&self) -> &RoomIntegrityStateV1 {
+        &self.integrity
+    }
+
+    #[must_use]
+    pub const fn head(&self) -> &CompleteHeadV1 {
+        &self.head
+    }
+
+    #[must_use]
+    pub const fn pack_revision(&self) -> &PackRevisionLockV1 {
+        &self.pack_revision
+    }
+}
+
+/// Stable Room-ID-ordered PostgreSQL inventory page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgresRoomDiagnosticInventoryPageV1 {
+    rooms: Vec<PostgresRoomDiagnosticSummaryV1>,
+    next_after_room_id: Option<RoomId>,
+}
+
+impl PostgresRoomDiagnosticInventoryPageV1 {
+    #[must_use]
+    pub fn rooms(&self) -> &[PostgresRoomDiagnosticSummaryV1] {
+        &self.rooms
+    }
+
+    #[must_use]
+    pub const fn next_after_room_id(&self) -> Option<&RoomId> {
+        self.next_after_room_id.as_ref()
+    }
+}
+
 /// Read-only structural verification evidence for one persisted Room.
 ///
 /// This reports verification of canonical bytes, lineage ordering,
@@ -3427,6 +3497,65 @@ fn verify_runtime_store_client(client: &mut Client) -> Result<(), PostgresSchema
         .map_err(PostgresSchemaVerificationError::Sql)
 }
 
+fn map_postgres_diagnostic_authority_store_error(
+    error: AuthorityStoreErrorV1,
+) -> PostgresRoomDiagnosticErrorV1 {
+    match error {
+        AuthorityStoreErrorV1::Corrupt => PostgresRoomDiagnosticErrorV1::Corrupt,
+        AuthorityStoreErrorV1::Conflict
+        | AuthorityStoreErrorV1::InvalidChange
+        | AuthorityStoreErrorV1::StaleGeneration
+        | AuthorityStoreErrorV1::Unavailable => PostgresRoomDiagnosticErrorV1::StorageUnavailable,
+    }
+}
+
+fn decode_postgres_diagnostic_summary(
+    row: &Row,
+) -> Result<PostgresRoomDiagnosticSummaryV1, PostgresRoomDiagnosticErrorV1> {
+    let room_id: String = row
+        .try_get(0)
+        .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    let head_bytes: Vec<u8> = row
+        .try_get(1)
+        .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    let pack_revision_lock_bytes: Vec<u8> = row
+        .try_get(2)
+        .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    let integrity_status: String = row
+        .try_get(3)
+        .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    let integrity_generation: i64 = row
+        .try_get(4)
+        .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    let room_id = room_id
+        .parse::<RoomId>()
+        .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    let head = CanonicalJsonV1::decode_canonical::<CompleteHeadV1>(&head_bytes)
+        .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    if head.room_id() != &room_id || head.canonical_bytes().ok().as_deref() != Some(&head_bytes) {
+        return Err(PostgresRoomDiagnosticErrorV1::Corrupt);
+    }
+    let pack_revision =
+        PackRevisionLockV1::from_canonical_bytes(&pack_revision_lock_bytes, head.pack_digest())
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    let status = match integrity_status.as_str() {
+        "healthy" => RoomIntegrityStatusV1::Healthy,
+        "faulted" => RoomIntegrityStatusV1::Faulted,
+        "quarantined" => RoomIntegrityStatusV1::Quarantined,
+        _ => return Err(PostgresRoomDiagnosticErrorV1::Corrupt),
+    };
+    let generation = u64::try_from(integrity_generation)
+        .ok()
+        .and_then(|value| IntegrityGenerationV1::new(value).ok())
+        .ok_or(PostgresRoomDiagnosticErrorV1::Corrupt)?;
+    Ok(PostgresRoomDiagnosticSummaryV1 {
+        room_id,
+        integrity: RoomIntegrityStateV1::new(status, generation),
+        head,
+        pack_revision,
+    })
+}
+
 /// Runtime PostgreSQL adapter implementing exactly Core's two-method mutation port.
 pub struct PostgresRoomStore {
     config: PostgresConnectionConfig,
@@ -3486,6 +3615,107 @@ impl PostgresRoomStore {
             | AuthorityStoreErrorV1::StaleGeneration
             | AuthorityStoreErrorV1::Unavailable => PostgresAuthorityClockError::Unavailable,
         })
+    }
+
+    /// Lists Rooms in stable Room-ID order after revalidating a
+    /// deployment-scoped safe-summary diagnostic grant.
+    pub fn diagnostic_inventory_page(
+        &self,
+        authority: AuthorizedDiagnosticV1,
+        checked_at: &AuthorityCheckedAt,
+        after_room_id: Option<&RoomId>,
+        limit: usize,
+    ) -> Result<PostgresRoomDiagnosticInventoryPageV1, PostgresRoomDiagnosticErrorV1> {
+        if limit == 0
+            || limit > 100
+            || authority.operation() != DiagnosticOperationV1::SafeRoomSummary
+        {
+            return Err(PostgresRoomDiagnosticErrorV1::InvalidBounds);
+        }
+        let authority = authority.into_adapter_input();
+        if !matches!(authority.target(), DiagnosticTargetV1::Deployment) {
+            return Err(PostgresRoomDiagnosticErrorV1::InvalidTarget);
+        }
+        let snapshot = self
+            .snapshot(&authority.authority_snapshot_query())
+            .map_err(map_postgres_diagnostic_authority_store_error)?
+            .ok_or(PostgresRoomDiagnosticErrorV1::Authority(
+                AuthorityErrorV1::Unauthenticated,
+            ))?;
+        authority.revalidate_current(&snapshot, checked_at)?;
+
+        let mut client = self
+            .connect()
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let row_limit =
+            i64::try_from(limit + 1).map_err(|_| PostgresRoomDiagnosticErrorV1::InvalidBounds)?;
+        let after = after_room_id.map_or("", RoomId::as_str);
+        let rows = client
+            .query(
+                "SELECT roots.room_id, roots.head_bytes, genesis.pack_revision_lock_bytes, \
+                 roots.integrity_status, roots.integrity_generation \
+                 FROM worldstream_room_roots AS roots \
+                 JOIN worldstream_genesis AS genesis ON genesis.room_id = roots.room_id \
+                 WHERE roots.room_id > $1 ORDER BY roots.room_id LIMIT $2",
+                &[&after, &row_limit],
+            )
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let mut summaries = Vec::with_capacity(limit + 1);
+        for row in rows {
+            summaries.push(decode_postgres_diagnostic_summary(&row)?);
+        }
+        let next_after_room_id = if summaries.len() > limit {
+            summaries.truncate(limit);
+            summaries.last().map(|summary| summary.room_id.clone())
+        } else {
+            None
+        };
+        Ok(PostgresRoomDiagnosticInventoryPageV1 {
+            rooms: summaries,
+            next_after_room_id,
+        })
+    }
+
+    /// Reads one host-authorized Room detail without exposing Membership or
+    /// participant-private materializations.
+    pub fn diagnostic_summary(
+        &self,
+        authority: AuthorizedDiagnosticV1,
+        checked_at: &AuthorityCheckedAt,
+    ) -> Result<PostgresRoomDiagnosticSummaryV1, PostgresRoomDiagnosticErrorV1> {
+        if authority.operation() != DiagnosticOperationV1::SafeRoomSummary {
+            return Err(PostgresRoomDiagnosticErrorV1::InvalidTarget);
+        }
+        let authority = authority.into_adapter_input();
+        let room_id = match authority.target() {
+            DiagnosticTargetV1::Room(room_id) => room_id.clone(),
+            DiagnosticTargetV1::Deployment => {
+                return Err(PostgresRoomDiagnosticErrorV1::InvalidTarget);
+            }
+        };
+        let snapshot = self
+            .snapshot(&authority.authority_snapshot_query())
+            .map_err(map_postgres_diagnostic_authority_store_error)?
+            .ok_or(PostgresRoomDiagnosticErrorV1::Authority(
+                AuthorityErrorV1::Unauthenticated,
+            ))?;
+        authority.revalidate_current(&snapshot, checked_at)?;
+
+        let mut client = self
+            .connect()
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let row = client
+            .query_opt(
+                "SELECT roots.room_id, roots.head_bytes, genesis.pack_revision_lock_bytes, \
+                 roots.integrity_status, roots.integrity_generation \
+                 FROM worldstream_room_roots AS roots \
+                 JOIN worldstream_genesis AS genesis ON genesis.room_id = roots.room_id \
+                 WHERE roots.room_id = $1",
+                &[&room_id.as_str()],
+            )
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::StorageUnavailable)?
+            .ok_or(PostgresRoomDiagnosticErrorV1::RoomUnavailable)?;
+        decode_postgres_diagnostic_summary(&row)
     }
 
     /// Returns the engine identity after re-running the adapter's PostgreSQL

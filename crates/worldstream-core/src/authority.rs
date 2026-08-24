@@ -1024,6 +1024,7 @@ pub enum DiagnosticTargetV1 {
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticOperationV1 {
     SafeRoomSummary,
+    ActivityPackCatalog,
     Verify,
     RawExport,
     Restore,
@@ -4611,9 +4612,9 @@ fn authorize_diagnostic(
         DiagnosticTargetV1::Room(room_id) => Some(room_id),
     };
     let scope = match operation {
-        DiagnosticOperationV1::SafeRoomSummary | DiagnosticOperationV1::Verify => {
-            CapabilityScopeV1::OperatorRoomAdmin
-        }
+        DiagnosticOperationV1::SafeRoomSummary
+        | DiagnosticOperationV1::ActivityPackCatalog
+        | DiagnosticOperationV1::Verify => CapabilityScopeV1::OperatorRoomAdmin,
         DiagnosticOperationV1::RawExport
         | DiagnosticOperationV1::Restore
         | DiagnosticOperationV1::Backup => CapabilityScopeV1::OperatorBackup,

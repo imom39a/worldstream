@@ -175,6 +175,154 @@ pub struct PackReference {
     pub digest: String,
 }
 
+/// Version of the bounded host-authorized Activity Pack catalog response.
+pub const ACTIVITY_PACK_CATALOG_VERSION: &str = "activity_pack_catalog.v1";
+
+/// One exact installed revision in the catalog list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackCatalogRevisionSummary {
+    pub pack: PackReference,
+    pub name: String,
+    pub selectable_for_new_rooms: bool,
+    pub runnable_for_retained_rooms: bool,
+}
+
+/// Complete bounded list of revisions compiled into the running daemon.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackCatalogResponse {
+    pub version: String,
+    pub revisions: Vec<ActivityPackCatalogRevisionSummary>,
+}
+
+/// One exact canonical JSON schema document from an installed revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackCatalogSchema {
+    pub schema_id: String,
+    pub schema_digest: String,
+    pub schema: Value,
+}
+
+/// One descriptor-declared Role and its supported assignment cardinality.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackCatalogRole {
+    pub role: String,
+    pub minimum: u32,
+    pub maximum: u32,
+}
+
+/// One descriptor-declared Action and exact payload schema document.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackCatalogAction {
+    pub action_type: String,
+    pub payload_schema: ActivityPackCatalogSchema,
+}
+
+/// Optional Lobby contract declared by an exact Activity Pack revision.
+/// Absence means the revision declares no Lobby compatibility; it must not be
+/// inferred from another revision or from the pack name.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackLobbyCompatibility {
+    pub contract: String,
+    pub configuration_schema: ActivityPackCatalogSchema,
+}
+
+/// Full detail for one exact installed Activity Pack revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackCatalogRevisionDetail {
+    pub summary: ActivityPackCatalogRevisionSummary,
+    pub roles: Vec<ActivityPackCatalogRole>,
+    pub configuration_schema: ActivityPackCatalogSchema,
+    pub actions: Vec<ActivityPackCatalogAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lobby_compatibility: Option<ActivityPackLobbyCompatibility>,
+}
+
+/// Versioned exact-revision detail response.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPackCatalogRevisionResponse {
+    pub version: String,
+    pub revision: ActivityPackCatalogRevisionDetail,
+}
+
+/// Maximum number of Rooms returned by one host-operator inventory page.
+pub const MAX_OPERATOR_ROOM_PAGE_SIZE: usize = 100;
+/// Default host-operator Room inventory page size.
+pub const DEFAULT_OPERATOR_ROOM_PAGE_SIZE: usize = 50;
+
+/// Request passed from the bounded HTTP query parser to a storage backend.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperatorRoomInventoryRequest {
+    pub after_room_id: Option<String>,
+    pub limit: usize,
+}
+
+/// Durable Room Integrity State exposed independently from Activity Phase and
+/// data freshness.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorRoomIntegrityStatus {
+    Healthy,
+    Faulted,
+    Quarantined,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorRoomIntegrity {
+    pub status: OperatorRoomIntegrityStatus,
+    pub generation: u64,
+}
+
+/// Activity Phase availability at the host diagnostic boundary. The host
+/// capability is not an Operator Membership, so callers must not infer a
+/// phase from canonical Activity State or participant-private projections.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperatorActivityPhase {
+    Available { value: String },
+    Unavailable { reason: String },
+}
+
+/// Freshness is represented separately from setup, Activity Phase, and Room
+/// Integrity so a consumer never collapses operational axes into one status.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperatorDataFreshness {
+    Fresh { observed_at: String },
+    Stale { observed_at: String, reason: String },
+    Unavailable { reason: String },
+}
+
+/// Privacy-bounded host-operator Room inventory row and detail representation.
+/// It intentionally carries no Membership, participant-private Projection,
+/// Invocation, Activation, cursor, or delivery data.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorRoomSummary {
+    pub room_id: String,
+    pub room_head: RoomHead,
+    pub pack: PackReference,
+    pub integrity: OperatorRoomIntegrity,
+    pub activity_phase: OperatorActivityPhase,
+    pub freshness: OperatorDataFreshness,
+}
+
+/// One deterministic Room-ID-ordered inventory page.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorRoomInventoryPage {
+    pub rooms: Vec<OperatorRoomSummary>,
+    pub next_after_room_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateMember {
@@ -629,5 +777,51 @@ mod tests {
             }
         });
         assert!(serde_json::from_value::<super::ServerWelcome>(invalid).is_err());
+    }
+
+    #[test]
+    fn operator_room_summary_keeps_phase_integrity_and_freshness_independent() {
+        let summary: super::OperatorRoomSummary = serde_json::from_value(serde_json::json!({
+            "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "room_head": {
+                "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "room_seq": 7,
+                "genesis_or_transition_hash": "blake3:lineage",
+                "core_schema_version": "worldstream.core-room-state.v1",
+                "pack_digest": "blake3:pack",
+                "core_state_hash": "blake3:core",
+                "activity_state_hash": "blake3:activity",
+                "authoritative_state_hash": "blake3:authoritative"
+            },
+            "pack": {
+                "id": "worldstream.counter",
+                "version": "1.0.0",
+                "digest": "blake3:pack"
+            },
+            "integrity": { "status": "faulted", "generation": 4 },
+            "activity_phase": {
+                "status": "unavailable",
+                "reason": "operator_membership_required"
+            },
+            "freshness": {
+                "status": "stale",
+                "observed_at": "2026-08-23T20:00:00Z",
+                "reason": "daemon_reconciliation_pending"
+            }
+        }))
+        .unwrap_or_else(|error| unreachable!("operator summary: {error}"));
+
+        assert!(matches!(
+            summary.activity_phase,
+            super::OperatorActivityPhase::Unavailable { .. }
+        ));
+        assert_eq!(
+            summary.integrity.status,
+            super::OperatorRoomIntegrityStatus::Faulted
+        );
+        assert!(matches!(
+            summary.freshness,
+            super::OperatorDataFreshness::Stale { .. }
+        ));
     }
 }
