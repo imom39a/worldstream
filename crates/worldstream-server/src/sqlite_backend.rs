@@ -42,15 +42,16 @@ use worldstream_protocol::{
     ActivationDelivery, ActivationFrame, ActivationIntentState, ActivationLeaseOperation,
     ActivationOffer, ActivationOfferRequest, ActivationOffers, ActivationOperationReply,
     ActivationResultCode, BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse,
-    LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES, ObservationAck, ObservationDeliver,
-    OperatorActivityPhase, OperatorBackupProfileStatus, OperatorBackupStorageHealth,
-    OperatorBackupStorageProfile, OperatorBackupVerification, OperatorDataFreshness,
-    OperatorLiveBackupArtifactSummary, OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus,
-    OperatorRoomIntegrity, OperatorRoomIntegrityStatus, OperatorRoomInventoryPage,
-    OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal,
-    PrincipalKind, Projection, ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach,
-    RoomAttached, RoomHead, RoomSyncAck, RunnerHello, RunnerReady, ServerWelcome, SyncBranch,
-    TimerFireRequest, TimerFireResponse,
+    LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES, MemberCapabilityProvisionRequestV1,
+    MemberCapabilityProvisionResponseV1, ObservationAck, ObservationDeliver, OperatorActivityPhase,
+    OperatorBackupProfileStatus, OperatorBackupStorageHealth, OperatorBackupStorageProfile,
+    OperatorBackupVerification, OperatorDataFreshness, OperatorLiveBackupArtifactSummary,
+    OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomIntegrity,
+    OperatorRoomIntegrityStatus, OperatorRoomInventoryPage, OperatorRoomInventoryRequest,
+    OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal, PrincipalKind, Projection,
+    ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach, RoomAttached, RoomHead,
+    RoomSyncAck, RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1,
+    RunnerHello, RunnerReady, ServerWelcome, SyncBranch, TimerFireRequest, TimerFireResponse,
 };
 use worldstream_runtime::prepare_data_directory;
 use worldstream_sqlite::{
@@ -912,6 +913,290 @@ impl SqliteGatewayBackend {
             permitted_memberships,
             scopes,
             bearer,
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn provision_member_capability_inner(
+        &self,
+        session: &GatewaySession,
+        request: MemberCapabilityProvisionRequestV1,
+    ) -> Result<MemberCapabilityProvisionResponseV1, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let room_id = RoomId::from_str(&request.room_id).map_err(|_| BackendError::Rejected)?;
+        let member_id = request
+            .member_id
+            .parse::<worldstream_core::MemberId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let principal_id = request
+            .principal_id
+            .parse::<worldstream_core::PrincipalId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let change_id = AuthorityChangeId::from_str(&request.capability.capability_idempotency_key)
+            .map_err(|_| BackendError::Rejected)?;
+        let capability_id = request
+            .capability
+            .capability_id
+            .parse::<CapabilityId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let scopes = crate::provisioned_scopes(request.scopes)?;
+        let expires_at = request
+            .expires_at
+            .as_deref()
+            .map(CapabilityExpiresAt::from_str)
+            .transpose()
+            .map_err(|_| BackendError::Rejected)?;
+        let bearer = request
+            .capability
+            .bearer
+            .wire()
+            .map_err(|_| BackendError::Rejected)?;
+
+        let snapshot = self
+            .supervised_room_snapshot(&room_id)?
+            .ok_or(BackendError::NotFound)?;
+        let membership = snapshot
+            .trace()
+            .core_state()
+            .membership(&member_id)
+            .filter(|membership| membership.standing() == MembershipStandingV1::Enabled)
+            .ok_or(BackendError::Forbidden)?;
+        if membership.principal_id() != &principal_id
+            || membership.principal_kind() != core_principal_kind(request.principal_kind)
+            || membership.access_mode() != core_access_mode(request.access_mode)
+            || membership.role() != Some(request.role.as_str())
+        {
+            return Err(BackendError::Forbidden);
+        }
+
+        let principal_change_id = AuthorityChangeId::from_str(principal_id.as_str())
+            .map_err(|_| BackendError::Rejected)?;
+        if principal_change_id == change_id {
+            return Err(BackendError::Rejected);
+        }
+        let presented = authenticated.into_presented();
+        let authority = self.authority();
+        match authority.change(
+            &presented,
+            AuthorityChangeV1::CreatePrincipal {
+                change_id: principal_change_id,
+                principal_id: principal_id.clone(),
+                kind: membership.principal_kind(),
+            },
+            Self::checked_at()?,
+        ) {
+            Ok(receipt)
+                if receipt.result()
+                    == worldstream_core::AuthorityChangeResultV1::PrincipalCreated
+                    && receipt.resulting_generation() == 1 => {}
+            Err(AuthorityErrorV1::Conflict | AuthorityErrorV1::InvalidAuthorityRequest) => {}
+            Ok(_) => return Err(BackendError::InvalidResult),
+            Err(error) => return Err(map_authority_error(error)),
+        }
+
+        let capability_bearer = CapabilityBearerV1::from_bytes(bearer.into_bytes());
+        let capability = NewCapabilityV1::new(
+            capability_id.clone(),
+            capability_bearer.token_hash(),
+            principal_id.clone(),
+            CapabilityProfileV1::RoomMember {
+                room_id: room_id.clone(),
+                member_id: member_id.clone(),
+            },
+            scopes.clone(),
+            expires_at,
+        )
+        .map_err(|_| BackendError::Rejected)?;
+        let receipt = authority
+            .change(
+                &presented,
+                AuthorityChangeV1::RegisterCapability {
+                    change_id,
+                    capability,
+                },
+                Self::checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        if receipt.result() != worldstream_core::AuthorityChangeResultV1::CapabilityRegistered
+            || receipt.resulting_generation() != 1
+            || !matches!(
+                receipt.target(),
+                worldstream_core::AuthorityChangeTargetV1::Capability(id)
+                    if id == &capability_id
+            )
+        {
+            return Err(BackendError::InvalidResult);
+        }
+        Ok(MemberCapabilityProvisionResponseV1 {
+            capability_id: capability_id.to_string(),
+            room_id: room_id.to_string(),
+            member_id: member_id.to_string(),
+            principal_id: principal_id.to_string(),
+            scopes: crate::scope_names(&scopes),
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn provision_runner_capability_inner(
+        &self,
+        session: &GatewaySession,
+        request: RunnerCapabilityProvisionRequestV1,
+    ) -> Result<RunnerCapabilityProvisionResponseV1, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let runner_id = request
+            .runner_id
+            .parse::<RunnerId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let owner_principal_id = request
+            .owner_principal_id
+            .parse::<worldstream_core::PrincipalId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let principal_change_id = AuthorityChangeId::from_str(&request.principal_idempotency_key)
+            .map_err(|_| BackendError::Rejected)?;
+        let runner_change_id = AuthorityChangeId::from_str(&request.runner_idempotency_key)
+            .map_err(|_| BackendError::Rejected)?;
+        let capability_change_id =
+            AuthorityChangeId::from_str(&request.capability.capability_idempotency_key)
+                .map_err(|_| BackendError::Rejected)?;
+        let capability_id = request
+            .capability
+            .capability_id
+            .parse::<CapabilityId>()
+            .map_err(|_| BackendError::Rejected)?;
+        if principal_change_id == runner_change_id
+            || principal_change_id == capability_change_id
+            || runner_change_id == capability_change_id
+        {
+            return Err(BackendError::Rejected);
+        }
+        let scopes = crate::provisioned_scopes(request.scopes)?;
+        let expires_at = request
+            .expires_at
+            .as_deref()
+            .map(CapabilityExpiresAt::from_str)
+            .transpose()
+            .map_err(|_| BackendError::Rejected)?;
+        let bearer = request
+            .capability
+            .bearer
+            .wire()
+            .map_err(|_| BackendError::Rejected)?;
+        let target_keys = request
+            .permitted_memberships
+            .iter()
+            .map(|target| {
+                Ok(RoomMembershipKeyV1 {
+                    room_id: target.room_id.parse().map_err(|_| BackendError::Rejected)?,
+                    member_id: target
+                        .member_id
+                        .parse()
+                        .map_err(|_| BackendError::Rejected)?,
+                })
+            })
+            .collect::<Result<Vec<_>, BackendError>>()?;
+        let permitted_memberships =
+            RunnerMembershipSetV1::new(target_keys).map_err(|_| BackendError::Rejected)?;
+        for target in permitted_memberships.iter() {
+            let snapshot = self
+                .supervised_room_snapshot(&target.room_id)?
+                .ok_or(BackendError::NotFound)?;
+            let membership = snapshot
+                .trace()
+                .core_state()
+                .membership(&target.member_id)
+                .ok_or(BackendError::Forbidden)?;
+            if membership.principal_id() != &owner_principal_id
+                || membership.principal_kind() != PrincipalKindV1::Agent
+                || membership.access_mode() != AccessModeV1::Participant
+                || membership.standing() != MembershipStandingV1::Enabled
+                || membership.role().is_none()
+            {
+                return Err(BackendError::Forbidden);
+            }
+        }
+
+        let presented = authenticated.into_presented();
+        let authority = self.authority();
+        let principal_receipt = authority
+            .change(
+                &presented,
+                AuthorityChangeV1::CreatePrincipal {
+                    change_id: principal_change_id,
+                    principal_id: owner_principal_id.clone(),
+                    kind: PrincipalKindV1::Agent,
+                },
+                Self::checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        if principal_receipt.result() != worldstream_core::AuthorityChangeResultV1::PrincipalCreated
+            || principal_receipt.resulting_generation() != 1
+        {
+            return Err(BackendError::InvalidResult);
+        }
+        let runner_receipt = authority
+            .change(
+                &presented,
+                AuthorityChangeV1::RegisterRunner {
+                    change_id: runner_change_id,
+                    runner_id: runner_id.clone(),
+                    owner_principal_id: owner_principal_id.clone(),
+                },
+                Self::checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        if runner_receipt.result() != worldstream_core::AuthorityChangeResultV1::RunnerRegistered
+            || runner_receipt.resulting_generation() != 1
+        {
+            return Err(BackendError::InvalidResult);
+        }
+        let capability_bearer = CapabilityBearerV1::from_bytes(bearer.into_bytes());
+        let capability = NewCapabilityV1::new(
+            capability_id.clone(),
+            capability_bearer.token_hash(),
+            owner_principal_id.clone(),
+            CapabilityProfileV1::RunnerControl {
+                runner_id: runner_id.clone(),
+                permitted_memberships: permitted_memberships.clone(),
+            },
+            scopes.clone(),
+            expires_at,
+        )
+        .map_err(|_| BackendError::Rejected)?;
+        let capability_receipt = authority
+            .change(
+                &presented,
+                AuthorityChangeV1::RegisterCapability {
+                    change_id: capability_change_id,
+                    capability,
+                },
+                Self::checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        if capability_receipt.result()
+            != worldstream_core::AuthorityChangeResultV1::CapabilityRegistered
+            || capability_receipt.resulting_generation() != 1
+            || !matches!(
+                capability_receipt.target(),
+                worldstream_core::AuthorityChangeTargetV1::Capability(id)
+                    if id == &capability_id
+            )
+        {
+            return Err(BackendError::InvalidResult);
+        }
+        Ok(RunnerCapabilityProvisionResponseV1 {
+            capability_id: capability_id.to_string(),
+            runner_id: runner_id.to_string(),
+            owner_principal_id: owner_principal_id.to_string(),
+            permitted_memberships: permitted_memberships
+                .iter()
+                .map(
+                    |target| worldstream_protocol::RunnerMembershipProvisionTargetV1 {
+                        room_id: target.room_id.to_string(),
+                        member_id: target.member_id.to_string(),
+                    },
+                )
+                .collect(),
+            scopes: crate::scope_names(&scopes),
         })
     }
 
@@ -2467,6 +2752,22 @@ impl GatewayBackend for SqliteGatewayBackend {
         self.issue_runner_capability_inner(session, request)
     }
 
+    fn provision_member_capability(
+        &self,
+        session: &GatewaySession,
+        request: MemberCapabilityProvisionRequestV1,
+    ) -> Result<MemberCapabilityProvisionResponseV1, BackendError> {
+        self.provision_member_capability_inner(session, request)
+    }
+
+    fn provision_runner_capability(
+        &self,
+        session: &GatewaySession,
+        request: RunnerCapabilityProvisionRequestV1,
+    ) -> Result<RunnerCapabilityProvisionResponseV1, BackendError> {
+        self.provision_runner_capability_inner(session, request)
+    }
+
     fn runner_hello(
         &self,
         session: &GatewaySession,
@@ -3275,7 +3576,9 @@ mod tests {
         counter_v2_digest,
     };
     use worldstream_protocol::{
-        AccessMode, BearerWireV1, CreateMember, PackReference, PrincipalKind,
+        AccessMode, BearerWireV1, CreateMember, MemberCapabilityProvisionRequestV1, PackReference,
+        PrincipalKind, RunnerCapabilityProvisionRequestV1, RunnerMembershipProvisionTargetV1,
+        SealedCapabilityBearerV1, SealedCapabilityInputV1,
     };
 
     fn session(value: u8, id: &str) -> GatewaySession {
@@ -3287,6 +3590,64 @@ mod tests {
                 .into_bytes(),
         );
         GatewaySession::new_with_wire(id, bearer, wire)
+    }
+
+    fn sealed_member_request(
+        room_id: &str,
+        member_id: &str,
+        bearer_byte: u8,
+    ) -> MemberCapabilityProvisionRequestV1 {
+        MemberCapabilityProvisionRequestV1 {
+            room_id: room_id.to_owned(),
+            member_id: member_id.to_owned(),
+            principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC6".to_owned(),
+            principal_kind: PrincipalKind::Agent,
+            role: "counter".to_owned(),
+            access_mode: AccessMode::Participant,
+            scopes: vec![
+                "room:attach".to_owned(),
+                "room:act".to_owned(),
+                "room:observe_member".to_owned(),
+            ],
+            capability: SealedCapabilityInputV1 {
+                capability_id: "01ARZ3NDEKTSV4RRFFQ69G5FF0".to_owned(),
+                capability_idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FF1".to_owned(),
+                bearer: SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(
+                    [bearer_byte; 32],
+                )),
+            },
+            expires_at: None,
+        }
+    }
+
+    fn sealed_runner_request(
+        room_id: &str,
+        member_id: &str,
+        bearer_byte: u8,
+    ) -> RunnerCapabilityProvisionRequestV1 {
+        RunnerCapabilityProvisionRequestV1 {
+            runner_id: "01ARZ3NDEKTSV4RRFFQ69G5FF2".to_owned(),
+            owner_principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC6".to_owned(),
+            permitted_memberships: vec![RunnerMembershipProvisionTargetV1 {
+                room_id: room_id.to_owned(),
+                member_id: member_id.to_owned(),
+            }],
+            scopes: vec![
+                "activation:offer_receive".to_owned(),
+                "activation:claim".to_owned(),
+                "activation:complete".to_owned(),
+            ],
+            principal_idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FC6".to_owned(),
+            runner_idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FF3".to_owned(),
+            capability: SealedCapabilityInputV1 {
+                capability_id: "01ARZ3NDEKTSV4RRFFQ69G5FF4".to_owned(),
+                capability_idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FF5".to_owned(),
+                bearer: SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(
+                    [bearer_byte; 32],
+                )),
+            },
+            expires_at: None,
+        }
     }
 
     struct CountingWallClock {
@@ -3478,6 +3839,220 @@ mod tests {
             backend.create_room(&gateway_session, conflict),
             Err(BackendError::Conflict)
         ));
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn sqlite_sealed_provisioning_replays_exactly_across_partial_commit_and_restart() {
+        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
+        let authority = AuthorityV1::new(Arc::new(store.clone()));
+        let host_bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
+        authority
+            .bootstrap(
+                AuthorityBootstrapV1::new(
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC4"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("bootstrap change")),
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC2"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("host principal")),
+                    PrincipalKindV1::Human,
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC3"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("host capability")),
+                    host_bearer.token_hash(),
+                    None,
+                )
+                .unwrap_or_else(|_| panic!("bootstrap request")),
+                "2026-08-15T12:00:00Z"
+                    .parse::<AuthorityCheckedAt>()
+                    .unwrap_or_else(|_| panic!("bootstrap time")),
+            )
+            .unwrap_or_else(|_| panic!("bootstrap authority"));
+
+        let registry =
+            Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
+        let descriptor = registry
+            .load_retained(&counter_v2_digest())
+            .unwrap_or_else(|_| panic!("counter pack"))
+            .descriptor()
+            .clone();
+        let host = session(0xa9, "01ARZ3NDEKTSV4RRFFQ69G5FC5");
+        let backend = SqliteGatewayBackend::new(store, Arc::clone(&registry));
+        let created = backend
+            .create_room(
+                &host,
+                CreateRoomRequest {
+                    pack: PackReference {
+                        id: descriptor.pack_id,
+                        version: descriptor.explanatory_version,
+                        digest: counter_v2_digest().to_string(),
+                    },
+                    configuration: json!({"initial_value": 0, "maximum_value": 16}),
+                    members: vec![CreateMember {
+                        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC6".to_owned(),
+                        principal_kind: PrincipalKind::Agent,
+                        role: Some("counter".to_owned()),
+                        access_mode: AccessMode::Participant,
+                    }],
+                    idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FD0".to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("create Room: {error:?}"));
+        let room_id = created.room_id;
+        let member_id = created.member_ids[0].clone();
+
+        let member_first = backend
+            .provision_member_capability(&host, sealed_member_request(&room_id, &member_id, 0xc1))
+            .unwrap_or_else(|error| panic!("sealed member: {error:?}"));
+        assert_eq!(
+            backend
+                .provision_member_capability(
+                    &host,
+                    sealed_member_request(&room_id, &member_id, 0xc1),
+                )
+                .unwrap_or_else(|error| panic!("same-process member replay: {error:?}")),
+            member_first
+        );
+        drop(backend);
+
+        let restarted = SqliteGatewayBackend::new(
+            SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("restart db")),
+            Arc::clone(&registry),
+        );
+        assert_eq!(
+            restarted
+                .provision_member_capability(
+                    &host,
+                    sealed_member_request(&room_id, &member_id, 0xc1),
+                )
+                .unwrap_or_else(|error| panic!("restart member replay: {error:?}")),
+            member_first
+        );
+        assert!(matches!(
+            restarted.provision_member_capability(
+                &host,
+                sealed_member_request(&room_id, &member_id, 0xc2),
+            ),
+            Err(BackendError::Conflict)
+        ));
+
+        // Model a crash after the Runner subcommit but before Capability
+        // registration. The production retry must replay that exact change and
+        // finish only the missing Capability subcommit.
+        let presented = restarted
+            .authenticate(&host)
+            .unwrap_or_else(|error| panic!("authenticate host: {error:?}"))
+            .into_presented();
+        restarted
+            .authority()
+            .change(
+                &presented,
+                AuthorityChangeV1::RegisterRunner {
+                    change_id: "01ARZ3NDEKTSV4RRFFQ69G5FF3"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("runner change")),
+                    runner_id: "01ARZ3NDEKTSV4RRFFQ69G5FF2"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("runner id")),
+                    owner_principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC6"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("agent principal")),
+                },
+                SqliteGatewayBackend::checked_at()
+                    .unwrap_or_else(|_| panic!("authority checked time")),
+            )
+            .unwrap_or_else(|error| panic!("precommit Runner subcommit: {error:?}"));
+        drop(restarted);
+
+        let resumed = SqliteGatewayBackend::new(
+            SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("resume db")),
+            Arc::clone(&registry),
+        );
+        let runner_first = resumed
+            .provision_runner_capability(&host, sealed_runner_request(&room_id, &member_id, 0xd1))
+            .unwrap_or_else(|error| panic!("resume partial Runner: {error:?}"));
+        assert_eq!(
+            resumed
+                .provision_runner_capability(
+                    &host,
+                    sealed_runner_request(&room_id, &member_id, 0xd1),
+                )
+                .unwrap_or_else(|error| panic!("same-process Runner replay: {error:?}")),
+            runner_first
+        );
+        assert!(matches!(
+            resumed.provision_runner_capability(
+                &host,
+                sealed_runner_request(&room_id, &member_id, 0xd2),
+            ),
+            Err(BackendError::Conflict)
+        ));
+        drop(resumed);
+
+        let final_restart = SqliteGatewayBackend::new(
+            SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("final restart db")),
+            registry,
+        );
+        assert_eq!(
+            final_restart
+                .provision_runner_capability(
+                    &host,
+                    sealed_runner_request(&room_id, &member_id, 0xd1),
+                )
+                .unwrap_or_else(|error| panic!("restart Runner replay: {error:?}")),
+            runner_first
+        );
+        drop(final_restart);
+
+        let connection = rusqlite::Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("inspect SQLite: {error}"));
+        let count = |sql: &str| {
+            connection
+                .query_row(sql, [], |row| row.get::<_, i64>(0))
+                .unwrap_or_else(|error| panic!("inspect authority rows: {error}"))
+        };
+        assert_eq!(
+            count(
+                "SELECT count(*) FROM principals WHERE principal_id = '01ARZ3NDEKTSV4RRFFQ69G5FC6'"
+            ),
+            1
+        );
+        assert_eq!(
+            count("SELECT count(*) FROM runners WHERE runner_id = '01ARZ3NDEKTSV4RRFFQ69G5FF2'"),
+            1
+        );
+        assert_eq!(
+            count(
+                "SELECT count(*) FROM capabilities WHERE capability_id IN ('01ARZ3NDEKTSV4RRFFQ69G5FF0', '01ARZ3NDEKTSV4RRFFQ69G5FF4')"
+            ),
+            2
+        );
+        assert_eq!(
+            count(
+                "SELECT count(*) FROM authority_change_receipts WHERE change_id IN ('01ARZ3NDEKTSV4RRFFQ69G5FC6', '01ARZ3NDEKTSV4RRFFQ69G5FF1', '01ARZ3NDEKTSV4RRFFQ69G5FF3', '01ARZ3NDEKTSV4RRFFQ69G5FF5')"
+            ),
+            4
+        );
+        assert_eq!(
+            count(
+                "SELECT count(*) FROM authority_audit WHERE change_id IN ('01ARZ3NDEKTSV4RRFFQ69G5FC6', '01ARZ3NDEKTSV4RRFFQ69G5FF1', '01ARZ3NDEKTSV4RRFFQ69G5FF3', '01ARZ3NDEKTSV4RRFFQ69G5FF5')"
+            ),
+            4
+        );
+        assert_eq!(
+            count(
+                "SELECT count(*) FROM capability_scopes WHERE capability_id IN ('01ARZ3NDEKTSV4RRFFQ69G5FF0', '01ARZ3NDEKTSV4RRFFQ69G5FF4')"
+            ),
+            6
+        );
+        assert_eq!(
+            count(
+                "SELECT count(*) FROM runner_capability_memberships WHERE capability_id = '01ARZ3NDEKTSV4RRFFQ69G5FF4'"
+            ),
+            1
+        );
     }
 
     #[allow(clippy::too_many_lines)]

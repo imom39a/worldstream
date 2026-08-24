@@ -6,7 +6,9 @@
 
 use std::{fmt, str::FromStr};
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 /// Version marker for the capability bearer transport representation.
 pub const BEARER_WIRE_PREFIX: &str = "wsb1:";
@@ -103,6 +105,72 @@ impl Drop for BearerWireV1 {
     }
 }
 
+/// Zeroizing serde transport for one caller-sealed Capability bearer.
+///
+/// Serialization is deliberately supported only because this value crosses
+/// the authenticated daemon request boundary. Debug and error paths always
+/// redact it, and the retained allocation is zeroized on drop.
+pub struct SealedCapabilityBearerV1(Zeroizing<String>);
+
+impl SealedCapabilityBearerV1 {
+    /// Seals one already validated bearer wire value.
+    #[must_use]
+    pub fn from_wire(bearer: &BearerWireV1) -> Self {
+        Self(Zeroizing::new(bearer.to_wire()))
+    }
+
+    /// Parses and immediately wraps an owned wire allocation for zeroization.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed bearer error without retaining or printing the input.
+    pub fn parse(value: String) -> Result<Self, BearerWireError> {
+        let value = Zeroizing::new(value);
+        BearerWireV1::parse(value.as_str())?;
+        Ok(Self(value))
+    }
+
+    /// Borrows the exact wire value only for the bounded transport boundary.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Revalidates and returns the zeroizing binary bearer representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed error if memory corruption changed the retained wire.
+    pub fn wire(&self) -> Result<BearerWireV1, BearerWireError> {
+        BearerWireV1::parse(self.0.as_str())
+    }
+}
+
+impl fmt::Debug for SealedCapabilityBearerV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SealedCapabilityBearerV1(REDACTED)")
+    }
+}
+
+impl Serialize for SealedCapabilityBearerV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SealedCapabilityBearerV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Closed parsing failures for the bearer wire representation.
 ///
 /// Error values intentionally never retain or print the supplied bearer.
@@ -137,7 +205,10 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
-    use super::{BEARER_WIRE_LENGTH, BEARER_WIRE_PREFIX, BearerWireError, BearerWireV1};
+    use super::{
+        BEARER_WIRE_LENGTH, BEARER_WIRE_PREFIX, BearerWireError, BearerWireV1,
+        SealedCapabilityBearerV1,
+    };
 
     const WIRE: &str = "wsb1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
@@ -195,5 +266,35 @@ mod tests {
         let debug = format!("{bearer:?}");
         assert_eq!(debug, "BearerWireV1(REDACTED)");
         assert!(!debug.contains("00010203"));
+    }
+
+    #[test]
+    fn sealed_serde_transport_serializes_only_at_the_explicit_boundary_and_redacts_debug() {
+        let sealed = SealedCapabilityBearerV1::parse(WIRE.to_owned())
+            .unwrap_or_else(|error| unreachable!("sealed bearer: {error}"));
+        assert_eq!(
+            serde_json::to_string(&sealed)
+                .unwrap_or_else(|error| unreachable!("serialize sealed bearer: {error}")),
+            format!("\"{WIRE}\"")
+        );
+        let debug = format!("{sealed:?}");
+        assert_eq!(debug, "SealedCapabilityBearerV1(REDACTED)");
+        assert!(!debug.contains("00010203"));
+        assert_eq!(
+            sealed
+                .wire()
+                .unwrap_or_else(|error| unreachable!("retained bearer: {error}"))
+                .to_wire(),
+            WIRE
+        );
+    }
+
+    #[test]
+    fn sealed_serde_transport_rejects_noncanonical_input_without_echoing_it() {
+        let invalid = format!("\"{}\"", WIRE.to_uppercase());
+        let error = serde_json::from_str::<SealedCapabilityBearerV1>(&invalid)
+            .err()
+            .unwrap_or_else(|| unreachable!("invalid sealed bearer was accepted"));
+        assert!(!error.to_string().contains("00010203"));
     }
 }

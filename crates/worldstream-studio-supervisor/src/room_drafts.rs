@@ -46,6 +46,16 @@ pub enum RoomDraftStepV1 {
     Review,
 }
 
+/// Execution assignment for an Agent participant. This does not select an
+/// Agent Profile revision; it only records whether the agent is externally
+/// operated or managed by an approved local Runner.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAssignmentModeV1 {
+    External,
+    Managed,
+}
+
 /// One stable seat derived from an exact pack revision's declared Role.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +68,8 @@ pub struct RoomDraftSeatV1 {
     pub principal_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_kind: Option<PrincipalKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_assignment: Option<AgentAssignmentModeV1>,
 }
 
 /// Pre-Room readiness policy for one stable seat. This is not live presence.
@@ -452,6 +464,10 @@ fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
             || !is_bounded_text(&seat.display_name)
             || seats.insert(seat.seat_id.as_str(), seat).is_some()
             || seat.principal_id.is_some() != seat.principal_kind.is_some()
+            || match seat.principal_kind {
+                Some(PrincipalKind::Agent) => seat.agent_assignment.is_none(),
+                Some(PrincipalKind::Human) | None => seat.agent_assignment.is_some(),
+            }
         {
             return Err(RoomDraftErrorV1::InvalidDraft);
         }

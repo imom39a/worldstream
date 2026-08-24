@@ -2333,6 +2333,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "zeroize",
 ]
 
 [[package]]
@@ -2365,6 +2366,9 @@ dependencies = [
  "fs-id",
  "getrandom 0.4.3",
  "http-body-util",
+ "native-tls",
+ "postgres",
+ "postgres-native-tls",
  "rusqlite",
  "rustix",
  "rustls",

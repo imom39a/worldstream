@@ -131,4 +131,21 @@ describe("Studio Room drafts", () => {
     const reviewed = { ...draft(), last_valid_step: "review" as const };
     expect(invalidateRoomDraftReview(reviewed, edit(reviewed)).last_valid_step).toBe(expectedStep);
   });
+
+  it("invalidates Review when an Agent switches external or managed assignment", () => {
+    const reviewed: RoomDraft = {
+      ...draft(),
+      last_valid_step: "review",
+      seats: [{
+        ...draft().seats[0]!,
+        principal_kind: "agent",
+        agent_assignment: "external",
+      }],
+    };
+    const changed: RoomDraft = {
+      ...reviewed,
+      seats: reviewed.seats.map((seat) => ({ ...seat, agent_assignment: "managed" })),
+    };
+    expect(invalidateRoomDraftReview(reviewed, changed).last_valid_step).toBe("configuration");
+  });
 });

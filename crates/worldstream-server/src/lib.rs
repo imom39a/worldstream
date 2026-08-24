@@ -52,12 +52,14 @@ use worldstream_protocol::{
     ActivityPackLobbyCompatibility, BROWSER_WS_TICKET_VERSION, BearerWireV1,
     BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateRoomRequest,
     CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope, LobbyLaunchRequest,
-    LobbyLaunchResponse, ObservationAck, ObservationDeliver, OperatorBackupProfileStatus,
+    LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
+    ObservationAck, ObservationDeliver, OperatorBackupProfileStatus,
     OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomInventoryPage,
     OperatorRoomInventoryRequest, OperatorRoomSummary, PackReference, ProjectionReset,
     ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck,
-    RunnerHello, RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString,
-    VersionedEnvelope, WEBSOCKET_SUBPROTOCOL, decode_envelope,
+    RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
+    RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope,
+    WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 use worldstream_runtime::{
     CompatibilitySummary, EffectiveConfig, ManifestError, StorageProfile, embedded_manifest,
@@ -508,6 +510,44 @@ const POST_WELCOME_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const OPERATOR_ROOM_CREATE: &str = "room-create";
 const OPERATOR_MEMBER_CAPABILITY: &str = "member-capability-issue";
 const OPERATOR_RUNNER_CAPABILITY: &str = "runner-capability-issue";
+
+fn provisioned_scopes(values: Vec<String>) -> Result<CapabilityScopeSetV1, BackendError> {
+    let scopes = values
+        .into_iter()
+        .map(|value| match value.as_str() {
+            "room:attach" => Ok(CapabilityScopeV1::RoomAttach),
+            "room:act" => Ok(CapabilityScopeV1::RoomAct),
+            "room:observe_public" => Ok(CapabilityScopeV1::RoomObservePublic),
+            "room:observe_member" => Ok(CapabilityScopeV1::RoomObserveMember),
+            "room:replay" => Ok(CapabilityScopeV1::RoomReplay),
+            "activation:offer_receive" => Ok(CapabilityScopeV1::ActivationOfferReceive),
+            "activation:claim" => Ok(CapabilityScopeV1::ActivationClaim),
+            "activation:complete" => Ok(CapabilityScopeV1::ActivationComplete),
+            _ => Err(BackendError::Rejected),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    CapabilityScopeSetV1::new(scopes).map_err(|_| BackendError::Rejected)
+}
+
+fn scope_names(scopes: &CapabilityScopeSetV1) -> Vec<String> {
+    scopes
+        .iter()
+        .map(|scope| match scope {
+            CapabilityScopeV1::RoomAttach => "room:attach",
+            CapabilityScopeV1::RoomAct => "room:act",
+            CapabilityScopeV1::RoomObservePublic => "room:observe_public",
+            CapabilityScopeV1::RoomObserveMember => "room:observe_member",
+            CapabilityScopeV1::RoomReplay => "room:replay",
+            CapabilityScopeV1::ActivationOfferReceive => "activation:offer_receive",
+            CapabilityScopeV1::ActivationClaim => "activation:claim",
+            CapabilityScopeV1::ActivationComplete => "activation:complete",
+            CapabilityScopeV1::OperatorRoomAdmin | CapabilityScopeV1::OperatorBackup => {
+                unreachable!("sealed setup provisioning never accepts operator scopes")
+            }
+        })
+        .map(str::to_owned)
+        .collect()
+}
 const OPERATOR_TIMER_FIRE: &str = "timer-fire";
 const OPERATOR_LOBBY_LAUNCH: &str = "lobby-launch";
 const OPERATOR_ACTIVITY_PACK_CATALOG: &str = "activity-pack-catalog";
@@ -964,6 +1004,34 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _session: &GatewaySession,
         _request: RunnerCapabilityIssueRequest,
     ) -> Result<RunnerCapabilityIssueResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Registers one caller-sealed member Capability idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed backend error when the exact sealed input conflicts,
+    /// its Membership binding is invalid, or durable authority is unavailable.
+    fn provision_member_capability(
+        &self,
+        _session: &GatewaySession,
+        _request: MemberCapabilityProvisionRequestV1,
+    ) -> Result<MemberCapabilityProvisionResponseV1, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Registers one caller-sealed Runner-control Capability idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed backend error when any exact identity, Membership
+    /// binding, or authority transition is invalid or unavailable.
+    fn provision_runner_capability(
+        &self,
+        _session: &GatewaySession,
+        _request: RunnerCapabilityProvisionRequestV1,
+    ) -> Result<RunnerCapabilityProvisionResponseV1, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
 
@@ -1645,8 +1713,16 @@ pub fn operator_router(state: OperatorState) -> Router {
             post(issue_member_capability),
         )
         .route(
+            "/v1/operator/member-capabilities:provision",
+            post(provision_member_capability),
+        )
+        .route(
             "/v1/operator/runner-capabilities",
             post(issue_runner_capability),
+        )
+        .route(
+            "/v1/operator/runner-capabilities:provision",
+            post(provision_runner_capability),
         )
         .route("/v1/operator/rooms", get(operator_room_inventory))
         .route("/v1/operator/rooms/{room_id}", get(operator_room_detail))
@@ -2074,6 +2150,118 @@ async fn issue_runner_capability(
             headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
             Ok((headers, Json(response)))
+        }
+        Err(error) => {
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                reason_for_backend_error(&error),
+                correlation,
+            );
+            Err(ResponseError::from(error))
+        }
+    }
+}
+
+async fn provision_member_capability(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ResponseError> {
+    let correlation = traceparent_correlation(&headers);
+    let session = match authenticated_session(&headers) {
+        Ok(session) => Arc::new(session),
+        Err(error) => {
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Unauthorized,
+                correlation,
+            );
+            return Err(error);
+        }
+    };
+    let request = strict_json::<MemberCapabilityProvisionRequestV1>(&body).inspect_err(|_| {
+        record_admission_with_correlation(
+            state.telemetry.as_ref(),
+            telemetry::ReasonCodeV1::Invalid,
+            correlation,
+        );
+    })?;
+    let targets = [AdmissionTarget {
+        room_id: &request.room_id,
+        member_id: Some(&request.member_id),
+    }];
+    admit_authenticated_http(
+        &state,
+        &session,
+        &targets,
+        Some(OPERATOR_MEMBER_CAPABILITY),
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    let result = backend_call(backend, move |backend| {
+        backend.provision_member_capability(&session, request)
+    })
+    .await;
+    sealed_provision_response(&state, correlation, result)
+}
+
+async fn provision_runner_capability(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ResponseError> {
+    let correlation = traceparent_correlation(&headers);
+    let session = match authenticated_session(&headers) {
+        Ok(session) => Arc::new(session),
+        Err(error) => {
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Unauthorized,
+                correlation,
+            );
+            return Err(error);
+        }
+    };
+    let request = strict_json::<RunnerCapabilityProvisionRequestV1>(&body).inspect_err(|_| {
+        record_admission_with_correlation(
+            state.telemetry.as_ref(),
+            telemetry::ReasonCodeV1::Invalid,
+            correlation,
+        );
+    })?;
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_RUNNER_CAPABILITY),
+        correlation,
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    let result = backend_call(backend, move |backend| {
+        backend.provision_runner_capability(&session, request)
+    })
+    .await;
+    sealed_provision_response(&state, correlation, result)
+}
+
+fn sealed_provision_response<T: Serialize>(
+    state: &OperatorState,
+    correlation: telemetry::CorrelationV1,
+    result: Result<T, BackendError>,
+) -> Result<Response, ResponseError> {
+    match result {
+        Ok(response) => {
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+            Ok((headers, Json(response)).into_response())
         }
         Err(error) => {
             record_admission_with_correlation(
@@ -7964,6 +8152,54 @@ mod tests {
         assert_eq!(second.room_id, created.room_id);
         assert_eq!(second.member_id, created.member_ids[0]);
         assert_eq!(second.principal_id, agent_principal);
+
+        // Studio setup seals the bearer and Capability identity before the
+        // first POST. A response lost after the authority commit can then
+        // repeat the exact request and recover the same secret-free receipt.
+        let sealed_body = serde_json::json!({
+            "room_id": created.room_id,
+            "member_id": created.member_ids[0],
+            "principal_id": agent_principal,
+            "principal_kind": "agent",
+            "role": "counter",
+            "access_mode": "participant",
+            "scopes": ["room:attach", "room:observe_member", "room:act"],
+            "capability": {
+                "capability_id": "01ARZ3NDEKTSV4RRFFQ69G5FF0",
+                "capability_idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FF1",
+                "bearer": BearerWireV1::from_bytes([0x44; 32]).to_wire()
+            },
+            "expires_at": null
+        });
+        let provision = |body: serde_json::Value| {
+            let backend = backend.clone();
+            let host_header = host_header.clone();
+            async move {
+                operator_router(
+                    OperatorState::new(EffectiveConfig::default())
+                        .unwrap_or_else(|error| unreachable!("operator state: {error}"))
+                        .with_backend(backend),
+                )
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/operator/member-capabilities:provision")
+                        .header(header::AUTHORIZATION, &host_header)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap_or_else(|error| unreachable!("sealed request: {error}")),
+                )
+                .await
+                .unwrap_or_else(|error| unreachable!("sealed response: {error}"))
+            }
+        };
+        let first_sealed = provision(sealed_body.clone()).await;
+        assert_eq!(first_sealed.status(), 200);
+        let repeated_sealed = provision(sealed_body.clone()).await;
+        assert_eq!(repeated_sealed.status(), 200);
+        let mut changed = sealed_body;
+        changed["scopes"] = serde_json::json!(["room:attach"]);
+        assert_eq!(provision(changed).await.status(), 409);
     }
 
     #[tokio::test]

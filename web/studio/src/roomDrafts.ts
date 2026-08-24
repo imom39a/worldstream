@@ -17,6 +17,7 @@ export interface RoomDraftSeat {
   display_name: string;
   principal_id?: string;
   principal_kind?: "human" | "agent";
+  agent_assignment?: "external" | "managed";
 }
 
 export interface RoomDraftSeatReadinessPolicy {
@@ -272,10 +273,14 @@ function isSeat(value: unknown): value is RoomDraftSeat {
   const keys = Object.keys(value);
   if (!keys.every((key) => [
     "seat_id", "role", "required", "display_name", "principal_id", "principal_kind",
-  ].includes(key)) || ![4, 6].includes(keys.length)) return false;
-  const assignmentAbsent = value.principal_id === undefined && value.principal_kind === undefined;
+    "agent_assignment",
+  ].includes(key)) || ![4, 6, 7].includes(keys.length)) return false;
+  const assignmentAbsent = value.principal_id === undefined && value.principal_kind === undefined &&
+    value.agent_assignment === undefined;
   const assignmentValid = typeof value.principal_id === "string" && isUlid(value.principal_id) &&
-    (value.principal_kind === "human" || value.principal_kind === "agent");
+    (value.principal_kind === "human" && value.agent_assignment === undefined ||
+      value.principal_kind === "agent" &&
+      (value.agent_assignment === "external" || value.agent_assignment === "managed"));
   return isIdentifier(value.seat_id) && isText(value.role) && typeof value.required === "boolean" &&
     isText(value.display_name) && (assignmentAbsent || assignmentValid);
 }

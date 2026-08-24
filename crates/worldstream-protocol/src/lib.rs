@@ -11,7 +11,7 @@ mod messages;
 
 pub use bearer::{
     BEARER_BYTES, BEARER_HEX_LENGTH, BEARER_WIRE_LENGTH, BEARER_WIRE_PREFIX, BearerWireError,
-    BearerWireV1,
+    BearerWireV1, SealedCapabilityBearerV1,
 };
 pub use envelope::{
     EnvelopeError, MAX_ACTION_PAYLOAD_BYTES, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, ProtocolEnvelope,

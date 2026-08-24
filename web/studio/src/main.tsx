@@ -58,6 +58,11 @@ import {
   requestRoomCreation,
   type RoomCreationStatus,
 } from "./roomCreation";
+import {
+  loadTaskSetup,
+  requestTaskSetup,
+  type TaskSetupStatus,
+} from "./taskSetup";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 5_000;
@@ -88,6 +93,9 @@ function LiveStudio() {
   const [roomCreation, setRoomCreation] = useState<RoomCreationStatus | null>(null);
   const [roomCreationStatusAvailable, setRoomCreationStatusAvailable] = useState(false);
   const [roomCreationLoading, setRoomCreationLoading] = useState(false);
+  const [taskSetup, setTaskSetup] = useState<TaskSetupStatus | null>(null);
+  const [taskSetupStatusAvailable, setTaskSetupStatusAvailable] = useState(false);
+  const [taskSetupLoading, setTaskSetupLoading] = useState(false);
   const [backupProfile, setBackupProfile] = useState<BackupProfileStatus | null>(null);
   const [backupOperation, setBackupOperation] = useState<BackupOperationStatus | null>(null);
   const [backupOperationId, setBackupOperationId] = useState<string | null>(
@@ -112,6 +120,7 @@ function LiveStudio() {
         nextActivityPackCatalog,
         nextRoomInventory,
         nextRoomCreation,
+        nextTaskSetup,
         nextBackupProfile,
         nextBackupOperation,
       ] = await Promise.all([
@@ -123,6 +132,7 @@ function LiveStudio() {
         loadActivityPackCatalog(),
         loadRoomInventory(),
         loadRoomCreation(NEW_ROOM_DRAFT_ID),
+        loadTaskSetup(NEW_ROOM_DRAFT_ID),
         loadBackupProfile(),
         activeBackupOperationId === null
           ? Promise.resolve({ availability: "available" as const, operation: null })
@@ -136,9 +146,15 @@ function LiveStudio() {
         setRunnerInstances(nextRunnerInstances);
         setActivityPackCatalog(nextActivityPackCatalog);
         setActivityPackCatalogLoading(false);
-        setRoomInventory((previous) => staleAfterFailedRefresh(previous, nextRoomInventory));
+        setRoomInventory((previous) => overlayTaskSetup(
+          staleAfterFailedRefresh(previous, nextRoomInventory),
+          nextTaskSetup.availability === "available" ? nextTaskSetup.setup : null,
+          nextTaskSetup.availability === "available",
+        ));
         setRoomCreation(nextRoomCreation.operation);
         setRoomCreationStatusAvailable(nextRoomCreation.availability === "available");
+        setTaskSetup(nextTaskSetup.availability === "available" ? nextTaskSetup.setup : null);
+        setTaskSetupStatusAvailable(nextTaskSetup.availability === "available");
         setBackupProfile(nextBackupProfile);
         if (loadBackupOperationId() === activeBackupOperationId) {
           setBackupOperation(nextBackupOperation.operation);
@@ -293,6 +309,14 @@ function LiveStudio() {
     setRoomCreationLoading(false);
   };
 
+  const runTaskSetup = async (action: "start" | "retry") => {
+    setTaskSetupLoading(true);
+    const result = await requestTaskSetup(NEW_ROOM_DRAFT_ID, action);
+    setTaskSetup(result);
+    setTaskSetupStatusAvailable(result !== null);
+    setTaskSetupLoading(false);
+  };
+
   return (
     <App
       status={status}
@@ -328,6 +352,11 @@ function LiveStudio() {
       roomCreationLoading={roomCreationLoading}
       onStartRoomCreation={() => void runRoomCreation("start")}
       onRetryRoomCreation={() => void runRoomCreation("retry")}
+      taskSetup={taskSetup}
+      taskSetupStatusAvailable={taskSetupStatusAvailable}
+      taskSetupLoading={taskSetupLoading}
+      onStartTaskSetup={() => void runTaskSetup("start")}
+      onRetryTaskSetup={() => void runTaskSetup("retry")}
       backupProfile={backupProfile}
       backupOperation={backupOperation}
       backupOperationId={backupOperationId}
@@ -337,6 +366,34 @@ function LiveStudio() {
       onRetryBackup={() => void retryBackup()}
     />
   );
+}
+
+function overlayTaskSetup(
+  inventory: RoomInventoryState,
+  setup: TaskSetupStatus | null,
+  setupAvailable: boolean,
+): RoomInventoryState {
+  if (inventory.status !== "available") return inventory;
+  return {
+    status: "available",
+    page: {
+      ...inventory.page,
+      rooms: inventory.page.rooms.map((room) => !setupAvailable ? {
+        ...room,
+        setup_progress: { status: "unavailable" as const, reason: "task_setup_refresh_unavailable" },
+      } : setup === null || room.room_id !== setup.room_id ? room : {
+        ...room,
+        setup_progress: setup.state === "ready"
+          ? { status: "complete" as const, completed_steps: setup.completed_stages, total_steps: setup.total_stages }
+          : {
+              status: "partially_provisioned" as const,
+              completed_steps: setup.completed_stages,
+              total_steps: setup.total_stages,
+              reason: setup.attention?.code ?? "setup_in_progress",
+            },
+      }),
+    },
+  };
 }
 
 const root = document.getElementById("root");

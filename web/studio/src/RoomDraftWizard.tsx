@@ -309,7 +309,7 @@ function SeatsStep({
                 onChange={(event) => {
                   const principalId = event.currentTarget.value;
                   updateSeat(draft, seats, policy, seat.seat_id, principalId === ""
-                    ? { principal_id: undefined, principal_kind: undefined }
+                    ? { principal_id: undefined, principal_kind: undefined, agent_assignment: undefined }
                     : { principal_id: principalId, principal_kind: seat.principal_kind ?? "human" }, onChange);
                 }}
               />
@@ -319,10 +319,25 @@ function SeatsStep({
                   value={seat.principal_kind ?? "human"}
                   onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
                     principal_kind: event.currentTarget.value === "agent" ? "agent" : "human",
+                    agent_assignment: event.currentTarget.value === "agent"
+                      ? seat.agent_assignment ?? "external"
+                      : undefined,
                   }, onChange)}
                 >
                   <option value="human">Human</option>
                   <option value="agent">Agent</option>
+                </select>
+              ) : null}
+              {seat.principal_kind === "agent" ? (
+                <select
+                  aria-label={`${seat.display_name} agent assignment`}
+                  value={seat.agent_assignment ?? "external"}
+                  onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
+                    agent_assignment: event.currentTarget.value === "managed" ? "managed" : "external",
+                  }, onChange)}
+                >
+                  <option value="external">External agent</option>
+                  <option value="managed">Managed agent</option>
                 </select>
               ) : null}
             </span>

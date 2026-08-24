@@ -596,6 +596,94 @@ pub struct CreateRoomResponse {
     pub room_head: RoomHead,
 }
 
+/// Caller-sealed input for an idempotently registered Capability.
+///
+/// The bearer is delivered to the daemon only over the authenticated local
+/// operator channel. The daemon persists only its hash; exact retries reuse
+/// the same capability and authority-change identities.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealedCapabilityInputV1 {
+    pub capability_id: String,
+    pub capability_idempotency_key: String,
+    pub bearer: crate::SealedCapabilityBearerV1,
+}
+
+impl std::fmt::Debug for SealedCapabilityInputV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SealedCapabilityInputV1")
+            .field("capability_id", &self.capability_id)
+            .field(
+                "capability_idempotency_key",
+                &self.capability_idempotency_key,
+            )
+            .field("bearer", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Host-authorized, exactly retryable member-Capability provisioning input.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberCapabilityProvisionRequestV1 {
+    pub room_id: String,
+    pub member_id: String,
+    pub principal_id: String,
+    pub principal_kind: PrincipalKind,
+    pub role: String,
+    pub access_mode: AccessMode,
+    pub scopes: Vec<String>,
+    pub capability: SealedCapabilityInputV1,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+/// Secret-free receipt for one provisioned member Capability.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberCapabilityProvisionResponseV1 {
+    pub capability_id: String,
+    pub room_id: String,
+    pub member_id: String,
+    pub principal_id: String,
+    pub scopes: Vec<String>,
+}
+
+/// One public Room/Membership target for a sealed Runner Capability.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunnerMembershipProvisionTargetV1 {
+    pub room_id: String,
+    pub member_id: String,
+}
+
+/// Host-authorized, exactly retryable Runner-control provisioning input.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunnerCapabilityProvisionRequestV1 {
+    pub runner_id: String,
+    pub owner_principal_id: String,
+    pub permitted_memberships: Vec<RunnerMembershipProvisionTargetV1>,
+    pub scopes: Vec<String>,
+    pub principal_idempotency_key: String,
+    pub runner_idempotency_key: String,
+    pub capability: SealedCapabilityInputV1,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+/// Secret-free receipt for one provisioned Runner-control Capability.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunnerCapabilityProvisionResponseV1 {
+    pub capability_id: String,
+    pub runner_id: String,
+    pub owner_principal_id: String,
+    pub permitted_memberships: Vec<RunnerMembershipProvisionTargetV1>,
+    pub scopes: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectionResponse {

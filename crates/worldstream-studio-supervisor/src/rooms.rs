@@ -74,9 +74,8 @@ impl From<OperatorRoomSummary> for StudioRoomSummaryV1 {
             room_id: room.room_id,
             room_head: room.room_head,
             pack: room.pack,
-            setup_progress: RoomSetupProgressV1::Complete {
-                completed_steps: 1,
-                total_steps: 1,
+            setup_progress: RoomSetupProgressV1::Unavailable {
+                reason: "supervisor_setup_state_required".to_owned(),
             },
             participant_readiness: ParticipantReadinessV1::Unavailable {
                 reason: "operator_membership_required",
@@ -412,7 +411,11 @@ mod tests {
             .to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes)
             .unwrap_or_else(|error| unreachable!("inventory json: {error}"));
-        assert_eq!(json["rooms"][0]["setup_progress"]["status"], "complete");
+        assert_eq!(json["rooms"][0]["setup_progress"]["status"], "unavailable");
+        assert_eq!(
+            json["rooms"][0]["setup_progress"]["reason"],
+            "supervisor_setup_state_required"
+        );
         assert_eq!(
             json["rooms"][0]["participant_readiness"]["status"],
             "unavailable"

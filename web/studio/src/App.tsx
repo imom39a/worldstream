@@ -16,6 +16,8 @@ import { RoomOperations } from "./RoomOperations";
 import { RoomDraftWizard } from "./RoomDraftWizard";
 import { RoomCreationOperation } from "./RoomCreationOperation";
 import type { RoomCreationStatus } from "./roomCreation";
+import { TaskSetupOperation } from "./TaskSetupOperation";
+import type { TaskSetupStatus } from "./taskSetup";
 import type {
   RunnerInstanceLifecycleAction,
   RunnerInstanceStatusResponse,
@@ -64,6 +66,11 @@ export interface AppProps {
   roomCreationLoading?: boolean;
   onStartRoomCreation?: () => void;
   onRetryRoomCreation?: () => void;
+  taskSetup?: TaskSetupStatus | null;
+  taskSetupStatusAvailable?: boolean;
+  taskSetupLoading?: boolean;
+  onStartTaskSetup?: () => void;
+  onRetryTaskSetup?: () => void;
   backupProfile?: BackupProfileStatus | null;
   backupOperation?: BackupOperationStatus | null;
   backupOperationId?: string | null;
@@ -105,6 +112,11 @@ export function App({
   roomCreationLoading = false,
   onStartRoomCreation,
   onRetryRoomCreation,
+  taskSetup = null,
+  taskSetupStatusAvailable = false,
+  taskSetupLoading = false,
+  onStartTaskSetup,
+  onRetryTaskSetup,
   backupProfile = null,
   backupOperation = null,
   backupOperationId = null,
@@ -227,6 +239,15 @@ export function App({
           loading={roomCreationLoading}
           onStart={onStartRoomCreation}
           onRetry={onRetryRoomCreation}
+        />
+
+        <TaskSetupOperation
+          setup={taskSetup}
+          statusAvailable={taskSetupStatusAvailable}
+          roomCreated={roomCreation?.state === "succeeded"}
+          loading={taskSetupLoading}
+          onStart={onStartTaskSetup}
+          onRetry={onRetryTaskSetup}
         />
 
         <ActivityPackCatalogView

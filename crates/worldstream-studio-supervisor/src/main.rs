@@ -16,7 +16,8 @@ use worldstream_studio_supervisor::{
     rooms::HttpDaemonRoomSource,
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
-    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_and_creation,
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup,
+    task_setup::{HttpDaemonTaskSetupProvisionerV1, TaskSetupSupervisorV1},
 };
 
 #[derive(Debug, Parser)]
@@ -68,6 +69,7 @@ struct Args {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let daemon_effective =
@@ -124,6 +126,19 @@ async fn main() -> Result<()> {
         room_creator,
     )
     .context("Studio Supervisor protected Room creation store is unavailable")?;
+    let task_setup_provisioner = HttpDaemonTaskSetupProvisionerV1::new(
+        args.daemon,
+        daemon_timeout,
+        vault.clone(),
+        args.host_authority_reference.clone(),
+    );
+    let task_setup = TaskSetupSupervisorV1::open(
+        &args.state_dir.join("task-setups"),
+        room_creation.clone(),
+        vault.clone(),
+        task_setup_provisioner,
+    )
+    .context("Studio Supervisor protected Task setup store is unavailable")?;
     let backup_executor = HttpDaemonBackupExecutorV1::new(
         args.daemon,
         daemon_timeout,
@@ -150,7 +165,7 @@ async fn main() -> Result<()> {
     .context("Studio Supervisor Runner instance state is unavailable")?;
     axum::serve(
         listener,
-        supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_and_creation(
+        supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup(
             source,
             lifecycle,
             vault,
@@ -160,6 +175,7 @@ async fn main() -> Result<()> {
             drafts,
             backups,
             room_creation,
+            task_setup,
         ),
     )
     .await

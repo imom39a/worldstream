@@ -12,6 +12,7 @@ pub mod rooms;
 pub mod runner_templates;
 
 pub mod secrets;
+pub mod task_setup;
 
 use std::{
     io::{Read as _, Write as _},
@@ -363,6 +364,35 @@ pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_dra
         backups,
     )
     .merge(room_creation::room_creation_router(room_creation))
+}
+
+/// Builds the complete bounded Supervisor surface with durable post-Genesis
+/// participant and Runner-control setup orchestration.
+#[allow(clippy::too_many_arguments)]
+pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+    runners: runner_templates::RunnerSupervisorV1,
+    activity_packs: impl activity_packs::DaemonActivityPackSource,
+    rooms: impl rooms::DaemonRoomSource,
+    drafts: room_drafts::RoomDraftStoreV1,
+    backups: backups::BackupOperationsV1,
+    room_creation: room_creation::RoomCreationSupervisorV1,
+    task_setup: task_setup::TaskSetupSupervisorV1,
+) -> Router {
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_and_creation(
+        source,
+        lifecycle,
+        vault,
+        runners,
+        activity_packs,
+        rooms,
+        drafts,
+        backups,
+        room_creation,
+    )
+    .merge(task_setup::task_setup_router(task_setup))
 }
 
 async fn daemon_status(State(source): State<Arc<dyn DaemonStatusSource>>) -> Json<DaemonStatusV1> {
