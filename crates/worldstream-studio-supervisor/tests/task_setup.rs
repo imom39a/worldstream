@@ -1,18 +1,27 @@
-use std::sync::{Arc, Mutex, PoisonError};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use serde_json::json;
 use tempfile::tempdir;
 use worldstream_protocol::{
-    CreateRoomRequest, CreateRoomResponse, MemberCapabilityProvisionRequestV1,
-    MemberCapabilityProvisionResponseV1, RunnerCapabilityProvisionRequestV1,
-    RunnerCapabilityProvisionResponseV1,
+    CreateRoomRequest, CreateRoomResponse, LobbyLaunchRequest, LobbyLaunchResponse,
+    MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
+    OperatorRunnerConnectionV1, OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference,
+    RoomHead, RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1,
 };
+use worldstream_runtime::prepare_data_directory;
 use worldstream_studio_supervisor::{
+    agent_profiles::{AgentProfileRevisionV1, AgentProfileStoreV1},
+    participant_handoff::{ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1},
     room_creation::{DaemonRoomCreatorV1, RoomCreationAttemptErrorV1, RoomCreationSupervisorV1},
     room_drafts::{RoomDraftErrorV1, RoomDraftStoreV1, RoomDraftV1, RoomDraftValidatorV1},
     secrets::FileSecretVaultV1,
     task_setup::{
-        DaemonTaskSetupProvisionerV1, TaskSetupAttemptErrorV1, TaskSetupStateV1,
+        DaemonTaskLaunchSourceV1, DaemonTaskSetupProvisionerV1, TaskLaunchAttemptErrorV1,
+        TaskLaunchStateV1, TaskRunnerObservationV1, TaskRunnerReadinessSourceV1,
+        TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1, TaskSetupStateV1,
         TaskSetupSupervisorV1,
     },
 };
@@ -50,7 +59,8 @@ fn reviewed_draft() -> RoomDraftV1 {
             {
                 "seat_id": "analyst-1", "role": "analyst", "required": true,
                 "display_name": "Analyst", "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
-                "principal_kind": "agent", "agent_assignment": "external"
+                "principal_kind": "agent", "agent_assignment": "external",
+                "agent_profile": { "profile_id": "analyst", "revision": "rev-1" }
             },
             {
                 "seat_id": "broker-1", "role": "broker", "required": false,
@@ -84,14 +94,14 @@ fn room_response() -> CreateRoomResponse {
 }
 
 #[derive(Clone)]
-struct Creator;
+struct Creator(CreateRoomResponse);
 
 impl DaemonRoomCreatorV1 for Creator {
     fn create(
         &self,
         _request: &CreateRoomRequest,
     ) -> Result<CreateRoomResponse, RoomCreationAttemptErrorV1> {
-        Ok(room_response())
+        Ok(self.0.clone())
     }
 }
 
@@ -209,15 +219,24 @@ impl DaemonTaskSetupProvisionerV1 for DurableProvisioner {
 }
 
 fn open_creation(root: &std::path::Path) -> RoomCreationSupervisorV1 {
+    open_creation_for(root, &reviewed_draft(), room_response())
+}
+
+fn open_creation_for(
+    root: &std::path::Path,
+    draft: &RoomDraftV1,
+    response: CreateRoomResponse,
+) -> RoomCreationSupervisorV1 {
     let drafts = RoomDraftStoreV1::open(&root.join("drafts"), ValidDraft)
         .unwrap_or_else(|error| unreachable!("draft store: {error:?}"));
     if drafts.load("setup-alpha").is_err() {
         drafts
-            .save(&reviewed_draft())
+            .save(draft)
             .unwrap_or_else(|error| unreachable!("save reviewed draft: {error:?}"));
     }
-    let creation = RoomCreationSupervisorV1::open(&root.join("creations"), drafts, Creator)
-        .unwrap_or_else(|error| unreachable!("creation store: {error:?}"));
+    let creation =
+        RoomCreationSupervisorV1::open(&root.join("creations"), drafts, Creator(response))
+            .unwrap_or_else(|error| unreachable!("creation store: {error:?}"));
     creation
         .start("setup-alpha")
         .unwrap_or_else(|error| unreachable!("create Room: {error:?}"));
@@ -381,6 +400,62 @@ fn unavailable_retained_secret_is_visible_only_as_safe_retryable_attention() {
 }
 
 #[test]
+fn transient_agent_profile_binding_unavailability_is_retryable() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("vault: {error:?}"));
+    let profile_root = directory.path().join("agent-profiles");
+    let profiles = AgentProfileStoreV1::open(&profile_root, vault.clone())
+        .unwrap_or_else(|error| unreachable!("profile store: {error:?}"));
+    profiles
+        .publish(&AgentProfileRevisionV1 {
+            schema: "worldstream/studio-agent-profile/v1".to_owned(),
+            profile_id: "analyst".to_owned(),
+            revision: "rev-1".to_owned(),
+            display_name: "Analyst".to_owned(),
+            non_secret_configuration: BTreeMap::new(),
+            secret_settings: Vec::new(),
+        })
+        .unwrap_or_else(|error| unreachable!("publish profile: {error:?}"));
+    std::fs::remove_dir(profile_root.join("assignments"))
+        .unwrap_or_else(|error| unreachable!("remove assignments directory: {error}"));
+    let supervisor = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        open_creation(directory.path()),
+        vault,
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    )
+    .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_agent_profiles(profiles);
+
+    let blocked = supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("start setup: {error:?}"));
+    assert_eq!(blocked.state, TaskSetupStateV1::NeedsAttention);
+    assert_eq!(
+        blocked
+            .attention
+            .as_ref()
+            .map(|attention| attention.retryable),
+        Some(true)
+    );
+    assert_eq!(
+        blocked
+            .attention
+            .as_ref()
+            .map(|attention| attention.code.as_str()),
+        Some("daemon_result_ambiguous")
+    );
+
+    prepare_data_directory(&profile_root.join("assignments"))
+        .unwrap_or_else(|error| unreachable!("restore assignments directory: {error}"));
+    let ready = supervisor
+        .retry("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("retry setup: {error:?}"));
+    assert_eq!(ready.state, TaskSetupStateV1::Ready);
+}
+
+#[test]
 fn corrupt_checkpoint_cannot_claim_ready_or_issue_another_daemon_effect() {
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
     let ledger = Arc::new(Mutex::new(ProvisionLedger {
@@ -448,4 +523,315 @@ fn corrupt_checkpoint_cannot_claim_ready_or_issue_another_daemon_effect() {
             .len(),
         calls_before_corruption
     );
+}
+
+#[derive(Clone)]
+struct ConsoleHealth(Arc<Mutex<ParticipantConsoleSessionHealthV1>>);
+
+impl ParticipantConsoleReadinessSourceV1 for ConsoleHealth {
+    fn session_health(
+        &self,
+        _room_id: &str,
+        _member_id: &str,
+    ) -> ParticipantConsoleSessionHealthV1 {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OptionalSeatDisconnected;
+
+impl ParticipantConsoleReadinessSourceV1 for OptionalSeatDisconnected {
+    fn session_health(&self, _room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
+        if member_id == "01ARZ3NDEKTSV4RRFFQ69G5FB1" {
+            ParticipantConsoleSessionHealthV1::Disconnected
+        } else {
+            ParticipantConsoleSessionHealthV1::Usable
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RunnerHealth(Arc<Mutex<RunnerMode>>);
+
+#[derive(Clone, Copy)]
+enum RunnerMode {
+    Ready,
+    Missing,
+    Stale,
+    Disconnected,
+    Full,
+    Incompatible,
+}
+
+impl TaskRunnerReadinessSourceV1 for RunnerHealth {
+    fn presence(&self, runner_id: &str) -> TaskRunnerObservationV1 {
+        let mode = *self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(mode, RunnerMode::Missing) {
+            return TaskRunnerObservationV1::Missing;
+        }
+        TaskRunnerObservationV1::Present(OperatorRunnerPresenceV1 {
+            version: "worldstream/operator-runner-presence/v1".to_owned(),
+            runner_id: runner_id.to_owned(),
+            connection: if matches!(mode, RunnerMode::Disconnected) {
+                OperatorRunnerConnectionV1::Disconnected
+            } else {
+                OperatorRunnerConnectionV1::Connected
+            },
+            freshness: if matches!(mode, RunnerMode::Stale) {
+                OperatorRunnerFreshnessV1::Stale
+            } else {
+                OperatorRunnerFreshnessV1::Fresh
+            },
+            maximum_concurrent_activations: 1,
+            active_activations: u32::from(matches!(mode, RunnerMode::Full)),
+            available_activations: u32::from(!matches!(mode, RunnerMode::Full)),
+            supported_pack_revisions: if matches!(mode, RunnerMode::Incompatible) {
+                Vec::new()
+            } else {
+                vec![PackReference {
+                    id: "counter".to_owned(),
+                    version: "2.0.0".to_owned(),
+                    digest: DIGEST.to_owned(),
+                }]
+            },
+            observed_at_unix_ms: 1,
+        })
+    }
+}
+
+#[derive(Default)]
+struct LaunchLedger {
+    calls: Vec<LobbyLaunchRequest>,
+    response: Option<LobbyLaunchResponse>,
+    lose_first_response: bool,
+    hide_committed_head_once: bool,
+}
+
+#[derive(Clone)]
+struct Launcher(Arc<Mutex<LaunchLedger>>);
+
+fn launched_head() -> RoomHead {
+    let mut head = room_response().room_head;
+    head.room_seq = 1;
+    head.genesis_or_transition_hash = format!("blake3:{}", "f".repeat(64));
+    head
+}
+
+impl DaemonTaskLaunchSourceV1 for Launcher {
+    fn launch(
+        &self,
+        room_id: &str,
+        request: &LobbyLaunchRequest,
+    ) -> Result<LobbyLaunchResponse, TaskLaunchAttemptErrorV1> {
+        let mut ledger = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        ledger.calls.push(request.clone());
+        let response = ledger
+            .response
+            .get_or_insert_with(|| LobbyLaunchResponse {
+                room_id: room_id.to_owned(),
+                input_id: request.input_id.clone(),
+                transition_id: "01ARZ3NDEKTSV4RRFFQ69G5FB0".to_owned(),
+                room_head: launched_head(),
+                duplicate: false,
+            })
+            .clone();
+        if ledger.lose_first_response {
+            ledger.lose_first_response = false;
+            Err(TaskLaunchAttemptErrorV1::Ambiguous)
+        } else {
+            Ok(response)
+        }
+    }
+
+    fn room_head(&self, _room_id: &str) -> Result<RoomHead, TaskLaunchAttemptErrorV1> {
+        let mut ledger = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if ledger.hide_committed_head_once {
+            ledger.hide_committed_head_once = false;
+            return Ok(room_response().room_head);
+        }
+        ledger
+            .response
+            .as_ref()
+            .map(|response| response.room_head.clone())
+            .ok_or(TaskLaunchAttemptErrorV1::Ambiguous)
+    }
+}
+
+fn open_launch_ready_setup(
+    root: &std::path::Path,
+    provisioner: DurableProvisioner,
+    console: ConsoleHealth,
+    runners: RunnerHealth,
+    launcher: Launcher,
+) -> TaskSetupSupervisorV1 {
+    open_setup(root, provisioner).with_launch_readiness(console, runners, launcher)
+}
+
+#[test]
+fn readiness_reports_exact_console_and_runner_reasons_and_optional_unfilled_is_nonblocking() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let console = Arc::new(Mutex::new(ParticipantConsoleSessionHealthV1::Usable));
+    let runner = Arc::new(Mutex::new(RunnerMode::Ready));
+    let supervisor = open_launch_ready_setup(
+        directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+        ConsoleHealth(Arc::clone(&console)),
+        RunnerHealth(Arc::clone(&runner)),
+        Launcher(Arc::new(Mutex::new(LaunchLedger::default()))),
+    );
+    let status = supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("start: {error:?}"));
+    assert!(status.readiness.ready_to_launch);
+    assert_eq!(
+        status.readiness.seats[2].reason,
+        TaskSeatReadinessReasonV1::OptionalUnfilled
+    );
+
+    for (health, reason) in [
+        (
+            ParticipantConsoleSessionHealthV1::Missing,
+            TaskSeatReadinessReasonV1::ConsoleMissing,
+        ),
+        (
+            ParticipantConsoleSessionHealthV1::Stale,
+            TaskSeatReadinessReasonV1::ConsoleStale,
+        ),
+        (
+            ParticipantConsoleSessionHealthV1::Disconnected,
+            TaskSeatReadinessReasonV1::ConsoleDisconnected,
+        ),
+    ] {
+        *console.lock().unwrap_or_else(PoisonError::into_inner) = health;
+        let status = supervisor
+            .status("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("status: {error:?}"));
+        assert_eq!(status.readiness.seats[0].reason, reason);
+        assert!(!status.readiness.ready_to_launch);
+    }
+    *console.lock().unwrap_or_else(PoisonError::into_inner) =
+        ParticipantConsoleSessionHealthV1::Usable;
+    for (mode, reason) in [
+        (
+            RunnerMode::Missing,
+            TaskSeatReadinessReasonV1::RunnerMissing,
+        ),
+        (RunnerMode::Stale, TaskSeatReadinessReasonV1::RunnerStale),
+        (
+            RunnerMode::Disconnected,
+            TaskSeatReadinessReasonV1::RunnerDisconnected,
+        ),
+        (
+            RunnerMode::Full,
+            TaskSeatReadinessReasonV1::RunnerOverCapacity,
+        ),
+        (
+            RunnerMode::Incompatible,
+            TaskSeatReadinessReasonV1::RunnerIncompatible,
+        ),
+    ] {
+        *runner.lock().unwrap_or_else(PoisonError::into_inner) = mode;
+        let status = supervisor
+            .status("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("status: {error:?}"));
+        assert_eq!(status.readiness.seats[1].reason, reason);
+        assert!(!status.readiness.ready_to_launch);
+    }
+}
+
+#[test]
+fn filled_optional_seat_is_blocking_when_its_live_readiness_is_false() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let mut draft = reviewed_draft();
+    draft.seats[2].principal_id = Some("01ARZ3NDEKTSV4RRFFQ69G5FB0".to_owned());
+    draft.seats[2].principal_kind = Some(worldstream_protocol::PrincipalKind::Human);
+    let mut response = room_response();
+    response
+        .member_ids
+        .push("01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned());
+    let creation = open_creation_for(directory.path(), &draft, response);
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("vault: {error:?}"));
+    let supervisor = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        creation,
+        vault,
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    )
+    .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_launch_readiness(
+        OptionalSeatDisconnected,
+        RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
+        Launcher(Arc::new(Mutex::new(LaunchLedger::default()))),
+    );
+
+    let status = supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("start setup: {error:?}"));
+    assert_eq!(status.state, TaskSetupStateV1::Ready);
+    assert!(!status.readiness.seats[2].required);
+    assert_eq!(
+        status.readiness.seats[2].reason,
+        TaskSeatReadinessReasonV1::ConsoleDisconnected
+    );
+    assert!(!status.readiness.ready_to_launch);
+    assert_eq!(
+        supervisor.launch("setup-alpha"),
+        Err(worldstream_studio_supervisor::task_setup::TaskSetupErrorV1::NotReady)
+    );
+}
+
+#[test]
+fn lost_launch_response_restart_and_readiness_change_resolve_the_same_committed_launch() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let provisions = Arc::new(Mutex::new(ProvisionLedger::default()));
+    let launches = Arc::new(Mutex::new(LaunchLedger {
+        lose_first_response: true,
+        ..LaunchLedger::default()
+    }));
+    let runner_health = Arc::new(Mutex::new(RunnerMode::Ready));
+    let make = || {
+        open_launch_ready_setup(
+            directory.path(),
+            DurableProvisioner(Arc::clone(&provisions)),
+            ConsoleHealth(Arc::new(Mutex::new(
+                ParticipantConsoleSessionHealthV1::Usable,
+            ))),
+            RunnerHealth(Arc::clone(&runner_health)),
+            Launcher(Arc::clone(&launches)),
+        )
+    };
+    let first = make();
+    first
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    let ambiguous = first
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("launch: {error:?}"));
+    assert_eq!(
+        ambiguous.launch.as_ref().map(|value| value.state),
+        Some(TaskLaunchStateV1::NeedsAttention)
+    );
+    drop(first);
+
+    // Mutable capacity can disappear after the immutable launch was submitted.
+    // Reconciliation must resolve that launch before applying a fresh gate.
+    *runner_health.lock().unwrap_or_else(PoisonError::into_inner) = RunnerMode::Full;
+
+    let restarted = make();
+    let committed = restarted
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("retry: {error:?}"));
+    assert_eq!(
+        committed.launch.as_ref().map(|value| value.state),
+        Some(TaskLaunchStateV1::Launched)
+    );
+    assert!(!committed.readiness.ready_to_launch);
+    let calls = &launches
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .calls;
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0], calls[1]);
 }

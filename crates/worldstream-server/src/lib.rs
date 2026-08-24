@@ -14,7 +14,7 @@ pub mod telemetry;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     fmt,
     fmt::Write as _,
@@ -55,7 +55,8 @@ use worldstream_protocol::{
     LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
     ObservationAck, ObservationDeliver, OperatorBackupProfileStatus,
     OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomInventoryPage,
-    OperatorRoomInventoryRequest, OperatorRoomSummary, PackReference, ProjectionReset,
+    OperatorRoomInventoryRequest, OperatorRoomSummary, OperatorRunnerConnectionV1,
+    OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference, ProjectionReset,
     ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck,
     RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
     RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope,
@@ -548,6 +549,36 @@ fn scope_names(scopes: &CapabilityScopeSetV1) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+pub(crate) fn runner_hello_is_bounded(request: &RunnerHello) -> bool {
+    if request.maximum_concurrent_activations == 0
+        || request.maximum_concurrent_activations > 64
+        || request.supported_pack_ids.len() > 64
+        || request.supported_pack_revisions.len() > 64
+        || request
+            .supported_pack_ids
+            .iter()
+            .any(|id| id.is_empty() || id.len() > 256)
+    {
+        return false;
+    }
+    let mut exact = HashSet::new();
+    request.supported_pack_revisions.iter().all(|pack| {
+        !pack.id.is_empty()
+            && pack.id.len() <= 256
+            && !pack.version.is_empty()
+            && pack.version.len() <= 64
+            && pack
+                .digest
+                .parse::<worldstream_core::PackDigestV1>()
+                .is_ok()
+            && exact.insert((
+                pack.id.as_str(),
+                pack.version.as_str(),
+                pack.digest.as_str(),
+            ))
+    })
+}
 const OPERATOR_TIMER_FIRE: &str = "timer-fire";
 const OPERATOR_LOBBY_LAUNCH: &str = "lobby-launch";
 const OPERATOR_ACTIVITY_PACK_CATALOG: &str = "activity-pack-catalog";
@@ -555,6 +586,9 @@ const OPERATOR_ROOM_INVENTORY: &str = "room-inventory";
 const OPERATOR_ROOM_DETAIL: &str = "room-detail";
 const OPERATOR_BACKUP_PROFILE: &str = "backup-profile";
 const OPERATOR_LIVE_BACKUP: &str = "live-backup";
+const OPERATOR_RUNNER_PRESENCE: &str = "runner-presence";
+const RUNNER_PRESENCE_VERSION: &str = "worldstream/operator-runner-presence/v1";
+const RUNNER_PRESENCE_STALE_AFTER: Duration = Duration::from_secs(45);
 
 /// Fills a caller-owned buffer from the platform's operating-system CSPRNG.
 ///
@@ -784,6 +818,19 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _session: &GatewaySession,
         _revision_digest: &str,
     ) -> Result<ActivityPackCatalogRevisionResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Authorizes a host diagnostic read of bounded Runner presence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed error unless the caller has deployment-level
+    /// host-operator diagnostic authority.
+    fn authorize_operator_runner_presence(
+        &self,
+        _session: &GatewaySession,
+    ) -> Result<(), BackendError> {
         Err(BackendError::StorageUnavailable)
     }
 
@@ -1382,6 +1429,7 @@ pub struct OperatorState {
     readiness: RuntimeReadiness,
     engine: EngineVersion,
     live_streams: LiveStreamRegistry,
+    runner_presence: RunnerPresenceRegistry,
     rate_limiter: GatewayRateLimiter,
 }
 
@@ -1616,6 +1664,7 @@ impl OperatorState {
             readiness: RuntimeReadiness::not_initialized(),
             engine: EngineVersion::not_initialized(profile),
             live_streams: LiveStreamRegistry::default(),
+            runner_presence: RunnerPresenceRegistry::default(),
             rate_limiter: GatewayRateLimiter::new()
                 .map_err(|_| ServerError::RateLimiterInitialization)?,
         })
@@ -1726,6 +1775,10 @@ pub fn operator_router(state: OperatorState) -> Router {
         )
         .route("/v1/operator/rooms", get(operator_room_inventory))
         .route("/v1/operator/rooms/{room_id}", get(operator_room_detail))
+        .route(
+            "/v1/operator/runners/{runner_id}/presence",
+            get(operator_runner_presence),
+        )
         .route("/v1/operator/backups/health", get(operator_backup_profile))
         .route("/v1/operator/backups", post(operator_live_backup))
         .route("/v1/operator/rooms/{room_id}/timers/fire", post(fire_timer))
@@ -1945,6 +1998,37 @@ async fn activity_pack_revision(
     .await
     .map(Json)
     .map_err(ResponseError::from)
+}
+
+async fn operator_runner_presence(
+    State(state): State<OperatorState>,
+    Path(runner_id): Path<String>,
+    headers: HeaderMap,
+) -> ResponseResult<OperatorRunnerPresenceV1> {
+    let correlation = traceparent_correlation(&headers);
+    let session = Arc::new(authenticated_session(&headers)?);
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_RUNNER_PRESENCE),
+        correlation,
+    )
+    .await?;
+    runner_id
+        .parse::<UlidString>()
+        .map_err(|_| ResponseError::from(BackendError::Rejected))?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.authorize_operator_runner_presence(&session)
+    })
+    .await
+    .map_err(ResponseError::from)?;
+    state
+        .runner_presence
+        .get(&runner_id)
+        .map(Json)
+        .ok_or_else(|| ResponseError::from(BackendError::NotFound))
 }
 
 async fn create_room(
@@ -3048,6 +3132,7 @@ async fn room_stream(
                 socket,
                 state.backend,
                 state.live_streams,
+                state.runner_presence,
                 session,
                 admission,
                 telemetry,
@@ -3066,6 +3151,7 @@ async fn room_stream(
             socket,
             state.backend,
             state.live_streams,
+            state.runner_presence,
             tickets,
             origin,
             peer,
@@ -3111,6 +3197,7 @@ async fn runner_stream(
                 socket,
                 state.backend,
                 state.live_streams,
+                state.runner_presence,
                 session,
                 admission,
                 telemetry,
@@ -3129,6 +3216,7 @@ async fn runner_stream(
             socket,
             state.backend,
             state.live_streams,
+            state.runner_presence,
             tickets,
             origin,
             peer,
@@ -3169,6 +3257,7 @@ async fn browser_stream_loop(
     mut socket: WebSocket,
     backend: Arc<dyn GatewayBackend>,
     live_streams: LiveStreamRegistry,
+    runner_presence: RunnerPresenceRegistry,
     tickets: Arc<BrowserTicketStore>,
     origin: String,
     peer: PeerIdentity,
@@ -3238,6 +3327,7 @@ async fn browser_stream_loop(
         socket,
         backend,
         live_streams,
+        runner_presence,
         session,
         admission,
         telemetry,
@@ -3288,6 +3378,7 @@ async fn stream_loop(
     mut socket: WebSocket,
     backend: Arc<dyn GatewayBackend>,
     live_streams: LiveStreamRegistry,
+    runner_presence: RunnerPresenceRegistry,
     session: Arc<GatewaySession>,
     admission: StreamAdmission,
     telemetry: Option<telemetry::TelemetryHandle>,
@@ -3438,7 +3529,9 @@ async fn stream_loop(
     let mut runner = RunnerConnectionState {
         mode: hello.body.mode,
         ready: false,
+        runner_id: None,
     };
+    let mut active_runner_presence = None;
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // `interval` ticks immediately once; the welcome itself is the initial
@@ -3453,6 +3546,9 @@ async fn stream_loop(
             message = socket.recv() => {
                 let Some(Ok(message)) = message else { break; };
                 idle_deadline = tokio::time::Instant::now() + POST_WELCOME_IDLE_TIMEOUT;
+                if runner.ready {
+                    runner_presence.touch(session.session_id());
+                }
                 let Message::Text(text) = message else {
                     if admission.admit_base(&session).is_err() {
                         let _ = send_error(&mut socket, None, ErrorCode::RateLimited, true).await;
@@ -3505,6 +3601,8 @@ async fn stream_loop(
                     &mut live,
                     &mut attached_stream,
                     &mut runner,
+                    &runner_presence,
+                    &mut active_runner_presence,
                     telemetry.as_ref(),
                     correlation,
                 )
@@ -3549,10 +3647,146 @@ fn welcome_matches_session(welcome: &ServerWelcome, session: &GatewaySession) ->
     welcome.session_id.as_str() == session.session_id().as_str()
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct RunnerConnectionState {
     mode: ClientMode,
     ready: bool,
+    runner_id: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct RunnerPresenceRegistry {
+    entries: Arc<Mutex<HashMap<String, RunnerPresenceEntry>>>,
+}
+
+struct RunnerPresenceEntry {
+    session_id: UlidString,
+    connected: bool,
+    maximum: u32,
+    active: HashSet<String>,
+    supported_pack_revisions: Vec<PackReference>,
+    observed_at_unix_ms: u64,
+}
+
+impl RunnerPresenceRegistry {
+    fn register(&self, session_id: &UlidString, hello: &RunnerHello) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.insert(
+            hello.runner_id.clone(),
+            RunnerPresenceEntry {
+                session_id: session_id.clone(),
+                connected: true,
+                maximum: hello.maximum_concurrent_activations,
+                active: HashSet::new(),
+                supported_pack_revisions: hello.supported_pack_revisions.clone(),
+                observed_at_unix_ms: unix_time_ms(),
+            },
+        );
+    }
+
+    fn touch(&self, session_id: &UlidString) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries
+            .values_mut()
+            .find(|entry| &entry.session_id == session_id && entry.connected)
+        {
+            entry.observed_at_unix_ms = unix_time_ms();
+        }
+    }
+
+    fn activation_started(&self, runner_id: &str, activation_id: &str) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(runner_id)
+            && entry.connected
+        {
+            entry.active.insert(activation_id.to_owned());
+            entry.observed_at_unix_ms = unix_time_ms();
+        }
+    }
+
+    fn activation_finished(&self, runner_id: &str, activation_id: &str) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(runner_id) {
+            entry.active.remove(activation_id);
+            entry.observed_at_unix_ms = unix_time_ms();
+        }
+    }
+
+    fn disconnect(&self, runner_id: &str, session_id: &UlidString) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(runner_id)
+            && &entry.session_id == session_id
+        {
+            entry.connected = false;
+            entry.active.clear();
+            entry.observed_at_unix_ms = unix_time_ms();
+        }
+    }
+
+    fn get(&self, runner_id: &str) -> Option<OperatorRunnerPresenceV1> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.get(runner_id)?;
+        let active = u32::try_from(entry.active.len()).unwrap_or(u32::MAX);
+        let stale = unix_time_ms().saturating_sub(entry.observed_at_unix_ms)
+            > u64::try_from(RUNNER_PRESENCE_STALE_AFTER.as_millis()).unwrap_or(u64::MAX);
+        Some(OperatorRunnerPresenceV1 {
+            version: RUNNER_PRESENCE_VERSION.to_owned(),
+            runner_id: runner_id.to_owned(),
+            connection: if entry.connected {
+                OperatorRunnerConnectionV1::Connected
+            } else {
+                OperatorRunnerConnectionV1::Disconnected
+            },
+            freshness: if stale {
+                OperatorRunnerFreshnessV1::Stale
+            } else {
+                OperatorRunnerFreshnessV1::Fresh
+            },
+            maximum_concurrent_activations: entry.maximum,
+            active_activations: active.min(entry.maximum),
+            available_activations: entry.maximum.saturating_sub(active),
+            supported_pack_revisions: entry.supported_pack_revisions.clone(),
+            observed_at_unix_ms: entry.observed_at_unix_ms,
+        })
+    }
+}
+
+struct ActiveRunnerPresence {
+    registry: RunnerPresenceRegistry,
+    runner_id: String,
+    session_id: UlidString,
+}
+
+impl Drop for ActiveRunnerPresence {
+    fn drop(&mut self) {
+        self.registry.disconnect(&self.runner_id, &self.session_id);
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|value| u64::try_from(value.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4067,6 +4301,8 @@ async fn dispatch_message(
     live: &mut bool,
     attached_stream: &mut Option<AttachedStream>,
     runner: &mut RunnerConnectionState,
+    runner_presence: &RunnerPresenceRegistry,
+    active_runner_presence: &mut Option<ActiveRunnerPresence>,
     telemetry: Option<&telemetry::TelemetryHandle>,
     correlation: telemetry::CorrelationV1,
 ) -> Result<(), ()> {
@@ -4085,6 +4321,7 @@ async fn dispatch_message(
                 return Ok(());
             }
             let request = decode_body::<RunnerHello>(body).map_err(|_| ())?;
+            let presence_hello = request.clone();
             match backend_call(Arc::clone(&backend), {
                 let session = Arc::clone(session);
                 move |backend| backend.runner_hello(&session, request)
@@ -4093,6 +4330,13 @@ async fn dispatch_message(
             {
                 Ok(ready) => {
                     runner.ready = true;
+                    runner.runner_id = Some(ready.runner_id.clone());
+                    runner_presence.register(session.session_id(), &presence_hello);
+                    *active_runner_presence = Some(ActiveRunnerPresence {
+                        registry: runner_presence.clone(),
+                        runner_id: ready.runner_id.clone(),
+                        session_id: session.session_id().clone(),
+                    });
                     record_admission_with_correlation(
                         telemetry,
                         telemetry::ReasonCodeV1::Accepted,
@@ -4146,6 +4390,8 @@ async fn dispatch_message(
             }
             let request = decode_body::<ActivationClaim>(body).map_err(|_| ())?;
             let claim_id = request.claim_id.clone();
+            let activation_id = request.activation_id.clone();
+            let claim_runner_id = request.runner_id.clone();
             pause_for_process_crash_evidence("activation_lease", "before_commit", &claim_id);
             match backend_call(Arc::clone(&backend), {
                 let session = Arc::clone(session);
@@ -4155,6 +4401,7 @@ async fn dispatch_message(
             {
                 Ok(reply) => {
                     if reply.code == ActivationResultCode::Granted {
+                        runner_presence.activation_started(&claim_runner_id, &activation_id);
                         pause_for_process_crash_evidence(
                             "activation_lease",
                             "after_commit_before_publication",
@@ -4213,6 +4460,8 @@ async fn dispatch_message(
                 return Ok(());
             }
             let request = decode_body::<ActivationLeaseOperation>(body).map_err(|_| ())?;
+            let lease_activation_id = request.activation_id.clone();
+            let lease_runner_id = request.runner_id.clone();
             let operation = message_type.clone();
             let result = backend_call(Arc::clone(&backend), {
                 let session = Arc::clone(session);
@@ -4237,6 +4486,12 @@ async fn dispatch_message(
             };
             match result {
                 Ok(reply) => {
+                    if matches!(
+                        reply.code,
+                        ActivationResultCode::Released | ActivationResultCode::Completed
+                    ) {
+                        runner_presence.activation_finished(&lease_runner_id, &lease_activation_id);
+                    }
                     record_activation_with_correlation(
                         telemetry,
                         phase,
@@ -5025,9 +5280,9 @@ mod tests {
         AccessMode, ActionSubmit, BEARER_WIRE_PREFIX, BearerWireV1,
         BrowserWebSocketTicketIssueResponse, ClientHello, CreateMember, CreateRoomRequest,
         CreateRoomResponse, ErrorCode, ErrorEnvelope, LobbyLaunchResponse, ObservationAck,
-        ObservationDeliver, PackReference, PrincipalKind, Projection, ProjectionResponse,
-        ReplayResponse, RoomAttach, RoomHead, RoomSyncAck, RunnerHello, ServerWelcome,
-        TimerFireResponse,
+        ObservationDeliver, OperatorRunnerConnectionV1, OperatorRunnerPresenceV1, PackReference,
+        PrincipalKind, Projection, ProjectionResponse, ReplayResponse, RoomAttach, RoomHead,
+        RoomSyncAck, RunnerHello, ServerWelcome, TimerFireResponse, UlidString,
     };
     use worldstream_runtime::{EffectiveConfig, StorageProfile};
     use worldstream_sqlite::SqliteRoomStore;
@@ -5323,6 +5578,13 @@ mod tests {
             let registry = builtin_worldstream_registry()
                 .map_err(|_| super::BackendError::StorageUnavailable)?;
             super::activity_pack_revision_from_registry(&registry, revision_digest)
+        }
+
+        fn authorize_operator_runner_presence(
+            &self,
+            _: &super::GatewaySession,
+        ) -> Result<(), super::BackendError> {
+            Ok(())
         }
 
         fn hello(
@@ -6440,6 +6702,107 @@ mod tests {
             .await
             .unwrap_or_else(|error| unreachable!("response: {error}"));
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn runner_presence_is_host_authorized_bounded_and_retains_disconnect_state() {
+        let state = OperatorState::new(EffectiveConfig::default())
+            .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+            .with_backend(Arc::new(SuccessfulCreateBackend));
+        let registry = state.runner_presence.clone();
+        let session_id = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+            .parse::<UlidString>()
+            .unwrap_or_else(|_| unreachable!("session id"));
+        let runner_id = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+        registry.register(
+            &session_id,
+            &RunnerHello {
+                runner_id: runner_id.to_owned(),
+                maximum_concurrent_activations: 2,
+                supported_pack_ids: vec!["worldstream.agent-heist".to_owned()],
+                supported_pack_revisions: vec![PackReference {
+                    id: "worldstream.agent-heist".to_owned(),
+                    version: "1.0.0".to_owned(),
+                    digest:
+                        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                }],
+            },
+        );
+        let app = operator_router(state);
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/operator/runners/{runner_id}/presence"))
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(unauthorized.status(), StatusCode::FORBIDDEN);
+        let connected = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/operator/runners/{runner_id}/presence"))
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(connected.status(), StatusCode::OK);
+        let connected: OperatorRunnerPresenceV1 = serde_json::from_slice(
+            &connected
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("presence: {error}"));
+        assert_eq!(connected.connection, OperatorRunnerConnectionV1::Connected);
+        assert_eq!(connected.available_activations, 2);
+        assert_eq!(connected.supported_pack_revisions.len(), 1);
+
+        registry.disconnect(runner_id, &session_id);
+        let disconnected = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/operator/runners/{runner_id}/presence"))
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        let disconnected: OperatorRunnerPresenceV1 = serde_json::from_slice(
+            &disconnected
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes(),
+        )
+        .unwrap_or_else(|error| unreachable!("presence: {error}"));
+        assert_eq!(
+            disconnected.connection,
+            OperatorRunnerConnectionV1::Disconnected
+        );
+
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/operator/runners/01ARZ3NDEKTSV4RRFFQ69G5FAY/presence")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .body(Body::empty())
+                    .unwrap_or_else(|error| unreachable!("request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -8348,6 +8711,7 @@ mod tests {
                     runner_id: runner_id.to_owned(),
                     maximum_concurrent_activations: 4,
                     supported_pack_ids: vec!["worldstream.counter".to_owned()],
+                    supported_pack_revisions: Vec::new(),
                 },
             )
             .unwrap_or_else(|error| unreachable!("Runner hello: {error:?}"));

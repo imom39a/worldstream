@@ -1583,6 +1583,7 @@ pub struct SqliteAuthenticatedCapabilityV1 {
     presented: PresentedCapabilityV1,
     principal_id: PrincipalId,
     principal_kind: PrincipalKindV1,
+    runner_id: Option<RunnerId>,
 }
 
 impl SqliteAuthenticatedCapabilityV1 {
@@ -1604,6 +1605,12 @@ impl SqliteAuthenticatedCapabilityV1 {
     #[must_use]
     pub fn principal_kind(&self) -> PrincipalKindV1 {
         self.principal_kind
+    }
+
+    /// Returns the exact Runner bound by a Runner-control Capability.
+    #[must_use]
+    pub const fn runner_id(&self) -> Option<&RunnerId> {
+        self.runner_id.as_ref()
     }
 }
 
@@ -4281,7 +4288,7 @@ impl SqliteRoomStore {
             .map_err(|_| SqliteGatewayErrorV1::StorageUnavailable)?;
         let row = connection
             .query_row(
-                "SELECT c.capability_id, c.principal_id, p.principal_kind \
+                "SELECT c.capability_id, c.principal_id, p.principal_kind, c.profile_kind, c.runner_id \
                  FROM capabilities c JOIN principals p ON p.principal_id = c.principal_id \
                  WHERE c.token_hash = ?1 AND p.authority_status = 'enabled' \
                  AND c.revoked_at IS NULL \
@@ -4292,6 +4299,8 @@ impl SqliteRoomStore {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
@@ -4307,10 +4316,20 @@ impl SqliteRoomStore {
             "agent" => PrincipalKindV1::Agent,
             _ => return Err(SqliteGatewayErrorV1::Corrupt),
         };
+        let runner_id = match (row.3.as_str(), row.4) {
+            ("runner_control", Some(value)) => Some(
+                value
+                    .parse::<RunnerId>()
+                    .map_err(|_| SqliteGatewayErrorV1::Corrupt)?,
+            ),
+            ("room_member" | "host_operator", None) => None,
+            _ => return Err(SqliteGatewayErrorV1::Corrupt),
+        };
         Ok(SqliteAuthenticatedCapabilityV1 {
             presented: PresentedCapabilityV1::new(capability_id, bearer),
             principal_id,
             principal_kind,
+            runner_id,
         })
     }
 

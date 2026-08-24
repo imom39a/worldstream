@@ -7,6 +7,8 @@ export function TaskSetupOperation({
   loading,
   onStart,
   onRetry,
+  onLaunch,
+  onOpenParticipantView,
 }: {
   setup: TaskSetupStatus | null;
   statusAvailable: boolean;
@@ -14,6 +16,8 @@ export function TaskSetupOperation({
   loading: boolean;
   onStart?: () => void;
   onRetry?: () => void;
+  onLaunch?: () => void;
+  onOpenParticipantView?: (seatId: string) => void;
 }) {
   if (!roomCreated && setup === null) return null;
   const retryable = setup?.state === "needs_attention" && setup.attention?.retryable === true;
@@ -38,6 +42,12 @@ export function TaskSetupOperation({
                 <small>{seat.role} · {seat.required ? "Required" : "Optional"}</small>
               </span>
               <span>{seatLabel(seat)}</span>
+              <small className={`task-readiness ${readinessFor(setup, seat.seat_id)?.ready ? "is-ready" : "is-blocked"}`}>
+                {readinessLabel(readinessFor(setup, seat.seat_id)?.reason)}
+              </small>
+              {seat.principal_kind === "human" && seat.member_authority === "provisioned" ? (
+                <button type="button" onClick={() => onOpenParticipantView?.(seat.seat_id)}>Open Participant View ↗</button>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -57,12 +67,36 @@ export function TaskSetupOperation({
         <button type="button" disabled={loading} onClick={onRetry}>
           {loading ? "Retrying exact stage…" : "Retry original setup"}
         </button>
+      ) : setup?.state === "ready" && setup.launch?.state !== "launched" ? (
+        <button type="button" disabled={loading || !setup.readiness.ready_to_launch} onClick={onLaunch}>
+          {loading ? "Reconciling launch…" : setup.launch === null ? "Launch Task" : "Retry original launch"}
+        </button>
+      ) : null}
+      {setup?.launch?.state === "launched" ? (
+        <div className="task-launch-committed" role="status"><strong>Task launched</strong><p>The committed Lobby transition is now observable.</p></div>
+      ) : setup?.state === "ready" && !setup.readiness.ready_to_launch ? (
+        <p className="task-launch-blocked" role="status">Launch is blocked until every required seat is live-ready.</p>
       ) : null}
       <p className="task-setup-boundary">
         Participant Action authority and Runner-control authority are provisioned separately. Credentials remain in the protected Supervisor vault.
       </p>
     </section>
   );
+}
+
+function readinessFor(setup: TaskSetupStatus, seatId: string) {
+  return setup.readiness.seats.find((seat) => seat.seat_id === seatId);
+}
+
+function readinessLabel(reason: TaskSetupStatus["readiness"]["seats"][number]["reason"] | undefined) {
+  return ({
+    ready: "Ready", optional_unfilled: "Optional · unfilled", setup_incomplete: "Setup incomplete",
+    console_missing: "Console session missing", console_stale: "Console session stale",
+    console_invalid: "Console session invalid", console_disconnected: "Console disconnected",
+    runner_assignment_missing: "Runner assignment missing", runner_missing: "Runner missing",
+    runner_stale: "Runner presence stale", runner_disconnected: "Runner disconnected",
+    runner_over_capacity: "Runner at capacity", runner_incompatible: "Runner incompatible",
+  } as const)[reason ?? "setup_incomplete"];
 }
 
 function heading(setup: TaskSetupStatus | null, available: boolean) {

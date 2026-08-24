@@ -18,6 +18,8 @@ import { RoomCreationOperation } from "./RoomCreationOperation";
 import type { RoomCreationStatus } from "./roomCreation";
 import { TaskSetupOperation } from "./TaskSetupOperation";
 import type { TaskSetupStatus } from "./taskSetup";
+import { AgentProfileBuild } from "./AgentProfileBuild";
+import type { AgentProfileCatalog, AgentProfileRevision } from "./agentProfiles";
 import type {
   RunnerInstanceLifecycleAction,
   RunnerInstanceStatusResponse,
@@ -71,6 +73,10 @@ export interface AppProps {
   taskSetupLoading?: boolean;
   onStartTaskSetup?: () => void;
   onRetryTaskSetup?: () => void;
+  onLaunchTask?: () => void;
+  agentProfiles?: AgentProfileCatalog | null;
+  onAgentProfilePublished?: (profile: AgentProfileRevision) => void;
+  onOpenParticipantView?: (seatId: string) => void;
   backupProfile?: BackupProfileStatus | null;
   backupOperation?: BackupOperationStatus | null;
   backupOperationId?: string | null;
@@ -117,6 +123,10 @@ export function App({
   taskSetupLoading = false,
   onStartTaskSetup,
   onRetryTaskSetup,
+  onLaunchTask,
+  agentProfiles = null,
+  onAgentProfilePublished,
+  onOpenParticipantView,
   backupProfile = null,
   backupOperation = null,
   backupOperationId = null,
@@ -216,11 +226,19 @@ export function App({
           />
         </div>
 
+        <div className="agent-profile-build" id="agent-profiles">
+          <AgentProfileBuild
+            catalog={agentProfiles}
+            onPublished={onAgentProfilePublished}
+          />
+        </div>
+
         {roomDraft !== null ? (
           <RoomDraftWizard
             draft={roomDraft}
             catalog={activityPackCatalog}
             detail={activityPackDetail}
+            agentProfiles={agentProfiles}
             activeStep={roomDraftStep}
             fieldErrors={roomDraftErrors}
             saving={roomDraftSaving}
@@ -248,6 +266,8 @@ export function App({
           loading={taskSetupLoading}
           onStart={onStartTaskSetup}
           onRetry={onRetryTaskSetup}
+          onLaunch={onLaunchTask}
+          onOpenParticipantView={onOpenParticipantView}
         />
 
         <ActivityPackCatalogView

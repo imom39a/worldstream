@@ -20,7 +20,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use worldstream_protocol::{BearerWireV1, UlidString};
 use worldstream_runtime::{create_owner_only_file, prepare_data_directory};
+use zeroize::Zeroize as _;
 
 use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
 
@@ -41,6 +43,17 @@ pub enum CompatibilityV1 {
     Compatible,
     /// The exact Activity Pack revision is not declared by the template.
     Incompatible,
+}
+
+/// Closed result of binding an exact Task Runner authority to one managed instance.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum ManagedRunnerBindingErrorV1 {
+    #[error("managed Runner instance was not found")]
+    NotFound,
+    #[error("managed Runner instance is already bound")]
+    Conflict,
+    #[error("managed Runner binding is unavailable")]
+    Unavailable,
 }
 
 /// Approved executable identity retained only in the local registry.
@@ -639,6 +652,8 @@ struct RunnerRuntime {
     capacity_in_use: u32,
     observed_at_unix_ms: Option<u64>,
     failure: Option<RunnerInstanceFailureV1>,
+    task_runner_id: Option<String>,
+    task_runner_authority: Option<SecretReferenceV1>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -647,6 +662,10 @@ struct RunnerRuntimeRecordV1 {
     instance_id: String,
     operation_id: u64,
     expected_running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_runner_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_runner_authority: Option<SecretReferenceV1>,
 }
 
 impl RunnerSupervisorV1 {
@@ -686,7 +705,13 @@ impl RunnerSupervisorV1 {
             let expected_running = record
                 .as_ref()
                 .is_some_and(|record| record.expected_running);
-            let operation_id = record.map_or(0, |record| record.operation_id);
+            let operation_id = record.as_ref().map_or(0, |record| record.operation_id);
+            let task_runner_id = record
+                .as_ref()
+                .and_then(|record| record.task_runner_id.clone());
+            let task_runner_authority = record
+                .as_ref()
+                .and_then(|record| record.task_runner_authority.clone());
             instances.insert(
                 instance_id.clone(),
                 RunnerRuntime {
@@ -710,6 +735,8 @@ impl RunnerSupervisorV1 {
                     capacity_in_use: 0,
                     observed_at_unix_ms: None,
                     failure: expected_running.then(reconciliation_failed),
+                    task_runner_id,
+                    task_runner_authority,
                 },
             );
         }
@@ -800,7 +827,7 @@ impl RunnerSupervisorV1 {
             }
         }
 
-        let environment = match self.launch_environment(manifest, instance_id) {
+        let mut environment = match self.launch_environment(manifest, instance_id) {
             Ok(environment) => environment,
             Err(failure) => {
                 let mut instances = self.lock();
@@ -842,6 +869,9 @@ impl RunnerSupervisorV1 {
         }
 
         let launched = self.backend.launch(&manifest.executable.path, &environment);
+        for (_, value) in &mut environment {
+            value.zeroize();
+        }
         let mut instances = self.lock();
         let runtime = instances.get_mut(instance_id)?;
         if let Ok(process) = launched {
@@ -918,6 +948,82 @@ impl RunnerSupervisorV1 {
         self.start(instance_id)
     }
 
+    /// Returns whether an instance can accept its first immutable Task Runner binding.
+    #[must_use]
+    pub fn task_runner_binding_available(&self, instance_id: &str) -> bool {
+        self.lock().get(instance_id).is_some_and(|runtime| {
+            runtime.task_runner_id.is_none() && runtime.task_runner_authority.is_none()
+        })
+    }
+
+    /// Durably binds and delivers one exact provisioned Runner identity and authority.
+    ///
+    /// An already-bound instance accepts only the identical identity/reference pair.
+    /// A new binding restarts the owner-managed process so it receives the exact
+    /// identity and credential through its private launch environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed not-found, immutable-conflict, or local-unavailable result.
+    pub fn bind_task_runner_authority(
+        &self,
+        instance_id: &str,
+        runner_id: &str,
+        authority: &SecretReferenceV1,
+    ) -> Result<(), ManagedRunnerBindingErrorV1> {
+        if runner_id.parse::<UlidString>().is_err()
+            || !self
+                .vault
+                .resolve(SecretKindV1::RunnerAuthority, authority)
+                .is_ok_and(|secret| secret.as_bytes().len() == 32)
+        {
+            return Err(ManagedRunnerBindingErrorV1::Unavailable);
+        }
+        {
+            let mut instances = self.lock();
+            let runtime = instances
+                .get_mut(instance_id)
+                .ok_or(ManagedRunnerBindingErrorV1::NotFound)?;
+            match (&runtime.task_runner_id, &runtime.task_runner_authority) {
+                (Some(existing_id), Some(existing_authority))
+                    if existing_id == runner_id && existing_authority == authority =>
+                {
+                    return Ok(());
+                }
+                (Some(_), _) | (_, Some(_)) => {
+                    return Err(ManagedRunnerBindingErrorV1::Conflict);
+                }
+                (None, None) => {}
+            }
+            if runtime.state != RunnerInstanceStateV1::Running
+                || !runtime.managed
+                || runtime.health != RunnerInstanceHealthV1::Healthy
+            {
+                return Err(ManagedRunnerBindingErrorV1::Unavailable);
+            }
+            runtime.task_runner_id = Some(runner_id.to_owned());
+            runtime.task_runner_authority = Some(authority.clone());
+            if self.persist(runtime).is_err() {
+                runtime.task_runner_id = None;
+                runtime.task_runner_authority = None;
+                return Err(ManagedRunnerBindingErrorV1::Unavailable);
+            }
+        }
+        let status = self
+            .restart(instance_id)
+            .ok_or(ManagedRunnerBindingErrorV1::Unavailable)?;
+        let instance = status
+            .instances
+            .iter()
+            .find(|instance| instance.instance_id == instance_id)
+            .ok_or(ManagedRunnerBindingErrorV1::Unavailable)?;
+        if instance.state == RunnerInstanceStateV1::Running {
+            Ok(())
+        } else {
+            Err(ManagedRunnerBindingErrorV1::Unavailable)
+        }
+    }
+
     fn launch_environment(
         &self,
         manifest: &RunnerTemplateManifestV1,
@@ -932,6 +1038,25 @@ impl RunnerSupervisorV1 {
             "WORLDSTREAM_RUNNER_INSTANCE_ID".to_owned(),
             instance_id.to_owned(),
         ));
+        let task_binding = self.lock().get(instance_id).and_then(|runtime| {
+            runtime
+                .task_runner_id
+                .clone()
+                .zip(runtime.task_runner_authority.clone())
+        });
+        if let Some((runner_id, authority)) = task_binding {
+            let resolved = self
+                .vault
+                .resolve(SecretKindV1::RunnerAuthority, &authority)
+                .map_err(|_| missing_secret())?;
+            let bytes: [u8; 32] = resolved
+                .as_bytes()
+                .try_into()
+                .map_err(|_| unusable_secret())?;
+            let bearer = BearerWireV1::from_bytes(bytes).to_wire();
+            environment.push(("WORLDSTREAM_RUNNER_ID".to_owned(), runner_id));
+            environment.push(("WORLDSTREAM_RUNNER_BEARER".to_owned(), bearer));
+        }
         for setting in &manifest.secret_environment {
             let resolved = self
                 .vault
@@ -1079,6 +1204,8 @@ impl RunnerSupervisorV1 {
             instance_id: runtime.install.instance_id.clone(),
             operation_id: runtime.operation_id,
             expected_running: runtime.expected_running,
+            task_runner_id: runtime.task_runner_id.clone(),
+            task_runner_authority: runtime.task_runner_authority.clone(),
         };
         let encoded = serde_json::to_vec_pretty(&record)
             .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
@@ -1113,6 +1240,11 @@ fn read_runtime_record(
     .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
     if record.schema != "worldstream/runner-instance-runtime/v1"
         || record.instance_id != instance_id
+        || record.task_runner_id.is_some() != record.task_runner_authority.is_some()
+        || record
+            .task_runner_id
+            .as_ref()
+            .is_some_and(|runner_id| runner_id.parse::<UlidString>().is_err())
     {
         return Err(RunnerTemplateErrorV1::RegistryUnavailable);
     }
@@ -1454,14 +1586,15 @@ mod tests {
     use http_body_util::BodyExt as _;
     use tempfile::TempDir;
     use tower::ServiceExt as _;
+    use worldstream_protocol::BearerWireV1;
 
     use super::{
-        CompatibilityV1, ManagedRunner, ProcessExit, RunnerHealthObservationV1,
-        RunnerInstanceHealthV1, RunnerInstanceStateV1, RunnerInstanceStatusResponseV1,
-        RunnerRuntimeBackend, RunnerSupervisorV1, RunnerTemplateErrorV1, RunnerTemplateRegistryV1,
-        runner_router,
+        CompatibilityV1, ManagedRunner, ManagedRunnerBindingErrorV1, ProcessExit,
+        RunnerHealthObservationV1, RunnerInstanceHealthV1, RunnerInstanceStateV1,
+        RunnerInstanceStatusResponseV1, RunnerRuntimeBackend, RunnerSupervisorV1,
+        RunnerTemplateErrorV1, RunnerTemplateRegistryV1, runner_router,
     };
-    use crate::secrets::FileSecretVaultV1;
+    use crate::secrets::{FileSecretVaultV1, SecretKindV1};
 
     #[test]
     fn exact_runner_template_revision_is_immutable_after_owner_install() {
@@ -1562,6 +1695,58 @@ mod tests {
         assert_eq!(backend.launches.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn exact_task_runner_binding_is_durable_idempotent_and_delivered_only_to_managed_process() {
+        let fixture = Fixture::new();
+        fixture.write_manifest("Local MCP Helper", "r2", &["1.1"]);
+        let backend = FakeBackend::healthy();
+        let supervisor = fixture.supervisor(backend.clone());
+        let _ = supervisor.start("local-mcp-01");
+        let healthy = supervisor.statuses();
+        assert_eq!(healthy.instances[0].health, RunnerInstanceHealthV1::Healthy);
+        let authority = fixture
+            .vault
+            .store(SecretKindV1::RunnerAuthority, &[7_u8; 32])
+            .unwrap_or_else(|error| unreachable!("store runner authority: {error:?}"));
+        let runner_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+        supervisor
+            .bind_task_runner_authority("local-mcp-01", runner_id, &authority)
+            .unwrap_or_else(|error| unreachable!("bind runner authority: {error:?}"));
+        assert_eq!(backend.launches.load(Ordering::SeqCst), 2);
+        let environment = backend
+            .last_environment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            environment
+                .iter()
+                .any(|(key, value)| { key == "WORLDSTREAM_RUNNER_ID" && value == runner_id })
+        );
+        let expected_bearer = BearerWireV1::from_bytes([7_u8; 32]).to_wire();
+        assert!(environment.iter().any(|(key, value)| {
+            key == "WORLDSTREAM_RUNNER_BEARER" && value == &expected_bearer
+        }));
+        drop(environment);
+
+        supervisor
+            .bind_task_runner_authority("local-mcp-01", runner_id, &authority)
+            .unwrap_or_else(|error| unreachable!("repeat exact binding: {error:?}"));
+        assert_eq!(backend.launches.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            supervisor.bind_task_runner_authority(
+                "local-mcp-01",
+                "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                &authority,
+            ),
+            Err(ManagedRunnerBindingErrorV1::Conflict)
+        );
+        drop(supervisor);
+
+        let reopened = fixture.supervisor(backend);
+        assert!(!reopened.task_runner_binding_available("local-mcp-01"));
+    }
+
     #[tokio::test]
     async fn supervisor_restart_reconciles_running_and_stopped_instances_without_launching() {
         let fixture = Fixture::new();
@@ -1619,6 +1804,7 @@ mod tests {
         healthy: Arc<Mutex<bool>>,
         running: Arc<Mutex<BTreeSet<String>>>,
         last_executable: Arc<Mutex<Option<PathBuf>>>,
+        last_environment: Arc<Mutex<Vec<(String, String)>>>,
     }
 
     impl FakeBackend {
@@ -1628,6 +1814,7 @@ mod tests {
                 healthy: Arc::new(Mutex::new(true)),
                 running: Arc::new(Mutex::new(BTreeSet::new())),
                 last_executable: Arc::new(Mutex::new(None)),
+                last_environment: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -1657,6 +1844,10 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Some(executable.to_path_buf());
+            *self
+                .last_environment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = environment.to_vec();
             let instance_id = environment
                 .iter()
                 .find(|(key, _)| key == "WORLDSTREAM_RUNNER_INSTANCE_ID")

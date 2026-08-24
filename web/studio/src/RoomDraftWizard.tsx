@@ -12,6 +12,7 @@ import {
   type RoomDraftFieldError,
   type RoomDraftStep,
 } from "./roomDrafts";
+import { assignAgentProfileRevision, type AgentProfileCatalog } from "./agentProfiles";
 
 const steps: Array<{ id: RoomDraftStep; label: string }> = [
   { id: "activity", label: "Activity" },
@@ -25,6 +26,7 @@ export interface RoomDraftWizardProps {
   draft: RoomDraft;
   catalog: ActivityPackCatalog | null;
   detail: ActivityPackDetailResponse | null;
+  agentProfiles?: AgentProfileCatalog | null;
   activeStep: RoomDraftStep;
   fieldErrors?: RoomDraftFieldError[];
   saving?: boolean;
@@ -39,6 +41,7 @@ export function RoomDraftWizard({
   draft,
   catalog,
   detail,
+  agentProfiles = null,
   activeStep,
   fieldErrors = [],
   saving = false,
@@ -106,7 +109,7 @@ export function RoomDraftWizard({
           <ConfigurationStep draft={draft} detail={exactDetail} errors={errors} onChange={onDraftChange} />
         ) : null}
         {activeStep === "seats" ? (
-          <SeatsStep draft={draft} detail={exactDetail} onChange={onDraftChange} />
+          <SeatsStep draft={draft} detail={exactDetail} profiles={agentProfiles} onChange={onDraftChange} />
         ) : null}
         {activeStep === "readiness" ? <ReadinessStep draft={draft} /> : null}
         {activeStep === "review" ? (
@@ -277,10 +280,12 @@ function SchemaField({
 function SeatsStep({
   draft,
   detail,
+  profiles,
   onChange,
 }: {
   draft: RoomDraft;
   detail: ActivityPackDetailResponse | null;
+  profiles: AgentProfileCatalog | null;
   onChange?: (draft: RoomDraft) => void;
 }) {
   if (detail === null) return <p className="draft-warning">Exact revision Roles unavailable.</p>;
@@ -309,7 +314,7 @@ function SeatsStep({
                 onChange={(event) => {
                   const principalId = event.currentTarget.value;
                   updateSeat(draft, seats, policy, seat.seat_id, principalId === ""
-                    ? { principal_id: undefined, principal_kind: undefined, agent_assignment: undefined }
+                    ? { principal_id: undefined, principal_kind: undefined, agent_assignment: undefined, agent_profile: undefined }
                     : { principal_id: principalId, principal_kind: seat.principal_kind ?? "human" }, onChange);
                 }}
               />
@@ -322,6 +327,7 @@ function SeatsStep({
                     agent_assignment: event.currentTarget.value === "agent"
                       ? seat.agent_assignment ?? "external"
                       : undefined,
+                    agent_profile: event.currentTarget.value === "agent" ? seat.agent_profile : undefined,
                   }, onChange)}
                 >
                   <option value="human">Human</option>
@@ -329,7 +335,7 @@ function SeatsStep({
                 </select>
               ) : null}
               {seat.principal_kind === "agent" ? (
-                <select
+                <><select
                   aria-label={`${seat.display_name} agent assignment`}
                   value={seat.agent_assignment ?? "external"}
                   onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
@@ -339,6 +345,24 @@ function SeatsStep({
                   <option value="external">External agent</option>
                   <option value="managed">Managed agent</option>
                 </select>
+                <select
+                  aria-label={`${seat.display_name} agent profile`}
+                  value={seat.agent_profile === undefined ? "" : `${seat.agent_profile.profile_id}:${seat.agent_profile.revision}`}
+                  onChange={(event) => {
+                    const profile = profiles?.profiles.find((candidate) =>
+                      `${candidate.profile_id}:${candidate.revision}` === event.currentTarget.value);
+                    if (profile === undefined) return;
+                    const updated = assignAgentProfileRevision({ ...draft, seats }, seat.seat_id, profile);
+                    if (updated !== null) onChange?.(updated);
+                  }}
+                >
+                  <option value="">Select exact Agent Profile</option>
+                  {(profiles?.profiles ?? []).map((profile) => (
+                    <option key={`${profile.profile_id}:${profile.revision}`} value={`${profile.profile_id}:${profile.revision}`}>
+                      {profile.display_name} · {profile.revision}
+                    </option>
+                  ))}
+                </select></>
               ) : null}
             </span>
           </label>
@@ -426,7 +450,8 @@ function stepIsValid(
   if (step === "seats") {
     if (detail === null) return false;
     const policy = buildSeatPolicy(detail.revision.roles);
-    return sameSeatPolicy(draft, policy);
+    return sameSeatPolicy(draft, policy) && draft.seats.every((seat) =>
+      seat.principal_kind !== "agent" || seat.agent_profile !== undefined);
   }
   if (step === "readiness") return draft.readiness.length === draft.seats.length &&
     draft.readiness.every((readiness) => {

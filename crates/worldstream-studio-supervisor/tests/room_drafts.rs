@@ -345,3 +345,60 @@ async fn draft_surface_has_no_room_or_authority_creation_route() {
         assert_eq!(response.status(), 404);
     }
 }
+
+#[tokio::test]
+async fn agent_seat_retains_exact_profile_revision_but_human_seat_rejects_it() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+    let root = directory.path().join("drafts");
+    let store = RoomDraftStoreV1::open(&root, ValidDraft)
+        .unwrap_or_else(|error| unreachable!("open draft store: {error:?}"));
+    let mut agent = draft();
+    agent["seats"][0]["principal_kind"] = json!("agent");
+    agent["seats"][0]["agent_assignment"] = json!("external");
+    agent["seats"][0]["agent_profile"] = json!({
+        "profile_id": "careful-counter",
+        "revision": "2"
+    });
+    let saved = room_draft_router(store.clone())
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/room-drafts/launch-alpha")
+                .header("content-type", "application/json")
+                .body(Body::from(agent.to_string()))
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+    assert_eq!(saved.status(), 200);
+    let reopened = RoomDraftStoreV1::open(&root, ValidDraft)
+        .unwrap_or_else(|error| unreachable!("reopen draft store: {error:?}"));
+    let retained = reopened
+        .load("launch-alpha")
+        .unwrap_or_else(|error| unreachable!("load draft: {error:?}"));
+    assert_eq!(
+        retained.seats[0]
+            .agent_profile
+            .as_ref()
+            .map(|profile| (profile.profile_id.as_str(), profile.revision.as_str())),
+        Some(("careful-counter", "2"))
+    );
+
+    let mut human = draft();
+    human["seats"][0]["agent_profile"] = json!({
+        "profile_id": "careful-counter",
+        "revision": "2"
+    });
+    let rejected = room_draft_router(store)
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/room-drafts/launch-alpha")
+                .header("content-type", "application/json")
+                .body(Body::from(human.to_string()))
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+    assert_eq!(rejected.status(), 400);
+}

@@ -18,6 +18,12 @@ export interface RoomDraftSeat {
   principal_id?: string;
   principal_kind?: "human" | "agent";
   agent_assignment?: "external" | "managed";
+  agent_profile?: AgentProfileRevisionReference;
+}
+
+export interface AgentProfileRevisionReference {
+  profile_id: string;
+  revision: string;
 }
 
 export interface RoomDraftSeatReadinessPolicy {
@@ -273,16 +279,24 @@ function isSeat(value: unknown): value is RoomDraftSeat {
   const keys = Object.keys(value);
   if (!keys.every((key) => [
     "seat_id", "role", "required", "display_name", "principal_id", "principal_kind",
-    "agent_assignment",
-  ].includes(key)) || ![4, 6, 7].includes(keys.length)) return false;
+    "agent_assignment", "agent_profile",
+  ].includes(key)) || ![4, 6, 7, 8].includes(keys.length)) return false;
   const assignmentAbsent = value.principal_id === undefined && value.principal_kind === undefined &&
-    value.agent_assignment === undefined;
+    value.agent_assignment === undefined && value.agent_profile === undefined;
   const assignmentValid = typeof value.principal_id === "string" && isUlid(value.principal_id) &&
-    (value.principal_kind === "human" && value.agent_assignment === undefined ||
+    (value.principal_kind === "human" && value.agent_assignment === undefined &&
+      value.agent_profile === undefined ||
       value.principal_kind === "agent" &&
-      (value.agent_assignment === "external" || value.agent_assignment === "managed"));
+      (value.agent_assignment === "external" || value.agent_assignment === "managed") &&
+      (value.agent_profile === undefined || isAgentProfileReference(value.agent_profile)));
   return isIdentifier(value.seat_id) && isText(value.role) && typeof value.required === "boolean" &&
     isText(value.display_name) && (assignmentAbsent || assignmentValid);
+}
+
+function isAgentProfileReference(value: unknown): value is AgentProfileRevisionReference {
+  return isRecordWithKeys(value, ["profile_id", "revision"]) &&
+    typeof value.profile_id === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value.profile_id) &&
+    typeof value.revision === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.revision);
 }
 
 function isReadiness(value: unknown): value is RoomDraftSeatReadinessPolicy {

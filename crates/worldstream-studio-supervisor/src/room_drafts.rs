@@ -46,14 +46,24 @@ pub enum RoomDraftStepV1 {
     Review,
 }
 
-/// Execution assignment for an Agent participant. This does not select an
-/// Agent Profile revision; it only records whether the agent is externally
-/// operated or managed by an approved local Runner.
+/// Execution assignment for an Agent participant. It remains separate from an
+/// exact Agent Profile revision and from Membership Action authority.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentAssignmentModeV1 {
     External,
     Managed,
+}
+
+/// Exact immutable Agent Profile revision selected for one Agent seat.
+///
+/// This is planning metadata only. It grants neither Membership Action
+/// authority nor Runner control authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProfileRevisionReferenceV1 {
+    pub profile_id: String,
+    pub revision: String,
 }
 
 /// One stable seat derived from an exact pack revision's declared Role.
@@ -70,6 +80,8 @@ pub struct RoomDraftSeatV1 {
     pub principal_kind: Option<PrincipalKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_assignment: Option<AgentAssignmentModeV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<AgentProfileRevisionReferenceV1>,
 }
 
 /// Pre-Room readiness policy for one stable seat. This is not live presence.
@@ -465,8 +477,16 @@ fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
             || seats.insert(seat.seat_id.as_str(), seat).is_some()
             || seat.principal_id.is_some() != seat.principal_kind.is_some()
             || match seat.principal_kind {
-                Some(PrincipalKind::Agent) => seat.agent_assignment.is_none(),
-                Some(PrincipalKind::Human) | None => seat.agent_assignment.is_some(),
+                Some(PrincipalKind::Agent) => {
+                    seat.agent_assignment.is_none()
+                        || seat.agent_profile.as_ref().is_some_and(|profile| {
+                            !valid_profile_id(&profile.profile_id)
+                                || !valid_profile_revision(&profile.revision)
+                        })
+                }
+                Some(PrincipalKind::Human) | None => {
+                    seat.agent_assignment.is_some() || seat.agent_profile.is_some()
+                }
             }
         {
             return Err(RoomDraftErrorV1::InvalidDraft);
@@ -513,6 +533,30 @@ fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1> {
         return Err(RoomDraftErrorV1::InvalidDraft);
     }
     Ok(())
+}
+
+fn valid_profile_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
+fn valid_profile_revision(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 fn bound_field_errors(errors: Vec<RoomDraftFieldErrorV1>) -> Vec<RoomDraftFieldErrorV1> {

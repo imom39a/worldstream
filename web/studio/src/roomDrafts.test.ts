@@ -148,4 +148,43 @@ describe("Studio Room drafts", () => {
     };
     expect(invalidateRoomDraftReview(reviewed, changed).last_valid_step).toBe("configuration");
   });
+
+  it("persists only an exact Agent Profile revision on Agent seats", async () => {
+    const agent: RoomDraft = {
+      ...draft(),
+      seats: [{
+        ...draft().seats[0]!,
+        principal_kind: "agent",
+        agent_assignment: "external",
+        agent_profile: { profile_id: "careful-counter", revision: "2" },
+      }],
+    };
+    const fetcher = vi.fn(async (_input, init) => {
+      const saved = JSON.parse(String(init?.body)) as RoomDraft;
+      return new Response(JSON.stringify({
+        version: "studio_room_draft.v1",
+        draft: saved,
+        review: {
+          pack: saved.pack,
+          configuration: saved.configuration,
+          seats: saved.seats,
+          readiness: saved.readiness,
+        },
+      }), { status: 200 });
+    });
+    await expect(saveRoomDraft(agent, fetcher)).resolves.toMatchObject({ draft: agent });
+
+    const humanWithProfile: RoomDraft = {
+      ...draft(),
+      seats: [{
+        ...draft().seats[0]!,
+        agent_profile: { profile_id: "careful-counter", revision: "2" },
+      }],
+    };
+    await expect(saveRoomDraft(humanWithProfile, fetcher)).resolves.toBeNull();
+    const unknownNested: RoomDraft = structuredClone(agent);
+    Object.assign(unknownNested.seats[0]!.agent_profile!, { secret_reference: "a".repeat(64) });
+    await expect(saveRoomDraft(unknownNested, fetcher)).resolves.toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
 });

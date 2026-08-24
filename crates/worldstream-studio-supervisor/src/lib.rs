@@ -4,8 +4,10 @@
 //! APIs. Lifecycle control is limited to one fixed local daemon configuration.
 
 pub mod activity_packs;
+pub mod agent_profiles;
 pub mod backups;
 pub mod lifecycle;
+pub mod participant_handoff;
 pub mod room_creation;
 pub mod room_drafts;
 pub mod rooms;
@@ -380,6 +382,8 @@ pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_dra
     backups: backups::BackupOperationsV1,
     room_creation: room_creation::RoomCreationSupervisorV1,
     task_setup: task_setup::TaskSetupSupervisorV1,
+    agent_profiles: agent_profiles::AgentProfileStoreV1,
+    participant_handoff: participant_handoff::ParticipantHandoffBrokerV1,
 ) -> Router {
     supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_and_creation(
         source,
@@ -393,6 +397,8 @@ pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_dra
         room_creation,
     )
     .merge(task_setup::task_setup_router(task_setup))
+    .merge(agent_profiles::agent_profile_router(agent_profiles))
+    .merge(participant_handoff::participant_handoff_router(participant_handoff))
 }
 
 async fn daemon_status(State(source): State<Arc<dyn DaemonStatusSource>>) -> Json<DaemonStatusV1> {

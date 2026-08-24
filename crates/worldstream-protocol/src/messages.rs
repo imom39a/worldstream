@@ -323,6 +323,37 @@ pub struct OperatorRoomInventoryPage {
     pub next_after_room_id: Option<String>,
 }
 
+/// Connection state of one exact provisioned Runner identity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorRunnerConnectionV1 {
+    Connected,
+    Disconnected,
+}
+
+/// Freshness of the daemon's last authenticated Runner observation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorRunnerFreshnessV1 {
+    Fresh,
+    Stale,
+}
+
+/// Host-authorized, secret-free presence and capacity for one exact Runner.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorRunnerPresenceV1 {
+    pub version: String,
+    pub runner_id: String,
+    pub connection: OperatorRunnerConnectionV1,
+    pub freshness: OperatorRunnerFreshnessV1,
+    pub maximum_concurrent_activations: u32,
+    pub active_activations: u32,
+    pub available_activations: u32,
+    pub supported_pack_revisions: Vec<PackReference>,
+    pub observed_at_unix_ms: u64,
+}
+
 /// Durable storage profile relevant to live-backup capability.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -717,6 +748,11 @@ pub struct RunnerHello {
     pub runner_id: String,
     pub maximum_concurrent_activations: u32,
     pub supported_pack_ids: Vec<String>,
+    /// Exact immutable revisions supported by this connection. Older clients
+    /// deserialize with an empty set and therefore cannot satisfy an exact
+    /// launch-readiness check.
+    #[serde(default)]
+    pub supported_pack_revisions: Vec<PackReference>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

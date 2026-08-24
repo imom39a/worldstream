@@ -40,6 +40,7 @@ pub struct PostgresAuthenticatedCapabilityV1 {
     presented: PresentedCapabilityV1,
     principal_id: PrincipalId,
     principal_kind: PrincipalKindV1,
+    runner_id: Option<RunnerId>,
 }
 
 impl fmt::Debug for PostgresAuthenticatedCapabilityV1 {
@@ -49,6 +50,7 @@ impl fmt::Debug for PostgresAuthenticatedCapabilityV1 {
             .field("presented", &self.presented)
             .field("principal_id", &self.principal_id)
             .field("principal_kind", &self.principal_kind)
+            .field("runner_id", &self.runner_id)
             .finish()
     }
 }
@@ -76,6 +78,12 @@ impl PostgresAuthenticatedCapabilityV1 {
     #[must_use]
     pub const fn principal_kind(&self) -> PrincipalKindV1 {
         self.principal_kind
+    }
+
+    /// Returns the exact Runner bound by a Runner-control Capability.
+    #[must_use]
+    pub const fn runner_id(&self) -> Option<&RunnerId> {
+        self.runner_id.as_ref()
     }
 }
 
@@ -107,7 +115,7 @@ impl PostgresRoomStore {
             .map_err(|_| PostgresAuthorityAuthenticationError::Unavailable)?;
         let row = client
             .query_opt(
-                "SELECT c.capability_id, c.principal_id, p.principal_kind, c.expires_at \
+                "SELECT c.capability_id, c.principal_id, p.principal_kind, c.expires_at, c.profile_kind, c.runner_id \
                  FROM worldstream_authority_capabilities c \
                  JOIN worldstream_authority_principals p ON p.principal_id = c.principal_id \
                  WHERE c.token_hash = $1 AND p.authority_status = 'enabled' \
@@ -133,6 +141,12 @@ impl PostgresRoomStore {
         let expires_at: Option<String> = row
             .try_get(3)
             .map_err(|_| PostgresAuthorityAuthenticationError::Corrupt)?;
+        let profile_kind: String = row
+            .try_get(4)
+            .map_err(|_| PostgresAuthorityAuthenticationError::Corrupt)?;
+        let runner_id: Option<String> = row
+            .try_get(5)
+            .map_err(|_| PostgresAuthorityAuthenticationError::Corrupt)?;
         if let Some(expires_at) = expires_at
             && timestamp_is_expired(&checked_at, &expires_at)
                 .map_err(|_| PostgresAuthorityAuthenticationError::Corrupt)?
@@ -147,10 +161,20 @@ impl PostgresRoomStore {
             .map_err(|_| PostgresAuthorityAuthenticationError::Corrupt)?;
         let principal_kind = principal_kind_from_storage(&principal_kind)
             .map_err(|_| PostgresAuthorityAuthenticationError::Corrupt)?;
+        let runner_id = match (profile_kind.as_str(), runner_id) {
+            ("runner_control", Some(value)) => Some(
+                value
+                    .parse::<RunnerId>()
+                    .map_err(|_| PostgresAuthorityAuthenticationError::Corrupt)?,
+            ),
+            ("room_member" | "host_operator", None) => None,
+            _ => return Err(PostgresAuthorityAuthenticationError::Corrupt),
+        };
         Ok(PostgresAuthenticatedCapabilityV1 {
             presented: PresentedCapabilityV1::new(capability_id, bearer),
             principal_id,
             principal_kind,
+            runner_id,
         })
     }
 }

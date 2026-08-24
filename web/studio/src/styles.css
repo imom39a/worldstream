@@ -151,4 +151,20 @@ header p:last-child { color: #738079; }
 .task-setup-attention { margin: 16px 0; padding: 14px; border-left: 3px solid #b76a35; background: #fff7f1; }
 .task-setup-card button { padding: 9px 12px; border: 1px solid #2b7660; border-radius: 8px; color: #f7fffb; background: #286f59; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
 .task-setup-card button:disabled { opacity: .5; cursor: not-allowed; }
+.task-readiness { display: block; margin-left: auto; font-weight: 700; }
+.task-readiness.is-ready { color: #177653; }
+.task-readiness.is-blocked, .task-launch-blocked { color: #9a4e18; }
+.task-launch-committed { margin-top: 1rem; padding: .9rem 1rem; border-radius: 12px; background: #e8f7ef; color: #135c42; }
+.task-launch-committed p { margin: .25rem 0 0; }
+.agent-profile-build { margin-top: 24px; padding: 24px; border: 1px solid #d7dfdb; border-radius: 18px; background: rgba(255,255,255,.82); }
+.agent-profile-build h2 { margin: 0 0 8px; }
+.agent-profile-build ul { display: grid; gap: 10px; padding: 0; list-style: none; }
+.agent-profile-build li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; padding: 12px; border-radius: 10px; background: #f3f7f5; }
+.agent-profile-build li span { color: #68756f; font-size: 12px; }
+.agent-profile-build form { display: grid; gap: 14px; margin-top: 18px; }
+.agent-profile-build label, .agent-profile-build fieldset { display: grid; gap: 6px; color: #586861; font-size: 12px; font-weight: 750; }
+.agent-profile-build input, .agent-profile-build textarea { min-width: 0; padding: 9px 10px; border: 1px solid #cfdad5; border-radius: 8px; color: #18221e; background: white; font: inherit; }
+.agent-profile-build textarea { min-height: 110px; font-family: ui-monospace, monospace; }
+.agent-profile-build button { width: fit-content; padding: 9px 12px; border: 1px solid #2b7660; border-radius: 8px; color: #f7fffb; background: #286f59; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.agent-profile-build button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 760px) { .studio-shell { grid-template-columns: 1fr; } .studio-sidebar { position: static; height: auto; grid-template-columns: 34px 1fr; grid-template-rows: auto; } .studio-sidebar nav, .studio-sidebar > p { display: none; } .studio-content { width: min(100% - 36px, 1040px); padding: 36px 0; } .status-grid, .credential-grid, .draft-fields, .draft-review, .pack-browser, .runner-template-grid, .runner-template-grid dl, .runner-instance dl { grid-template-columns: 1fr; } .draft-heading, .pack-catalog-heading, .runner-heading { display: block; } .draft-steps { grid-template-columns: 1fr; } .draft-seat-list label { grid-template-columns: 1fr; } .pack-revision { display: grid; } .pack-revision-status { align-items: flex-start; text-align: left; } .bounded-chip { display: inline-block; margin-top: 14px; } }

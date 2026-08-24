@@ -11,7 +11,11 @@ const attention: TaskSetupStatus = {
   attention: { code: "setup_credential_unavailable", message: "Repair credentials and retry.", retryable: true },
   seats: [{ seat_id: "analyst-1", role: "analyst", required: true, display_name: "Analyst",
     principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX", principal_kind: "agent", agent_assignment: "managed",
+    agent_profile: { profile_id: "analyst", revision: "rev-1" },
+    managed_runner: { instance_id: "managed-1", template_id: "local", template_revision: "rev-1" },
     member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY", member_authority: "provisioned", runner_authority: "pending" }],
+  readiness: { ready_to_launch: false, seats: [{ seat_id: "analyst-1", required: true, ready: false, reason: "setup_incomplete" }] },
+  launch: null,
 };
 
 describe("TaskSetupOperation", () => {
@@ -36,6 +40,7 @@ describe("TaskSetupOperation", () => {
       completed_stages: 2,
       active_stage: null,
       attention: null,
+      readiness: { ready_to_launch: true, seats: [{ seat_id: "analyst-1", required: true, ready: true, reason: "ready" }] },
       seats: [{
         ...attention.seats[0],
         member_authority: "provisioned",
@@ -57,6 +62,7 @@ describe("TaskSetupOperation", () => {
           total_stages: 1,
           seats: [{
             ...ready.seats[0], principal_kind: "human", agent_assignment: null,
+            agent_profile: null, managed_runner: null,
             runner_authority: "not_applicable",
           }],
         }}

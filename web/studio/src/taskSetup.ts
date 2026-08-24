@@ -18,9 +18,28 @@ export interface TaskSetupSeatStatus {
   principal_id: string | null;
   principal_kind: "human" | "agent" | null;
   agent_assignment: "external" | "managed" | null;
+  agent_profile: { profile_id: string; revision: string } | null;
+  managed_runner: { instance_id: string; template_id: string; template_revision: string } | null;
   member_id: string | null;
   member_authority: "pending" | "provisioned" | "unfilled_optional";
   runner_authority: "pending" | "provisioned" | "not_applicable";
+}
+
+export type TaskSeatReadinessReason = "ready" | "optional_unfilled" | "setup_incomplete" |
+  "console_missing" | "console_stale" | "console_invalid" | "console_disconnected" |
+  "runner_assignment_missing" | "runner_missing" | "runner_stale" | "runner_disconnected" |
+  "runner_over_capacity" | "runner_incompatible";
+
+export interface TaskReadiness {
+  ready_to_launch: boolean;
+  seats: Array<{ seat_id: string; required: boolean; ready: boolean; reason: TaskSeatReadinessReason }>;
+}
+
+export interface TaskLaunchStatus {
+  state: "waiting" | "retrying" | "reconciling" | "launched" | "needs_attention";
+  attempts: number;
+  attention: TaskSetupAttention | null;
+  transition_id: string | null;
 }
 
 export interface TaskSetupStatus {
@@ -35,6 +54,8 @@ export interface TaskSetupStatus {
   active_stage: TaskSetupStage | null;
   attention: TaskSetupAttention | null;
   seats: TaskSetupSeatStatus[];
+  readiness: TaskReadiness;
+  launch: TaskLaunchStatus | null;
 }
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -44,11 +65,11 @@ const maximumStages = maximumSeats * 2;
 const maximumU32 = 4_294_967_295;
 const statusKeys = [
   "version", "draft_id", "operation_id", "room_id", "state", "attempts",
-  "completed_stages", "total_stages", "active_stage", "attention", "seats",
+  "completed_stages", "total_stages", "active_stage", "attention", "seats", "readiness", "launch",
 ] as const;
 const seatKeys = [
   "seat_id", "role", "required", "display_name", "principal_id", "principal_kind",
-  "agent_assignment", "member_id", "member_authority", "runner_authority",
+  "agent_assignment", "agent_profile", "managed_runner", "member_id", "member_authority", "runner_authority",
 ] as const;
 
 export async function loadTaskSetup(
@@ -73,7 +94,7 @@ export async function loadTaskSetup(
 
 export async function requestTaskSetup(
   draftId: string,
-  action: "start" | "retry",
+  action: "start" | "retry" | "launch",
   fetcher: Fetcher = fetch,
 ): Promise<TaskSetupStatus | null> {
   if (!isIdentifier(draftId)) return null;
@@ -98,7 +119,8 @@ export function isTaskSetupStatus(value: unknown): value is TaskSetupStatus {
     !isBoundedCount(value.total_stages) || !Array.isArray(value.seats) ||
     value.seats.length > maximumSeats || !value.seats.every(isSeat) ||
     !(value.active_stage === null || isStage(value.active_stage)) ||
-    !(value.attention === null || isAttention(value.attention))) return false;
+    !(value.attention === null || isAttention(value.attention)) ||
+    !isReadiness(value.readiness) || !(value.launch === null || isLaunch(value.launch))) return false;
 
   const seats = value.seats as TaskSetupSeatStatus[];
   if (new Set(seats.map((seat) => seat.seat_id)).size !== seats.length) return false;
@@ -109,20 +131,18 @@ export function isTaskSetupStatus(value: unknown): value is TaskSetupStatus {
 
   const expectedStage = nextStage(seats);
   if (value.active_stage !== null && !sameStage(value.active_stage, expectedStage)) return false;
-  if (value.state === "waiting") {
-    return value.attempts === 0 && completedStages === 0 && value.active_stage === null &&
-      value.attention === null;
-  }
-  if (value.state === "ready") {
-    return value.attempts > 0 && completedStages === totalStages && expectedStage === null &&
-      value.active_stage === null && value.attention === null;
-  }
-  if (value.state === "provisioning") {
-    return value.attempts > 0 && completedStages < totalStages && expectedStage !== null &&
-      value.active_stage !== null && value.attention === null;
-  }
-  return value.attempts > 0 && completedStages < totalStages && expectedStage !== null &&
-    value.active_stage !== null && value.attention !== null;
+  const lifecycleCoherent = value.state === "waiting"
+    ? value.attempts === 0 && completedStages === 0 && value.active_stage === null && value.attention === null
+    : value.state === "ready"
+      ? value.attempts > 0 && completedStages === totalStages && expectedStage === null &&
+        value.active_stage === null && value.attention === null
+      : value.state === "provisioning"
+        ? value.attempts > 0 && completedStages < totalStages && expectedStage !== null &&
+          value.active_stage !== null && value.attention === null
+        : value.attempts > 0 && completedStages < totalStages && expectedStage !== null &&
+          value.active_stage !== null && value.attention !== null;
+  const status = value as unknown as TaskSetupStatus;
+  return lifecycleCoherent && readinessIsCoherent(status, seats) && launchIsCoherent(status);
 }
 
 function isSeat(value: unknown): value is TaskSetupSeatStatus {
@@ -131,6 +151,10 @@ function isSeat(value: unknown): value is TaskSetupSeatStatus {
     !(value.principal_id === null || isUlid(value.principal_id)) ||
     !(value.principal_kind === null || value.principal_kind === "human" || value.principal_kind === "agent") ||
     !(value.agent_assignment === null || value.agent_assignment === "external" || value.agent_assignment === "managed") ||
+    !(value.agent_profile === null || (isRecordWithKeys(value.agent_profile, ["profile_id", "revision"]) &&
+      isText(value.agent_profile.profile_id) && isText(value.agent_profile.revision))) ||
+    !(value.managed_runner === null || (isRecordWithKeys(value.managed_runner, ["instance_id", "template_id", "template_revision"]) &&
+      isIdentifier(value.managed_runner.instance_id) && isText(value.managed_runner.template_id) && isText(value.managed_runner.template_revision))) ||
     !(value.member_id === null || isUlid(value.member_id)) ||
     !["pending", "provisioned", "unfilled_optional"].includes(String(value.member_authority)) ||
     !["pending", "provisioned", "not_applicable"].includes(String(value.runner_authority))) {
@@ -138,7 +162,7 @@ function isSeat(value: unknown): value is TaskSetupSeatStatus {
   }
   const seat = value as unknown as TaskSetupSeatStatus;
   const unfilled = seat.principal_id === null && seat.principal_kind === null &&
-    seat.agent_assignment === null && seat.member_id === null;
+    seat.agent_assignment === null && seat.agent_profile === null && seat.managed_runner === null && seat.member_id === null;
   if (unfilled) {
     return !seat.required && seat.member_authority === "unfilled_optional" &&
       seat.runner_authority === "not_applicable";
@@ -146,11 +170,68 @@ function isSeat(value: unknown): value is TaskSetupSeatStatus {
   if (seat.principal_id === null || seat.principal_kind === null || seat.member_id === null ||
     seat.member_authority === "unfilled_optional") return false;
   if (seat.principal_kind === "human") {
-    return seat.agent_assignment === null && seat.runner_authority === "not_applicable";
+    return seat.agent_assignment === null && seat.agent_profile === null && seat.managed_runner === null && seat.runner_authority === "not_applicable";
   }
-  return (seat.agent_assignment === "external" || seat.agent_assignment === "managed") &&
+  return (seat.agent_assignment === "external" || seat.agent_assignment === "managed") && seat.agent_profile !== null &&
+    (seat.agent_assignment === "managed" ? seat.managed_runner !== null : seat.managed_runner === null) &&
     seat.runner_authority !== "not_applicable" &&
     !(seat.member_authority === "pending" && seat.runner_authority === "provisioned");
+}
+
+function isReadiness(value: unknown): value is TaskReadiness {
+  if (!isRecordWithKeys(value, ["ready_to_launch", "seats"]) ||
+    typeof value.ready_to_launch !== "boolean" || !Array.isArray(value.seats) ||
+    value.seats.length > maximumSeats) return false;
+  const reasons = new Set<TaskSeatReadinessReason>([
+    "ready", "optional_unfilled", "setup_incomplete", "console_missing", "console_stale",
+    "console_invalid", "console_disconnected", "runner_assignment_missing", "runner_missing",
+    "runner_stale", "runner_disconnected", "runner_over_capacity", "runner_incompatible",
+  ]);
+  return value.seats.every((seat) => isRecordWithKeys(seat, ["seat_id", "required", "ready", "reason"]) &&
+    isIdentifier(seat.seat_id) && typeof seat.required === "boolean" && typeof seat.ready === "boolean" &&
+    reasons.has(seat.reason as TaskSeatReadinessReason));
+}
+
+function isLaunch(value: unknown): value is TaskLaunchStatus {
+  return isRecordWithKeys(value, ["state", "attempts", "attention", "transition_id"]) &&
+    ["waiting", "retrying", "reconciling", "launched", "needs_attention"].includes(String(value.state)) &&
+    isU32(value.attempts) && (value.attention === null || isAttention(value.attention)) &&
+    (value.transition_id === null || isUlid(value.transition_id));
+}
+
+function readinessIsCoherent(status: TaskSetupStatus, seats: TaskSetupSeatStatus[]): boolean {
+  if (status.readiness.seats.length !== seats.length) return false;
+  const seen = new Set<string>();
+  for (let index = 0; index < seats.length; index += 1) {
+    const seat = seats[index];
+    const readiness = status.readiness.seats[index];
+    if (readiness === undefined || readiness.seat_id !== seat.seat_id ||
+      !seen.add(readiness.seat_id) || readiness.required !== seat.required) return false;
+    const expectedReady = readiness.reason === "ready" || readiness.reason === "optional_unfilled";
+    const unfilledOptional = !seat.required && seat.member_authority === "unfilled_optional";
+    if (readiness.ready !== expectedReady ||
+      (readiness.reason === "optional_unfilled") !== unfilledOptional) return false;
+  }
+  const expectedAggregate = status.state === "ready" &&
+    status.readiness.seats.every((seat) => seat.ready);
+  return status.readiness.ready_to_launch === expectedAggregate;
+}
+
+function launchIsCoherent(status: TaskSetupStatus): boolean {
+  const launch = status.launch;
+  if (launch === null) return true;
+  if (status.state !== "ready") return false;
+  switch (launch.state) {
+    case "waiting":
+      return launch.attempts === 0 && launch.attention === null && launch.transition_id === null;
+    case "retrying":
+      return launch.attempts > 0 && launch.attention === null && launch.transition_id === null;
+    case "reconciling":
+    case "launched":
+      return launch.attempts > 0 && launch.attention === null && launch.transition_id !== null;
+    case "needs_attention":
+      return launch.attempts > 0 && launch.attention !== null;
+  }
 }
 
 function isStage(value: unknown): value is TaskSetupStage {

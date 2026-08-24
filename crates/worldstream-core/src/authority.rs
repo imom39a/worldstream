@@ -1025,6 +1025,7 @@ pub enum DiagnosticTargetV1 {
 pub enum DiagnosticOperationV1 {
     SafeRoomSummary,
     ActivityPackCatalog,
+    RunnerPresence,
     Verify,
     RawExport,
     Restore,
@@ -4709,6 +4710,7 @@ fn authorize_diagnostic(
     let scope = match operation {
         DiagnosticOperationV1::SafeRoomSummary
         | DiagnosticOperationV1::ActivityPackCatalog
+        | DiagnosticOperationV1::RunnerPresence
         | DiagnosticOperationV1::Verify => CapabilityScopeV1::OperatorRoomAdmin,
         DiagnosticOperationV1::RawExport
         | DiagnosticOperationV1::Restore

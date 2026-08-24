@@ -16,8 +16,11 @@ const ready = {
     seat_id: "analyst-1", role: "analyst", required: true, display_name: "Analyst",
     principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX", principal_kind: "agent",
     agent_assignment: "external", member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+    agent_profile: { profile_id: "analyst", revision: "rev-1" }, managed_runner: null,
     member_authority: "provisioned", runner_authority: "provisioned",
   }],
+  readiness: { ready_to_launch: true, seats: [{ seat_id: "analyst-1", required: true, ready: true, reason: "ready" }] },
+  launch: null,
 };
 
 describe("Task setup client", () => {
@@ -92,6 +95,7 @@ describe("Task setup client", () => {
         seats: [{
           ...ready.seats[0], required: true, principal_id: null, principal_kind: null,
           agent_assignment: null, member_id: null, member_authority: "unfilled_optional",
+          agent_profile: null, managed_runner: null,
           runner_authority: "not_applicable",
         }],
         completed_stages: 0,
@@ -106,6 +110,67 @@ describe("Task setup client", () => {
       },
     ];
     for (const value of cases) expect(isTaskSetupStatus(value)).toBe(false);
+  });
+
+  it("rejects readiness projections that do not exactly describe every setup seat", () => {
+    const row = ready.readiness.seats[0];
+    const cases = [
+      { ...ready, readiness: { ...ready.readiness, seats: [] } },
+      { ...ready, readiness: { ...ready.readiness, seats: [row, row] } },
+      { ...ready, readiness: { ...ready.readiness, seats: [{ ...row, seat_id: "other-seat" }] } },
+      { ...ready, readiness: { ...ready.readiness, seats: [{ ...row, required: false }] } },
+      { ...ready, readiness: { ...ready.readiness, seats: [{ ...row, ready: false }] } },
+      { ...ready, readiness: { ...ready.readiness, seats: [{ ...row, reason: "runner_missing" }] } },
+      { ...ready, readiness: { ...ready.readiness, ready_to_launch: false } },
+    ];
+    for (const value of cases) expect(isTaskSetupStatus(value)).toBe(false);
+  });
+
+  it("accepts only coherent optional-unfilled readiness and launch transitions", () => {
+    const optional = {
+      seat_id: "observer-1", role: "observer", required: false, display_name: "Observer",
+      principal_id: null, principal_kind: null, agent_assignment: null, agent_profile: null,
+      managed_runner: null, member_id: null, member_authority: "unfilled_optional",
+      runner_authority: "not_applicable",
+    };
+    const withOptional = {
+      ...ready,
+      seats: [...ready.seats, optional],
+      readiness: {
+        ready_to_launch: true,
+        seats: [...ready.readiness.seats, {
+          seat_id: "observer-1", required: false, ready: true, reason: "optional_unfilled",
+        }],
+      },
+    };
+    expect(isTaskSetupStatus(withOptional)).toBe(true);
+    expect(isTaskSetupStatus({
+      ...withOptional,
+      readiness: {
+        ...withOptional.readiness,
+        seats: [...ready.readiness.seats, {
+          seat_id: "observer-1", required: false, ready: false, reason: "optional_unfilled",
+        }],
+      },
+    })).toBe(false);
+
+    const transitions = [
+      { state: "waiting", attempts: 1, attention: null, transition_id: null },
+      { state: "retrying", attempts: 0, attention: null, transition_id: null },
+      { state: "reconciling", attempts: 1, attention: null, transition_id: null },
+      { state: "launched", attempts: 1, attention: null, transition_id: null },
+      { state: "needs_attention", attempts: 1, attention: null, transition_id: null },
+    ];
+    for (const launch of transitions) {
+      expect(isTaskSetupStatus({ ...ready, launch })).toBe(false);
+    }
+    expect(isTaskSetupStatus({
+      ...ready,
+      launch: {
+        state: "launched", attempts: 1, attention: null,
+        transition_id: "01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      },
+    })).toBe(true);
   });
 
   it("binds load, start, and retry responses to the requested draft", async () => {
@@ -123,6 +188,15 @@ describe("Task setup client", () => {
     await expect(requestTaskSetup("setup-alpha", "retry", fetcher)).resolves.toEqual(ready);
     expect(fetcher).toHaveBeenCalledWith(
       "/api/v1/task-setups/setup-alpha:retry",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("launches only through the stable draft-keyed explicit endpoint", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(ready), { status: 200 }));
+    await expect(requestTaskSetup("setup-alpha", "launch", fetcher)).resolves.toEqual(ready);
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/v1/task-setups/setup-alpha:launch",
       expect.objectContaining({ method: "POST" }),
     );
   });

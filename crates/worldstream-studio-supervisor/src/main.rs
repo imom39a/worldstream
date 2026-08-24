@@ -6,18 +6,23 @@ use worldstream_runtime::{CliOverrides, ConfigLoader};
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
+    agent_profiles::AgentProfileStoreV1,
     backups::{
         BackupOperationsV1, BackupStorageProfileV1, HttpDaemonBackupExecutorV1,
         prepare_shared_backup_root,
     },
     lifecycle::ConfiguredDaemonLifecycle,
+    participant_handoff::{FixedDaemonParticipantConsoleGatewayV1, ParticipantHandoffBrokerV1},
     room_creation::{HttpDaemonRoomCreatorV1, RoomCreationSupervisorV1},
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
     rooms::HttpDaemonRoomSource,
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
     supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup,
-    task_setup::{HttpDaemonTaskSetupProvisionerV1, TaskSetupSupervisorV1},
+    task_setup::{
+        HttpDaemonTaskRuntimeV1, HttpDaemonTaskSetupProvisionerV1, LiveTaskRunnerReadinessSourceV1,
+        TaskSetupSupervisorV1,
+    },
 };
 
 #[derive(Debug, Parser)]
@@ -66,6 +71,14 @@ struct Args {
     /// Storage profile configured for the controlled worldstreamd process.
     #[arg(long, default_value = "sqlite-bundled", value_parser = parse_backup_profile)]
     storage_profile: BackupStorageProfileV1,
+
+    /// Exact loopback Studio browser origin admitted for handoff creation.
+    #[arg(long, default_value = "http://127.0.0.1:5173")]
+    studio_origin: String,
+
+    /// Exact loopback Participant Console origin placed in one-use URLs.
+    #[arg(long, default_value = "http://127.0.0.1:5174")]
+    participant_console_origin: String,
 }
 
 #[tokio::main]
@@ -126,25 +139,12 @@ async fn main() -> Result<()> {
         room_creator,
     )
     .context("Studio Supervisor protected Room creation store is unavailable")?;
-    let task_setup_provisioner = HttpDaemonTaskSetupProvisionerV1::new(
-        args.daemon,
-        daemon_timeout,
-        vault.clone(),
-        args.host_authority_reference.clone(),
-    );
-    let task_setup = TaskSetupSupervisorV1::open(
-        &args.state_dir.join("task-setups"),
-        room_creation.clone(),
-        vault.clone(),
-        task_setup_provisioner,
-    )
-    .context("Studio Supervisor protected Task setup store is unavailable")?;
     let backup_executor = HttpDaemonBackupExecutorV1::new(
         args.daemon,
         daemon_timeout,
         args.storage_profile,
         vault.clone(),
-        args.host_authority_reference,
+        args.host_authority_reference.clone(),
     );
     let backups = BackupOperationsV1::open(&backup_root, backup_executor).map_err(|error| {
         anyhow::anyhow!(
@@ -163,6 +163,43 @@ async fn main() -> Result<()> {
         Duration::from_millis(args.graceful_stop_timeout_ms),
     )
     .context("Studio Supervisor Runner instance state is unavailable")?;
+    let agent_profiles =
+        AgentProfileStoreV1::open(&args.state_dir.join("agent-profiles"), vault.clone())
+            .context("Studio Supervisor Agent Profile store is unavailable")?;
+    let task_runtime = HttpDaemonTaskRuntimeV1::new(
+        args.daemon,
+        daemon_timeout,
+        vault.clone(),
+        args.host_authority_reference.clone(),
+    );
+    let task_setup_provisioner = HttpDaemonTaskSetupProvisionerV1::new(
+        args.daemon,
+        daemon_timeout,
+        vault.clone(),
+        args.host_authority_reference,
+    );
+    let task_setup_base = TaskSetupSupervisorV1::open(
+        &args.state_dir.join("task-setups"),
+        room_creation.clone(),
+        vault.clone(),
+        task_setup_provisioner,
+    )
+    .context("Studio Supervisor protected Task setup store is unavailable")?
+    .with_agent_profiles(agent_profiles.clone());
+    let participant_handoff = ParticipantHandoffBrokerV1::new(
+        &args.studio_origin,
+        &args.participant_console_origin,
+        Duration::from_secs(90),
+        256,
+        task_setup_base.clone(),
+        FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, daemon_timeout),
+    )
+    .map_err(|error| anyhow::anyhow!("Participant Console handoff is unavailable: {error:?}"))?;
+    let task_setup = task_setup_base.with_launch_readiness(
+        participant_handoff.clone(),
+        LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
+        task_runtime,
+    );
     axum::serve(
         listener,
         supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_and_setup(
@@ -176,6 +213,8 @@ async fn main() -> Result<()> {
             backups,
             room_creation,
             task_setup,
+            agent_profiles,
+            participant_handoff,
         ),
     )
     .await

@@ -972,6 +972,29 @@ impl PostgresGatewayBackend {
         Ok(())
     }
 
+    fn authorize_runner_presence(&self, session: &GatewaySession) -> Result<(), BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let checked_at = self.checked_at()?;
+        let grant = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                worldstream_core::DiagnosticTargetV1::Deployment,
+                worldstream_core::DiagnosticOperationV1::RunnerPresence,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let adapter_input = grant.into_adapter_input();
+        let snapshot = self
+            .store
+            .snapshot(&adapter_input.authority_snapshot_query())
+            .map_err(|_| BackendError::StorageUnavailable)?
+            .ok_or(BackendError::Forbidden)?;
+        adapter_input
+            .revalidate_current(&snapshot, &checked_at)
+            .map_err(map_authority_error)
+    }
+
     fn authorize_backup(&self, session: &GatewaySession) -> Result<(), BackendError> {
         let authenticated = self.authenticate(session)?;
         let checked_at = self.checked_at()?;
@@ -1950,24 +1973,27 @@ impl GatewayBackend for PostgresGatewayBackend {
         self.provision_runner_capability_inner(session, request)
     }
 
+    fn authorize_operator_runner_presence(
+        &self,
+        session: &GatewaySession,
+    ) -> Result<(), BackendError> {
+        self.authorize_runner_presence(session)
+    }
+
     fn runner_hello(
         &self,
         session: &GatewaySession,
         request: RunnerHello,
     ) -> Result<RunnerReady, BackendError> {
-        let _ = self.authenticate(session)?;
-        request
+        let authenticated = self.authenticate(session)?;
+        let runner_id = request
             .runner_id
             .parse::<RunnerId>()
             .map_err(|_| BackendError::Rejected)?;
-        if request.maximum_concurrent_activations == 0
-            || request.maximum_concurrent_activations > 64
-            || request.supported_pack_ids.len() > 64
-            || request
-                .supported_pack_ids
-                .iter()
-                .any(|id| id.is_empty() || id.len() > 256)
-        {
+        if authenticated.runner_id() != Some(&runner_id) {
+            return Err(BackendError::Forbidden);
+        }
+        if !crate::runner_hello_is_bounded(&request) {
             return Err(BackendError::Rejected);
         }
         Ok(RunnerReady {
