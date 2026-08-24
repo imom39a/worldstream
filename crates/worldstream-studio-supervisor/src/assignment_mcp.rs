@@ -6,7 +6,7 @@
 //! Runner-control authority.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fmt, fs,
     io::{self, BufRead, Write},
     net::{SocketAddr, TcpStream},
@@ -55,6 +55,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 const MAX_MCP_LINE_BYTES: usize = 64 * 1024;
 const MAX_TEXT_BYTES: usize = 256;
+const MAX_ACTIVE_ASSIGNMENTS: usize = 256;
 const MAX_OBSERVATIONS: usize = 10_000;
 const CONTINUITY_SCHEMA_V1: &str = "worldstream/assignment-mcp-continuity/v1";
 const MAX_CONTINUITY_BYTES: u64 = 64 * 1024;
@@ -274,6 +275,30 @@ struct AssignmentMcpActiveLaunchV1 {
     schema: String,
     assignment_id: String,
     launch_reference: String,
+}
+
+/// Browser-safe fields needed to join an active assignment to aggregate
+/// Runner status. This deliberately cannot be serialized.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct ActiveAssignmentScopeV1 {
+    pub assignment_id: String,
+    pub room_id: String,
+    pub member_id: String,
+    pub runner_id: String,
+    pub pack: PackReference,
+}
+
+impl fmt::Debug for ActiveAssignmentScopeV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ActiveAssignmentScopeV1")
+            .field("assignment_id", &self.assignment_id)
+            .field("room_id", &"[redacted]")
+            .field("member_id", &"[redacted]")
+            .field("runner_id", &"[redacted]")
+            .field("pack", &self.pack)
+            .finish()
+    }
 }
 
 #[derive(Serialize)]
@@ -584,6 +609,95 @@ where
     #[must_use]
     pub fn continuity_root(&self) -> &Path {
         &self.continuity_root
+    }
+
+    /// Lists exact active assignment identities without exposing launch references.
+    ///
+    /// Every retained active record and its participant/Activation sidecars are
+    /// revalidated through the same private launch seam used at helper start.
+    /// Revoked records are excluded.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for malformed, duplicate, incoherent, or excessive active
+    /// records and unavailable owner-only storage.
+    pub fn active_assignment_ids(&self) -> Result<Vec<String>, AssignedMembershipSourceErrorV1> {
+        let mut assignments = Vec::new();
+        let mut seen = BTreeSet::new();
+        for entry in
+            fs::read_dir(&self.root).map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?
+        {
+            let path = entry
+                .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?
+                .path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or(AssignedMembershipSourceErrorV1::Invalid)?;
+            let Some(assignment_id) = name.strip_suffix(".active.json") else {
+                if name.contains(".active") {
+                    return Err(AssignedMembershipSourceErrorV1::Invalid);
+                }
+                continue;
+            };
+            if assignment_id.parse::<UlidString>().is_err()
+                || !seen.insert(assignment_id.to_owned())
+                || assignments.len() >= MAX_ACTIVE_ASSIGNMENTS
+            {
+                return Err(AssignedMembershipSourceErrorV1::Invalid);
+            }
+            if self.active_launch(assignment_id)?.is_some() {
+                assignments.push(assignment_id.to_owned());
+            }
+        }
+        assignments.sort();
+        Ok(assignments)
+    }
+
+    /// Lists the exact safe active-assignment join fields without exposing
+    /// launch references, authority, principal, or role material.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when an active pointer or either retained sidecar is
+    /// malformed, incoherent, revoked, duplicated, or excessive.
+    pub(crate) fn active_assignment_scopes(
+        &self,
+    ) -> Result<Vec<ActiveAssignmentScopeV1>, AssignedMembershipSourceErrorV1> {
+        let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        let assignment_ids = self.active_assignment_ids()?;
+        let mut scopes = Vec::with_capacity(assignment_ids.len());
+        for assignment_id in assignment_ids {
+            let launch_reference = self
+                .active_launch(&assignment_id)?
+                .ok_or(AssignedMembershipSourceErrorV1::Invalid)?;
+            let participant = read_launch_record(&self.root, &launch_reference)?;
+            let activation = read_activation_launch_record(&self.root, &launch_reference)?;
+            if participant.assignment_id != assignment_id
+                || activation.assignment_id != assignment_id
+                || participant.room_id != activation.room_id
+                || participant.member_id != activation.member_id
+                || participant.pack != activation.pack
+                || participant.activation_binding_hash != activation.binding_hash
+            {
+                return Err(AssignedMembershipSourceErrorV1::Invalid);
+            }
+            scopes.push(ActiveAssignmentScopeV1 {
+                assignment_id,
+                room_id: participant.room_id,
+                member_id: participant.member_id,
+                runner_id: activation.runner_id,
+                pack: participant.pack,
+            });
+        }
+        scopes.sort_by(|left, right| left.assignment_id.cmp(&right.assignment_id));
+        if scopes
+            .windows(2)
+            .any(|window| window[0].assignment_id == window[1].assignment_id)
+        {
+            return Err(AssignedMembershipSourceErrorV1::Invalid);
+        }
+        Ok(scopes)
     }
 
     fn active_launch(

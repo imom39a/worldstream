@@ -1294,6 +1294,26 @@ impl SqliteRoomDiagnosticSummaryV1 {
     }
 }
 
+/// Bounded durable Activation counts for one exact Room Membership. No
+/// Activation identity or private invocation material crosses this seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SqliteActivationStatusV1 {
+    waiting: u32,
+    leased: u32,
+}
+
+impl SqliteActivationStatusV1 {
+    #[must_use]
+    pub const fn waiting(self) -> u32 {
+        self.waiting
+    }
+
+    #[must_use]
+    pub const fn leased(self) -> u32 {
+        self.leased
+    }
+}
+
 /// One deterministic, bounded page of host-authorized Room summaries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteRoomDiagnosticInventoryPageV1 {
@@ -4397,6 +4417,50 @@ impl SqliteRoomStore {
             integrity: history.integrity,
             head,
             pack_revision,
+        })
+    }
+
+    /// Counts only pending and leased durable Activation intents for one exact
+    /// Room Membership after revalidating the consumed host diagnostic grant.
+    /// Terminal states are deliberately excluded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed authority, unavailable-target, storage, or overflow
+    /// failure. SQL counts that cannot fit the bounded public `u32` contract
+    /// fail closed as corrupt storage.
+    pub fn diagnostic_activation_status(
+        &self,
+        authority: AuthorizedDiagnosticV1,
+        checked_at: &AuthorityCheckedAt,
+        member_id: &MemberId,
+    ) -> Result<SqliteActivationStatusV1, SqliteRoomDiagnosticErrorV1> {
+        let (room_id, _) = self.consume_diagnostic_authority(
+            authority,
+            DiagnosticOperationV1::SafeRoomSummary,
+            checked_at,
+        )?;
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let counts = connection
+            .query_row(
+                "SELECT \
+                    (SELECT count(*) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending'), \
+                    (SELECT count(*) FROM activation_intents \
+                     WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'leased') \
+                 FROM room_members WHERE room_id = ?1 AND member_id = ?2",
+                params![room_id.as_str(), member_id.as_str()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|_| SqliteRoomDiagnosticErrorV1::StorageUnavailable)?
+            .ok_or(SqliteRoomDiagnosticErrorV1::RoomUnavailable)?;
+        Ok(SqliteActivationStatusV1 {
+            waiting: u32::try_from(counts.0).map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
+            leased: u32::try_from(counts.1).map_err(|_| SqliteRoomDiagnosticErrorV1::Corrupt)?,
         })
     }
 
@@ -30512,6 +30576,108 @@ mod tests {
             "scored_selected_plan",
             5,
         );
+    }
+
+    #[test]
+    fn activation_status_counts_only_live_states_for_exact_room_member() {
+        let file =
+            NamedTempFile::new().unwrap_or_else(|error| panic!("activation status DB: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open activation status DB: {error}"));
+        let (_trace, authority) = committed_trace_with_real_authority(
+            &store,
+            MembershipStandingV1::Enabled,
+            [CapabilityScopeV1::RoomAct],
+            None,
+        );
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open activation status fixture: {error}"));
+        connection
+            .execute(
+                "INSERT INTO transitions(\
+                 room_id, transition_id, room_seq, transition_hash, previous_lineage_hash,\
+                 core_schema_version, pack_digest, core_state_hash, activity_state_hash,\
+                 authoritative_state_hash, transition_bytes) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    ROOM,
+                    "01ARZ3NDEKTSV4RRFFQ69G5FQ8",
+                    "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+                    "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+                    worldstream_core::CORE_SCHEMA_VERSION,
+                    counter_v2_digest().to_string(),
+                    "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+                    "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+                    "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+                    b"{}".as_slice(),
+                ],
+            )
+            .unwrap_or_else(|error| panic!("activation status transition: {error}"));
+        for (suffix, state) in [
+            ("waiting-a", "pending"),
+            ("waiting-b", "pending"),
+            ("leased", "leased"),
+            ("completed", "completed"),
+            ("expired", "expired"),
+            ("cancelled", "cancelled"),
+        ] {
+            let leased = state == "leased";
+            connection
+                .execute(
+                    "INSERT INTO activation_intents(\
+                     activation_id, room_id, cause_room_seq, decision_id, target_member_id,\
+                     reason_code, deduplication_key, priority, policy_revision, state,\
+                     intent_generation, lease_generation, runner_id, claim_id, lease_until)\
+                     VALUES (?1, ?2, 1, ?3, ?4, 'bounded', ?5, 1, 1, ?6, 1, ?7, ?8, ?9, ?10)",
+                    params![
+                        format!("activation-{suffix}"),
+                        ROOM,
+                        format!("decision-{suffix}"),
+                        PARTICIPANT,
+                        format!("dedup-{suffix}"),
+                        state,
+                        i64::from(leased),
+                        leased.then_some("01ARZ3NDEKTSV4RRFFQ69G5FF2"),
+                        leased.then_some("claim-status"),
+                        leased.then_some("2026-08-15T12:05:00Z"),
+                    ],
+                )
+                .unwrap_or_else(|error| panic!("seed {state} Activation: {error}"));
+        }
+        drop(connection);
+
+        let checked_at: AuthorityCheckedAt = parsed("2026-08-15T12:00:05Z");
+        let status = store
+            .diagnostic_activation_status(
+                authority
+                    .authorize_diagnostic(
+                        &presented_host_capability(),
+                        DiagnosticTargetV1::Room(parsed(ROOM)),
+                        DiagnosticOperationV1::SafeRoomSummary,
+                        checked_at.clone(),
+                    )
+                    .unwrap_or_else(|error| panic!("authorize activation status: {error}")),
+                &checked_at,
+                &parsed(PARTICIPANT),
+            )
+            .unwrap_or_else(|error| panic!("activation status: {error}"));
+        assert_eq!(status.waiting(), 2);
+        assert_eq!(status.leased(), 1);
+        let missing = store.diagnostic_activation_status(
+            authority
+                .authorize_diagnostic(
+                    &presented_host_capability(),
+                    DiagnosticTargetV1::Room(parsed(ROOM)),
+                    DiagnosticOperationV1::SafeRoomSummary,
+                    checked_at.clone(),
+                )
+                .unwrap_or_else(|error| panic!("authorize missing member status: {error}")),
+            &checked_at,
+            &parsed("01ARZ3NDEKTSV4RRFFQ69G5FQ9"),
+        );
+        assert!(matches!(
+            missing,
+            Err(super::SqliteRoomDiagnosticErrorV1::RoomUnavailable)
+        ));
     }
 
     #[test]

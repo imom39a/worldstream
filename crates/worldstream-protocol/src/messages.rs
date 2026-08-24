@@ -354,6 +354,19 @@ pub struct OperatorRunnerPresenceV1 {
     pub observed_at_unix_ms: u64,
 }
 
+/// Host-authorized, participant-private-free Activation state counts for one
+/// exact Room Membership at the instant durable storage is queried.
+pub const OPERATOR_ACTIVATION_STATUS_VERSION: &str = "worldstream/operator-activation-status/v1";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorActivationStatusV1 {
+    pub version: String,
+    pub waiting: u32,
+    pub leased: u32,
+    pub observed_at_unix_ms: u64,
+}
+
 /// Durable storage profile relevant to live-backup capability.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1037,5 +1050,40 @@ mod tests {
             summary.freshness,
             super::OperatorDataFreshness::Stale { .. }
         ));
+    }
+
+    #[test]
+    fn operator_activation_status_rejects_private_or_unknown_fields() {
+        let exact = serde_json::json!({
+            "version": "worldstream/operator-activation-status/v1",
+            "waiting": 2,
+            "leased": 1,
+            "observed_at_unix_ms": 1_777_000_000_000_u64
+        });
+        let status: super::OperatorActivationStatusV1 = serde_json::from_value(exact.clone())
+            .unwrap_or_else(|error| unreachable!("bounded activation status: {error}"));
+        assert_eq!(status.waiting, 2);
+        assert_eq!(status.leased, 1);
+
+        for private_field in ["activation_id", "claim_id", "context", "member_id"] {
+            let mut with_private = exact.clone();
+            with_private
+                .as_object_mut()
+                .unwrap_or_else(|| unreachable!("object fixture"))
+                .insert(private_field.to_owned(), serde_json::json!("private"));
+            assert!(
+                serde_json::from_value::<super::OperatorActivationStatusV1>(with_private).is_err(),
+                "accepted private field {private_field}"
+            );
+        }
+        let mut overflow = exact;
+        overflow
+            .as_object_mut()
+            .unwrap_or_else(|| unreachable!("object fixture"))
+            .insert(
+                "waiting".to_owned(),
+                serde_json::json!(u64::from(u32::MAX) + 1),
+            );
+        assert!(serde_json::from_value::<super::OperatorActivationStatusV1>(overflow).is_err());
     }
 }

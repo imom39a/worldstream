@@ -16,6 +16,7 @@ pub mod participant_handoff;
 pub mod room_creation;
 pub mod room_drafts;
 pub mod rooms;
+pub mod runner_attention;
 pub mod runner_templates;
 
 pub mod secrets;

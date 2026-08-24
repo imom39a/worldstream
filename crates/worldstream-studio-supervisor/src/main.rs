@@ -17,6 +17,11 @@ use worldstream_studio_supervisor::{
     room_creation::{HttpDaemonRoomCreatorV1, RoomCreationSupervisorV1},
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
     rooms::HttpDaemonRoomSource,
+    runner_attention::{
+        FileRunnerRestartStoreV1, HttpDaemonRunnerAttentionSourceV1,
+        LiveRunnerAttentionSourceV1, PersistedAgentSeatAssignmentSourceV1,
+        RunnerAttentionSupervisorV1, runner_attention_router,
+    },
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
     supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates,
@@ -191,7 +196,7 @@ async fn main() -> Result<()> {
         args.daemon,
         daemon_timeout,
         vault.clone(),
-        args.host_authority_reference,
+        args.host_authority_reference.clone(),
     );
     let task_setup_base = TaskSetupSupervisorV1::open(
         &args.state_dir.join("task-setups"),
@@ -230,6 +235,27 @@ async fn main() -> Result<()> {
     )
     .context("assignment MCP launch registry is unavailable")?
     .with_activity_packs(activity_packs.clone());
+    let runner_attention_assignments = PersistedAgentSeatAssignmentSourceV1::new(
+        agent_profiles.clone(),
+        assignment_mcp_launches.clone(),
+        task_setup.clone(),
+    );
+    let runner_attention_source = LiveRunnerAttentionSourceV1::new(
+        runner_attention_assignments,
+        HttpDaemonRunnerAttentionSourceV1::new(
+            args.daemon,
+            daemon_timeout,
+            vault.clone(),
+            args.host_authority_reference.clone(),
+        ),
+        runners.clone(),
+    );
+    let runner_attention = RunnerAttentionSupervisorV1::new(
+        runner_attention_source,
+        runners.clone(),
+        FileRunnerRestartStoreV1::open(&args.state_dir.join("runner-attention/restarts"))
+            .map_err(|error| anyhow::anyhow!("Runner attention store is unavailable: {error:?}"))?,
+    );
     let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates(
         source,
         lifecycle,
@@ -245,7 +271,8 @@ async fn main() -> Result<()> {
         participant_handoff,
         task_templates,
     )
-    .merge(assignment_mcp_launch_router(assignment_mcp_launches));
+    .merge(assignment_mcp_launch_router(assignment_mcp_launches))
+    .merge(runner_attention_router(runner_attention));
     axum::serve(listener, router)
         .await
         .context("Studio Supervisor server failed")

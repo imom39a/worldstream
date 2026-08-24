@@ -10,6 +10,11 @@ import type {
   ActivityPackReference,
 } from "./activityPacks";
 import { RunnerOperations } from "./RunnerOperations";
+import { RunnerAttentionPanel } from "./RunnerAttentionPanel";
+import type {
+  RunnerAttentionOperations,
+  TaskAgentAttention,
+} from "./runnerAttention";
 import { BackupOperations } from "./BackupOperations";
 import type { BackupOperationStatus, BackupProfileStatus } from "./backups";
 import { RoomOperations } from "./RoomOperations";
@@ -46,6 +51,9 @@ export interface AppProps {
     instanceId: string,
     action: RunnerInstanceLifecycleAction,
   ) => void;
+  runnerAttention?: RunnerAttentionOperations | null;
+  taskAgentAttention?: TaskAgentAttention | null;
+  onRestartApprovedRunner?: (instanceId: string) => void;
   activityPackCatalog?: ActivityPackCatalog | null;
   activityPackDetail?: ActivityPackDetailResponse | null;
   inspectedActivityPackDigest?: string | null;
@@ -99,6 +107,9 @@ export function App({
   runnerTemplates = null,
   runnerInstances = null,
   onRunnerLifecycleAction,
+  runnerAttention = null,
+  taskAgentAttention = null,
+  onRestartApprovedRunner,
   activityPackCatalog = null,
   activityPackDetail = null,
   inspectedActivityPackDigest = null,
@@ -313,6 +324,12 @@ export function App({
           catalog={runnerTemplates}
           instances={runnerInstances}
           onLifecycleAction={onRunnerLifecycleAction}
+        />
+
+        <RunnerAttentionPanel
+          operations={runnerAttention}
+          task={taskAgentAttention}
+          onRestart={onRestartApprovedRunner}
         />
 
         <section className="authority-note">

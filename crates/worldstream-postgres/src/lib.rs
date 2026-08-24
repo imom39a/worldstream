@@ -79,9 +79,9 @@ use worldstream_core::{
     AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, Blake3DigestV1, CanonicalJsonV1,
     CanonicalRequestHashV1, CompleteHeadV1, CoreTraceV1, DiagnosticOperationV1, DiagnosticTargetV1,
     ExternalInputRecordedAt, ExternalInputV1, GenesisV1, HistoricalReplayErrorV1,
-    HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1, MembershipStandingV1,
-    MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1, PackViewerV1,
-    ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
+    HistoricalReplayProjectionV1, HostClockSampleV1, IntegrityGenerationV1, MemberId,
+    MembershipStandingV1, MembershipV1, OperationIdentityV1, PackRegistryV1, PackRevisionLockV1,
+    PackViewerV1, ParticipantActionAuthorityV1, ParticipantActionRequestV1, ParticipantActionV1,
     PreparedAdvancePersistenceV1, PreparedAuthorityWitnessV1, PreparedCreationPersistenceV1,
     PreparedExistingIntentV1, PreparedMembershipMaterializationV1,
     PreparedObservationConsequenceV1, PreparedRoomCommitV1, PreparedRoomWriteV1,
@@ -2138,6 +2138,26 @@ impl PostgresRoomDiagnosticSummaryV1 {
     }
 }
 
+/// Bounded durable Activation counts for one exact Room Membership. No
+/// Activation identity or private invocation material crosses this seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PostgresActivationStatusV1 {
+    waiting: u32,
+    leased: u32,
+}
+
+impl PostgresActivationStatusV1 {
+    #[must_use]
+    pub const fn waiting(self) -> u32 {
+        self.waiting
+    }
+
+    #[must_use]
+    pub const fn leased(self) -> u32 {
+        self.leased
+    }
+}
+
 /// Stable Room-ID-ordered PostgreSQL inventory page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostgresRoomDiagnosticInventoryPageV1 {
@@ -3804,6 +3824,66 @@ impl PostgresRoomStore {
             .map_err(|_| PostgresRoomDiagnosticErrorV1::StorageUnavailable)?
             .ok_or(PostgresRoomDiagnosticErrorV1::RoomUnavailable)?;
         decode_postgres_diagnostic_summary(&row)
+    }
+
+    /// Counts only pending and leased durable Activation intents for one exact
+    /// Room Membership after revalidating the consumed host diagnostic grant.
+    /// Terminal states are deliberately excluded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed authority, unavailable-target, storage, or overflow
+    /// failure. SQL counts that cannot fit the bounded public `u32` contract
+    /// fail closed as corrupt storage.
+    pub fn diagnostic_activation_status(
+        &self,
+        authority: AuthorizedDiagnosticV1,
+        checked_at: &AuthorityCheckedAt,
+        member_id: &MemberId,
+    ) -> Result<PostgresActivationStatusV1, PostgresRoomDiagnosticErrorV1> {
+        if authority.operation() != DiagnosticOperationV1::SafeRoomSummary {
+            return Err(PostgresRoomDiagnosticErrorV1::InvalidTarget);
+        }
+        let authority = authority.into_adapter_input();
+        let room_id = match authority.target() {
+            DiagnosticTargetV1::Room(room_id) => room_id.clone(),
+            DiagnosticTargetV1::Deployment => {
+                return Err(PostgresRoomDiagnosticErrorV1::InvalidTarget);
+            }
+        };
+        let snapshot = self
+            .snapshot(&authority.authority_snapshot_query())
+            .map_err(map_postgres_diagnostic_authority_store_error)?
+            .ok_or(PostgresRoomDiagnosticErrorV1::Authority(
+                AuthorityErrorV1::Unauthenticated,
+            ))?;
+        authority.revalidate_current(&snapshot, checked_at)?;
+
+        let mut client = self
+            .connect()
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::StorageUnavailable)?;
+        let row = client
+            .query_opt(
+                "SELECT \
+                    (SELECT count(*) FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 AND state = 'pending'), \
+                    (SELECT count(*) FROM worldstream_activation_intents \
+                     WHERE room_id = $1 AND target_member_id = $2 AND state = 'leased') \
+                 FROM worldstream_members WHERE room_id = $1 AND member_id = $2",
+                &[&room_id.as_str(), &member_id.as_str()],
+            )
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::StorageUnavailable)?
+            .ok_or(PostgresRoomDiagnosticErrorV1::RoomUnavailable)?;
+        let waiting = row
+            .try_get::<_, i64>(0)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        let leased = row
+            .try_get::<_, i64>(1)
+            .map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?;
+        Ok(PostgresActivationStatusV1 {
+            waiting: u32::try_from(waiting).map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+            leased: u32::try_from(leased).map_err(|_| PostgresRoomDiagnosticErrorV1::Corrupt)?,
+        })
     }
 
     /// Returns the engine identity after re-running the adapter's PostgreSQL

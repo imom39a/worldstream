@@ -36,6 +36,14 @@ import {
   type RunnerInstanceStatusResponse,
   type RunnerTemplateCatalog,
 } from "./runnerTemplates";
+import {
+  loadRunnerAttention,
+  loadTaskAgentAttention,
+  newRunnerRestartOperationId,
+  requestRunnerRestart,
+  type RunnerAttentionOperations,
+  type TaskAgentAttention,
+} from "./runnerAttention";
 import { loadSecretStatus, type SecretStatusResponse } from "./secretStatus";
 import {
   loadRoomDetail,
@@ -77,6 +85,8 @@ function LiveStudio() {
   const [secretStatus, setSecretStatus] = useState<SecretStatusResponse | null>(null);
   const [runnerTemplates, setRunnerTemplates] = useState<RunnerTemplateCatalog | null>(null);
   const [runnerInstances, setRunnerInstances] = useState<RunnerInstanceStatusResponse | null>(null);
+  const [runnerAttention, setRunnerAttention] = useState<RunnerAttentionOperations | null>(null);
+  const [taskAgentAttention, setTaskAgentAttention] = useState<TaskAgentAttention | null>(null);
   const [activityPackCatalog, setActivityPackCatalog] = useState<ActivityPackCatalog | null>(null);
   const [activityPackCatalogLoading, setActivityPackCatalogLoading] = useState(true);
   const [activityPackDetail, setActivityPackDetail] = useState<ActivityPackDetailResponse | null>(null);
@@ -123,6 +133,8 @@ function LiveStudio() {
         nextSecretStatus,
         nextRunnerTemplates,
         nextRunnerInstances,
+        nextRunnerAttention,
+        nextTaskAgentAttention,
         nextActivityPackCatalog,
         nextRoomInventory,
         nextRoomCreation,
@@ -137,6 +149,8 @@ function LiveStudio() {
         loadSecretStatus(),
         loadRunnerTemplates(),
         loadRunnerInstances(),
+        loadRunnerAttention(),
+        selectedRoomId === null ? Promise.resolve(null) : loadTaskAgentAttention(selectedRoomId),
         loadActivityPackCatalog(),
         loadRoomInventory(),
         loadRoomCreation(activeDraftId),
@@ -154,6 +168,8 @@ function LiveStudio() {
         setSecretStatus(nextSecretStatus);
         setRunnerTemplates(nextRunnerTemplates);
         setRunnerInstances(nextRunnerInstances);
+        setRunnerAttention(nextRunnerAttention);
+        setTaskAgentAttention(nextTaskAgentAttention);
         setActivityPackCatalog(nextActivityPackCatalog);
         setActivityPackCatalogLoading(false);
         setRoomInventory((previous) => overlayTaskSetup(
@@ -181,7 +197,7 @@ function LiveStudio() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [activeDraftId]);
+  }, [activeDraftId, selectedRoomId]);
 
   useEffect(() => {
     let active = true;
@@ -213,6 +229,17 @@ function LiveStudio() {
   ) => {
     const next = await requestRunnerInstanceLifecycle(instanceId, action);
     setRunnerInstances(next);
+  };
+
+  const restartApprovedRunner = async (instanceId: string) => {
+    const operation = await requestRunnerRestart(instanceId, newRunnerRestartOperationId());
+    if (operation === null) return;
+    const [nextOperations, nextTask] = await Promise.all([
+      loadRunnerAttention(),
+      selectedRoomId === null ? Promise.resolve(null) : loadTaskAgentAttention(selectedRoomId),
+    ]);
+    setRunnerAttention(nextOperations);
+    setTaskAgentAttention(nextTask);
   };
 
   const inspectActivityPack = async (digest: string) => {
@@ -336,6 +363,8 @@ function LiveStudio() {
       secretStatus={secretStatus}
       runnerTemplates={runnerTemplates}
       runnerInstances={runnerInstances}
+      runnerAttention={runnerAttention}
+      taskAgentAttention={taskAgentAttention}
       activityPackCatalog={activityPackCatalog}
       activityPackCatalogLoading={activityPackCatalogLoading}
       activityPackDetail={activityPackDetail}
@@ -347,6 +376,7 @@ function LiveStudio() {
       onRunnerLifecycleAction={(instanceId, action) => {
         void requestRunnerLifecycle(instanceId, action);
       }}
+      onRestartApprovedRunner={(instanceId) => void restartApprovedRunner(instanceId)}
       onInspectActivityPack={(digest) => void inspectActivityPack(digest)}
       onSelectActivityPack={selectActivityPack}
       onClearActivityPackSelection={clearActivityPackSelection}

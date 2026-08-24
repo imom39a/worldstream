@@ -53,7 +53,7 @@ use worldstream_protocol::{
     BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateRoomRequest,
     CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope, LobbyLaunchRequest,
     LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
-    ObservationAck, ObservationDeliver, OperatorBackupProfileStatus,
+    ObservationAck, ObservationDeliver, OperatorActivationStatusV1, OperatorBackupProfileStatus,
     OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomInventoryPage,
     OperatorRoomInventoryRequest, OperatorRoomSummary, OperatorRunnerConnectionV1,
     OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference, ProjectionReset,
@@ -584,6 +584,7 @@ const OPERATOR_LOBBY_LAUNCH: &str = "lobby-launch";
 const OPERATOR_ACTIVITY_PACK_CATALOG: &str = "activity-pack-catalog";
 const OPERATOR_ROOM_INVENTORY: &str = "room-inventory";
 const OPERATOR_ROOM_DETAIL: &str = "room-detail";
+const OPERATOR_ACTIVATION_STATUS: &str = "activation-status";
 const OPERATOR_BACKUP_PROFILE: &str = "backup-profile";
 const OPERATOR_LIVE_BACKUP: &str = "live-backup";
 const OPERATOR_RUNNER_PRESENCE: &str = "runner-presence";
@@ -993,6 +994,22 @@ pub trait GatewayBackend: Send + Sync + 'static {
         _session: &GatewaySession,
         _room_id: &str,
     ) -> Result<OperatorRoomSummary, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
+
+    /// Reads bounded durable Activation state counts for one exact Room
+    /// Membership under host diagnostic authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed authority, unavailable target, storage, overflow, or
+    /// canonical-identity failure without returning Activation records.
+    fn operator_activation_status(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+        _member_id: &str,
+    ) -> Result<OperatorActivationStatusV1, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
 
@@ -1776,6 +1793,10 @@ pub fn operator_router(state: OperatorState) -> Router {
         .route("/v1/operator/rooms", get(operator_room_inventory))
         .route("/v1/operator/rooms/{room_id}", get(operator_room_detail))
         .route(
+            "/v1/operator/rooms/{room_id}/members/{member_id}/activation-status",
+            get(operator_activation_status),
+        )
+        .route(
             "/v1/operator/runners/{runner_id}/presence",
             get(operator_runner_presence),
         )
@@ -2403,6 +2424,39 @@ async fn operator_room_detail(
     let backend = Arc::clone(&state.backend);
     backend_call(backend, move |backend| {
         backend.operator_room_detail(&session, &room_id)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
+}
+
+async fn operator_activation_status(
+    State(state): State<OperatorState>,
+    Path((room_id, member_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ResponseResult<OperatorActivationStatusV1> {
+    let session = Arc::new(authenticated_session(&headers)?);
+    room_id
+        .parse::<worldstream_core::RoomId>()
+        .map_err(|_| ResponseError::from(BackendError::NotFound))?;
+    member_id
+        .parse::<worldstream_core::MemberId>()
+        .map_err(|_| ResponseError::from(BackendError::NotFound))?;
+    let targets = [AdmissionTarget {
+        room_id: &room_id,
+        member_id: Some(&member_id),
+    }];
+    admit_authenticated_http(
+        &state,
+        &session,
+        &targets,
+        Some(OPERATOR_ACTIVATION_STATUS),
+        traceparent_correlation(&headers),
+    )
+    .await?;
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.operator_activation_status(&session, &room_id, &member_id)
     })
     .await
     .map(Json)
@@ -3787,6 +3841,13 @@ fn unix_time_ms() -> u64 {
         .ok()
         .and_then(|value| u64::try_from(value.as_millis()).ok())
         .unwrap_or(0)
+}
+
+fn checked_unix_time_ms() -> Result<u64, BackendError> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| BackendError::StorageUnavailable)?;
+    u64::try_from(elapsed.as_millis()).map_err(|_| BackendError::InvalidResult)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5830,6 +5891,31 @@ mod tests {
             }
         }
 
+        fn operator_activation_status(
+            &self,
+            _: &super::GatewaySession,
+            room_id: &str,
+            member_id: &str,
+        ) -> Result<worldstream_protocol::OperatorActivationStatusV1, super::BackendError> {
+            if member_id != "01ARZ3NDEKTSV4RRFFQ69G5FQ1" {
+                return Err(super::BackendError::NotFound);
+            }
+            match room_id {
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ3" => {
+                    return Err(super::BackendError::StorageUnavailable);
+                }
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ4" => return Err(super::BackendError::Forbidden),
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ0" => {}
+                _ => return Err(super::BackendError::NotFound),
+            }
+            Ok(worldstream_protocol::OperatorActivationStatusV1 {
+                version: "worldstream/operator-activation-status/v1".to_owned(),
+                waiting: 2,
+                leased: 1,
+                observed_at_unix_ms: 1_777_000_000_000,
+            })
+        }
+
         fn operator_backup_profile(
             &self,
             _: &super::GatewaySession,
@@ -6235,6 +6321,98 @@ mod tests {
                 !serialized.contains(private_field),
                 "leaked {private_field}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_activation_status_is_exact_and_private_data_free() {
+        let response = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        )
+        .oneshot(
+            Request::builder()
+                .uri("/v1/operator/rooms/01ARZ3NDEKTSV4RRFFQ69G5FQ0/members/01ARZ3NDEKTSV4RRFFQ69G5FQ1/activation-status")
+                .header(header::AUTHORIZATION, auth_header())
+                .body(Body::empty())
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("body: {error}"))
+            .to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| unreachable!("activation status JSON: {error}"));
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "version": "worldstream/operator-activation-status/v1",
+                "waiting": 2,
+                "leased": 1,
+                "observed_at_unix_ms": 1_777_000_000_000_u64
+            })
+        );
+        let serialized = String::from_utf8(body.to_vec())
+            .unwrap_or_else(|error| unreachable!("UTF-8 body: {error}"));
+        for private_field in ["activation_id", "claim_id", "context", "reason_code"] {
+            assert!(
+                !serialized.contains(private_field),
+                "leaked {private_field}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_activation_status_distinguishes_closed_failures_without_private_data() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("valid state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let member = "01ARZ3NDEKTSV4RRFFQ69G5FQ1";
+        for (room, authorization, expected) in [
+            ("01ARZ3NDEKTSV4RRFFQ69G5FQ0", false, StatusCode::FORBIDDEN),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FQ2", true, StatusCode::NOT_FOUND),
+            (
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ3",
+                true,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FQ4", true, StatusCode::FORBIDDEN),
+        ] {
+            let mut request = Request::builder().uri(format!(
+                "/v1/operator/rooms/{room}/members/{member}/activation-status"
+            ));
+            if authorization {
+                request = request.header(header::AUTHORIZATION, auth_header());
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(Body::empty())
+                        .unwrap_or_else(|error| unreachable!("request: {error}")),
+                )
+                .await
+                .unwrap_or_else(|error| unreachable!("response: {error}"));
+            assert_eq!(response.status(), expected, "{room}");
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|error| unreachable!("body: {error}"))
+                .to_bytes();
+            let serialized = String::from_utf8(body.to_vec())
+                .unwrap_or_else(|error| unreachable!("UTF-8 body: {error}"));
+            for private in [room, member, "activation_id", "claim_id", "context"] {
+                assert!(!serialized.contains(private), "leaked {private}");
+            }
         }
     }
 

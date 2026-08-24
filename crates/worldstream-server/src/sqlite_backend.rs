@@ -43,7 +43,8 @@ use worldstream_protocol::{
     ActivationOffer, ActivationOfferRequest, ActivationOffers, ActivationOperationReply,
     ActivationResultCode, BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse,
     LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES, MemberCapabilityProvisionRequestV1,
-    MemberCapabilityProvisionResponseV1, ObservationAck, ObservationDeliver, OperatorActivityPhase,
+    MemberCapabilityProvisionResponseV1, OPERATOR_ACTIVATION_STATUS_VERSION, ObservationAck,
+    ObservationDeliver, OperatorActivationStatusV1, OperatorActivityPhase,
     OperatorBackupProfileStatus, OperatorBackupStorageHealth, OperatorBackupStorageProfile,
     OperatorBackupVerification, OperatorDataFreshness, OperatorLiveBackupArtifactSummary,
     OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomIntegrity,
@@ -2712,6 +2713,39 @@ impl GatewayBackend for SqliteGatewayBackend {
         operator_room_summary(&summary, checked_at.as_str())
     }
 
+    fn operator_activation_status(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        member_id: &str,
+    ) -> Result<OperatorActivationStatusV1, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::NotFound)?;
+        let member_id = member_id
+            .parse::<worldstream_core::MemberId>()
+            .map_err(|_| BackendError::NotFound)?;
+        let checked_at = Self::checked_at()?;
+        let authority = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Room(room_id),
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let status = self
+            .store
+            .diagnostic_activation_status(authority, &checked_at, &member_id)
+            .map_err(|error| map_sqlite_diagnostic_error(&error))?;
+        Ok(OperatorActivationStatusV1 {
+            version: OPERATOR_ACTIVATION_STATUS_VERSION.to_owned(),
+            waiting: status.waiting(),
+            leased: status.leased(),
+            observed_at_unix_ms: crate::checked_unix_time_ms()?,
+        })
+    }
+
     fn operator_backup_profile(
         &self,
         session: &GatewaySession,
@@ -3853,6 +3887,28 @@ mod tests {
             .unwrap_or_else(|error| panic!("create Room: {error:?}"));
         assert_eq!(first.member_ids.len(), 1);
         assert_eq!(first.room_head.room_seq, 0);
+        let status = backend
+            .operator_activation_status(&gateway_session, &first.room_id, &first.member_ids[0])
+            .unwrap_or_else(|error| panic!("activation status: {error:?}"));
+        assert_eq!(status.waiting, 0);
+        assert_eq!(status.leased, 0);
+        assert!(status.observed_at_unix_ms > 0);
+        assert!(matches!(
+            backend.operator_activation_status(
+                &gateway_session,
+                &first.room_id,
+                "01ARZ3NDEKTSV4RRFFQ69G5FQ9"
+            ),
+            Err(BackendError::NotFound)
+        ));
+        assert!(matches!(
+            backend.operator_activation_status(
+                &session(0xab, "01ARZ3NDEKTSV4RRFFQ69G5FC6"),
+                &first.room_id,
+                &first.member_ids[0]
+            ),
+            Err(BackendError::Forbidden)
+        ));
 
         let duplicate = backend
             .create_room(&gateway_session, request.clone())

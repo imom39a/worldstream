@@ -51,7 +51,8 @@ use worldstream_protocol::{
     ActivationOfferRequest, ActivationOffers, ActivationOperationReply, ActivationResultCode,
     BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse, LobbyLaunchRequest,
     LobbyLaunchResponse, MAX_MESSAGE_BYTES, MemberCapabilityProvisionRequestV1,
-    MemberCapabilityProvisionResponseV1, ObservationAck, ObservationDeliver, OperatorActivityPhase,
+    MemberCapabilityProvisionResponseV1, OPERATOR_ACTIVATION_STATUS_VERSION, ObservationAck,
+    ObservationDeliver, OperatorActivationStatusV1, OperatorActivityPhase,
     OperatorBackupProfileStatus, OperatorBackupStorageHealth, OperatorBackupStorageProfile,
     OperatorBackupVerification, OperatorDataFreshness, OperatorLiveBackupPrepareRequest,
     OperatorLiveBackupStatus, OperatorRoomIntegrity, OperatorRoomIntegrityStatus,
@@ -1905,6 +1906,39 @@ impl GatewayBackend for PostgresGatewayBackend {
         operator_room_summary(&summary, checked_at.as_str())
     }
 
+    fn operator_activation_status(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        member_id: &str,
+    ) -> Result<OperatorActivationStatusV1, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let room_id = RoomId::from_str(room_id).map_err(|_| BackendError::NotFound)?;
+        let member_id = member_id
+            .parse::<worldstream_core::MemberId>()
+            .map_err(|_| BackendError::NotFound)?;
+        let checked_at = self.checked_at()?;
+        let authority = self
+            .authority()
+            .authorize_diagnostic(
+                &authenticated.into_presented(),
+                DiagnosticTargetV1::Room(room_id),
+                DiagnosticOperationV1::SafeRoomSummary,
+                checked_at.clone(),
+            )
+            .map_err(map_authority_error)?;
+        let status = self
+            .store
+            .diagnostic_activation_status(authority, &checked_at, &member_id)
+            .map_err(|error| map_postgres_diagnostic_error(&error))?;
+        Ok(OperatorActivationStatusV1 {
+            version: OPERATOR_ACTIVATION_STATUS_VERSION.to_owned(),
+            waiting: status.waiting(),
+            leased: status.leased(),
+            observed_at_unix_ms: crate::checked_unix_time_ms()?,
+        })
+    }
+
     fn operator_backup_profile(
         &self,
         session: &GatewaySession,
@@ -3091,6 +3125,7 @@ mod tests {
         sync::Arc,
     };
 
+    use postgres::{Client, NoTls};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -3399,6 +3434,7 @@ mod tests {
 
         let room_id = created.room_id.clone();
         let member_id = created.member_ids[0].clone();
+        let other_member_id = created.member_ids[1].clone();
         let issued = backend
             .issue_member_capability(
                 &host,
@@ -3531,6 +3567,67 @@ mod tests {
             unreachable!("authorized Action rejected")
         };
         assert_eq!(first.room_head.room_seq, 1);
+
+        let mut status_client = Client::connect(&dsn, NoTls)
+            .unwrap_or_else(|error| unreachable!("activation status fixture connection: {error}"));
+        let mut transaction = status_client
+            .transaction()
+            .unwrap_or_else(|error| unreachable!("activation status fixture transaction: {error}"));
+        for (suffix, target, state) in [
+            ("waiting-a", member_id.as_str(), "pending"),
+            ("waiting-b", member_id.as_str(), "pending"),
+            ("leased", member_id.as_str(), "leased"),
+            ("completed", member_id.as_str(), "completed"),
+            ("expired", member_id.as_str(), "expired"),
+            ("cancelled", member_id.as_str(), "cancelled"),
+            ("other-member", other_member_id.as_str(), "pending"),
+        ] {
+            let leased = state == "leased";
+            transaction
+                .execute(
+                    "INSERT INTO worldstream_activation_intents(\
+                     activation_id, room_id, cause_room_seq, decision_id, target_member_id,\
+                     reason_code, deduplication_key, priority, policy_revision, state,\
+                     intent_generation, lease_generation, runner_id, claim_id, lease_until)\
+                     VALUES ($1, $2, 1, $3, $4, 'bounded', $5, 1, 1, $6, 1, $7, $8, $9, $10)\
+                     ON CONFLICT (activation_id) DO NOTHING",
+                    &[
+                        &format!("operator-status-{suffix}"),
+                        &room_id,
+                        &format!("operator-status-decision-{suffix}"),
+                        &target,
+                        &format!("operator-status-dedup-{suffix}"),
+                        &state,
+                        &i64::from(leased),
+                        &leased.then_some("01ARZ3NDEKTSV4RRFFQ69G5FF2"),
+                        &leased.then_some("operator-status-claim"),
+                        &leased.then_some("2026-08-15T12:05:00Z"),
+                    ],
+                )
+                .unwrap_or_else(|error| unreachable!("seed {state} Activation: {error}"));
+        }
+        transaction
+            .commit()
+            .unwrap_or_else(|error| unreachable!("publish activation status fixture: {error}"));
+        let status = backend
+            .operator_activation_status(&host, &room_id, &member_id)
+            .unwrap_or_else(|error| unreachable!("bounded activation status: {error:?}"));
+        assert_eq!((status.waiting, status.leased), (2, 1));
+        let isolated = backend
+            .operator_activation_status(&host, &room_id, &other_member_id)
+            .unwrap_or_else(|error| unreachable!("isolated activation status: {error:?}"));
+        assert_eq!((isolated.waiting, isolated.leased), (1, 0));
+        assert!(matches!(
+            backend.operator_activation_status(&host, &room_id, "01ARZ3NDEKTSV4RRFFQ69G5FQ9"),
+            Err(BackendError::NotFound)
+        ));
+        assert!(matches!(
+            backend.operator_activation_status(&member, &room_id, &member_id),
+            Err(BackendError::Forbidden)
+        ));
+        println!(
+            "LIVE_POSTGRES=PASS operator_activation_status=pending+leased+terminal-filter+member-isolation+authorization"
+        );
         let live = backend
             .live_observation_suffix(&member, &room_id, &member_id, baseline)
             .unwrap_or_else(|error| unreachable!("live suffix: {error:?}"));
