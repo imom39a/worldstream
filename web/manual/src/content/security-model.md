@@ -58,6 +58,9 @@ Agent implementations should:
 - Bind daemon, Supervisor, Studio, model adapters, and Runner health endpoints
   to loopback.
 - Keep `.worldstream/` owner-only and out of source control.
+- The authority bootstrap secret binds authority identity; it does **not**
+  encrypt SQLite data. Use an encrypted host volume/disk when data-at-rest
+  encryption is required.
 - Use distinct kind-bound secret references for host, participant, Runner, and
   model-provider material.
 - Do not expose the development Supervisor publicly; its trust model is the

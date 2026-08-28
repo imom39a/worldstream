@@ -42,14 +42,64 @@ evidence.
 
 ## Complete local MVP gate
 
-Read `docs/mvp-agent-heist-acceptance.md` before running the live harness. It
-requires built daemon, Supervisor, Console, assignment MCP helper, local
-authority state, and browser support. The checked-in entry point is:
+The real gate owns disposable state and launches the production daemon,
+Supervisor, Console, browser, WebSocket, and assignment MCP boundaries. Build
+the required artifacts first:
 
 ```sh
-uv run --project sdk/python --python 3.14.7 \
-  python examples/heist/mvp_live/run_mvp_acceptance.py --help
+cargo build --locked -p worldstream-server --bin worldstreamd
+cargo build --locked -p worldstream-studio-supervisor \
+  --bin worldstream-studio-supervisor \
+  --bin worldstream-assignment-mcp
+pnpm ui:build
+uv sync --project sdk/python --locked --python 3.14.7
 ```
+
+Install the repository-pinned Chrome-for-Testing identity and export the seven
+`WORLDSTREAM_BROWSER_*` identity variables exactly as documented in
+`docs/mvp-agent-heist-acceptance.md`. On macOS, the checked source bootstrap
+validates the pinned binary, version, archive URL, hashes, and byte sizes:
+
+```sh
+scripts/macos-source-quickstart.sh --help
+```
+
+Do not substitute an arbitrary installed Chrome build: the browser identity is
+part of the acceptance evidence. For the current macOS arm64 pin, validate the
+binary with the full `scripts/macos-source-quickstart.sh` command in the
+acceptance contract, then export:
+
+```sh
+export WORLDSTREAM_BROWSER_BINARY=/absolute/path/to/chrome-headless-shell
+export WORLDSTREAM_BROWSER_VERSION=152.0.7977.54
+export WORLDSTREAM_BROWSER_SHA256=4e0c165ef2f0d7265fb1e6b3df2d03d1d6581fb72cdfcebeac19c09760571df6
+export WORLDSTREAM_BROWSER_SIZE_BYTES=167333040
+export WORLDSTREAM_BROWSER_ARCHIVE_URL=https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.54/mac-arm64/chrome-headless-shell-mac-arm64.zip
+export WORLDSTREAM_BROWSER_ARCHIVE_SHA256=ef5d61434f13d9d2d9bdc7c9ab4bff92225979e196458cf846640862b25f127d
+export WORLDSTREAM_BROWSER_ARCHIVE_SIZE_BYTES=98034515
+```
+
+The acceptance contract carries the separately closed x86_64 identity. Once
+the seven variables are exported, run the actual live story:
+
+```sh
+uv run --project sdk/python --python 3.14.7 python \
+  examples/heist/mvp_live/run_mvp_acceptance.py \
+  --live \
+  --report target/agent-heist-mvp-acceptance.json
+```
+
+Then revalidate the retained bounded report independently:
+
+```sh
+uv run --project sdk/python --python 3.14.7 python \
+  examples/heist/mvp_live/run_mvp_acceptance.py \
+  --report target/agent-heist-mvp-acceptance.json
+```
+
+Exit code `2` and a single `blocked:<reason>` mean a required real boundary is
+unavailable; that is not acceptance. Use `--keep-artifacts` only for local
+diagnosis because the otherwise temporary evidence directory is sensitive.
 
 The gate is designed to prove:
 

@@ -35,8 +35,8 @@ Studio ────────┘                              │
    rate limits, Action Offer identity, and exact Head precondition.
 4. The Activity Pack reduces the normalized Stimulus against the exact current
    Core and Activity State.
-5. Core validates every requested membership/status change and may veto pack
-   output.
+5. Core constructs and validates its proposed Membership/status changes; the
+   pack can veto only the narrow proposal classes allowed by the contract.
 6. The storage adapter atomically persists the new authoritative state,
    Transition, semantic receipt, frames, timers, and Activation intents.
 7. Only after commit does the actor install the new in-memory Head and publish

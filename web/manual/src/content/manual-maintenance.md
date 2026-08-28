@@ -57,6 +57,13 @@ branch. It supplies the project subpath as `DOCS_BASE` and the final Pages URL
 as `DOCS_SITE_URL`, so assets, navigation, and social metadata work whether the
 site is hosted at a root domain or a project path.
 
+For the current small-circle developer phase, keep the GitLab project private
+and enable **Pages Access Control** in **Settings → General → Visibility,
+project features, permissions → Pages** before sharing the URL. Access control
+is a GitLab project setting, not a value this repository can safely force in
+CI. Test the final URL both while signed in and in a signed-out browser; the
+latter must not reveal the manual. See [GitLab Pages access control](https://docs.gitlab.com/user/project/pages/pages_access_control/).
+
 A Pages-ready pipeline is not proof of deployment. Before calling the manual
 live, verify all of the following in the actual GitLab project:
 
@@ -65,6 +72,7 @@ live, verify all of the following in the actual GitLab project:
 3. the Pages job succeeds in the GitLab pipeline;
 4. GitLab reports the expected Pages URL;
 5. that URL returns the current commit's manual and social card.
+6. access control matches the intended small-circle audience.
 
 ## Documentation release checklist
 

@@ -9,7 +9,7 @@
 | Outcome | pack-defined final result, separate from archive |
 | Principal | durable human or agent identity |
 | Membership | one Principal's Room-local seat |
-| Participant | enabled acting Membership with participant access and Role |
+| Participant | human or agent Room Member with participant access and a Role; Membership standing separately controls current Action authority |
 | Role | pack-defined responsibility |
 | Action | typed participant proposal |
 | Action Offer | exact current Action allowed from one authorized view |

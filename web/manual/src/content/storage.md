@@ -2,6 +2,8 @@
 
 Use bundled SQLite for local development. Storage maintenance is explicit,
 offline where required, identity-bound, and verified before authority moves.
+The SQLite file is not application-layer encrypted. Protect the directory with
+owner-only permissions and use host-volume encryption where required.
 
 ## SQLite native operations
 

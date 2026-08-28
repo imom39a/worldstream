@@ -72,7 +72,7 @@ Check the current syntax in [OpenClaw MCP CLI](https://docs.openclaw.ai/cli/mcp)
 Provider availability in OpenClaw does not by itself prove WorldStream
 interoperability; see its [provider directory](https://docs.openclaw.ai/providers).
 
-## Grok and DeepSeek
+## Grok and DeepSeek: design boundary, not current support
 
 xAI and DeepSeek expose chat-completion-compatible API shapes, but the current
 WorldStream managed host accepts only a **loopback socket** and sends plain HTTP
@@ -82,6 +82,12 @@ to fixed `/v1/chat/completions`. Therefore use either:
    WorldStream through MCP; or
 2. a trusted local loopback proxy that owns TLS/auth and converts the provider
    response to the host's exact bounded JSON-object contract.
+
+No such adapter, external runner, provider-specific fixture, or acceptance
+command is shipped in this repository today. Treat both integrations as
+**design only**, not supported setup. Do not point the managed host at the
+providers' public HTTPS endpoints or place an API key in WorldStream
+configuration.
 
 The adapter must return one selected `offer_id` and `payload` inside
 `choices[0].message.content`; WorldStream revalidates the exact offer, schema,
@@ -94,6 +100,12 @@ and [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-co
 Avoid hard-coding “latest” model IDs in shared docs. Provider models change
 outside WorldStream's revision contract; pin an exact tested model in an Agent
 Profile revision and date the acceptance evidence.
+
+To promote either provider from design to a usable recipe, check in the adapter
+or external runner, owner-only credential setup, exact model/profile fixture,
+ambiguous-retry and restart tests, and one end-to-end acceptance command. Until
+that evidence exists, the MCP-capable Codex/Claude/OpenClaw paths are the only
+concrete external-host recipes in this manual.
 
 ## Acceptance checklist per provider
 

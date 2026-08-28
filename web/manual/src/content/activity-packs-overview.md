@@ -20,23 +20,145 @@ Every retained revision binds:
 Changing any semantic element requires a new revision. Existing Rooms remain
 pinned to their original executable revision for their complete lineage.
 
-## The ActivityPackV1 shape
+## The exact ActivityPackV1 seam
 
-The Rust trait lives in `crates/worldstream-core/src/activity_pack.rs`. Its
-responsibilities are conceptually:
+The Rust trait lives in `crates/worldstream-core/src/activity_pack.rs`. These
+are the current five signatures:
 
 ```rust
 pub trait ActivityPackV1: Send + Sync + 'static {
     fn descriptor(&self) -> &'static PackRevisionDescriptorV1;
-    fn initialize(/* exact request and deterministic host context */);
-    fn reduce(/* prior activity state plus one normalized stimulus */);
-    fn view(/* exact state and one PackViewerV1 */);
-    fn observe(/* predecessor and successor views */);
+    fn initialize(
+        &self,
+        input: &ActivityGenesisInputV1<'_>,
+        cx: &DeterministicContextV1<'_>,
+    ) -> Result<InitialOutputV1, PackFaultV1>;
+    fn reduce(
+        &self,
+        input: &ActivityReduceInputV1<'_>,
+        cx: &DeterministicContextV1<'_>,
+    ) -> Result<ActivityDispositionV1, PackFaultV1>;
+    fn view(&self, input: &ViewInputV1<'_>)
+        -> Result<PackViewV1, PackFaultV1>;
+    fn observe(&self, input: &ObserveInputV1<'_>)
+        -> Result<Option<PackObservationV1>, PackFaultV1>;
 }
 ```
 
-Use the source trait—not this abbreviated illustration—as the compile-time
-contract.
+There is no sixth callback, dynamic loader, model hook, storage handle, or
+ambient clock. Re-check the source trait when implementing because it—not this
+website—is the compile-time authority.
+
+## Build an in-tree pack revision
+
+Local v0.1 does not have a public package generator or plug-in ABI. Adding an
+Activity is a reviewed `worldstream-core` change. Counter is the smallest
+compiling template; Agent Heist shows the full privacy/timer path.
+
+### 1. Create the executor module
+
+Add `crates/worldstream-core/src/<pack>.rs`. A first compile checkpoint can use
+this exact method shape while the descriptor, reducer, and view helpers are
+built:
+
+```rust
+use crate::{
+    ActivityDispositionV1, ActivityGenesisInputV1, ActivityPackV1,
+    ActivityReduceInputV1, DeterministicContextV1, InitialOutputV1,
+    ObserveInputV1, PackFaultV1, PackObservationV1,
+    PackRevisionDescriptorV1, PackViewV1, ViewInputV1,
+};
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExampleV1;
+
+impl ActivityPackV1 for ExampleV1 {
+    fn descriptor(&self) -> &'static PackRevisionDescriptorV1 { todo!() }
+
+    fn initialize(
+        &self,
+        _input: &ActivityGenesisInputV1<'_>,
+        _cx: &DeterministicContextV1<'_>,
+    ) -> Result<InitialOutputV1, PackFaultV1> { todo!() }
+
+    fn reduce(
+        &self,
+        _input: &ActivityReduceInputV1<'_>,
+        _cx: &DeterministicContextV1<'_>,
+    ) -> Result<ActivityDispositionV1, PackFaultV1> { todo!() }
+
+    fn view(&self, _input: &ViewInputV1<'_>)
+        -> Result<PackViewV1, PackFaultV1> { todo!() }
+
+    fn observe(&self, _input: &ObserveInputV1<'_>)
+        -> Result<Option<PackObservationV1>, PackFaultV1> { todo!() }
+}
+```
+
+Run `cargo check -p worldstream-core` after adding the module in `lib.rs`.
+Replace every `todo!()` before registry construction; a panic is contained but
+is still a Pack Fault, never valid behavior.
+
+### 2. Define canonical schemas and behavior
+
+Follow `counter.rs` in this order:
+
+1. add strict `serde` configuration, state, and projection types with unknown
+   fields denied;
+2. declare stable pack, Role, Action, event, attention, and schema IDs;
+3. construct the descriptor, schema bundle, codec bundle, revision lock, and
+   source-derived executor artifact digest;
+4. implement deterministic initialization and reduction over canonical JSON;
+5. implement viewer-class-specific `view`, including exact Action Offers;
+6. implement `observe` from predecessor/successor authorized views;
+7. add unit tests for every Stimulus, rejection, viewer, and privacy boundary.
+
+Do not persist current Role ownership in Activity State. Read it from the
+immutable Core view. Do not request a Core mutation from the pack.
+
+### 3. Add the retained registry row
+
+Add `crates/worldstream-core/src/<pack>_registry.rs`, following
+`counter_registry.rs`. Construct one `PackRegistryEntryV1` with the exact
+revision lock, descriptors, schema/codecs, executor artifact digest, golden
+corpus and digest, concrete executor, and independent selection/retention
+flags.
+
+The production registry is intentionally closed. Extend all of these reviewed
+seams explicitly:
+
+| Seam | Required change |
+| --- | --- |
+| `activity_pack.rs` | add a `ReviewedExecutorProvenanceV1` variant, exact concrete type/constructor mapping, artifact digest mapping, and typed `PackRegistryEntryV1` constructor |
+| `lib.rs` | declare the executor/registry modules and export only the required catalog helpers |
+| `<pack>_registry.rs` | build and self-verify the revision row and frozen golden corpus |
+| `registry.rs` | combine the new validated registry into `builtin_worldstream_registry()` |
+| `compatibility.toml` | declare the exact digest and selection/retention status |
+| generated compatibility JSON | regenerate and verify the checked mirror with `xtask` |
+
+`PackRegistryV1::try_new` recomputes and cross-checks every identity. A missing
+schema, codec, implementation, provenance mapping, digest, or golden transcript
+must fail registry construction.
+
+### 4. Freeze evidence and run the focused gates
+
+Author a multi-view golden corpus in the registry module. Include Genesis,
+accepted and rejected Actions, timers/Core changes where applicable, every
+viewer class, Action Offers, observations, and the terminal Outcome. Compute
+the corpus digest with `PackGoldenCorpusV1::digest()`, review the complete
+transcript, then freeze the literal. Never silently refresh a digest after a
+semantic change.
+
+```sh
+cargo fmt --all -- --check
+cargo test -p worldstream-core <pack_name>
+cargo test -p worldstream-conformance
+cargo run --locked -p xtask -- compat verify
+scripts/gates.sh fast
+```
+
+Finally add a real boundary-level example under `examples/<pack>/`; unit tests
+or an offline story alone are not evidence that the daemon/client path works.
 
 ## Determinism rules
 
@@ -61,10 +183,13 @@ required input may fault the Room; canonical mismatch may quarantine it.
 2. Validate pack-specific Role, phase, deadline, and payload rules.
 3. Return a typed rejection without mutation, or a proposed next Activity
    State and consequences.
-4. Request any WorldStream-owned Core changes explicitly.
+4. For a Core Stimulus, inspect the immutable Core-before and host-proposed
+   Core-after views; veto only join, resume, Access Mode, or Role proposals
+   when the pack's stable rules require it. A pack never mutates Core.
 5. Emit deterministic Domain Events, timers, observation consequences,
    attention, and Outcome changes.
-6. Let Core validate/veto protected Membership and Room lifecycle changes.
+6. Let Core construct, authorize, and validate every Membership and Room
+   lifecycle change before persistence.
 
 Never duplicate Action legality in the UI or Runner. `view` emits exact
 current Action Offers for the viewer; clients submit one of those offers.

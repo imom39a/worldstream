@@ -19,8 +19,9 @@ and Activity Pack APIs.
 
 - **Principal:** durable identity representing a human or agent.
 - **Membership:** one Principal's durable Room-local seat.
-- **Participant:** enabled human or agent Membership with participant access and
-  a pack-defined Role.
+- **Participant:** human or agent Room Member whose Membership has participant
+  access and a pack-defined Role. Its standing separately controls whether it
+  may currently submit Actions.
 - **Spectator Membership:** authorized read-only public view.
 - **Operator Membership:** scoped read-only diagnostic/administrative view.
 - **Role:** pack-defined responsibility; never use it as a synonym for access

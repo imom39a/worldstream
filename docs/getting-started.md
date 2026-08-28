@@ -28,6 +28,30 @@ The checkout pins these versions:
 Install `bash` and `curl` as well. Docker and PostgreSQL client tools are only
 needed for PostgreSQL, OCI, and release-specific checks.
 
+On a new workstation, install `rustup` from the
+[official Rust installer](https://rust-lang.org/install.html), install the exact
+Node 24.18.1 signed build from the
+[Node.js v24 archive](https://nodejs.org/en/download/archive/v24), then install
+the remaining pinned tools:
+
+```sh
+rustup toolchain install 1.97.1 --profile minimal \
+  --component rustfmt --component clippy
+corepack enable
+corepack install --global pnpm@11.19.0
+curl -LsSf https://astral.sh/uv/0.12.5/install.sh \
+  -o /tmp/worldstream-uv-install.sh
+less /tmp/worldstream-uv-install.sh
+sh /tmp/worldstream-uv-install.sh
+uv python install 3.14.7
+```
+
+Inspect downloaded installers before execution. Astral documents the
+[versioned uv installer](https://docs.astral.sh/uv/getting-started/installation/)
+and [managed Python versions](https://docs.astral.sh/uv/guides/install-python/).
+Open a new shell if an installer updated `PATH`, and confirm that every command
+reports the exact version in the table before continuing.
+
 From the repository root, install the locked Python and JavaScript
 dependencies:
 
@@ -68,6 +92,9 @@ chmod 600 .worldstream/authority.secret
 The secret file contains raw bytes, not hexadecimal text and not a trailing
 newline. Keep the same secret with the same database. WorldStream persists
 only its hash and intentionally rejects a different secret on a later start.
+This binds authority identity; it does not encrypt the SQLite file. Keep the
+directory owner-only and use host-volume encryption when data-at-rest
+encryption is required.
 
 Validate the configuration and inspect the local environment:
 
