@@ -25,11 +25,44 @@ services publicly.
 
 ## Daemon and storage
 
-### Authority bootstrap fails after restart
+### SQLite authority bootstrap conflicts after restart
 
-Restore the exact original 32-byte secret. If local state is disposable, reset
-both the database and secret together. Replacing only the secret is correctly
-rejected.
+This failure commonly appears when Studio starts the daemon after
+`.worldstream/authority.secret` was regenerated but `.worldstream/data` still
+contains the database bound to the previous secret:
+
+```text
+Error: SQLite authority bootstrap failed closed
+
+Caused by:
+    0: authority bootstrap transaction was rejected
+    1: authority change conflicts with another request
+```
+
+This is an intentional fail-closed authority check, not a migration failure.
+The database stores only a hash of the original 32-byte secret, so the original
+secret cannot be recovered from the database.
+
+Stop the daemon before recovery, then choose one path:
+
+- **Preserve existing Rooms:** restore the exact original
+  `.worldstream/authority.secret`, keep it owner-only with `chmod 600`, and
+  retry the start. Do not edit the SQLite authority tables or receipts.
+- **Reset disposable local Rooms:** keep the current secret and archive the old
+  data directory before creating an empty owner-only replacement:
+
+  ```sh
+  mv .worldstream/data \
+    ".worldstream/data.authority-mismatch.$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -m 700 .worldstream/data
+  ```
+
+  Start the daemon again from Studio. The archived directory remains available
+  if it is needed for later investigation.
+
+The [quickstart](#/quickstart) reuses an existing secret instead of overwriting
+it. Keep each SQLite data directory paired with the secret that first
+bootstrapped it.
 
 ### `/healthz` works but `/readyz` fails
 

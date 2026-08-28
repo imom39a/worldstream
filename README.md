@@ -47,7 +47,9 @@ fastest way to build the real daemon and run it locally with bundled SQLite is:
 cargo build --locked -p worldstream-server --bins
 umask 077
 mkdir -p .worldstream/data
-head -c 32 /dev/urandom > .worldstream/authority.secret
+if [ ! -e .worldstream/authority.secret ]; then
+  head -c 32 /dev/urandom > .worldstream/authority.secret
+fi
 chmod 600 .worldstream/authority.secret
 target/debug/worldstreamctl --config config/development.toml config validate
 target/debug/worldstreamd --config config/development.toml

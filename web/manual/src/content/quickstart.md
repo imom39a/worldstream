@@ -79,13 +79,16 @@ assignment-bound MCP helper, and the managed reference Agent Host.
 ```sh
 umask 077
 mkdir -p .worldstream/data
-head -c 32 /dev/urandom > .worldstream/authority.secret
+if [ ! -e .worldstream/authority.secret ]; then
+  head -c 32 /dev/urandom > .worldstream/authority.secret
+fi
 chmod 600 .worldstream/authority.secret
 ```
 
 The secret is exactly 32 random bytes—not hexadecimal text and not a line of
-text. Keep it with the same database. WorldStream persists its hash and rejects
-a different secret on restart.
+text. The setup command reuses an existing secret instead of overwriting it.
+Keep it with the same database. WorldStream persists its hash and rejects a
+different secret on restart.
 
 Validate before starting:
 

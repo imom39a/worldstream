@@ -85,16 +85,19 @@ Create the local data directory and one random 32-byte bootstrap secret:
 ```sh
 umask 077
 mkdir -p .worldstream/data
-head -c 32 /dev/urandom > .worldstream/authority.secret
+if [ ! -e .worldstream/authority.secret ]; then
+  head -c 32 /dev/urandom > .worldstream/authority.secret
+fi
 chmod 600 .worldstream/authority.secret
 ```
 
 The secret file contains raw bytes, not hexadecimal text and not a trailing
-newline. Keep the same secret with the same database. WorldStream persists
-only its hash and intentionally rejects a different secret on a later start.
-This binds authority identity; it does not encrypt the SQLite file. Keep the
-directory owner-only and use host-volume encryption when data-at-rest
-encryption is required.
+newline. The setup command reuses an existing secret instead of overwriting it.
+Keep the same secret with the same database. WorldStream persists only its hash
+and intentionally rejects a different secret on a later start. This binds
+authority identity; it does not encrypt the SQLite file. Keep the directory
+owner-only and use host-volume encryption when data-at-rest encryption is
+required.
 
 Validate the configuration and inspect the local environment:
 
