@@ -58,9 +58,9 @@ enum CompatibilityCommand {
 
 #[derive(Debug, Subcommand)]
 enum CounterDependenciesCommand {
-    /// Regenerate Counter v3's checked-in normal/build dependency closure.
+    /// Regenerate Counter v4's checked-in normal/build dependency closure.
     Generate,
-    /// Verify Counter v1/v2's frozen closure and Counter v3's resolved closure.
+    /// Verify Counter v1/v2/v3's frozen closures and Counter v4's resolved closure.
     Verify,
 }
 

@@ -4,7 +4,7 @@ use worldstream_core::{
     CoreReducerV1, PackRegistryErrorV1, PreparedCoreStateV1, PreparedRoomTransitionV1,
     RoomTransitionPreparerV1, RoomTransitionStateV1, TimerRequestV1, VerifiedCoreStateV1,
     agent_heist_lobby_digest, builtin_worldstream_registry, counter_v1_digest, counter_v2_digest,
-    counter_v3_digest,
+    counter_v3_digest, counter_v4_digest,
 };
 
 #[test]
@@ -24,7 +24,7 @@ fn activity_pack_catalog_preserves_exact_revision_identity_and_schema_bytes() {
         .unwrap_or_else(|error| unreachable!("built-in registry: {error}"));
 
     let revisions = registry.catalog_revisions().collect::<Vec<_>>();
-    assert_eq!(revisions.len(), 6);
+    assert_eq!(revisions.len(), 7);
     assert!(
         revisions
             .iter()
@@ -49,13 +49,23 @@ fn activity_pack_catalog_preserves_exact_revision_identity_and_schema_bytes() {
     assert!(selectable.runnable_for_retained_rooms);
     assert_ne!(retained.revision_digest, selectable.revision_digest);
 
-    let attention_selectable = registry
+    let attention_retained = registry
         .catalog_revision(&counter_v3_digest())
         .unwrap_or_else(|error| unreachable!("attention revision: {error}"));
+    assert!(!attention_retained.selectable_for_new_rooms);
+    assert!(attention_retained.runnable_for_retained_rooms);
+    assert_ne!(
+        selectable.revision_digest,
+        attention_retained.revision_digest
+    );
+
+    let attention_selectable = registry
+        .catalog_revision(&counter_v4_digest())
+        .unwrap_or_else(|error| unreachable!("target-qualified attention revision: {error}"));
     assert!(attention_selectable.selectable_for_new_rooms);
     assert!(attention_selectable.runnable_for_retained_rooms);
     assert_ne!(
-        selectable.revision_digest,
+        attention_retained.revision_digest,
         attention_selectable.revision_digest
     );
 

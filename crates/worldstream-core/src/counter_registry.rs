@@ -15,6 +15,7 @@ use crate::{
     activity_pack::{CanonicalPackCodecV1, PackRegistryArtifactsV1, PackRegistryEntryV1},
     counter::{counter_v1_revision, counter_v2_revision},
     counter_attention::counter_v3_revision,
+    counter_attention_v4::counter_v4_revision,
 };
 
 const PARTICIPANT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
@@ -33,6 +34,11 @@ const COUNTER_V3_TRANSCRIPT_DIGEST: &str =
 #[cfg(test)]
 const COUNTER_V3_CORPUS_DIGEST: &str =
     "blake3:e41e162eaadf33eee2f242d3736f2b678d3e24212fcde3528a8070ad8af01a18";
+const COUNTER_V4_TRANSCRIPT_DIGEST: &str =
+    "blake3:aaada63dd0819112cb84851a6c4a643cf9bd7bd6d821b0edf76baf8f4c8927b7";
+#[cfg(test)]
+const COUNTER_V4_CORPUS_DIGEST: &str =
+    "blake3:885639a0a9123ebba977250ed4cfc3d302a0e1fa0a61ab756e0b30a74b4f13b1";
 
 /// Constructs the complete embedded Counter conformance registry.
 ///
@@ -47,8 +53,9 @@ const COUNTER_V3_CORPUS_DIGEST: &str =
 pub fn builtin_counter_registry() -> Result<PackRegistryV1, PackRegistryErrorV1> {
     let v1 = counter_entry(false, true, CounterRevision::V1)?;
     let v2 = counter_entry(true, true, CounterRevision::V2)?;
-    let v3 = counter_entry(true, true, CounterRevision::V3)?;
-    PackRegistryV1::try_new([v1, v2, v3])
+    let v3 = counter_entry(false, true, CounterRevision::V3)?;
+    let v4 = counter_entry(true, true, CounterRevision::V4)?;
+    PackRegistryV1::try_new([v1, v2, v3, v4])
 }
 
 /// Builds the retained-v1-only registry used to prove missing-runtime recovery.
@@ -178,11 +185,18 @@ pub fn counter_v3_digest() -> PackDigestV1 {
     counter_v3_revision().0.revision_digest.clone()
 }
 
+/// Exact target-qualified Counter v4 semantic digest.
+#[must_use]
+pub fn counter_v4_digest() -> PackDigestV1 {
+    counter_v4_revision().0.revision_digest.clone()
+}
+
 #[derive(Clone, Copy)]
 enum CounterRevision {
     V1,
     V2,
     V3,
+    V4,
 }
 
 #[cfg(any(test, feature = "conformance-tracer"))]
@@ -436,6 +450,7 @@ impl CounterRevision {
             Self::V1 => COUNTER_V1_TRANSCRIPT_DIGEST,
             Self::V2 => COUNTER_V2_TRANSCRIPT_DIGEST,
             Self::V3 => COUNTER_V3_TRANSCRIPT_DIGEST,
+            Self::V4 => COUNTER_V4_TRANSCRIPT_DIGEST,
         }
     }
 }
@@ -449,6 +464,7 @@ fn counter_entry(
         CounterRevision::V1 => counter_v1_revision(),
         CounterRevision::V2 => counter_v2_revision(),
         CounterRevision::V3 => counter_v3_revision(),
+        CounterRevision::V4 => counter_v4_revision(),
     };
     let corpus = counter_corpus(revision, descriptor.revision_digest.clone());
     let artifacts = PackRegistryArtifactsV1 {
@@ -473,6 +489,9 @@ fn counter_entry(
         }
         CounterRevision::V3 => {
             PackRegistryEntryV1::counter_v3(lock.clone(), descriptor, artifacts, status)
+        }
+        CounterRevision::V4 => {
+            PackRegistryEntryV1::counter_v4(lock.clone(), descriptor, artifacts, status)
         }
     })
 }
@@ -501,7 +520,7 @@ fn counter_corpus(revision: CounterRevision, pack_digest: PackDigestV1) -> PackG
         None,
     );
     let mut memberships = vec![participant, spectator, operator];
-    if matches!(revision, CounterRevision::V3) {
+    if matches!(revision, CounterRevision::V3 | CounterRevision::V4) {
         memberships.extend([
             membership_with(
                 "01ARZ3NDEKTSV4RRFFQ69G5FC5",
@@ -541,7 +560,7 @@ fn counter_corpus(revision: CounterRevision, pack_digest: PackDigestV1) -> PackG
         .unwrap_or_else(|error| unreachable!("authored Counter Core fixture: {error}"));
     let configuration = match revision {
         CounterRevision::V1 => canonical(br#"{"initial_value":0,"maximum_value":1}"#),
-        CounterRevision::V2 | CounterRevision::V3 => {
+        CounterRevision::V2 | CounterRevision::V3 | CounterRevision::V4 => {
             canonical(br#"{"initial_value":0,"maximum_value":2}"#)
         }
     };
@@ -549,6 +568,7 @@ fn counter_corpus(revision: CounterRevision, pack_digest: PackDigestV1) -> PackG
         CounterRevision::V1 => counter_v1_revision().0,
         CounterRevision::V2 => counter_v2_revision().0,
         CounterRevision::V3 => counter_v3_revision().0,
+        CounterRevision::V4 => counter_v4_revision().0,
     };
     let empty_payload = canonical(br"{}");
     PackGoldenCorpusV1 {
@@ -674,6 +694,7 @@ mod tests {
         },
         counter::{CounterV1, CounterV2},
         counter_attention::CounterV3,
+        counter_attention_v4::CounterV4,
     };
 
     fn transcript(revision: CounterRevision) -> serde_json::Value {
@@ -718,6 +739,20 @@ mod tests {
                     artifact.clone(),
                     &corpus,
                     CounterV3,
+                )
+            }
+            CounterRevision::V4 => {
+                let (descriptor, lock, schemas, codecs, artifact) = counter_v4_revision();
+                let corpus =
+                    counter_corpus(CounterRevision::V4, descriptor.revision_digest.clone());
+                author_golden_transcript_for_test(
+                    lock.clone(),
+                    descriptor,
+                    schemas.clone(),
+                    codecs.clone(),
+                    artifact.clone(),
+                    &corpus,
+                    CounterV4,
                 )
             }
         }
@@ -771,10 +806,23 @@ mod tests {
         )
         .unwrap_or_else(|()| unreachable!("authored Counter v3 transcript"));
         assert_eq!(v3, parsed(COUNTER_V3_TRANSCRIPT_DIGEST));
+        let (descriptor, lock, schemas, codecs, artifact) = counter_v4_revision();
+        let corpus = counter_corpus(CounterRevision::V4, descriptor.revision_digest.clone());
+        let v4 = author_golden_transcript_digest_for_test(
+            lock.clone(),
+            descriptor,
+            schemas.clone(),
+            codecs.clone(),
+            artifact.clone(),
+            &corpus,
+            CounterV4,
+        )
+        .unwrap_or_else(|()| unreachable!("authored Counter v4 transcript"));
+        assert_eq!(v4, parsed(COUNTER_V4_TRANSCRIPT_DIGEST));
     }
 
     #[test]
-    fn counter_revisions_remain_retained_while_v2_and_v3_are_conformance_selectable() {
+    fn counter_revisions_remain_retained_while_v2_and_v4_are_conformance_selectable() {
         let registry = builtin_counter_registry()
             .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"));
         let v1 = registry
@@ -786,15 +834,21 @@ mod tests {
         let v3 = registry
             .load_retained(&counter_v3_digest())
             .unwrap_or_else(|error| unreachable!("Counter v3 retained: {error}"));
+        let v4 = registry
+            .load_retained(&counter_v4_digest())
+            .unwrap_or_else(|error| unreachable!("Counter v4 retained: {error}"));
         assert!(!v1.status().selectable_for_new_rooms);
         assert!(v1.status().runnable_for_retained_rooms);
         assert!(v2.status().selectable_for_new_rooms);
         assert!(v2.status().runnable_for_retained_rooms);
-        assert!(v3.status().selectable_for_new_rooms);
+        assert!(!v3.status().selectable_for_new_rooms);
         assert!(v3.status().runnable_for_retained_rooms);
+        assert!(v4.status().selectable_for_new_rooms);
+        assert!(v4.status().runnable_for_retained_rooms);
         assert!(registry.select_for_new_room(&counter_v1_digest()).is_err());
         assert!(registry.select_for_new_room(&counter_v2_digest()).is_ok());
-        assert!(registry.select_for_new_room(&counter_v3_digest()).is_ok());
+        assert!(registry.select_for_new_room(&counter_v3_digest()).is_err());
+        assert!(registry.select_for_new_room(&counter_v4_digest()).is_ok());
     }
 
     #[test]
@@ -968,6 +1022,73 @@ mod tests {
     }
 
     #[test]
+    fn counter_v4_human_ack_uses_target_qualified_attention_and_replays() {
+        let registry = builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"));
+        let corpus = counter_corpus(CounterRevision::V4, counter_v4_digest());
+        let prepared = registry
+            .prepare_genesis_for_new_room(&corpus.genesis)
+            .unwrap_or_else(|error| unreachable!("Counter v4 genesis: {error}"));
+        let mut trace = CoreTraceV1::create_uncommitted(prepared)
+            .unwrap_or_else(|error| unreachable!("Counter v4 trace: {error}"));
+        let private_ack = trace
+            .retained_pack()
+            .unwrap_or_else(|| unreachable!("Counter v4 retained pack"))
+            .descriptor()
+            .actions
+            .iter()
+            .find(|action| action.action_type == "private_ack")
+            .unwrap_or_else(|| unreachable!("Counter v4 private acknowledgement"));
+        trace
+            .advance(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+                member_id: parsed(PARTICIPANT),
+                action_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC3"),
+                action_type: "private_ack".to_owned(),
+                payload_schema_digest: private_ack.payload_schema.schema_digest.clone(),
+                canonical_payload: canonical(br"{}"),
+                exact_basis_head: trace.head().clone(),
+                admitted_at: parsed("2026-08-15T12:00:01Z"),
+            }))
+            .unwrap_or_else(|error| unreachable!("Counter v4 acknowledgement: {error}"));
+
+        let transition = &trace.transitions()[0];
+        let signals =
+            transition
+                .ordered_attention_signals()
+                .iter()
+                .map(|signal| {
+                    serde_json::from_slice::<serde_json::Value>(&signal.to_bytes().unwrap_or_else(
+                        |error| unreachable!("Counter v4 Attention bytes: {error}"),
+                    ))
+                    .unwrap_or_else(|error| unreachable!("Counter v4 Attention JSON: {error}"))
+                })
+                .collect::<Vec<_>>();
+        assert_eq!(signals.len(), 2);
+        assert_eq!(
+            signals[0]["deduplication_key"],
+            "counter_private_acknowledged:01ARZ3NDEKTSV4RRFFQ69G5FC3:01ARZ3NDEKTSV4RRFFQ69G5FC5"
+        );
+        assert_eq!(
+            signals[1]["deduplication_key"],
+            "counter_private_acknowledged:01ARZ3NDEKTSV4RRFFQ69G5FC3:01ARZ3NDEKTSV4RRFFQ69G5FC6"
+        );
+
+        let replay = CoreTraceV1::replay(
+            &registry,
+            &trace
+                .genesis_bytes()
+                .unwrap_or_else(|error| unreachable!("Counter v4 Genesis bytes: {error}")),
+            &trace
+                .transition_bytes()
+                .unwrap_or_else(|error| unreachable!("Counter v4 Transition bytes: {error}")),
+        )
+        .unwrap_or_else(|error| unreachable!("Counter v4 replay: {error:?}"));
+        assert_eq!(replay.final_head, *trace.head());
+        assert_eq!(replay.activity_callback_count, 1);
+        assert_eq!(replay.external_effect_count, 0);
+    }
+
+    #[test]
     fn counter_v3_compatibility_metadata_is_fixed() {
         let (descriptor, lock, schemas, codecs, artifact) = counter_v3_revision();
         assert_eq!(
@@ -1000,5 +1121,52 @@ mod tests {
                 .unwrap_or_else(|error| unreachable!("Counter v3 corpus digest: {error}")),
             parsed(COUNTER_V3_CORPUS_DIGEST)
         );
+    }
+
+    #[test]
+    fn counter_v4_compatibility_metadata_is_fixed() {
+        let (descriptor, lock, schemas, codecs, artifact) = counter_v4_revision();
+        assert_eq!(
+            descriptor.revision_digest,
+            parsed("blake3:2a1d2e493cbaffa3803724dfef42d35c167db2237aa9b1e113dfb79679e9c052")
+        );
+        assert_eq!(
+            lock.descriptor_digest,
+            parsed("blake3:5b5b431d2008b56cddc38541f16c6b12d2c54cb5e1a323b73671e24f9d4502a0")
+        );
+        assert_eq!(
+            *artifact,
+            parsed("blake3:0c591f3a9a3716003eb11c9b71160d808bfc52422046a347439407e1a430df37")
+        );
+        assert_eq!(
+            schemas
+                .digest()
+                .unwrap_or_else(|error| unreachable!("Counter v4 schema digest: {error}")),
+            parsed("blake3:bfb839aeaabf089a318d0b14ef403bfdee0f49883111c7a60c7f8158af177e8f")
+        );
+        assert_eq!(
+            codecs
+                .digest()
+                .unwrap_or_else(|error| unreachable!("Counter v4 codecs digest: {error}")),
+            parsed("blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30")
+        );
+        assert_eq!(
+            counter_corpus(CounterRevision::V4, descriptor.revision_digest.clone())
+                .digest()
+                .unwrap_or_else(|error| unreachable!("Counter v4 corpus digest: {error}")),
+            parsed(COUNTER_V4_CORPUS_DIGEST)
+        );
+        let corpus = counter_corpus(CounterRevision::V4, descriptor.revision_digest.clone());
+        let transcript = author_golden_transcript_digest_for_test(
+            lock.clone(),
+            descriptor,
+            schemas.clone(),
+            codecs.clone(),
+            artifact.clone(),
+            &corpus,
+            CounterV4,
+        )
+        .unwrap_or_else(|()| unreachable!("authored Counter v4 transcript"));
+        assert_eq!(transcript, parsed(COUNTER_V4_TRANSCRIPT_DIGEST));
     }
 }

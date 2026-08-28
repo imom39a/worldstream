@@ -512,6 +512,23 @@
     },
     {
       "codec_bundle_digest": "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30",
+      "descriptor_digest": "blake3:5b5b431d2008b56cddc38541f16c6b12d2c54cb5e1a323b73671e24f9d4502a0",
+      "executor_artifact_digest": "blake3:0c591f3a9a3716003eb11c9b71160d808bfc52422046a347439407e1a430df37",
+      "explanatory_version": "4.0.0",
+      "golden_corpus_digest": "blake3:885639a0a9123ebba977250ed4cfc3d302a0e1fa0a61ab756e0b30a74b4f13b1",
+      "host_contract_id": "worldstream/activity-pack/v1",
+      "pack_id": "worldstream.counter",
+      "required_for_release": true,
+      "revision_digest": "blake3:2a1d2e493cbaffa3803724dfef42d35c167db2237aa9b1e113dfb79679e9c052",
+      "revision_digest_algorithm": "blake3",
+      "revision_lock_id": "worldstream/pack-revision-lock/v1",
+      "runnable_for_retained_rooms": true,
+      "schema_bundle_digest": "blake3:bfb839aeaabf089a318d0b14ef403bfdee0f49883111c7a60c7f8158af177e8f",
+      "selectable_for_new_rooms": false,
+      "status": "resolved"
+    },
+    {
+      "codec_bundle_digest": "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30",
       "descriptor_digest": "blake3:584bae0d101510fc8435adfadf29bfcd39bd789f2d5aa4c4348d4ce4f6d42d13",
       "executor_artifact_digest": "blake3:6a4c9682b9d3702e7c1283348883214919cf53e4570ce0c5e68cbb5159cdd7e4",
       "explanatory_version": "0.0.1",

@@ -157,12 +157,12 @@ fn verify_embedded_counter_registry(manifest: &Value) -> Result<()> {
         .iter()
         .filter(|row| row["pack_id"] == "worldstream.counter")
         .collect();
-    if counter_rows.len() != 3 {
-        bail!("manifest must contain exactly Counter v1, v2, and v3 executor rows");
+    if counter_rows.len() != 4 {
+        bail!("manifest must contain exactly Counter v1, v2, v3, and v4 executor rows");
     }
 
     let registry = builtin_counter_registry().context("embedded Counter registry is invalid")?;
-    for expected_version in ["1.0.0", "2.0.0", "3.0.0"] {
+    for expected_version in ["1.0.0", "2.0.0", "3.0.0", "4.0.0"] {
         let row = counter_rows
             .iter()
             .copied()
@@ -537,7 +537,7 @@ mod tests {
     };
 
     #[test]
-    fn embedded_counter_registry_requires_the_exact_three_revision_rows() {
+    fn embedded_counter_registry_requires_the_exact_four_revision_rows() {
         let mut manifest: serde_json::Value =
             serde_json::from_str(include_str!("../../compatibility.json"))
                 .unwrap_or_else(|error| unreachable!("parse compatibility fixture: {error}"));
@@ -547,7 +547,7 @@ mod tests {
             .as_array_mut()
             .unwrap_or_else(|| unreachable!("pack executors"))
             .retain(|row| {
-                row["pack_id"] != "worldstream.counter" || row["explanatory_version"] != "3.0.0"
+                row["pack_id"] != "worldstream.counter" || row["explanatory_version"] != "4.0.0"
             });
         assert!(verify_embedded_counter_registry(&manifest).is_err());
     }

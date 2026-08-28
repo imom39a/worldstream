@@ -5,11 +5,11 @@
 //! module derives one canonical artifact from Cargo's resolved graph plus
 //! `Cargo.lock`, then verifies the checked-in copy.
 //!
-//! Counter v1 and v2 retain the historical v1 closure that was already part
-//! of their immutable locks. Counter v3 instead binds the current resolved
-//! graph in a versioned v2 closure, including `worldstream-protocol`'s
-//! normal `zeroize` edge. This keeps historical revisions byte-identical
-//! while making the new revision fail closed against the graph it runs with.
+//! Counter v1, v2, and v3 retain the exact closures already part of their
+//! immutable locks. Counter v4 binds the current resolved graph in a
+//! versioned v2 closure, including `worldstream-protocol`'s normal `zeroize`
+//! edge. This keeps retained revisions byte-identical while making the new
+//! revision fail closed against the graph it runs with.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -26,26 +26,38 @@ const HISTORICAL_ARTIFACT_RELATIVE_PATH: &str =
     "crates/worldstream-core/src/counter-dependency-closure.json";
 const V3_ARTIFACT_RELATIVE_PATH: &str =
     "crates/worldstream-core/src/counter-v3-dependency-closure.json";
+const V4_ARTIFACT_RELATIVE_PATH: &str =
+    "crates/worldstream-core/src/counter-v4-dependency-closure.json";
 const ROOT_PACKAGE: &str = "worldstream-core";
-const V3_SCHEMA: &str = "worldstream/counter-dependency-closure/v2";
+const CURRENT_SCHEMA: &str = "worldstream/counter-dependency-closure/v2";
 const HISTORICAL_SCHEMA: &str = "worldstream/counter-dependency-closure/v1";
 const HISTORICAL_CLOSURE_DIGEST: &str =
     "blake3:35337fb8034fed17a4a45f05d578f6321b1cd1431f029d2d6389154e5758623f";
+const V3_CLOSURE_DIGEST: &str =
+    "blake3:ab6522185e745316baa46dcec26e41644c57198df8d28a5170c0b1ecaa5302ae";
 
 type EnabledFeatures = BTreeMap<(String, String), BTreeSet<String>>;
 type LockEntries<'a> = BTreeMap<(String, String, Option<String>), &'a toml::Value>;
 
 pub fn generate(repository_root: &Path) -> Result<()> {
     let bytes = expected_bytes(repository_root)?;
-    let path = repository_root.join(V3_ARTIFACT_RELATIVE_PATH);
+    write_v4_bytes(repository_root, &bytes)
+}
+
+fn write_v4_bytes(repository_root: &Path, bytes: &[u8]) -> Result<()> {
+    let path = repository_root.join(V4_ARTIFACT_RELATIVE_PATH);
     fs::write(&path, bytes).with_context(|| format!("cannot write {}", path.display()))
 }
 
 pub fn verify(repository_root: &Path) -> Result<()> {
     let expected = expected_bytes(repository_root)?;
-    let path = repository_root.join(V3_ARTIFACT_RELATIVE_PATH);
-    let checked_in = fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
-    verify_bytes(&expected, &checked_in, &path)?;
+    let v4_path = repository_root.join(V4_ARTIFACT_RELATIVE_PATH);
+    let v4 = fs::read(&v4_path).with_context(|| format!("cannot read {}", v4_path.display()))?;
+    verify_bytes(&expected, &v4, &v4_path)?;
+
+    let v3_path = repository_root.join(V3_ARTIFACT_RELATIVE_PATH);
+    let v3 = fs::read(&v3_path).with_context(|| format!("cannot read {}", v3_path.display()))?;
+    verify_v3_bytes(&v3, &v3_path)?;
 
     let historical_path = repository_root.join(HISTORICAL_ARTIFACT_RELATIVE_PATH);
     let historical = fs::read(&historical_path)
@@ -64,18 +76,44 @@ pub(crate) fn verify_bytes(expected: &[u8], checked_in: &[u8], path: &Path) -> R
 }
 
 fn verify_historical_bytes(checked_in: &[u8], path: &Path) -> Result<()> {
+    verify_frozen_bytes(
+        checked_in,
+        path,
+        HISTORICAL_SCHEMA,
+        HISTORICAL_CLOSURE_DIGEST,
+        "Counter v1/v2",
+    )
+}
+
+fn verify_v3_bytes(checked_in: &[u8], path: &Path) -> Result<()> {
+    verify_frozen_bytes(
+        checked_in,
+        path,
+        CURRENT_SCHEMA,
+        V3_CLOSURE_DIGEST,
+        "Counter v3",
+    )
+}
+
+fn verify_frozen_bytes(
+    checked_in: &[u8],
+    path: &Path,
+    expected_schema: &str,
+    expected_digest: &str,
+    revision: &str,
+) -> Result<()> {
     let value: Value = serde_json::from_slice(checked_in)
         .with_context(|| format!("{} is not valid JSON", path.display()))?;
-    if value["schema"].as_str() != Some(HISTORICAL_SCHEMA) {
+    if value["schema"].as_str() != Some(expected_schema) {
         bail!(
-            "{} has an unexpected historical Counter closure schema",
+            "{} has an unexpected frozen {revision} closure schema",
             path.display()
         );
     }
     let actual = Blake3DigestV1::hash(checked_in).to_string();
-    if actual != HISTORICAL_CLOSURE_DIGEST {
+    if actual != expected_digest {
         bail!(
-            "{} differs from the frozen Counter v1/v2 dependency closure",
+            "{} differs from the frozen {revision} dependency closure",
             path.display()
         );
     }
@@ -88,7 +126,13 @@ fn expected_bytes(repository_root: &Path) -> Result<Vec<u8>> {
     let metadata = cargo_metadata(&repository_root)?;
     let lock = cargo_lock(&repository_root)?;
     let features = cargo_tree_features(&repository_root)?;
-    let value = closure_value(&repository_root, &metadata, &lock, &features, V3_SCHEMA)?;
+    let value = closure_value(
+        &repository_root,
+        &metadata,
+        &lock,
+        &features,
+        CURRENT_SCHEMA,
+    )?;
     let mut bytes = serde_json::to_vec_pretty(&value)?;
     bytes.push(b'\n');
     Ok(bytes)
@@ -399,6 +443,7 @@ fn string<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn checked_in_closure_excludes_the_unrelated_sqlite_adapter() {
@@ -415,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn closure_verification_fails_closed_for_real_byte_drift() {
+    fn v4_closure_verification_fails_closed_for_real_byte_drift() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let expected =
             expected_bytes(&root).unwrap_or_else(|error| unreachable!("closure: {error}"));
@@ -452,13 +497,59 @@ mod tests {
     }
 
     #[test]
-    fn v3_closure_binds_the_current_protocol_graph_with_a_new_schema() {
+    fn v3_closure_is_frozen_by_schema_and_exact_digest() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let path = root.join(V3_ARTIFACT_RELATIVE_PATH);
+        let v3 = fs::read(&path).unwrap_or_else(|error| unreachable!("Counter v3: {error}"));
+        verify_v3_bytes(&v3, &path)
+            .unwrap_or_else(|error| unreachable!("Counter v3 verification: {error}"));
+
+        let mut drifted = v3;
+        let index = drifted
+            .iter()
+            .position(u8::is_ascii_alphanumeric)
+            .unwrap_or_else(|| unreachable!("canonical closure has text"));
+        drifted[index] = b'x';
+        assert!(verify_v3_bytes(&drifted, &path).is_err());
+    }
+
+    #[test]
+    fn generation_writes_only_the_v4_closure() {
+        let root = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+        let v3_path = root.path().join(V3_ARTIFACT_RELATIVE_PATH);
+        let v4_path = root.path().join(V4_ARTIFACT_RELATIVE_PATH);
+        fs::create_dir_all(
+            v3_path
+                .parent()
+                .unwrap_or_else(|| unreachable!("Counter closure parent")),
+        )
+        .unwrap_or_else(|error| unreachable!("Counter closure directory: {error}"));
+        fs::write(&v3_path, b"immutable Counter v3 closure\n")
+            .unwrap_or_else(|error| unreachable!("seed Counter v3 closure: {error}"));
+
+        write_v4_bytes(root.path(), b"new Counter v4 closure\n")
+            .unwrap_or_else(|error| unreachable!("write Counter v4 closure: {error}"));
+
+        assert_eq!(
+            fs::read(&v3_path)
+                .unwrap_or_else(|error| unreachable!("read Counter v3 closure: {error}")),
+            b"immutable Counter v3 closure\n"
+        );
+        assert_eq!(
+            fs::read(&v4_path)
+                .unwrap_or_else(|error| unreachable!("read Counter v4 closure: {error}")),
+            b"new Counter v4 closure\n"
+        );
+    }
+
+    #[test]
+    fn v4_closure_binds_the_current_protocol_graph_with_a_new_schema() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let expected =
             expected_bytes(&root).unwrap_or_else(|error| unreachable!("closure: {error}"));
         let value: Value = serde_json::from_slice(&expected)
             .unwrap_or_else(|error| unreachable!("closure JSON: {error}"));
-        assert_eq!(value["schema"], V3_SCHEMA);
+        assert_eq!(value["schema"], CURRENT_SCHEMA);
         let protocol = value["packages"]
             .as_array()
             .unwrap_or_else(|| unreachable!("packages"))
@@ -483,7 +574,7 @@ mod tests {
         let lock = cargo_lock(&root).unwrap_or_else(|error| unreachable!("lock: {error}"));
         let features = cargo_tree_features(&root)
             .unwrap_or_else(|error| unreachable!("Counter features: {error}"));
-        let expected = closure_value(&root, &metadata, &lock, &features, V3_SCHEMA)
+        let expected = closure_value(&root, &metadata, &lock, &features, CURRENT_SCHEMA)
             .unwrap_or_else(|error| unreachable!("closure: {error}"));
 
         let mut with_core_feature = features.clone();
@@ -491,7 +582,7 @@ mod tests {
             .entry((ROOT_PACKAGE.to_owned(), "0.1.0".to_owned()))
             .or_default()
             .insert("behavior-affecting-core-feature".to_owned());
-        let actual = closure_value(&root, &metadata, &lock, &with_core_feature, V3_SCHEMA)
+        let actual = closure_value(&root, &metadata, &lock, &with_core_feature, CURRENT_SCHEMA)
             .unwrap_or_else(|error| unreachable!("feature-bound closure: {error}"));
         assert_ne!(actual, expected);
     }
@@ -505,7 +596,7 @@ mod tests {
         let lock = cargo_lock(&root).unwrap_or_else(|error| unreachable!("lock: {error}"));
         let features = cargo_tree_features(&root)
             .unwrap_or_else(|error| unreachable!("Counter features: {error}"));
-        let expected = closure_value(&root, &metadata, &lock, &features, V3_SCHEMA)
+        let expected = closure_value(&root, &metadata, &lock, &features, CURRENT_SCHEMA)
             .unwrap_or_else(|error| unreachable!("closure: {error}"));
 
         let mut workspace_unified_metadata = metadata.clone();
@@ -524,7 +615,7 @@ mod tests {
             &workspace_unified_metadata,
             &lock,
             &features,
-            V3_SCHEMA,
+            CURRENT_SCHEMA,
         )
         .unwrap_or_else(|error| unreachable!("feature-independent closure: {error}"));
         assert_eq!(from_workspace_unification, expected);
@@ -539,7 +630,7 @@ mod tests {
             &metadata,
             &lock,
             &with_unrelated_sqlite_feature,
-            V3_SCHEMA,
+            CURRENT_SCHEMA,
         )
         .unwrap_or_else(|error| unreachable!("sqlite-independent closure: {error}"));
         assert_eq!(from_sqlite_feature, expected);

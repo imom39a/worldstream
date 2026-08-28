@@ -1864,6 +1864,7 @@ enum ReviewedExecutorProvenanceV1 {
     CounterV1,
     CounterV2,
     CounterV3,
+    CounterV4,
     AgentHeistLobbyV2,
     AgentHeistV1,
     AgentHeistV0,
@@ -1881,6 +1882,7 @@ impl ReviewedExecutorProvenanceV1 {
             Self::CounterV1 => TypeId::of::<crate::counter::CounterV1>(),
             Self::CounterV2 => TypeId::of::<crate::counter::CounterV2>(),
             Self::CounterV3 => TypeId::of::<crate::counter_attention::CounterV3>(),
+            Self::CounterV4 => TypeId::of::<crate::counter_attention_v4::CounterV4>(),
             Self::AgentHeistLobbyV2 => TypeId::of::<crate::agent_heist_lobby::AgentHeistLobbyV2>(),
             Self::AgentHeistV1 => TypeId::of::<crate::agent_heist::AgentHeistV1>(),
             Self::AgentHeistV0 => TypeId::of::<crate::agent_heist::AgentHeistV0>(),
@@ -1896,6 +1898,7 @@ impl ReviewedExecutorProvenanceV1 {
             Self::CounterV1 => std::any::type_name::<crate::counter::CounterV1>(),
             Self::CounterV2 => std::any::type_name::<crate::counter::CounterV2>(),
             Self::CounterV3 => std::any::type_name::<crate::counter_attention::CounterV3>(),
+            Self::CounterV4 => std::any::type_name::<crate::counter_attention_v4::CounterV4>(),
             Self::AgentHeistLobbyV2 => {
                 std::any::type_name::<crate::agent_heist_lobby::AgentHeistLobbyV2>()
             }
@@ -1914,6 +1917,7 @@ impl ReviewedExecutorProvenanceV1 {
             Self::CounterV1 => crate::counter::counter_artifact_digest_v1(),
             Self::CounterV2 => crate::counter::counter_artifact_digest_v2(),
             Self::CounterV3 => crate::counter_attention::counter_artifact_digest_v3(),
+            Self::CounterV4 => crate::counter_attention_v4::counter_artifact_digest_v4(),
             Self::AgentHeistLobbyV2 => {
                 crate::agent_heist_lobby::agent_heist_lobby_artifact_digest()
             }
@@ -2006,6 +2010,22 @@ impl PackRegistryEntryV1 {
             artifacts,
             ReviewedExecutorProvenanceV1::CounterV3,
             crate::counter_attention::CounterV3,
+            status,
+        )
+    }
+
+    pub(crate) fn counter_v4(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(
+            revision_lock,
+            descriptor,
+            artifacts,
+            ReviewedExecutorProvenanceV1::CounterV4,
+            crate::counter_attention_v4::CounterV4,
             status,
         )
     }
