@@ -8,7 +8,6 @@ agent-streamer/
 ├── crates/                    Rust kernel, adapters, server, Supervisor
 ├── docs/                      normative architecture, protocol, ADRs, runbooks
 ├── examples/                  Counter and Agent Heist fixtures/acceptance
-├── research/                  dated non-normative primary-source research
 ├── sdk/python/                public asynchronous participant client
 ├── scripts/                   gates, smoke tests, local launch, release tools
 ├── tests/fixtures/            compatibility/storage/conformance fixtures
@@ -32,13 +31,12 @@ agent-streamer/
 | Activity Pack | `worldstream-core` registry/pack | compatibility, retained corpus, examples, all views |
 | agent contract | assignment MCP + activation core/protocol | Studio setup, Runner attention, managed host |
 | release contract | compatibility + packaging/gates | generated mirror, workflows, docs |
-| developer manual | `web/manual` | research source brief and primary docs |
+| developer manual | `web/manual` | primary docs |
 
 ## Normative vs explanatory
 
 - `docs/adr/`, requirements, architecture, protocol, security, and domain
   context govern behavior.
-- `research/` is dated evidence/analysis and explicitly non-normative.
 - examples prove only the boundary they actually execute.
 - this manual curates and teaches; it should link to the owning source for
   every important claim.

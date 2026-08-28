@@ -1,5 +1,6 @@
 /target/
 /tmp/
+/research/
 /.worldstream/
 /node_modules/
 /web/console/node_modules/
