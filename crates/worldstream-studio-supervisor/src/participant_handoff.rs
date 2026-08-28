@@ -145,6 +145,14 @@ pub enum ParticipantConsoleGatewayErrorV1 {
     Unavailable,
 }
 
+/// Internal observation result whose durable Cursor never crosses the browser boundary.
+pub struct ParticipantConsoleObservationV1 {
+    /// The only observation data eligible for browser-safe response encoding.
+    pub browser_value: Value,
+    /// The daemon-reported Membership Cursor retained by the local broker only.
+    pub durable_cursor: Option<u64>,
+}
+
 /// Membership-bound observe/act adapter used after the local session is admitted.
 pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
     /// Returns browser-safe authorized observation data for this Membership only.
@@ -155,8 +163,8 @@ pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
     fn observe(
         &self,
         authority: &HumanSeatAuthorityV1,
-        after_frame_seq: Option<u64>,
-    ) -> Result<Value, ParticipantConsoleGatewayErrorV1>;
+        durable_cursor: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1>;
 
     /// Submits an exact Action through this Membership's participant authority only.
     ///
@@ -166,6 +174,7 @@ pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
     fn act(
         &self,
         authority: &HumanSeatAuthorityV1,
+        durable_cursor: Option<u64>,
         request: &ParticipantActionRequestV1,
     ) -> Result<Value, ParticipantConsoleGatewayErrorV1>;
 
@@ -191,6 +200,7 @@ pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
     fn health(
         &self,
         _authority: &HumanSeatAuthorityV1,
+        _durable_cursor: Option<u64>,
     ) -> Result<ParticipantConsoleSessionHealthV1, ParticipantConsoleGatewayErrorV1> {
         Ok(ParticipantConsoleSessionHealthV1::Usable)
     }
@@ -263,7 +273,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
     fn attach(
         socket: &mut WebSocket<TcpStream>,
         authority: &HumanSeatAuthorityV1,
-        after_frame_seq: Option<u64>,
+        durable_cursor: Option<u64>,
     ) -> Result<RoomAttached, ParticipantConsoleGatewayErrorV1> {
         Self::send(
             socket,
@@ -271,7 +281,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             &serde_json::json!({
                 "room_id": authority.room_id(),
                 "member_id": authority.member_id(),
-                "after_frame_seq": after_frame_seq,
+                "after_frame_seq": durable_cursor,
             }),
         )?;
         let attached: RoomAttached =
@@ -385,28 +395,32 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
     fn observe(
         &self,
         authority: &HumanSeatAuthorityV1,
-        after_frame_seq: Option<u64>,
-    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        durable_cursor: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
         let mut socket = self.connect(authority)?;
-        let attached = Self::attach(&mut socket, authority, after_frame_seq)?;
+        let attached = Self::attach(&mut socket, authority, durable_cursor)?;
         if attached.membership_status != "enabled" {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
         let delivery = Self::read_delivery(&mut socket, authority)?;
-        Ok(serde_json::json!({
-            "room_head": browser_room_head(&attached.room_head),
-            "frame_head": attached.frame_head,
-            "delivery": delivery,
-        }))
+        Ok(ParticipantConsoleObservationV1 {
+            browser_value: serde_json::json!({
+                "room_head": browser_room_head(&attached.room_head),
+                "frame_head": attached.frame_head,
+                "delivery": delivery,
+            }),
+            durable_cursor: attached.cursor,
+        })
     }
 
     fn act(
         &self,
         authority: &HumanSeatAuthorityV1,
+        durable_cursor: Option<u64>,
         request: &ParticipantActionRequestV1,
     ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
         let mut socket = self.connect(authority)?;
-        let attached = Self::attach(&mut socket, authority, None)?;
+        let attached = Self::attach(&mut socket, authority, durable_cursor)?;
         if attached.membership_status != "enabled" {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
@@ -487,9 +501,10 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
     fn health(
         &self,
         authority: &HumanSeatAuthorityV1,
+        durable_cursor: Option<u64>,
     ) -> Result<ParticipantConsoleSessionHealthV1, ParticipantConsoleGatewayErrorV1> {
         let mut socket = self.connect(authority)?;
-        let attached = Self::attach(&mut socket, authority, None)?;
+        let attached = Self::attach(&mut socket, authority, durable_cursor)?;
         match attached.membership_status.as_str() {
             "enabled" => Ok(ParticipantConsoleSessionHealthV1::Usable),
             "suspended" | "departed" => Ok(ParticipantConsoleSessionHealthV1::Invalid),
@@ -624,9 +639,11 @@ struct HandoffRecordV1 {
     expires_at: Instant,
 }
 
+#[derive(Clone)]
 struct SessionRecordV1 {
     binding: SeatBindingV1,
     target_fingerprint: [u8; 32],
+    durable_cursor: Option<u64>,
     expires_at: Instant,
 }
 
@@ -766,6 +783,7 @@ impl ParticipantHandoffBrokerV1 {
                     authority.room_id(),
                     authority.member_id(),
                 ),
+                durable_cursor: None,
                 expires_at: Instant::now() + Duration::from_secs(SESSION_MAX_AGE_SECONDS),
             },
         );
@@ -776,8 +794,9 @@ impl ParticipantHandoffBrokerV1 {
         &self,
         cookie: Option<&str>,
     ) -> Result<ParticipantSessionStatusV1, ParticipantHandoffErrorV1> {
+        let cursor = self.session_cursor(cookie)?;
         let authority = self.resolve_session(cookie)?;
-        match self.inner.gateway.health(&authority) {
+        match self.inner.gateway.health(&authority, cursor) {
             Ok(ParticipantConsoleSessionHealthV1::Usable) => {
                 Ok(ParticipantSessionStatusV1::usable())
             }
@@ -806,13 +825,18 @@ impl ParticipantHandoffBrokerV1 {
         cookie: Option<&str>,
         request: ObserveRequestV1,
     ) -> Result<Value, ParticipantHandoffErrorV1> {
+        let cursor = self.session_cursor(cookie)?;
         let authority = self.resolve_session(cookie)?;
-        let value = self
+        let observation = self
             .inner
             .gateway
-            .observe(&authority, request.after_frame_seq)
+            .observe(&authority, cursor)
             .map_err(ParticipantHandoffErrorV1::from_gateway)?;
-        browser_safe_gateway_value(value)
+        self.update_session_cursor(cookie, observation.durable_cursor)?;
+        // A browser frame head records what this page rendered. The protected Console
+        // does not issue `observation.ack`, so it cannot become a Membership Cursor.
+        let _ = request.after_frame_seq;
+        browser_safe_gateway_value(observation.browser_value)
     }
 
     fn act(
@@ -821,11 +845,12 @@ impl ParticipantHandoffBrokerV1 {
         request: &ParticipantActionRequestV1,
     ) -> Result<Value, ParticipantHandoffErrorV1> {
         validate_action(request)?;
+        let cursor = self.session_cursor(cookie)?;
         let authority = self.resolve_session(cookie)?;
         let value = self
             .inner
             .gateway
-            .act(&authority, request)
+            .act(&authority, cursor, request)
             .map_err(ParticipantHandoffErrorV1::from_gateway)?;
         browser_safe_gateway_value(value)
     }
@@ -872,6 +897,42 @@ impl ParticipantHandoffBrokerV1 {
             .map_err(ParticipantHandoffErrorV1::from_authority)
     }
 
+    fn session_cursor(
+        &self,
+        cookie: Option<&str>,
+    ) -> Result<Option<u64>, ParticipantHandoffErrorV1> {
+        let token = cookie
+            .and_then(parse_session_cookie)
+            .filter(|value| is_token(value, "wss1:"))
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
+        let mut state = self.lock();
+        prune_expired(&mut state);
+        state
+            .sessions
+            .get(token)
+            .map(|record| record.durable_cursor)
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)
+    }
+
+    fn update_session_cursor(
+        &self,
+        cookie: Option<&str>,
+        cursor: Option<u64>,
+    ) -> Result<(), ParticipantHandoffErrorV1> {
+        let token = cookie
+            .and_then(parse_session_cookie)
+            .filter(|value| is_token(value, "wss1:"))
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
+        let mut state = self.lock();
+        prune_expired(&mut state);
+        let record = state
+            .sessions
+            .get_mut(token)
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
+        record.durable_cursor = cursor;
+        Ok(())
+    }
+
     fn lock(&self) -> MutexGuard<'_, BrokerStateV1> {
         self.inner
             .state
@@ -886,16 +947,16 @@ impl ParticipantConsoleReadinessSourceV1 for ParticipantHandoffBrokerV1 {
             return ParticipantConsoleSessionHealthV1::Invalid;
         }
         let expected = target_fingerprint(&self.inner.readiness_key, room_id, member_id);
-        let binding = {
+        let retained = {
             let mut state = self.lock();
             prune_expired(&mut state);
             state
                 .sessions
                 .values()
                 .find(|record| record.target_fingerprint == expected)
-                .map(|record| record.binding.clone())
+                .map(|record| (record.binding.clone(), record.durable_cursor))
         };
-        let Some(binding) = binding else {
+        let Some((binding, cursor)) = retained else {
             return ParticipantConsoleSessionHealthV1::Missing;
         };
         let authority = match self
@@ -914,7 +975,7 @@ impl ParticipantConsoleReadinessSourceV1 for ParticipantHandoffBrokerV1 {
                 | ParticipantHandoffAuthorityErrorV1::AuthorityInvalid,
             ) => return ParticipantConsoleSessionHealthV1::Invalid,
         };
-        match self.inner.gateway.health(&authority) {
+        match self.inner.gateway.health(&authority, cursor) {
             Ok(health) => health,
             Err(
                 ParticipantConsoleGatewayErrorV1::Disconnected
@@ -1442,6 +1503,7 @@ fn contains_prohibited_browser_material(value: &Value) -> bool {
                     | "room_id"
                     | "member_id"
                     | "membership_id"
+                    | "durable_cursor"
                     | "path"
                     | "file_path"
                     | "agent_private_memory"

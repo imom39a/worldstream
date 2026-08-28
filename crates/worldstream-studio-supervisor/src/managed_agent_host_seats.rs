@@ -55,27 +55,15 @@ async fn start(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ManagedAgentHostStatusV1>, StatusCode> {
-    if !is_json_content_type(&headers) {
-        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-    let request: ManagedHostSeatActionRequestV1 =
-        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if request.schema != "worldstream/studio-managed-agent-host-action/v1" {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    tokio::task::spawn_blocking(move || {
-        let assignment = state
-            .profiles
-            .assignment_for_room_seat(&room_id, &seat_id)
-            .map_err(map_profile_error)?;
-        state
-            .hosts
-            .start(&assignment.assignment_id)
-            .map_err(map_host_error)
-    })
+    dispatch(
+        state,
+        room_id,
+        seat_id,
+        headers,
+        body,
+        ManagedHostSeatOperationV1::Start,
+    )
     .await
-    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
-    .map(Json)
 }
 
 /// Stops only the host already bound to the exact persisted Room seat.
@@ -87,6 +75,31 @@ async fn stop(
     AxumPath((room_id, seat_id)): AxumPath<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
+) -> Result<Json<ManagedAgentHostStatusV1>, StatusCode> {
+    dispatch(
+        state,
+        room_id,
+        seat_id,
+        headers,
+        body,
+        ManagedHostSeatOperationV1::Stop,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum ManagedHostSeatOperationV1 {
+    Start,
+    Stop,
+}
+
+async fn dispatch(
+    state: ManagedHostSeatStateV1,
+    room_id: String,
+    seat_id: String,
+    headers: HeaderMap,
+    body: Bytes,
+    operation: ManagedHostSeatOperationV1,
 ) -> Result<Json<ManagedAgentHostStatusV1>, StatusCode> {
     if !is_json_content_type(&headers) {
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -101,10 +114,11 @@ async fn stop(
             .profiles
             .assignment_for_room_seat(&room_id, &seat_id)
             .map_err(map_profile_error)?;
-        state
-            .hosts
-            .stop(&assignment.assignment_id)
-            .map_err(map_host_error)
+        match operation {
+            ManagedHostSeatOperationV1::Start => state.hosts.start(&assignment.assignment_id),
+            ManagedHostSeatOperationV1::Stop => state.hosts.stop(&assignment.assignment_id),
+        }
+        .map_err(map_host_error)
     })
     .await
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?

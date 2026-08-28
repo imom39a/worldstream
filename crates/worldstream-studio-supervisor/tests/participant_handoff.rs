@@ -13,14 +13,15 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use http_body_util::BodyExt as _;
 use participant_handoff::{
     FixedDaemonParticipantConsoleGatewayV1, HumanSeatAuthorityV1, ParticipantConsoleGatewayErrorV1,
-    ParticipantConsoleGatewayV1, ParticipantConsoleReadinessSourceV1,
-    ParticipantConsoleSessionHealthV1, ParticipantHandoffAuthorityErrorV1,
-    ParticipantHandoffAuthoritySourceV1, ParticipantHandoffBrokerV1, participant_handoff_router,
+    ParticipantConsoleGatewayV1, ParticipantConsoleObservationV1,
+    ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1,
+    ParticipantHandoffAuthorityErrorV1, ParticipantHandoffAuthoritySourceV1,
+    ParticipantHandoffBrokerV1, participant_handoff_router,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
@@ -71,7 +72,7 @@ impl ParticipantHandoffAuthoritySourceV1 for FakeAuthoritySource {
     }
 }
 
-type GatewayCall = (String, String, &'static str);
+type GatewayCall = (String, String, Option<u64>, &'static str);
 
 #[derive(Clone, Default)]
 struct FakeGateway {
@@ -82,22 +83,27 @@ impl ParticipantConsoleGatewayV1 for FakeGateway {
     fn observe(
         &self,
         authority: &HumanSeatAuthorityV1,
-        _after_frame_seq: Option<u64>,
-    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        after_frame_seq: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
         self.calls
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push((
                 authority.room_id().to_owned(),
                 authority.member_id().to_owned(),
+                after_frame_seq,
                 "observe",
             ));
-        Ok(json!({"projection": {"phase": "Lobby"}, "frame_head": 7}))
+        Ok(ParticipantConsoleObservationV1 {
+            browser_value: json!({"projection": {"phase": "Lobby"}, "frame_head": 7}),
+            durable_cursor: None,
+        })
     }
 
     fn act(
         &self,
         authority: &HumanSeatAuthorityV1,
+        after_frame_seq: Option<u64>,
         _request: &participant_handoff::ParticipantActionRequestV1,
     ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
         self.calls
@@ -106,6 +112,7 @@ impl ParticipantConsoleGatewayV1 for FakeGateway {
             .push((
                 authority.room_id().to_owned(),
                 authority.member_id().to_owned(),
+                after_frame_seq,
                 "act",
             ));
         Ok(json!({"state": "accepted", "room_seq": 8}))
@@ -122,6 +129,7 @@ impl ParticipantConsoleGatewayV1 for FakeGateway {
             .push((
                 authority.room_id().to_owned(),
                 authority.member_id().to_owned(),
+                None,
                 "replay",
             ));
         Ok(json!({
@@ -152,6 +160,19 @@ fn app(source: FakeAuthoritySource, gateway: FakeGateway) -> axum::Router {
         16,
         source,
         gateway,
+    )
+    .unwrap_or_else(|error| panic!("test broker must be valid: {error:?}"));
+    participant_handoff_router(broker)
+}
+
+fn fixed_gateway_app(address: std::net::SocketAddr) -> axum::Router {
+    let broker = ParticipantHandoffBrokerV1::new(
+        STUDIO_ORIGIN,
+        CONSOLE_ORIGIN,
+        Duration::from_secs(30),
+        16,
+        FakeAuthoritySource::usable(),
+        FixedDaemonParticipantConsoleGatewayV1::new(address, Duration::from_secs(1)),
     )
     .unwrap_or_else(|error| panic!("test broker must be valid: {error:?}"));
     participant_handoff_router(broker)
@@ -213,6 +234,29 @@ async fn redeem_handoff(
         .oneshot(
             request
                 .body(Body::empty())
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"))
+}
+
+async fn console_request(
+    router: &axum::Router,
+    method: Method,
+    path: &str,
+    cookie: &str,
+    body: Body,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::ORIGIN, CONSOLE_ORIGIN)
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body)
                 .unwrap_or_else(|error| panic!("request: {error}")),
         )
         .await
@@ -347,6 +391,20 @@ async fn refresh_observe_and_act_reuse_only_the_bound_membership_authority() {
     assert!(!observed.to_string().contains(ROOM_ID));
     assert!(!observed.to_string().contains(MEMBER_ID));
 
+    let refreshed = router
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/participant-console/session:observe")
+                .header(header::ORIGIN, CONSOLE_ORIGIN)
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"after_frame_seq":7}"#))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"));
+    assert_eq!(refreshed.status(), StatusCode::OK);
+
     let act = router
         .clone()
         .oneshot(
@@ -400,9 +458,10 @@ async fn refresh_observe_and_act_reuse_only_the_bound_membership_authority() {
             .unwrap_or_else(PoisonError::into_inner)
             .as_slice(),
         &[
-            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), "observe"),
-            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), "act"),
-            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), "replay"),
+            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), None, "observe"),
+            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), None, "observe"),
+            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), None, "act"),
+            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), None, "replay"),
         ]
     );
 
@@ -440,12 +499,16 @@ async fn rejects_unknown_fields_and_browser_unsafe_gateway_payloads() {
             &self,
             _: &HumanSeatAuthorityV1,
             _: Option<u64>,
-        ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
-            Ok(json!({"nested": {"bearer": BEARER}}))
+        ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
+            Ok(ParticipantConsoleObservationV1 {
+                browser_value: json!({"nested": {"bearer": BEARER, "durable_cursor": 7}}),
+                durable_cursor: None,
+            })
         }
         fn act(
             &self,
             _: &HumanSeatAuthorityV1,
+            _: Option<u64>,
             _: &participant_handoff::ParticipantActionRequestV1,
         ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
             Ok(json!({"nested": {"member_id": MEMBER_ID}}))
@@ -682,35 +745,108 @@ fn fixed_daemon_gateway_sanitizes_projection_and_attaches_health_to_exact_member
     let observed = gateway
         .observe(&authority, None)
         .unwrap_or_else(|error| panic!("production observe: {error:?}"));
-    assert_eq!(observed["room_head"]["room_seq"], 7);
-    assert_eq!(observed["delivery"][0]["kind"], "projection_reset");
+    assert_eq!(observed.browser_value["room_head"]["room_seq"], 7);
     assert_eq!(
-        observed["delivery"][0]["body"]["projection"]["action_offers"][0]["action_type"],
+        observed.browser_value["delivery"][0]["kind"],
+        "projection_reset"
+    );
+    assert_eq!(
+        observed.browser_value["delivery"][0]["body"]["projection"]["action_offers"][0]["action_type"],
         "ready",
     );
-    let serialized = observed.to_string();
+    assert_eq!(observed.durable_cursor, None);
+    let serialized = observed.browser_value.to_string();
     assert!(!serialized.contains("room_id"));
     assert!(!serialized.contains(ROOM_ID));
     assert!(!serialized.contains("member_id"));
     assert_eq!(
-        gateway.health(&authority),
+        gateway.health(&authority, None),
         Ok(ParticipantConsoleSessionHealthV1::Usable)
     );
     assert_eq!(
-        gateway.health(&authority),
+        gateway.health(&authority, None),
         Ok(ParticipantConsoleSessionHealthV1::Invalid)
     );
     assert_eq!(
-        gateway.health(&authority),
+        gateway.health(&authority, None),
         Ok(ParticipantConsoleSessionHealthV1::Invalid)
     );
     assert_eq!(
-        gateway.health(&authority),
+        gateway.health(&authority, None),
         Err(ParticipantConsoleGatewayErrorV1::Rejected)
     );
     server
         .join()
         .unwrap_or_else(|error| panic!("daemon fixture thread: {error:?}"));
+}
+
+#[tokio::test]
+async fn protected_console_keeps_its_browser_frame_head_out_of_the_membership_cursor() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("bind cursor fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("cursor fixture address: {error}"));
+    let server = spawn_cursor_enforcing_daemon_fixture(listener);
+    let router = fixed_gateway_app(address);
+    let (_, handoff) = issue_handoff(&router).await;
+    let redeemed = redeem_handoff(&router, &handoff, None).await;
+    let cookie = redeemed
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+
+    let initial = console_request(
+        &router,
+        Method::POST,
+        "/api/v1/participant-console/session:observe",
+        &cookie,
+        Body::from(r#"{"after_frame_seq":null}"#),
+    )
+    .await;
+    assert_eq!(initial.status(), StatusCode::OK);
+    assert_eq!(json_response(initial).await["frame_head"], 7);
+
+    let refresh = console_request(
+        &router,
+        Method::POST,
+        "/api/v1/participant-console/session:observe",
+        &cookie,
+        Body::from(r#"{"after_frame_seq":7}"#),
+    )
+    .await;
+    assert_eq!(refresh.status(), StatusCode::OK);
+
+    let accepted = console_request(
+        &router,
+        Method::POST,
+        "/api/v1/participant-console/session:act",
+        &cookie,
+        Body::from(
+            r#"{"action_id":"01ARZ3NDEKTSV4RRFFQ69G5FAY","based_on_room_seq":7,"offer_id":"7:host_launch:0","schema_digest":"blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","action_type":"host_launch","payload":{}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::OK);
+
+    let reconnect = console_request(
+        &router,
+        Method::GET,
+        "/api/v1/participant-console/session",
+        &cookie,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(reconnect.status(), StatusCode::OK);
+
+    server
+        .join()
+        .unwrap_or_else(|error| panic!("cursor fixture thread: {error:?}"));
 }
 
 fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
@@ -720,6 +856,14 @@ fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
             .enumerate()
         {
             serve_daemon_fixture_connection(&listener, index, standing);
+        }
+    })
+}
+
+fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        for accepts_action in [false, false, true, false] {
+            serve_cursor_enforcing_connection(&listener, accepts_action);
         }
     })
 }
@@ -783,6 +927,52 @@ fn serve_daemon_fixture_connection(listener: &TcpListener, index: usize, standin
             .get_mut()
             .shutdown(std::net::Shutdown::Both)
             .unwrap_or_else(|error| panic!("close projection fixture: {error}"));
+    }
+}
+
+fn serve_cursor_enforcing_connection(listener: &TcpListener, accepts_action: bool) {
+    let (stream, _) = listener
+        .accept()
+        .unwrap_or_else(|error| panic!("accept cursor fixture: {error}"));
+    let mut socket = accept_hdr(stream, authorize_fixture_handshake)
+        .unwrap_or_else(|error| panic!("cursor fixture handshake: {error}"));
+    let _hello = socket
+        .read()
+        .unwrap_or_else(|error| panic!("read cursor hello: {error}"));
+    send_fixture_message(&mut socket, "server.welcome", &json!({}));
+    let attach = read_fixture_message(&mut socket, "cursor attach");
+    assert_eq!(attach["type"], "room.attach");
+    assert_eq!(attach["body"]["room_id"], ROOM_ID);
+    assert_eq!(attach["body"]["member_id"], MEMBER_ID);
+    // The protected Console is read-only with respect to Membership Cursor. A
+    // rendered frame head is never an ACK and therefore must remain null here.
+    assert_eq!(attach["body"]["after_frame_seq"], Value::Null);
+    send_fixture_message(
+        &mut socket,
+        "room.attached",
+        &fixture_attached(MEMBER_ID, "enabled"),
+    );
+    if accepts_action {
+        let sync_ack = read_fixture_message(&mut socket, "cursor sync ack");
+        assert_eq!(sync_ack["type"], "room.sync_ack");
+        send_fixture_message(&mut socket, "room.sync_acked", &json!({}));
+        let action = read_fixture_message(&mut socket, "cursor action");
+        assert_eq!(action["type"], "action.submit");
+        send_fixture_message(&mut socket, "action.accepted", &json!({"state":"accepted"}));
+    }
+}
+
+fn read_fixture_message(
+    socket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    context: &str,
+) -> Value {
+    match socket
+        .read()
+        .unwrap_or_else(|error| panic!("read {context}: {error}"))
+    {
+        Message::Text(text) => serde_json::from_str(text.as_str())
+            .unwrap_or_else(|error| panic!("parse {context}: {error}")),
+        other => panic!("unexpected {context} message: {other:?}"),
     }
 }
 

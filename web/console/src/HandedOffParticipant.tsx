@@ -6,6 +6,7 @@ import {
   type ParticipantConsoleAction,
   type ParticipantConsoleSessionState,
 } from "./participantSession";
+import { ParticipantConsoleRequestQueue } from "./participantRequestQueue";
 
 interface ParticipantOfferView {
   offerId: string;
@@ -26,7 +27,9 @@ export function HandedOffParticipant({
   const [state, setState] = useState<ParticipantConsoleSessionState>(session.state);
   const [replay, setReplay] = useState<ParticipantBrowserReplay | null>(null);
   const startTask = useRef<Promise<ParticipantConsoleSessionState> | null>(null);
-  const requestInFlight = useRef(false);
+  const requestQueueRef = useRef<ParticipantConsoleRequestQueue | null>(null);
+  if (requestQueueRef.current === null) requestQueueRef.current = new ParticipantConsoleRequestQueue();
+  const requestQueue = requestQueueRef.current;
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -45,16 +48,10 @@ export function HandedOffParticipant({
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (disposed) return;
-      if (requestInFlight.current) {
-        timer = setTimeout(poll, 1_000);
-        return;
-      }
-      requestInFlight.current = true;
       try {
-        const next = await session.refresh();
+        const next = await requestQueue.run(() => session.refresh());
         if (!disposed) setState(next);
       } finally {
-        requestInFlight.current = false;
         if (!disposed) timer = setTimeout(poll, 1_000);
       }
     };
@@ -63,43 +60,37 @@ export function HandedOffParticipant({
       disposed = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [session, state.state]);
+  }, [requestQueue, session, state.state]);
 
   const submit = async (action: ParticipantConsoleAction) => {
-    if (requestInFlight.current) return;
-    requestInFlight.current = true;
-    try {
-      await session.act(action);
-      const next = await session.refresh();
-      if (mounted.current) setState(next);
-    } catch (error) {
-      if (mounted.current) setState(session.fail(error));
-    } finally {
-      requestInFlight.current = false;
-    }
+    await requestQueue.run(async () => {
+      try {
+        await session.act(action);
+        const next = await session.refresh();
+        if (mounted.current) setState(next);
+      } catch (error) {
+        if (mounted.current) setState(session.fail(error));
+      }
+    });
   };
   const verifyReplay = async () => {
-    if (requestInFlight.current) return;
-    requestInFlight.current = true;
-    try {
-      const result = await session.replay();
-      if (mounted.current) setReplay(result);
-    } catch (error) {
-      if (mounted.current) setState(session.fail(error));
-    } finally {
-      requestInFlight.current = false;
-    }
+    await requestQueue.run(async () => {
+      try {
+        const result = await session.replay();
+        if (mounted.current) setReplay(result);
+      } catch (error) {
+        if (mounted.current) setState(session.fail(error));
+      }
+    });
   };
   return <ParticipantHandoffView
     state={state}
     replay={replay}
     onReconnect={async () => {
-      if (requestInFlight.current) return;
-      requestInFlight.current = true;
-      try {
+      await requestQueue.run(async () => {
         const next = await session.reconnect();
         if (mounted.current) setState(next);
-      } finally { requestInFlight.current = false; }
+      });
     }}
     onAct={submit}
     onReplay={verifyReplay}
