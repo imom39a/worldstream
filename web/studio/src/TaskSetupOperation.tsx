@@ -63,19 +63,23 @@ export function TaskSetupOperation({
         <button type="button" disabled={loading || !statusAvailable} onClick={onStart}>
           {loading ? "Starting setup…" : "Provision participant access"}
         </button>
-      ) : retryable ? (
+      ) : retryable || (setup?.state === "ready" && setup.launch_applicability === "unknown") ? (
         <button type="button" disabled={loading} onClick={onRetry}>
           {loading ? "Retrying exact stage…" : "Retry original setup"}
         </button>
-      ) : setup?.state === "ready" && setup.launch?.state !== "launched" ? (
+      ) : setup?.state === "ready" && setup.launch_applicability === "lobby_launch" && setup.launch?.state !== "launched" ? (
         <button type="button" disabled={loading || !setup.readiness.ready_to_launch} onClick={onLaunch}>
           {loading ? "Reconciling launch…" : setup.launch === null ? "Launch Task" : "Retry original launch"}
         </button>
       ) : null}
       {setup?.launch?.state === "launched" ? (
         <div className="task-launch-committed" role="status"><strong>Task launched</strong><p>The committed Lobby transition is now observable.</p></div>
-      ) : setup?.state === "ready" && !setup.readiness.ready_to_launch ? (
+      ) : setup?.state === "ready" && setup.launch_applicability === "lobby_launch" && !setup.readiness.ready_to_launch ? (
         <p className="task-launch-blocked" role="status">Launch is blocked until every required seat is live-ready.</p>
+      ) : setup?.state === "ready" && setup.launch_applicability === "active_at_genesis" ? (
+        <div className="task-launch-committed" role="status"><strong>Room active</strong><p>Genesis created the active Room. Open an available participant handoff to connect.</p></div>
+      ) : setup?.state === "ready" && setup.launch_applicability === "unknown" ? (
+        <p className="task-launch-blocked" role="status">The exact Activity Pack launch contract is unavailable. Retry setup after restoring catalog access.</p>
       ) : null}
       <p className="task-setup-boundary">
         Participant Action authority and Runner-control authority are provisioned separately. Credentials remain in the protected Supervisor vault.

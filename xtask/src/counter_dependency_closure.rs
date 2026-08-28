@@ -4,6 +4,12 @@
 //! workspace-wide feature unification, or dev-only test dependencies. This
 //! module derives one canonical artifact from Cargo's resolved graph plus
 //! `Cargo.lock`, then verifies the checked-in copy.
+//!
+//! Counter v1 and v2 retain the historical v1 closure that was already part
+//! of their immutable locks. Counter v3 instead binds the current resolved
+//! graph in a versioned v2 closure, including `worldstream-protocol`'s
+//! normal `zeroize` edge. This keeps historical revisions byte-identical
+//! while making the new revision fail closed against the graph it runs with.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -14,25 +20,37 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use worldstream_core::Blake3DigestV1;
 
-const ARTIFACT_RELATIVE_PATH: &str = "crates/worldstream-core/src/counter-dependency-closure.json";
+const HISTORICAL_ARTIFACT_RELATIVE_PATH: &str =
+    "crates/worldstream-core/src/counter-dependency-closure.json";
+const V3_ARTIFACT_RELATIVE_PATH: &str =
+    "crates/worldstream-core/src/counter-v3-dependency-closure.json";
 const ROOT_PACKAGE: &str = "worldstream-core";
-const SCHEMA: &str = "worldstream/counter-dependency-closure/v1";
+const V3_SCHEMA: &str = "worldstream/counter-dependency-closure/v2";
+const HISTORICAL_SCHEMA: &str = "worldstream/counter-dependency-closure/v1";
+const HISTORICAL_CLOSURE_DIGEST: &str =
+    "blake3:35337fb8034fed17a4a45f05d578f6321b1cd1431f029d2d6389154e5758623f";
 
 type EnabledFeatures = BTreeMap<(String, String), BTreeSet<String>>;
 type LockEntries<'a> = BTreeMap<(String, String, Option<String>), &'a toml::Value>;
 
 pub fn generate(repository_root: &Path) -> Result<()> {
     let bytes = expected_bytes(repository_root)?;
-    let path = repository_root.join(ARTIFACT_RELATIVE_PATH);
+    let path = repository_root.join(V3_ARTIFACT_RELATIVE_PATH);
     fs::write(&path, bytes).with_context(|| format!("cannot write {}", path.display()))
 }
 
 pub fn verify(repository_root: &Path) -> Result<()> {
     let expected = expected_bytes(repository_root)?;
-    let path = repository_root.join(ARTIFACT_RELATIVE_PATH);
+    let path = repository_root.join(V3_ARTIFACT_RELATIVE_PATH);
     let checked_in = fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
-    verify_bytes(&expected, &checked_in, &path)
+    verify_bytes(&expected, &checked_in, &path)?;
+
+    let historical_path = repository_root.join(HISTORICAL_ARTIFACT_RELATIVE_PATH);
+    let historical = fs::read(&historical_path)
+        .with_context(|| format!("cannot read {}", historical_path.display()))?;
+    verify_historical_bytes(&historical, &historical_path)
 }
 
 pub(crate) fn verify_bytes(expected: &[u8], checked_in: &[u8], path: &Path) -> Result<()> {
@@ -45,13 +63,32 @@ pub(crate) fn verify_bytes(expected: &[u8], checked_in: &[u8], path: &Path) -> R
     Ok(())
 }
 
+fn verify_historical_bytes(checked_in: &[u8], path: &Path) -> Result<()> {
+    let value: Value = serde_json::from_slice(checked_in)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    if value["schema"].as_str() != Some(HISTORICAL_SCHEMA) {
+        bail!(
+            "{} has an unexpected historical Counter closure schema",
+            path.display()
+        );
+    }
+    let actual = Blake3DigestV1::hash(checked_in).to_string();
+    if actual != HISTORICAL_CLOSURE_DIGEST {
+        bail!(
+            "{} differs from the frozen Counter v1/v2 dependency closure",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn expected_bytes(repository_root: &Path) -> Result<Vec<u8>> {
     let repository_root = fs::canonicalize(repository_root)
         .with_context(|| format!("cannot canonicalize {}", repository_root.display()))?;
     let metadata = cargo_metadata(&repository_root)?;
     let lock = cargo_lock(&repository_root)?;
     let features = cargo_tree_features(&repository_root)?;
-    let value = closure_value(&repository_root, &metadata, &lock, &features)?;
+    let value = closure_value(&repository_root, &metadata, &lock, &features, V3_SCHEMA)?;
     let mut bytes = serde_json::to_vec_pretty(&value)?;
     bytes.push(b'\n');
     Ok(bytes)
@@ -148,6 +185,7 @@ fn closure_value(
     metadata: &Value,
     lock: &toml::Value,
     enabled_features: &EnabledFeatures,
+    schema: &str,
 ) -> Result<Value> {
     let packages = metadata["packages"]
         .as_array()
@@ -235,7 +273,7 @@ fn closure_value(
         .sort_unstable_by(|left, right| left["identity"].as_str().cmp(&right["identity"].as_str()));
 
     Ok(json!({
-        "schema": SCHEMA,
+        "schema": schema,
         "root": package_identity(repository_root, root)?,
         "packages": records,
     }))
@@ -396,6 +434,47 @@ mod tests {
     }
 
     #[test]
+    fn historical_v1_v2_closure_is_frozen_by_schema_and_exact_digest() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let path = root.join(HISTORICAL_ARTIFACT_RELATIVE_PATH);
+        let historical =
+            fs::read(&path).unwrap_or_else(|error| unreachable!("historical: {error}"));
+        verify_historical_bytes(&historical, &path)
+            .unwrap_or_else(|error| unreachable!("historical verification: {error}"));
+
+        let mut modified = historical;
+        let index = modified
+            .iter()
+            .position(u8::is_ascii_alphanumeric)
+            .unwrap_or_else(|| unreachable!("canonical closure has text"));
+        modified[index] = b'x';
+        assert!(verify_historical_bytes(&modified, &path).is_err());
+    }
+
+    #[test]
+    fn v3_closure_binds_the_current_protocol_graph_with_a_new_schema() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let expected =
+            expected_bytes(&root).unwrap_or_else(|error| unreachable!("closure: {error}"));
+        let value: Value = serde_json::from_slice(&expected)
+            .unwrap_or_else(|error| unreachable!("closure JSON: {error}"));
+        assert_eq!(value["schema"], V3_SCHEMA);
+        let protocol = value["packages"]
+            .as_array()
+            .unwrap_or_else(|| unreachable!("packages"))
+            .iter()
+            .find(|package| package["name"] == "worldstream-protocol")
+            .unwrap_or_else(|| unreachable!("protocol package"));
+        assert!(
+            protocol["normal_or_build_edges"]
+                .as_array()
+                .unwrap_or_else(|| unreachable!("protocol edges"))
+                .iter()
+                .any(|edge| edge["dependency_name_or_rename"] == "zeroize")
+        );
+    }
+
+    #[test]
     fn core_scoped_feature_drift_changes_counter_closure() {
         let root = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
             .unwrap_or_else(|error| unreachable!("workspace root: {error}"));
@@ -404,7 +483,7 @@ mod tests {
         let lock = cargo_lock(&root).unwrap_or_else(|error| unreachable!("lock: {error}"));
         let features = cargo_tree_features(&root)
             .unwrap_or_else(|error| unreachable!("Counter features: {error}"));
-        let expected = closure_value(&root, &metadata, &lock, &features)
+        let expected = closure_value(&root, &metadata, &lock, &features, V3_SCHEMA)
             .unwrap_or_else(|error| unreachable!("closure: {error}"));
 
         let mut with_core_feature = features.clone();
@@ -412,7 +491,7 @@ mod tests {
             .entry((ROOT_PACKAGE.to_owned(), "0.1.0".to_owned()))
             .or_default()
             .insert("behavior-affecting-core-feature".to_owned());
-        let actual = closure_value(&root, &metadata, &lock, &with_core_feature)
+        let actual = closure_value(&root, &metadata, &lock, &with_core_feature, V3_SCHEMA)
             .unwrap_or_else(|error| unreachable!("feature-bound closure: {error}"));
         assert_ne!(actual, expected);
     }
@@ -426,7 +505,7 @@ mod tests {
         let lock = cargo_lock(&root).unwrap_or_else(|error| unreachable!("lock: {error}"));
         let features = cargo_tree_features(&root)
             .unwrap_or_else(|error| unreachable!("Counter features: {error}"));
-        let expected = closure_value(&root, &metadata, &lock, &features)
+        let expected = closure_value(&root, &metadata, &lock, &features, V3_SCHEMA)
             .unwrap_or_else(|error| unreachable!("closure: {error}"));
 
         let mut workspace_unified_metadata = metadata.clone();
@@ -440,9 +519,14 @@ mod tests {
             .as_array_mut()
             .unwrap_or_else(|| unreachable!("serde features"))
             .push(Value::String("unrelated-workspace-feature".to_owned()));
-        let from_workspace_unification =
-            closure_value(&root, &workspace_unified_metadata, &lock, &features)
-                .unwrap_or_else(|error| unreachable!("feature-independent closure: {error}"));
+        let from_workspace_unification = closure_value(
+            &root,
+            &workspace_unified_metadata,
+            &lock,
+            &features,
+            V3_SCHEMA,
+        )
+        .unwrap_or_else(|error| unreachable!("feature-independent closure: {error}"));
         assert_eq!(from_workspace_unification, expected);
 
         let mut with_unrelated_sqlite_feature = features.clone();
@@ -450,9 +534,14 @@ mod tests {
             .entry(("rusqlite".to_owned(), "0.40.1".to_owned()))
             .or_default()
             .insert("bundled".to_owned());
-        let from_sqlite_feature =
-            closure_value(&root, &metadata, &lock, &with_unrelated_sqlite_feature)
-                .unwrap_or_else(|error| unreachable!("sqlite-independent closure: {error}"));
+        let from_sqlite_feature = closure_value(
+            &root,
+            &metadata,
+            &lock,
+            &with_unrelated_sqlite_feature,
+            V3_SCHEMA,
+        )
+        .unwrap_or_else(|error| unreachable!("sqlite-independent closure: {error}"));
         assert_eq!(from_sqlite_feature, expected);
     }
 }

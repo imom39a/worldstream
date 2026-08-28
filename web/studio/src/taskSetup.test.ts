@@ -20,6 +20,7 @@ const ready = {
     member_authority: "provisioned", runner_authority: "provisioned",
   }],
   readiness: { ready_to_launch: true, seats: [{ seat_id: "analyst-1", required: true, ready: true, reason: "ready" }] },
+  launch_applicability: "active_at_genesis",
   launch: null,
 };
 
@@ -162,10 +163,11 @@ describe("Task setup client", () => {
       { state: "needs_attention", attempts: 1, attention: null, transition_id: null },
     ];
     for (const launch of transitions) {
-      expect(isTaskSetupStatus({ ...ready, launch })).toBe(false);
+    expect(isTaskSetupStatus({ ...ready, launch })).toBe(false);
     }
     expect(isTaskSetupStatus({
       ...ready,
+      launch_applicability: "lobby_launch",
       launch: {
         state: "launched", attempts: 1, attention: null,
         transition_id: "01ARZ3NDEKTSV4RRFFQ69G5FB0",

@@ -439,6 +439,16 @@ impl EffectiveConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_without_bootstrap_secret()?;
+
+        if let Some(source) = &self.authority.bootstrap_secret {
+            validate_bootstrap_secret(source, "authority.bootstrap.secret_handle")?;
+        }
+
+        Ok(())
+    }
+
+    fn validate_without_bootstrap_secret(&self) -> Result<(), ConfigError> {
         if self.config_version != CONFIG_VERSION {
             return Err(ConfigError::UnsupportedConfigVersion(self.config_version));
         }
@@ -486,10 +496,6 @@ impl EffectiveConfig {
         ) {
             (Some(_), Some(_)) | (None, None) => {}
             _ => return Err(ConfigError::PartialDeploymentMetadata),
-        }
-
-        if let Some(source) = &self.authority.bootstrap_secret {
-            validate_bootstrap_secret(source, "authority.bootstrap.secret_handle")?;
         }
 
         Ok(())
@@ -673,13 +679,41 @@ impl ConfigLoader {
     /// intentionally a typed fallback diagnostic, because telemetry cannot
     /// make the authoritative process fail to start.
     pub fn load(&self) -> Result<EffectiveConfig, ConfigError> {
+        let effective = self.load_before_secret_validation()?;
+        effective.validate()?;
+        Ok(effective)
+    }
+
+    /// Loads all configuration layers, prepares a configured bootstrap source,
+    /// and then performs complete final validation.
+    ///
+    /// Trusted local launchers use this to create an owner-only first-install
+    /// bootstrap file without duplicating configuration precedence. The
+    /// callback sees layered configuration only after non-secret invariants
+    /// pass, cannot alter it, and never bypasses final validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration validation errors or the callback's preparation
+    /// error. Bootstrap material is always validated before success.
+    pub fn load_with_bootstrap_preparation(
+        &self,
+        prepare: impl FnOnce(&EffectiveConfig) -> Result<(), ConfigError>,
+    ) -> Result<EffectiveConfig, ConfigError> {
+        let effective = self.load_before_secret_validation()?;
+        effective.validate_without_bootstrap_secret()?;
+        prepare(&effective)?;
+        effective.validate()?;
+        Ok(effective)
+    }
+
+    fn load_before_secret_validation(&self) -> Result<EffectiveConfig, ConfigError> {
         let mut effective = EffectiveConfig::default();
         if let Some(path) = self.selected_config_path()? {
             apply_file(&mut effective, path)?;
         }
         apply_environment(&mut effective, &self.environment)?;
         apply_cli(&mut effective, &self.cli_overrides);
-        effective.validate()?;
         Ok(effective)
     }
 
@@ -1343,6 +1377,8 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::{create_owner_only_file, prepare_data_directory};
+
     use super::{
         CliOverrides, ConfigError, ConfigLoader, SecretSource, SecretValidationError,
         StorageProfile, TelemetryConfigDiagnosticV1, TelemetryEndpointV1,
@@ -1833,6 +1869,118 @@ mod tests {
 
         let direct = SecretSource::File(path);
         assert_eq!(direct.kind(), "owner_readable_secret_file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bootstrap_preparation_can_create_a_missing_configured_source_before_final_validation() {
+        use std::io::Write as _;
+
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let source_directory = prepare_data_directory(&directory.path().join("bootstrap-source"))
+            .unwrap_or_else(|error| unreachable!("prepare bootstrap source directory: {error}"));
+        let path = source_directory.join("fresh-authority-bootstrap");
+        let path_text = path.to_string_lossy().into_owned();
+        let loader = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[("WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE", &path_text)]),
+        );
+
+        let config = loader
+            .load_with_bootstrap_preparation(|effective| {
+                let source = effective
+                    .authority
+                    .bootstrap_secret
+                    .as_ref()
+                    .unwrap_or_else(|| unreachable!("configured bootstrap source"));
+                let SecretSource::File(source_path) = source else {
+                    unreachable!("configured bootstrap source must be a file");
+                };
+                assert_eq!(source_path, &path);
+                let mut file = create_owner_only_file(source_path)
+                    .unwrap_or_else(|error| unreachable!("create bootstrap source: {error}"));
+                file.write_all(&[0x4f; 32])
+                    .and_then(|()| file.sync_all())
+                    .unwrap_or_else(|error| unreachable!("write bootstrap source: {error}"));
+                Ok(())
+            })
+            .unwrap_or_else(|error| unreachable!("prepared config: {error}"));
+
+        assert_eq!(
+            config
+                .authority
+                .bootstrap_secret
+                .as_ref()
+                .unwrap_or_else(|| unreachable!("prepared bootstrap source"))
+                .read_exact_256()
+                .unwrap_or_else(|error| unreachable!("prepared bootstrap material: {error}")),
+            [0x4f; 32]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bootstrap_preparation_still_rejects_malformed_material_during_final_validation() {
+        use std::io::Write as _;
+
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temp dir: {error}"));
+        let source_directory = prepare_data_directory(&directory.path().join("bootstrap-source"))
+            .unwrap_or_else(|error| unreachable!("prepare bootstrap source directory: {error}"));
+        let path = source_directory.join("malformed-fresh-authority-bootstrap");
+        let path_text = path.to_string_lossy().into_owned();
+        let loader = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[("WORLDSTREAM__AUTHORITY__BOOTSTRAP__SECRET_FILE", &path_text)]),
+        );
+
+        let error = loader
+            .load_with_bootstrap_preparation(|effective| {
+                let source = effective
+                    .authority
+                    .bootstrap_secret
+                    .as_ref()
+                    .unwrap_or_else(|| unreachable!("configured bootstrap source"));
+                let SecretSource::File(source_path) = source else {
+                    unreachable!("configured bootstrap source must be a file");
+                };
+                assert_eq!(source_path, &path);
+                let mut file = create_owner_only_file(source_path)
+                    .unwrap_or_else(|error| unreachable!("create bootstrap source: {error}"));
+                file.write_all(&[0x51; 31])
+                    .and_then(|()| file.sync_all())
+                    .unwrap_or_else(|error| unreachable!("write bootstrap source: {error}"));
+                Ok(())
+            })
+            .err()
+            .unwrap_or_else(|| unreachable!("malformed prepared source must fail"));
+
+        assert!(matches!(
+            error,
+            ConfigError::Secret(SecretValidationError::MaterialLength)
+        ));
+    }
+
+    #[test]
+    fn invalid_non_secret_configuration_never_invokes_bootstrap_preparation() {
+        let loader = ConfigLoader::with_environment(
+            None,
+            CliOverrides::default(),
+            environment(&[("WORLDSTREAM__STORAGE__PROFILE", "unsupported")]),
+        );
+        let mut invoked = false;
+
+        let error = loader
+            .load_with_bootstrap_preparation(|_| {
+                invoked = true;
+                Ok(())
+            })
+            .err()
+            .unwrap_or_else(|| unreachable!("invalid storage profile must fail"));
+
+        assert!(matches!(error, ConfigError::UnsupportedValue { .. }));
+        assert!(!invoked);
     }
 
     #[cfg(unix)]

@@ -15,6 +15,7 @@ const attention: TaskSetupStatus = {
     managed_runner: { instance_id: "managed-1", template_id: "local", template_revision: "rev-1" },
     member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY", member_authority: "provisioned", runner_authority: "pending" }],
   readiness: { ready_to_launch: false, seats: [{ seat_id: "analyst-1", required: true, ready: false, reason: "setup_incomplete" }] },
+  launch_applicability: "active_at_genesis",
   launch: null,
 };
 
@@ -73,5 +74,46 @@ describe("TaskSetupOperation", () => {
     );
     expect(participant).toContain("Participant authority provisioned");
     expect(participant).not.toContain("Runner authority provisioned");
+  });
+
+  it("presents an active-at-Genesis Room without a Lobby launch action", () => {
+    const ready: TaskSetupStatus = {
+      ...attention, state: "ready", attempts: 1, completed_stages: 2, total_stages: 2,
+      active_stage: null, attention: null,
+      seats: [{
+        ...attention.seats[0], principal_kind: "human", agent_assignment: null,
+        agent_profile: null, managed_runner: null, runner_authority: "not_applicable",
+      }],
+      readiness: { ready_to_launch: false, seats: [{ seat_id: "analyst-1", required: true, ready: false, reason: "console_missing" }] },
+      launch_applicability: "active_at_genesis",
+    };
+    const html = renderToStaticMarkup(
+      <TaskSetupOperation
+        setup={ready}
+        statusAvailable
+        roomCreated
+        loading={false}
+        onLaunch={vi.fn()}
+        onOpenParticipantView={vi.fn()}
+      />,
+    );
+    expect(html).toContain("Room active");
+    expect(html).toContain("Open an available participant handoff to connect.");
+    expect(html).toContain("Console session missing");
+    expect(html).toContain("Open Participant View");
+    expect(html).not.toContain("Launch Task");
+  });
+
+  it("keeps an older unresolved launch record recoverable without offering a new launch", () => {
+    const setup: TaskSetupStatus = {
+      ...attention, state: "ready", attempts: 1, completed_stages: 2, total_stages: 2,
+      active_stage: null, attention: null, launch_applicability: "unknown",
+      seats: [{ ...attention.seats[0], runner_authority: "provisioned" }],
+      readiness: { ready_to_launch: true, seats: [{ seat_id: "analyst-1", required: true, ready: true, reason: "ready" }] },
+      launch: { state: "reconciling", attempts: 1, attention: null, transition_id: "01ARZ3NDEKTSV4RRFFQ69G5FB0" },
+    };
+    const html = renderToStaticMarkup(<TaskSetupOperation setup={setup} statusAvailable roomCreated loading={false} onRetry={vi.fn()} />);
+    expect(html).toContain("Retry original setup");
+    expect(html).not.toContain("Launch Task");
   });
 });

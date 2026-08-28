@@ -1,12 +1,16 @@
 use std::{
     collections::BTreeMap,
+    fs,
     sync::{Arc, Mutex, PoisonError, mpsc},
     thread,
     time::Duration,
 };
 
+use axum::{body::Body, http::Request};
+use http_body_util::BodyExt as _;
 use serde_json::json;
 use tempfile::tempdir;
+use tower::ServiceExt as _;
 use worldstream_protocol::{
     CreateRoomRequest, CreateRoomResponse, LobbyLaunchRequest, LobbyLaunchResponse,
     MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
@@ -35,9 +39,10 @@ use worldstream_studio_supervisor::{
     secrets::{FileSecretVaultV1, SecretKindV1},
     task_setup::{
         DaemonTaskLaunchSourceV1, DaemonTaskSetupProvisionerV1, FileAssignedMembershipSourceV1,
-        TaskLaunchAttemptErrorV1, TaskLaunchStateV1, TaskRunnerObservationV1,
-        TaskRunnerReadinessSourceV1, TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1,
-        TaskSetupStateV1, TaskSetupSupervisorV1, task_setup_router,
+        TaskLaunchApplicabilitySourceV1, TaskLaunchApplicabilityV1, TaskLaunchAttemptErrorV1,
+        TaskLaunchStateV1, TaskRunnerObservationV1, TaskRunnerReadinessSourceV1,
+        TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1, TaskSetupErrorV1, TaskSetupStateV1,
+        TaskSetupSupervisorV1, task_setup_router,
     },
 };
 
@@ -46,6 +51,30 @@ const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 
 #[derive(Clone, Copy)]
 struct ValidDraft;
+
+#[derive(Clone, Copy)]
+struct LaunchApplicability(TaskLaunchApplicabilityV1);
+
+impl TaskLaunchApplicabilitySourceV1 for LaunchApplicability {
+    fn applicability(
+        &self,
+        _pack: &PackReference,
+    ) -> Result<TaskLaunchApplicabilityV1, TaskSetupErrorV1> {
+        Ok(self.0)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UnavailableLaunchApplicability;
+
+impl TaskLaunchApplicabilitySourceV1 for UnavailableLaunchApplicability {
+    fn applicability(
+        &self,
+        _pack: &PackReference,
+    ) -> Result<TaskLaunchApplicabilityV1, TaskSetupErrorV1> {
+        Err(TaskSetupErrorV1::Unavailable)
+    }
+}
 
 impl RoomDraftValidatorV1 for ValidDraft {
     fn validate(
@@ -268,6 +297,9 @@ fn open_setup(root: &std::path::Path, provisioner: DurableProvisioner) -> TaskSe
         provisioner,
     )
     .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_launch_applicability(LaunchApplicability(
+        TaskLaunchApplicabilityV1::ActiveAtGenesis,
+    ))
 }
 
 #[test]
@@ -282,6 +314,71 @@ fn action_routes_construct_with_distinct_path_segments() {
         setup_directory.path(),
         DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
     ));
+}
+
+#[tokio::test]
+async fn counter_setup_is_active_at_genesis_and_never_submits_a_lobby_launch() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let supervisor = open_setup(
+        directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    );
+    let setup = supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    assert_eq!(
+        setup.launch_applicability,
+        TaskLaunchApplicabilityV1::ActiveAtGenesis
+    );
+    assert!(setup.launch.is_none());
+    assert_eq!(
+        supervisor.launch("setup-alpha"),
+        Err(TaskSetupErrorV1::NotReady)
+    );
+    let response = task_setup_router(supervisor)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/task-setups/setup-alpha/launch")
+                .body(Body::empty())
+                .unwrap_or_else(|error| unreachable!("launch request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("launch response: {error}"));
+    assert_eq!(response.status(), 409);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap_or_else(|error| unreachable!("launch body: {error}"))
+        .to_bytes();
+    let error: serde_json::Value =
+        serde_json::from_slice(&body).unwrap_or_else(|error| unreachable!("launch JSON: {error}"));
+    assert_eq!(error["error"]["code"], "task_launch_inapplicable");
+    assert_eq!(error["error"]["retryable"], false);
+}
+
+#[test]
+fn unavailable_exact_pack_declaration_cannot_be_assumed_active_at_genesis() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("vault: {error:?}"));
+    let supervisor = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        open_creation(directory.path()),
+        vault,
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    )
+    .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_launch_applicability(UnavailableLaunchApplicability);
+    assert_eq!(
+        supervisor.start("setup-alpha"),
+        Err(TaskSetupErrorV1::Unavailable)
+    );
+    assert_eq!(
+        supervisor.status("setup-alpha"),
+        Err(TaskSetupErrorV1::NotFound)
+    );
 }
 
 #[test]
@@ -456,7 +553,8 @@ fn transient_agent_profile_binding_unavailability_is_retryable() {
         DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
     )
     .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
-    .with_agent_profiles(profiles.clone());
+    .with_agent_profiles(profiles.clone())
+    .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch));
 
     let blocked = supervisor
         .start("setup-alpha")
@@ -547,7 +645,8 @@ fn managed_reference_profile_is_rejected_for_an_external_agent_seat() {
         DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
     )
     .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
-    .with_agent_profiles(profiles);
+    .with_agent_profiles(profiles)
+    .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch));
 
     let rejected = supervisor
         .start("setup-alpha")
@@ -675,7 +774,8 @@ fn task_setup_backed_console_authority_does_not_reenter_the_mutation_lock() {
     let base = open_setup(
         directory.path(),
         DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
-    );
+    )
+    .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch));
     base.start("setup-alpha")
         .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
     let supervisor = base.clone().with_launch_readiness(
@@ -834,7 +934,9 @@ fn open_launch_ready_setup(
     runners: RunnerHealth,
     launcher: Launcher,
 ) -> TaskSetupSupervisorV1 {
-    open_setup(root, provisioner).with_launch_readiness(console, runners, launcher)
+    open_setup(root, provisioner)
+        .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch))
+        .with_launch_readiness(console, runners, launcher)
 }
 
 #[test]
@@ -929,6 +1031,7 @@ fn filled_optional_seat_is_blocking_when_its_live_readiness_is_false() {
         DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
     )
     .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch))
     .with_launch_readiness(
         OptionalSeatDisconnected,
         RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
@@ -1003,4 +1106,104 @@ fn lost_launch_response_restart_and_readiness_change_resolve_the_same_committed_
         .calls;
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0], calls[1]);
+}
+
+#[test]
+fn legacy_lobby_launch_record_stays_fail_closed_until_retry_resolves_its_exact_declaration() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let supervisor = open_launch_ready_setup(
+        directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+        ConsoleHealth(Arc::new(Mutex::new(
+            ParticipantConsoleSessionHealthV1::Usable,
+        ))),
+        RunnerHealth(Arc::new(Mutex::new(RunnerMode::Ready))),
+        Launcher(Arc::new(Mutex::new(LaunchLedger::default()))),
+    );
+    supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    supervisor
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("launch: {error:?}"));
+
+    let path = directory.path().join("setups/setup-alpha.json");
+    let mut legacy: serde_json::Value = serde_json::from_slice(
+        &fs::read(&path).unwrap_or_else(|error| unreachable!("read setup: {error}")),
+    )
+    .unwrap_or_else(|error| unreachable!("decode setup: {error}"));
+    let fields = legacy
+        .as_object_mut()
+        .unwrap_or_else(|| unreachable!("setup object"));
+    assert!(fields.remove("launch_applicability").is_some());
+    fields.insert(
+        "checkpoint_hash".to_owned(),
+        serde_json::Value::String(String::new()),
+    );
+    let checkpoint = format!(
+        "blake3:{}",
+        blake3::hash(
+            &serde_json::to_vec(&legacy)
+                .unwrap_or_else(|error| unreachable!("legacy checkpoint: {error}")),
+        )
+        .to_hex()
+    );
+    legacy
+        .as_object_mut()
+        .unwrap_or_else(|| unreachable!("setup object"))
+        .insert(
+            "checkpoint_hash".to_owned(),
+            serde_json::Value::String(checkpoint),
+        );
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&legacy)
+            .unwrap_or_else(|error| unreachable!("legacy setup: {error}")),
+    )
+    .unwrap_or_else(|error| unreachable!("write legacy setup: {error}"));
+
+    let status = supervisor
+        .status("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("legacy status: {error:?}"));
+    assert_eq!(
+        status.launch_applicability,
+        TaskLaunchApplicabilityV1::Unknown
+    );
+    assert_eq!(
+        status.launch.as_ref().map(|launch| launch.state),
+        Some(TaskLaunchStateV1::Launched)
+    );
+
+    let unavailable = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        open_creation(directory.path()),
+        FileSecretVaultV1::open(&directory.path().join("secrets"))
+            .unwrap_or_else(|error| unreachable!("vault: {error:?}")),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    )
+    .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_launch_applicability(UnavailableLaunchApplicability);
+    assert_eq!(
+        unavailable.retry("setup-alpha"),
+        Err(TaskSetupErrorV1::Unavailable)
+    );
+    assert_eq!(
+        unavailable
+            .status("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("unknown status: {error:?}"))
+            .launch_applicability,
+        TaskLaunchApplicabilityV1::Unknown
+    );
+
+    let recovered = supervisor
+        .retry("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("resolve legacy launch declaration: {error:?}"));
+    assert_eq!(
+        recovered.launch_applicability,
+        TaskLaunchApplicabilityV1::LobbyLaunch
+    );
+    assert_eq!(
+        recovered.launch.as_ref().map(|launch| launch.state),
+        Some(TaskLaunchStateV1::Launched)
+    );
 }

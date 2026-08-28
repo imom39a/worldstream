@@ -1,0 +1,566 @@
+{
+  "packages": [
+    {
+      "checksum": "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb",
+      "enabled_features": [],
+      "identity": "arrayref@0.3.9#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "arrayref",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.9"
+    },
+    {
+      "checksum": "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56",
+      "enabled_features": [],
+      "identity": "arrayvec@0.7.8#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "arrayvec",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.7.8"
+    },
+    {
+      "checksum": "76ae7bad254120e9e4c63bafc385310756f90c484eac0e36b8317cf09cb92a77",
+      "enabled_features": [
+        "default",
+        "pure",
+        "std"
+      ],
+      "identity": "blake3@1.8.6#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "blake3",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "arrayref",
+          "kinds": [
+            "normal"
+          ],
+          "package": "arrayref@0.3.9#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "arrayvec",
+          "kinds": [
+            "normal"
+          ],
+          "package": "arrayvec@0.7.8#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "cc",
+          "kinds": [
+            "build"
+          ],
+          "package": "cc@1.4.3#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "cfg_if",
+          "kinds": [
+            "normal"
+          ],
+          "package": "cfg-if@1.0.4#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "constant_time_eq",
+          "kinds": [
+            "normal"
+          ],
+          "package": "constant_time_eq@0.4.2#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "cpufeatures",
+          "kinds": [
+            "normal"
+          ],
+          "package": "cpufeatures@0.3.0#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.8.6"
+    },
+    {
+      "checksum": "509591b7bcd67f4ef775afad7662703b4935daaa6ec0e5605cfb1090b32a2b6d",
+      "enabled_features": [],
+      "identity": "cc@1.4.3#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "cc",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "find_msvc_tools",
+          "kinds": [
+            "normal"
+          ],
+          "package": "find-msvc-tools@0.1.11#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "shlex",
+          "kinds": [
+            "normal"
+          ],
+          "package": "shlex@2.0.1#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.4.3"
+    },
+    {
+      "checksum": "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801",
+      "enabled_features": [],
+      "identity": "cfg-if@1.0.4#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "cfg-if",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.4"
+    },
+    {
+      "checksum": "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b",
+      "enabled_features": [
+        "std"
+      ],
+      "identity": "constant_time_eq@0.4.2#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "constant_time_eq",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.4.2"
+    },
+    {
+      "checksum": "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201",
+      "enabled_features": [],
+      "identity": "cpufeatures@0.3.0#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "cpufeatures",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "libc",
+          "kinds": [
+            "normal"
+          ],
+          "package": "libc@0.2.189#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.0"
+    },
+    {
+      "checksum": "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890",
+      "enabled_features": [],
+      "identity": "find-msvc-tools@0.1.11#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "find-msvc-tools",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.1.11"
+    },
+    {
+      "checksum": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+      "enabled_features": [],
+      "identity": "itoa@1.0.18#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "itoa",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.18"
+    },
+    {
+      "checksum": "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+      "enabled_features": [],
+      "identity": "libc@0.2.189#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "libc",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.2.189"
+    },
+    {
+      "checksum": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98",
+      "enabled_features": [
+        "alloc",
+        "std"
+      ],
+      "identity": "memchr@2.8.3#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "memchr",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.8.3"
+    },
+    {
+      "checksum": "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9",
+      "enabled_features": [
+        "default",
+        "proc-macro"
+      ],
+      "identity": "proc-macro2@1.0.107#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "proc-macro2",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "unicode_ident",
+          "kinds": [
+            "normal"
+          ],
+          "package": "unicode-ident@1.0.24#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.107"
+    },
+    {
+      "checksum": "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001",
+      "enabled_features": [
+        "default",
+        "proc-macro"
+      ],
+      "identity": "quote@1.0.47#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "quote",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "proc_macro2",
+          "kinds": [
+            "normal"
+          ],
+          "package": "proc-macro2@1.0.107#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.47"
+    },
+    {
+      "checksum": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba",
+      "enabled_features": [
+        "default",
+        "derive",
+        "serde_derive",
+        "std"
+      ],
+      "identity": "serde@1.0.229#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "serde",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "serde_core",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde_core@1.0.229#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "serde_derive",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde_derive@1.0.229#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.229"
+    },
+    {
+      "checksum": "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48",
+      "enabled_features": [
+        "result",
+        "std"
+      ],
+      "identity": "serde_core@1.0.229#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "serde_core",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "serde_derive",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde_derive@1.0.229#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.229"
+    },
+    {
+      "checksum": "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348",
+      "enabled_features": [
+        "default"
+      ],
+      "identity": "serde_derive@1.0.229#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "serde_derive",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "proc_macro2",
+          "kinds": [
+            "normal"
+          ],
+          "package": "proc-macro2@1.0.107#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "quote",
+          "kinds": [
+            "normal"
+          ],
+          "package": "quote@1.0.47#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "syn",
+          "kinds": [
+            "normal"
+          ],
+          "package": "syn@3.0.3#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.229"
+    },
+    {
+      "checksum": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14",
+      "enabled_features": [
+        "default",
+        "std"
+      ],
+      "identity": "serde_json@1.0.151#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "serde_json",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "itoa",
+          "kinds": [
+            "normal"
+          ],
+          "package": "itoa@1.0.18#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "memchr",
+          "kinds": [
+            "normal"
+          ],
+          "package": "memchr@2.8.3#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "serde",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde@1.0.229#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "serde_core",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde_core@1.0.229#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "zmij",
+          "kinds": [
+            "normal"
+          ],
+          "package": "zmij@1.0.23#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.151"
+    },
+    {
+      "checksum": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
+      "enabled_features": [
+        "default",
+        "std"
+      ],
+      "identity": "shlex@2.0.1#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "shlex",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.0.1"
+    },
+    {
+      "checksum": "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3",
+      "enabled_features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ],
+      "identity": "syn@3.0.3#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "syn",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "proc_macro2",
+          "kinds": [
+            "normal"
+          ],
+          "package": "proc-macro2@1.0.107#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "quote",
+          "kinds": [
+            "normal"
+          ],
+          "package": "quote@1.0.47#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "unicode_ident",
+          "kinds": [
+            "normal"
+          ],
+          "package": "unicode-ident@1.0.24#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "3.0.3"
+    },
+    {
+      "checksum": "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af",
+      "enabled_features": [],
+      "identity": "thiserror-impl@2.0.20#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "thiserror-impl",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "proc_macro2",
+          "kinds": [
+            "normal"
+          ],
+          "package": "proc-macro2@1.0.107#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "quote",
+          "kinds": [
+            "normal"
+          ],
+          "package": "quote@1.0.47#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "syn",
+          "kinds": [
+            "normal"
+          ],
+          "package": "syn@3.0.3#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.0.20"
+    },
+    {
+      "checksum": "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f",
+      "enabled_features": [
+        "default",
+        "std"
+      ],
+      "identity": "thiserror@2.0.20#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "thiserror",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "thiserror_impl",
+          "kinds": [
+            "normal"
+          ],
+          "package": "thiserror-impl@2.0.20#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.0.20"
+    },
+    {
+      "checksum": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75",
+      "enabled_features": [],
+      "identity": "unicode-ident@1.0.24#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "unicode-ident",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.24"
+    },
+    {
+      "checksum": null,
+      "enabled_features": [
+        "default"
+      ],
+      "identity": "worldstream-core@0.1.0#path:crates/worldstream-core",
+      "name": "worldstream-core",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "blake3",
+          "kinds": [
+            "normal"
+          ],
+          "package": "blake3@1.8.6#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "serde",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde@1.0.229#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "serde_json",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde_json@1.0.151#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "thiserror",
+          "kinds": [
+            "normal"
+          ],
+          "package": "thiserror@2.0.20#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "worldstream_protocol",
+          "kinds": [
+            "normal"
+          ],
+          "package": "worldstream-protocol@0.1.0#path:crates/worldstream-protocol"
+        }
+      ],
+      "source": "path:crates/worldstream-core",
+      "version": "0.1.0"
+    },
+    {
+      "checksum": null,
+      "enabled_features": [],
+      "identity": "worldstream-protocol@0.1.0#path:crates/worldstream-protocol",
+      "name": "worldstream-protocol",
+      "normal_or_build_edges": [
+        {
+          "dependency_name_or_rename": "serde",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde@1.0.229#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "serde_json",
+          "kinds": [
+            "normal"
+          ],
+          "package": "serde_json@1.0.151#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "thiserror",
+          "kinds": [
+            "normal"
+          ],
+          "package": "thiserror@2.0.20#registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "dependency_name_or_rename": "zeroize",
+          "kinds": [
+            "normal"
+          ],
+          "package": "zeroize@1.9.0#registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "source": "path:crates/worldstream-protocol",
+      "version": "0.1.0"
+    },
+    {
+      "checksum": "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e",
+      "enabled_features": [
+        "alloc",
+        "default"
+      ],
+      "identity": "zeroize@1.9.0#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "zeroize",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.9.0"
+    },
+    {
+      "checksum": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b",
+      "enabled_features": [],
+      "identity": "zmij@1.0.23#registry+https://github.com/rust-lang/crates.io-index",
+      "name": "zmij",
+      "normal_or_build_edges": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.23"
+    }
+  ],
+  "root": "worldstream-core@0.1.0#path:crates/worldstream-core",
+  "schema": "worldstream/counter-dependency-closure/v2"
+}

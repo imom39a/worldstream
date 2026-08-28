@@ -18751,8 +18751,8 @@ mod tests {
         counter_v2_malformed_output_registry_for_conformance,
         counter_v2_returned_fault_registry_for_conformance,
         counter_v2_runtime_fault_registry_for_conformance,
-        counter_v2_semantic_mismatch_registry_for_conformance, external_input_request_hash,
-        recover_room_from_storage,
+        counter_v2_semantic_mismatch_registry_for_conformance, counter_v3_digest,
+        external_input_request_hash, recover_room_from_storage,
     };
     use worldstream_transfer::{
         BundleProfileV1, DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceKindV1,
@@ -19185,6 +19185,142 @@ mod tests {
             .into_committed_trace()
             .unwrap_or_else(|| panic!("new durable Genesis releases trace"));
         (trace, witness)
+    }
+
+    fn committed_counter_v3_trace(
+        store: &SqliteRoomStore,
+    ) -> (CoreTraceV1, PreparedAuthorityWitnessV1) {
+        let registry =
+            builtin_counter_registry().unwrap_or_else(|error| panic!("Counter registry: {error}"));
+        let configuration = canonical(br#"{"initial_value":0,"maximum_value":4}"#);
+        let human = MembershipV1::new(
+            parsed(PARTICIPANT),
+            parsed(PRINCIPAL),
+            PrincipalKindV1::Human,
+            MembershipStandingV1::Enabled,
+            AccessModeV1::Participant,
+            Some("counter".to_owned()),
+        )
+        .unwrap_or_else(|error| panic!("Counter v3 human Membership: {error}"));
+        let agent = MembershipV1::new(
+            parsed(PARTICIPANT_ALT),
+            parsed(PRINCIPAL_ALT),
+            PrincipalKindV1::Agent,
+            MembershipStandingV1::Enabled,
+            AccessModeV1::Participant,
+            Some("counter".to_owned()),
+        )
+        .unwrap_or_else(|error| panic!("Counter v3 agent Membership: {error}"));
+        let genesis = registry
+            .prepare_genesis_for_new_room(&PackGenesisRequestV1 {
+                room_id: parsed(ROOM),
+                pack_digest: counter_v3_digest(),
+                configuration: configuration.clone(),
+                room_seed: parsed(SEED),
+                created_at: parsed("2026-08-15T12:00:00Z"),
+                initial_core_state: CoreRoomStateV1::active([human, agent])
+                    .unwrap_or_else(|error| panic!("Counter v3 Core: {error}")),
+            })
+            .unwrap_or_else(|error| panic!("Counter v3 Genesis: {error}"));
+        let request = RoomCreationRequestV1::new(
+            counter_v3_digest(),
+            configuration,
+            vec![
+                InitialMembershipProposalV1::new(
+                    parsed(PRINCIPAL),
+                    PrincipalKindV1::Human,
+                    MembershipStandingV1::Enabled,
+                    AccessModeV1::Participant,
+                    Some("counter".to_owned()),
+                )
+                .unwrap_or_else(|error| panic!("Counter v3 human proposal: {error}")),
+                InitialMembershipProposalV1::new(
+                    parsed(PRINCIPAL_ALT),
+                    PrincipalKindV1::Agent,
+                    MembershipStandingV1::Enabled,
+                    AccessModeV1::Participant,
+                    Some("counter".to_owned()),
+                )
+                .unwrap_or_else(|error| panic!("Counter v3 agent proposal: {error}")),
+            ],
+        );
+        let witness = PreparedAuthorityWitnessV1::mint_for_conformance(
+            "create-counter-v3-activation",
+            parsed(PRINCIPAL),
+            1,
+            &canonical(br#"{"scope":"create_room","revoked":false}"#),
+        )
+        .unwrap_or_else(|error| panic!("Counter v3 authority: {error}"));
+        let prepared = PreparedRoomCreationV1::from_registry_genesis_for_conformance(
+            AdministrationOperationIdentityV1 {
+                authenticated_principal: parsed(PRINCIPAL),
+                versioned_operation_kind: CREATE_ROOM_OPERATION_KIND.to_owned(),
+                idempotency_key: "create-counter-v3-activation".to_owned(),
+            },
+            &request,
+            witness.clone(),
+            genesis,
+        )
+        .unwrap_or_else(|error| panic!("prepare Counter v3 creation: {error}"));
+        store
+            .seed_authority(&witness, true)
+            .unwrap_or_else(|error| panic!("seed Counter v3 authority: {error}"));
+        let trace = commit_room_creation(store, prepared)
+            .into_committed_trace()
+            .unwrap_or_else(|| panic!("Counter v3 Genesis releases trace"));
+        (trace, witness)
+    }
+
+    fn prepared_counter_v3_private_ack(
+        trace: &CoreTraceV1,
+        witness: PreparedAuthorityWitnessV1,
+        action_id: &str,
+        transition_id: &str,
+    ) -> PreparedRoomCommitV1 {
+        let definition = trace
+            .retained_pack()
+            .unwrap_or_else(|| panic!("Counter v3 retained pack"))
+            .descriptor()
+            .actions
+            .iter()
+            .find(|definition| definition.action_type == "private_ack")
+            .unwrap_or_else(|| panic!("Counter v3 private acknowledgement definition"));
+        let request = ParticipantActionRequestV1::new(
+            parsed(ROOM),
+            parsed(PARTICIPANT),
+            parsed(action_id),
+            trace.head().room_seq(),
+            "private_ack",
+            canonical(br"{}"),
+        );
+        let transition = trace
+            .prepare(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+                member_id: parsed(PARTICIPANT),
+                action_id: parsed(action_id),
+                action_type: "private_ack".to_owned(),
+                payload_schema_digest: definition.payload_schema.schema_digest.clone(),
+                canonical_payload: canonical(br"{}"),
+                exact_basis_head: trace.head().clone(),
+                admitted_at: parsed("2026-08-15T12:00:01Z"),
+            }))
+            .unwrap_or_else(|error| panic!("prepare Counter v3 acknowledgement: {error}"));
+        PreparedRoomCommitV1::for_action_for_conformance(
+            trace,
+            &request,
+            transition,
+            parsed(transition_id),
+            IntegrityGenerationV1::new(1)
+                .unwrap_or_else(|error| panic!("Counter v3 integrity generation: {error}")),
+            witness,
+            &trace
+                .core_state()
+                .memberships()
+                .keys()
+                .cloned()
+                .map(|member_id| (member_id, 0))
+                .collect(),
+        )
+        .unwrap_or_else(|error| panic!("seal Counter v3 acknowledgement: {error}"))
     }
 
     fn committed_heist_trace(store: &SqliteRoomStore) -> (CoreTraceV1, PreparedAuthorityWitnessV1) {
@@ -30150,6 +30286,76 @@ mod tests {
             .unwrap_or_else(|error| panic!("snapshot Heist with activation decision: {error}"))
             .unwrap_or_else(|| panic!("durable Heist Room remains present"));
         assert_eq!(snapshot.trace().head(), timer_trace.head());
+    }
+
+    #[test]
+    fn counter_v3_human_ack_durably_materializes_one_agent_intent_once_across_duplicate_and_recovery()
+     {
+        let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp DB: {error}"));
+        let store = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("open SQLite: {error}"));
+        let (mut trace, witness) = committed_counter_v3_trace(&store);
+        let genesis_bytes = trace
+            .genesis_bytes()
+            .unwrap_or_else(|error| panic!("Counter v3 Genesis bytes: {error}"));
+        let prepared =
+            prepared_counter_v3_private_ack(&trace, witness.clone(), ACTION_A, TRANSITION_A);
+        assert!(matches!(
+            commit_existing_room(&store, &mut trace, prepared).resolution(),
+            RoomCommitResolutionV1::TransitionCommitted {
+                status: ResolutionStatusV1::New,
+                ..
+            }
+        ));
+        let mut stale = CoreTraceV1::replay(
+            &builtin_counter_registry().unwrap_or_else(|error| panic!("Counter registry: {error}")),
+            &genesis_bytes,
+            &[],
+        )
+        .unwrap_or_else(|error| panic!("Counter v3 stale Replay: {error:?}"))
+        .into_trace();
+        let duplicate = prepared_counter_v3_private_ack(&stale, witness, ACTION_A, TRANSITION_A);
+        assert!(matches!(
+            commit_existing_room(&store, &mut stale, duplicate).resolution(),
+            RoomCommitResolutionV1::TransitionCommitted {
+                status: ResolutionStatusV1::Existing,
+                ..
+            }
+        ));
+
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open Counter v3 Activation reader: {error}"));
+        let counts: (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM activation_decisions WHERE room_id = ?1), \
+                 (SELECT count(*) FROM activation_intents WHERE room_id = ?1)",
+                [ROOM],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|error| panic!("count Counter v3 Activations: {error}"));
+        assert_eq!(counts, (1, 1));
+        drop(connection);
+        drop(store);
+
+        let reopened = SqliteRoomStore::open(file.path())
+            .unwrap_or_else(|error| panic!("reopen SQLite: {error}"));
+        let registry =
+            builtin_counter_registry().unwrap_or_else(|error| panic!("Counter registry: {error}"));
+        let recovered = reopened
+            .recover_room(&registry, &parsed(ROOM))
+            .unwrap_or_else(|error| panic!("recover Counter v3 Room: {error}"))
+            .unwrap_or_else(|| panic!("Counter v3 Room remains present"));
+        assert_eq!(recovered.head(), trace.head());
+        let connection = Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("open recovered Counter v3 reader: {error}"));
+        let recovered_intents: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM activation_intents WHERE room_id = ?1",
+                [ROOM],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("count recovered Counter v3 intents: {error}"));
+        assert_eq!(recovered_intents, 1);
     }
 
     #[test]

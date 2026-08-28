@@ -157,10 +157,12 @@ The default local ports are:
 
 ### Studio setup
 
-Complete the SQLite data-directory and authority-secret setup in
-[Run the daemon with SQLite](#run-the-daemon-with-sqlite) first. Studio uses
-the same `config/development.toml`, `.worldstream/data`, and authority secret.
-Then build the daemon and all Supervisor helper binaries:
+Studio uses the same `config/development.toml`, `.worldstream/data`, and
+authority secret as `worldstreamd`. On a fresh local Studio start, the launcher
+creates the configured owner-only 32-byte bootstrap source before either
+daemon or Studio state exists. To start `worldstreamd` by itself, use the
+authority-secret setup in [Run the daemon with SQLite](#run-the-daemon-with-sqlite)
+first. Then build the daemon and all Supervisor helper binaries:
 
 ```sh
 cargo build --locked -p worldstream-server --bin worldstreamd
@@ -176,6 +178,12 @@ Studio keeps its own owner-only operational state under
 references, Runner state, attention history, and backup-operation records. It
 is local development state and is ignored by Git. Do not copy it between
 machines or commit it.
+
+On its first start, the Supervisor reads the configured owner-only bootstrap
+authority and imports it behind one kind-bound opaque Host authority reference
+in that state. The raw authority never enters a browser request, URL, process
+argument, or Studio diagnostic. Later starts require the configured bootstrap
+authority and verify that it still matches the retained reference.
 
 Runner Templates are optional. If you need supervised Runners, place reviewed
 manifest files in `config/runner-templates/` before starting Studio. The
@@ -193,16 +201,16 @@ scripts/studio-dev.sh \
   --participant-console-origin http://127.0.0.1:5173
 ```
 
-This command builds `worldstreamd`, starts the Supervisor on port `9420`, and
-starts the Studio Vite server on port `5174`. It does not immediately start
-`worldstreamd`, and it does not start the Participant Console. Keep the command
-running in its terminal.
+This command builds `worldstreamd` and all required Supervisor helpers, starts
+the Supervisor on port `9420`, and starts the Studio Vite server on port
+`5174`. It stops before Vite starts if protected Supervisor startup fails. It
+does not immediately start `worldstreamd`, and it does not start the Participant
+Console. Keep the command running in its terminal.
 
 `pnpm studio:dev` invokes the same `scripts/studio-dev.sh` launcher without
 additional Supervisor arguments. The explicit form above is the canonical
-complete-development command because it binds the Studio and Participant
-Console origins to their actual Vite ports while the CLI defaults are being
-aligned.
+complete-development command because it makes the Studio and Participant
+Console origins explicit.
 
 Open <http://127.0.0.1:5174>, select **Operations**, and click **Start daemon**.
 Alternatively, leave a daemon started by the previous section running; Studio
@@ -408,8 +416,9 @@ bootstrap.
   it instead of relying on an unrelated system `python3`.
 - **The port is already in use:** pass the same alternative bind to daemon and
   control commands, for example `--bind 127.0.0.1:9510`.
-- **Authority bootstrap fails after a restart:** restore the original secret
-  file, or reset both the secret and disposable `.worldstream/data` together.
+- **Studio Host authority startup fails:** restore access to the configured
+  owner-only bootstrap secret and the matching `.worldstream/studio/` state,
+  then restart. The Supervisor will not replace retained authority state.
 - **The UI shows fixture data:** this is the default design. Running Vite does
   not provision a Room or inject a capability.
 - **Studio cannot start on a fresh checkout:** build all

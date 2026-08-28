@@ -221,8 +221,10 @@ impl CompatibilityManifest {
                 ));
             }
             if entry.pack_id == COUNTER_PACK_ID {
-                if !matches!(entry.explanatory_version.as_str(), "1.0.0" | "2.0.0")
-                    || !counter_versions.insert(entry.explanatory_version.as_str())
+                if !matches!(
+                    entry.explanatory_version.as_str(),
+                    "1.0.0" | "2.0.0" | "3.0.0"
+                ) || !counter_versions.insert(entry.explanatory_version.as_str())
                 {
                     return Err(ManifestError::Inconsistent(
                         "Counter executor set must contain each frozen revision exactly once",
@@ -299,9 +301,9 @@ impl CompatibilityManifest {
                 "required pack executor entries must include Counter and Agent Heist",
             ));
         }
-        if counter_versions != BTreeSet::from(["1.0.0", "2.0.0"]) {
+        if counter_versions != BTreeSet::from(["1.0.0", "2.0.0", "3.0.0"]) {
             return Err(ManifestError::Inconsistent(
-                "manifest must retain exact Counter v1 and v2 executors",
+                "manifest must retain exact Counter v1, v2, and v3 executors",
             ));
         }
         if self.release_ready && !selectable_release_activity {
@@ -451,13 +453,13 @@ mod tests {
     #[test]
     fn all_retained_pack_entries_are_resolved_and_current_heist_is_selectable() {
         let summary = manifest().summary();
-        assert_eq!(summary.pack_executors.len(), 5);
+        assert_eq!(summary.pack_executors.len(), 6);
         let counter: Vec<_> = summary
             .pack_executors
             .iter()
             .filter(|entry| entry.pack_id == super::COUNTER_PACK_ID)
             .collect();
-        assert_eq!(counter.len(), 2);
+        assert_eq!(counter.len(), 3);
         assert!(counter.iter().all(|entry| {
             entry.status == "resolved"
                 && !entry.revision_digest.is_empty()
@@ -583,12 +585,18 @@ mod tests {
     }
 
     #[test]
-    fn manifest_requires_exact_resolved_counter_v1_and_v2_rows() {
+    fn manifest_requires_exact_resolved_counter_v1_v2_and_v3_rows() {
         let mut missing_v2 = manifest();
         missing_v2.pack_executors.retain(|entry| {
             entry.pack_id != super::COUNTER_PACK_ID || entry.explanatory_version != "2.0.0"
         });
         assert!(missing_v2.validate().is_err());
+
+        let mut missing_v3 = manifest();
+        missing_v3.pack_executors.retain(|entry| {
+            entry.pack_id != super::COUNTER_PACK_ID || entry.explanatory_version != "3.0.0"
+        });
+        assert!(missing_v3.validate().is_err());
 
         let mut wrong_version = manifest();
         entry_mut(&mut wrong_version, super::COUNTER_PACK_ID, "2.0.0").explanatory_version =

@@ -466,6 +466,23 @@ status = "resolved"
 required_for_release = true
 
 [[pack_executors]]
+pack_id = "worldstream.counter"
+explanatory_version = "3.0.0"
+host_contract_id = "worldstream/activity-pack/v1"
+revision_lock_id = "worldstream/pack-revision-lock/v1"
+revision_digest_algorithm = "blake3"
+revision_digest = "blake3:7572a62b364fb9c88c02d79c85efba9e5b9cef22211da4a66827f64704970a55"
+descriptor_digest = "blake3:ac40f0ca14fe3c16884cc7548efdc8b456296f6956759bb9411503896415d06f"
+executor_artifact_digest = "blake3:2f8203ebeae8948d6c4c9113c26850c1e7d95c79301e7ae2161d040563626e20"
+schema_bundle_digest = "blake3:bfb839aeaabf089a318d0b14ef403bfdee0f49883111c7a60c7f8158af177e8f"
+codec_bundle_digest = "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30"
+golden_corpus_digest = "blake3:e41e162eaadf33eee2f242d3736f2b678d3e24212fcde3528a8070ad8af01a18"
+selectable_for_new_rooms = false
+runnable_for_retained_rooms = true
+status = "resolved"
+required_for_release = true
+
+[[pack_executors]]
 pack_id = "worldstream.agent-heist"
 explanatory_version = "0.0.1"
 host_contract_id = "worldstream/activity-pack/v1"

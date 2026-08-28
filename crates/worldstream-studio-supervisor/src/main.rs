@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
-use worldstream_runtime::{CliOverrides, ConfigLoader};
+use worldstream_runtime::{CliOverrides, ConfigError, ConfigLoader};
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
@@ -28,10 +28,14 @@ use worldstream_studio_supervisor::{
     },
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
+    startup_authority::{
+        bootstrap_source_for_local_development, establish_host_authority_reference,
+    },
     supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates,
     task_setup::{
-        FileAssignedMembershipSourceV1, HttpDaemonTaskRuntimeV1, HttpDaemonTaskSetupProvisionerV1,
-        LiveTaskRunnerReadinessSourceV1, TaskSetupSupervisorV1,
+        CatalogTaskLaunchApplicabilitySourceV1, FileAssignedMembershipSourceV1,
+        HttpDaemonTaskRuntimeV1, HttpDaemonTaskSetupProvisionerV1, LiveTaskRunnerReadinessSourceV1,
+        TaskSetupSupervisorV1,
     },
     task_templates::{InstalledTaskTemplateDependenciesV1, TaskTemplateStoreV1},
 };
@@ -88,11 +92,11 @@ struct Args {
     storage_profile: BackupStorageProfileV1,
 
     /// Exact loopback Studio browser origin admitted for handoff creation.
-    #[arg(long, default_value = "http://127.0.0.1:5173")]
+    #[arg(long, default_value = "http://127.0.0.1:5174")]
     studio_origin: String,
 
     /// Exact loopback Participant Console origin placed in one-use URLs.
-    #[arg(long, default_value = "http://127.0.0.1:5174")]
+    #[arg(long, default_value = "http://127.0.0.1:5173")]
     participant_console_origin: String,
 }
 
@@ -100,11 +104,29 @@ struct Args {
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let mut bootstrap_source = None;
     let daemon_effective =
         ConfigLoader::from_process(Some(args.daemon_config.clone()), CliOverrides::default())
             .context("controlled worldstreamd configuration could not be selected")?
-            .load()
+            .load_with_bootstrap_preparation(|effective| {
+                bootstrap_source = Some(
+                    bootstrap_source_for_local_development(
+                        &args.state_dir,
+                        &effective.storage.data_dir,
+                        effective.storage.profile,
+                        effective.authority.bootstrap_secret.as_ref(),
+                    )
+                    .map_err(|_| {
+                        ConfigError::Missing(
+                            "Studio bootstrap authority requires fresh empty local SQLite state or its existing owner-only secret source",
+                        )
+                    })?,
+                );
+                Ok(())
+            })
             .context("controlled worldstreamd configuration is invalid")?;
+    let bootstrap_source = bootstrap_source
+        .context("Studio Supervisor bootstrap authority preparation did not select a source")?;
     let backup_root = prepare_shared_backup_root(
         &args.state_dir,
         &daemon_effective.storage.data_dir,
@@ -115,6 +137,15 @@ async fn main() -> Result<()> {
         )
     })?;
     let daemon_timeout = Duration::from_millis(args.probe_timeout_ms);
+    let vault = FileSecretVaultV1::open(&args.state_dir.join("secrets"))
+        .context("Studio Supervisor protected secret backend is unavailable")?;
+    let host_authority_reference = establish_host_authority_reference(
+        &args.state_dir,
+        &vault,
+        Some(&bootstrap_source),
+        args.host_authority_reference.as_ref(),
+    )
+    .context("Studio Supervisor Host authority startup is unavailable")?;
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("Studio Supervisor listener bind failed at {}", args.bind))?;
@@ -125,13 +156,11 @@ async fn main() -> Result<()> {
         Duration::from_millis(args.graceful_stop_timeout_ms),
         source.clone(),
     );
-    let vault = FileSecretVaultV1::open(&args.state_dir.join("secrets"))
-        .context("Studio Supervisor protected secret backend is unavailable")?;
     let activity_packs = HttpDaemonActivityPackSource::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
-        args.host_authority_reference.clone(),
+        Some(host_authority_reference.clone()),
     );
     let runner_registry = RunnerTemplateRegistryV1::open(
         &args.state_dir.join("runner-templates/installed"),
@@ -161,13 +190,13 @@ async fn main() -> Result<()> {
         args.daemon,
         daemon_timeout,
         vault.clone(),
-        args.host_authority_reference.clone(),
+        Some(host_authority_reference.clone()),
     );
     let room_creator = HttpDaemonRoomCreatorV1::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
-        args.host_authority_reference.clone(),
+        Some(host_authority_reference.clone()),
     );
     let room_creation = RoomCreationSupervisorV1::open(
         &args.state_dir.join("room-creations"),
@@ -180,7 +209,7 @@ async fn main() -> Result<()> {
         daemon_timeout,
         args.storage_profile,
         vault.clone(),
-        args.host_authority_reference.clone(),
+        Some(host_authority_reference.clone()),
     );
     let backups = BackupOperationsV1::open(&backup_root, backup_executor).map_err(|error| {
         anyhow::anyhow!(
@@ -198,13 +227,13 @@ async fn main() -> Result<()> {
         args.daemon,
         daemon_timeout,
         vault.clone(),
-        args.host_authority_reference.clone(),
+        Some(host_authority_reference.clone()),
     );
     let task_setup_provisioner = HttpDaemonTaskSetupProvisionerV1::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
-        args.host_authority_reference.clone(),
+        Some(host_authority_reference.clone()),
     );
     let task_setup_base = TaskSetupSupervisorV1::open(
         &args.state_dir.join("task-setups"),
@@ -213,7 +242,10 @@ async fn main() -> Result<()> {
         task_setup_provisioner,
     )
     .context("Studio Supervisor protected Task setup store is unavailable")?
-    .with_agent_profiles(agent_profiles.clone());
+    .with_agent_profiles(agent_profiles.clone())
+    .with_launch_applicability(CatalogTaskLaunchApplicabilitySourceV1::new(
+        activity_packs.clone(),
+    ));
     let participant_handoff = ParticipantHandoffBrokerV1::new(
         &args.studio_origin,
         &args.participant_console_origin,
@@ -254,7 +286,7 @@ async fn main() -> Result<()> {
             args.daemon,
             daemon_timeout,
             vault.clone(),
-            args.host_authority_reference.clone(),
+            Some(host_authority_reference),
         ),
         runners.clone(),
     );

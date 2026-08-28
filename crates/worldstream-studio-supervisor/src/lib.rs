@@ -22,6 +22,7 @@ pub mod runner_attention;
 pub mod runner_templates;
 
 pub mod secrets;
+pub mod startup_authority;
 pub mod task_setup;
 pub mod task_templates;
 

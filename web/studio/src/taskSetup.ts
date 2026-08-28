@@ -55,6 +55,7 @@ export interface TaskSetupStatus {
   attention: TaskSetupAttention | null;
   seats: TaskSetupSeatStatus[];
   readiness: TaskReadiness;
+  launch_applicability: "unknown" | "active_at_genesis" | "lobby_launch";
   launch: TaskLaunchStatus | null;
 }
 
@@ -65,7 +66,7 @@ const maximumStages = maximumSeats * 2;
 const maximumU32 = 4_294_967_295;
 const statusKeys = [
   "version", "draft_id", "operation_id", "room_id", "state", "attempts",
-  "completed_stages", "total_stages", "active_stage", "attention", "seats", "readiness", "launch",
+  "completed_stages", "total_stages", "active_stage", "attention", "seats", "readiness", "launch_applicability", "launch",
 ] as const;
 const seatKeys = [
   "seat_id", "role", "required", "display_name", "principal_id", "principal_kind",
@@ -120,7 +121,8 @@ export function isTaskSetupStatus(value: unknown): value is TaskSetupStatus {
     value.seats.length > maximumSeats || !value.seats.every(isSeat) ||
     !(value.active_stage === null || isStage(value.active_stage)) ||
     !(value.attention === null || isAttention(value.attention)) ||
-    !isReadiness(value.readiness) || !(value.launch === null || isLaunch(value.launch))) return false;
+    !isReadiness(value.readiness) || !["unknown", "active_at_genesis", "lobby_launch"].includes(String(value.launch_applicability)) ||
+    !(value.launch === null || isLaunch(value.launch))) return false;
 
   const seats = value.seats as TaskSetupSeatStatus[];
   if (new Set(seats.map((seat) => seat.seat_id)).size !== seats.length) return false;
@@ -220,7 +222,7 @@ function readinessIsCoherent(status: TaskSetupStatus, seats: TaskSetupSeatStatus
 function launchIsCoherent(status: TaskSetupStatus): boolean {
   const launch = status.launch;
   if (launch === null) return true;
-  if (status.state !== "ready") return false;
+  if (status.state !== "ready" || !["unknown", "lobby_launch"].includes(status.launch_applicability)) return false;
   switch (launch.state) {
     case "waiting":
       return launch.attempts === 0 && launch.attention === null && launch.transition_id === null;

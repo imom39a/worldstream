@@ -1,4 +1,4 @@
-//! Embedded retained registry rows for the two Counter conformance revisions.
+//! Embedded retained registry rows for the Counter conformance revisions.
 //!
 //! This module intentionally lives outside `counter.rs`: the executor source
 //! is itself a revision-lock input, while the reviewed transcript digests are
@@ -14,6 +14,7 @@ use crate::{
     PackRegistryV1, PrincipalKindV1,
     activity_pack::{CanonicalPackCodecV1, PackRegistryArtifactsV1, PackRegistryEntryV1},
     counter::{counter_v1_revision, counter_v2_revision},
+    counter_attention::counter_v3_revision,
 };
 
 const PARTICIPANT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC0";
@@ -27,6 +28,11 @@ const COUNTER_V1_TRANSCRIPT_DIGEST: &str =
     "blake3:af195b647116508de2210a5e8aec7d8558295ef8b270eedaeb70a0d624c8e9dd";
 const COUNTER_V2_TRANSCRIPT_DIGEST: &str =
     "blake3:2f09686e4b8f78db7220c5f1b55061788753d11619832d28e137412207e7196a";
+const COUNTER_V3_TRANSCRIPT_DIGEST: &str =
+    "blake3:fec06f45b83bc5e8bc9b19f0dc64c94721e115389e2906a340ac2549b3bf6105";
+#[cfg(test)]
+const COUNTER_V3_CORPUS_DIGEST: &str =
+    "blake3:e41e162eaadf33eee2f242d3736f2b678d3e24212fcde3528a8070ad8af01a18";
 
 /// Constructs the complete embedded Counter conformance registry.
 ///
@@ -41,7 +47,8 @@ const COUNTER_V2_TRANSCRIPT_DIGEST: &str =
 pub fn builtin_counter_registry() -> Result<PackRegistryV1, PackRegistryErrorV1> {
     let v1 = counter_entry(false, true, CounterRevision::V1)?;
     let v2 = counter_entry(true, true, CounterRevision::V2)?;
-    PackRegistryV1::try_new([v1, v2])
+    let v3 = counter_entry(true, true, CounterRevision::V3)?;
+    PackRegistryV1::try_new([v1, v2, v3])
 }
 
 /// Builds the retained-v1-only registry used to prove missing-runtime recovery.
@@ -165,10 +172,17 @@ pub fn counter_v2_digest() -> PackDigestV1 {
     counter_v2_revision().0.revision_digest.clone()
 }
 
+/// Exact attention-bearing Counter v3 semantic digest.
+#[must_use]
+pub fn counter_v3_digest() -> PackDigestV1 {
+    counter_v3_revision().0.revision_digest.clone()
+}
+
 #[derive(Clone, Copy)]
 enum CounterRevision {
     V1,
     V2,
+    V3,
 }
 
 #[cfg(any(test, feature = "conformance-tracer"))]
@@ -421,6 +435,7 @@ impl CounterRevision {
         match self {
             Self::V1 => COUNTER_V1_TRANSCRIPT_DIGEST,
             Self::V2 => COUNTER_V2_TRANSCRIPT_DIGEST,
+            Self::V3 => COUNTER_V3_TRANSCRIPT_DIGEST,
         }
     }
 }
@@ -433,6 +448,7 @@ fn counter_entry(
     let (descriptor, lock, schemas, codecs, artifact_digest) = match revision {
         CounterRevision::V1 => counter_v1_revision(),
         CounterRevision::V2 => counter_v2_revision(),
+        CounterRevision::V3 => counter_v3_revision(),
     };
     let corpus = counter_corpus(revision, descriptor.revision_digest.clone());
     let artifacts = PackRegistryArtifactsV1 {
@@ -455,9 +471,16 @@ fn counter_entry(
         CounterRevision::V2 => {
             PackRegistryEntryV1::counter_v2(lock.clone(), descriptor, artifacts, status)
         }
+        CounterRevision::V3 => {
+            PackRegistryEntryV1::counter_v3(lock.clone(), descriptor, artifacts, status)
+        }
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "The frozen multi-revision corpus is audited as one exact fixture."
+)]
 fn counter_corpus(revision: CounterRevision, pack_digest: PackDigestV1) -> PackGoldenCorpusV1 {
     let participant = membership(
         PARTICIPANT,
@@ -477,15 +500,55 @@ fn counter_corpus(revision: CounterRevision, pack_digest: PackDigestV1) -> PackG
         AccessModeV1::Operator,
         None,
     );
-    let core = CoreRoomStateV1::active([participant, spectator, operator])
+    let mut memberships = vec![participant, spectator, operator];
+    if matches!(revision, CounterRevision::V3) {
+        memberships.extend([
+            membership_with(
+                "01ARZ3NDEKTSV4RRFFQ69G5FC5",
+                "01ARZ3NDEKTSV4RRFFQ69G5FD5",
+                PrincipalKindV1::Agent,
+                MembershipStandingV1::Enabled,
+                AccessModeV1::Participant,
+                Some("counter"),
+            ),
+            membership_with(
+                "01ARZ3NDEKTSV4RRFFQ69G5FC6",
+                "01ARZ3NDEKTSV4RRFFQ69G5FD6",
+                PrincipalKindV1::Agent,
+                MembershipStandingV1::Enabled,
+                AccessModeV1::Participant,
+                Some("counter"),
+            ),
+            membership_with(
+                "01ARZ3NDEKTSV4RRFFQ69G5FC7",
+                "01ARZ3NDEKTSV4RRFFQ69G5FD7",
+                PrincipalKindV1::Agent,
+                MembershipStandingV1::Suspended,
+                AccessModeV1::Participant,
+                Some("counter"),
+            ),
+            membership_with(
+                "01ARZ3NDEKTSV4RRFFQ69G5FC8",
+                "01ARZ3NDEKTSV4RRFFQ69G5FD8",
+                PrincipalKindV1::Agent,
+                MembershipStandingV1::Departed,
+                AccessModeV1::Participant,
+                Some("counter"),
+            ),
+        ]);
+    }
+    let core = CoreRoomStateV1::active(memberships)
         .unwrap_or_else(|error| unreachable!("authored Counter Core fixture: {error}"));
     let configuration = match revision {
         CounterRevision::V1 => canonical(br#"{"initial_value":0,"maximum_value":1}"#),
-        CounterRevision::V2 => canonical(br#"{"initial_value":0,"maximum_value":2}"#),
+        CounterRevision::V2 | CounterRevision::V3 => {
+            canonical(br#"{"initial_value":0,"maximum_value":2}"#)
+        }
     };
     let descriptor = match revision {
         CounterRevision::V1 => counter_v1_revision().0,
         CounterRevision::V2 => counter_v2_revision().0,
+        CounterRevision::V3 => counter_v3_revision().0,
     };
     let empty_payload = canonical(br"{}");
     PackGoldenCorpusV1 {
@@ -557,11 +620,29 @@ fn membership(
     access_mode: AccessModeV1,
     role: Option<&str>,
 ) -> MembershipV1 {
+    membership_with(
+        member_id,
+        principal_id,
+        PrincipalKindV1::Human,
+        MembershipStandingV1::Enabled,
+        access_mode,
+        role,
+    )
+}
+
+fn membership_with(
+    member_id: &str,
+    principal_id: &str,
+    principal_kind: PrincipalKindV1,
+    standing: MembershipStandingV1,
+    access_mode: AccessModeV1,
+    role: Option<&str>,
+) -> MembershipV1 {
     MembershipV1::new(
         parsed(member_id),
         parsed(principal_id),
-        PrincipalKindV1::Human,
-        MembershipStandingV1::Enabled,
+        principal_kind,
+        standing,
         access_mode,
         role.map(str::to_owned),
     )
@@ -587,10 +668,12 @@ where
 mod tests {
     use super::*;
     use crate::{
+        CoreTraceV1, ParticipantActionV1, RecordedStimulusV1,
         activity_pack::{
             author_golden_transcript_digest_for_test, author_golden_transcript_for_test,
         },
         counter::{CounterV1, CounterV2},
+        counter_attention::CounterV3,
     };
 
     fn transcript(revision: CounterRevision) -> serde_json::Value {
@@ -621,6 +704,20 @@ mod tests {
                     artifact.clone(),
                     &corpus,
                     CounterV2,
+                )
+            }
+            CounterRevision::V3 => {
+                let (descriptor, lock, schemas, codecs, artifact) = counter_v3_revision();
+                let corpus =
+                    counter_corpus(CounterRevision::V3, descriptor.revision_digest.clone());
+                author_golden_transcript_for_test(
+                    lock.clone(),
+                    descriptor,
+                    schemas.clone(),
+                    codecs.clone(),
+                    artifact.clone(),
+                    &corpus,
+                    CounterV3,
                 )
             }
         }
@@ -661,10 +758,23 @@ mod tests {
         .unwrap_or_else(|()| unreachable!("authored Counter v2 transcript"));
         assert_eq!(v1, parsed(COUNTER_V1_TRANSCRIPT_DIGEST));
         assert_eq!(v2, parsed(COUNTER_V2_TRANSCRIPT_DIGEST));
+        let (descriptor, lock, schemas, codecs, artifact) = counter_v3_revision();
+        let corpus = counter_corpus(CounterRevision::V3, descriptor.revision_digest.clone());
+        let v3 = author_golden_transcript_digest_for_test(
+            lock.clone(),
+            descriptor,
+            schemas.clone(),
+            codecs.clone(),
+            artifact.clone(),
+            &corpus,
+            CounterV3,
+        )
+        .unwrap_or_else(|()| unreachable!("authored Counter v3 transcript"));
+        assert_eq!(v3, parsed(COUNTER_V3_TRANSCRIPT_DIGEST));
     }
 
     #[test]
-    fn both_counter_revisions_are_retained_but_only_v2_is_conformance_selectable() {
+    fn counter_revisions_remain_retained_while_v2_and_v3_are_conformance_selectable() {
         let registry = builtin_counter_registry()
             .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"));
         let v1 = registry
@@ -673,18 +783,25 @@ mod tests {
         let v2 = registry
             .load_retained(&counter_v2_digest())
             .unwrap_or_else(|error| unreachable!("Counter v2 retained: {error}"));
+        let v3 = registry
+            .load_retained(&counter_v3_digest())
+            .unwrap_or_else(|error| unreachable!("Counter v3 retained: {error}"));
         assert!(!v1.status().selectable_for_new_rooms);
         assert!(v1.status().runnable_for_retained_rooms);
         assert!(v2.status().selectable_for_new_rooms);
         assert!(v2.status().runnable_for_retained_rooms);
+        assert!(v3.status().selectable_for_new_rooms);
+        assert!(v3.status().runnable_for_retained_rooms);
         assert!(registry.select_for_new_room(&counter_v1_digest()).is_err());
         assert!(registry.select_for_new_room(&counter_v2_digest()).is_ok());
+        assert!(registry.select_for_new_room(&counter_v3_digest()).is_ok());
     }
 
     #[test]
     fn counter_transcripts_make_revision_privacy_and_offer_semantics_readable() {
         let v1 = transcript(CounterRevision::V1);
         let v2 = transcript(CounterRevision::V2);
+        let v3 = transcript(CounterRevision::V3);
 
         assert_eq!(
             v1["steps"][1]["disposition"]["next_activity_state"]["value"],
@@ -701,6 +818,20 @@ mod tests {
         assert_eq!(
             v2["steps"][1]["disposition"]["ordered_domain_events"][0]["delta"],
             2
+        );
+        assert_eq!(
+            v3["steps"][0]["disposition"]["ordered_attention_signals"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            v3["steps"][0]["disposition"]["ordered_attention_signals"][0]["target_member_id"],
+            "01ARZ3NDEKTSV4RRFFQ69G5FC5"
+        );
+        assert_eq!(
+            v3["steps"][0]["disposition"]["ordered_attention_signals"][1]["target_member_id"],
+            "01ARZ3NDEKTSV4RRFFQ69G5FC6"
         );
 
         for transcript in [&v1, &v2] {
@@ -732,5 +863,142 @@ mod tests {
             assert_eq!(after_view_offers.as_array().map(Vec::len), Some(1));
             assert_eq!(after_view_offers[0]["action_type"], "private_ack");
         }
+    }
+
+    #[test]
+    fn counter_v3_human_ack_emits_eligible_agent_attention_and_replays_without_effects() {
+        let registry = builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"));
+        let corpus = counter_corpus(CounterRevision::V3, counter_v3_digest());
+        let prepared = registry
+            .prepare_genesis_for_new_room(&corpus.genesis)
+            .unwrap_or_else(|error| unreachable!("Counter v3 genesis: {error}"));
+        let mut trace = CoreTraceV1::create_uncommitted(prepared)
+            .unwrap_or_else(|error| unreachable!("Counter v3 trace: {error}"));
+        let private_ack = trace
+            .retained_pack()
+            .unwrap_or_else(|| unreachable!("Counter v3 retained pack"))
+            .descriptor()
+            .actions
+            .iter()
+            .find(|action| action.action_type == "private_ack")
+            .unwrap_or_else(|| unreachable!("Counter v3 private acknowledgement"));
+        trace
+            .advance(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+                member_id: parsed(PARTICIPANT),
+                action_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC3"),
+                action_type: "private_ack".to_owned(),
+                payload_schema_digest: private_ack.payload_schema.schema_digest.clone(),
+                canonical_payload: canonical(br"{}"),
+                exact_basis_head: trace.head().clone(),
+                admitted_at: parsed("2026-08-15T12:00:01Z"),
+            }))
+            .unwrap_or_else(|error| unreachable!("Counter v3 acknowledgement: {error}"));
+
+        let transition = trace
+            .transitions()
+            .first()
+            .unwrap_or_else(|| unreachable!("Counter v3 transition"));
+        let targets = transition
+            .ordered_attention_signals()
+            .iter()
+            .map(|signal| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &signal
+                        .to_bytes()
+                        .unwrap_or_else(|error| unreachable!("Counter v3 Attention bytes: {error}")),
+                )
+                .unwrap_or_else(|error| unreachable!("Counter v3 Attention JSON: {error}"))
+                ["target_member_id"]
+                    .as_str()
+                    .unwrap_or_else(|| unreachable!("Counter v3 Attention target"))
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets,
+            [
+                "01ARZ3NDEKTSV4RRFFQ69G5FC5".to_owned(),
+                "01ARZ3NDEKTSV4RRFFQ69G5FC6".to_owned(),
+            ]
+        );
+        assert!(transition.ordered_attention_signals().iter().all(|signal| {
+            signal.to_bytes().is_ok_and(|bytes| {
+                bytes.windows(b"FC7".len()).all(|window| window != b"FC7")
+                    && bytes.windows(b"FC8".len()).all(|window| window != b"FC8")
+            })
+        }));
+
+        let replay = CoreTraceV1::replay(
+            &registry,
+            &trace
+                .genesis_bytes()
+                .unwrap_or_else(|error| unreachable!("Counter v3 Genesis bytes: {error}")),
+            &trace
+                .transition_bytes()
+                .unwrap_or_else(|error| unreachable!("Counter v3 Transition bytes: {error}")),
+        )
+        .unwrap_or_else(|error| unreachable!("Counter v3 replay: {error:?}"));
+        assert_eq!(replay.final_head, *trace.head());
+        assert_eq!(replay.activity_callback_count, 1);
+        assert_eq!(replay.external_effect_count, 0);
+        assert_eq!(replay.receipt_count, 0);
+
+        let prepared = registry
+            .prepare_genesis_for_new_room(&corpus.genesis)
+            .unwrap_or_else(|error| unreachable!("Counter v3 agent genesis: {error}"));
+        let mut agent_trace = CoreTraceV1::create_uncommitted(prepared)
+            .unwrap_or_else(|error| unreachable!("Counter v3 agent trace: {error}"));
+        agent_trace
+            .advance(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
+                member_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC5"),
+                action_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC4"),
+                action_type: "private_ack".to_owned(),
+                payload_schema_digest: private_ack.payload_schema.schema_digest.clone(),
+                canonical_payload: canonical(br"{}"),
+                exact_basis_head: agent_trace.head().clone(),
+                admitted_at: parsed("2026-08-15T12:00:01Z"),
+            }))
+            .unwrap_or_else(|error| unreachable!("Counter v3 agent acknowledgement: {error}"));
+        assert!(
+            agent_trace.transitions()[0]
+                .ordered_attention_signals()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn counter_v3_compatibility_metadata_is_fixed() {
+        let (descriptor, lock, schemas, codecs, artifact) = counter_v3_revision();
+        assert_eq!(
+            descriptor.revision_digest,
+            parsed("blake3:7572a62b364fb9c88c02d79c85efba9e5b9cef22211da4a66827f64704970a55")
+        );
+        assert_eq!(
+            lock.descriptor_digest,
+            parsed("blake3:ac40f0ca14fe3c16884cc7548efdc8b456296f6956759bb9411503896415d06f")
+        );
+        assert_eq!(
+            *artifact,
+            parsed("blake3:2f8203ebeae8948d6c4c9113c26850c1e7d95c79301e7ae2161d040563626e20")
+        );
+        assert_eq!(
+            schemas
+                .digest()
+                .unwrap_or_else(|error| unreachable!("Counter v3 schema digest: {error}")),
+            parsed("blake3:bfb839aeaabf089a318d0b14ef403bfdee0f49883111c7a60c7f8158af177e8f")
+        );
+        assert_eq!(
+            codecs
+                .digest()
+                .unwrap_or_else(|error| unreachable!("Counter v3 codec digest: {error}")),
+            parsed("blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30")
+        );
+        assert_eq!(
+            counter_corpus(CounterRevision::V3, descriptor.revision_digest.clone())
+                .digest()
+                .unwrap_or_else(|error| unreachable!("Counter v3 corpus digest: {error}")),
+            parsed(COUNTER_V3_CORPUS_DIGEST)
+        );
     }
 }

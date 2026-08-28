@@ -15,6 +15,11 @@ mod agent_heist_registry;
 mod authority;
 mod canonical;
 mod counter;
+#[allow(
+    clippy::assigning_clones,
+    reason = "Counter v3's self-hashed source freezes this one-time descriptor construction."
+)]
+mod counter_attention;
 mod counter_registry;
 mod lineage;
 mod model;
@@ -88,7 +93,9 @@ pub use authority::{
     ValidatedAuthorityChangeV1, ViewerAdapterInputV1,
 };
 pub use canonical::{CanonicalJsonError, CanonicalJsonV1, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER};
-pub use counter_registry::{builtin_counter_registry, counter_v1_digest, counter_v2_digest};
+pub use counter_registry::{
+    builtin_counter_registry, counter_v1_digest, counter_v2_digest, counter_v3_digest,
+};
 #[cfg(any(test, feature = "conformance-tracer"))]
 pub use counter_registry::{
     counter_v1_only_registry_for_conformance,

@@ -157,12 +157,12 @@ fn verify_embedded_counter_registry(manifest: &Value) -> Result<()> {
         .iter()
         .filter(|row| row["pack_id"] == "worldstream.counter")
         .collect();
-    if counter_rows.len() != 2 {
-        bail!("manifest must contain exactly Counter v1 and v2 executor rows");
+    if counter_rows.len() != 3 {
+        bail!("manifest must contain exactly Counter v1, v2, and v3 executor rows");
     }
 
     let registry = builtin_counter_registry().context("embedded Counter registry is invalid")?;
-    for expected_version in ["1.0.0", "2.0.0"] {
+    for expected_version in ["1.0.0", "2.0.0", "3.0.0"] {
         let row = counter_rows
             .iter()
             .copied()
@@ -532,9 +532,25 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        canonical_from_toml, sort_json, verify_embedded_storage_identity, verify_node_workspace,
-        verify_python_workspace,
+        canonical_from_toml, sort_json, verify_embedded_counter_registry,
+        verify_embedded_storage_identity, verify_node_workspace, verify_python_workspace,
     };
+
+    #[test]
+    fn embedded_counter_registry_requires_the_exact_three_revision_rows() {
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../compatibility.json"))
+                .unwrap_or_else(|error| unreachable!("parse compatibility fixture: {error}"));
+        assert!(verify_embedded_counter_registry(&manifest).is_ok());
+
+        manifest["pack_executors"]
+            .as_array_mut()
+            .unwrap_or_else(|| unreachable!("pack executors"))
+            .retain(|row| {
+                row["pack_id"] != "worldstream.counter" || row["explanatory_version"] != "3.0.0"
+            });
+        assert!(verify_embedded_counter_registry(&manifest).is_err());
+    }
 
     #[test]
     fn embedded_storage_identity_is_exact_and_rejects_non_applicable_checksums() {

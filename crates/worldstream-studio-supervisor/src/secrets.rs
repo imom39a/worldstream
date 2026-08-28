@@ -301,6 +301,38 @@ impl FileSecretVaultV1 {
         }
     }
 
+    /// Returns every exact retained reference for one authority kind without
+    /// resolving any material.
+    ///
+    /// This internal startup boundary uses the result to recover an interrupted
+    /// first import only when exactly one retained Host authority exists.
+    pub(crate) fn retained_references(
+        &self,
+        kind: SecretKindV1,
+    ) -> Result<Vec<SecretReferenceV1>, SecretVaultErrorV1> {
+        let prefix = format!("{}-", kind.file_label());
+        let mut references = Vec::new();
+        let entries = fs::read_dir(&self.root).map_err(|_| SecretVaultErrorV1::Unavailable)?;
+        for entry in entries {
+            let entry = entry.map_err(|_| SecretVaultErrorV1::Unavailable)?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| SecretVaultErrorV1::Unavailable)?;
+            let Some(value) = name
+                .strip_prefix(&prefix)
+                .and_then(|value| value.strip_suffix(".secret"))
+            else {
+                continue;
+            };
+            let reference = SecretReferenceV1::parse(value.to_owned())
+                .map_err(|_| SecretVaultErrorV1::Unavailable)?;
+            references.push(reference);
+        }
+        references.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(references)
+    }
+
     fn secret_path(&self, kind: SecretKindV1, reference: &SecretReferenceV1) -> PathBuf {
         self.root.join(format!(
             "{}-{}.secret",

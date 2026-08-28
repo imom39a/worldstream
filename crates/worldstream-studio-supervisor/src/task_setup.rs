@@ -32,6 +32,7 @@ use worldstream_runtime::{
 use zeroize::Zeroizing;
 
 use crate::{
+    activity_packs::{ActivityPackProxyErrorV1, DaemonActivityPackSource},
     agent_profiles::{
         AgentExecutionBindingV1, AgentHostContractV1, AgentProfileErrorV1,
         AgentProfileMembershipBindingV1, AgentProfileSeatAssignmentV1, AgentProfileStoreV1,
@@ -62,6 +63,83 @@ const SETUP_SCHEMA_V1: &str = "worldstream/studio-task-setup-operation/v1";
 const SETUP_STATUS_VERSION_V1: &str = "studio_task_setup.v1";
 const MAX_OPERATION_BYTES: usize = 256 * 1024;
 const MAX_SETUP_OPERATIONS: usize = 256;
+
+/// The immutable Genesis-time lifecycle declared by an exact Activity Pack.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskLaunchApplicabilityV1 {
+    /// An older protected operation has not yet resolved its exact declaration.
+    #[default]
+    Unknown,
+    /// Genesis is already the active Room; there is no host launch transition.
+    ActiveAtGenesis,
+    /// A reviewed host Lobby launch must advance Genesis into the active Room.
+    LobbyLaunch,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if predicates receive a field reference"
+)]
+fn launch_applicability_is_unknown(value: &TaskLaunchApplicabilityV1) -> bool {
+    *value == TaskLaunchApplicabilityV1::Unknown
+}
+
+/// Exact-pack declaration source for the setup lifecycle.
+pub trait TaskLaunchApplicabilitySourceV1: Send + Sync + 'static {
+    /// Reads the immutable declaration for the exact pinned pack reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed unavailable or invalid exact-pack declaration.
+    fn applicability(
+        &self,
+        pack: &PackReference,
+    ) -> Result<TaskLaunchApplicabilityV1, TaskSetupErrorV1>;
+}
+
+/// Catalog-backed launch declaration source. It accepts no pack-name fallback.
+#[derive(Clone)]
+pub struct CatalogTaskLaunchApplicabilitySourceV1 {
+    source: Arc<dyn DaemonActivityPackSource>,
+}
+
+impl CatalogTaskLaunchApplicabilitySourceV1 {
+    #[must_use]
+    pub fn new(source: impl DaemonActivityPackSource) -> Self {
+        Self {
+            source: Arc::new(source),
+        }
+    }
+}
+
+impl TaskLaunchApplicabilitySourceV1 for CatalogTaskLaunchApplicabilitySourceV1 {
+    fn applicability(
+        &self,
+        pack: &PackReference,
+    ) -> Result<TaskLaunchApplicabilityV1, TaskSetupErrorV1> {
+        let detail = self
+            .source
+            .revision(&pack.digest)
+            .map_err(|error| match error {
+                ActivityPackProxyErrorV1::InvalidRevision
+                | ActivityPackProxyErrorV1::RevisionUnavailable => {
+                    TaskSetupErrorV1::InvalidCreation
+                }
+                ActivityPackProxyErrorV1::AuthorityUnavailable
+                | ActivityPackProxyErrorV1::DaemonUnavailable
+                | ActivityPackProxyErrorV1::InvalidResponse => TaskSetupErrorV1::Unavailable,
+            })?;
+        if detail.revision.summary.pack != *pack {
+            return Err(TaskSetupErrorV1::InvalidCreation);
+        }
+        Ok(if detail.revision.lobby_compatibility.is_some() {
+            TaskLaunchApplicabilityV1::LobbyLaunch
+        } else {
+            TaskLaunchApplicabilityV1::ActiveAtGenesis
+        })
+    }
+}
 
 /// Operator-visible setup lifecycle, independent from Activity Phase.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -151,6 +229,8 @@ struct TaskSetupOperationV1 {
     attempts: u32,
     active_stage: Option<TaskSetupStageV1>,
     attention: Option<TaskSetupAttentionV1>,
+    #[serde(default, skip_serializing_if = "launch_applicability_is_unknown")]
+    launch_applicability: TaskLaunchApplicabilityV1,
     launch: Option<TaskLaunchIntentV1>,
 }
 
@@ -258,6 +338,7 @@ pub struct TaskSetupStatusV1 {
     pub attention: Option<TaskSetupAttentionV1>,
     pub seats: Vec<TaskSetupSeatStatusV1>,
     pub readiness: TaskReadinessV1,
+    pub launch_applicability: TaskLaunchApplicabilityV1,
     pub launch: Option<TaskLaunchStatusV1>,
 }
 
@@ -322,6 +403,7 @@ impl TaskSetupStatusV1 {
             attention: operation.attention,
             seats,
             readiness,
+            launch_applicability: operation.launch_applicability,
             launch: operation.launch.map(|launch| TaskLaunchStatusV1 {
                 state: launch.state,
                 attempts: launch.attempts,
@@ -859,6 +941,7 @@ pub struct TaskSetupSupervisorV1 {
     console: Option<Arc<dyn ParticipantConsoleReadinessSourceV1>>,
     runners: Option<Arc<dyn TaskRunnerReadinessSourceV1>>,
     launcher: Option<Arc<dyn DaemonTaskLaunchSourceV1>>,
+    launch_applicability: Option<Arc<dyn TaskLaunchApplicabilitySourceV1>>,
     profiles: Option<AgentProfileStoreV1>,
     mutation: Arc<Mutex<()>>,
 }
@@ -884,6 +967,7 @@ impl TaskSetupSupervisorV1 {
             console: None,
             runners: None,
             launcher: None,
+            launch_applicability: None,
             profiles: None,
             mutation: Arc::new(Mutex::new(())),
         })
@@ -900,6 +984,16 @@ impl TaskSetupSupervisorV1 {
         self.console = Some(Arc::new(console));
         self.runners = Some(Arc::new(runners));
         self.launcher = Some(Arc::new(launcher));
+        self
+    }
+
+    /// Binds setup lifecycle selection to the exact reviewed Activity Pack declaration.
+    #[must_use]
+    pub fn with_launch_applicability(
+        mut self,
+        source: impl TaskLaunchApplicabilitySourceV1,
+    ) -> Self {
+        self.launch_applicability = Some(Arc::new(source));
         self
     }
 
@@ -927,6 +1021,8 @@ impl TaskSetupSupervisorV1 {
             }
             Err(error) => return Err(error),
         };
+        let mut operation = operation;
+        self.resolve_launch_applicability(&mut operation)?;
         let operation = self.reconcile_unlocked(operation)?;
         Ok(self.status_for(operation))
     }
@@ -938,7 +1034,8 @@ impl TaskSetupSupervisorV1 {
     /// Returns exact not-found or protected-storage unavailable.
     pub fn retry(&self, draft_id: &str) -> Result<TaskSetupStatusV1, TaskSetupErrorV1> {
         let _guard = self.lock();
-        let operation = self.load_unlocked(draft_id)?;
+        let mut operation = self.load_unlocked(draft_id)?;
+        self.resolve_launch_applicability(&mut operation)?;
         let operation = self.reconcile_unlocked(operation)?;
         Ok(self.status_for(operation))
     }
@@ -1006,6 +1103,10 @@ impl TaskSetupSupervisorV1 {
     pub fn launch(&self, draft_id: &str) -> Result<TaskSetupStatusV1, TaskSetupErrorV1> {
         let _guard = self.lock();
         let mut operation = self.load_unlocked(draft_id)?;
+        self.resolve_launch_applicability(&mut operation)?;
+        if operation.launch_applicability != TaskLaunchApplicabilityV1::LobbyLaunch {
+            return Err(TaskSetupErrorV1::NotReady);
+        }
         let launcher = self
             .launcher
             .as_ref()
@@ -1043,6 +1144,28 @@ impl TaskSetupSupervisorV1 {
     fn status_for(&self, operation: TaskSetupOperationV1) -> TaskSetupStatusV1 {
         let readiness = self.readiness_for(&operation);
         TaskSetupStatusV1::from_operation(operation, readiness)
+    }
+
+    fn resolve_launch_applicability(
+        &self,
+        operation: &mut TaskSetupOperationV1,
+    ) -> Result<(), TaskSetupErrorV1> {
+        if operation.launch_applicability != TaskLaunchApplicabilityV1::Unknown {
+            return Ok(());
+        }
+        let source = self
+            .launch_applicability
+            .as_ref()
+            .ok_or(TaskSetupErrorV1::Unavailable)?;
+        let applicability = source.applicability(&operation.pack)?;
+        if applicability == TaskLaunchApplicabilityV1::Unknown
+            || (operation.launch.is_some()
+                && applicability != TaskLaunchApplicabilityV1::LobbyLaunch)
+        {
+            return Err(TaskSetupErrorV1::Unavailable);
+        }
+        operation.launch_applicability = applicability;
+        self.persist(operation)
     }
 
     fn readiness_for(&self, operation: &TaskSetupOperationV1) -> TaskReadinessV1 {
@@ -1273,6 +1396,14 @@ impl TaskSetupSupervisorV1 {
             .pack
             .clone()
             .ok_or(TaskSetupErrorV1::InvalidCreation)?;
+        let launch_applicability = self
+            .launch_applicability
+            .as_ref()
+            .ok_or(TaskSetupErrorV1::Unavailable)?
+            .applicability(&pack)?;
+        if launch_applicability == TaskLaunchApplicabilityV1::Unknown {
+            return Err(TaskSetupErrorV1::Unavailable);
+        }
         let filled = creation
             .review
             .seats
@@ -1328,6 +1459,7 @@ impl TaskSetupSupervisorV1 {
             attempts: 0,
             active_stage: None,
             attention: None,
+            launch_applicability,
             launch: None,
         };
         operation.setup_intent_hash = setup_intent_hash(&operation)?;
@@ -2164,11 +2296,35 @@ async fn retry_setup(
 async fn launch_task(
     State(supervisor): State<TaskSetupSupervisorV1>,
     AxumPath(draft_id): AxumPath<String>,
-) -> Result<Json<TaskSetupStatusV1>, TaskSetupErrorV1> {
+) -> Result<Json<TaskSetupStatusV1>, Response> {
+    let status_supervisor = supervisor.clone();
+    let status_draft_id = draft_id.clone();
+    let current = tokio::task::spawn_blocking(move || status_supervisor.status(&status_draft_id))
+        .await
+        .map_err(|_| TaskSetupErrorV1::Unavailable.into_response())?
+        .map_err(IntoResponse::into_response)?;
+    if current.launch_applicability == TaskLaunchApplicabilityV1::ActiveAtGenesis {
+        return Err(launch_inapplicable_response());
+    }
     let status = tokio::task::spawn_blocking(move || supervisor.launch(&draft_id))
         .await
-        .map_err(|_| TaskSetupErrorV1::Unavailable)??;
+        .map_err(|_| TaskSetupErrorV1::Unavailable.into_response())?
+        .map_err(IntoResponse::into_response)?;
     Ok(Json(status))
+}
+
+fn launch_inapplicable_response() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "error": {
+                "code": "task_launch_inapplicable",
+                "message": "this Task is active at Genesis and has no Lobby launch transition",
+                "retryable": false
+            }
+        })),
+    )
+        .into_response()
 }
 
 impl IntoResponse for TaskSetupErrorV1 {
@@ -2189,7 +2345,7 @@ impl IntoResponse for TaskSetupErrorV1 {
             Self::NotReady => (
                 StatusCode::CONFLICT,
                 "task_not_ready_to_launch",
-                "every required seat must be live-ready before launch",
+                "the Task must declare a Lobby launch and every required seat must be live-ready",
                 true,
             ),
             Self::Unavailable => (
@@ -2393,6 +2549,11 @@ fn validate_operation(
 }
 
 fn launch_is_coherent(operation: &TaskSetupOperationV1) -> bool {
+    if operation.launch.is_some()
+        && operation.launch_applicability == TaskLaunchApplicabilityV1::ActiveAtGenesis
+    {
+        return false;
+    }
     let Some(launch) = &operation.launch else {
         return true;
     };

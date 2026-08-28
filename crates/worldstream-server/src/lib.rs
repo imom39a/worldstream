@@ -1270,11 +1270,26 @@ pub(crate) fn activity_pack_revision_from_registry(
         selectable_for_new_rooms: revision.selectable_for_new_rooms,
         runnable_for_retained_rooms: revision.runnable_for_retained_rooms,
     };
-    let lobby_compatibility = (revision_digest == worldstream_core::agent_heist_lobby_digest())
-        .then(|| ActivityPackLobbyCompatibility {
-            contract: worldstream_core::AGENT_HEIST_LOBBY_CONTRACT.to_owned(),
-            configuration_schema: configuration_schema.clone(),
-        });
+    let lobby_compatibility = descriptor
+        .stimulus_schemas
+        .get(worldstream_core::HOST_LAUNCH_INPUT_TYPE)
+        .map(|reference| {
+            let launch_schema =
+                activity_pack_schema_from_registry(registry, &revision_digest, reference)?;
+            if launch_schema.schema
+                != json!({
+                    "additionalProperties": false,
+                    "type": "object",
+                })
+            {
+                return Err(BackendError::InvalidResult);
+            }
+            Ok(ActivityPackLobbyCompatibility {
+                contract: worldstream_core::AGENT_HEIST_LOBBY_CONTRACT.to_owned(),
+                configuration_schema: configuration_schema.clone(),
+            })
+        })
+        .transpose()?;
     Ok(ActivityPackCatalogRevisionResponse {
         version: ACTIVITY_PACK_CATALOG_VERSION.to_owned(),
         revision: ActivityPackCatalogRevisionDetail {
@@ -7103,7 +7118,7 @@ mod tests {
             list.version,
             worldstream_protocol::ACTIVITY_PACK_CATALOG_VERSION
         );
-        assert_eq!(list.revisions.len(), 5);
+        assert_eq!(list.revisions.len(), 6);
         assert!(
             list.revisions
                 .windows(2)
