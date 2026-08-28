@@ -12,7 +12,7 @@ This reference exists to keep architecture, protocol, code, UI, and examples ali
 
 ## One-paragraph mental model
 
-WorldStream is a self-hosted **realtime room runtime for multi-agent applications**, with humans as first-class participants. One server hosts independent Rooms. Each Room pins exactly one Activity Pack, which defines its rules. Human and Agent Participants receive authorized Projections, submit typed Actions, and receive Membership-addressed Observation Frames. The Room Kernel orders accepted Stimuli, commits deterministic Transitions, preserves Recovery and Replay, and may create Activation Intents for external Runners. WorldStream does not host models or preserve a continuously running agent mind.
+Agent orchestrators coordinate agents to complete work. WorldStream governs a shared reality in which humans and agents participate. Its implementation category is a self-hosted **realtime room runtime for multi-agent applications**, with humans as first-class participants. One server hosts independent Rooms. Each Room pins exactly one Activity Pack, which defines its rules. Human and Agent Participants receive authorized Projections, submit typed Actions, and receive Membership-addressed Observation Frames. The Room Kernel orders accepted Stimuli, commits deterministic Transitions, preserves Recovery and Replay, and may create Activation Intents for external Runners. WorldStream does not host models or preserve a continuously running agent mind.
 
 ## Relationship map
 
@@ -54,6 +54,7 @@ flowchart TD
 | **Self-hosted** | One host operator controls the WorldStream Server and its selected storage, whether the PostgreSQL service is self-managed or hosted. Agent runners may execute on other host-operator-approved machines. | This is an operational-control property, not an assertion that every process or durable byte is on one machine. |
 | **AI application** | An application that uses AI agents as participants while WorldStream supplies shared-state participation infrastructure. | Broader than games and narrower than generic business automation. |
 | **World** | Informal metaphor for a room's shared evolving situation. | There is no separate World entity in v0.1 or v0.2. Use Room in schemas and code. |
+| **Shared reality** | Positioning language for one Room's governed situation: its rules, authoritative state, permitted Actions, scoped views, and ordered history. | Use in product narrative. It is not a separate entity; use Room and Authoritative Room State in domain, protocol, and code. |
 | **Activity** | The domain experience occurring in one room under one Activity Pack, such as a Heist or Investigation. | The Activity Pack is the definition; the room is the running instance. |
 | **Reference activity** | A deliberately bounded application used to prove or falsify the runtime thesis. | Agent Heist and Investigation Room are reference activities, not the entire product. |
 
@@ -282,7 +283,7 @@ flowchart TD
 | Avoid | Say instead | Why |
 |---|---|---|
 | “WorldStream is a multiplayer game server.” | “WorldStream is a realtime room runtime for multi-agent applications; multiplayer servers are the architectural analogy.” | The product supports non-game activities. |
-| “WorldStream is a multi-agent orchestrator.” | “WorldStream coordinates multi-participant shared state; external runners operate the agents.” | It does not own agent plans, models, or tool loops. |
+| “WorldStream is a multi-agent orchestrator.” | “WorldStream governs a shared reality in which humans and agents participate; external Runners operate the agents.” | It owns Room truth, rules, visibility, and history—not agent plans, models, or tool loops. |
 | “The runtime” when ownership is unclear. | Use “WorldStream Server,” “Room Kernel,” or “runner-owned execution runtime.” | These have different trust, durability, and execution responsibilities. |
 | “The operator” when scope is unclear. | Use “host operator” or “operator membership.” | One controls the deployment; the other is a room-scoped access mode. |
 | “Context” without qualification. | Use “deterministic context,” “invocation context,” or “agent-private memory.” | These name pack helpers, one run's authorized input, and runner-owned state respectively. |

@@ -2,7 +2,17 @@
 
 ## Current product thesis
 
+> Agent orchestrators coordinate agents to complete work. WorldStream governs a
+> shared reality in which humans and agents participate.
+
 WorldStream is a self-hosted realtime room runtime for multi-agent applications. Its precise model is multi-participant: humans and independently run agents join one authoritative room, receive scoped realtime observations, submit typed actions, and retain continuity across connections and ephemeral agent invocations.
+
+The distinction is ownership. An orchestrator owns execution flow toward a
+task. WorldStream owns the governed situation: what is authoritative, which
+rules apply, what each Participant may see and do, how concurrent Actions are
+ordered, and how the resulting history survives disconnects and crashes.
+External orchestrators and Runners can participate in a WorldStream Room, but
+they do not become the authority for that Room.
 
 The architectural analogy is a multiplayer game backend generalized for AI applications:
 
@@ -17,7 +27,7 @@ This is a promising infrastructure thesis, not yet a validated product category.
 
 ## The problem being solved
 
-AI application developers repeatedly have to assemble the same coordination layer when several agents or humans affect one situation:
+AI application developers repeatedly have to assemble the same governed shared-state layer when several agents or humans affect one situation:
 
 - one authoritative current state;
 - deterministic handling of racing or conflicting actions;
@@ -178,7 +188,7 @@ Do not choose it when:
 
 ### Not n8n or Temporal
 
-n8n and Temporal coordinate a process whose control flow is substantially designed in advance. WorldStream coordinates participants inside shared state. The pack defines Action Offers and consequences, but a participant policy decides what to do next.
+n8n and Temporal coordinate a process whose control flow is substantially designed in advance. WorldStream governs a shared reality in which humans and agents participate. The pack defines Action Offers and consequences, but a participant policy decides what to do next.
 
 If the desired UI is primarily nodes and connectors, WorldStream is the wrong tool.
 

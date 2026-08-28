@@ -28,7 +28,7 @@ import glossary from "./content/glossary.md?raw";
 import manualMaintenance from "./content/manual-maintenance.md?raw";
 
 export const manualPages: readonly ManualPage[] = [
-  { route: "/orientation", title: "Developer orientation", summary: "Learn what WorldStream owns, what it deliberately does not own, and how to read this manual.", group: "Start here", source: orientation },
+  { route: "/orientation", title: "Developer orientation", summary: "Learn why WorldStream governs shared reality instead of orchestrating agent work, and how to read this manual.", group: "Start here", source: orientation },
   { route: "/quickstart", title: "Local quickstart", summary: "Install the pinned toolchain and bring up a verified local authority and Studio.", group: "Start here", source: quickstart },
   { route: "/concepts/architecture", title: "Architecture", summary: "Trace change from client or agent through Core, storage, projection, and delivery.", group: "Core concepts", source: architecture },
   { route: "/concepts/domain-model", title: "Domain model", summary: "Use WorldStream terminology precisely: Rooms, Participants, Memberships, Tasks, Actions, and Outcomes.", group: "Core concepts", source: domainModel },

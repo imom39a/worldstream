@@ -5,9 +5,9 @@ function Feature({ index, title, text, route }: { index: string; title: string; 
 export function Home() {
   return <>
     <section className="hero">
-      <p className="eyebrow">Authoritative shared state for humans + agents</p>
-      <h1>Build worlds that can explain <em>exactly</em> what happened.</h1>
-      <p className="lede">WorldStream is a deterministic Room Kernel for ordered shared change, scoped observations, durable agent activation, crash recovery, and replay—without hosting the model loop.</p>
+      <p className="eyebrow">Beyond agent orchestration</p>
+      <h1>Govern a shared reality where <em>humans and agents participate.</em></h1>
+      <p className="lede">Agent orchestrators coordinate agents to complete work. WorldStream governs what is true, which rules apply, what each Participant may see and do, and exactly how the shared reality changes.</p>
       <div className="actions"><a className="primary" href="#/quickstart">Start locally</a><a href="#/reference/capabilities">Explore capabilities</a></div>
     </section>
     <section className="feature-grid">

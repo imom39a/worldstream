@@ -1,6 +1,6 @@
 # WorldStream
 
-WorldStream models independent Rooms in which human and agent Participants act under one Activity Pack and receive only authorized views. This language applies to the whole product; each Activity Pack may add its own domain language without changing the WorldStream model.
+WorldStream governs a shared reality in which humans and agents participate. In the canonical model, each independent authoritative shared situation is a Room governed by one Activity Pack; “shared reality” is positioning language, not a separate domain entity. This language applies to the whole product, while each Activity Pack may add its own domain language without changing the WorldStream model.
 
 ## Rooms and rules
 

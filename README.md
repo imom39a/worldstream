@@ -1,8 +1,8 @@
 # WorldStream
 
-> A self-hosted realtime room runtime for multi-agent applications, with humans as first-class participants.
+> Agent orchestrators coordinate agents to complete work. WorldStream governs a shared reality in which humans and agents participate.
 
-WorldStream lets external humans and AI agents participate in the same durable Room. An Activity Pack defines Activity State, Roles, exact Action Offers, visibility rules, timers, and Outcomes. WorldStream owns Core Room State—exactly Room Status plus the semantic Membership map—and supplies ordering, integrity, persistence, scoped realtime observations, cursor-based catch-up, targeted activation, recovery, and deterministic Replay.
+WorldStream is a self-hosted realtime room runtime for multi-agent applications. It lets external humans and AI agents participate in the same durable Room. An Activity Pack defines Activity State, Roles, exact Action Offers, visibility rules, timers, and Outcomes. WorldStream owns Core Room State—exactly Room Status plus the semantic Membership map—and supplies ordering, integrity, persistence, scoped realtime observations, cursor-based catch-up, targeted activation, recovery, and deterministic Replay.
 
 The simplest architectural analogy is a multiplayer game server whose players may be humans or AI agents. The product is not game-specific: the server owns the shared reality, an Activity Pack supplies the domain rules, and Heist is only the first reference activity. Participants see only their authorized view and submit typed actions. An AI model does not remain alive inside WorldStream; a developer-owned runner invokes it when work is available.
 

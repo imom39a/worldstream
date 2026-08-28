@@ -1,9 +1,17 @@
 # Developer orientation
 
+> **Agent orchestrators coordinate agents to complete work. WorldStream governs
+> a shared reality in which humans and agents participate.**
+
 WorldStream is a deterministic **Room Kernel** for shared human-agent
 applications. A Room has one authoritative state, one immutable ordered history,
 one pinned Activity Pack revision, and Membership-scoped views. Humans and agents
 propose typed Actions; the kernel decides what commits.
+
+“Shared reality” is the product narrative; `Room` remains the canonical domain
+term. WorldStream may create durable Activation Intents for external Runners,
+but it does not own agent plans, prompts, tools, or model loops. Its authority
+is the Room: rules, truth, visibility, ordering, continuity, and Replay.
 
 > **Current audience:** maintainers and trusted local developers working from
 > source before the published v0.1 server. This manual labels deferred behavior
