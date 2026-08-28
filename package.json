@@ -7,6 +7,12 @@
     "node": "24.18.1"
   },
   "scripts": {
+    "docs:dev": "pnpm --dir web/manual dev",
+    "docs:build": "pnpm --dir web/manual build",
+    "docs:lint": "pnpm --dir web/manual lint",
+    "docs:test": "pnpm --dir web/manual test",
+    "docs:verify": "node scripts/verify-developer-manual.mjs",
+    "docs:preview": "pnpm --dir web/manual preview",
     "studio:prototype": "pnpm --dir web/console prototype:studio",
     "studio:dev": "scripts/studio-dev.sh",
     "studio:supervisor": "cargo run -p worldstream-studio-supervisor --",

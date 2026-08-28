@@ -65,7 +65,7 @@ the complete pin as explicit arguments and verifies the frozen version, binary
 and archive identities before running the same adapter:
 
 ```sh
-uv sync --project sdk/python --locked --python 3.13.0
+uv sync --project sdk/python --locked --python 3.14.7
 scripts/macos-source-quickstart.sh \
   --browser /absolute/path/to/chrome-headless-shell \
   --browser-version 152.0.7977.54 \
@@ -80,7 +80,7 @@ The x86_64 pin is closed separately in that script. With the seven
 `WORLDSTREAM_BROWSER_*` variables exported, run:
 
 ```sh
-PYENV_VERSION=3.13.0 python3 \
+uv run --project sdk/python --python 3.14.7 python \
   examples/heist/mvp_live/run_mvp_acceptance.py \
   --live --report target/agent-heist-mvp-acceptance.json
 ```
@@ -88,9 +88,9 @@ PYENV_VERSION=3.13.0 python3 \
 CI can run the fast report-contract gate independently:
 
 ```sh
-PYENV_VERSION=3.13.0 python3 -m unittest \
+uv run --project sdk/python --python 3.14.7 python -m unittest \
   examples/heist/mvp_live/test_run_mvp_acceptance.py
-PYENV_VERSION=3.13.0 python3 \
+uv run --project sdk/python --python 3.14.7 python \
   examples/heist/mvp_live/run_mvp_acceptance.py \
   --report target/agent-heist-mvp-acceptance.json
 ```

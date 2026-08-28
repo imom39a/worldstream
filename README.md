@@ -38,6 +38,45 @@ One accepted action follows this path:
 
 This is why the name includes Stream. WorldStream does not primarily stream LLM tokens. It streams meaningful, ordered changes in a shared situation and lets a disconnected participant catch up from a durable cursor.
 
+## Quick start
+
+WorldStream is a runtime workspace rather than a single web application. The
+fastest way to build the real daemon and run it locally with bundled SQLite is:
+
+```sh
+cargo build --locked -p worldstream-server --bins
+umask 077
+mkdir -p .worldstream/data
+head -c 32 /dev/urandom > .worldstream/authority.secret
+chmod 600 .worldstream/authority.secret
+target/debug/worldstreamctl --config config/development.toml config validate
+target/debug/worldstreamd --config config/development.toml
+```
+
+In another terminal, verify the running process:
+
+```sh
+curl -fsS http://127.0.0.1:9410/healthz
+curl -fsS http://127.0.0.1:9410/readyz
+curl -fsS http://127.0.0.1:9410/version
+```
+
+Use `Ctrl-C` to stop the daemon. The local database and bootstrap secret stay
+under the ignored `.worldstream/` directory so the same authority can be used
+on the next start.
+
+For the fixture-mode web console, install the locked JavaScript dependencies
+and start Vite:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm ui:dev
+```
+
+See [Getting started](docs/getting-started.md) for exact tool versions,
+configuration, component tests, full verification, SDK usage, and the limits
+of the fixture UI versus a live Room session.
+
 The frozen releases run exactly one WorldStream process and support exactly two startup-selected durable profiles under the same Room semantics: release-bundled SQLite by default, or one hosted/self-managed PostgreSQL 17 primary. Linux x86-64 and Windows x64 are native release profiles, Linux/amd64 is the only OCI profile, and macOS is a source-build quickstart only. See [ADR 0004](docs/adr/0004-supported-storage-profiles-and-offline-portability.md) and [ADR 0011](docs/adr/0011-release-compatibility-recovery-and-supply-chain-gate.md).
 
 ## The frozen boundary
@@ -82,6 +121,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 
 ## Documentation
 
+- [Getting started](docs/getting-started.md) — build, run, inspect, test, and troubleshoot a local checkout
 - [WorldStream domain context](CONTEXT.md) — canonical whole-product language and concept boundaries
 - [Frozen requirements](docs/requirements.md) — normative release scope and change control
 - [Canonical decision index](docs/decision-index.md) — frozen invariant, normative source, ADR, conformance evidence, and implementation ownership map
@@ -109,8 +149,8 @@ The implemented frontiers currently provide a pinned, deliberately narrow worksp
 - `worldstreamd` and `worldstreamctl` operator-shell binaries, protocol/runtime support crates, and a deterministic `xtask` manifest verifier;
 - a pure canonical Core reducer, lineage tracer, strict Replay verifier, and storage-neutral operational Principal/capability/Membership authority module;
 - the retained exact-revision `ActivityPackV1` host and registry, with executable test-only Counter v1 and v2 conformance revisions;
-- a Counter-only bundled-SQLite conformance adapter for atomic Room commit/recovery, durable authority changes, commit-time revocation fences, authorized receipt resolution, and authorized historical Replay;
-- locked Python SDK and web-console package skeletons that expose no Room or public protocol API yet;
+- bundled-SQLite and PostgreSQL adapters for authenticated Room creation, atomic commit/recovery, durable authority changes, scoped observations, and authorized historical Replay;
+- a locked public Python SDK and a first-party web console with fixture and explicit live-session modes;
 - native Linux and Windows bootstrap checks plus opt-in repository hooks.
 
 Install the exact tools named above. The POSIX verifier also requires Python 3.11+ as `python3`

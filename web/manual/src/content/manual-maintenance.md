@@ -1,0 +1,80 @@
+# Maintain and publish this manual
+
+The developer manual is a static React/Vite application in `web/manual`. Its
+technical claims live in version-controlled Markdown; its navigation and
+capability catalog are typed source. It has no runtime database, analytics, or
+external font dependency.
+
+## Run it locally
+
+From the repository root:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm docs:dev
+```
+
+Open `http://127.0.0.1:4173`. The development server reloads Markdown, React,
+and CSS changes.
+
+## Content map
+
+| Change | Edit |
+| --- | --- |
+| prose, commands, tables, source links | `web/manual/src/content/*.md` |
+| page title, route, group, or summary | `web/manual/src/pages.ts` |
+| capability catalog and status | `web/manual/src/capabilities.ts` |
+| navigation/search/application behavior | `web/manual/src/App.tsx` |
+| visual design | `web/manual/src/styles.css` |
+| social preview | `web/manual/public/og.png` |
+| GitLab Pages pipeline | `.gitlab-ci.yml` |
+
+Every capability must say whether it is **Implemented**, a **Reference**
+integration/example, **Design only**, or **Deferred**. Do not turn a proposed
+workflow or structurally compatible provider into a certified feature.
+
+## Verify a change
+
+```sh
+pnpm docs:test
+pnpm docs:lint
+pnpm docs:build
+pnpm docs:verify
+```
+
+The build writes `web/manual/dist`. The link verifier checks that every route
+and local documentation link resolves before publication.
+
+For technical claims, prefer the repository's contracts, ADRs, schemas, CLI
+help, and tests. Use the provider's official documentation for external
+integration syntax. Record compatibility gaps directly in the page instead of
+guessing.
+
+## GitLab Pages
+
+The checked-in pipeline publishes the static build only from GitLab's default
+branch. It supplies the project subpath as `DOCS_BASE` and the final Pages URL
+as `DOCS_SITE_URL`, so assets, navigation, and social metadata work whether the
+site is hosted at a root domain or a project path.
+
+A Pages-ready pipeline is not proof of deployment. Before calling the manual
+live, verify all of the following in the actual GitLab project:
+
+1. a GitLab remote exists and points at the intended project;
+2. `main` (or the configured default branch) contains this site;
+3. the Pages job succeeds in the GitLab pipeline;
+4. GitLab reports the expected Pages URL;
+5. that URL returns the current commit's manual and social card.
+
+## Documentation release checklist
+
+- run the full repository verification suite once;
+- confirm commands against current `--help` output;
+- verify privacy-safe examples contain no real authority material;
+- inspect the built site at desktop and narrow widths;
+- keep local-v0.1 limitations visible;
+- commit research evidence with the documentation it informed;
+- record the deployed commit and URL when GitLab Pages is actually enabled.
+
+Primary source: [GitLab Pages](https://docs.gitlab.com/user/project/pages/)
+and [GitLab CI/CD YAML](https://docs.gitlab.com/ci/yaml/).

@@ -1,0 +1,42 @@
+stages:
+  - verify
+  - deploy
+
+.manual-node:
+  image: node:24.18.1-bookworm-slim
+  before_script:
+    - corepack enable
+    - corepack install --global pnpm@11.19.0
+    - pnpm install --frozen-lockfile
+
+verify-developer-manual:
+  extends: .manual-node
+  stage: verify
+  script:
+    - pnpm docs:test
+    - pnpm docs:lint
+    - pnpm docs:verify
+  rules:
+    - changes:
+        - .gitlab-ci.yml
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - scripts/verify-developer-manual.mjs
+        - web/manual/**/*
+
+deploy-developer-manual:
+  extends: .manual-node
+  stage: deploy
+  script:
+    - export DOCS_BASE="$(node -e 'const path = new URL(process.env.CI_PAGES_URL).pathname; console.log(`${path.replace(/\/$/, "")}/`)')"
+    - export DOCS_SITE_URL="$CI_PAGES_URL"
+    - export VITE_SOURCE_URL="$CI_PROJECT_URL"
+    - pnpm docs:build
+  pages:
+    publish: web/manual/dist
+  environment:
+    name: developer-manual
+    url: $CI_PAGES_URL
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
