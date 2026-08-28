@@ -57,9 +57,53 @@ describe("WorldStream Studio portal", () => {
     expect(dom).toContain("Protected local references");
     expect(dom).toContain("Host authority");
     expect(dom).toContain("Configured");
-    expect(dom).toContain("Missing");
     expect(dom).not.toContain("bearer");
     expect(dom).not.toContain("Participant Console");
+  });
+
+  it.each([
+    {
+      availability: "missing",
+      host: "Required",
+      membership: "Created during Task setup",
+      runner: "Created during Task setup",
+      provider: "Optional",
+    },
+    {
+      availability: "configured",
+      host: "Configured",
+      membership: "Configured",
+      runner: "Configured",
+      provider: "Configured",
+    },
+    {
+      availability: "unavailable",
+      host: "Unavailable",
+      membership: "Unavailable",
+      runner: "Unavailable",
+      provider: "Unavailable",
+    },
+  ] as const)("explains each $availability protected credential", ({ availability, host, membership, runner, provider }) => {
+    const dom = renderToStaticMarkup(
+      <App
+        status={connected}
+        lifecycle={managedRunning}
+        secretStatus={{
+          schema: "worldstream/studio-secret-kind-status/v1",
+          credentials: [
+            { kind: "host_authority", availability },
+            { kind: "membership_authority", availability },
+            { kind: "runner_authority", availability },
+            { kind: "model_provider", availability },
+          ],
+        }}
+      />,
+    );
+
+    expect(dom).toContain(`<dt>Host authority</dt><dd>${host}</dd>`);
+    expect(dom).toContain(`<dt>Membership authority</dt><dd>${membership}</dd>`);
+    expect(dom).toContain(`<dt>Runner authority</dt><dd>${runner}</dd>`);
+    expect(dom).toContain(`<dt>Model provider</dt><dd>${provider}</dd>`);
   });
 
   it("shows a clear stopped state without stale version claims", () => {

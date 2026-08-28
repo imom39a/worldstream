@@ -245,7 +245,7 @@ export function App({
               <StatusFact
                 key={credential.kind}
                 label={credentialLabel(credential.kind)}
-                value={availabilityLabel(credential.availability)}
+                value={availabilityLabel(credential)}
               />
             ))}
           </dl>
@@ -369,10 +369,14 @@ function credentialLabel(kind: SecretStatusResponse["credentials"][number]["kind
 }
 
 function availabilityLabel(
-  availability: SecretStatusResponse["credentials"][number]["availability"],
+  { kind, availability }: SecretStatusResponse["credentials"][number],
 ) {
   if (availability === "configured") return "Configured";
-  if (availability === "missing") return "Missing";
+  if (availability === "missing") {
+    if (kind === "host_authority") return "Required";
+    if (kind === "model_provider") return "Optional";
+    return "Created during Task setup";
+  }
   return "Unavailable";
 }
 
