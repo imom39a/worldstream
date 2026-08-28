@@ -55,7 +55,7 @@ target/debug/worldstream-managed-agent-host --help
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm studio:dev` | Supervisor + Studio development portal |
+| `pnpm studio:dev` | Build the daemon binary; start the Supervisor + Studio portal, but not the daemon process or Participant Console |
 | `pnpm studio:supervisor` | Supervisor only |
 | `pnpm ui:dev` | Participant/reference Console |
 | `pnpm docs:dev` | this developer manual locally |

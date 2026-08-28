@@ -179,20 +179,32 @@ manifest files in `config/runner-templates/` before starting Studio. The
 manifest format and protected-secret workflow are documented in
 `docs/studio.md`. Studio starts normally with an empty Runner Template catalog.
 
-### Start the operator portal
+### Start the operator portal and Supervisor
 
 For daemon operations, Room inventory, drafts, backups, and attention without
 a live Participant Console, run this from the repository root:
 
 ```sh
-pnpm studio:dev
+scripts/studio-dev.sh \
+  --studio-origin http://127.0.0.1:5174 \
+  --participant-console-origin http://127.0.0.1:5173
 ```
 
 This command builds `worldstreamd`, starts the Supervisor on port `9420`, and
 starts the Studio Vite server on port `5174`. It does not immediately start
-`worldstreamd`. Open <http://127.0.0.1:5174>, select **Operations**, and start
-the configured daemon there. Alternatively, leave a daemon started by the
-previous section running; Studio will discover it through the Supervisor.
+`worldstreamd`, and it does not start the Participant Console. Keep the command
+running in its terminal.
+
+`pnpm studio:dev` invokes the same `scripts/studio-dev.sh` launcher without
+additional Supervisor arguments. The explicit form above is the canonical
+complete-development command because it binds the Studio and Participant
+Console origins to their actual Vite ports while the CLI defaults are being
+aligned.
+
+Open <http://127.0.0.1:5174>, select **Operations**, and click **Start daemon**.
+Alternatively, leave a daemon started by the previous section running; Studio
+will discover it through the Supervisor. Do not start a second daemon against
+the same `127.0.0.1:9410` listener.
 
 The expected healthy path is:
 
@@ -206,22 +218,17 @@ The expected healthy path is:
 Stop the Studio development stack with `Ctrl-C`. The script also stops its
 Supervisor child, but it does not delete `.worldstream/` state.
 
-### Start Studio with the Participant Console
+### Add the Participant Console when needed
 
-A complete human handoff uses both Vite applications. Start the Participant
-Console in the first terminal:
+A Participant Console is not required for Studio Operations, daemon health,
+Activity Pack inspection, Room administration, backups, or agent setup. It is
+required for a complete human Participant handoff.
+
+Keep the Studio launcher above running in the first terminal. In a second
+terminal, start the Participant Console:
 
 ```sh
 pnpm ui:dev
-```
-
-In a second terminal, start Studio and bind the browser origins to their local
-development ports explicitly:
-
-```sh
-scripts/studio-dev.sh \
-  --studio-origin http://127.0.0.1:5174 \
-  --participant-console-origin http://127.0.0.1:5173
 ```
 
 Open Studio at <http://127.0.0.1:5174>. When Task setup has provisioned a human

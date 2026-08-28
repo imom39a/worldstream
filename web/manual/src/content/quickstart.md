@@ -98,28 +98,10 @@ target/debug/worldstreamctl --config config/development.toml doctor
 `config effective` redacts secret references. `doctor` is non-mutating, so
 storage may still report `not_initialized` before first startup.
 
-## 4. Start Studio and the daemon
+## 4. Start Studio and its Supervisor
 
-```sh
-pnpm studio:dev
-```
-
-Open `http://127.0.0.1:5174`, select **Operations**, and start the configured
-daemon. Studio uses this local topology:
-
-| Process | Default address |
-| --- | --- |
-| `worldstreamd` | `127.0.0.1:9410` |
-| Studio Supervisor | `127.0.0.1:9420` |
-| Participant Console | `127.0.0.1:5173` |
-| Studio portal | `127.0.0.1:5174` |
-
-For a human Participant handoff, start the Console in another terminal and bind
-the origins explicitly:
-
-```sh
-pnpm ui:dev
-```
+In terminal 1, start the Studio development stack with the browser origins
+bound to their actual local ports:
 
 ```sh
 scripts/studio-dev.sh \
@@ -127,10 +109,59 @@ scripts/studio-dev.sh \
   --participant-console-origin http://127.0.0.1:5173
 ```
 
-The explicit origins work around current CLI default drift and bind each
-browser to its real local development port.
+Keep this foreground command running. It builds the `worldstreamd` binary, then
+starts only these two processes:
 
-## 5. Verify the live runtime
+- the Studio Supervisor on `127.0.0.1:9420`;
+- the Studio portal on `127.0.0.1:5174`.
+
+It does **not** start `worldstreamd`, and it does **not** start the Participant
+Console. `pnpm studio:dev` is an alias for the same launcher without additional
+Supervisor arguments. Until the current CLI origin defaults are aligned with
+the Vite ports, use the explicit command above for the complete local flow.
+
+## 5. Start the daemon
+
+Open `http://127.0.0.1:5174`, select **Operations**, and click **Start daemon**.
+Wait for the UI to report `worldstreamd connected` and `ready` before running
+the health probes in Step 7.
+
+If you prefer to own the daemon in a separate terminal instead of through
+Studio, run this from the repository root:
+
+```sh
+RUST_LOG=info target/debug/worldstreamd --config config/development.toml
+```
+
+Studio discovers that external process through the Supervisor. Do not run both
+startup paths for the same `127.0.0.1:9410` listener.
+
+The complete local topology is:
+
+| Process | Address | How it starts |
+| --- | --- | --- |
+| `worldstreamd` | `127.0.0.1:9410` | **Start daemon** in Studio, or the foreground command above |
+| Studio Supervisor | `127.0.0.1:9420` | `scripts/studio-dev.sh ...` in terminal 1 |
+| Studio portal | `127.0.0.1:5174` | `scripts/studio-dev.sh ...` in terminal 1 |
+| Participant Console | `127.0.0.1:5173` | optional `pnpm ui:dev` in terminal 2 |
+
+## 6. Optionally start the Participant Console
+
+Skip this step when you only need Studio Operations, daemon health, Activity
+Pack inspection, Room administration, backups, or agent setup.
+
+For a human Participant handoff, start the separate Console process in terminal
+2:
+
+```sh
+pnpm ui:dev
+```
+
+Keep it running alongside terminal 1. Do not open the Console with manually
+copied Room credentials. In Studio, provision the human seat and use **Open
+Participant View**; the Supervisor brokers the one-use handoff to port `5173`.
+
+## 7. Verify the live runtime
 
 ```sh
 curl -fsS http://127.0.0.1:9410/healthz
@@ -143,7 +174,7 @@ target/debug/worldstreamctl --config config/development.toml health
 - `/readyz` proves storage, authority, writer, and scheduler readiness.
 - `/version` reports embedded compatibility and selected engine identity.
 
-## 6. Run a reference story
+## 8. Run a reference story
 
 The offline Agent Heist story needs no daemon or model:
 
@@ -164,9 +195,11 @@ complete Studio-driven acceptance gate.
 
 ## Stop and reset
 
-Use `Ctrl-C` to stop foreground processes. To reset disposable state, stop the
-daemon and remove `.worldstream/`, then repeat the secret setup. Never replace
-only the secret while retaining the database.
+If Studio started the daemon, stop it from **Operations** first. Use `Ctrl-C` in
+each foreground terminal to stop Studio/Supervisor and the optional Participant
+Console. To reset disposable state, stop the daemon and remove `.worldstream/`,
+then repeat the secret setup. Never replace only the secret while retaining the
+database.
 
 Source: [getting started](https://github.com/imom39a/worldstream/blob/main/docs/getting-started.md),
 [runtime configuration](https://github.com/imom39a/worldstream/blob/main/crates/worldstream-runtime/src/config.rs),
