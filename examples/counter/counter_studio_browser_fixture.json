@@ -1,0 +1,62 @@
+{
+  "schema": "worldstream/counter-studio-browser-fixture/v1",
+  "profile": {
+    "id": "counter-managed",
+    "hostContractRevision": "v1",
+    "runnerTemplate": {"label": "Counter deterministic managed reference · v1"},
+    "providerAddress": "127.0.0.1:19431",
+    "modelId": "counter-deterministic",
+    "credentialId": {"label": "Counter deterministic loopback · configured"},
+    "revision": "v1",
+    "displayName": "Counter managed reference"
+  },
+  "sourceDraft": {
+    "configuration": [
+      {"selector": {"role": "spinbutton", "name": "initial_value", "exact": false}, "value": 0},
+      {"selector": {"role": "spinbutton", "name": "maximum_value", "exact": false}, "value": 3}
+    ],
+    "seats": [
+      {
+        "values": {
+          "principalId": "01ARZ3NDEKTSV4RRFFQ69G5FB0",
+          "principalKind": "human",
+          "required": true
+        },
+        "controls": {
+          "principalId": {"label": "counter 1 principal ID", "exact": true},
+          "principalKind": {"label": "counter 1 principal kind", "exact": true},
+          "required": {"label": "counter 1 required for this Task", "exact": true}
+        }
+      },
+      {
+        "values": {
+          "principalId": "01ARZ3NDEKTSV4RRFFQ69G5FB1",
+          "principalKind": "agent",
+          "required": true,
+          "agentAssignment": "managed",
+          "agentProfile": {"label": "Counter managed reference · v1"},
+          "runnerTemplate": {"label": "Counter deterministic managed reference · v1"}
+        },
+        "controls": {
+          "principalId": {"label": "counter 2 principal ID", "exact": true},
+          "principalKind": {"label": "counter 2 principal kind", "exact": true},
+          "required": {"label": "counter 2 required for this Task", "exact": true},
+          "agentAssignment": {"label": "counter 2 agent assignment", "exact": true},
+          "agentProfile": {"label": "counter 2 agent profile", "exact": true},
+          "runnerTemplate": {"label": "counter 2 runner template", "exact": true}
+        }
+      }
+    ],
+    "includeOperatorView": true
+  },
+  "template": {
+    "id": "counter4-managed-task",
+    "revision": "v1",
+    "displayName": "Counter 4 managed task"
+  },
+  "editableDraftId": "counter4-demo",
+  "editableDraft": {
+    "selectExactRevision": false,
+    "includeOperatorView": true
+  }
+}

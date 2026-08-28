@@ -2,7 +2,7 @@
 """Start the local Counter Studio browser demo without prebuilding a Task.
 
 The coordinator owns only its fresh state directory and the process groups it
-starts. It installs the exact Counter v3 managed-host fixture and named local
+starts. It installs the exact Counter v4 managed-host fixture and named local
 credential, but deliberately leaves Agent Profile, Task Template, Room draft,
 Room creation, and Task setup for the operator to perform in Studio.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -24,9 +25,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
-import re
-from typing import Any, Callable
+from typing import Any
 
 from install_managed_counter_fixture import (
     COUNTER_PACK_DIGEST,
@@ -37,7 +38,6 @@ from install_managed_counter_fixture import (
     TEMPLATE_REVISION,
     install_fixture,
 )
-
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 CONTROL_SCHEMA = "worldstream/counter-studio-demo-control/v1"
@@ -69,8 +69,14 @@ def require_ports_available(ports: list[int]) -> None:
     """Reject an occupied loopback listener; never displace another process."""
 
     for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.settimeout(0.1)
+            if listener.connect_ex(("127.0.0.1", port)) == 0:
+                raise DemoConfigurationError(
+                    f"127.0.0.1:{port} is already in use; choose an unused port"
+                )
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(("127.0.0.1", port))
             except OSError as error:
@@ -416,6 +422,14 @@ def start_demo(args: argparse.Namespace) -> int:
         args.supervisor_port, args.daemon_port, args.studio_port,
         args.console_port, args.provider_port, MANAGED_HOST_HEALTH_PORT,
     ])
+    control = Path(os.path.abspath(args.control_file)) if args.control_file is not None else None
+    if control is not None:
+        building_payload = control_payload(
+            args.supervisor_port, args.daemon_port, args.studio_port, args.console_port,
+            args.provider_port,
+        )
+        building_payload["status"] = "building"
+        write_control_file(control, building_payload)
     if not args.skip_build:
         build_dependencies()
     binaries = [
@@ -433,7 +447,6 @@ def start_demo(args: argparse.Namespace) -> int:
     environment = safe_environment(supervisor_url)
     stopped = threading.Event()
     logs: list[Any] = []
-    control = Path(os.path.abspath(args.control_file)) if args.control_file is not None else None
     cleanup_confirmed = False
 
     def signal_stop(_signum: int, _frame: Any) -> None:
@@ -555,7 +568,7 @@ def start_demo(args: argparse.Namespace) -> int:
             managed_hosts_stopped = supervisor is None
             daemon_stopped = supervisor is None
         process_groups_reaped = all(
-            [stop_process(process) for process in (console, studio, supervisor, provider)]
+            stop_process(process) for process in (console, studio, supervisor, provider)
         )
         for log in logs:
             log.close()

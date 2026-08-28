@@ -34,7 +34,9 @@ uv sync --project sdk/python --locked --python 3.14.7
 Use the one entrypoint:
 
 ```sh
-pnpm counter:studio
+DEMO_ROOT="$(mktemp -d)"
+chmod 700 "$DEMO_ROOT"
+pnpm counter:studio -- --state-dir "$DEMO_ROOT/state" --control-file "$DEMO_ROOT/control.json"
 ```
 
 It coordinates these real local components:
@@ -62,6 +64,34 @@ pnpm counter:studio --skip-build
 
 `--state-dir PATH` requires a fresh owner-only directory. Reusing one requires
 the explicit `--retain-state` flag; the entrypoint never clears it for you.
+
+### Run the repeatable browser acceptance
+
+Keep the coordinator above running. In another terminal, install the local
+Playwright Chromium once, then run the checked-in public fixture. The
+owner-only control file and state directory bind this browser run to that one
+coordinator; neither argument is copied into the Participant Console.
+
+```sh
+pnpm exec playwright install chromium
+pnpm counter:studio:browser -- \
+  --adapter playwright \
+  --fixture examples/counter/counter_studio_browser_fixture.json \
+  --studio-url http://127.0.0.1:5174 \
+  --control-file "$DEMO_ROOT/control.json" \
+  --state-dir "$DEMO_ROOT/state/studio" \
+  --draft-name counter4-demo \
+  --provider-status-url http://127.0.0.1:19431 \
+  --artifact-dir "$DEMO_ROOT/browser-evidence" \
+  --capture-witness "$DEMO_ROOT/browser-evidence/before-replay.json" \
+  --check-witness "$DEMO_ROOT/browser-evidence/after-replay.json"
+```
+
+It uses the same Studio controls as the guide, stops and retries the managed
+host at the provider boundary, performs a completed-host restart, and then
+verifies Replay. Its owner-only report checks DOM and request-URL disclosure,
+retained context canaries, one committed `increment`, recovery, and replay
+without printing protected values.
 
 ## Follow the story in Studio
 
@@ -100,12 +130,12 @@ The empty Room draft is named `new-room`. It is the required **source reviewed
 draft** for the immutable template; publishing a profile alone is not enough.
 
 1. In **Plan a new Room**, open **1. Activity**. On the Counter card for
-   `worldstream.counter` **3.0.0** (digest
-   `blake3:7572a62b364fb9c88c02d79c85efba9e5b9cef22211da4a66827f64704970a55`),
+   `worldstream.counter` **4.0.0** (digest
+   `blake3:2a1d2e493cbaffa3803724dfef42d35c167db2237aa9b1e113dfb79679e9c052`),
    choose **Use exact revision**.
 2. Open **2. Configuration** and set `initial_value` to `0` and `maximum_value`
    to `3`.
-3. Open **3. Seats** and choose **Use declared seat policy**. Counter 3 permits
+3. Open **3. Seats** and choose **Use declared seat policy**. Counter 4 permits
    eight `counter` seats. Configure only the first two and leave seats 3–8
    blank with **Required for this Task** unchecked:
 
@@ -128,19 +158,19 @@ Under **Task Templates**, use this reviewed `new-room` source and enter:
 
 | Field | Value |
 | --- | --- |
-| Template ID | `counter3-managed-task` |
+| Template ID | `counter4-managed-task` |
 | New revision | `v1` |
-| Display name | `Counter 3 managed task` |
+| Display name | `Counter 4 managed task` |
 
 Choose **Publish immutable revision**. Studio shows `Source draft: new-room`;
 that line confirms the reviewed-source dependency. Set **New independent draft
-ID** to `counter3-demo` and choose **Create editable draft**. The confirmation
+ID** to `counter4-demo` and choose **Create editable draft**. The confirmation
 must say that no Room was created.
 
 ### 2. Review the independent Task draft and provision it
 
-The new `counter3-demo` draft is an independent copy of the exact template. Go
-to **5. Review**, confirm the Counter 3 configuration, the two required seats,
+The new `counter4-demo` draft is an independent copy of the exact template. Go
+to **5. Review**, confirm the Counter 4 configuration, the two required seats,
 the exact Profile and Runner bindings, six empty optional seats, and the
 read-only operator view. Choose **Save Review** again, then **Create from
 reviewed draft**. Confirm the resulting Task setup shows both populated seats,
@@ -251,7 +281,7 @@ the assignment MCP helper, the Runner, or the deterministic provider.
 
 | What you see | What to do |
 | --- | --- |
-| Studio cannot reach the Supervisor | Keep `pnpm counter:studio` running and reload Studio. To resume the retained `counter3-demo` draft or its Task setup, use **Open existing draft counter3-demo** on its retained template usage instead of creating another draft. The fixture owns its local processes. |
+| Studio cannot reach the Supervisor | Keep `pnpm counter:studio` running and reload Studio. To resume the retained `counter4-demo` draft or its Task setup, use **Open existing draft counter4-demo** on its retained template usage instead of creating another draft. The fixture owns its local processes. |
 | Participant Console says reconnect | Choose **Reconnect**. Do not reopen the handoff URL or copy its old fragment. |
 | No managed turn appears | Check the bounded attention and Runner status in Studio. The deterministic provider should be labeled as a local fixture. |
 | Replay is unavailable | The existing human credential may predate Replay scope provisioning. Return to Task setup and create a new reviewed Counter draft; old credentials are intentionally not upgraded. |

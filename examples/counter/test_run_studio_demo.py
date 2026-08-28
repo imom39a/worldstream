@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import socket
 import stat
 import sys
 import tempfile
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
 
 path = Path(__file__).with_name("run_studio_demo.py")
 sys_path = str(path.parent)
 if sys_path not in sys.path:
     sys.path.insert(0, sys_path)
 from deterministic_loopback_provider import create_provider_server
+
 spec = importlib.util.spec_from_file_location("counter_studio_demo", path)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
@@ -90,9 +92,49 @@ def test_control_file_rejects_a_symlink_target() -> None:
             module.write_control_file(link, module.control_payload(9410, 9420, 5174, 5173))
 
 
+def test_reused_control_file_is_marked_building_before_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary) / "control"
+        parent.mkdir(mode=0o700)
+        control = parent / "demo.json"
+        module.write_control_file(control, module.control_payload(9410, 9420, 5174, 5173))
+        observed: list[str] = []
+
+        def build() -> None:
+            observed.append(json.loads(control.read_text("utf-8"))["status"])
+            raise module.DemoConfigurationError("stop after control transition")
+
+        monkeypatch.setattr(module, "require_ports_available", lambda _ports: None)
+        monkeypatch.setattr(module, "build_dependencies", build)
+        arguments = SimpleNamespace(
+            supervisor_port=9410,
+            daemon_port=9420,
+            studio_port=5174,
+            console_port=5173,
+            provider_port=19431,
+            skip_build=False,
+            control_file=control,
+        )
+        with pytest.raises(module.DemoConfigurationError, match="stop after control transition"):
+            module.start_demo(arguments)
+        assert observed == ["building"]
+        assert json.loads(control.read_text("utf-8"))["status"] == "building"
+
+
 def test_port_configuration_rejects_collisions_before_starting_processes() -> None:
     with pytest.raises(module.DemoConfigurationError, match="distinct"):
         module.validate_ports(9410, 9410, 5174, 5173, 19431)
+
+
+def test_port_preflight_rejects_a_live_listener_but_allows_its_immediate_reuse() -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    with pytest.raises(module.DemoConfigurationError, match="already in use"):
+        module.require_ports_available([port])
+    listener.close()
+    module.require_ports_available([port])
 
 
 def test_vite_command_passes_loopback_and_strict_port_to_vite() -> None:

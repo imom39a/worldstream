@@ -21,11 +21,22 @@ from typing import Any
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCHEMA = "worldstream/counter-studio-browser-verification/v1"
 CONTROL_SCHEMA = "worldstream/counter-studio-demo-control/v1"
-COUNTER_V3_DIGEST = "blake3:7572a62b364fb9c88c02d79c85efba9e5b9cef22211da4a66827f64704970a55"
+COUNTER_V4_DIGEST = "blake3:2a1d2e493cbaffa3803724dfef42d35c167db2237aa9b1e113dfb79679e9c052"
 ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 HASH = re.compile(r"blake3:[0-9a-f]{64}")
 CONSOLE_FORBIDDEN = re.compile(r"(?i)ws[bh]1:[0-9a-f]+|\b(?:room_id|member_id|membership_id|bearer|token_hash|secret_reference|host_authority|invocation_context|provider_response|private_context_canary)\b")
 STRUCTURAL_PRIVATE_FIELD = re.compile(r'(?i)["\'](?:prompt|memory|private_context|provider_response)["\']\s*:')
+URL_EVIDENCE_SCHEMA = "worldstream/counter-browser-url-evidence/v1"
+PUBLIC_CONTEXT_LEAVES = {"increment", "private_ack", "handled"}
+PRIVATE_CONTEXT_FIELD = re.compile(
+    r"(?:private|secret|token|bearer|credential|authority|context|prompt|memory|"
+    r"instruction|observation|payload)",
+    re.IGNORECASE,
+)
+PUBLIC_CONTEXT_FIELD = re.compile(
+    r"(?:schema|digest|pack|domain|action_type|offer_id|reason|projection_schema)$",
+    re.IGNORECASE,
+)
 
 
 class VerificationFailure(RuntimeError):
@@ -159,7 +170,7 @@ def exact_template_lineage(state_dir: Path, draft_name: str, setup: dict[str, An
     pack, configuration, seats = template.get("pack"), template.get("configuration"), template.get("seats")
     if (
         template.get("schema") != "worldstream/studio-task-template/v1"
-        or not isinstance(pack, dict) or pack != {"id": "worldstream.counter", "version": "3.0.0", "digest": COUNTER_V3_DIGEST}
+        or not isinstance(pack, dict) or pack != {"id": "worldstream.counter", "version": "4.0.0", "digest": COUNTER_V4_DIGEST}
         or not isinstance(configuration, dict) or configuration.get("initial_value") != 0 or configuration.get("maximum_value") != 3
         or template.get("source_draft_id") == draft_name or not isinstance(seats, list)
     ):
@@ -252,6 +263,93 @@ def completion_receipts(state_dir: Path, room_id: str) -> tuple[tuple[str, str, 
     return tuple(result)
 
 
+def retained_invocation_context_values(
+    state_dir: Path, room_id: str, activation_id: str
+) -> set[bytes]:
+    """Read retained claim contexts only to create local absence sentinels."""
+
+    database = state_dir.parent / "data" / "worldstream.sqlite3"
+    try:
+        metadata = database.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise VerificationFailure("invocation_context_database_invalid")
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            rows = connection.execute(
+                "SELECT context_bytes FROM activation_operation_receipts "
+                "WHERE room_id = ? AND activation_id = ? AND operation_kind = 'claim' "
+                "AND result_code = 'granted' AND context_bytes IS NOT NULL",
+                (room_id, activation_id),
+            ).fetchall()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error) as error:
+        raise VerificationFailure("invocation_context_unavailable") from error
+    raw_values = {value for (value,) in rows if isinstance(value, bytes) and value}
+    # The shared scanner accepts bounded 128-bit-or-larger sentinels. Keep an
+    # exact small context when possible; otherwise retain its private leaves.
+    values = {value for value in raw_values if 16 <= len(value) <= 512}
+    for context in raw_values:
+        values.update(
+            value
+            for value in private_context_leaf_values(context)
+            if 16 <= len(value) <= 512
+        )
+    if not values or len(values) > 64:
+        raise VerificationFailure("invocation_context_retained_value_invalid")
+    return values
+
+
+def private_context_leaf_values(context: bytes) -> set[bytes]:
+    """Extract private-bearing context leaves, excluding shared offer metadata."""
+
+    try:
+        decoded = json.loads(context)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise VerificationFailure("invocation_context_retained_value_invalid") from error
+    if not isinstance(decoded, dict):
+        raise VerificationFailure("invocation_context_retained_value_invalid")
+    leaves: set[bytes] = {
+        candidate.encode("utf-8")
+        for key in ("activation_id", "claim_id")
+        if isinstance(candidate := decoded.get(key), str) and candidate
+    }
+
+    def collect_private(item: Any, private_scope: bool = False) -> None:
+        if isinstance(item, str):
+            if private_scope and len(item) >= 16 and item not in PUBLIC_CONTEXT_LEAVES:
+                leaves.add(item.encode("utf-8"))
+        elif isinstance(item, dict):
+            for key, nested in item.items():
+                if PUBLIC_CONTEXT_FIELD.search(key):
+                    continue
+                nested_private = private_scope or bool(PRIVATE_CONTEXT_FIELD.search(key))
+                if nested_private or isinstance(nested, (dict, list)):
+                    collect_private(nested, nested_private)
+        elif isinstance(item, list):
+            for nested in item:
+                collect_private(nested, private_scope)
+
+    def decode_private_bytes(item: Any) -> None:
+        if not isinstance(item, list) or any(not isinstance(byte, int) or not 0 <= byte <= 255 for byte in item):
+            return
+        try:
+            collect_private(json.loads(bytes(item)))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+
+    projection = decoded.get("projection_bytes")
+    decode_private_bytes(projection)
+    delivery = decoded.get("delivery")
+    frames = delivery.get("frames") if isinstance(delivery, dict) else None
+    if isinstance(frames, list):
+        for frame in frames:
+            if isinstance(frame, dict):
+                decode_private_bytes(frame.get("payload_bytes"))
+    return leaves
+
+
 def bound_launch(state_dir: Path, assignment_id: str, room_id: str, runner_id: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
     root = state_dir / "assignment-mcp-launches"
     active = safe_json(root / f"{assignment_id}.active.json", "active_launch_missing")
@@ -273,32 +371,173 @@ def bound_launch(state_dir: Path, assignment_id: str, room_id: str, runner_id: s
 
 def recovery_evidence(
     state_dir: Path,
+    room_id: str,
     assignment_id: str,
     launch_reference: str,
     completion: tuple[str, str, bytes],
 ) -> bool:
-    operation = safe_json(state_dir / "managed-agent-hosts" / f"{assignment_id}.json", "managed_host_operation_missing")
-    if operation.get("schema") != "worldstream/managed-agent-host-operation/v1" or operation.get("assignment_id") != assignment_id or not isinstance(operation.get("attempts"), int) or operation["attempts"] < 2:
-        raise VerificationFailure("managed_host_restart_not_retained")
-    root = state_dir / "assignment-mcp-activations" / launch_reference / "private"
-    records = [
-        value for path in root.glob("*.json")
-        if (value := safe_json(path, "activation_ledger_invalid")).get("assignment_id") == assignment_id
+    operation_root = state_dir / "managed-agent-hosts" / "operations"
+    try:
+        operations = [
+            safe_json(path, "managed_host_operation_invalid")
+            for path in operation_root.glob("*.json")
+        ]
+    except OSError as error:
+        raise VerificationFailure("managed_host_operation_missing") from error
+    matches = [
+        operation
+        for operation in operations
+        if operation.get("schema") == "worldstream/managed-agent-host-operation/v1"
+        and operation.get("assignment_id") == assignment_id
     ]
+    if len(matches) != 1:
+        raise VerificationFailure("managed_host_operation_missing")
+    operation = matches[0]
+    if not isinstance(operation.get("attempts"), int) or operation["attempts"] < 2:
+        raise VerificationFailure("managed_host_restart_not_retained")
+    root = state_dir / "assignment-mcp-activations" / launch_reference / "operations"
+    try:
+        records = [
+            safe_json(path, "activation_ledger_invalid")
+            for path in root.glob("*.json")
+        ]
+    except OSError as error:
+        raise VerificationFailure("activation_ledger_invalid") from error
     expected_operation, expected_activation, _request_hash = completion
-    receipts = list(walk_records(records))
     matching = [
-        receipt for receipt in receipts
-        if receipt.get("activation_id") == expected_activation
-        and receipt.get("operation_id") == expected_operation
-        and isinstance(receipt.get("activation_cursor"), int)
-        and receipt["activation_cursor"] > 0
-        and isinstance(receipt.get("lease_generation"), int)
-        and receipt["lease_generation"] >= 2
-        and receipt.get("duplicate") is False
+        record for record in records
+        if record.get("schema") == "worldstream/studio-assignment-mcp-operation@1"
+        and record.get("phase") == "complete"
+        and isinstance(intent := record.get("intent"), dict)
+        and isinstance(identity := intent.get("identity"), dict)
+        and identity.get("assignment_id") == assignment_id
+        and identity.get("operation_id") == expected_operation
+        and isinstance(kind := intent.get("kind"), dict)
+        and kind.get("kind") == "activation_completion"
+        and kind.get("activation_id") == expected_activation
+        and isinstance(kind.get("claim_id"), str)
+        and isinstance(kind.get("acquisition_cursor"), int)
+        and kind["acquisition_cursor"] > 0
+        and isinstance(kind.get("lease_generation"), int)
+        and kind["lease_generation"] > 0
+        and isinstance(remote := record.get("remote_acceptance"), dict)
+        and remote.get("outcome") == "accepted"
+        and isinstance(remote_kind := remote.get("kind"), dict)
+        and remote_kind.get("kind") == "activation_completion"
+        and remote_kind.get("activation_id") == expected_activation
+        and remote_kind.get("completion_id") == kind.get("completion_id")
     ]
     if len(matching) != 1:
         raise VerificationFailure("activation_lease_recovery_not_retained")
+    kind = matching[0]["intent"]["kind"]
+    retained_successful_acquisition(
+        state_dir,
+        room_id,
+        expected_activation,
+        kind["claim_id"],
+        kind["lease_generation"],
+    )
+    return True
+
+
+def retained_successful_acquisition(
+    state_dir: Path,
+    room_id: str,
+    activation_id: str,
+    claim_id: str,
+    lease_generation: int,
+) -> bool:
+    """Bind a completion to the exact durable granted claim that supplied its lease."""
+
+    database = state_dir.parent / "data" / "worldstream.sqlite3"
+    try:
+        metadata = database.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise VerificationFailure("activation_acquisition_database_invalid")
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            rows = connection.execute(
+                "SELECT result_bytes FROM activation_operation_receipts "
+                "WHERE room_id = ? AND activation_id = ? "
+                "AND operation_kind = 'claim' AND result_code = 'granted' "
+                "ORDER BY operation_id",
+                (room_id, activation_id),
+            ).fetchall()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error) as error:
+        raise VerificationFailure("activation_acquisition_unavailable") from error
+
+    matches = []
+    for (raw_result,) in rows:
+        if not isinstance(raw_result, bytes):
+            continue
+        try:
+            result = json.loads(raw_result)
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        context = result.get("context") if isinstance(result, dict) else None
+        if (
+            isinstance(context, dict)
+            and result.get("activation_id") == activation_id
+            and result.get("claim_id") == claim_id
+            and result.get("code") == "granted"
+            and result.get("state") == "leased"
+            and result.get("lease_generation") == lease_generation
+            and context.get("activation_id") == activation_id
+            and context.get("claim_id") == claim_id
+            and context.get("lease_generation") == lease_generation
+        ):
+            matches.append(result)
+    if len(matches) != 1:
+        raise VerificationFailure("activation_acquisition_not_retained")
+    return True
+
+
+def committed_increment_evidence(
+    state_dir: Path, assignment_id: str, launch_reference: str, activation_id: str
+) -> bool:
+    """Bind the retained managed Action request to the completed Activation."""
+
+    root = state_dir / "assignment-mcp-operations" / launch_reference
+    matches: list[dict[str, Any]] = []
+    try:
+        paths = sorted(root.glob("*.json"))
+    except OSError as error:
+        raise VerificationFailure("increment_action_receipt_unavailable") from error
+    for path in paths:
+        record = safe_json(path, "increment_action_receipt_invalid")
+        intent = record.get("intent")
+        if not isinstance(intent, dict):
+            continue
+        identity, kind = intent.get("identity"), intent.get("kind")
+        request = intent.get("canonical_request")
+        if not isinstance(identity, dict) or not isinstance(kind, dict) or not isinstance(request, str):
+            continue
+        if identity.get("assignment_id") != assignment_id or identity.get("operation_id") != activation_id:
+            continue
+        if kind != {"kind": "action", "action_id": activation_id}:
+            continue
+        try:
+            exact = json.loads(request)
+        except json.JSONDecodeError as error:
+            raise VerificationFailure("increment_action_receipt_invalid") from error
+        if not isinstance(exact, dict):
+            raise VerificationFailure("increment_action_receipt_invalid")
+        if (
+            exact.get("assignment_id") == assignment_id
+            and exact.get("operation_id") == activation_id
+            and exact.get("request_id") == activation_id
+            and exact.get("action_id") == activation_id
+            and exact.get("action_type") == "increment"
+            and isinstance(exact.get("offer_id"), str)
+            and exact["offer_id"]
+            and record.get("phase") == "complete"
+        ):
+            matches.append(exact)
+    if len(matches) != 1:
+        raise VerificationFailure("increment_action_receipt_missing")
     return True
 
 
@@ -320,6 +559,27 @@ def provider_counts(url: str) -> tuple[int, int]:
     return received, accepted
 
 
+def url_evidence(path: Path) -> bool:
+    """Require both browser request channels and keep their private values local."""
+
+    value = safe_json(path, "browser_url_evidence_invalid")
+    if value.get("schema") != URL_EVIDENCE_SCHEMA:
+        raise VerificationFailure("browser_url_evidence_invalid")
+    channels = (value.get("studio_request_urls"), value.get("console_request_urls"))
+    current = (value.get("studio_current_url"), value.get("console_current_url"))
+    if not all(isinstance(channel, list) and channel for channel in channels):
+        raise VerificationFailure("browser_url_evidence_incomplete")
+    if not all(isinstance(url, str) and url for url in current):
+        raise VerificationFailure("browser_url_evidence_incomplete")
+    for channel in (*channels, current):
+        for url in channel:
+            if not isinstance(url, str) or len(url) > 8 * 1024:
+                raise VerificationFailure("browser_url_evidence_invalid")
+            if CONSOLE_FORBIDDEN.search(url) or STRUCTURAL_PRIVATE_FIELD.search(url):
+                raise VerificationFailure("browser_url_disclosed_protected_material")
+    return True
+
+
 def public_room_state(supervisor: str, room_id: str) -> tuple[int, int, dict[str, str]]:
     inventory = public_get(supervisor, "/api/v1/rooms?limit=50")
     rooms = inventory.get("rooms")
@@ -329,8 +589,8 @@ def public_room_state(supervisor: str, room_id: str) -> tuple[int, int, dict[str
     if not isinstance(room, dict) or room.get("room_id") != room_id:
         raise VerificationFailure("room_inventory_setup_mismatch")
     head, pack = room.get("room_head"), room.get("pack")
-    if not isinstance(head, dict) or not isinstance(pack, dict) or pack.get("id") != "worldstream.counter" or pack.get("version") != "3.0.0":
-        raise VerificationFailure("room_inventory_not_counter_v3")
+    if not isinstance(head, dict) or not isinstance(pack, dict) or pack.get("id") != "worldstream.counter" or pack.get("version") != "4.0.0":
+        raise VerificationFailure("room_inventory_not_counter_v4")
     value = public_get(supervisor, f"/api/v1/rooms/{room_id}/operator-view")
     counter = value.get("counter")
     operator_head = value.get("room_head")
@@ -362,7 +622,14 @@ def dom_evidence(studio_dom: Path, console_dom: Path, require_replay: bool, head
     return True, True
 
 
-def retained_secret_canaries(state_dir: Path, setup: dict[str, Any], destination: Path) -> dict[str, Path]:
+def retained_secret_canaries(
+    state_dir: Path,
+    setup: dict[str, Any],
+    destination: Path,
+    launch_reference: str,
+    room_id: str,
+    activation_id: str,
+) -> dict[str, Path]:
     seats = setup.get("seats")
     if not isinstance(seats, list):
         raise VerificationFailure("secret_setup_invalid")
@@ -405,7 +672,37 @@ def retained_secret_canaries(state_dir: Path, setup: dict[str, Any], destination
             raise VerificationFailure("owner_secret_reference_invalid")
         values[name] = safe_bytes(state_dir / "secrets" / f"{kind}-{reference}.secret", "owner_secret_missing")
         references[name] = reference
-    if set(values) != {"member_human", "member_agent", "runner", "host", "model"}:
+    context_hashes: set[str] = set()
+    operations = state_dir / "assignment-mcp-activations" / launch_reference / "operations"
+    try:
+        operation_paths = sorted(operations.glob("*.json"))
+    except OSError as error:
+        raise VerificationFailure("private_context_ledger_unavailable") from error
+    for operation_path in operation_paths:
+        operation = safe_json(operation_path, "private_context_ledger_invalid")
+        intent = operation.get("intent")
+        request = intent.get("canonical_request") if isinstance(intent, dict) else None
+        if not isinstance(request, str):
+            continue
+        try:
+            retained = json.loads(request)
+        except json.JSONDecodeError as error:
+            raise VerificationFailure("private_context_ledger_invalid") from error
+        context_hash = retained.get("context_hash") if isinstance(retained, dict) else None
+        if isinstance(context_hash, str) and HASH.fullmatch(context_hash):
+            context_hashes.add(context_hash)
+    if len(context_hashes) != 1:
+        raise VerificationFailure("private_context_canary_missing")
+    context_hash = context_hashes.pop()
+    values["private_context"] = context_hash.encode("ascii")
+    references["private_context"] = context_hash
+    for number, context in enumerate(
+        sorted(retained_invocation_context_values(state_dir, room_id, activation_id))
+    ):
+        name = f"private_context_value_{number}"
+        values[name] = context
+        references[name] = context.hex()
+    if not {"member_human", "member_agent", "runner", "host", "model", "private_context"}.issubset(values):
         raise VerificationFailure("secret_canary_bindings_incomplete")
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
@@ -419,11 +716,21 @@ def retained_secret_canaries(state_dir: Path, setup: dict[str, Any], destination
     return paths
 
 
-def scan_secret_absence(args: argparse.Namespace, setup: dict[str, Any], launch: dict[str, Any], activation_launch: dict[str, Any]) -> bool:
+def scan_secret_absence(
+    args: argparse.Namespace,
+    setup: dict[str, Any],
+    launch: dict[str, Any],
+    activation_launch: dict[str, Any],
+    launch_reference: str,
+    room_id: str,
+    activation_id: str,
+) -> bool:
     args.witness.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     canary_root = Path(tempfile.mkdtemp(prefix=f".imo89-{args.mode}-", dir=args.witness.parent))
     try:
-        canaries = retained_secret_canaries(args.state_dir, setup, canary_root)
+        canaries = retained_secret_canaries(
+            args.state_dir, setup, canary_root, launch_reference, room_id, activation_id
+        )
         for name, record in (("launch_member_reference", launch), ("launch_runner_reference", activation_launch)):
             reference = record.get("authority_reference")
             if not isinstance(reference, str) or not re.fullmatch(r"[0-9a-f]{64}", reference):
@@ -433,7 +740,12 @@ def scan_secret_absence(args: argparse.Namespace, setup: dict[str, Any], launch:
                 output.write(reference.encode("ascii"))
             path.chmod(0o600)
             canaries[name] = path
-        channels = [f"studio-dom={args.studio_dom}", f"console-dom={args.console_dom}", *args.channel]
+        channels = [
+            f"studio-dom={args.studio_dom}",
+            f"console-dom={args.console_dom}",
+            f"browser-urls={args.url_evidence}",
+            *args.channel,
+        ]
         for name, canary in canaries.items():
             output = canary_root / f"absence-{name}.json"
             run = subprocess.run(
@@ -492,7 +804,7 @@ def bounded_report(mode: str, provider: tuple[int, int], unchanged: bool, secret
         "mode": mode,
         "ui_created": {"exact_template": True, "editable_draft": True, "one_room": True, "ready_at_genesis": True},
         "authorities": {"distinct_human_agent_memberships": True, "runner_bound_separately": True},
-        "managed_recovery": {"cursor_and_lease_generation_retained": True, "one_completion_receipt": True},
+        "managed_recovery": {"cursor_and_lease_retained": True, "one_completion_receipt": True},
         "counter": {"value": 2, "room_seq": 2},
         "provider": {"received": provider[0], "accepted": provider[1]},
         "replay": {"visible_hash_parity": mode == "check", "no_effects_after_baseline": unchanged},
@@ -510,9 +822,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     counter_value, room_seq, head = public_room_state(metadata["supervisor"], room_id)
     receipts = completion_receipts(args.state_dir, room_id)
     launch_reference, launch, activation_launch = bound_launch(args.state_dir, agent_member, room_id, runner_id)
-    recovery_evidence(args.state_dir, agent_member, launch_reference, receipts[0])
+    recovery_evidence(args.state_dir, room_id, agent_member, launch_reference, receipts[0])
+    committed_increment_evidence(args.state_dir, agent_member, launch_reference, receipts[0][1])
     dom_evidence(args.studio_dom, args.console_dom, args.mode == "check", head)
-    secret_absence = scan_secret_absence(args, setup, launch, activation_launch)
+    url_evidence(args.url_evidence)
+    secret_absence = scan_secret_absence(
+        args, setup, launch, activation_launch, launch_reference, room_id, receipts[0][1]
+    )
     witness = {
         "schema": SCHEMA,
         "room_id": room_id,
@@ -548,6 +864,7 @@ def main() -> int:
     parser.add_argument("--provider-status-url", required=True)
     parser.add_argument("--studio-dom", type=Path, required=True)
     parser.add_argument("--console-dom", type=Path, required=True)
+    parser.add_argument("--url-evidence", type=Path, required=True)
     parser.add_argument("--witness", type=Path, required=True)
     parser.add_argument("--before-witness", type=Path)
     parser.add_argument("--report", type=Path)

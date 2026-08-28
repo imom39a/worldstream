@@ -35,7 +35,7 @@ class InstallManagedCounterFixtureTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.directory.cleanup()
 
-    def test_installs_an_owner_only_immutable_host_copy_and_exact_counter_v3_manifest(
+    def test_installs_an_owner_only_immutable_host_copy_and_exact_counter_v4_manifest(
         self,
     ) -> None:
         install_fixture(self.source, self.install_root, self.manifests, 19431)
@@ -52,7 +52,7 @@ class InstallManagedCounterFixtureTests(unittest.TestCase):
         self.assertEqual(manifest["executable"]["blake3"], digest)
         self.assertEqual(
             manifest["compatibility"],
-            [{"activity_pack_id": "worldstream.counter", "exact_revisions": ["3.0.0"]}],
+            [{"activity_pack_id": "worldstream.counter", "exact_revisions": ["4.0.0"]}],
         )
         self.assertEqual(
             stat.S_IMODE(

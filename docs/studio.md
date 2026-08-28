@@ -80,7 +80,7 @@ use a closed, pathless error vocabulary suitable for logs and diagnostics.
 ## Deterministic managed Counter fixture
 
 `examples/counter/run_managed_acceptance.py` is the disposable local acceptance
-lane for the managed Counter reference host. It installs the exact Counter v3
+lane for the managed Counter reference host. It installs the exact Counter v4
 Runner Template and its `counter-managed` Agent Profile, runs a loopback-only
 OpenAI-compatible provider, and proves the host's managed-turn path through
 the real daemon and Supervisor. The provider is a deterministic development

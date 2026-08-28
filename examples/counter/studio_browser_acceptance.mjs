@@ -51,7 +51,7 @@ export const defaultSelectors = Object.freeze({
     readinessStep: { role: "button", name: "4. Readiness", exact: true },
     reviewStep: { role: "button", name: "5. Review", exact: true },
     useExactRevision: {
-      within: { role: "article", name: /worldstream\.counter 3\.0\.0/ },
+      within: { css: "article", hasText: /worldstream\.counter 4\.0\.0/ },
       role: "button", name: "Use exact revision", exact: true,
     },
     continueDraft: { role: "button", name: "Continue", exact: true },
@@ -66,12 +66,18 @@ export const defaultSelectors = Object.freeze({
     enableOperatorView: { role: "button", name: "Enable operator view", exact: true },
     counterValue: { text: /Counter value:\s*2\b/ },
     startManagedHost: { role: "button", name: "Start managed host", exact: true },
+    stopManagedHost: { role: "button", name: "Stop managed host", exact: true },
     retryManagedHost: { role: "button", name: "Retry managed host", exact: true },
+    managedHostCompletionStable: {
+      css: "article.runner-attention-row",
+      hasText: /Host state\s*Running[\s\S]*Activation\s*Idle[\s\S]*Confirmed result\s*Handled/,
+    },
   },
   console: {
     title: { role: "heading", name: "Participant session", exact: true },
     projection: { role: "heading", name: "Authorized Room projection", exact: true },
     privateAck: { role: "button", name: "Submit private_ack", exact: true },
+    privateAckCommitted: { text: /Current sequence:\s*1\b/ },
     currentSequenceTwo: { text: /Current sequence:\s*2\b/ },
     valueTwo: { text: /"value"\s*:\s*2\b/ },
     replayHeading: { role: "heading", name: "Authorized Replay", exact: true },
@@ -103,9 +109,17 @@ export async function runStudioBrowserAcceptance({
   onStep,
   pauseAfter,
   beforeManagedHostRetry,
+  waitForManagedHostInFlight,
+  afterCompletedHostRestart,
+  beforeOpenProtectedConsole,
+  acceptanceTimeoutMs = 120_000,
 } = {}) {
   requireValue(tab, "tab");
   requireValue(fixture, "fixture");
+  if (!Number.isInteger(acceptanceTimeoutMs) || acceptanceTimeoutMs < 1_000) {
+    throw new TypeError("acceptanceTimeoutMs must be a bounded positive integer");
+  }
+  tab.textTimeoutMs ??= acceptanceTimeoutMs;
   const evidence = [];
   const step = async (name, action) => {
     const value = await action();
@@ -136,7 +150,7 @@ export async function runStudioBrowserAcceptance({
   if (result) return result;
 
   const consoleTab = await step("protected_console_opened", () =>
-    openAndVerifyProtectedConsole(tab, selectors, openProtectedConsole));
+    openAndVerifyProtectedConsole(tab, selectors, openProtectedConsole, beforeOpenProtectedConsole));
   // A pause before a callback result needs the Console for the next invocation.
   if (consoleTab?.paused) return { ...consoleTab, evidence };
   const participantConsole = consoleTab;
@@ -144,18 +158,40 @@ export async function runStudioBrowserAcceptance({
     submitPrivateAck(participantConsole, selectors));
   if (result) return result;
   result = await step("managed_host_start_requested", () =>
-    requestManagedHostStart(tab, selectors));
+    requestManagedHostStartOrRetry(tab, selectors));
   if (result) return result;
-  await beforeManagedHostRetry?.({
+  await waitForManagedHostInFlight?.({
     schema: COUNTER_STUDIO_BROWSER_ACCEPTANCE_V1,
-    step: "managed_host_restart_boundary",
+    step: "managed_host_provider_boundary",
   });
+  if (beforeManagedHostRetry) {
+    await beforeManagedHostRetry({
+      schema: COUNTER_STUDIO_BROWSER_ACCEPTANCE_V1,
+      step: "managed_host_restart_boundary",
+    });
+  } else {
+    await stopManagedHost(tab, selectors);
+  }
   result = await step("managed_host_restart_requested", () =>
-    requestManagedHostRetry(tab, selectors));
+    requestManagedHostStartOrRetry(tab, selectors));
   if (result) return result;
   result = await step("public_counter_value_two", () =>
     verifyPublicCounterValue(tab, selectors));
   if (result) return result;
+  result = await step("managed_host_completion_stable", () =>
+    waitForManagedHostCompletionStable(tab, selectors));
+  if (result) return result;
+  result = await step("managed_host_completed_stop_requested", () =>
+    stopManagedHost(tab, selectors));
+  if (result) return result;
+  result = await step("managed_host_completed_restart_requested", () =>
+    requestManagedHostStartOrRetry(tab, selectors));
+  if (result) return result;
+  await waitForManagedHostCompletionStable(tab, selectors);
+  await afterCompletedHostRestart?.({
+    schema: COUNTER_STUDIO_BROWSER_ACCEPTANCE_V1,
+    step: "managed_host_completed_restart_boundary",
+  });
   await step("console_replay_verified", () => verifyReplay(participantConsole, selectors));
   return { paused: false, evidence };
 }
@@ -216,10 +252,11 @@ export async function createRoomAndProvisionAccess(tab, selectors) {
   await visible(tab, selectors.studio.roomActive);
 }
 
-export async function openAndVerifyProtectedConsole(tab, selectors, openProtectedConsole) {
+export async function openAndVerifyProtectedConsole(tab, selectors, openProtectedConsole, beforeOpenProtectedConsole) {
   if (typeof openProtectedConsole !== "function") {
     throw new TypeError("openProtectedConsole callback is required to claim the protected popup");
   }
+  await beforeOpenProtectedConsole?.();
   await click(tab, selectors.studio.openParticipantView);
   const consoleTab = await openProtectedConsole();
   requireValue(consoleTab, "protected Console tab");
@@ -231,15 +268,40 @@ export async function openAndVerifyProtectedConsole(tab, selectors, openProtecte
 
 export async function submitPrivateAck(consoleTab, selectors) {
   await click(consoleTab, selectors.console.privateAck);
+  // The isolated Counter fixture transitions from Genesis sequence 0 to 1.
+  // Do not launch the managed host until the authorized projection confirms it.
+  await visible(consoleTab, selectors.console.privateAckCommitted);
   await assertSafeConsoleSurface(consoleTab);
 }
 
-export async function requestManagedHostStart(tab, selectors) {
-  await click(tab, selectors.studio.startManagedHost);
+/**
+ * Request the next managed-host run through the control the current public
+ * Activation state exposes. Idle, waiting, and delayed states offer Start;
+ * attention and unavailable states offer Retry.
+ */
+export async function requestManagedHostStartOrRetry(tab, selectors) {
+  const deadline = Date.now() + (tab.textTimeoutMs ?? 10_000);
+  do {
+    if (await isVisible(tab, selectors.studio.startManagedHost)) {
+      await click(tab, selectors.studio.startManagedHost);
+      return;
+    }
+    if (await isVisible(tab, selectors.studio.retryManagedHost)) {
+      await click(tab, selectors.studio.retryManagedHost);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  throw new Error("managed_host_start_or_retry_not_visible");
 }
 
-export async function requestManagedHostRetry(tab, selectors) {
-  await click(tab, selectors.studio.retryManagedHost);
+export async function stopManagedHost(tab, selectors) {
+  await click(tab, selectors.studio.stopManagedHost);
+}
+
+/** Wait for the public host row to report a completed, healthy managed turn. */
+export async function waitForManagedHostCompletionStable(tab, selectors) {
+  await visible(tab, selectors.studio.managedHostCompletionStable);
 }
 
 export async function verifyPublicCounterValue(tab, selectors) {
@@ -266,12 +328,14 @@ export async function assertSafeConsoleSurface(tab) {
   for (const forbidden of CONSOLE_FORBIDDEN) {
     if (forbidden.test(snapshot)) throw new Error("protected_console_surface_disclosed_forbidden_material");
   }
-  if (typeof tab.observedRequestUrls === "function") {
-    const urls = await tab.observedRequestUrls();
-    for (const url of urls) {
-      if (CONSOLE_FORBIDDEN.some((forbidden) => forbidden.test(String(url)))) {
-        throw new Error("protected_console_request_disclosed_forbidden_material");
-      }
+  if (typeof tab.observedRequestUrls !== "function") {
+    throw new Error("protected_console_url_evidence_required");
+  }
+  const urls = await tab.observedRequestUrls();
+  if (!Array.isArray(urls)) throw new Error("protected_console_url_evidence_invalid");
+  for (const url of urls) {
+    if (CONSOLE_FORBIDDEN.some((forbidden) => forbidden.test(String(url)))) {
+      throw new Error("protected_console_request_disclosed_forbidden_material");
     }
   }
 }
@@ -359,7 +423,8 @@ async function visible(tab, selector) {
   if (typeof control.isVisible === "function" && !(await control.isVisible())) {
     throw new Error("required_browser_element_not_visible");
   }
-  if (selector?.text !== undefined) await waitForText(tab, control, selector.text);
+  const expectedText = selector?.text ?? selector?.hasText;
+  if (expectedText !== undefined) await waitForText(tab, control, expectedText);
 }
 
 async function isVisible(tab, selector) {
@@ -367,8 +432,9 @@ async function isVisible(tab, selector) {
     const control = element(tab, selector);
     if (typeof control.isVisible !== "function") return false;
     if (!(await control.isVisible())) return false;
-    if (selector?.text === undefined) return true;
-    return matches((await control.textContent()) ?? "", selector.text);
+    const expectedText = selector?.text ?? selector?.hasText;
+    if (expectedText === undefined) return true;
+    return matches((await control.textContent()) ?? "", expectedText);
   } catch {
     return false;
   }
@@ -384,7 +450,7 @@ function element(tab, selector) {
     return nth(page.getByLabel(selector.label, { exact: selector.exact }), selector.nth);
   }
   if (selector?.text) return page.locator("body");
-  if (selector?.css) return nth(page.locator(selector.css), selector.nth);
+  if (selector?.css) return nth(filtered(page.locator(selector.css), selector.hasText), selector.nth);
   if (typeof selector === "string") return page.locator(selector);
   throw new TypeError("invalid semantic browser selector");
 }
@@ -397,12 +463,16 @@ function elementWithin(tab, selector) {
   if (selector.label) {
     return nth(container.getByLabel(selector.label, { exact: selector.exact }), selector.nth);
   }
-  if (selector.css) return nth(container.locator(selector.css), selector.nth);
+  if (selector.css) return nth(filtered(container.locator(selector.css), selector.hasText), selector.nth);
   throw new TypeError("scoped browser selector requires role, label, or css");
 }
 
 function nth(control, index) {
   return index === undefined ? control : control.nth(index);
+}
+
+function filtered(control, hasText) {
+  return hasText === undefined ? control : control.filter({ hasText });
 }
 
 function matches(value, expected) {

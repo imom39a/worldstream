@@ -21,9 +21,9 @@ from typing import Any
 import blake3
 
 COUNTER_PACK_ID = "worldstream.counter"
-COUNTER_PACK_REVISION = "3.0.0"
+COUNTER_PACK_REVISION = "4.0.0"
 COUNTER_PACK_DIGEST = (
-    "blake3:7572a62b364fb9c88c02d79c85efba9e5b9cef22211da4a66827f64704970a55"
+    "blake3:2a1d2e493cbaffa3803724dfef42d35c167db2237aa9b1e113dfb79679e9c052"
 )
 MANIFEST_NAME = "counter-managed-reference-v1.json"
 PROVIDER_CONFIG_NAME = "managed-counter-provider.json"
@@ -337,7 +337,7 @@ def install_fixture(
     supervisor_state_dir: Path | None = None,
     model_provider_credentials_dir: Path | None = None,
 ) -> None:
-    """Install the reviewed host and immutable Counter v3 fixture records."""
+    """Install the reviewed host and immutable Counter v4 fixture records."""
 
     source = _regular_source(source_executable)
     root = _owner_only_directory(install_root)
