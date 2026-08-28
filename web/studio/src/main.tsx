@@ -40,6 +40,7 @@ import {
   loadRunnerAttention,
   loadTaskAgentAttention,
   newRunnerRestartOperationId,
+  requestManagedHostSeatAction,
   requestRunnerRestart,
   type RunnerAttentionOperations,
   type TaskAgentAttention,
@@ -80,7 +81,8 @@ import {
   requestTaskSetup,
   type TaskSetupStatus,
 } from "./taskSetup";
-import { loadAgentProfiles, type AgentProfileCatalog } from "./agentProfiles";
+import { loadAgentProfiles, loadModelProviderCredentials, type AgentProfileCatalog, type ModelProviderCredentialCatalog } from "./agentProfiles";
+import { enableRoomOperatorView, loadRoomOperatorView, type RoomOperatorView } from "./roomOperatorView";
 import { openParticipantView } from "./participantViews";
 import { loadTaskTemplates, type TaskTemplateCatalog } from "./taskTemplates";
 import "./styles.css";
@@ -96,6 +98,7 @@ function LiveStudio() {
   const [runnerInstances, setRunnerInstances] = useState<RunnerInstanceStatusResponse | null>(null);
   const [runnerAttention, setRunnerAttention] = useState<RunnerAttentionOperations | null>(null);
   const [taskAgentAttention, setTaskAgentAttention] = useState<TaskAgentAttention | null>(null);
+  const [managedHostBusySeats, setManagedHostBusySeats] = useState<ReadonlySet<string>>(new Set());
   const [attentionInbox, setAttentionInbox] = useState<AttentionInboxResponse | null>(null);
   const [attentionNotificationsEnabled, setAttentionNotificationsEnabled] = useState(
     () => notificationPreference() === "enabled",
@@ -110,6 +113,8 @@ function LiveStudio() {
   );
   const activityPackDetailRequest = useRef(0);
   const [roomInventory, setRoomInventory] = useState<RoomInventoryState>({ status: "loading" });
+  const [operatorView, setOperatorView] = useState<RoomOperatorView | null>(null);
+  const [operatorViewLoading, setOperatorViewLoading] = useState(false);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const roomDetailRequest = useRef(0);
   const [activeDraftId, setActiveDraftId] = useState(NEW_ROOM_DRAFT_ID);
@@ -125,6 +130,7 @@ function LiveStudio() {
   const [taskSetupStatusAvailable, setTaskSetupStatusAvailable] = useState(false);
   const [taskSetupLoading, setTaskSetupLoading] = useState(false);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfileCatalog | null>(null);
+  const [modelProviderCredentials, setModelProviderCredentials] = useState<ModelProviderCredentialCatalog | null>(null);
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplateCatalog | null>(null);
   const [backupProfile, setBackupProfile] = useState<BackupProfileStatus | null>(null);
   const [backupOperation, setBackupOperation] = useState<BackupOperationStatus | null>(null);
@@ -152,11 +158,13 @@ function LiveStudio() {
         nextAttentionInbox,
         nextActivityPackCatalog,
         nextRoomInventory,
+        nextOperatorView,
         nextRoomCreation,
         nextTaskSetup,
         nextBackupProfile,
         nextBackupOperation,
         nextAgentProfiles,
+        nextModelProviderCredentials,
         nextTaskTemplates,
       ] = await Promise.all([
         loadDaemonStatus(),
@@ -169,6 +177,7 @@ function LiveStudio() {
         loadAttentionInbox(),
         loadActivityPackCatalog(),
         loadRoomInventory(),
+        selectedRoomId === null ? Promise.resolve(null) : loadRoomOperatorView(selectedRoomId),
         loadRoomCreation(activeDraftId),
         loadTaskSetup(activeDraftId),
         loadBackupProfile(),
@@ -176,6 +185,7 @@ function LiveStudio() {
           ? Promise.resolve({ availability: "available" as const, operation: null })
           : loadBackupOperationState(activeBackupOperationId),
         loadAgentProfiles(),
+        loadModelProviderCredentials(),
         loadTaskTemplates(),
       ]);
       if (active) {
@@ -197,11 +207,13 @@ function LiveStudio() {
           nextTaskSetup.availability === "available" ? nextTaskSetup.setup : null,
           nextTaskSetup.availability === "available",
         ));
+        setOperatorView(nextOperatorView);
         setRoomCreation(nextRoomCreation.operation);
         setRoomCreationStatusAvailable(nextRoomCreation.availability === "available");
         setTaskSetup(nextTaskSetup.availability === "available" ? nextTaskSetup.setup : null);
         setTaskSetupStatusAvailable(nextTaskSetup.availability === "available");
         setAgentProfiles(nextAgentProfiles);
+        setModelProviderCredentials(nextModelProviderCredentials);
         setTaskTemplates(nextTaskTemplates);
         setBackupProfile(nextBackupProfile);
         if (loadBackupOperationId() === activeBackupOperationId) {
@@ -261,6 +273,34 @@ function LiveStudio() {
     setRunnerAttention(nextOperations);
     setTaskAgentAttention(nextTask);
   };
+
+  const requestManagedHost = async (seatId: string, action: "start" | "retry") => {
+    if (selectedRoomId === null || managedHostBusySeats.has(seatId)) return;
+    setManagedHostBusySeats((current) => new Set(current).add(seatId));
+    try {
+      await requestManagedHostSeatAction(selectedRoomId, seatId, action);
+      const [nextOperations, nextTask] = await Promise.all([
+        loadRunnerAttention(),
+        loadTaskAgentAttention(selectedRoomId),
+      ]);
+      setRunnerAttention(nextOperations);
+      setTaskAgentAttention(nextTask);
+    } finally {
+      setManagedHostBusySeats((current) => {
+        const next = new Set(current);
+        next.delete(seatId);
+        return next;
+      });
+    }
+  };
+
+  const requestOperatorView = async (roomId: string) => {
+    if (operatorViewLoading) return;
+    setOperatorViewLoading(true);
+    try { setOperatorView(await enableRoomOperatorView(roomId)); }
+    finally { setOperatorViewLoading(false); }
+  };
+
 
   const changeAttentionNotificationPreference = async (enabled: boolean) => {
     if (!enabled) {
@@ -414,6 +454,9 @@ function LiveStudio() {
         void requestRunnerLifecycle(instanceId, action);
       }}
       onRestartApprovedRunner={(instanceId) => void restartApprovedRunner(instanceId)}
+      managedHostRoomId={selectedRoomId}
+      managedHostBusySeats={managedHostBusySeats}
+      onManagedHostAction={(seatId, action) => void requestManagedHost(seatId, action)}
       onAttentionNotificationPreference={(enabled) => {
         void changeAttentionNotificationPreference(enabled);
       }}
@@ -421,6 +464,9 @@ function LiveStudio() {
       onSelectActivityPack={selectActivityPack}
       onClearActivityPackSelection={clearActivityPackSelection}
       onSelectRoom={(roomId) => void inspectRoom(roomId)}
+      operatorView={operatorView}
+      operatorViewLoading={operatorViewLoading}
+      onEnableOperatorView={(roomId) => void requestOperatorView(roomId)}
       roomDraft={roomDraft}
       roomDraftStep={roomDraftStep}
       roomDraftErrors={roomDraftErrors}
@@ -441,6 +487,7 @@ function LiveStudio() {
       onRetryTaskSetup={() => void runTaskSetup("retry")}
       onLaunchTask={() => void runTaskSetup("launch")}
       agentProfiles={agentProfiles}
+      modelProviderCredentials={modelProviderCredentials}
       onAgentProfilePublished={() => {
         void loadAgentProfiles().then(setAgentProfiles);
       }}

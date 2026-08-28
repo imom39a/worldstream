@@ -13,10 +13,14 @@ pub mod assignment_mcp_operations;
 pub mod attention_inbox;
 pub mod backups;
 pub mod lifecycle;
+pub mod managed_activation_status;
 pub mod managed_agent_host;
+pub mod managed_agent_host_seats;
+pub mod model_provider_credentials;
 pub mod participant_handoff;
 pub mod room_creation;
 pub mod room_drafts;
+pub mod room_operator_view;
 pub mod rooms;
 pub mod runner_attention;
 pub mod runner_templates;
@@ -444,6 +448,46 @@ pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_dra
         agent_profiles,
         participant_handoff,
     )
+    .merge(task_templates::task_template_router(task_templates))
+}
+
+/// Builds the production Studio surface with browser publication through named
+/// owner-installed model-provider credentials.  The earlier helper remains for
+/// internal callers that publish the legacy v1 opaque-reference representation.
+#[allow(clippy::too_many_arguments)]
+pub fn supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_templates_and_model_provider_credentials(
+    source: impl DaemonStatusSource,
+    lifecycle: impl lifecycle::DaemonLifecycleControl,
+    vault: secrets::FileSecretVaultV1,
+    runners: runner_templates::RunnerSupervisorV1,
+    activity_packs: impl activity_packs::DaemonActivityPackSource,
+    rooms: impl rooms::DaemonRoomSource,
+    drafts: room_drafts::RoomDraftStoreV1,
+    backups: backups::BackupOperationsV1,
+    room_creation: room_creation::RoomCreationSupervisorV1,
+    task_setup: task_setup::TaskSetupSupervisorV1,
+    agent_profiles: agent_profiles::AgentProfileStoreV1,
+    model_provider_credentials: model_provider_credentials::ModelProviderCredentialRegistryV1,
+    participant_handoff: participant_handoff::ParticipantHandoffBrokerV1,
+    task_templates: task_templates::TaskTemplateStoreV1,
+) -> Router {
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_and_creation(
+        source,
+        lifecycle,
+        vault,
+        runners,
+        activity_packs,
+        rooms,
+        drafts,
+        backups,
+        room_creation,
+    )
+    .merge(task_setup::task_setup_router(task_setup))
+    .merge(agent_profiles::agent_profile_router_with_credentials(
+        agent_profiles,
+        model_provider_credentials,
+    ))
+    .merge(participant_handoff::participant_handoff_router(participant_handoff))
     .merge(task_templates::task_template_router(task_templates))
 }
 

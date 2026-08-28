@@ -26,7 +26,7 @@ import type { RoomCreationStatus } from "./roomCreation";
 import { TaskSetupOperation } from "./TaskSetupOperation";
 import type { TaskSetupStatus } from "./taskSetup";
 import { AgentProfileBuild } from "./AgentProfileBuild";
-import type { AgentProfileCatalog, AgentProfileRevision } from "./agentProfiles";
+import type { AgentProfileCatalog, AgentProfileRevision, ModelProviderCredentialCatalog } from "./agentProfiles";
 import { TaskTemplateBuild } from "./TaskTemplateBuild";
 import type { TaskTemplateCatalog } from "./taskTemplates";
 import type {
@@ -36,6 +36,7 @@ import type {
 } from "./runnerTemplates";
 import type { SecretStatusResponse } from "./secretStatus";
 import type { RoomInventoryState } from "./roomInventory";
+import type { RoomOperatorView } from "./roomOperatorView";
 import type {
   RoomDraft,
   RoomDraftFieldError,
@@ -56,6 +57,9 @@ export interface AppProps {
   runnerAttention?: RunnerAttentionOperations | null;
   taskAgentAttention?: TaskAgentAttention | null;
   onRestartApprovedRunner?: (instanceId: string) => void;
+  managedHostRoomId?: string | null;
+  managedHostBusySeats?: ReadonlySet<string>;
+  onManagedHostAction?: (seatId: string, action: "start" | "retry") => void;
   attentionInbox?: AttentionInboxResponse | null;
   attentionNotificationsEnabled?: boolean;
   attentionNotificationsAvailable?: boolean;
@@ -71,6 +75,9 @@ export interface AppProps {
   roomInventory?: RoomInventoryState;
   selectedRoomId?: string | null;
   onSelectRoom?: (roomId: string) => void;
+  operatorView?: RoomOperatorView | null;
+  operatorViewLoading?: boolean;
+  onEnableOperatorView?: (roomId: string) => void;
   roomDraft?: RoomDraft | null;
   roomDraftStep?: RoomDraftStep;
   roomDraftErrors?: RoomDraftFieldError[];
@@ -91,6 +98,7 @@ export interface AppProps {
   onRetryTaskSetup?: () => void;
   onLaunchTask?: () => void;
   agentProfiles?: AgentProfileCatalog | null;
+  modelProviderCredentials?: ModelProviderCredentialCatalog | null;
   onAgentProfilePublished?: (profile: AgentProfileRevision) => void;
   taskTemplates?: TaskTemplateCatalog | null;
   onTaskTemplateCatalogChanged?: () => void;
@@ -116,6 +124,9 @@ export function App({
   runnerAttention = null,
   taskAgentAttention = null,
   onRestartApprovedRunner,
+  managedHostRoomId = null,
+  managedHostBusySeats = new Set(),
+  onManagedHostAction,
   attentionInbox = null,
   attentionNotificationsEnabled = false,
   attentionNotificationsAvailable = false,
@@ -131,6 +142,9 @@ export function App({
   roomInventory = { status: "loading" },
   selectedRoomId = null,
   onSelectRoom,
+  operatorView = null,
+  operatorViewLoading = false,
+  onEnableOperatorView,
   roomDraft = null,
   roomDraftStep = "activity",
   roomDraftErrors = [],
@@ -151,6 +165,7 @@ export function App({
   onRetryTaskSetup,
   onLaunchTask,
   agentProfiles = null,
+  modelProviderCredentials = null,
   onAgentProfilePublished,
   taskTemplates = null,
   onTaskTemplateCatalogChanged,
@@ -259,6 +274,9 @@ export function App({
             inventory={roomInventory}
             selectedRoomId={selectedRoomId}
             onSelectRoom={onSelectRoom}
+            operatorView={operatorView}
+            operatorViewLoading={operatorViewLoading}
+            onEnableOperatorView={onEnableOperatorView}
           />
         </div>
 
@@ -266,6 +284,8 @@ export function App({
           <AgentProfileBuild
             catalog={agentProfiles}
             onPublished={onAgentProfilePublished}
+            credentials={modelProviderCredentials}
+            runnerTemplates={runnerTemplates}
           />
         </div>
 
@@ -347,6 +367,10 @@ export function App({
           operations={runnerAttention}
           task={taskAgentAttention}
           onRestart={onRestartApprovedRunner}
+          managedHostRoomId={managedHostRoomId}
+          managedReferenceSeatIds={managedReferenceSeatIds(taskSetup, agentProfiles, managedHostRoomId)}
+          managedHostBusySeats={managedHostBusySeats}
+          onManagedHostAction={onManagedHostAction}
         />
 
         <section className="authority-note">
@@ -359,6 +383,21 @@ export function App({
       </section>
     </main>
   );
+}
+
+function managedReferenceSeatIds(
+  setup: TaskSetupStatus | null,
+  profiles: AgentProfileCatalog | null,
+  selectedRoomId: string | null | undefined,
+): ReadonlySet<string> {
+  if (setup === null || profiles === null || selectedRoomId !== setup.room_id) return new Set();
+  return new Set(setup.seats.flatMap((seat) => {
+    if (seat.agent_assignment !== "managed" || seat.agent_profile === null) return [];
+    const profile = profiles.profiles.find((candidate) =>
+      candidate.profile_id === seat.agent_profile?.profile_id
+      && candidate.revision === seat.agent_profile.revision);
+    return profile?.host_contract.kind === "managed_reference" ? [seat.seat_id] : [];
+  }));
 }
 
 function credentialLabel(kind: SecretStatusResponse["credentials"][number]["kind"]) {

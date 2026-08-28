@@ -18,7 +18,12 @@ use worldstream_protocol::{
     RoomHead, RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1,
 };
 use worldstream_runtime::prepare_data_directory;
-use worldstream_studio_supervisor::assignment_mcp::AssignedMembershipLaunchSourceV1;
+use worldstream_studio_supervisor::assignment_mcp::{
+    AssignedMembershipLaunchSourceV1, AssignmentMcpLaunchRegistryV1,
+};
+use worldstream_studio_supervisor::runner_attention::{
+    AgentSeatAssignmentSourceV1, PersistedAgentSeatAssignmentSourceV1,
+};
 use worldstream_studio_supervisor::{
     agent_profiles::{
         AgentHostContractV1, AgentProfileRevisionV1, AgentProfileSecretSettingV1,
@@ -39,10 +44,10 @@ use worldstream_studio_supervisor::{
     secrets::{FileSecretVaultV1, SecretKindV1},
     task_setup::{
         DaemonTaskLaunchSourceV1, DaemonTaskSetupProvisionerV1, FileAssignedMembershipSourceV1,
-        TaskLaunchApplicabilitySourceV1, TaskLaunchApplicabilityV1, TaskLaunchAttemptErrorV1,
-        TaskLaunchStateV1, TaskRunnerObservationV1, TaskRunnerReadinessSourceV1,
-        TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1, TaskSetupErrorV1, TaskSetupStateV1,
-        TaskSetupSupervisorV1, task_setup_router,
+        ManagedRunnerAssignmentV1, TaskLaunchApplicabilitySourceV1, TaskLaunchApplicabilityV1,
+        TaskLaunchAttemptErrorV1, TaskLaunchStateV1, TaskRunnerObservationV1,
+        TaskRunnerReadinessSourceV1, TaskSeatReadinessReasonV1, TaskSetupAttemptErrorV1,
+        TaskSetupErrorV1, TaskSetupStateV1, TaskSetupSupervisorV1, task_setup_router,
     },
 };
 
@@ -165,6 +170,8 @@ struct ProvisionCall {
     capability_id: String,
     change_id: String,
     bearer_digest: String,
+    member_id: Option<String>,
+    scopes: Vec<String>,
 }
 
 impl ProvisionCall {
@@ -175,6 +182,8 @@ impl ProvisionCall {
             bearer_digest: blake3::hash(request.capability.bearer.as_str().as_bytes())
                 .to_hex()
                 .to_string(),
+            member_id: Some(request.member_id.clone()),
+            scopes: request.scopes.clone(),
         }
     }
 
@@ -185,6 +194,8 @@ impl ProvisionCall {
             bearer_digest: blake3::hash(request.capability.bearer.as_str().as_bytes())
                 .to_hex()
                 .to_string(),
+            member_id: None,
+            scopes: request.scopes.clone(),
         }
     }
 }
@@ -300,6 +311,53 @@ fn open_setup(root: &std::path::Path, provisioner: DurableProvisioner) -> TaskSe
     .with_launch_applicability(LaunchApplicability(
         TaskLaunchApplicabilityV1::ActiveAtGenesis,
     ))
+}
+
+#[test]
+fn reviewed_operator_genesis_member_is_excluded_from_ordinary_task_setup_seats() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let mut draft = reviewed_draft();
+    draft.operator_view = true;
+    let mut creation_response = room_response();
+    creation_response
+        .member_ids
+        .push("01ARZ3NDEKTSV4RRFFQ69G5FB0".to_owned());
+    let creation = open_creation_for(directory.path(), &draft, creation_response);
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("vault: {error:?}"));
+    let ledger = Arc::new(Mutex::new(ProvisionLedger::default()));
+    let setup = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        creation,
+        vault,
+        DurableProvisioner(Arc::clone(&ledger)),
+    )
+    .unwrap_or_else(|error| unreachable!("setup: {error:?}"))
+    .with_launch_applicability(LaunchApplicability(
+        TaskLaunchApplicabilityV1::ActiveAtGenesis,
+    ));
+
+    let status = setup
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("start: {error:?}"));
+    assert_eq!(status.total_stages, 3);
+    assert_eq!(status.seats.len(), 3);
+    assert_eq!(
+        status.seats[0].member_id.as_deref(),
+        Some("01ARZ3NDEKTSV4RRFFQ69G5FAY")
+    );
+    assert_eq!(
+        status.seats[1].member_id.as_deref(),
+        Some("01ARZ3NDEKTSV4RRFFQ69G5FAZ")
+    );
+    let ledger = ledger.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(ledger.member_requests.len(), 2);
+    assert!(
+        ledger
+            .member_requests
+            .iter()
+            .all(|request| { request.member_id.as_deref() != Some("01ARZ3NDEKTSV4RRFFQ69G5FB0") })
+    );
 }
 
 #[test]
@@ -663,6 +721,106 @@ fn managed_reference_profile_is_rejected_for_an_external_agent_seat() {
 }
 
 #[test]
+fn ready_managed_reference_assignment_is_visible_before_its_first_mcp_launch() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("vault: {error:?}"));
+    let credential = vault
+        .store(SecretKindV1::ModelProvider, b"provider-credential")
+        .unwrap_or_else(|error| unreachable!("model credential: {error:?}"));
+    let profiles =
+        AgentProfileStoreV1::open(&directory.path().join("agent-profiles"), vault.clone())
+            .unwrap_or_else(|error| unreachable!("profile store: {error:?}"));
+    profiles
+        .publish(&AgentProfileRevisionV1 {
+            schema: "worldstream/studio-agent-profile/v1".to_owned(),
+            profile_id: "analyst".to_owned(),
+            revision: "rev-1".to_owned(),
+            display_name: "Managed Analyst".to_owned(),
+            non_secret_configuration: BTreeMap::new(),
+            secret_settings: vec![AgentProfileSecretSettingV1 {
+                key: "MODEL_PROVIDER_TOKEN".to_owned(),
+                kind: SecretKindV1::ModelProvider,
+                reference: credential,
+            }],
+            host_contract: AgentHostContractV1::ManagedReference {
+                host_contract_revision: "v1".to_owned(),
+                runner_template: RunnerTemplateRevisionReferenceV1 {
+                    template_id: "reference-agent-host".to_owned(),
+                    revision: "r1".to_owned(),
+                },
+                provider: ManagedReferenceProviderV1::OpenAiCompatible,
+                provider_address: "127.0.0.1:11434"
+                    .parse()
+                    .unwrap_or_else(|error| unreachable!("provider address: {error}")),
+                model_id: "test-model".to_owned(),
+            },
+        })
+        .unwrap_or_else(|error| unreachable!("publish profile: {error:?}"));
+    let mut draft = reviewed_draft();
+    let analyst = draft
+        .seats
+        .iter_mut()
+        .find(|seat| seat.seat_id == "analyst-1")
+        .unwrap_or_else(|| unreachable!("analyst seat"));
+    analyst.agent_assignment =
+        Some(worldstream_studio_supervisor::room_drafts::AgentAssignmentModeV1::Managed);
+    analyst.runner_template = Some(RunnerTemplateRevisionReferenceV1 {
+        template_id: "reference-agent-host".to_owned(),
+        revision: "r1".to_owned(),
+    });
+    let setup = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        open_creation_for(directory.path(), &draft, room_response()),
+        vault.clone(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    )
+    .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_agent_profiles(profiles.clone())
+    .with_launch_readiness(
+        ConsoleHealth(Arc::new(Mutex::new(
+            ParticipantConsoleSessionHealthV1::Usable,
+        ))),
+        ManagedReferenceRunner,
+        Launcher(Arc::new(Mutex::new(LaunchLedger::default()))),
+    )
+    .with_launch_applicability(LaunchApplicability(
+        TaskLaunchApplicabilityV1::ActiveAtGenesis,
+    ));
+    let ready = setup
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("ready setup: {error:?}"));
+    assert_eq!(ready.state, TaskSetupStateV1::Ready);
+
+    let launch_source = FileAssignedMembershipSourceV1::open(
+        &directory.path().join("setups"),
+        profiles.clone(),
+        vault,
+    )
+    .unwrap_or_else(|error| unreachable!("launch source: {error:?}"));
+    let launches = AssignmentMcpLaunchRegistryV1::open(
+        &directory.path().join("launches"),
+        &directory.path().join("continuity"),
+        launch_source,
+        "127.0.0.1:39001"
+            .parse()
+            .unwrap_or_else(|error| unreachable!("daemon address: {error}")),
+        Duration::from_secs(1),
+    )
+    .unwrap_or_else(|error| unreachable!("launch registry: {error:?}"));
+    let assignments = PersistedAgentSeatAssignmentSourceV1::new(profiles, launches, setup)
+        .assignments()
+        .unwrap_or_else(|error| unreachable!("pre-launch assignment inventory: {error:?}"));
+    assert_eq!(assignments.len(), 1);
+    assert_eq!(assignments[0].seat_id, "analyst-1");
+    assert!(assignments[0].managed_reference);
+    assert_eq!(
+        assignments[0].instance_id.as_deref(),
+        Some("reference-runner")
+    );
+}
+
+#[test]
 fn corrupt_checkpoint_cannot_claim_ready_or_issue_another_daemon_effect() {
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
     let ledger = Arc::new(Mutex::new(ProvisionLedger {
@@ -866,6 +1024,32 @@ impl TaskRunnerReadinessSourceV1 for RunnerHealth {
             },
             observed_at_unix_ms: 1,
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ManagedReferenceRunner;
+
+impl TaskRunnerReadinessSourceV1 for ManagedReferenceRunner {
+    fn presence(&self, _runner_id: &str) -> TaskRunnerObservationV1 {
+        TaskRunnerObservationV1::Missing
+    }
+
+    fn select_managed_reference(
+        &self,
+        pack: &PackReference,
+        requested: &RunnerTemplateRevisionReferenceV1,
+    ) -> Option<ManagedRunnerAssignmentV1> {
+        (pack.id == "counter"
+            && pack.version == "2.0.0"
+            && pack.digest == DIGEST
+            && requested.template_id == "reference-agent-host"
+            && requested.revision == "r1")
+            .then(|| ManagedRunnerAssignmentV1 {
+                instance_id: "reference-runner".to_owned(),
+                template_id: requested.template_id.clone(),
+                template_revision: requested.revision.clone(),
+            })
     }
 }
 

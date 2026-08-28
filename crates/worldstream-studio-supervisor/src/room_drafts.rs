@@ -126,6 +126,10 @@ pub struct RoomDraftV1 {
     pub configuration: Value,
     pub seats: Vec<RoomDraftSeatV1>,
     pub readiness: Vec<RoomDraftSeatReadinessV1>,
+    /// Explicit reviewed opt-in for one roleless, read-only Operator
+    /// Membership at Genesis. False is omitted to preserve legacy draft bytes.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub operator_view: bool,
     pub last_valid_step: Option<RoomDraftStepV1>,
 }
 
@@ -137,6 +141,8 @@ pub struct RoomDraftReviewV1 {
     pub configuration: Value,
     pub seats: Vec<RoomDraftSeatV1>,
     pub readiness: Vec<RoomDraftSeatReadinessV1>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub operator_view: bool,
 }
 
 /// Versioned persisted draft plus an immutable snapshot-shaped review value.
@@ -155,6 +161,7 @@ impl RoomDraftResponseV1 {
             configuration: draft.configuration.clone(),
             seats: draft.seats.clone(),
             readiness: draft.readiness.clone(),
+            operator_view: draft.operator_view,
         };
         Self {
             version: DRAFT_RESPONSE_VERSION_V1.to_owned(),
@@ -162,6 +169,14 @@ impl RoomDraftResponseV1 {
             review,
         }
     }
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if predicates receive a field reference"
+)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Closed, pathless draft-store failures.

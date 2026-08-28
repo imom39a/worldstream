@@ -125,24 +125,28 @@ describe("Studio Agent Profile workflows", () => {
     await expect(loadAgentProfileAssignments(unsafeFetcher)).resolves.toBeNull();
   });
 
-  it("publishes one exact revision and never accepts raw credential-shaped configuration", async () => {
+  it("publishes a managed profile with a named credential and never accepts raw credential-shaped configuration", async () => {
     const request: AgentProfilePublishRequest = {
-      schema: "worldstream/studio-agent-profile/v1",
+      schema: "worldstream/studio-agent-profile-publish/v2",
       profile_id: "careful-counter",
       revision: "3",
       display_name: "Careful Counter",
       non_secret_configuration: { policy: "deliberate" },
-      secret_settings: [{
-        key: "MODEL_PROVIDER_TOKEN",
-        kind: "model_provider",
-        reference: "a".repeat(64),
-      }],
-      host_contract: { kind: "generic_mcp" },
+      host_contract: {
+        kind: "managed_reference",
+        host_contract_revision: "v1",
+        runner_template: { template_id: "counter-managed-reference", revision: "v1" },
+        provider: "open_ai_compatible",
+        provider_address: "127.0.0.1:11434",
+        model_id: "counter-deterministic",
+      },
+      managed_provider_credential_id: "counter-provider",
     };
     const published = {
       ...catalog.profiles[0]!,
       revision: "3",
       non_secret_configuration: { policy: "deliberate" },
+      host_contract: request.host_contract,
     };
     const fetcher = vi.fn(async () => new Response(JSON.stringify(published), { status: 200 }));
 
@@ -177,18 +181,13 @@ describe("Studio Agent Profile workflows", () => {
     });
   });
 
-  it("starts a new immutable revision without copying an opaque secret reference", () => {
+  it("starts a new immutable revision without exposing a credential reference", () => {
     expect(createAgentProfileRevisionDraft(catalog.profiles[0]!)).toEqual({
-      schema: "worldstream/studio-agent-profile/v1",
+      schema: "worldstream/studio-agent-profile-publish/v2",
       profile_id: "careful-counter",
       revision: "",
       display_name: "Careful Counter",
       non_secret_configuration: { policy: "deliberate", temperature: "0.2" },
-      secret_settings: [{
-        key: "MODEL_PROVIDER_TOKEN",
-        kind: "model_provider",
-        reference: "",
-      }],
       host_contract: { kind: "generic_mcp" },
     });
   });

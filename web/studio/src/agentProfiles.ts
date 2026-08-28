@@ -36,21 +36,16 @@ export interface AgentProfileCatalog {
   schema: "worldstream/studio-agent-profile-catalog/v1";
   profiles: AgentProfileRevision[];
 }
-
-export interface AgentProfileSecretSettingInput {
-  key: string;
-  kind: AgentProfileSecretKind;
-  reference: string;
-}
+export interface ModelProviderCredentialCatalog { schema: "worldstream/studio-model-provider-credential-catalog/v1"; credentials: Array<{ credential_id: string; display_name: string; provider: "open_ai_compatible"; availability: "configured" | "missing" | "unavailable" }>; }
 
 export interface AgentProfilePublishRequest {
-  schema: "worldstream/studio-agent-profile/v1";
+  schema: "worldstream/studio-agent-profile-publish/v2";
   profile_id: string;
   revision: string;
   display_name: string;
   non_secret_configuration: Record<string, string>;
-  secret_settings: AgentProfileSecretSettingInput[];
   host_contract: AgentHostContract;
+  managed_provider_credential_id?: string;
 }
 
 export type AgentProfilePublishOutcome =
@@ -101,6 +96,8 @@ export async function loadAgentProfiles(
 ): Promise<AgentProfileCatalog | null> {
   return loadJson("/api/v1/agent-profiles", isAgentProfileCatalog, fetcher);
 }
+export async function loadModelProviderCredentials(fetcher: Fetcher = fetch): Promise<ModelProviderCredentialCatalog | null> { return loadJson("/api/v1/model-provider-credentials", isModelProviderCredentialCatalog, fetcher); }
+function isModelProviderCredentialCatalog(value: unknown): value is ModelProviderCredentialCatalog { return isExactRecord(value, ["schema", "credentials"]) && value.schema === "worldstream/studio-model-provider-credential-catalog/v1" && isBoundedArray(value.credentials, (item): item is ModelProviderCredentialCatalog["credentials"][number] => isExactRecord(item, ["credential_id", "display_name", "provider", "availability"]) && isProfileId(item.credential_id) && isText(item.display_name) && item.provider === "open_ai_compatible" && ["configured", "missing", "unavailable"].includes(String(item.availability))); }
 
 export async function loadAgentProfileRevision(
   profileId: string,
@@ -152,20 +149,11 @@ export function createAgentProfileRevisionDraft(
   source?: AgentProfileRevision,
 ): AgentProfilePublishRequest {
   return {
-    schema: "worldstream/studio-agent-profile/v1",
+    schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: source?.profile_id ?? "",
     revision: "",
     display_name: source?.display_name ?? "",
     non_secret_configuration: { ...(source?.non_secret_configuration ?? {}) },
-    secret_settings: (source?.secret_settings ?? [{
-      key: "MODEL_PROVIDER_TOKEN",
-      kind: "model_provider" as const,
-      availability: "missing" as const,
-    }]).map((setting) => ({
-      key: setting.key,
-      kind: setting.kind,
-      reference: "",
-    })),
     host_contract: source?.host_contract ?? { kind: "generic_mcp" },
   };
 }
@@ -215,26 +203,20 @@ function isAgentProfileCatalog(value: unknown): value is AgentProfileCatalog {
 }
 
 function isAgentProfilePublishRequest(value: unknown): value is AgentProfilePublishRequest {
-  return isExactRecord(value, [
-    "schema", "profile_id", "revision", "display_name", "non_secret_configuration", "secret_settings", "host_contract",
-  ])
-    && value.schema === "worldstream/studio-agent-profile/v1"
+  if (!isRecord(value)
+    || !isExactRecord(value, value.host_contract && isRecord(value.host_contract)
+      && value.host_contract.kind === "managed_reference"
+      ? ["schema", "profile_id", "revision", "display_name", "non_secret_configuration", "host_contract", "managed_provider_credential_id"]
+      : ["schema", "profile_id", "revision", "display_name", "non_secret_configuration", "host_contract"])) return false;
+  return value.schema === "worldstream/studio-agent-profile-publish/v2"
     && isProfileId(value.profile_id)
     && isRevision(value.revision)
     && isText(value.display_name)
     && isConfiguration(value.non_secret_configuration)
-    && isBoundedArray(value.secret_settings, isSecretSettingInput)
-    && unique(value.secret_settings.map((setting) => setting.key))
-    && isAgentHostContract(value.host_contract, value.secret_settings);
-}
-
-function isSecretSettingInput(value: unknown): value is AgentProfileSecretSettingInput {
-  return isExactRecord(value, ["key", "kind", "reference"])
-    && isSecretKey(value.key)
-    && isSensitiveKey(value.key)
-    && value.kind === "model_provider"
-    && typeof value.reference === "string"
-    && /^[0-9a-f]{64}$/.test(value.reference);
+    && isAgentHostContract(value.host_contract)
+    && (value.host_contract.kind === "generic_mcp"
+      ? value.managed_provider_credential_id === undefined
+      : isProfileId(value.managed_provider_credential_id));
 }
 
 function isAgentProfileRevision(value: unknown): value is AgentProfileRevision {
@@ -252,7 +234,7 @@ function isAgentProfileRevision(value: unknown): value is AgentProfileRevision {
 
 function isAgentHostContract(
   value: unknown,
-  settings: Array<AgentProfileSecretSetting | AgentProfileSecretSettingInput>,
+  settings?: AgentProfileSecretSetting[],
 ): value is AgentHostContract {
   if (!isRecord(value)) return false;
   if (value.kind === "generic_mcp") return isExactRecord(value, ["kind"]);
@@ -264,9 +246,9 @@ function isAgentHostContract(
     && value.provider === "open_ai_compatible"
     && isLoopbackSocket(value.provider_address)
     && isText(value.model_id)
-    && settings.length === 1
-    && settings[0]?.kind === "model_provider"
-    && settings[0]?.key === "MODEL_PROVIDER_TOKEN";
+    && (settings === undefined || (settings.length === 1
+      && settings[0]?.kind === "model_provider"
+      && settings[0]?.key === "MODEL_PROVIDER_TOKEN"));
 }
 
 function isSecretSetting(value: unknown): value is AgentProfileSecretSetting {
@@ -363,13 +345,11 @@ function publishedRevisionMatches(
     && response.display_name === request.display_name
     && exactStringRecord(response.non_secret_configuration, request.non_secret_configuration)
     && JSON.stringify(response.host_contract) === JSON.stringify(request.host_contract)
-    && response.secret_settings.length === request.secret_settings.length
-    && response.secret_settings.every((setting, index) => {
-      const requested = request.secret_settings[index];
-      return requested !== undefined
-        && setting.key === requested.key
-        && setting.kind === requested.kind;
-    });
+    && (request.host_contract.kind === "generic_mcp"
+      ? response.secret_settings.length === 0
+      : response.secret_settings.length === 1
+        && response.secret_settings[0]?.key === "MODEL_PROVIDER_TOKEN"
+        && response.secret_settings[0]?.kind === "model_provider");
 }
 
 function isLoopbackSocket(value: unknown): value is string {

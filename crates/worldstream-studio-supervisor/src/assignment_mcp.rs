@@ -20,7 +20,8 @@ use crate::{
     assignment_mcp_actions::{
         AssignmentMcpActionErrorV1, AssignmentMcpActionSchemaErrorV1,
         AssignmentMcpActionSchemaSourceV1, AssignmentMcpSubmitActionV1,
-        FixedDaemonAssignmentMcpActionGatewayV1, list_current_action_offers, submit_current_action,
+        FixedDaemonAssignmentMcpActionGatewayV1, list_current_action_offers,
+        resume_reserved_action, submit_current_action,
     },
     assignment_mcp_activation_ledger::FileActivationOperationLedgerV1,
     assignment_mcp_activations::{
@@ -28,7 +29,12 @@ use crate::{
         FixedDaemonRunnerActivationGatewayV1, RunnerActivationGatewayErrorV1,
         SystemActivationLeaseClockV1,
     },
-    assignment_mcp_operations::FileAssignmentMcpOperationLedgerV1,
+    assignment_mcp_operations::{
+        AssignmentMcpOperationIdentityV1, AssignmentMcpOperationLedgerV1,
+        FileAssignmentMcpOperationLedgerV1,
+    },
+    managed_activation_status::{ManagedActivationStatusStoreV1, PendingConfirmationV1},
+    managed_agent_host::ManagedAgentActivationDispositionV1,
     secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1},
 };
 use axum::{
@@ -957,12 +963,16 @@ pub fn open_registered_assignment_mcp(
         binding_hash: record.binding_hash,
         _lock: lock,
     });
+    let managed_activation_status =
+        ManagedActivationStatusStoreV1::open(state_dir.join("managed-agent-activation-status"))
+            .map_err(|_| AssignedMembershipSourceErrorV1::Unavailable)?;
     Ok(AssignmentMcpServerV1::open(AssignmentMcpContextV1 {
         authority,
         gateway: Arc::new(gateway),
         lease,
         actions: Some(actions),
         activations: Some(activations),
+        managed_activation_status: Some(managed_activation_status),
     }))
 }
 
@@ -2143,6 +2153,7 @@ where
             lease: Arc::new(StaticAssignmentLeaseV1),
             actions: None,
             activations: None,
+            managed_activation_status: None,
         })
     }
 }
@@ -2154,6 +2165,7 @@ pub struct AssignmentMcpContextV1 {
     lease: Arc<dyn AssignmentLeaseV1>,
     actions: Option<AssignmentMcpActionToolsV1>,
     activations: Option<AssignmentMcpActivationToolsV1>,
+    managed_activation_status: Option<ManagedActivationStatusStoreV1>,
 }
 
 type AssignmentMcpActivationToolsV1 = AssignmentActivationToolsV1<
@@ -2323,7 +2335,15 @@ pub struct AssignmentMcpServerV1 {
     context: AssignmentMcpContextV1,
     current: Option<MembershipStreamSnapshotV1>,
     highest_delivered: Option<u64>,
+    managed_turn: Option<ManagedTurnV1>,
     initialized: bool,
+}
+
+struct ManagedTurnV1 {
+    operation_id: String,
+    activation_cursor: u64,
+    lease_generation: u64,
+    context_hash: String,
 }
 
 impl AssignmentMcpServerV1 {
@@ -2333,6 +2353,7 @@ impl AssignmentMcpServerV1 {
             context,
             current: None,
             highest_delivered: None,
+            managed_turn: None,
             initialized: false,
         }
     }
@@ -2517,6 +2538,334 @@ impl AssignmentMcpServerV1 {
         self.context.lease.validate().map_err(map_source_error)?;
         serde_json::to_value(result).map_err(|_| AssignmentMcpErrorV1::InvalidDaemonData)
     }
+
+    fn note_managed_completion(
+        &self,
+        activation_id: &str,
+        disposition: ManagedAgentActivationDispositionV1,
+    ) -> Result<(), AssignmentMcpErrorV1> {
+        if let Some(status) = &self.context.managed_activation_status {
+            status
+                .note_confirmed(
+                    self.context.authority.assignment_id(),
+                    activation_id,
+                    disposition,
+                )
+                .map_err(|_| AssignmentMcpErrorV1::DaemonUnavailable)?;
+        }
+        Ok(())
+    }
+
+    fn begin_managed_completion(
+        &self,
+        activation_id: &str,
+        disposition: ManagedAgentActivationDispositionV1,
+    ) -> Result<(), AssignmentMcpErrorV1> {
+        if let Some(status) = &self.context.managed_activation_status {
+            status
+                .note_completion_pending(
+                    self.context.authority.assignment_id(),
+                    activation_id,
+                    disposition,
+                )
+                .map_err(|_| AssignmentMcpErrorV1::DaemonUnavailable)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_managed_completion(&self) -> Result<bool, AssignmentMcpErrorV1> {
+        let Some(status) = &self.context.managed_activation_status else {
+            return Ok(false);
+        };
+        let pending = status
+            .pending_confirmation(self.context.authority.assignment_id())
+            .map_err(|_| AssignmentMcpErrorV1::DaemonUnavailable)?;
+        let tools = self
+            .context
+            .activations
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+        let receipt = tools
+            .confirmed_completion()
+            .map_err(|error| map_activation_error(&error))?;
+        let Some(disposition) = reconciled_managed_completion_disposition(
+            pending.as_ref(),
+            receipt.as_ref().map(|value| value.activation_id.as_str()),
+        )?
+        else {
+            return Ok(false);
+        };
+        let receipt = receipt.ok_or(AssignmentMcpErrorV1::InvalidDaemonData)?;
+        self.note_managed_completion(receipt.activation_id.as_str(), disposition)?;
+        Ok(true)
+    }
+
+    /// Keeps an unresolved managed completion bound to the exact re-leased
+    /// Activation. A matching lease may recover the retained Action; a new
+    /// Activation must never inherit that Action or its disposition.
+    fn require_pending_managed_activation(
+        &self,
+        activation_id: &str,
+    ) -> Result<bool, AssignmentMcpErrorV1> {
+        let Some(status) = &self.context.managed_activation_status else {
+            return Ok(false);
+        };
+        let pending = status
+            .pending_confirmation(self.context.authority.assignment_id())
+            .map_err(|_| AssignmentMcpErrorV1::DaemonUnavailable)?;
+        pending_managed_activation_matches(pending.as_ref(), activation_id)
+    }
+
+    /// Prepares one managed-host turn without exposing Activation or authority identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns only closed assignment, Activation, observation, or daemon failures.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered managed-activation recovery keeps its exact authority and completion checks together"
+    )]
+    pub fn prepare_managed_turn(
+        &mut self,
+        arguments: Value,
+    ) -> Result<Value, AssignmentMcpErrorV1> {
+        decode_empty(arguments)?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        if self.reconcile_managed_completion()? {
+            return Ok(serde_json::json!({
+                "schema": "worldstream/managed-turn-preparation/v1",
+                "state": "reconciled",
+            }));
+        }
+        let activation = {
+            let tools = self
+                .context
+                .activations
+                .as_ref()
+                .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+            match tools.next_activation(&serde_json::json!({})) {
+                Ok(activation) => activation,
+                Err(ActivationToolErrorV1::NoActivation) => {
+                    return Err(AssignmentMcpErrorV1::NoActivation);
+                }
+                Err(ActivationToolErrorV1::CompletionPending) => {
+                    let receipt = tools
+                        .resume_completion()
+                        .map_err(|error| map_activation_error(&error))?;
+                    if let Some(status) = &self.context.managed_activation_status {
+                        let disposition = managed_completion_disposition(
+                            status,
+                            self.context.authority.assignment_id(),
+                            receipt.activation_id.as_str(),
+                        )?;
+                        self.note_managed_completion(receipt.activation_id.as_str(), disposition)?;
+                    }
+                    self.context.lease.validate().map_err(map_source_error)?;
+                    return Ok(serde_json::json!({
+                        "schema": "worldstream/managed-turn-preparation/v1",
+                        "state": "reconciled",
+                    }));
+                }
+                Err(error) => return Err(map_activation_error(&error)),
+            }
+        };
+        self.context.lease.validate().map_err(map_source_error)?;
+        let operation_id = activation.activation.activation_id().to_owned();
+        let activation_cursor = activation.activation_cursor;
+        let lease_generation = activation.activation.lease_generation();
+        let context_hash = activation.activation.context_hash().to_owned();
+        let has_pending_completion = self.require_pending_managed_activation(&operation_id)?;
+        let reserved_action = {
+            let tools = self
+                .context
+                .actions
+                .as_ref()
+                .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+            let identity = AssignmentMcpOperationIdentityV1::new(
+                self.context.authority.assignment_id(),
+                &operation_id,
+            )
+            .map_err(|_| AssignmentMcpErrorV1::InvalidDaemonData)?;
+            tools
+                .operations
+                .load(&identity)
+                .map_err(|_| AssignmentMcpErrorV1::DaemonUnavailable)?
+                .is_some()
+        };
+        if has_pending_completion && !reserved_action {
+            return Err(AssignmentMcpErrorV1::InvalidDaemonData);
+        }
+        if reserved_action {
+            let action = {
+                let tools = self
+                    .context
+                    .actions
+                    .as_ref()
+                    .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+                resume_reserved_action(
+                    &self.context.authority,
+                    &tools.operations,
+                    &tools.gateway,
+                    &operation_id,
+                )
+                .map_err(map_action_error)?
+            };
+            self.context.lease.validate().map_err(map_source_error)?;
+            let action = serde_json::to_value(action)
+                .map_err(|_| AssignmentMcpErrorV1::InvalidDaemonData)?;
+            if action.get("status").and_then(Value::as_str) != Some("accepted") {
+                return Err(AssignmentMcpErrorV1::InvalidDaemonData);
+            }
+            let observation = self.observe(serde_json::json!({}))?;
+            if let Some(highest) = observation
+                .get("observations")
+                .and_then(Value::as_array)
+                .and_then(|frames| frames.last())
+                .and_then(|frame| frame.get("frame_seq"))
+                .and_then(Value::as_u64)
+            {
+                self.acknowledge(serde_json::json!({"through_frame_seq": highest}))?;
+            }
+            self.begin_managed_completion(
+                &operation_id,
+                ManagedAgentActivationDispositionV1::Handled,
+            )?;
+            let completion = {
+                let tools = self
+                    .context
+                    .activations
+                    .as_ref()
+                    .ok_or(AssignmentMcpErrorV1::DaemonUnavailable)?;
+                tools
+                    .complete(serde_json::json!({
+                        "activation_cursor": activation_cursor,
+                        "lease_generation": lease_generation,
+                        "context_hash": context_hash,
+                        "disposition": "handled",
+                    }))
+                    .map_err(|error| map_activation_error(&error))?
+            };
+            self.context.lease.validate().map_err(map_source_error)?;
+            self.note_managed_completion(
+                &operation_id,
+                ManagedAgentActivationDispositionV1::Handled,
+            )?;
+            return Ok(serde_json::json!({
+                "schema": "worldstream/managed-turn-preparation/v1",
+                "state": "reconciled",
+                "completion": completion,
+            }));
+        }
+        self.managed_turn = Some(ManagedTurnV1 {
+            operation_id,
+            activation_cursor,
+            lease_generation,
+            context_hash,
+        });
+        let observation = self.observe(serde_json::json!({}))?;
+        let offers = self.list_current_action_offers(serde_json::json!({}))?;
+        Ok(serde_json::json!({
+            "schema": "worldstream/managed-turn-preparation/v1",
+            "instruction": "Select exactly one listed offer and return its offer_id and payload.",
+            "observation": observation,
+            "offers": offers,
+        }))
+    }
+
+    /// Submits and completes exactly the managed turn prepared for this helper process.
+    ///
+    /// # Errors
+    ///
+    /// Returns only closed input, assignment, Action, or Activation failures.
+    pub fn submit_managed_turn_action(
+        &mut self,
+        arguments: Value,
+    ) -> Result<Value, AssignmentMcpErrorV1> {
+        let arguments: ManagedTurnActionArgumentsV1 =
+            serde_json::from_value(arguments).map_err(|_| AssignmentMcpErrorV1::InvalidInput)?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        let turn = self
+            .managed_turn
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::ActionObservationRequired)?;
+        let operation_id = turn.operation_id.clone();
+        let activation_cursor = turn.activation_cursor;
+        let lease_generation = turn.lease_generation;
+        let context_hash = turn.context_hash.clone();
+        let offers = self.list_current_action_offers(serde_json::json!({}))?;
+        let precondition = offers
+            .get("precondition")
+            .cloned()
+            .ok_or(AssignmentMcpErrorV1::InvalidDaemonData)?;
+        let result = self.submit_action(serde_json::json!({
+            "operation_id": operation_id,
+            "offer_id": arguments.offer_id,
+            "precondition": precondition,
+            "payload": arguments.payload,
+        }))?;
+        if result.get("status").and_then(Value::as_str) != Some("accepted") {
+            return Err(AssignmentMcpErrorV1::ActionUnoffered);
+        }
+        if let Some(highest) = self.highest_delivered {
+            self.acknowledge(serde_json::json!({"through_frame_seq": highest}))?;
+        }
+        self.begin_managed_completion(&operation_id, ManagedAgentActivationDispositionV1::Handled)?;
+        let completion = self.complete_activation(serde_json::json!({
+            "activation_cursor": activation_cursor,
+            "lease_generation": lease_generation,
+            "context_hash": context_hash,
+            "disposition": "handled",
+        }))?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        self.note_managed_completion(&operation_id, ManagedAgentActivationDispositionV1::Handled)?;
+        self.managed_turn = None;
+        Ok(serde_json::json!({
+            "schema": "worldstream/managed-turn-action/v1",
+            "action": result,
+            "completion": completion,
+        }))
+    }
+}
+
+fn managed_completion_disposition(
+    status: &ManagedActivationStatusStoreV1,
+    assignment_id: &str,
+    activation_id: &str,
+) -> Result<ManagedAgentActivationDispositionV1, AssignmentMcpErrorV1> {
+    let pending = status
+        .pending_confirmation(assignment_id)
+        .map_err(|_| AssignmentMcpErrorV1::DaemonUnavailable)?
+        .ok_or(AssignmentMcpErrorV1::InvalidDaemonData)?;
+    if pending.activation_id() != activation_id {
+        return Err(AssignmentMcpErrorV1::InvalidDaemonData);
+    }
+    Ok(pending.disposition())
+}
+
+fn reconciled_managed_completion_disposition(
+    pending: Option<&PendingConfirmationV1>,
+    receipt_activation_id: Option<&str>,
+) -> Result<Option<ManagedAgentActivationDispositionV1>, AssignmentMcpErrorV1> {
+    let Some(pending) = pending else {
+        return Ok(None);
+    };
+    let Some(receipt_activation_id) = receipt_activation_id else {
+        return Ok(None);
+    };
+    if pending.activation_id() != receipt_activation_id {
+        return Err(AssignmentMcpErrorV1::InvalidDaemonData);
+    }
+    Ok(Some(pending.disposition()))
+}
+
+fn pending_managed_activation_matches(
+    pending: Option<&PendingConfirmationV1>,
+    activation_id: &str,
+) -> Result<bool, AssignmentMcpErrorV1> {
+    if pending.is_some_and(|pending| pending.activation_id() != activation_id) {
+        return Err(AssignmentMcpErrorV1::InvalidDaemonData);
+    }
+    Ok(pending.is_some())
 }
 
 #[derive(Deserialize)]
@@ -2527,6 +2876,13 @@ struct EmptyArguments {}
 #[serde(deny_unknown_fields)]
 struct AckArguments {
     through_frame_seq: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedTurnActionArgumentsV1 {
+    offer_id: String,
+    payload: Value,
 }
 
 fn decode_empty(value: Value) -> Result<(), AssignmentMcpErrorV1> {
@@ -2876,6 +3232,10 @@ fn call_tool(server: &mut AssignmentMcpServerV1, id: &Value, params: Value) -> V
         "worldstream.submit_action" => server.submit_action(params.arguments),
         "worldstream.next_activation" => server.next_activation(&params.arguments),
         "worldstream.complete_activation" => server.complete_activation(params.arguments),
+        "worldstream.prepare_managed_turn" => server.prepare_managed_turn(params.arguments),
+        "worldstream.submit_managed_turn_action" => {
+            server.submit_managed_turn_action(params.arguments)
+        }
         _ => Err(AssignmentMcpErrorV1::InvalidInput),
     };
     match result {
@@ -2895,7 +3255,9 @@ fn tool_definitions() -> Value {
         {"name":"worldstream.list_current_action_offers","description":"List exact current Action Offers and their pinned payload schemas.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"worldstream.submit_action","description":"Submit one exact currently offered Action using a stable operation identity.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string"},"offer_id":{"type":"string"},"precondition":{"type":"object","properties":{"room_seq":{"type":"integer","minimum":0},"head_hash":{"type":"string"}},"required":["room_seq","head_hash"],"additionalProperties":false},"payload":{}},"required":["operation_id","offer_id","precondition","payload"],"additionalProperties":false}},
         {"name":"worldstream.next_activation","description":"Acquire or resume the next Activation in this assignment's sealed Runner scope.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"worldstream.complete_activation","description":"Complete the exact currently leased Activation with its safe preconditions.","inputSchema":{"type":"object","properties":{"activation_cursor":{"type":"integer","minimum":1},"lease_generation":{"type":"integer","minimum":1},"context_hash":{"type":"string"},"disposition":{"type":"string","enum":["handled","declined","failed"]}},"required":["activation_cursor","lease_generation","context_hash","disposition"],"additionalProperties":false}}
+        {"name":"worldstream.complete_activation","description":"Complete the exact currently leased Activation with its safe preconditions.","inputSchema":{"type":"object","properties":{"activation_cursor":{"type":"integer","minimum":1},"lease_generation":{"type":"integer","minimum":1},"context_hash":{"type":"string"},"disposition":{"type":"string","enum":["handled","declined","failed"]}},"required":["activation_cursor","lease_generation","context_hash","disposition"],"additionalProperties":false}},
+        {"name":"worldstream.prepare_managed_turn","description":"Prepare one managed Agent turn from the sealed assignment without exposing authority or Activation identity.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"worldstream.submit_managed_turn_action","description":"Submit the one Action selected for the prepared managed turn and durably complete its Activation.","inputSchema":{"type":"object","properties":{"offer_id":{"type":"string"},"payload":{}},"required":["offer_id","payload"],"additionalProperties":false}}
     ])
 }
 
@@ -2923,7 +3285,7 @@ fn json_rpc_error(id: &Value, code: i32, message: &'static str) -> Value {
 fn safe_error(error: AssignmentMcpErrorV1) -> Value {
     serde_json::json!({
         "code":error.code(), "message":error.message(), "next_action":error.next_action(),
-        "retryable":matches!(error, AssignmentMcpErrorV1::Disconnected | AssignmentMcpErrorV1::StaleCursor | AssignmentMcpErrorV1::DaemonUnavailable | AssignmentMcpErrorV1::ActionAmbiguous | AssignmentMcpErrorV1::NoActivation | AssignmentMcpErrorV1::ActivationCompletionPending)
+        "retryable":matches!(error, AssignmentMcpErrorV1::Disconnected | AssignmentMcpErrorV1::StaleCursor | AssignmentMcpErrorV1::DaemonUnavailable | AssignmentMcpErrorV1::ActionAmbiguous | AssignmentMcpErrorV1::NoActivation | AssignmentMcpErrorV1::ActivationLeaseExpired | AssignmentMcpErrorV1::ActivationStaleCursor | AssignmentMcpErrorV1::ActivationCompletionPending)
     })
 }
 
@@ -2941,8 +3303,14 @@ mod tests {
     use std::{fs, time::Duration};
 
     use super::{
-        AssignedMembershipGatewayErrorV1, FixedDaemonAssignedMembershipGatewayV1,
-        StreamContinuityV1, update_action_offers,
+        AssignedMembershipGatewayErrorV1, AssignmentMcpErrorV1,
+        FixedDaemonAssignedMembershipGatewayV1, StreamContinuityV1, managed_completion_disposition,
+        pending_managed_activation_matches, reconciled_managed_completion_disposition,
+        update_action_offers,
+    };
+    use crate::{
+        managed_activation_status::ManagedActivationStatusStoreV1,
+        managed_agent_host::ManagedAgentActivationDispositionV1,
     };
     use serde_json::json;
     use tempfile::tempdir;
@@ -3022,6 +3390,64 @@ mod tests {
         for prohibited in [ROOM, MEMBER, BEARER, "room_id", "member_id", "bearer"] {
             assert!(!persisted.contains(prohibited), "leaked {prohibited}");
         }
+    }
+
+    #[test]
+    fn managed_completion_requires_an_exact_durable_pending_witness() {
+        const ASSIGNMENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+        const ACTIVATION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
+        const OTHER_ACTIVATION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+
+        let directory = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let status = ManagedActivationStatusStoreV1::open(directory.path().join("status"))
+            .unwrap_or_else(|error| panic!("activation status: {error:?}"));
+        assert_eq!(
+            managed_completion_disposition(&status, ASSIGNMENT, ACTIVATION),
+            Err(AssignmentMcpErrorV1::InvalidDaemonData)
+        );
+        status
+            .note_completion_pending(
+                ASSIGNMENT,
+                OTHER_ACTIVATION,
+                ManagedAgentActivationDispositionV1::Handled,
+            )
+            .unwrap_or_else(|error| panic!("pending status: {error:?}"));
+        assert_eq!(
+            managed_completion_disposition(&status, ASSIGNMENT, ACTIVATION),
+            Err(AssignmentMcpErrorV1::InvalidDaemonData)
+        );
+        assert_eq!(
+            managed_completion_disposition(&status, ASSIGNMENT, OTHER_ACTIVATION),
+            Ok(ManagedAgentActivationDispositionV1::Handled)
+        );
+
+        let pending = status
+            .pending_confirmation(ASSIGNMENT)
+            .unwrap_or_else(|error| panic!("load pending status: {error:?}"));
+        assert_eq!(
+            reconciled_managed_completion_disposition(None, Some(ACTIVATION)),
+            Ok(None)
+        );
+        assert_eq!(
+            reconciled_managed_completion_disposition(pending.as_ref(), Some(OTHER_ACTIVATION),),
+            Ok(Some(ManagedAgentActivationDispositionV1::Handled))
+        );
+        assert_eq!(
+            reconciled_managed_completion_disposition(pending.as_ref(), Some(ACTIVATION)),
+            Err(AssignmentMcpErrorV1::InvalidDaemonData)
+        );
+        assert_eq!(
+            pending_managed_activation_matches(None, ACTIVATION),
+            Ok(false)
+        );
+        assert_eq!(
+            pending_managed_activation_matches(pending.as_ref(), OTHER_ACTIVATION),
+            Ok(true)
+        );
+        assert_eq!(
+            pending_managed_activation_matches(pending.as_ref(), ACTIVATION),
+            Err(AssignmentMcpErrorV1::InvalidDaemonData)
+        );
     }
 
     fn offer(action_type: &str) -> ActionOffer {

@@ -91,6 +91,18 @@ describe("Participant Console opaque handoff", () => {
     await expect(client.resume()).rejects.toMatchObject({ code: "participant_session_invalid_response", nextAction: "return_to_task_setup" });
   });
 
+  it("calls the native browser fetch with its global receiver", async () => {
+    const fetch = vi.fn(function (this: typeof globalThis) {
+      expect(this).toBe(globalThis);
+      return Promise.resolve(new Response(JSON.stringify({
+        version: "participant_console_session.v1", state: "usable", next_action: "continue",
+      }), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(new ParticipantHandoffClient("http://127.0.0.1:9420").resume()).resolves.toMatchObject({ state: "usable" });
+    vi.unstubAllGlobals();
+  });
+
   it("resumes a retained cookie before defaulting to direct and keeps invalid authority actionable", async () => {
     const usable = new ParticipantHandoffClient("http://127.0.0.1:9420", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       version: "participant_console_session.v1",

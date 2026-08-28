@@ -3,6 +3,9 @@
 #[path = "../src/secrets.rs"]
 mod secrets;
 
+#[path = "../src/model_provider_credentials.rs"]
+mod model_provider_credentials;
+
 mod room_drafts {
     pub use worldstream_studio_supervisor::room_drafts::{
         AgentProfileRevisionReferenceV1, RunnerTemplateRevisionReferenceV1,
@@ -18,12 +21,14 @@ use agent_profiles::{
     AgentExecutionBindingV1, AgentProfileErrorV1, AgentProfileMembershipBindingV1,
     AgentProfileRevisionV1, AgentProfileSeatAssignmentV1, AgentProfileSecretAvailabilityV1,
     AgentProfileSecretSettingV1, AgentProfileStoreV1, agent_profile_router,
+    agent_profile_router_with_credentials,
 };
 use axum::{
     body::Body,
     http::{Method, Request},
 };
 use http_body_util::BodyExt as _;
+use model_provider_credentials::ModelProviderCredentialRegistryV1;
 use room_drafts::AgentProfileRevisionReferenceV1;
 use secrets::{FileSecretVaultV1, SecretKindV1};
 use tempfile::tempdir;
@@ -68,6 +73,83 @@ fn assignment(revision: &str) -> AgentProfileSeatAssignmentV1 {
             runner_id: "01ARZ3NDEKTSV4RRFFQ69G5FB4".to_owned(),
         },
     }
+}
+
+#[tokio::test]
+async fn named_credential_publish_resolves_only_inside_supervisor_and_never_projects_reference() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("secret vault: {error:?}"));
+    let reference = vault
+        .store(SecretKindV1::ModelProvider, b"provider-private-value")
+        .unwrap_or_else(|error| unreachable!("provider secret: {error:?}"));
+    let manifests = directory.path().join("config/model-provider-credentials");
+    std::fs::create_dir_all(&manifests)
+        .unwrap_or_else(|error| unreachable!("manifest directory: {error}"));
+    let manifest = serde_json::json!({
+        "schema": "worldstream/model-provider-credential/v1",
+        "credential_id": "local-openai",
+        "display_name": "Local OpenAI",
+        "provider": "open_ai_compatible",
+        "secret": { "kind": "model_provider", "reference": reference.as_str() },
+    });
+    std::fs::write(
+        manifests.join("local-openai.json"),
+        serde_json::to_vec(&manifest)
+            .unwrap_or_else(|error| unreachable!("manifest JSON: {error}")),
+    )
+    .unwrap_or_else(|error| unreachable!("manifest write: {error}"));
+    let credentials = ModelProviderCredentialRegistryV1::open(
+        &directory
+            .path()
+            .join("state/model-provider-credentials/installed"),
+        &manifests,
+        vault.clone(),
+    )
+    .unwrap_or_else(|error| unreachable!("credential registry: {error:?}"));
+    let store = AgentProfileStoreV1::open(&directory.path().join("profiles"), vault)
+        .unwrap_or_else(|error| unreachable!("profile store: {error:?}"));
+    let body = serde_json::json!({
+        "schema": "worldstream/studio-agent-profile-publish/v2",
+        "profile_id": "counter-managed",
+        "revision": "v1",
+        "display_name": "Counter managed",
+        "non_secret_configuration": { "policy": "deterministic" },
+        "host_contract": {
+            "kind": "managed_reference",
+            "host_contract_revision": "v1",
+            "runner_template": { "template_id": "counter-managed-reference", "revision": "v1" },
+            "provider": "open_ai_compatible",
+            "provider_address": "127.0.0.1:11434",
+            "model_id": "counter-deterministic"
+        },
+        "managed_provider_credential_id": "local-openai"
+    });
+    let response = agent_profile_router_with_credentials(store, credentials)
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/agent-profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap_or_else(
+                    |error| unreachable!("request JSON: {error}"),
+                )))
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+    assert_eq!(response.status(), 200);
+    let payload = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap_or_else(|error| unreachable!("body: {error}"))
+        .to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&payload)
+        .unwrap_or_else(|error| unreachable!("response JSON: {error}"));
+    assert_eq!(value["secret_settings"][0]["key"], "MODEL_PROVIDER_TOKEN");
+    assert!(!value.to_string().contains(reference.as_str()));
+    assert!(value.get("managed_provider_credential_id").is_none());
 }
 
 #[tokio::test]

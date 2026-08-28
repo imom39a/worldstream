@@ -60,6 +60,54 @@ describe("Runner attention", () => {
     expect(unavailable).toContain("Runner attention is unavailable");
     expect(unavailable).toContain("Agent work status is unavailable");
   });
+
+  it("offers host controls only for exact managed-reference seats and can start pending work", () => {
+    const waiting = task();
+    waiting.seats[0].activation = { state: "waiting", waiting: 1, leased: 0 };
+    const enabled = renderToStaticMarkup(
+      <RunnerAttentionPanel
+        operations={operations()}
+        task={waiting}
+        managedHostRoomId="01ARZ3NDEKTSV4RRFFQ69G5FB3"
+        managedReferenceSeatIds={new Set(["navigator-agent"])}
+        onManagedHostAction={() => undefined}
+      />,
+    );
+    expect(enabled).toContain("Start managed host");
+
+    const attention = renderToStaticMarkup(
+      <RunnerAttentionPanel
+        operations={operations()}
+        task={task()}
+        managedHostRoomId="01ARZ3NDEKTSV4RRFFQ69G5FB3"
+        managedReferenceSeatIds={new Set(["navigator-agent"])}
+        onManagedHostAction={() => undefined}
+      />,
+    );
+    expect(attention).toContain("Retry managed host");
+
+    const generic = renderToStaticMarkup(
+      <RunnerAttentionPanel
+        operations={operations()}
+        task={waiting}
+        managedHostRoomId="01ARZ3NDEKTSV4RRFFQ69G5FB3"
+        managedReferenceSeatIds={new Set()}
+        onManagedHostAction={() => undefined}
+      />,
+    );
+    expect(generic).not.toContain("Start managed host");
+
+    const absentRoom = renderToStaticMarkup(
+      <RunnerAttentionPanel
+        operations={operations()}
+        task={waiting}
+        managedHostRoomId={undefined}
+        managedReferenceSeatIds={new Set(["navigator-agent"])}
+        onManagedHostAction={() => undefined}
+      />,
+    );
+    expect(absentRoom).not.toContain("Start managed host");
+  });
 });
 
 function operations(): RunnerAttentionOperations {
@@ -88,6 +136,7 @@ function operations(): RunnerAttentionOperations {
       capacity: 1,
       active_invocations: 1,
       freshness: "fresh",
+      activation: { state: "leased", last_confirmed_disposition: "handled" },
     }],
     restart_attempts: [{
       schema: "worldstream/studio-runner-restart-operation/v1",

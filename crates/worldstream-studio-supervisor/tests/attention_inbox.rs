@@ -446,6 +446,7 @@ fn setup_needing_attention() -> TaskSetupStatusV1 {
         "attention":{"code":"operator_fix_required","message":"Task setup needs a local fix.","retryable":true},
         "seats":[],
         "readiness":{"ready_to_launch":false,"seats":[]},
+        "launch_applicability":"unknown",
         "launch":null
     }))
     .expect("setup status")

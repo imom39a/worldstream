@@ -40,6 +40,7 @@ use crate::{
         ManagedReferenceProviderV1,
     },
     assignment_mcp::{AssignedMembershipLaunchSourceV1, AssignmentMcpLaunchRegistryV1},
+    managed_activation_status::{ManagedActivationStatusErrorV1, ManagedActivationStatusStoreV1},
     runner_templates::RunnerSupervisorV1,
     secrets::{FileSecretVaultV1, SecretKindV1},
     task_setup::{TaskSetupStateV1, TaskSetupSupervisorV1},
@@ -130,8 +131,43 @@ pub struct ManagedAgentHostStatusV1 {
     pub capacity: u32,
     pub active_invocations: u32,
     pub freshness: ManagedAgentHostFreshnessV1,
+    #[serde(default)]
+    pub activation: ManagedAgentActivationStatusV1,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<ManagedAgentHostFailureV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedAgentActivationStatusV1 {
+    pub state: ManagedAgentActivationStateV1,
+    pub last_confirmed_disposition: Option<ManagedAgentActivationDispositionV1>,
+}
+
+impl Default for ManagedAgentActivationStatusV1 {
+    fn default() -> Self {
+        Self {
+            state: ManagedAgentActivationStateV1::Unavailable,
+            last_confirmed_disposition: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedAgentActivationStateV1 {
+    Idle,
+    Waiting,
+    Leased,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedAgentActivationDispositionV1 {
+    Handled,
+    Declined,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -186,6 +222,31 @@ pub struct ManagedAgentHostLaunchPlanV1 {
 }
 
 impl ManagedAgentHostLaunchPlanV1 {
+    /// Constructs the fixed topology for a typed managed-reference provider.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the same unsafe topology or bounded configuration as [`Self::new`].
+    pub fn new_managed_reference(
+        helper_executable: &Path,
+        state_dir: &Path,
+        launch_reference: &str,
+        host_executable: &Path,
+        provider: ManagedReferenceProviderV1,
+        provider_address: SocketAddr,
+        model: &str,
+    ) -> Result<Self, ManagedAgentHostErrorV1> {
+        Self::new(
+            helper_executable,
+            state_dir,
+            launch_reference,
+            host_executable,
+            managed_reference_provider_cli_argument(provider),
+            provider_address,
+            model,
+        )
+    }
+
     /// Constructs the fixed-helper/two-child topology.
     ///
     /// # Errors
@@ -435,14 +496,12 @@ where
             exact_instance.capacity.maximum,
             Duration::from_secs(30),
         )?;
-        let plan = ManagedAgentHostLaunchPlanV1::new(
+        let plan = ManagedAgentHostLaunchPlanV1::new_managed_reference(
             &self.helper_executable,
             &self.state_dir,
             &launch_reference,
             &host_executable,
-            match provider {
-                ManagedReferenceProviderV1::OpenAiCompatible => "openai_compatible",
-            },
+            provider,
             provider_address,
             &model_id,
         )?;
@@ -454,6 +513,14 @@ where
     }
 }
 
+const fn managed_reference_provider_cli_argument(
+    provider: ManagedReferenceProviderV1,
+) -> &'static str {
+    match provider {
+        ManagedReferenceProviderV1::OpenAiCompatible => "openai-compatible",
+    }
+}
+
 #[derive(Clone)]
 pub struct ManagedAgentHostOperationsV1 {
     root: Arc<PathBuf>,
@@ -462,6 +529,7 @@ pub struct ManagedAgentHostOperationsV1 {
     launcher: Arc<dyn ManagedAgentHostProcessLauncherV1>,
     processes: Arc<Mutex<BTreeMap<String, Box<dyn ManagedAgentHostProcessV1>>>>,
     mutation: Arc<Mutex<()>>,
+    activation_status: Option<ManagedActivationStatusStoreV1>,
 }
 
 impl ManagedAgentHostOperationsV1 {
@@ -493,7 +561,12 @@ impl ManagedAgentHostOperationsV1 {
             vault,
             task_setup,
         )?;
-        Self::open_with(root, source, OsManagedAgentHostProcessLauncherV1)
+        let mut operations = Self::open_with(root, source, OsManagedAgentHostProcessLauncherV1)?;
+        operations.activation_status = Some(
+            ManagedActivationStatusStoreV1::open(state_dir.join("managed-agent-activation-status"))
+                .map_err(map_activation_status_error)?,
+        );
+        Ok(operations)
     }
 
     /// Opens an operation store with bounded process/source adapters.
@@ -525,6 +598,7 @@ impl ManagedAgentHostOperationsV1 {
             launcher: Arc::new(launcher),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             mutation: Arc::new(Mutex::new(())),
+            activation_status: None,
         })
     }
 
@@ -589,7 +663,9 @@ impl ManagedAgentHostOperationsV1 {
                 operation.observed_at_ms = Some(now_ms()?);
                 self.persist_operation(&operation)?;
                 let active = self.active_for_host(&prepared.profile.host_id)?;
-                Ok(operation.status(&prepared.profile, active))
+                let mut status = operation.status(&prepared.profile, active);
+                self.attach_activation_status(&mut status)?;
+                Ok(status)
             }
             Err(error) => {
                 operation.state = ManagedAgentHostStateV1::NeedsAttention;
@@ -655,16 +731,13 @@ impl ManagedAgentHostOperationsV1 {
                 None => (None, None),
             }
         };
-        if exited.is_some() {
+        if let Some(exit_code) = exited {
             self.processes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(assignment_id);
             operation.state = ManagedAgentHostStateV1::NeedsAttention;
-            operation.failure = Some(process_failure(
-                "host_exited",
-                "Retry the same managed host operation after inspecting the approved provider configuration.",
-            ));
+            operation.failure = Some(process_exit_failure(exit_code));
             self.persist_operation(&operation)?;
         } else if operation.expected_running
             && self
@@ -684,6 +757,7 @@ impl ManagedAgentHostOperationsV1 {
             operation.failure = None;
             self.persist_operation(&operation)?;
         } else if operation.expected_running
+            && operation.failure.is_none()
             && !self
                 .processes
                 .lock()
@@ -698,7 +772,9 @@ impl ManagedAgentHostOperationsV1 {
             self.persist_operation(&operation)?;
         }
         let active = self.active_for_host(&profile.host_id)?;
-        Ok(operation.status(&profile, active))
+        let mut status = operation.status(&profile, active);
+        self.attach_activation_status(&mut status)?;
+        Ok(status)
     }
 
     /// Stops only the exact retained two-child operation.
@@ -728,7 +804,21 @@ impl ManagedAgentHostOperationsV1 {
         operation.failure = None;
         self.persist_operation(&operation)?;
         let active = self.active_for_host(&profile.host_id)?;
-        Ok(operation.status(&profile, active))
+        let mut status = operation.status(&profile, active);
+        self.attach_activation_status(&mut status)?;
+        Ok(status)
+    }
+
+    fn attach_activation_status(
+        &self,
+        status: &mut ManagedAgentHostStatusV1,
+    ) -> Result<(), ManagedAgentHostErrorV1> {
+        if let Some(activation_status) = &self.activation_status {
+            status.activation = activation_status
+                .status(&status.assignment_id)
+                .map_err(map_activation_status_error)?;
+        }
+        Ok(())
     }
 
     fn load_operation(
@@ -817,6 +907,7 @@ impl ManagedAgentHostOperationV1 {
             capacity: profile.capacity,
             active_invocations,
             freshness,
+            activation: ManagedAgentActivationStatusV1::default(),
             failure: self.failure.clone(),
         }
     }
@@ -860,6 +951,24 @@ fn process_failure(code: &str, safe_action: &str) -> ManagedAgentHostFailureV1 {
         message: "The managed Agent Host is unavailable; no private provider content was retained."
             .to_owned(),
         safe_action: safe_action.to_owned(),
+    }
+}
+
+fn process_exit_failure(exit_code: i32) -> ManagedAgentHostFailureV1 {
+    ManagedAgentHostFailureV1 {
+        code: "host_exited".to_owned(),
+        message: format!("Managed Agent Host child exited with process status {exit_code}."),
+        safe_action: "Retry the same managed host operation after inspecting the approved provider configuration."
+            .to_owned(),
+    }
+}
+
+const fn map_activation_status_error(
+    error: ManagedActivationStatusErrorV1,
+) -> ManagedAgentHostErrorV1 {
+    match error {
+        ManagedActivationStatusErrorV1::Invalid => ManagedAgentHostErrorV1::Corrupt,
+        ManagedActivationStatusErrorV1::Unavailable => ManagedAgentHostErrorV1::Unavailable,
     }
 }
 
@@ -1328,4 +1437,28 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn sync_directory(_path: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{ManagedAgentHostLaunchPlanV1, ManagedReferenceProviderV1};
+
+    #[test]
+    fn typed_managed_reference_plan_uses_the_host_cli_value() {
+        let plan = ManagedAgentHostLaunchPlanV1::new_managed_reference(
+            Path::new("/approved/worldstream-assignment-mcp"),
+            Path::new("/owner/worldstream-state"),
+            "abababababababababababababababababababababababababababababababab",
+            Path::new("/approved/reference-agent-host"),
+            ManagedReferenceProviderV1::OpenAiCompatible,
+            "127.0.0.1:11434"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("provider address: {error}")),
+            "test-model",
+        )
+        .unwrap_or_else(|error| unreachable!("managed reference plan: {error:?}"));
+        assert_eq!(plan.host_arguments()[3], "openai-compatible");
+    }
 }

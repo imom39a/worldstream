@@ -29,6 +29,7 @@ export interface TaskTemplateRevision {
   configuration: unknown;
   seats: RoomDraftSeat[];
   readiness: RoomDraftSeatReadinessPolicy[];
+  operator_view?: boolean;
 }
 
 export interface TaskTemplateRevisionView {
@@ -128,11 +129,15 @@ function isRevisionView(value: unknown): value is TaskTemplateRevisionView {
 }
 
 function isRevision(value: unknown): value is TaskTemplateRevision {
-  if (!isRecordWithKeys(value, [
+  if (!(isRecordWithKeys(value, [
     "schema", "template_id", "revision", "display_name", "source_draft_id", "pack",
     "configuration", "seats", "readiness",
-  ]) || value.schema !== "worldstream/studio-task-template/v1" || !isId(value.template_id) ||
-    !isRevisionId(value.revision) || !isText(value.display_name) || !isId(value.source_draft_id)) {
+  ]) || isRecordWithKeys(value, [
+    "schema", "template_id", "revision", "display_name", "source_draft_id", "pack",
+    "configuration", "seats", "readiness", "operator_view",
+  ])) || value.schema !== "worldstream/studio-task-template/v1" || !isId(value.template_id) ||
+    !isRevisionId(value.revision) || !isText(value.display_name) || !isId(value.source_draft_id) ||
+    !(value.operator_view === undefined || typeof value.operator_view === "boolean")) {
     return false;
   }
   return isRoomDraft({
@@ -142,6 +147,7 @@ function isRevision(value: unknown): value is TaskTemplateRevision {
     configuration: value.configuration,
     seats: value.seats,
     readiness: value.readiness,
+    operator_view: value.operator_view,
     last_valid_step: "review",
   }) && (value.seats as RoomDraftSeat[]).every((seat) =>
     seat.principal_kind !== "agent" || seat.agent_profile !== undefined);

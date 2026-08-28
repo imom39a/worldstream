@@ -127,6 +127,7 @@ describe("Studio Room drafts", () => {
     ["configuration", (value: RoomDraft) => ({ ...value, configuration: { initial_value: 1, maximum_value: 8 } }), "activity"],
     ["seats", (value: RoomDraft) => ({ ...value, seats: value.seats.map((seat) => ({ ...seat, display_name: "Changed" })) }), "configuration"],
     ["readiness", (value: RoomDraft) => ({ ...value, readiness: value.readiness.map((policy) => ({ ...policy, required: false })) }), "seats"],
+    ["operator view", (value: RoomDraft) => ({ ...value, operator_view: true }), "readiness"],
   ] as const)("invalidates persisted review after a %s edit", (_name, edit, expectedStep) => {
     const reviewed = { ...draft(), last_valid_step: "review" as const };
     expect(invalidateRoomDraftReview(reviewed, edit(reviewed)).last_valid_step).toBe(expectedStep);

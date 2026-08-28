@@ -623,6 +623,10 @@ impl PostgresGatewayBackend {
             .bearer
             .wire()
             .map_err(|_| BackendError::Rejected)?;
+        if !crate::member_capability_access_role_valid(request.access_mode, request.role.as_deref())
+        {
+            return Err(BackendError::Rejected);
+        }
         let (trace, _) = self.verified_trace(&room_id)?;
         let membership = trace
             .core_state()
@@ -632,7 +636,7 @@ impl PostgresGatewayBackend {
         if membership.principal_id() != &principal_id
             || membership.principal_kind() != core_principal_kind(request.principal_kind)
             || membership.access_mode() != core_access_mode(request.access_mode)
-            || membership.role() != Some(request.role.as_str())
+            || membership.role() != request.role.as_deref()
         {
             return Err(BackendError::Forbidden);
         }

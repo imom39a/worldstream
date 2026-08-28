@@ -52,6 +52,10 @@ export interface ManagedAgentHostStatus {
   capacity: number;
   active_invocations: number;
   freshness: "fresh" | "stale";
+  activation: {
+    state: "idle" | "waiting" | "leased" | "unavailable";
+    last_confirmed_disposition: "handled" | "declined" | "failed" | null;
+  };
   failure?: {
     code: string;
     message: string;
@@ -91,6 +95,11 @@ export interface TaskAgentAttention {
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+export async function requestManagedHostSeatAction(roomId: string, seatId: string, action: "start" | "retry", fetcher: Fetcher = fetch): Promise<boolean> {
+  if (!isUlid(roomId) || !isIdentifier(seatId)) return false;
+  try { return (await fetcher(`/api/v1/rooms/${encodeURIComponent(roomId)}/agent-seats/${encodeURIComponent(seatId)}/managed-host/${action}`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ schema: "worldstream/studio-managed-agent-host-action/v1" }) })).ok; } catch { return false; }
+}
+
 const maxRows = 256;
 const sensitiveKeys = new Set([
   "activation_id", "claim_id", "invocation", "invocation_context", "context",
@@ -102,7 +111,8 @@ const sensitiveKeys = new Set([
 export async function loadRunnerAttention(
   fetcher: Fetcher = fetch,
 ): Promise<RunnerAttentionOperations | null> {
-  return loadJson("/api/v1/runner-attention", isRunnerAttentionOperations, fetcher);
+  const value = await loadJson("/api/v1/runner-attention", isRunnerAttentionOperations, fetcher);
+  return value === null ? null : normalizeRunnerAttentionOperations(value);
 }
 
 export async function loadTaskAgentAttention(
@@ -210,19 +220,48 @@ function isManagedAgentHostStatus(value: unknown): value is ManagedAgentHostStat
     "capacity", "active_invocations", "freshness",
   ];
   const hasFailure = "failure" in value;
-  if (!isExactRecord(value, hasFailure ? [...keys, "failure"] : keys) ||
+  const hasActivation = "activation" in value;
+  const acceptedKeys = [
+    ...keys,
+    ...(hasFailure ? ["failure"] : []),
+    ...(hasActivation ? ["activation"] : []),
+  ];
+  if (!isExactRecord(value, acceptedKeys) ||
     value.schema !== "worldstream/managed-agent-host-status/v1" ||
     !isUlid(value.assignment_id) || !isIdentifier(value.host_id) ||
     !isIdentifier(value.host_revision) ||
     !["stopped", "starting", "running", "needs_attention"].includes(String(value.state)) ||
     typeof value.ready !== "boolean" || !isPositiveCount(value.capacity) ||
     !isCount(value.active_invocations) || Number(value.active_invocations) > Number(value.capacity) ||
-    !["fresh", "stale"].includes(String(value.freshness))) return false;
+    !["fresh", "stale"].includes(String(value.freshness)) ||
+    (hasActivation && !isManagedActivation(value.activation))) return false;
   if (value.ready !== (value.state === "running" && value.freshness === "fresh")) return false;
   if ((value.state === "running") !== (Number(value.active_invocations) === 1)) return false;
   if (!hasFailure) return value.state !== "needs_attention";
   return value.state === "needs_attention" && isExactRecord(value.failure, ["code", "message", "safe_action"])
     && isIdentifier(value.failure.code) && isText(value.failure.message) && isText(value.failure.safe_action);
+}
+
+function isManagedActivation(value: unknown): boolean {
+  return isExactRecord(value, ["state", "last_confirmed_disposition"])
+    && ["idle", "waiting", "leased", "unavailable"].includes(String(value.state))
+    && (value.last_confirmed_disposition === null
+      || ["handled", "declined", "failed"].includes(String(value.last_confirmed_disposition)));
+}
+
+function normalizeRunnerAttentionOperations(
+  value: RunnerAttentionOperations,
+): RunnerAttentionOperations {
+  return {
+    ...value,
+    managed_hosts: value.managed_hosts.map((host) => ({
+      ...host,
+      activation: host.activation ?? {
+        state: "unavailable",
+        last_confirmed_disposition: null,
+      },
+    })),
+  };
 }
 
 export function isTaskAgentAttention(value: unknown): value is TaskAgentAttention {

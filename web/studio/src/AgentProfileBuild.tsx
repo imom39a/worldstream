@@ -4,17 +4,22 @@ import {
   createAgentProfileRevisionDraft,
   publishAgentProfile,
   type AgentProfileCatalog,
+  type AgentHostContract,
   type AgentProfilePublishOutcome,
   type AgentProfilePublishRequest,
   type AgentProfileRevision,
+  type ModelProviderCredentialCatalog,
 } from "./agentProfiles";
+import type { RunnerTemplateCatalog } from "./runnerTemplates";
 
 export interface AgentProfileBuildProps {
   catalog: AgentProfileCatalog | null;
   onPublished?: (profile: AgentProfileRevision) => void;
+  credentials?: ModelProviderCredentialCatalog | null;
+  runnerTemplates?: RunnerTemplateCatalog | null;
 }
 
-export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildProps) {
+export function AgentProfileBuild({ catalog, onPublished, credentials = null, runnerTemplates = null }: AgentProfileBuildProps) {
   const [draft, setDraft] = useState<AgentProfilePublishRequest>(() =>
     createAgentProfileRevisionDraft());
   const [configuration, setConfiguration] = useState("{}");
@@ -39,6 +44,15 @@ export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildPro
     setDraft(next);
     setConfiguration(JSON.stringify(next.non_secret_configuration, null, 2));
     setOutcome(null);
+  }
+
+  function updateManagedHost(
+    update: Partial<Exclude<AgentHostContract, { kind: "generic_mcp" }>>,
+  ) {
+    setDraft((current) => current.host_contract.kind === "generic_mcp" ? current : {
+      ...current,
+      host_contract: { ...current.host_contract, ...update },
+    });
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -98,6 +112,29 @@ export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildPro
             onChange={(event) => setDraft({ ...draft, profile_id: event.currentTarget.value })}
           />
         </label>
+        <fieldset>
+          <legend>Execution kind</legend>
+          <label>
+            <select
+              aria-label="Execution kind"
+              value={draft.host_contract.kind}
+              onChange={(event) => setDraft(setAgentProfileExecutionKind(draft, event.currentTarget.value === "managed_reference" ? "managed_reference" : "generic_mcp"))}
+            >
+              <option value="generic_mcp">External assignment-bound MCP</option>
+              <option value="managed_reference">Managed reference host</option>
+            </select>
+          </label>
+          {draft.host_contract.kind === "managed_reference" ? (
+            <>
+              <label>Host contract revision<input value={draft.host_contract.host_contract_revision} onChange={(event) => updateManagedHost({ host_contract_revision: event.currentTarget.value })} /></label>
+              <label>Approved Runner Template<select value={`${draft.host_contract.runner_template.template_id}\0${draft.host_contract.runner_template.revision}`} onChange={(event) => { const [template_id, revision] = event.currentTarget.value.split("\0"); updateManagedHost({ runner_template: { template_id, revision } }); }}><option value="">Select exact revision</option>{runnerTemplates?.templates.map((template) => <option key={`${template.template_id}\0${template.revision}`} value={`${template.template_id}\0${template.revision}`}>{template.display_name} · {template.revision}</option>)}</select></label>
+              <label>Provider loopback address<input value={draft.host_contract.provider_address} onChange={(event) => updateManagedHost({ provider_address: event.currentTarget.value })} /></label>
+              <label>Model ID<input value={draft.host_contract.model_id} onChange={(event) => updateManagedHost({ model_id: event.currentTarget.value })} /></label>
+              <label>Owner-installed provider credential<select value={draft.managed_provider_credential_id ?? ""} onChange={(event) => setDraft({ ...draft, managed_provider_credential_id: event.currentTarget.value || undefined })}><option value="">Choose owner-installed credential</option>{credentials?.credentials.map((credential) => <option key={credential.credential_id} value={credential.credential_id} disabled={credential.availability !== "configured"}>{credential.display_name} · {credential.availability}</option>)}</select></label>
+              <p>The Supervisor resolves the named credential. Studio never receives a credential reference or value.</p>
+            </>
+          ) : <p>External profiles use the assignment-bound MCP contract and cannot carry managed-provider fields.</p>}
+        </fieldset>
         <label>
           Revision
           <input
@@ -116,53 +153,6 @@ export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildPro
           Non-secret configuration (JSON object)
           <textarea value={configuration} onChange={(event) => setConfiguration(event.currentTarget.value)} />
         </label>
-        {draft.secret_settings.map((setting, index) => (
-          <fieldset key={index}>
-            <legend>Model provider setting {index + 1}</legend>
-            <label>
-              Model provider setting key
-              <input
-                value={setting.key}
-                onChange={(event) => setDraft({
-                  ...draft,
-                  secret_settings: draft.secret_settings.map((candidate, candidateIndex) =>
-                    candidateIndex === index
-                      ? { ...candidate, key: event.currentTarget.value }
-                      : candidate),
-                })}
-              />
-            </label>
-            <label>
-              Model provider secret reference
-              <input
-                type="password"
-                autoComplete="off"
-                value={setting.reference}
-                onChange={(event) => setDraft({
-                  ...draft,
-                  secret_settings: draft.secret_settings.map((candidate, candidateIndex) =>
-                    candidateIndex === index
-                      ? { ...candidate, reference: event.currentTarget.value }
-                      : candidate),
-                })}
-              />
-            </label>
-          </fieldset>
-        ))}
-        <button
-          type="button"
-          onClick={() => setDraft({
-            ...draft,
-            secret_settings: [...draft.secret_settings, {
-              key: "MODEL_PROVIDER_TOKEN",
-              kind: "model_provider",
-              reference: "",
-            }],
-          })}
-        >
-          Add model provider setting
-        </button>
-        <p>The opaque reference is used only for publication and is not returned to the browser.</p>
         <button type="submit" disabled={publishing}>
           {publishing ? "Publishing…" : "Publish immutable revision"}
         </button>
@@ -171,6 +161,18 @@ export function AgentProfileBuild({ catalog, onPublished }: AgentProfileBuildPro
       <PublishOutcome outcome={outcome} />
     </section>
   );
+}
+
+export function setAgentProfileExecutionKind(
+  draft: AgentProfilePublishRequest,
+  kind: AgentHostContract["kind"],
+): AgentProfilePublishRequest {
+  if (kind === "managed_reference") return {
+    ...draft,
+    host_contract: { kind: "managed_reference", host_contract_revision: "v1", runner_template: { template_id: "", revision: "" }, provider: "open_ai_compatible", provider_address: "127.0.0.1:11434", model_id: "" },
+  };
+  const { managed_provider_credential_id: _discarded, ...generic } = draft;
+  return { ...generic, host_contract: { kind: "generic_mcp" } };
 }
 
 function PublishOutcome({ outcome }: { outcome: AgentProfilePublishOutcome | null }) {

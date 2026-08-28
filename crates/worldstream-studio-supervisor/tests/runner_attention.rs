@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::result_large_err)]
 
 use std::{
+    fs,
     io::{Read as _, Write as _},
     net::TcpListener,
     sync::{Arc, Mutex},
@@ -15,15 +16,21 @@ use axum::{
 use http_body_util::BodyExt as _;
 use tempfile::TempDir;
 use tower::ServiceExt as _;
-use worldstream_protocol::{OperatorRunnerConnectionV1, OperatorRunnerFreshnessV1, PackReference};
+use worldstream_protocol::{
+    OperatorActivationStatusV1, OperatorRunnerConnectionV1, OperatorRunnerFreshnessV1,
+    PackReference,
+};
 use worldstream_studio_supervisor::runner_attention::{
-    ActivationAttentionStateV1, AgentSeatAssignmentV1, ApprovedRunnerRestartV1,
-    AuthoritativeRunnerSnapshotV1, DaemonRunnerAttentionSourceV1, FileRunnerRestartStoreV1,
-    HttpDaemonRunnerAttentionSourceV1, LocalRunnerInstanceSnapshotV1, LocalRunnerStateV1,
-    RunnerAttentionErrorV1, RunnerAttentionSourceErrorV1, RunnerAttentionSourceV1,
-    RunnerAttentionSupervisorV1, RunnerCompatibilityV1, RunnerPresenceSnapshotV1,
-    RunnerRestartControlErrorV1, RunnerRestartOperationStateV1, SeatActivationAggregateV1,
-    runner_attention_router,
+    ActivationAttentionStateV1, AgentSeatAssignmentSourceV1, AgentSeatAssignmentV1,
+    ApprovedRunnerRestartV1, AuthoritativeRunnerSnapshotV1, DaemonRunnerAttentionSourceV1,
+    FileRunnerRestartStoreV1, HttpDaemonRunnerAttentionSourceV1, LiveRunnerAttentionSourceV1,
+    LocalRunnerInstanceSnapshotV1, LocalRunnerStateV1, RunnerAttentionErrorV1,
+    RunnerAttentionSourceErrorV1, RunnerAttentionSourceV1, RunnerAttentionSupervisorV1,
+    RunnerCompatibilityV1, RunnerPresenceSnapshotV1, RunnerRestartControlErrorV1,
+    RunnerRestartOperationStateV1, SeatActivationAggregateV1, runner_attention_router,
+};
+use worldstream_studio_supervisor::runner_templates::{
+    RunnerSupervisorV1, RunnerTemplateRegistryV1,
 };
 use worldstream_studio_supervisor::secrets::{FileSecretVaultV1, SecretKindV1};
 
@@ -47,6 +54,40 @@ struct FakeRestart(Arc<Mutex<Result<(), RunnerRestartControlErrorV1>>>);
 impl ApprovedRunnerRestartV1 for FakeRestart {
     fn restart(&self, _instance_id: &str) -> Result<(), RunnerRestartControlErrorV1> {
         *self.0.lock().expect("restart")
+    }
+}
+
+#[derive(Clone)]
+struct StaticAssignments(Vec<AgentSeatAssignmentV1>);
+
+impl AgentSeatAssignmentSourceV1 for StaticAssignments {
+    fn assignments(&self) -> Result<Vec<AgentSeatAssignmentV1>, RunnerAttentionSourceErrorV1> {
+        Ok(self.0.clone())
+    }
+}
+
+#[derive(Clone)]
+struct MissingManagedRunnerDaemon;
+
+impl DaemonRunnerAttentionSourceV1 for MissingManagedRunnerDaemon {
+    fn presence(
+        &self,
+        _runner_id: &str,
+    ) -> Result<RunnerPresenceSnapshotV1, RunnerAttentionSourceErrorV1> {
+        Err(RunnerAttentionSourceErrorV1::Unavailable)
+    }
+
+    fn activation_counts(
+        &self,
+        _room_id: &str,
+        _member_id: &str,
+    ) -> Result<OperatorActivationStatusV1, RunnerAttentionSourceErrorV1> {
+        Ok(OperatorActivationStatusV1 {
+            version: "worldstream/operator-activation-status/v1".to_owned(),
+            waiting: 2,
+            leased: 0,
+            observed_at_unix_ms: 2_000,
+        })
     }
 }
 
@@ -96,6 +137,66 @@ fn stale_presence_and_capacity_exhaustion_are_actionable_without_private_data() 
             "{forbidden}"
         );
     }
+}
+
+#[test]
+fn missing_managed_reference_presence_retains_live_activation_counts_without_a_launch() {
+    let temporary = TempDir::new().expect("temporary");
+    let vault = FileSecretVaultV1::open(&temporary.path().join("secrets")).expect("vault");
+    let owner_manifests = temporary.path().join("owner-manifests");
+    fs::create_dir(&owner_manifests).expect("owner manifests");
+    let registry = RunnerTemplateRegistryV1::open(
+        &temporary.path().join("installed-templates"),
+        &owner_manifests,
+    )
+    .expect("empty template registry");
+    let runners = RunnerSupervisorV1::open(
+        registry,
+        &temporary.path().join("runner-runtime"),
+        vault,
+        Duration::from_secs(1),
+    )
+    .expect("runner supervisor");
+    let mut assignment = healthy_snapshot().assignments.remove(0);
+    assignment.managed_reference = true;
+    let source = LiveRunnerAttentionSourceV1::new(
+        StaticAssignments(vec![assignment]),
+        MissingManagedRunnerDaemon,
+        runners.clone(),
+    );
+
+    let snapshot = source.snapshot().expect("missing presence is bounded");
+    assert!(snapshot.runners.is_empty());
+    assert_eq!(snapshot.activations[0].waiting, 2);
+    assert_eq!(snapshot.activations[0].leased, 0);
+
+    let supervisor = RunnerAttentionSupervisorV1::new(
+        source,
+        FakeRestart(Arc::new(Mutex::new(Ok(())))),
+        FileRunnerRestartStoreV1::open(&temporary.path().join("restarts")).expect("restart store"),
+    );
+    let task = supervisor.task(ROOM).expect("agent attention");
+    assert_eq!(
+        task.seats[0].compatibility,
+        RunnerCompatibilityV1::Unavailable
+    );
+    assert_eq!(task.seats[0].capacity.available, 0);
+    assert_eq!(task.seats[0].activation.waiting, 2);
+    assert_eq!(
+        task.seats[0].activation.state,
+        ActivationAttentionStateV1::Attention
+    );
+
+    let mut external_assignments = healthy_snapshot().assignments;
+    let external = LiveRunnerAttentionSourceV1::new(
+        StaticAssignments(vec![external_assignments.remove(0)]),
+        MissingManagedRunnerDaemon,
+        runners,
+    );
+    assert_eq!(
+        external.snapshot(),
+        Err(RunnerAttentionSourceErrorV1::Unavailable)
+    );
 }
 
 #[test]
@@ -476,6 +577,43 @@ fn production_daemon_gateway_uses_exact_host_authority_and_bounded_safe_routes()
     fixture.join().expect("fixture");
 }
 
+#[test]
+fn absent_daemon_runner_presence_is_unavailable_not_corrupt_data() {
+    let temporary = TempDir::new().expect("temporary");
+    let vault = FileSecretVaultV1::open(&temporary.path().join("secrets")).expect("vault");
+    let secret = vault
+        .store(SecretKindV1::HostAuthority, &[0xab; 32])
+        .expect("host authority");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let fixture = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut request = [0_u8; 4096];
+        let count = stream.read(&mut request).expect("read request");
+        let request = String::from_utf8_lossy(&request[..count]);
+        assert!(request.starts_with(&format!(
+            "GET /v1/operator/runners/{RUNNER}/presence HTTP/1.1\r\n"
+        )));
+        write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write response");
+    });
+    let source = HttpDaemonRunnerAttentionSourceV1::new(
+        address,
+        Duration::from_secs(2),
+        vault,
+        Some(secret),
+    );
+
+    assert_eq!(
+        source.presence(RUNNER),
+        Err(RunnerAttentionSourceErrorV1::Unavailable)
+    );
+    fixture.join().expect("fixture");
+}
+
 fn open(
     temporary: &TempDir,
     snapshot: AuthoritativeRunnerSnapshotV1,
@@ -492,11 +630,13 @@ fn healthy_snapshot() -> AuthoritativeRunnerSnapshotV1 {
     AuthoritativeRunnerSnapshotV1 {
         observed_at_unix_ms: 1_000,
         assignments: vec![AgentSeatAssignmentV1 {
+            assignment_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY".to_owned(),
             room_id: ROOM.to_owned(),
             seat_id: "navigator-agent".to_owned(),
             member_id: MEMBER.to_owned(),
             runner_id: RUNNER.to_owned(),
             instance_id: Some("managed-runner-01".to_owned()),
+            managed_reference: false,
             pack: pack(),
         }],
         runners: vec![RunnerPresenceSnapshotV1 {

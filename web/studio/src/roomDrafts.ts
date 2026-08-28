@@ -45,6 +45,7 @@ export interface RoomDraft {
   configuration: unknown;
   seats: RoomDraftSeat[];
   readiness: RoomDraftSeatReadinessPolicy[];
+  operator_view?: boolean;
   last_valid_step: RoomDraftStep | null;
 }
 
@@ -53,6 +54,7 @@ export interface RoomDraftReview {
   configuration: unknown;
   seats: RoomDraftSeat[];
   readiness: RoomDraftSeatReadinessPolicy[];
+  operator_view?: boolean;
 }
 
 export interface RoomDraftResponse {
@@ -95,6 +97,7 @@ export function invalidateRoomDraftReview(previous: RoomDraft, next: RoomDraft):
   else if (!jsonEquals(previous.configuration, next.configuration)) boundary = "activity";
   else if (!jsonEquals(previous.seats, next.seats)) boundary = "configuration";
   else if (!jsonEquals(previous.readiness, next.readiness)) boundary = "seats";
+  else if (previous.operator_view !== next.operator_view) boundary = "readiness";
   if (boundary === undefined) return next;
   return {
     ...next,
@@ -250,14 +253,17 @@ function isRoomDraftResponse(value: unknown): value is RoomDraftResponse {
     jsonEquals(value.review.pack, value.draft.pack) &&
     jsonEquals(value.review.configuration, value.draft.configuration) &&
     jsonEquals(value.review.seats, value.draft.seats) &&
-    jsonEquals(value.review.readiness, value.draft.readiness)
+    jsonEquals(value.review.readiness, value.draft.readiness) &&
+    value.review.operator_view === value.draft.operator_view
   );
 }
 
 export function isRoomDraft(value: unknown): value is RoomDraft {
-  if (!isRecordWithKeys(value, [
+  if (!(isRecordWithKeys(value, [
     "schema", "draft_id", "pack", "configuration", "seats", "readiness", "last_valid_step",
-  ])) return false;
+  ]) || isRecordWithKeys(value, [
+    "schema", "draft_id", "pack", "configuration", "seats", "readiness", "operator_view", "last_valid_step",
+  ]))) return false;
   if (
     value.schema !== "worldstream/studio-room-draft/v1" ||
     !isIdentifier(value.draft_id) ||
@@ -267,6 +273,7 @@ export function isRoomDraft(value: unknown): value is RoomDraft {
     !value.seats.every(isSeat) ||
     !Array.isArray(value.readiness) || value.readiness.length !== value.seats.length ||
     !value.readiness.every(isReadiness) ||
+    !(value.operator_view === undefined || typeof value.operator_view === "boolean") ||
     !(value.last_valid_step === null || isStep(value.last_valid_step))
   ) return false;
   const seats = new Map(value.seats.map((seat) => [seat.seat_id, seat]));
@@ -278,7 +285,9 @@ export function isRoomDraft(value: unknown): value is RoomDraft {
 }
 
 function isReview(value: unknown): value is RoomDraftReview {
-  return isRecordWithKeys(value, ["pack", "configuration", "seats", "readiness"]);
+  return (isRecordWithKeys(value, ["pack", "configuration", "seats", "readiness"])
+    || isRecordWithKeys(value, ["pack", "configuration", "seats", "readiness", "operator_view"]))
+    && (value.operator_view === undefined || typeof value.operator_view === "boolean");
 }
 
 function isSeat(value: unknown): value is RoomDraftSeat {

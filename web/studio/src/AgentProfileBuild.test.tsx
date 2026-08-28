@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { AgentProfileBuild } from "./AgentProfileBuild";
+import { AgentProfileBuild, setAgentProfileExecutionKind } from "./AgentProfileBuild";
+import { createAgentProfileRevisionDraft } from "./agentProfiles";
 import type { AgentProfileCatalog } from "./agentProfiles";
 
 const catalog: AgentProfileCatalog = {
@@ -29,10 +30,10 @@ describe("Agent Profile Build workflow", () => {
     expect(dom).toContain("Revision 2");
     expect(dom).toContain("Start new revision");
     expect(dom).toContain("Publish immutable revision");
-    expect(dom).toContain("Model provider secret reference");
+    expect(dom).toContain("Execution kind");
     expect(dom).toContain("External assignment-bound MCP is the foundational execution path");
     expect(dom).toContain("External or generic MCP · foundational");
-    expect(dom).toContain("reference is used only for publication and is not returned to the browser");
+    expect(dom).toContain("cannot carry managed-provider fields");
     expect(dom).not.toContain("a".repeat(64));
   });
 
@@ -62,5 +63,15 @@ describe("Agent Profile Build workflow", () => {
     expect(dom).toContain("Agent Profile catalog unavailable");
     expect(dom).toContain("Publishing is disabled");
     expect(dom).not.toContain("Publish immutable revision");
+  });
+
+  it("clears a selected managed credential when returning to generic MCP", () => {
+    const managed = {
+      ...setAgentProfileExecutionKind(createAgentProfileRevisionDraft(), "managed_reference"),
+      managed_provider_credential_id: "local-openai",
+    };
+    const generic = setAgentProfileExecutionKind(managed, "generic_mcp");
+    expect(generic.host_contract).toEqual({ kind: "generic_mcp" });
+    expect(generic).not.toHaveProperty("managed_provider_credential_id");
   });
 });

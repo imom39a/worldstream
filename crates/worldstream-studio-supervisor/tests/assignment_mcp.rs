@@ -287,7 +287,7 @@ fn ack_resume_reconnect_and_stale_cursor_recovery_preserve_assignment_isolation(
 }
 
 #[test]
-fn stdio_exposes_only_generic_bounded_tools_and_safe_errors() {
+fn stdio_exposes_generic_and_managed_turn_tools_without_authority_disclosure() {
     let context = AssignmentMcpSupervisorV1::new(
         FakeSource,
         FakeGateway::new(vec![Ok(snapshot(0, 0, true))]),
@@ -316,6 +316,8 @@ fn stdio_exposes_only_generic_bounded_tools_and_safe_errors() {
     assert!(output.contains("worldstream.submit_action"));
     assert!(output.contains("worldstream.next_activation"));
     assert!(output.contains("worldstream.complete_activation"));
+    assert!(output.contains("worldstream.prepare_managed_turn"));
+    assert!(output.contains("worldstream.submit_managed_turn_action"));
     assert!(!output.contains(ROOM));
     assert!(!output.contains(MEMBER));
     assert!(!output.contains(BEARER));

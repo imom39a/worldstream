@@ -30,15 +30,20 @@ use worldstream_runtime::{
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::{
-    agent_profiles::{AgentExecutionBindingV1, AgentProfileErrorV1, AgentProfileStoreV1},
+    agent_profiles::{
+        AgentExecutionBindingV1, AgentProfileErrorV1, AgentProfileSeatAssignmentV1,
+        AgentProfileStoreV1,
+    },
     assignment_mcp::{
         AssignedMembershipLaunchSourceV1, AssignedMembershipSourceErrorV1,
         AssignmentMcpLaunchRegistryV1,
     },
-    managed_agent_host::{ManagedAgentHostOperationsV1, ManagedAgentHostStatusV1},
+    managed_agent_host::{
+        ManagedAgentActivationStateV1, ManagedAgentHostOperationsV1, ManagedAgentHostStatusV1,
+    },
     runner_templates::{RunnerInstanceStateV1, RunnerSupervisorV1},
     secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1},
-    task_setup::{TaskSetupErrorV1, TaskSetupSupervisorV1},
+    task_setup::{TaskSetupErrorV1, TaskSetupStateV1, TaskSetupSupervisorV1},
 };
 
 const OPERATIONS_SCHEMA_V1: &str = "worldstream/studio-runner-attention/v1";
@@ -93,11 +98,16 @@ pub enum RunnerAttentionErrorV1 {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSeatAssignmentV1 {
+    pub assignment_id: String,
     pub room_id: String,
     pub seat_id: String,
     pub member_id: String,
     pub runner_id: String,
     pub instance_id: Option<String>,
+    /// Marks the ready managed-reference inventory that may exist before the
+    /// local host has registered daemon Runner presence.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub managed_reference: bool,
     pub pack: PackReference,
 }
 
@@ -177,7 +187,8 @@ pub trait ApprovedRunnerRestartV1: Send + Sync + 'static {
 }
 
 /// Exact persisted assignment projection. Implementations must validate the
-/// active launch, immutable Agent Profile assignment, and Task setup together.
+/// immutable Agent Profile assignment and ready Task setup together; external
+/// and legacy managed assignments also require an active launch sidecar.
 pub trait AgentSeatAssignmentSourceV1: Send + Sync + 'static {
     /// Lists active exact agent-seat assignments in stable order.
     ///
@@ -188,7 +199,9 @@ pub trait AgentSeatAssignmentSourceV1: Send + Sync + 'static {
 }
 
 /// Production exact join across immutable Agent Profile assignments, active
-/// assignment MCP sidecars, and durable Task setup status.
+/// assignment MCP sidecars, and durable Task setup status. A ready managed
+/// reference is visible before its first local host launch, while external and
+/// legacy managed assignments retain their active-sidecar requirement.
 #[derive(Clone)]
 pub struct PersistedAgentSeatAssignmentSourceV1<S> {
     profiles: AgentProfileStoreV1,
@@ -221,84 +234,153 @@ where
             .active_assignment_scopes()
             .map_err(map_assignment_source_error)?;
         let mut assignments = Vec::with_capacity(scopes.len());
-        for scope in scopes {
+        for scope in &scopes {
             let profile = self
                 .profiles
                 .assignment(&scope.assignment_id)
                 .map_err(map_agent_profile_error)?;
-            if profile.assignment_id != scope.assignment_id
-                || profile.membership.room_id != scope.room_id
-                || profile.membership.member_id != scope.member_id
-            {
-                return Err(RunnerAttentionSourceErrorV1::InvalidData);
-            }
-            let setup = self
-                .setup
-                .status(&profile.draft_id)
-                .map_err(map_task_setup_error)?;
-            if setup.room_id != scope.room_id {
-                return Err(RunnerAttentionSourceErrorV1::InvalidData);
-            }
-            let seat = setup
-                .seats
+            assignments.push(
+                self.join_assignment(&profile, Some(scope))?
+                    .ok_or(RunnerAttentionSourceErrorV1::InvalidData)?,
+            );
+        }
+        for profile in self
+            .profiles
+            .assignments()
+            .map_err(map_agent_profile_error)?
+            .assignments
+        {
+            if !matches!(
+                &profile.execution,
+                AgentExecutionBindingV1::ManagedReference { .. }
+            ) || scopes
                 .iter()
-                .find(|seat| seat.seat_id == profile.seat_id)
-                .ok_or(RunnerAttentionSourceErrorV1::InvalidData)?;
-            if seat.member_id.as_deref() != Some(scope.member_id.as_str()) {
-                return Err(RunnerAttentionSourceErrorV1::InvalidData);
+                .any(|scope| scope.assignment_id == profile.assignment_id)
+            {
+                continue;
             }
-            let instance_id = match &profile.execution {
-                AgentExecutionBindingV1::External => {
-                    if seat.managed_runner.is_some() {
-                        return Err(RunnerAttentionSourceErrorV1::InvalidData);
-                    }
-                    None
-                }
-                AgentExecutionBindingV1::Managed { runner_id } => {
-                    if runner_id != &scope.runner_id {
-                        return Err(RunnerAttentionSourceErrorV1::InvalidData);
-                    }
-                    Some(
-                        seat.managed_runner
-                            .as_ref()
-                            .ok_or(RunnerAttentionSourceErrorV1::InvalidData)?
-                            .instance_id
-                            .clone(),
-                    )
-                }
-                AgentExecutionBindingV1::ManagedReference {
-                    runner_id,
-                    instance_id,
-                    template_id,
-                    template_revision,
-                } => {
-                    let managed = seat
-                        .managed_runner
-                        .as_ref()
-                        .ok_or(RunnerAttentionSourceErrorV1::InvalidData)?;
-                    if runner_id != &scope.runner_id
-                        || instance_id != &managed.instance_id
-                        || template_id != &managed.template_id
-                        || template_revision != &managed.template_revision
-                    {
-                        return Err(RunnerAttentionSourceErrorV1::InvalidData);
-                    }
-                    Some(instance_id.clone())
-                }
-            };
-            assignments.push(AgentSeatAssignmentV1 {
-                room_id: scope.room_id,
-                seat_id: profile.seat_id,
-                member_id: scope.member_id,
-                runner_id: scope.runner_id,
-                instance_id,
-                pack: scope.pack,
-            });
+            if let Some(assignment) = self.join_assignment(&profile, None)? {
+                assignments.push(assignment);
+            }
         }
         assignments.sort_by(|left, right| {
             (&left.room_id, &left.seat_id).cmp(&(&right.room_id, &right.seat_id))
         });
+        if assignments.len() > MAX_ROWS
+            || assignments.windows(2).any(|window| {
+                window[0].assignment_id == window[1].assignment_id
+                    || (window[0].room_id == window[1].room_id
+                        && window[0].seat_id == window[1].seat_id)
+            })
+        {
+            return Err(RunnerAttentionSourceErrorV1::InvalidData);
+        }
         Ok(assignments)
+    }
+}
+
+impl<S> PersistedAgentSeatAssignmentSourceV1<S>
+where
+    S: AssignedMembershipLaunchSourceV1,
+{
+    fn join_assignment(
+        &self,
+        profile: &AgentProfileSeatAssignmentV1,
+        scope: Option<&crate::assignment_mcp::ActiveAssignmentScopeV1>,
+    ) -> Result<Option<AgentSeatAssignmentV1>, RunnerAttentionSourceErrorV1> {
+        if let Some(scope) = scope
+            && (profile.assignment_id != scope.assignment_id
+                || profile.membership.room_id != scope.room_id
+                || profile.membership.member_id != scope.member_id)
+        {
+            return Err(RunnerAttentionSourceErrorV1::InvalidData);
+        }
+        let setup = self
+            .setup
+            .status(&profile.draft_id)
+            .map_err(map_task_setup_error)?;
+        let metadata = self
+            .setup
+            .exact_metadata(&profile.draft_id)
+            .map_err(map_task_setup_error)?;
+        if setup.room_id != metadata.room_id || setup.state != metadata.state {
+            return Err(RunnerAttentionSourceErrorV1::InvalidData);
+        }
+        if scope.is_none() && metadata.state != TaskSetupStateV1::Ready {
+            return Ok(None);
+        }
+        if setup.room_id != profile.membership.room_id {
+            return Err(RunnerAttentionSourceErrorV1::InvalidData);
+        }
+        let seat = setup
+            .seats
+            .iter()
+            .find(|seat| seat.seat_id == profile.seat_id)
+            .ok_or(RunnerAttentionSourceErrorV1::InvalidData)?;
+        if seat.member_id.as_deref() != Some(profile.membership.member_id.as_str()) {
+            return Err(RunnerAttentionSourceErrorV1::InvalidData);
+        }
+        let (runner_id, instance_id, pack) = match &profile.execution {
+            AgentExecutionBindingV1::External => {
+                if seat.managed_runner.is_some() {
+                    return Err(RunnerAttentionSourceErrorV1::InvalidData);
+                }
+                let scope = scope.ok_or(RunnerAttentionSourceErrorV1::InvalidData)?;
+                (scope.runner_id.clone(), None, scope.pack.clone())
+            }
+            AgentExecutionBindingV1::Managed { runner_id } => {
+                let scope = scope.ok_or(RunnerAttentionSourceErrorV1::InvalidData)?;
+                let managed = seat
+                    .managed_runner
+                    .as_ref()
+                    .ok_or(RunnerAttentionSourceErrorV1::InvalidData)?;
+                if runner_id != &scope.runner_id {
+                    return Err(RunnerAttentionSourceErrorV1::InvalidData);
+                }
+                (
+                    scope.runner_id.clone(),
+                    Some(managed.instance_id.clone()),
+                    scope.pack.clone(),
+                )
+            }
+            AgentExecutionBindingV1::ManagedReference {
+                runner_id,
+                instance_id,
+                template_id,
+                template_revision,
+            } => {
+                let managed = self
+                    .setup
+                    .managed_reference_metadata(profile)
+                    .map_err(map_task_setup_error)?;
+                if runner_id != &managed.runner_id
+                    || instance_id != &managed.instance_id
+                    || template_id != &managed.template_id
+                    || template_revision != &managed.template_revision
+                {
+                    return Err(RunnerAttentionSourceErrorV1::InvalidData);
+                }
+                if let Some(scope) = scope
+                    && (managed.runner_id != scope.runner_id || managed.pack != scope.pack)
+                {
+                    return Err(RunnerAttentionSourceErrorV1::InvalidData);
+                }
+                (managed.runner_id, Some(managed.instance_id), managed.pack)
+            }
+        };
+        Ok(Some(AgentSeatAssignmentV1 {
+            assignment_id: profile.assignment_id.clone(),
+            room_id: profile.membership.room_id.clone(),
+            seat_id: profile.seat_id.clone(),
+            member_id: profile.membership.member_id.clone(),
+            runner_id,
+            instance_id,
+            managed_reference: matches!(
+                &profile.execution,
+                AgentExecutionBindingV1::ManagedReference { .. }
+            ),
+            pack,
+        }))
     }
 }
 
@@ -365,10 +447,18 @@ where
             .collect::<Vec<_>>();
         runner_ids.sort();
         runner_ids.dedup();
-        let runners = runner_ids
-            .iter()
-            .map(|runner_id| self.daemon.presence(runner_id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut runners = Vec::with_capacity(runner_ids.len());
+        for runner_id in &runner_ids {
+            match self.daemon.presence(runner_id) {
+                Ok(runner) => runners.push(runner),
+                Err(RunnerAttentionSourceErrorV1::Unavailable)
+                    if assignments
+                        .iter()
+                        .filter(|assignment| assignment.runner_id == *runner_id)
+                        .all(|assignment| assignment.managed_reference) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let mut observed_at_unix_ms = runners
             .iter()
             .map(|runner| runner.observed_at_unix_ms)
@@ -517,7 +607,9 @@ impl HttpDaemonRunnerAttentionSourceV1 {
         }
         let (status, body) = parse_http_response(&response)?;
         if status != 200 {
-            return Err(if matches!(status, 400 | 404 | 409 | 422) {
+            return Err(if status == 404 {
+                RunnerAttentionSourceErrorV1::Unavailable
+            } else if matches!(status, 400 | 409 | 422) {
                 RunnerAttentionSourceErrorV1::InvalidData
             } else {
                 RunnerAttentionSourceErrorV1::Unavailable
@@ -901,11 +993,16 @@ where
             .snapshot
             .as_ref()
             .map_or_else(Vec::new, build_runner_statuses);
-        let managed_hosts = self
+        let mut managed_hosts = self
             .managed_hosts
             .as_ref()
             .map_or_else(|| Ok(Vec::new()), ManagedAgentHostOperationsV1::statuses)
             .map_err(|_| RunnerAttentionErrorV1::Unavailable)?;
+        if observed.freshness == RunnerAttentionFreshnessV1::Live
+            && let Some(snapshot) = &observed.snapshot
+        {
+            apply_live_activation_status(&mut managed_hosts, snapshot);
+        }
         Ok(RunnerAttentionOperationsResponseV1 {
             schema: OPERATIONS_SCHEMA_V1.to_owned(),
             freshness: observed.freshness,
@@ -1135,6 +1232,33 @@ where
             }
         }
         Ok(())
+    }
+}
+
+fn apply_live_activation_status(
+    hosts: &mut [ManagedAgentHostStatusV1],
+    snapshot: &AuthoritativeRunnerSnapshotV1,
+) {
+    for host in hosts {
+        let Some(assignment) = snapshot
+            .assignments
+            .iter()
+            .find(|assignment| assignment.assignment_id == host.assignment_id)
+        else {
+            continue;
+        };
+        let Some(activation) = snapshot.activations.iter().find(|activation| {
+            activation.room_id == assignment.room_id && activation.member_id == assignment.member_id
+        }) else {
+            continue;
+        };
+        host.activation.state = if activation.leased > 0 {
+            ManagedAgentActivationStateV1::Leased
+        } else if activation.waiting > 0 {
+            ManagedAgentActivationStateV1::Waiting
+        } else {
+            ManagedAgentActivationStateV1::Idle
+        };
     }
 }
 
@@ -1623,6 +1747,14 @@ fn valid_pack(pack: &PackReference) -> bool {
         && pack.digest[7..]
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if predicates receive a field reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 const fn map_assignment_source_error(

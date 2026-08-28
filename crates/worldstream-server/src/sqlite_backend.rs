@@ -975,6 +975,10 @@ impl SqliteGatewayBackend {
             .bearer
             .wire()
             .map_err(|_| BackendError::Rejected)?;
+        if !crate::member_capability_access_role_valid(request.access_mode, request.role.as_deref())
+        {
+            return Err(BackendError::Rejected);
+        }
 
         let snapshot = self
             .supervised_room_snapshot(&room_id)?
@@ -988,7 +992,7 @@ impl SqliteGatewayBackend {
         if membership.principal_id() != &principal_id
             || membership.principal_kind() != core_principal_kind(request.principal_kind)
             || membership.access_mode() != core_access_mode(request.access_mode)
-            || membership.role() != Some(request.role.as_str())
+            || membership.role() != request.role.as_deref()
         {
             return Err(BackendError::Forbidden);
         }
@@ -3662,7 +3666,7 @@ mod tests {
             member_id: member_id.to_owned(),
             principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC6".to_owned(),
             principal_kind: PrincipalKind::Agent,
-            role: "counter".to_owned(),
+            role: Some("counter".to_owned()),
             access_mode: AccessMode::Participant,
             scopes: vec![
                 "room:attach".to_owned(),

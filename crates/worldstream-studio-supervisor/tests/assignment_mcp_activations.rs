@@ -40,6 +40,10 @@ use worldstream_protocol::{
     PROTOCOL_VERSION, PackReference, Principal, PrincipalKind, RoomHead, RunnerHello, RunnerReady,
     SealedCapabilityBearerV1, ServerWelcome, UlidString, VersionedEnvelope, decode_envelope,
 };
+use worldstream_studio_supervisor::{
+    managed_activation_status::ManagedActivationStatusStoreV1,
+    managed_agent_host::ManagedAgentActivationDispositionV1,
+};
 
 const ASSIGNMENT_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const PRINCIPAL_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -406,6 +410,119 @@ fn completion_binds_current_cursor_generation_context_and_reuses_operation_ident
 }
 
 #[test]
+fn managed_restart_resumes_the_retained_completion_without_a_second_completion_intent() {
+    let ledger = FakeLedger::new();
+    let gateway = FakeGateway::new();
+    let first = AssignmentActivationToolsV1::new(
+        authority(),
+        gateway.clone(),
+        ledger.clone(),
+        FixedClock(false),
+    );
+    first.next_activation(&json!({})).expect("acquire");
+    *gateway.fail_completion_once.lock().expect("fail flag") = true;
+    assert_eq!(
+        first
+            .complete(completion_arguments())
+            .expect_err("response loss leaves retained completion")
+            .code(),
+        ActivationToolErrorCodeV1::Disconnected
+    );
+
+    let restarted = AssignmentActivationToolsV1::new(
+        authority(),
+        gateway.clone(),
+        ledger.clone(),
+        FixedClock(false),
+    );
+    let receipt = restarted
+        .resume_completion()
+        .expect("restart reconciles the exact completion");
+    assert_eq!(receipt.activation_cursor, 1);
+    assert_eq!(receipt.operation_id, COMPLETION_OPERATION_ID);
+    assert_eq!(*ledger.completion_prepares.lock().expect("count"), 1);
+    assert_eq!(
+        gateway
+            .calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .filter(|call| call["method"] == "complete")
+            .count(),
+        2
+    );
+    assert_eq!(
+        restarted
+            .next_activation(&json!({}))
+            .expect("next Activation after confirmed completion")
+            .activation_cursor,
+        2
+    );
+}
+
+#[test]
+fn confirmation_publication_recovers_after_completion_receipt_precedes_status_write() {
+    let root = tempfile::tempdir().expect("temporary status root");
+    let status_path = root.path().join("status");
+    let status_root =
+        worldstream_runtime::prepare_data_directory(&status_path).expect("owner-only status root");
+    let status = ManagedActivationStatusStoreV1::open(&status_root).expect("status store");
+    let ledger = FakeLedger::new();
+    let gateway = FakeGateway::new();
+    let tools = AssignmentActivationToolsV1::new(authority(), gateway, ledger, FixedClock(false));
+    tools.next_activation(&json!({})).expect("acquire");
+    status
+        .note_completion_pending(
+            ASSIGNMENT_ID,
+            ACTIVATION_ID,
+            ManagedAgentActivationDispositionV1::Handled,
+        )
+        .expect("durable pending confirmation");
+    tools
+        .complete(completion_arguments())
+        .expect("durable completion receipt");
+
+    let restarted_status =
+        ManagedActivationStatusStoreV1::open(&status_root).expect("reopened status store");
+    assert_eq!(
+        restarted_status
+            .pending_confirmation(ASSIGNMENT_ID)
+            .expect("pending confirmation")
+            .map(|pending| (pending.activation_id().to_owned(), pending.disposition())),
+        Some((
+            ACTIVATION_ID.to_owned(),
+            ManagedAgentActivationDispositionV1::Handled,
+        ))
+    );
+    assert!(
+        tools
+            .confirmed_completion()
+            .expect("retained completion")
+            .is_some()
+    );
+    restarted_status
+        .note_confirmed(
+            ASSIGNMENT_ID,
+            ACTIVATION_ID,
+            ManagedAgentActivationDispositionV1::Handled,
+        )
+        .expect("reconciled publication");
+    assert_eq!(
+        restarted_status
+            .status(ASSIGNMENT_ID)
+            .expect("confirmed status")
+            .last_confirmed_disposition,
+        Some(ManagedAgentActivationDispositionV1::Handled)
+    );
+    assert_eq!(
+        restarted_status
+            .pending_confirmation(ASSIGNMENT_ID)
+            .expect("cleared pending confirmation"),
+        None
+    );
+}
+
+#[test]
 fn altered_or_duplicate_completion_cannot_target_a_different_activation() {
     let ledger = FakeLedger::new();
     let gateway = FakeGateway::new();
@@ -647,15 +764,24 @@ fn terminal_expiry_stale_and_already_completed_resume_at_next_cursor() {
     .expect_err("expiry is reported once");
     assert_eq!(expired.code(), ActivationToolErrorCodeV1::LeaseExpired);
     assert_terminal_witness(&local_ledger, ActivationTerminalOutcomeV1::Expired);
+    let re_leased_gateway = FakeGateway::new();
+    let mut next_generation_context = activation_context();
+    next_generation_context.lease_generation = 8;
+    *re_leased_gateway
+        .context_override
+        .lock()
+        .expect("next generation context") = Some(next_generation_context);
     let after_expiry = AssignmentActivationToolsV1::new(
         authority(),
-        FakeGateway::new(),
+        re_leased_gateway,
         local_ledger,
         FixedClock(false),
     )
     .next_activation(&json!({}))
     .expect("next after expiry");
     assert_eq!(after_expiry.activation_cursor, 2);
+    assert_eq!(after_expiry.activation.activation_id(), ACTIVATION_ID);
+    assert_eq!(after_expiry.activation.lease_generation(), 8);
 
     let leased_completion_ledger = acquired_ledger();
     let leased_expiry = AssignmentActivationToolsV1::new(

@@ -674,7 +674,9 @@ pub struct MemberCapabilityProvisionRequestV1 {
     pub member_id: String,
     pub principal_id: String,
     pub principal_kind: PrincipalKind,
-    pub role: String,
+    /// Participants carry a pack Role; spectator and operator Memberships do
+    /// not. `Some` preserves the v1 participant wire representation.
+    pub role: Option<String>,
     pub access_mode: AccessMode,
     pub scopes: Vec<String>,
     pub capability: SealedCapabilityInputV1,

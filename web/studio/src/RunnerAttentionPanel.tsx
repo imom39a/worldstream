@@ -11,10 +11,18 @@ export function RunnerAttentionPanel({
   operations,
   task,
   onRestart,
+  managedHostRoomId,
+  managedReferenceSeatIds = new Set(),
+  managedHostBusySeats = new Set(),
+  onManagedHostAction,
 }: {
   operations: RunnerAttentionOperations | null;
   task: TaskAgentAttention | null;
   onRestart?: (instanceId: string) => void;
+  managedHostRoomId?: string | null;
+  managedReferenceSeatIds?: ReadonlySet<string>;
+  managedHostBusySeats?: ReadonlySet<string>;
+  onManagedHostAction?: (seatId: string, action: "start" | "retry") => void;
 }) {
   return (
     <>
@@ -67,7 +75,7 @@ export function RunnerAttentionPanel({
           <p className="status-message">No assigned agent seats were reported.</p>
         ) : (
           <div className="runner-attention-list">
-            {task.seats.map((seat) => <SeatRow key={seat.seat_id} seat={seat} />)}
+            {task.seats.map((seat) => <SeatRow key={seat.seat_id} seat={seat} canControlHost={managedHostRoomId != null && onManagedHostAction !== undefined && managedReferenceSeatIds.has(seat.seat_id)} busy={managedHostBusySeats.has(seat.seat_id)} onManagedHostAction={onManagedHostAction} />)}
           </div>
         )}
       </section>
@@ -85,6 +93,8 @@ function ManagedHostRow({ host }: { host: ManagedAgentHostStatus }) {
       <dl>
         <Fact label="Host state" value={label(host.state)} />
         <Fact label="Capacity" value={`${host.active_invocations} used · ${host.capacity - host.active_invocations} available`} />
+        <Fact label="Activation" value={label(host.activation.state)} />
+        <Fact label="Confirmed result" value={host.activation.last_confirmed_disposition === null ? "Unknown" : label(host.activation.last_confirmed_disposition)} />
       </dl>
       {host.failure ? <><p>{host.failure.message}</p><p>{host.failure.safe_action}</p></> : null}
     </article>
@@ -119,7 +129,17 @@ function RunnerRow({
   );
 }
 
-function SeatRow({ seat }: { seat: AgentSeatAttention }) {
+function SeatRow({
+  seat,
+  canControlHost,
+  busy,
+  onManagedHostAction,
+}: {
+  seat: AgentSeatAttention;
+  canControlHost: boolean;
+  busy: boolean;
+  onManagedHostAction?: (seatId: string, action: "start" | "retry") => void;
+}) {
   return (
     <article className={`runner-attention-row is-${seat.activation.state}`}>
       <div className="runner-instance-title">
@@ -133,6 +153,8 @@ function SeatRow({ seat }: { seat: AgentSeatAttention }) {
         <Fact label="Compatible capacity" value={`${seat.capacity.available} available of ${seat.capacity.advertised}`} />
       </dl>
       <p>{seat.next_action}</p>
+      {canControlHost && ["idle", "waiting", "delayed"].includes(seat.activation.state) ? <button type="button" disabled={busy} onClick={() => onManagedHostAction?.(seat.seat_id, "start")}>{busy ? "Starting managed host…" : "Start managed host"}</button> : null}
+      {canControlHost && (seat.activation.state === "attention" || seat.activation.state === "unavailable") ? <button type="button" disabled={busy} onClick={() => onManagedHostAction?.(seat.seat_id, "retry")}>{busy ? "Retrying managed host…" : "Retry managed host"}</button> : null}
     </article>
   );
 }

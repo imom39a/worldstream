@@ -100,6 +100,20 @@ fn response() -> CreateRoomResponse {
     .unwrap_or_else(|error| unreachable!("create response: {error}"))
 }
 
+fn operator_response() -> CreateRoomResponse {
+    let mut response = response();
+    response
+        .member_ids
+        .push("01ARZ3NDEKTSV4RRFFQ69G5FAY".to_owned());
+    response
+}
+
+fn operator_reviewed_draft() -> RoomDraftV1 {
+    let mut draft = reviewed_draft();
+    draft.operator_view = true;
+    draft
+}
+
 #[derive(Default)]
 struct CreatorState {
     requests: Vec<CreateRoomRequest>,
@@ -158,6 +172,30 @@ struct RestartableDaemonCreator {
     durable: Arc<Mutex<DurableDaemonLedger>>,
     requests: Arc<Mutex<Vec<CreateRoomRequest>>>,
     lose_response_after_commit: bool,
+}
+
+#[derive(Clone)]
+struct OperatorCreator(Arc<Mutex<CreatorState>>);
+
+impl DaemonRoomCreatorV1 for OperatorCreator {
+    fn create(
+        &self,
+        request: &CreateRoomRequest,
+    ) -> Result<CreateRoomResponse, RoomCreationAttemptErrorV1> {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        state.requests.push(request.clone());
+        if let Some(committed) = &state.committed {
+            return Ok(committed.clone());
+        }
+        let committed = operator_response();
+        state.committed = Some(committed.clone());
+        if state.lose_next_response {
+            state.lose_next_response = false;
+            Err(RoomCreationAttemptErrorV1::Ambiguous)
+        } else {
+            Ok(committed)
+        }
+    }
 }
 
 impl DaemonRoomCreatorV1 for RestartableDaemonCreator {
@@ -299,13 +337,95 @@ fn corrupt_retryability_cannot_turn_a_permanent_rejection_into_a_retry() {
 }
 
 fn setup(root: &std::path::Path, creator: impl DaemonRoomCreatorV1) -> RoomCreationSupervisorV1 {
+    setup_with_draft(root, creator, &reviewed_draft())
+}
+
+fn setup_with_draft(
+    root: &std::path::Path,
+    creator: impl DaemonRoomCreatorV1,
+    draft: &RoomDraftV1,
+) -> RoomCreationSupervisorV1 {
     let drafts = RoomDraftStoreV1::open(&root.join("drafts"), ValidDraft)
         .unwrap_or_else(|error| unreachable!("draft store: {error:?}"));
     drafts
-        .save(&reviewed_draft())
+        .save(draft)
         .unwrap_or_else(|error| unreachable!("save reviewed draft: {error:?}"));
     RoomCreationSupervisorV1::open(&root.join("operations"), drafts, creator)
         .unwrap_or_else(|error| unreachable!("creation supervisor: {error:?}"))
+}
+
+#[test]
+fn reviewed_operator_membership_is_genesis_bound_and_ambiguous_retry_reuses_exact_request() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let state = Arc::new(Mutex::new(CreatorState {
+        lose_next_response: true,
+        ..CreatorState::default()
+    }));
+    let supervisor = setup_with_draft(
+        directory.path(),
+        OperatorCreator(Arc::clone(&state)),
+        &operator_reviewed_draft(),
+    );
+
+    let first = supervisor
+        .start("launch-alpha")
+        .unwrap_or_else(|error| unreachable!("initial creation: {error:?}"));
+    assert_eq!(first.state, RoomCreationStateV1::Retrying);
+    let completed = supervisor
+        .reconcile("launch-alpha")
+        .unwrap_or_else(|error| unreachable!("retry creation: {error:?}"));
+    assert_eq!(completed.state, RoomCreationStateV1::Succeeded);
+    let principal_id = {
+        let state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(state.requests.len(), 2);
+        assert_eq!(state.requests[0], state.requests[1]);
+        let operator = state.requests[0]
+            .members
+            .last()
+            .unwrap_or_else(|| unreachable!("operator genesis member"));
+        assert_eq!(
+            operator.access_mode,
+            worldstream_protocol::AccessMode::Operator
+        );
+        assert_eq!(
+            operator.principal_kind,
+            worldstream_protocol::PrincipalKind::Human
+        );
+        assert_eq!(operator.role, None);
+        operator.principal_id.clone()
+    };
+    let binding = supervisor
+        .reviewed_operator_membership(ROOM)
+        .unwrap_or_else(|error| unreachable!("operator binding: {error:?}"))
+        .unwrap_or_else(|| unreachable!("reviewed binding"));
+    assert_eq!(binding.principal_id, principal_id);
+    assert_eq!(binding.member_id, "01ARZ3NDEKTSV4RRFFQ69G5FAY");
+}
+
+#[test]
+fn false_operator_view_preserves_legacy_single_member_creation_request() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let state = Arc::new(Mutex::new(CreatorState::default()));
+    let supervisor = setup(directory.path(), ExactOnceCreator(Arc::clone(&state)));
+    supervisor
+        .start("launch-alpha")
+        .unwrap_or_else(|error| unreachable!("legacy creation: {error:?}"));
+    let request = state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .requests[0]
+        .clone();
+    assert_eq!(request.members.len(), 1);
+    assert_eq!(
+        request.members[0].access_mode,
+        worldstream_protocol::AccessMode::Participant
+    );
+    assert!(
+        supervisor
+            .reviewed_operator_membership(ROOM)
+            .unwrap_or_else(|error| unreachable!("legacy binding: {error:?}"))
+            .is_none()
+    );
 }
 
 #[test]

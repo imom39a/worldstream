@@ -58,6 +58,8 @@ pub struct TaskTemplateRevisionV1 {
     pub configuration: Value,
     pub seats: Vec<RoomDraftSeatV1>,
     pub readiness: Vec<RoomDraftSeatReadinessV1>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub operator_view: bool,
 }
 
 /// Browser request to snapshot one exact reviewed draft under a new revision.
@@ -307,6 +309,7 @@ impl RoomDraftValidatorV1 for InstalledTaskTemplateDependenciesV1 {
             configuration: draft.configuration.clone(),
             seats: draft.seats.clone(),
             readiness: draft.readiness.clone(),
+            operator_view: draft.operator_view,
         });
         if report.status == TaskTemplateDependencyStatusV1::Unavailable {
             return Err(RoomDraftErrorV1::ValidationUnavailable);
@@ -416,6 +419,7 @@ impl TaskTemplateStoreV1 {
             configuration: draft.configuration,
             seats: draft.seats,
             readiness: draft.readiness,
+            operator_view: draft.operator_view,
         };
         validate_revision(&revision)?;
         let report = self.dependencies.inspect(&revision);
@@ -649,9 +653,18 @@ impl TaskTemplateRevisionV1 {
             configuration: self.configuration.clone(),
             seats: self.seats.clone(),
             readiness: self.readiness.clone(),
+            operator_view: self.operator_view,
             last_valid_step: Some(last_valid_step),
         }
     }
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if predicates receive a field reference"
+)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Builds bounded catalog, publication, detail, and draft-instantiation routes.

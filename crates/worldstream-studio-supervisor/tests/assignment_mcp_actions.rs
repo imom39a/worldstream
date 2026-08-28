@@ -37,7 +37,7 @@ use assignment_mcp_actions::{
     AssignmentMcpActionSchemaErrorV1, AssignmentMcpActionSchemaSourceV1,
     AssignmentMcpActionSubmitResultV1, AssignmentMcpExactActionRequestV1,
     AssignmentMcpSubmitActionV1, FixedDaemonAssignmentMcpActionGatewayV1,
-    list_current_action_offers, submit_current_action,
+    list_current_action_offers, resume_reserved_action, submit_current_action,
 };
 use assignment_mcp_operations::FileAssignmentMcpOperationLedgerV1;
 
@@ -581,6 +581,67 @@ fn lost_response_restart_reissues_identical_action_and_completed_retry_is_local(
     )
     .unwrap_or_else(|error| unreachable!("local completed replay: {error:?}"));
     assert_eq!(local_replay, resolved);
+    let requests = gateway
+        .requests
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+}
+
+#[test]
+fn managed_restart_reconciles_the_retained_action_without_another_offer_snapshot() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let ledger_root = directory.path().join("operations");
+    let schema = payload_schema();
+    let current = snapshot(vec![increment_offer(&schema)]);
+    let schemas = FixedSchemas {
+        action: ActivityPackCatalogAction {
+            action_type: "increment".to_owned(),
+            payload_schema: schema,
+        },
+    };
+    let listed = list_current_action_offers(&current, &schemas)
+        .unwrap_or_else(|error| unreachable!("list offers: {error:?}"));
+    let arguments = AssignmentMcpSubmitActionV1 {
+        operation_id: OPERATION.to_owned(),
+        offer_id: listed.offers[0].offer_id.clone(),
+        precondition: listed.precondition,
+        payload: json!({"amount": 3}),
+    };
+    let gateway = LostResponseGateway::default();
+    {
+        let ledger = FileAssignmentMcpOperationLedgerV1::open(&ledger_root)
+            .unwrap_or_else(|error| unreachable!("operation ledger: {error:?}"));
+        assert_eq!(
+            submit_current_action(
+                &authority(ASSIGNMENT),
+                &current,
+                &schemas,
+                &ledger,
+                &gateway,
+                arguments,
+            ),
+            Err(AssignmentMcpActionErrorV1::AmbiguousRetrySameOperation)
+        );
+    }
+
+    let restarted = FileAssignmentMcpOperationLedgerV1::open(&ledger_root)
+        .unwrap_or_else(|error| unreachable!("restart operation ledger: {error:?}"));
+    let accepted = resume_reserved_action(&authority(ASSIGNMENT), &restarted, &gateway, OPERATION)
+        .unwrap_or_else(|error| unreachable!("managed action recovery: {error:?}"));
+    assert!(matches!(
+        accepted,
+        AssignmentMcpActionSubmitResultV1::Accepted {
+            duplicate: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        resume_reserved_action(&authority(ASSIGNMENT), &restarted, &gateway, OPERATION)
+            .unwrap_or_else(|error| unreachable!("local recovery replay: {error:?}")),
+        accepted
+    );
     let requests = gateway
         .requests
         .lock()

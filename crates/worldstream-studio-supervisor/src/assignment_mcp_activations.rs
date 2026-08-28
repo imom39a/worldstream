@@ -1100,6 +1100,77 @@ where
         Ok(receipt)
     }
 
+    /// Reconciles a completion that was durably prepared before a helper crash.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed failure unless the retained lifecycle is exactly one
+    /// pending completion for this sealed assignment.
+    pub fn resume_completion(
+        &self,
+    ) -> Result<ActivationCompletionReceiptV1, ActivationToolErrorV1> {
+        let ActivationLedgerSnapshotV1::Completing { lease, prepared } = self.load()? else {
+            return Err(ActivationToolErrorV1::CompletionPending);
+        };
+        let lease = *lease;
+        if !prepared.matches_lease(&lease) {
+            return Err(ActivationToolErrorV1::InvalidRetainedState);
+        }
+        let receipt = match self.gateway.complete(&self.authority, &lease, &prepared) {
+            Ok(receipt) => receipt,
+            Err(RunnerActivationGatewayErrorV1::Expired) => {
+                self.ledger
+                    .retain_terminal(&lease, ActivationTerminalOutcomeV1::Expired)
+                    .map_err(map_ledger_error)?;
+                return Err(ActivationToolErrorV1::LeaseExpired);
+            }
+            Err(RunnerActivationGatewayErrorV1::StaleLease) => {
+                self.ledger
+                    .retain_terminal(&lease, ActivationTerminalOutcomeV1::Stale)
+                    .map_err(map_ledger_error)?;
+                return Err(ActivationToolErrorV1::StaleCursor);
+            }
+            Err(RunnerActivationGatewayErrorV1::AlreadyCompleted) => {
+                self.ledger
+                    .retain_terminal(&lease, ActivationTerminalOutcomeV1::AlreadyCompleted)
+                    .map_err(map_ledger_error)?;
+                return Err(ActivationToolErrorV1::AlreadyCompleted);
+            }
+            Err(error) => return Err(map_gateway_error(error)),
+        };
+        if receipt.activation_cursor != lease.activation_cursor
+            || receipt.activation_id != lease.activation_id
+            || receipt.lease_generation != lease.lease_generation()
+            || receipt.operation_id != prepared.operation_id()
+            || receipt.completion_id != prepared.completion_id()
+        {
+            return Err(ActivationToolErrorV1::InvalidDaemonData);
+        }
+        self.ledger
+            .retain_completion(&prepared, &receipt)
+            .map_err(map_ledger_error)?;
+        Ok(receipt)
+    }
+
+    /// Returns the retained successful completion receipt, if this helper has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed retained-state error without releasing Invocation data.
+    pub fn confirmed_completion(
+        &self,
+    ) -> Result<Option<ActivationCompletionReceiptV1>, ActivationToolErrorV1> {
+        match self.load()? {
+            ActivationLedgerSnapshotV1::Completed(receipt) => Ok(Some(receipt)),
+            ActivationLedgerSnapshotV1::Idle { .. }
+            | ActivationLedgerSnapshotV1::Acquiring(_)
+            | ActivationLedgerSnapshotV1::Leased(_)
+            | ActivationLedgerSnapshotV1::Completing { .. }
+            | ActivationLedgerSnapshotV1::Terminal { .. }
+            | ActivationLedgerSnapshotV1::Abandoned(_) => Ok(None),
+        }
+    }
+
     fn load(&self) -> Result<ActivationLedgerSnapshotV1, ActivationToolErrorV1> {
         self.ledger
             .load(self.authority.assignment_id())

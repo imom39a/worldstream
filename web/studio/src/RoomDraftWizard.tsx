@@ -7,6 +7,7 @@ import type {
 } from "./activityPacks";
 import {
   buildSeatPolicy,
+  invalidateRoomDraftReview,
   validateConfiguration,
   type RoomDraft,
   type RoomDraftFieldError,
@@ -130,7 +131,7 @@ export function RoomDraftWizard({
         ) : null}
         {activeStep === "readiness" ? <ReadinessStep draft={draft} /> : null}
         {activeStep === "review" ? (
-          <ReviewStep draft={draft} saving={saving} saved={saved} onSave={onSave} />
+          <ReviewStep draft={draft} saving={saving} saved={saved} onChange={onDraftChange} onSave={onSave} />
         ) : null}
       </div>
 
@@ -475,11 +476,13 @@ function ReviewStep({
   draft,
   saving,
   saved,
+  onChange,
   onSave,
 }: {
   draft: RoomDraft;
   saving: boolean;
   saved: boolean;
+  onChange?: (draft: RoomDraft) => void;
   onSave?: (draft: RoomDraft) => void;
 }) {
   const snapshot = roomDraftReviewSnapshot(draft);
@@ -491,8 +494,21 @@ function ReviewStep({
         <div><dt>Activity</dt><dd>{snapshot.pack ? `${snapshot.pack.id} ${snapshot.pack.version}` : "Not selected"}</dd></div>
         <div><dt>Exact digest</dt><dd><code>{snapshot.pack ? shortDigest(snapshot.pack.digest) : "Unavailable"}</code></dd></div>
         <div><dt>Seats</dt><dd>{snapshot.seats.length}</dd></div>
+        <div><dt>Read-only operator view</dt><dd>{snapshot.operator_view ? "Included" : "Not included"}</dd></div>
       </dl>
       <pre>{JSON.stringify(snapshot.configuration, null, 2)}</pre>
+      <label>
+        <input
+          type="checkbox"
+          checked={draft.operator_view === true}
+          onChange={(event) => onChange?.(invalidateRoomDraftReview(draft, {
+            ...draft,
+            operator_view: event.currentTarget.checked || undefined,
+          }))}
+        />
+        Include read-only operator view
+      </label>
+      <p>Creates one reviewed nonparticipant Operator Membership at Room Genesis so Studio may request the Counter public projection.</p>
       <button type="button" disabled={saving} onClick={() => onSave?.({ ...draft, last_valid_step: "review" })}>
         {saving ? "Saving…" : saved ? "Draft saved" : "Save draft"}
       </button>
@@ -512,6 +528,7 @@ export function roomDraftReviewSnapshot(draft: RoomDraft) {
     configuration: JSON.parse(JSON.stringify(draft.configuration)) as unknown,
     seats: draft.seats.map((seat) => ({ ...seat })),
     readiness: draft.readiness.map((seat) => ({ ...seat })),
+    operator_view: draft.operator_view === true ? true : undefined,
   };
 }
 

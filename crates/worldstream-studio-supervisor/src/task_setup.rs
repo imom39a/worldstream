@@ -342,6 +342,26 @@ pub struct TaskSetupStatusV1 {
     pub launch: Option<TaskLaunchStatusV1>,
 }
 
+/// Internal non-secret immutable metadata needed to join a persisted Agent
+/// Profile assignment to its reviewed setup operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TaskSetupExactMetadataV1 {
+    pub room_id: String,
+    pub state: TaskSetupStateV1,
+    pub pack: PackReference,
+}
+
+/// Internal exact managed-reference binding derived from the ready immutable
+/// setup operation. It excludes authorities, credentials, and receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TaskSetupManagedReferenceMetadataV1 {
+    pub pack: PackReference,
+    pub runner_id: String,
+    pub instance_id: String,
+    pub template_id: String,
+    pub template_revision: String,
+}
+
 impl TaskSetupStatusV1 {
     fn from_operation(operation: TaskSetupOperationV1, readiness: TaskReadinessV1) -> Self {
         let total_stages = operation
@@ -1051,6 +1071,66 @@ impl TaskSetupSupervisorV1 {
         Ok(self.status_for(operation))
     }
 
+    /// Reads the immutable exact Pack binding without exposing retained
+    /// capability, secret, request, or receipt material.
+    ///
+    /// # Errors
+    ///
+    /// Returns exact setup or protected-storage failures.
+    pub(crate) fn exact_metadata(
+        &self,
+        draft_id: &str,
+    ) -> Result<TaskSetupExactMetadataV1, TaskSetupErrorV1> {
+        let _guard = self.lock();
+        let operation = self.load_unlocked(draft_id)?;
+        Ok(TaskSetupExactMetadataV1 {
+            room_id: operation.room_id,
+            state: operation.state,
+            pack: operation.pack,
+        })
+    }
+
+    /// Resolves the exact ready managed-reference binding for a persisted
+    /// Agent Profile assignment without resolving or minting authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns exact setup or protected-storage failures.
+    pub(crate) fn managed_reference_metadata(
+        &self,
+        assignment: &AgentProfileSeatAssignmentV1,
+    ) -> Result<TaskSetupManagedReferenceMetadataV1, TaskSetupErrorV1> {
+        let _guard = self.lock();
+        let operation = self.load_unlocked(&assignment.draft_id)?;
+        let seat =
+            validated_agent_assignment_seat(&operation, assignment).map_err(
+                |error| match error {
+                    AssignedMembershipSourceErrorV1::Unavailable => TaskSetupErrorV1::Unavailable,
+                    AssignedMembershipSourceErrorV1::NotFound
+                    | AssignedMembershipSourceErrorV1::Invalid
+                    | AssignedMembershipSourceErrorV1::Revoked => TaskSetupErrorV1::InvalidCreation,
+                },
+            )?;
+        if seat.agent_assignment != Some(AgentAssignmentModeV1::Managed) {
+            return Err(TaskSetupErrorV1::InvalidCreation);
+        }
+        let runner = seat
+            .runner
+            .as_ref()
+            .ok_or(TaskSetupErrorV1::InvalidCreation)?;
+        let managed = runner
+            .managed_assignment
+            .as_ref()
+            .ok_or(TaskSetupErrorV1::InvalidCreation)?;
+        Ok(TaskSetupManagedReferenceMetadataV1 {
+            pack: operation.pack.clone(),
+            runner_id: runner.runner_id.clone(),
+            instance_id: managed.instance_id.clone(),
+            template_id: managed.template_id.clone(),
+            template_revision: managed.template_revision.clone(),
+        })
+    }
+
     /// Lists all retained browser-safe setup statuses in stable draft order.
     ///
     /// # Errors
@@ -1410,7 +1490,8 @@ impl TaskSetupSupervisorV1 {
             .iter()
             .filter(|seat| seat.principal_id.is_some())
             .collect::<Vec<_>>();
-        if filled.len() != response.member_ids.len() {
+        let expected_member_count = filled.len() + usize::from(creation.review.operator_view);
+        if expected_member_count != response.member_ids.len() {
             return Err(TaskSetupErrorV1::InvalidCreation);
         }
         let mut member_ids = response.member_ids.iter();
@@ -1443,6 +1524,12 @@ impl TaskSetupSupervisorV1 {
                     runner: None,
                 }
             });
+        }
+        if creation.review.operator_view && member_ids.next().is_none() {
+            return Err(TaskSetupErrorV1::InvalidCreation);
+        }
+        if member_ids.next().is_some() {
+            return Err(TaskSetupErrorV1::InvalidCreation);
         }
         let operation_id = next_ulid()?;
         let mut operation = TaskSetupOperationV1 {
@@ -1641,7 +1728,7 @@ impl TaskSetupSupervisorV1 {
                     principal_kind: seat
                         .principal_kind
                         .ok_or(TaskSetupAttemptErrorV1::Rejected)?,
-                    role: seat.role.clone(),
+                    role: Some(seat.role.clone()),
                     access_mode: AccessMode::Participant,
                     scopes: vec![
                         "room:attach".to_owned(),

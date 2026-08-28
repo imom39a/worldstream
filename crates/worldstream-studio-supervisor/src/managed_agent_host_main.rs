@@ -63,6 +63,17 @@ enum TurnOutcomeV1 {
     NoWork,
 }
 
+enum ManagedTurnPreparationV1 {
+    Prepared(Value),
+    NoWork,
+    RetryAfterTerminalLease,
+}
+
+enum ManagedTurnActionSubmissionV1 {
+    Completed(Value),
+    RetryAfterTerminalLease,
+}
+
 fn read_credential(input: &mut impl BufRead) -> Result<Zeroizing<Vec<u8>>> {
     let line = read_bounded_line(input, MAX_CREDENTIAL_BYTES.saturating_mul(2) + 10)?;
     let encoded = line
@@ -85,24 +96,25 @@ fn run_one_turn(
     args: &Args,
     credential: &[u8],
 ) -> Result<TurnOutcomeV1> {
-    let Some(activation) = client.next_activation()? else {
-        return Ok(TurnOutcomeV1::NoWork);
+    let prepared = match client.prepare_managed_turn()? {
+        ManagedTurnPreparationV1::Prepared(prepared) => prepared,
+        ManagedTurnPreparationV1::NoWork => return Ok(TurnOutcomeV1::NoWork),
+        ManagedTurnPreparationV1::RetryAfterTerminalLease => match client.prepare_managed_turn()? {
+            ManagedTurnPreparationV1::Prepared(prepared) => prepared,
+            ManagedTurnPreparationV1::NoWork => return Ok(TurnOutcomeV1::NoWork),
+            ManagedTurnPreparationV1::RetryAfterTerminalLease => {
+                bail!("assignment MCP repeated a terminal Activation lease failure")
+            }
+        },
     };
-    let activation_cursor = required_u64(&activation, &["activation_cursor"])?;
-    let lease_generation = required_u64(&activation, &["context", "lease_generation"])?;
-    let context_hash = required_string(&activation, &["context_hash"])?;
-    let binding = format!("{activation_cursor}:{lease_generation}:{context_hash}");
-    let action_operation_id = stable_id(&binding, "action");
-
-    let observation = client.call("worldstream.observe", &json!({}))?;
-    let highest_observed = observation
-        .get("observations")
-        .and_then(Value::as_array)
-        .and_then(|frames| frames.last())
-        .and_then(|frame| frame.get("frame_seq"))
-        .and_then(Value::as_u64);
-    let offers = client.call("worldstream.list_current_action_offers", &json!({}))?;
-    let choice = request_model(args, credential, &observation, &offers)?;
+    if prepared.get("state").and_then(Value::as_str) == Some("reconciled") {
+        return Ok(TurnOutcomeV1::Completed);
+    }
+    let observation = prepared
+        .get("observation")
+        .context("managed turn is invalid")?;
+    let offers = prepared.get("offers").context("managed turn is invalid")?;
+    let choice = request_model(args, credential, observation, offers)?;
     let offer_id = required_string(&choice, &["offer_id"])?;
     let payload = choice.get("payload").context("model choice is invalid")?;
     if !offers
@@ -116,40 +128,48 @@ fn run_one_turn(
     {
         bail!("model selected an unavailable Action offer");
     }
-    let precondition = offers
-        .get("precondition")
-        .cloned()
-        .context("Action offer precondition is unavailable")?;
-    let action_result = client.call(
-        "worldstream.submit_action",
-        &json!({
-            "operation_id": action_operation_id,
-            "offer_id": offer_id,
-            "precondition": precondition,
-            "payload": payload,
-        }),
-    )?;
-    if action_result.get("status").and_then(Value::as_str) != Some("accepted") {
+    let action_result = match client.submit_managed_turn_action(&json!({
+        "offer_id": offer_id,
+        "payload": payload,
+    }))? {
+        ManagedTurnActionSubmissionV1::Completed(result) => result,
+        ManagedTurnActionSubmissionV1::RetryAfterTerminalLease => {
+            return recover_terminal_submission(client);
+        }
+    };
+    if action_result
+        .get("action")
+        .and_then(|action| action.get("status"))
+        .and_then(Value::as_str)
+        != Some("accepted")
+    {
         bail!("assignment MCP Action was not accepted");
     }
-    // The helper durably records an accepted Action before returning it. Only
-    // then may the host advance the observation acknowledgement checkpoint.
-    if let Some(highest) = highest_observed {
-        let _ = client.call(
-            "worldstream.acknowledge",
-            &json!({"through_frame_seq": highest}),
-        )?;
-    }
-    let _ = client.call(
-        "worldstream.complete_activation",
-        &json!({
-            "activation_cursor": activation_cursor,
-            "lease_generation": lease_generation,
-            "context_hash": context_hash,
-            "disposition": "handled",
-        }),
-    )?;
     Ok(TurnOutcomeV1::Completed)
+}
+
+/// Recovers a terminal lease result returned after the model selected an Action.
+///
+/// The assignment helper owns the durable Action and Activation ledgers.  A
+/// follow-up preparation may therefore reconcile the exact accepted Action on
+/// a re-leased generation, but it must never ask the model to choose again.
+fn recover_terminal_submission(
+    client: &mut McpClient<'_, impl BufRead, impl Write>,
+) -> Result<TurnOutcomeV1> {
+    match client.prepare_managed_turn()? {
+        ManagedTurnPreparationV1::Prepared(prepared)
+            if prepared.get("state").and_then(Value::as_str) == Some("reconciled") =>
+        {
+            Ok(TurnOutcomeV1::Completed)
+        }
+        ManagedTurnPreparationV1::NoWork => Ok(TurnOutcomeV1::NoWork),
+        ManagedTurnPreparationV1::Prepared(_) => {
+            bail!("terminal lease recovery unexpectedly required a new model choice")
+        }
+        ManagedTurnPreparationV1::RetryAfterTerminalLease => {
+            bail!("assignment MCP repeated a terminal Activation lease failure")
+        }
+    }
 }
 
 fn request_model(
@@ -267,27 +287,16 @@ impl<'a, R: BufRead, W: Write> McpClient<'a, R, W> {
         Ok(client)
     }
 
-    fn call(&mut self, name: &str, arguments: &Value) -> Result<Value> {
-        let result = self.request("tools/call", &json!({"name": name, "arguments": arguments}))?;
-        if result.get("isError").and_then(Value::as_bool) != Some(false) {
-            bail!("assignment MCP tool returned a closed failure");
-        }
-        result
-            .get("structuredContent")
-            .cloned()
-            .context("assignment MCP response is invalid")
-    }
-
-    fn next_activation(&mut self) -> Result<Option<Value>> {
+    fn prepare_managed_turn(&mut self) -> Result<ManagedTurnPreparationV1> {
         let result = self.request(
             "tools/call",
-            &json!({"name": "worldstream.next_activation", "arguments": {}}),
+            &json!({"name": "worldstream.prepare_managed_turn", "arguments": {}}),
         )?;
         if result.get("isError").and_then(Value::as_bool) == Some(false) {
             return result
                 .get("structuredContent")
                 .cloned()
-                .map(Some)
+                .map(ManagedTurnPreparationV1::Prepared)
                 .context("assignment MCP response is invalid");
         }
         let content = result
@@ -299,7 +308,37 @@ impl<'a, R: BufRead, W: Write> McpClient<'a, R, W> {
             && content.get("next_action").and_then(Value::as_str)
                 == Some("wait_then_request_next_activation")
         {
-            return Ok(None);
+            return Ok(ManagedTurnPreparationV1::NoWork);
+        }
+        if terminal_lease_retry(content) {
+            return Ok(ManagedTurnPreparationV1::RetryAfterTerminalLease);
+        }
+        bail!("assignment MCP tool returned a closed failure")
+    }
+
+    fn submit_managed_turn_action(
+        &mut self,
+        arguments: &Value,
+    ) -> Result<ManagedTurnActionSubmissionV1> {
+        let result = self.request(
+            "tools/call",
+            &json!({
+                "name": "worldstream.submit_managed_turn_action",
+                "arguments": arguments,
+            }),
+        )?;
+        if result.get("isError").and_then(Value::as_bool) == Some(false) {
+            return result
+                .get("structuredContent")
+                .cloned()
+                .map(ManagedTurnActionSubmissionV1::Completed)
+                .context("assignment MCP response is invalid");
+        }
+        let content = result
+            .get("structuredContent")
+            .context("assignment MCP response is invalid")?;
+        if terminal_lease_retry(content) {
+            return Ok(ManagedTurnActionSubmissionV1::RetryAfterTerminalLease);
         }
         bail!("assignment MCP tool returned a closed failure")
     }
@@ -339,6 +378,14 @@ impl<'a, R: BufRead, W: Write> McpClient<'a, R, W> {
     }
 }
 
+fn terminal_lease_retry(content: &Value) -> bool {
+    matches!(
+        content.get("code").and_then(Value::as_str),
+        Some("assignment_activation_lease_expired" | "assignment_activation_cursor_stale")
+    ) && content.get("retryable").and_then(Value::as_bool) == Some(true)
+        && content.get("next_action").and_then(Value::as_str) == Some("request_next_activation")
+}
+
 fn read_bounded_line(input: &mut impl BufRead, maximum: usize) -> Result<Vec<u8>> {
     let mut line = Vec::new();
     input
@@ -348,13 +395,6 @@ fn read_bounded_line(input: &mut impl BufRead, maximum: usize) -> Result<Vec<u8>
         bail!("bounded line input is invalid");
     }
     Ok(line)
-}
-
-fn required_u64(value: &Value, path: &[&str]) -> Result<u64> {
-    descend(value, path)
-        .and_then(Value::as_u64)
-        .filter(|value| *value > 0)
-        .context("assignment MCP response is invalid")
 }
 
 fn required_string<'a>(value: &'a Value, path: &[&str]) -> Result<&'a str> {
@@ -373,17 +413,4 @@ fn descend<'a>(mut value: &'a Value, path: &[&str]) -> Option<&'a Value> {
         };
     }
     Some(value)
-}
-
-fn stable_id(binding: &str, purpose: &str) -> String {
-    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    let digest =
-        blake3::hash(format!("worldstream/managed-agent-host/v1:{binding}:1:{purpose}").as_bytes());
-    let mut number = u128::from_be_bytes(digest.as_bytes()[..16].try_into().unwrap_or([0; 16]));
-    let mut output = [b'0'; 26];
-    for slot in output.iter_mut().rev() {
-        *slot = ALPHABET[(number & 31) as usize];
-        number >>= 5;
-    }
-    String::from_utf8(output.to_vec()).unwrap_or_default()
 }

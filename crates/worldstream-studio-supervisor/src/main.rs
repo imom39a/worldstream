@@ -18,9 +18,14 @@ use worldstream_studio_supervisor::{
     },
     lifecycle::ConfiguredDaemonLifecycle,
     managed_agent_host::{ManagedAgentHostOperationsV1, managed_agent_host_router},
+    managed_agent_host_seats::managed_agent_host_seat_router,
+    model_provider_credentials::ModelProviderCredentialRegistryV1,
     participant_handoff::{FixedDaemonParticipantConsoleGatewayV1, ParticipantHandoffBrokerV1},
     room_creation::{HttpDaemonRoomCreatorV1, RoomCreationSupervisorV1},
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
+    room_operator_view::{
+        HttpDaemonRoomOperatorProjectionV1, RoomOperatorViewSupervisorV1, room_operator_view_router,
+    },
     rooms::HttpDaemonRoomSource,
     runner_attention::{
         FileRunnerRestartStoreV1, HttpDaemonRunnerAttentionSourceV1, LiveRunnerAttentionSourceV1,
@@ -31,7 +36,7 @@ use worldstream_studio_supervisor::{
     startup_authority::{
         bootstrap_source_for_local_development, establish_host_authority_reference,
     },
-    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates,
+    supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_templates_and_model_provider_credentials,
     task_setup::{
         CatalogTaskLaunchApplicabilitySourceV1, FileAssignedMembershipSourceV1,
         HttpDaemonTaskRuntimeV1, HttpDaemonTaskSetupProvisionerV1, LiveTaskRunnerReadinessSourceV1,
@@ -86,6 +91,10 @@ struct Args {
     /// Owner-controlled directory of approved Runner Template manifests.
     #[arg(long, default_value = "config/runner-templates")]
     runner_templates_dir: PathBuf,
+
+    /// Owner-controlled directory of named protected model-provider credentials.
+    #[arg(long, default_value = "config/model-provider-credentials")]
+    model_provider_credentials_dir: PathBuf,
 
     /// Storage profile configured for the controlled worldstreamd process.
     #[arg(long, default_value = "sqlite-bundled", value_parser = parse_backup_profile)]
@@ -170,6 +179,12 @@ async fn main() -> Result<()> {
     let agent_profiles =
         AgentProfileStoreV1::open(&args.state_dir.join("agent-profiles"), vault.clone())
             .context("Studio Supervisor Agent Profile store is unavailable")?;
+    let model_provider_credentials = ModelProviderCredentialRegistryV1::open(
+        &args.state_dir.join("model-provider-credentials/installed"),
+        &args.model_provider_credentials_dir,
+        vault.clone(),
+    )
+    .context("Studio Supervisor model-provider credential registry is unavailable")?;
     let draft_dependencies = InstalledTaskTemplateDependenciesV1::new(
         ExactActivityPackDraftValidatorV1::new(activity_packs.clone()),
         agent_profiles.clone(),
@@ -239,7 +254,7 @@ async fn main() -> Result<()> {
         &args.state_dir.join("task-setups"),
         room_creation.clone(),
         vault.clone(),
-        task_setup_provisioner,
+        task_setup_provisioner.clone(),
     )
     .context("Studio Supervisor protected Task setup store is unavailable")?
     .with_agent_profiles(agent_profiles.clone())
@@ -260,6 +275,14 @@ async fn main() -> Result<()> {
         LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
         task_runtime,
     );
+    let room_operator_view = RoomOperatorViewSupervisorV1::open(
+        &args.state_dir.join("room-operator-views"),
+        vault.clone(),
+        room_creation.clone(),
+        task_setup_provisioner,
+        HttpDaemonRoomOperatorProjectionV1::new(args.daemon, daemon_timeout),
+    )
+    .map_err(|error| anyhow::anyhow!("room operator view is unavailable: {error:?}"))?;
     let assignment_launch_source = FileAssignedMembershipSourceV1::open(
         &args.state_dir.join("task-setups"),
         agent_profiles.clone(),
@@ -327,7 +350,7 @@ async fn main() -> Result<()> {
         FileAttentionHistoryV1::open(&args.state_dir.join("attention-inbox"))
             .map_err(|error| anyhow::anyhow!("attention inbox is unavailable: {error:?}"))?,
     );
-    let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_and_templates(
+    let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_templates_and_model_provider_credentials(
         source,
         lifecycle,
         vault,
@@ -338,12 +361,15 @@ async fn main() -> Result<()> {
         backups,
         room_creation,
         task_setup,
-        agent_profiles,
+        agent_profiles.clone(),
+        model_provider_credentials,
         participant_handoff,
         task_templates,
     )
     .merge(assignment_mcp_launch_router(assignment_mcp_launches))
-    .merge(managed_agent_host_router(managed_agent_hosts))
+    .merge(managed_agent_host_router(managed_agent_hosts.clone()))
+    .merge(managed_agent_host_seat_router(agent_profiles, managed_agent_hosts))
+    .merge(room_operator_view_router(room_operator_view))
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
     axum::serve(listener, router)

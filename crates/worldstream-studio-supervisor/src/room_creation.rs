@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use worldstream_protocol::{
     AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, CreateRoomResponse,
-    MAX_MESSAGE_BYTES,
+    MAX_MESSAGE_BYTES, PrincipalKind, UlidString,
 };
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
@@ -93,6 +93,20 @@ pub struct RoomCreationStatusV1 {
     pub attempts: u32,
     pub room_id: Option<String>,
     pub attention: Option<RoomCreationAttentionV1>,
+}
+
+/// Internal binding for the one reviewed Genesis Operator Membership. It is
+/// never serialized into browser status and is only consumed to provision its
+/// read-only Capability later.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "canonical Room, Member, and Principal identity names must remain explicit"
+)]
+pub(crate) struct ReviewedOperatorMembershipBindingV1 {
+    pub room_id: String,
+    pub member_id: String,
+    pub principal_id: String,
 }
 
 impl From<RoomCreationOperationV1> for RoomCreationStatusV1 {
@@ -323,6 +337,65 @@ impl RoomCreationSupervisorV1 {
     pub fn status(&self, draft_id: &str) -> Result<RoomCreationOperationV1, RoomCreationErrorV1> {
         let _guard = self.lock();
         self.load_unlocked(draft_id)
+    }
+
+    /// Finds only an explicitly reviewed Genesis Operator Membership by its
+    /// committed Room identity. No Host authority is converted into membership
+    /// and no late Core mutation is attempted.
+    pub(crate) fn reviewed_operator_membership(
+        &self,
+        room_id: &str,
+    ) -> Result<Option<ReviewedOperatorMembershipBindingV1>, RoomCreationErrorV1> {
+        let _guard = self.lock();
+        let entries =
+            fs::read_dir(self.root.as_ref()).map_err(|_| RoomCreationErrorV1::Unavailable)?;
+        let mut found = None;
+        for entry in entries {
+            let path = entry.map_err(|_| RoomCreationErrorV1::Unavailable)?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let draft_id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            let operation = self.load_unlocked(draft_id)?;
+            if operation.room_id.as_deref() != Some(room_id) || !operation.review.operator_view {
+                continue;
+            }
+            let response = operation
+                .response
+                .as_ref()
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            let index = operation
+                .request
+                .members
+                .iter()
+                .position(|member| {
+                    member.access_mode == AccessMode::Operator
+                        && member.principal_kind == PrincipalKind::Human
+                        && member.role.is_none()
+                })
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            let member = operation
+                .request
+                .members
+                .get(index)
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            let member_id = response
+                .member_ids
+                .get(index)
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            let binding = ReviewedOperatorMembershipBindingV1 {
+                room_id: room_id.to_owned(),
+                member_id: member_id.clone(),
+                principal_id: member.principal_id.clone(),
+            };
+            if found.replace(binding).is_some() {
+                return Err(RoomCreationErrorV1::Unavailable);
+            }
+        }
+        Ok(found)
     }
 
     /// Lists every retained browser-safe creation status in stable draft order.
@@ -594,7 +667,7 @@ fn prepare_operation(draft: &RoomDraftV1) -> Result<RoomCreationOperationV1, Roo
         .pack
         .clone()
         .ok_or(RoomCreationErrorV1::InvalidDraft)?;
-    let members = draft
+    let mut members = draft
         .seats
         .iter()
         .filter_map(|seat| {
@@ -611,6 +684,14 @@ fn prepare_operation(draft: &RoomDraftV1) -> Result<RoomCreationOperationV1, Roo
             })
         })
         .collect::<Result<Vec<_>, RoomCreationErrorV1>>()?;
+    if draft.operator_view {
+        members.push(CreateMember {
+            principal_id: next_ulid()?,
+            principal_kind: PrincipalKind::Human,
+            role: None,
+            access_mode: AccessMode::Operator,
+        });
+    }
     if members.is_empty() {
         return Err(RoomCreationErrorV1::InvalidDraft);
     }
@@ -627,6 +708,7 @@ fn prepare_operation(draft: &RoomDraftV1) -> Result<RoomCreationOperationV1, Roo
         configuration: draft.configuration.clone(),
         seats: draft.seats.clone(),
         readiness: draft.readiness.clone(),
+        operator_view: draft.operator_view,
     };
     let review_bytes =
         serde_json::to_vec(&review).map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
@@ -675,7 +757,7 @@ fn validate_operation(
 }
 
 fn request_matches_review(request: &CreateRoomRequest, review: &RoomDraftReviewV1) -> bool {
-    let expected_members = review
+    let mut expected_members = review
         .seats
         .iter()
         .filter_map(|seat| {
@@ -689,6 +771,19 @@ fn request_matches_review(request: &CreateRoomRequest, review: &RoomDraftReviewV
             })
         })
         .collect::<Vec<_>>();
+    if review.operator_view {
+        let Some(operator) = request.members.last() else {
+            return false;
+        };
+        if operator.principal_kind != PrincipalKind::Human
+            || operator.access_mode != AccessMode::Operator
+            || operator.role.is_some()
+            || operator.principal_id.parse::<UlidString>().is_err()
+        {
+            return false;
+        }
+        expected_members.push(operator.clone());
+    }
     review.pack.as_ref() == Some(&request.pack)
         && review.configuration == request.configuration
         && expected_members == request.members
@@ -764,6 +859,20 @@ fn random_identity(prefix: &str) -> Result<String, RoomCreationErrorV1> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| RoomCreationErrorV1::Unavailable)?;
     Ok(format!("{prefix}-{}", lower_hex(&bytes)))
+}
+
+fn next_ulid() -> Result<String, RoomCreationErrorV1> {
+    const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| RoomCreationErrorV1::Unavailable)?;
+    bytes[0] &= 0x3f;
+    let mut value = u128::from_be_bytes(bytes);
+    let mut encoded = [b'0'; 26];
+    for character in encoded.iter_mut().rev() {
+        *character = CROCKFORD[(value & 0x1f) as usize];
+        value >>= 5;
+    }
+    String::from_utf8(encoded.to_vec()).map_err(|_| RoomCreationErrorV1::Unavailable)
 }
 
 fn random_suffix() -> Result<String, RoomCreationErrorV1> {

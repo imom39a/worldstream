@@ -18,13 +18,13 @@ use worldstream_studio_supervisor::{
 const AUTHORITY: [u8; 32] = [0xa7; 32];
 
 fn test_directory() -> TempDir {
-    let directory = tempdir().unwrap_or_else(|error| panic!("temporary state: {error}"));
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary state: {error}"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
 
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-            .unwrap_or_else(|error| panic!("secure temporary root: {error}"));
+            .unwrap_or_else(|error| unreachable!("secure temporary root: {error}"));
     }
     directory
 }
@@ -32,10 +32,10 @@ fn test_directory() -> TempDir {
 fn bootstrap_source_at(root: &Path, name: &str, bytes: &[u8]) -> SecretSource {
     let path = root.join(name);
     let mut file = create_owner_only_file(&path)
-        .unwrap_or_else(|error| panic!("create bootstrap secret: {error}"));
+        .unwrap_or_else(|error| unreachable!("create bootstrap secret: {error}"));
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
-        .unwrap_or_else(|error| panic!("write bootstrap secret: {error}"));
+        .unwrap_or_else(|error| unreachable!("write bootstrap secret: {error}"));
     SecretSource::File(path)
 }
 
@@ -57,23 +57,23 @@ fn fresh_local_development_creates_an_owner_only_bootstrap_source_before_importi
         StorageProfile::SqliteBundled,
         Some(&configured),
     )
-    .unwrap_or_else(|error| panic!("prepare fresh bootstrap source: {error}"));
+    .unwrap_or_else(|error| unreachable!("prepare fresh bootstrap source: {error}"));
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("open vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
     let reference = establish_host_authority_reference(&state, &vault, Some(&source), None)
-        .unwrap_or_else(|error| panic!("establish imported authority: {error}"));
+        .unwrap_or_else(|error| unreachable!("establish imported authority: {error}"));
 
     assert_eq!(
         vault
             .resolve(SecretKindV1::HostAuthority, &reference)
-            .unwrap_or_else(|error| panic!("resolve imported authority: {error}"))
+            .unwrap_or_else(|error| unreachable!("resolve imported authority: {error}"))
             .as_bytes()
             .len(),
         32
     );
     assert!(
         !fs::read(source_path)
-            .unwrap_or_else(|error| panic!("read generated source: {error}"))
+            .unwrap_or_else(|error| unreachable!("read generated source: {error}"))
             .windows(b"Bearer ".len())
             .any(|window| window == b"Bearer ")
     );
@@ -90,10 +90,10 @@ fn interrupted_temporary_bootstrap_publication_recovers_on_the_next_fresh_start(
         .path()
         .join(".authority-bootstrap-interrupted.tmp");
     let mut file = create_owner_only_file(&temporary)
-        .unwrap_or_else(|error| panic!("create interrupted temporary source: {error}"));
+        .unwrap_or_else(|error| unreachable!("create interrupted temporary source: {error}"));
     file.write_all(b"partial")
         .and_then(|()| file.sync_all())
-        .unwrap_or_else(|error| panic!("write interrupted temporary source: {error}"));
+        .unwrap_or_else(|error| unreachable!("write interrupted temporary source: {error}"));
 
     let first = bootstrap_source_for_local_development(
         &state,
@@ -101,22 +101,22 @@ fn interrupted_temporary_bootstrap_publication_recovers_on_the_next_fresh_start(
         StorageProfile::SqliteBundled,
         Some(&configured),
     )
-    .unwrap_or_else(|error| panic!("recover bootstrap publication: {error}"));
+    .unwrap_or_else(|error| unreachable!("recover bootstrap publication: {error}"));
     let first_material = first
         .read_exact_256()
-        .unwrap_or_else(|error| panic!("read recovered bootstrap source: {error}"));
+        .unwrap_or_else(|error| unreachable!("read recovered bootstrap source: {error}"));
     let repeat = bootstrap_source_for_local_development(
         &state,
         &data,
         StorageProfile::SqliteBundled,
         Some(&configured),
     )
-    .unwrap_or_else(|error| panic!("repeat bootstrap publication: {error}"));
+    .unwrap_or_else(|error| unreachable!("repeat bootstrap publication: {error}"));
 
     assert_eq!(
         repeat
             .read_exact_256()
-            .unwrap_or_else(|error| panic!("read repeated bootstrap source: {error}")),
+            .unwrap_or_else(|error| unreachable!("read repeated bootstrap source: {error}")),
         first_material
     );
     assert!(temporary.is_file());
@@ -148,18 +148,18 @@ fn concurrent_fresh_bootstrap_initializers_reuse_one_published_source() {
     let first = workers
         .remove(0)
         .join()
-        .unwrap_or_else(|_| panic!("first initializer panicked"))
-        .unwrap_or_else(|error| panic!("first initializer: {error}"));
+        .unwrap_or_else(|_| unreachable!("first initializer panicked"))
+        .unwrap_or_else(|error| unreachable!("first initializer: {error}"));
     let second = workers
         .remove(0)
         .join()
-        .unwrap_or_else(|_| panic!("second initializer panicked"))
-        .unwrap_or_else(|error| panic!("second initializer: {error}"));
+        .unwrap_or_else(|_| unreachable!("second initializer panicked"))
+        .unwrap_or_else(|error| unreachable!("second initializer: {error}"));
 
     assert_eq!(first, second);
     assert_eq!(
         fs::metadata(source_path)
-            .unwrap_or_else(|error| panic!("published bootstrap metadata: {error}"))
+            .unwrap_or_else(|error| unreachable!("published bootstrap metadata: {error}"))
             .len(),
         32
     );
@@ -169,9 +169,9 @@ fn concurrent_fresh_bootstrap_initializers_reuse_one_published_source() {
 fn missing_bootstrap_source_with_existing_local_state_never_rotates_authority() {
     let directory = test_directory();
     let state = directory.path().join("studio");
-    fs::create_dir_all(&state).unwrap_or_else(|error| panic!("create state: {error}"));
+    fs::create_dir_all(&state).unwrap_or_else(|error| unreachable!("create state: {error}"));
     fs::write(state.join("existing-state"), b"retained")
-        .unwrap_or_else(|error| panic!("write state marker: {error}"));
+        .unwrap_or_else(|error| unreachable!("write state marker: {error}"));
     let configured = SecretSource::File(directory.path().join("missing.secret"));
 
     let error = bootstrap_source_for_local_development(
@@ -180,7 +180,8 @@ fn missing_bootstrap_source_with_existing_local_state_never_rotates_authority() 
         StorageProfile::SqliteBundled,
         Some(&configured),
     )
-    .expect_err("existing state with a missing source must fail closed");
+    .err()
+    .unwrap_or_else(|| unreachable!("existing state with a missing source must fail closed"));
 
     assert!(error.to_string().contains("bootstrap authority"));
     assert!(!error.to_string().contains("missing.secret"));
@@ -194,9 +195,9 @@ fn inaccessible_existing_local_state_never_allows_bootstrap_generation() {
 
     let directory = test_directory();
     let state = directory.path().join("studio");
-    fs::create_dir(&state).unwrap_or_else(|error| panic!("create retained state: {error}"));
+    fs::create_dir(&state).unwrap_or_else(|error| unreachable!("create retained state: {error}"));
     fs::set_permissions(&state, fs::Permissions::from_mode(0o000))
-        .unwrap_or_else(|error| panic!("make retained state inaccessible: {error}"));
+        .unwrap_or_else(|error| unreachable!("make retained state inaccessible: {error}"));
     let configured = SecretSource::File(directory.path().join("missing.secret"));
 
     let result = bootstrap_source_for_local_development(
@@ -206,9 +207,11 @@ fn inaccessible_existing_local_state_never_allows_bootstrap_generation() {
         Some(&configured),
     );
     fs::set_permissions(&state, fs::Permissions::from_mode(0o700))
-        .unwrap_or_else(|error| panic!("restore retained state permissions: {error}"));
+        .unwrap_or_else(|error| unreachable!("restore retained state permissions: {error}"));
 
-    let error = result.expect_err("inaccessible retained state must fail closed");
+    let error = result
+        .err()
+        .unwrap_or_else(|| unreachable!("inaccessible retained state must fail closed"));
     assert!(error.to_string().contains("bootstrap authority"));
 }
 
@@ -223,7 +226,8 @@ fn missing_postgres_bootstrap_source_requires_an_owner_provided_secret() {
         StorageProfile::PostgresPrimary,
         Some(&configured),
     )
-    .expect_err("postgres startup must not create host authority material");
+    .err()
+    .unwrap_or_else(|| unreachable!("postgres startup must not create host authority material"));
 
     assert!(error.to_string().contains("bootstrap authority"));
 }
@@ -233,7 +237,7 @@ fn first_startup_imports_the_configured_host_authority_behind_one_opaque_referen
     let directory = test_directory();
     let state = directory.path().join("studio");
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("open vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
 
     let reference = establish_host_authority_reference(
         &state,
@@ -241,17 +245,17 @@ fn first_startup_imports_the_configured_host_authority_behind_one_opaque_referen
         Some(&bootstrap_source(directory.path(), &AUTHORITY)),
         None,
     )
-    .unwrap_or_else(|error| panic!("establish host authority: {error}"));
+    .unwrap_or_else(|error| unreachable!("establish host authority: {error}"));
 
     assert_eq!(
         vault
             .resolve(SecretKindV1::HostAuthority, &reference)
-            .unwrap_or_else(|error| panic!("resolve imported authority: {error}"))
+            .unwrap_or_else(|error| unreachable!("resolve imported authority: {error}"))
             .as_bytes(),
         AUTHORITY
     );
     let binding = fs::read(state.join("host-authority-reference.json"))
-        .unwrap_or_else(|error| panic!("read retained binding: {error}"));
+        .unwrap_or_else(|error| unreachable!("read retained binding: {error}"));
     assert!(
         !binding
             .windows(b"\xa7\xa7".len())
@@ -270,18 +274,18 @@ fn repeat_startup_and_supervisor_restart_reuse_the_same_host_authority_reference
     let state = directory.path().join("studio");
     let source = bootstrap_source(directory.path(), &AUTHORITY);
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("open vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
     let first = establish_host_authority_reference(&state, &vault, Some(&source), None)
-        .unwrap_or_else(|error| panic!("first startup: {error}"));
+        .unwrap_or_else(|error| unreachable!("first startup: {error}"));
     let repeat = establish_host_authority_reference(&state, &vault, Some(&source), None)
-        .unwrap_or_else(|error| panic!("repeat startup: {error}"));
+        .unwrap_or_else(|error| unreachable!("repeat startup: {error}"));
     drop(vault);
 
     let restarted_vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("reopen vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("reopen vault: {error}"));
     let restarted =
         establish_host_authority_reference(&state, &restarted_vault, Some(&source), None)
-            .unwrap_or_else(|error| panic!("restart startup: {error}"));
+            .unwrap_or_else(|error| unreachable!("restart startup: {error}"));
 
     assert_eq!(first, repeat);
     assert_eq!(repeat, restarted);
@@ -293,19 +297,19 @@ fn interrupted_first_import_recovers_only_the_exact_matching_single_retained_aut
     let state = directory.path().join("studio");
     let source = bootstrap_source(directory.path(), &AUTHORITY);
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("open vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
     let imported = vault
         .store(SecretKindV1::HostAuthority, &AUTHORITY)
-        .unwrap_or_else(|error| panic!("simulate interrupted import: {error}"));
+        .unwrap_or_else(|error| unreachable!("simulate interrupted import: {error}"));
     let temporary = state.join(".host-authority-reference-interrupted.tmp");
     let mut file = create_owner_only_file(&temporary)
-        .unwrap_or_else(|error| panic!("create interrupted binding: {error}"));
+        .unwrap_or_else(|error| unreachable!("create interrupted binding: {error}"));
     file.write_all(b"{")
         .and_then(|()| file.sync_all())
-        .unwrap_or_else(|error| panic!("write interrupted binding: {error}"));
+        .unwrap_or_else(|error| unreachable!("write interrupted binding: {error}"));
 
     let recovered = establish_host_authority_reference(&state, &vault, Some(&source), None)
-        .unwrap_or_else(|error| panic!("recover interrupted import: {error}"));
+        .unwrap_or_else(|error| unreachable!("recover interrupted import: {error}"));
 
     assert_eq!(recovered, imported);
     assert!(state.join("host-authority-reference.json").is_file());
@@ -317,19 +321,20 @@ fn malformed_published_binding_fails_closed_without_repointing_authority() {
     let state = directory.path().join("studio");
     let source = bootstrap_source(directory.path(), &AUTHORITY);
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("open vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
     let retained = vault
         .store(SecretKindV1::HostAuthority, &AUTHORITY)
-        .unwrap_or_else(|error| panic!("store authority: {error}"));
+        .unwrap_or_else(|error| unreachable!("store authority: {error}"));
     let binding = state.join("host-authority-reference.json");
     let mut file = create_owner_only_file(&binding)
-        .unwrap_or_else(|error| panic!("create malformed binding: {error}"));
+        .unwrap_or_else(|error| unreachable!("create malformed binding: {error}"));
     file.write_all(b"{")
         .and_then(|()| file.sync_all())
-        .unwrap_or_else(|error| panic!("write malformed binding: {error}"));
+        .unwrap_or_else(|error| unreachable!("write malformed binding: {error}"));
 
     let error = establish_host_authority_reference(&state, &vault, Some(&source), None)
-        .expect_err("malformed published binding must stop startup");
+        .err()
+        .unwrap_or_else(|| unreachable!("malformed published binding must stop startup"));
 
     assert!(error.to_string().contains("malformed"));
     assert!(!error.to_string().contains(retained.as_str()));
@@ -340,11 +345,12 @@ fn missing_or_malformed_bootstrap_authority_fails_closed_without_disclosure() {
     let directory = test_directory();
     let state = directory.path().join("studio");
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("open vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
     let missing = SecretSource::File(directory.path().join("missing.secret"));
 
     let missing_error = establish_host_authority_reference(&state, &vault, Some(&missing), None)
-        .expect_err("missing bootstrap source must stop startup");
+        .err()
+        .unwrap_or_else(|| unreachable!("missing bootstrap source must stop startup"));
     assert!(missing_error.to_string().contains("bootstrap authority"));
     assert!(!missing_error.to_string().contains("missing.secret"));
     assert!(!missing_error.to_string().contains("delete"));
@@ -352,7 +358,8 @@ fn missing_or_malformed_bootstrap_authority_fails_closed_without_disclosure() {
     let malformed = bootstrap_source(directory.path(), &[0xa7; 31]);
     let malformed_error =
         establish_host_authority_reference(&state, &vault, Some(&malformed), None)
-            .expect_err("malformed bootstrap source must stop startup");
+            .err()
+            .unwrap_or_else(|| unreachable!("malformed bootstrap source must stop startup"));
     assert!(malformed_error.to_string().contains("bootstrap authority"));
     assert!(!malformed_error.to_string().contains("a7"));
 }
@@ -363,16 +370,19 @@ fn supplied_reference_must_match_the_retained_authority_and_never_repoints_it() 
     let state = directory.path().join("studio");
     let source = bootstrap_source(directory.path(), &AUTHORITY);
     let vault = FileSecretVaultV1::open(&state.join("secrets"))
-        .unwrap_or_else(|error| panic!("open vault: {error}"));
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
     let retained = establish_host_authority_reference(&state, &vault, Some(&source), None)
-        .unwrap_or_else(|error| panic!("first startup: {error}"));
+        .unwrap_or_else(|error| unreachable!("first startup: {error}"));
     let mismatched = vault
         .store(SecretKindV1::HostAuthority, &[0xb8; 32])
-        .unwrap_or_else(|error| panic!("store distinct authority: {error}"));
+        .unwrap_or_else(|error| unreachable!("store distinct authority: {error}"));
 
     let error =
         establish_host_authority_reference(&state, &vault, Some(&source), Some(&mismatched))
-            .expect_err("different supplied reference must not repoint retained authority");
+            .err()
+            .unwrap_or_else(|| {
+                unreachable!("different supplied reference must not repoint retained authority")
+            });
 
     assert!(error.to_string().contains("does not match"));
     assert!(!error.to_string().contains(mismatched.as_str()));
@@ -380,11 +390,14 @@ fn supplied_reference_must_match_the_retained_authority_and_never_repoints_it() 
         bootstrap_source_at(directory.path(), "changed-authority.secret", &[0xc9; 32]);
     let changed_error =
         establish_host_authority_reference(&state, &vault, Some(&changed_source), None)
-            .expect_err("changed bootstrap authority must not replace retained authority");
+            .err()
+            .unwrap_or_else(|| {
+                unreachable!("changed bootstrap authority must not replace retained authority")
+            });
     assert!(changed_error.to_string().contains("does not match"));
     assert!(!changed_error.to_string().contains("c9"));
     let still_retained =
         establish_host_authority_reference(&state, &vault, Some(&source), Some(&retained))
-            .unwrap_or_else(|error| panic!("matching supplied reference: {error}"));
+            .unwrap_or_else(|error| unreachable!("matching supplied reference: {error}"));
     assert_eq!(still_retained, retained);
 }

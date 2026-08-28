@@ -112,9 +112,13 @@ export async function resumeRetainedParticipantConsole(
 /** Cookie-backed client whose requests contain no Room, Membership, or bearer. */
 export class ParticipantHandoffClient {
   private readonly endpoint: string;
+  private readonly fetch: typeof globalThis.fetch;
 
-  constructor(endpoint: string, private readonly fetch: typeof globalThis.fetch = globalThis.fetch) {
+  constructor(endpoint: string, fetch?: typeof globalThis.fetch) {
     this.endpoint = exactLoopbackEndpoint(endpoint);
+    this.fetch = fetch === undefined
+      ? (input, init) => globalThis.fetch(input, init)
+      : (input, init) => fetch(input, init);
   }
 
   async redeem(handoff: string): Promise<ParticipantSessionStatus> {

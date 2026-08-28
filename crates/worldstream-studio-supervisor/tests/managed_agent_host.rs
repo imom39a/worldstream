@@ -11,6 +11,7 @@ use std::{
 
 use tempfile::tempdir;
 
+use worldstream_studio_supervisor::agent_profiles::ManagedReferenceProviderV1;
 use worldstream_studio_supervisor::managed_agent_host::{
     ManagedAgentHostErrorV1, ManagedAgentHostLaunchPlanV1, ManagedAgentHostOperationsV1,
     ManagedAgentHostPreparedLaunchV1, ManagedAgentHostProcessLauncherV1, ManagedAgentHostProcessV1,
@@ -95,6 +96,31 @@ impl ManagedAgentHostProcessLauncherV1 for RecordingProcessLauncher {
 
 struct FixedProcess {
     observed_at_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ExitingProcessLauncher;
+
+impl ManagedAgentHostProcessLauncherV1 for ExitingProcessLauncher {
+    fn launch_bridged(
+        &self,
+        _plan: &ManagedAgentHostLaunchPlanV1,
+        _credential: &zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Box<dyn ManagedAgentHostProcessV1>, ManagedAgentHostErrorV1> {
+        Ok(Box::new(ExitedProcess))
+    }
+}
+
+struct ExitedProcess;
+
+impl ManagedAgentHostProcessV1 for ExitedProcess {
+    fn try_wait(&mut self) -> Result<Option<i32>, ManagedAgentHostErrorV1> {
+        Ok(Some(17))
+    }
+
+    fn stop(&mut self) -> Result<(), ManagedAgentHostErrorV1> {
+        Ok(())
+    }
 }
 
 impl ManagedAgentHostProcessV1 for FixedProcess {
@@ -223,6 +249,46 @@ fn durable_post_setup_operation_surfaces_restart_recovery_without_private_materi
     ] {
         assert!(!safe.contains(prohibited));
     }
+}
+
+#[test]
+fn child_exit_is_retained_across_later_status_polls() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let root = directory
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|error| unreachable!("root: {error}"));
+    let operations = ManagedAgentHostOperationsV1::open_with(
+        &root.join("managed"),
+        FixedStartSource::new(root),
+        ExitingProcessLauncher,
+    )
+    .unwrap_or_else(|error| unreachable!("host operations: {error:?}"));
+    operations
+        .start(ASSIGNMENT)
+        .unwrap_or_else(|error| unreachable!("start host: {error:?}"));
+
+    let first = operations
+        .status(ASSIGNMENT)
+        .unwrap_or_else(|error| unreachable!("first status: {error:?}"));
+    assert_eq!(
+        first.failure.as_ref().map(|value| value.code.as_str()),
+        Some("host_exited")
+    );
+    assert!(
+        first
+            .failure
+            .as_ref()
+            .is_some_and(|value| value.message.contains("17"))
+    );
+
+    let later = operations
+        .status(ASSIGNMENT)
+        .unwrap_or_else(|error| unreachable!("later status: {error:?}"));
+    assert_eq!(
+        later.failure.as_ref().map(|value| value.code.as_str()),
+        Some("host_exited")
+    );
 }
 
 #[test]
@@ -496,6 +562,7 @@ fn separate_reference_host_process_completes_one_real_stdio_mcp_turn_via_loopbac
 import json, sys
 calls = open({calls:?}, "a", buffering=1)
 completed = False
+terminal_submission = False
 activation_polls = 0
 for line in sys.stdin:
     request = json.loads(line)
@@ -510,26 +577,26 @@ for line in sys.stdin:
         name = params["name"]
         arguments = params["arguments"]
         calls.write(json.dumps({{"name":name,"arguments":arguments}}) + "\n")
-        if completed and name == "worldstream.next_activation":
-            continue
-        if name == "worldstream.next_activation":
+        if name == "worldstream.prepare_managed_turn":
             activation_polls += 1
-            if activation_polls == 1:
+            if activation_polls == 1 or completed:
                 result = {{"content":[],"structuredContent":{{"code":"assignment_activation_none_available","retryable":True,"next_action":"wait_then_request_next_activation"}},"isError":True}}
                 print(json.dumps({{"jsonrpc":"2.0","id":request["id"],"result":result}}), flush=True)
                 continue
-            value = {{"activation_cursor":4,"context_hash":"blake3:" + "a"*64,"context":{{"lease_generation":2}}}}
-        elif name == "worldstream.observe":
-            value = {{"observations":[{{"frame_seq":9,"observation":{{"turn":3}}}}]}}
-        elif name == "worldstream.acknowledge":
-            value = {{"cursor":9}}
-        elif name == "worldstream.list_current_action_offers":
-            value = {{"precondition":{{"room_seq":7,"head_hash":"blake3:" + "b"*64}},"offers":[{{"offer_id":"7:0:digest","action_type":"increment","payload_schema":{{"schema":{{"type":"object"}}}}}}]}}
-        elif name == "worldstream.submit_action":
-            value = {{"status":"accepted"}}
-        elif name == "worldstream.complete_activation":
-            value = {{"outcome":"completed"}}
-            completed = True
+            if terminal_submission:
+                completed = True
+                value = {{"schema":"worldstream/managed-turn-preparation/v1","state":"reconciled"}}
+                result = {{"content":[],"structuredContent":value,"isError":False}}
+                print(json.dumps({{"jsonrpc":"2.0","id":request["id"],"result":result}}), flush=True)
+                continue
+            value = {{"schema":"worldstream/managed-turn-preparation/v1","instruction":"Select exactly one listed offer and return its offer_id and payload.","observation":{{"observations":[{{"frame_seq":9,"observation":{{"turn":3}}}}]}},"offers":{{"precondition":{{"room_seq":7,"head_hash":"blake3:" + "b"*64}},"offers":[{{"offer_id":"7:0:digest","action_type":"increment","payload_schema":{{"schema":{{"type":"object"}}}}}}]}}}}
+        elif name == "worldstream.submit_managed_turn_action":
+            if terminal_submission:
+                raise RuntimeError("unexpected duplicate managed submission")
+            terminal_submission = True
+            result = {{"content":[],"structuredContent":{{"code":"assignment_activation_lease_expired","retryable":True,"next_action":"request_next_activation"}},"isError":True}}
+            print(json.dumps({{"jsonrpc":"2.0","id":request["id"],"result":result}}), flush=True)
+            continue
         else:
             raise RuntimeError("unexpected tool")
         result = {{"content":[],"structuredContent":value,"isError":False}}
@@ -592,12 +659,12 @@ for line in sys.stdin:
         std::env::var("CARGO_BIN_EXE_worldstream-managed-agent-host")
             .unwrap_or_else(|error| unreachable!("managed host binary: {error}")),
     );
-    let plan = ManagedAgentHostLaunchPlanV1::new(
+    let plan = ManagedAgentHostLaunchPlanV1::new_managed_reference(
         &helper,
         directory.path(),
         SECRET_REFERENCE,
         &host,
-        "openai-compatible",
+        ManagedReferenceProviderV1::OpenAiCompatible,
         provider_address,
         "test-model",
     )
@@ -607,13 +674,13 @@ for line in sys.stdin:
         .unwrap_or_else(|error| unreachable!("launch host: {error:?}"));
     let deadline = Instant::now() + Duration::from_mins(1);
     loop {
-        let next_activation_calls = std::fs::read_to_string(&calls).map_or(0, |calls| {
+        let managed_turn_calls = std::fs::read_to_string(&calls).map_or(0, |calls| {
             calls
                 .lines()
-                .filter(|line| line.contains("worldstream.next_activation"))
+                .filter(|line| line.contains("worldstream.prepare_managed_turn"))
                 .count()
         });
-        if next_activation_calls >= 3 {
+        if managed_turn_calls >= 4 {
             break;
         }
         assert_eq!(
@@ -624,7 +691,7 @@ for line in sys.stdin:
         );
         assert!(
             Instant::now() < deadline,
-            "host did not observe the completed first turn; calls={}",
+            "host did not recover the terminal post-model lease; calls={}",
             std::fs::read_to_string(&calls).unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -639,12 +706,8 @@ for line in sys.stdin:
     let retained_calls =
         std::fs::read_to_string(calls).unwrap_or_else(|error| unreachable!("read calls: {error}"));
     for tool in [
-        "worldstream.next_activation",
-        "worldstream.observe",
-        "worldstream.acknowledge",
-        "worldstream.list_current_action_offers",
-        "worldstream.submit_action",
-        "worldstream.complete_activation",
+        "worldstream.prepare_managed_turn",
+        "worldstream.submit_managed_turn_action",
     ] {
         assert!(retained_calls.contains(tool), "missing tool {tool}");
     }
@@ -662,19 +725,34 @@ for line in sys.stdin:
                 .zip(value.get("arguments").cloned())
         })
         .collect::<Vec<_>>();
-    let index = |name: &str| {
-        calls
-            .iter()
-            .position(|(candidate, _)| candidate == name)
-            .unwrap_or_else(|| unreachable!("missing tool {name}"))
-    };
-    assert!(index("worldstream.submit_action") < index("worldstream.acknowledge"));
-    assert!(index("worldstream.acknowledge") < index("worldstream.complete_activation"));
-    let completion = &calls[index("worldstream.complete_activation")].1;
+    assert!(calls.iter().all(|(name, _)| {
+        !matches!(
+            name.as_str(),
+            "worldstream.next_activation"
+                | "worldstream.observe"
+                | "worldstream.acknowledge"
+                | "worldstream.list_current_action_offers"
+                | "worldstream.submit_action"
+                | "worldstream.complete_activation"
+        )
+    }));
+    let completion = &calls
+        .iter()
+        .find(|(name, _)| name == "worldstream.submit_managed_turn_action")
+        .unwrap_or_else(|| unreachable!("managed turn submission"))
+        .1;
     assert_eq!(
         completion
-            .get("disposition")
+            .get("offer_id")
             .and_then(serde_json::Value::as_str),
-        Some("handled")
+        Some("7:0:digest")
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(name, _)| name == "worldstream.submit_managed_turn_action")
+            .count(),
+        1,
+        "terminal recovery must reuse the retained Action without another model-selected submission"
     );
 }

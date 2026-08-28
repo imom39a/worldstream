@@ -871,6 +871,44 @@ where
     reconcile_record(authority, ledger, gateway, &identity, &record, &request)
 }
 
+/// Reconciles an Action already durably reserved under its exact stable identity.
+///
+/// This managed-turn recovery seam never reconstructs an offer, payload, or
+/// precondition from a new model call. It resumes only the immutable request
+/// retained by the generic Action operation ledger.
+///
+/// # Errors
+///
+/// Fails closed when the exact retained request is absent, malformed, or no
+/// longer belongs to the sealed assignment authority.
+pub fn resume_reserved_action<L, G>(
+    authority: &AssignedMembershipAuthorityV1,
+    ledger: &L,
+    gateway: &G,
+    operation_id: &str,
+) -> Result<AssignmentMcpActionSubmitResultV1, AssignmentMcpActionErrorV1>
+where
+    L: AssignmentMcpOperationLedgerV1,
+    G: AssignmentMcpActionGatewayV1,
+{
+    let identity = action_identity(authority.assignment_id(), operation_id)?;
+    let record = ledger
+        .load(&identity)
+        .map_err(map_operation_error)?
+        .ok_or(AssignmentMcpActionErrorV1::OperationConflict)?;
+    let request: AssignmentMcpExactActionRequestV1 =
+        serde_json::from_slice(record.canonical_request())
+            .map_err(|_| AssignmentMcpActionErrorV1::InvalidDaemonData)?;
+    if request.assignment_id != authority.assignment_id()
+        || request.operation_id != operation_id
+        || request.request_id != operation_id
+        || request.action_id != operation_id
+    {
+        return Err(AssignmentMcpActionErrorV1::OperationConflict);
+    }
+    reconcile_record(authority, ledger, gateway, &identity, &record, &request)
+}
+
 fn action_identity(
     assignment_id: &str,
     operation_id: &str,

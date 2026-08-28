@@ -76,6 +76,15 @@ describe("five-step Room draft wizard", () => {
     expect(dom).toContain(digest.slice(0, 20));
   });
 
+  it("makes the reviewed read-only operator view an explicit opt-in", () => {
+    const dom = renderToStaticMarkup(
+      <RoomDraftWizard draft={configuredDraft()} catalog={catalog} detail={detail} activeStep="review" />,
+    );
+    expect(dom).toContain("Include read-only operator view");
+    expect(dom).toContain("nonparticipant Operator Membership at Room Genesis");
+    expect(dom).toContain("Not included");
+  });
+
   it("renders schema-derived fields and bounded pointer errors", () => {
     const dom = renderToStaticMarkup(
       <RoomDraftWizard

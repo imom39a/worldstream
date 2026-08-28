@@ -5,6 +5,7 @@ import {
   isTaskAgentAttention,
   loadTaskAgentAttention,
   newRunnerRestartOperationId,
+  requestManagedHostSeatAction,
   requestRunnerRestart,
 } from "./runnerAttention";
 
@@ -63,6 +64,19 @@ describe("runner attention browser boundary", () => {
       /^[0-9A-HJKMNP-TV-Z]{26}$/,
     );
     expect(() => newRunnerRestartOperationId(-1, new Uint8Array(10))).toThrow();
+  });
+
+  it("uses the strict CSRF-resistant managed-host action DTO", async () => {
+    const fetcher = vi.fn(async () => new Response("{}", { status: 202 }));
+    await expect(requestManagedHostSeatAction(ROOM, "navigator-agent", "start", fetcher)).resolves.toBe(true);
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/v1/rooms/${ROOM}/agent-seats/navigator-agent/managed-host/start`,
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ schema: "worldstream/studio-managed-agent-host-action/v1" }),
+      }),
+    );
   });
 });
 

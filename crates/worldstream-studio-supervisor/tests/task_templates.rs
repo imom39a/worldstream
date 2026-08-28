@@ -519,6 +519,7 @@ fn production_dependencies_enforce_pack_schema_profile_secret_and_runner_compati
         configuration: source.configuration,
         seats: source.seats,
         readiness: source.readiness,
+        operator_view: source.operator_view,
     };
     assert_eq!(
         dependencies.inspect(&revision),

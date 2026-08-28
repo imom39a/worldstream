@@ -44,23 +44,23 @@ use worldstream_core::{
     RoomAdmissionQueueSnapshotV1,
 };
 use worldstream_protocol::{
-    ACTIVITY_PACK_CATALOG_VERSION, ActionAccepted, ActionRejected, ActionSubmit, ActivationClaim,
-    ActivationLeaseOperation, ActivationOfferRequest, ActivationOffers, ActivationOperationReply,
-    ActivationResultCode, ActivityPackCatalogAction, ActivityPackCatalogResponse,
-    ActivityPackCatalogRevisionDetail, ActivityPackCatalogRevisionResponse,
-    ActivityPackCatalogRevisionSummary, ActivityPackCatalogRole, ActivityPackCatalogSchema,
-    ActivityPackLobbyCompatibility, BROWSER_WS_TICKET_VERSION, BearerWireV1,
-    BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateRoomRequest,
-    CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope, LobbyLaunchRequest,
-    LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
-    ObservationAck, ObservationDeliver, OperatorActivationStatusV1, OperatorBackupProfileStatus,
-    OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomInventoryPage,
-    OperatorRoomInventoryRequest, OperatorRoomSummary, OperatorRunnerConnectionV1,
-    OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference, ProjectionReset,
-    ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck,
-    RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
-    RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope,
-    WEBSOCKET_SUBPROTOCOL, decode_envelope,
+    ACTIVITY_PACK_CATALOG_VERSION, AccessMode, ActionAccepted, ActionRejected, ActionSubmit,
+    ActivationClaim, ActivationLeaseOperation, ActivationOfferRequest, ActivationOffers,
+    ActivationOperationReply, ActivationResultCode, ActivityPackCatalogAction,
+    ActivityPackCatalogResponse, ActivityPackCatalogRevisionDetail,
+    ActivityPackCatalogRevisionResponse, ActivityPackCatalogRevisionSummary,
+    ActivityPackCatalogRole, ActivityPackCatalogSchema, ActivityPackLobbyCompatibility,
+    BROWSER_WS_TICKET_VERSION, BearerWireV1, BrowserWebSocketTicketIssueResponse, ClientHello,
+    ClientMode, CreateRoomRequest, CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
+    LobbyLaunchRequest, LobbyLaunchResponse, MemberCapabilityProvisionRequestV1,
+    MemberCapabilityProvisionResponseV1, ObservationAck, ObservationDeliver,
+    OperatorActivationStatusV1, OperatorBackupProfileStatus, OperatorLiveBackupPrepareRequest,
+    OperatorLiveBackupStatus, OperatorRoomInventoryPage, OperatorRoomInventoryRequest,
+    OperatorRoomSummary, OperatorRunnerConnectionV1, OperatorRunnerFreshnessV1,
+    OperatorRunnerPresenceV1, PackReference, ProjectionReset, ProjectionResponse, ProtocolEnvelope,
+    ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck, RunnerCapabilityProvisionRequestV1,
+    RunnerCapabilityProvisionResponseV1, RunnerHello, RunnerReady, ServerWelcome, TimerFireRequest,
+    TimerFireResponse, UlidString, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 use worldstream_runtime::{
     CompatibilitySummary, EffectiveConfig, ManifestError, StorageProfile, embedded_manifest,
@@ -528,6 +528,18 @@ fn provisioned_scopes(values: Vec<String>) -> Result<CapabilityScopeSetV1, Backe
         })
         .collect::<Result<Vec<_>, _>>()?;
     CapabilityScopeSetV1::new(scopes).map_err(|_| BackendError::Rejected)
+}
+
+/// The Role is a property of participant access only. A roleless operator or
+/// spectator request must stay roleless all the way through provision retry.
+pub(crate) fn member_capability_access_role_valid(
+    access_mode: AccessMode,
+    role: Option<&str>,
+) -> bool {
+    match access_mode {
+        AccessMode::Participant => role.is_some_and(|value| !value.is_empty()),
+        AccessMode::Spectator | AccessMode::Operator => role.is_none(),
+    }
 }
 
 fn scope_names(scopes: &CapabilityScopeSetV1) -> Vec<String> {
@@ -9203,5 +9215,33 @@ mod tests {
         assert_eq!(close.reason, BROWSER_ADMISSION_CLOSE_REASON);
         assert!(!close.reason.contains(BROWSER_TICKET_PREFIX));
         assert!(!close.reason.contains("Bearer"));
+    }
+
+    #[test]
+    fn sealed_member_provisioning_rejects_invalid_access_mode_role_pairs() {
+        assert!(super::member_capability_access_role_valid(
+            AccessMode::Participant,
+            Some("counter")
+        ));
+        assert!(super::member_capability_access_role_valid(
+            AccessMode::Operator,
+            None
+        ));
+        assert!(super::member_capability_access_role_valid(
+            AccessMode::Spectator,
+            None
+        ));
+        assert!(!super::member_capability_access_role_valid(
+            AccessMode::Participant,
+            None
+        ));
+        assert!(!super::member_capability_access_role_valid(
+            AccessMode::Operator,
+            Some("counter")
+        ));
+        assert!(!super::member_capability_access_role_valid(
+            AccessMode::Spectator,
+            Some("counter")
+        ));
     }
 }

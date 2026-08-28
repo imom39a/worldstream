@@ -335,7 +335,7 @@ fn validate_manifest(
     }
     let mut pack_ids = BTreeSet::new();
     for rule in &manifest.compatibility {
-        if !valid_id(&rule.activity_pack_id)
+        if !valid_activity_pack_id(&rule.activity_pack_id)
             || rule.exact_revisions.is_empty()
             || !pack_ids.insert(&rule.activity_pack_id)
             || rule
@@ -405,6 +405,23 @@ fn valid_id(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
         })
+}
+
+/// Activity Pack identities may be namespaced (for example
+/// `worldstream.counter`) while Runner and instance identities remain local
+/// identifiers.  A dotted value must have nonempty local-name segments.
+fn valid_activity_pack_id(value: &str) -> bool {
+    valid_id(value)
+        || (value.len() <= 64
+            && value.contains('.')
+            && value.split('.').all(|segment| {
+                !segment.is_empty()
+                    && segment.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'-' | b'_')
+                    })
+            }))
 }
 
 fn valid_revision(value: &str) -> bool {
@@ -1675,6 +1692,23 @@ mod tests {
             registry.compatibility("local-mcp-helper", "r2", "agent-heist", "1.1"),
             CompatibilityV1::Compatible
         );
+
+        let namespaced = Fixture::new();
+        namespaced.write_manifest_for_pack(
+            "Local MCP Helper",
+            "r3",
+            "worldstream.counter",
+            &["3.0.0"],
+        );
+        let registry = namespaced.open_registry();
+        assert_eq!(
+            registry.compatibility("local-mcp-helper", "r3", "worldstream.counter", "3.0.0"),
+            CompatibilityV1::Compatible
+        );
+        assert_eq!(
+            registry.compatibility("local-mcp-helper", "r3", "worldstream.counter", "3.0.1"),
+            CompatibilityV1::Incompatible
+        );
     }
 
     #[test]
@@ -2001,6 +2035,16 @@ mod tests {
         }
 
         fn write_manifest(&self, display_name: &str, revision: &str, revisions: &[&str]) {
+            self.write_manifest_for_pack(display_name, revision, "agent-heist", revisions);
+        }
+
+        fn write_manifest_for_pack(
+            &self,
+            display_name: &str,
+            revision: &str,
+            activity_pack_id: &str,
+            revisions: &[&str],
+        ) {
             let digest = blake3::hash(b"approved runner fixture")
                 .to_hex()
                 .to_string();
@@ -2010,7 +2054,7 @@ mod tests {
                 "revision": revision,
                 "display_name": display_name,
                 "executable": { "path": self.executable, "blake3": digest },
-                "compatibility": [{ "activity_pack_id": "agent-heist", "exact_revisions": revisions }],
+                "compatibility": [{ "activity_pack_id": activity_pack_id, "exact_revisions": revisions }],
                 "capacity": { "maximum_concurrent_invocations": 4 },
                 "health": { "path": "/healthz", "timeout_ms": 250, "stale_after_ms": 5000 },
                 "non_secret_environment": { "RUNNER_MODE": "stdio" },

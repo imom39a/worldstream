@@ -126,6 +126,7 @@ pub const SQLITE_BUNDLE_SOURCE_INVENTORY_DIGEST: &str =
     "sha256:3c9f9560f759ff0b8bedf2714f68d0bf6f06bf5a7dec2ce43ba833d424cbe4d6";
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+const MAX_ACTIVATION_LEASE_MS: u64 = 30_000;
 const MAX_DEPLOYMENT_LINEAGE_BYTES: usize = 128;
 const INITIAL_MIGRATION_ID: &str = "0001-initial-storage-schema";
 const AUTHORITY_MIGRATION_ID: &str = "0002-operational-authority-v1";
@@ -15165,7 +15166,7 @@ fn prepare_activation_claim_readonly(
         .ok_or(SqliteActivationErrorV1::InvalidRequest)?;
     let policy_revision =
         u64::try_from(policy_revision).map_err(|_| SqliteActivationErrorV1::Corrupt)?;
-    if requested_lease_ms == 0 || requested_lease_ms > 30_000 {
+    if requested_lease_ms == 0 || requested_lease_ms > MAX_ACTIVATION_LEASE_MS {
         return Err(SqliteActivationErrorV1::InvalidRequest);
     }
     let membership = CanonicalJsonV1::decode_canonical::<MembershipV1>(&membership_bytes)
@@ -15699,7 +15700,7 @@ fn activation_lease_operation_guarded(
             let requested = request
                 .requested_lease_ms
                 .ok_or(SqliteActivationErrorV1::InvalidRequest)?;
-            if requested == 0 || requested > 30_000 {
+            if requested == 0 || requested > MAX_ACTIVATION_LEASE_MS {
                 return Err(SqliteActivationErrorV1::InvalidRequest);
             }
             (
@@ -15774,7 +15775,7 @@ fn activation_offer_guarded(
     let mut offers = Vec::new();
     let mut statement = transaction
         .prepare(
-            "SELECT activation_id, target_member_id, cause_room_seq, reason_code, priority, semantic_deadline, policy_revision \
+            "SELECT activation_id, target_member_id, cause_room_seq, reason_code, priority, semantic_deadline \
              FROM activation_intents WHERE room_id = ?1 AND target_member_id = ?2 AND state = 'pending' \
              ORDER BY priority DESC, cause_room_seq, activation_id",
         )
@@ -15790,13 +15791,12 @@ fn activation_offer_guarded(
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, Option<String>>(5)?,
-                    row.get::<_, i64>(6)?,
                 ))
             },
         )
         .map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
     for row in rows {
-        let (activation_id, member_id, cause_seq, reason, priority, deadline, policy) =
+        let (activation_id, member_id, cause_seq, reason, priority, deadline) =
             row.map_err(|_| SqliteActivationErrorV1::StorageUnavailable)?;
         offers.push(SqliteActivationOfferV1 {
             activation_id,
@@ -15813,8 +15813,7 @@ fn activation_offer_guarded(
             reason_code: reason,
             priority: u64::try_from(priority).map_err(|_| SqliteActivationErrorV1::Corrupt)?,
             semantic_deadline: deadline,
-            maximum_lease_ms: u64::try_from(policy)
-                .map_err(|_| SqliteActivationErrorV1::Corrupt)?,
+            maximum_lease_ms: MAX_ACTIVATION_LEASE_MS,
         });
     }
     drop(statement);
@@ -27472,9 +27471,55 @@ mod tests {
                 ],
             )
             .unwrap_or_else(|error| panic!("seed leased Activation: {error}"));
+        connection
+            .execute(
+                "INSERT INTO activation_intents(\
+                 activation_id, room_id, cause_room_seq, decision_id, target_member_id, reason_code,\
+                 deduplication_key, priority, semantic_deadline, policy_revision, state,\
+                 intent_generation, lease_generation)\
+                 VALUES (?1, ?2, 1, ?3, ?4, 'ready', ?5, 1, NULL, 1, 'pending', 1, 0)",
+                params![
+                    "activation-offer-1",
+                    ROOM,
+                    "decision-activation-offer-1",
+                    PARTICIPANT,
+                    "dedup-activation-offer-1",
+                ],
+            )
+            .unwrap_or_else(|error| panic!("seed pending Activation: {error}"));
         drop(connection);
 
         clock.set("2026-08-15T12:03:00Z");
+        let offer_authority = authority
+            .authorize_runner_control(
+                &presented_runner,
+                parsed(RUNNER),
+                RunnerControlOperationV1::ReceiveOffer,
+                RoomMembershipKeyV1 {
+                    room_id: parsed(ROOM),
+                    member_id: parsed(PARTICIPANT),
+                },
+                parsed("2026-08-15T12:03:00Z"),
+            )
+            .unwrap_or_else(|error| panic!("authorize Activation offer: {error}"));
+        let offered = store
+            .offer_activations(
+                offer_authority,
+                ActivationOperationRequestV1 {
+                    operation_kind: "offer".to_owned(),
+                    operation_id: "01ARZ3NDEKTSV4RRFFQ69G5FP4".to_owned(),
+                    activation_id: None,
+                    claim_id: None,
+                    runner_id: RUNNER.to_owned(),
+                    lease_generation: None,
+                    requested_lease_ms: None,
+                    disposition: None,
+                },
+            )
+            .unwrap_or_else(|error| panic!("offer pending Activation: {error}"));
+        assert_eq!(offered.offers.len(), 1);
+        assert_eq!(offered.offers[0].maximum_lease_ms, 30_000);
+
         let completion_request = ActivationOperationRequestV1 {
             operation_kind: "complete".to_owned(),
             operation_id: "complete-operation-1".to_owned(),

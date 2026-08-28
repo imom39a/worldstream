@@ -27,6 +27,10 @@ use worldstream_runtime::{
 };
 
 use crate::{
+    model_provider_credentials::{
+        ModelProviderCredentialErrorV1, ModelProviderCredentialRegistryV1,
+        model_provider_credential_router,
+    },
     room_drafts::{AgentProfileRevisionReferenceV1, RunnerTemplateRevisionReferenceV1},
     secrets::{FileSecretVaultV1, SecretAvailabilityV1, SecretKindV1, SecretReferenceV1},
 };
@@ -414,6 +418,31 @@ impl AgentProfileStoreV1 {
         Ok(assignment)
     }
 
+    /// Resolves one persisted exact assignment for the stated Room seat.
+    /// The browser-facing adapter never accepts an assignment identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identifiers are invalid, no unique matching
+    /// assignment exists, or persisted assignment data cannot be validated.
+    pub fn assignment_for_room_seat(
+        &self,
+        room_id: &str,
+        seat_id: &str,
+    ) -> Result<AgentProfileSeatAssignmentV1, AgentProfileErrorV1> {
+        if room_id.parse::<UlidString>().is_err() || !valid_id(seat_id) {
+            return Err(AgentProfileErrorV1::InvalidAssignment);
+        }
+        let mut matches = self.load_assignments()?.into_iter().filter(|assignment| {
+            assignment.membership.room_id == room_id && assignment.seat_id == seat_id
+        });
+        let assignment = matches.next().ok_or(AgentProfileErrorV1::NotFound)?;
+        if matches.next().is_some() {
+            return Err(AgentProfileErrorV1::Unavailable);
+        }
+        Ok(assignment)
+    }
+
     fn view(&self, revision: &AgentProfileRevisionV1) -> AgentProfileRevisionViewV1 {
         AgentProfileRevisionViewV1 {
             profile_id: revision.profile_id.clone(),
@@ -523,6 +552,100 @@ pub fn agent_profile_router(store: AgentProfileStoreV1) -> Router {
             get(profile_assignments),
         )
         .with_state(store)
+}
+
+/// Adds browser publication through named protected credentials. The separate
+/// v1 router remains available to internal opaque-reference callers.
+pub fn agent_profile_router_with_credentials(
+    store: AgentProfileStoreV1,
+    credentials: ModelProviderCredentialRegistryV1,
+) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/agent-profiles",
+            get(profile_catalog_with_credentials).post(profile_publish_with_credentials),
+        )
+        .route(
+            "/api/v1/agent-profiles/{profile_id}/revisions/{revision}",
+            get(profile_revision_with_credentials),
+        )
+        .route(
+            "/api/v1/agent-profile-assignments",
+            get(profile_assignments_with_credentials),
+        )
+        .with_state((store, credentials.clone()))
+        .merge(model_provider_credential_router(credentials))
+}
+
+async fn profile_catalog_with_credentials(
+    State((store, _)): State<(AgentProfileStoreV1, ModelProviderCredentialRegistryV1)>,
+) -> Result<Json<AgentProfileCatalogV1>, AgentProfileErrorV1> {
+    profile_catalog(State(store)).await
+}
+async fn profile_revision_with_credentials(
+    State((store, _)): State<(AgentProfileStoreV1, ModelProviderCredentialRegistryV1)>,
+    AxumPath(path): AxumPath<(String, String)>,
+) -> Result<Json<AgentProfileRevisionViewV1>, AgentProfileErrorV1> {
+    profile_revision(State(store), AxumPath(path)).await
+}
+async fn profile_assignments_with_credentials(
+    State((store, _)): State<(AgentProfileStoreV1, ModelProviderCredentialRegistryV1)>,
+) -> Result<Json<AgentProfileAssignmentCatalogV1>, AgentProfileErrorV1> {
+    profile_assignments(State(store)).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedProfilePublishV2 {
+    schema: String,
+    profile_id: String,
+    revision: String,
+    display_name: String,
+    non_secret_configuration: BTreeMap<String, String>,
+    host_contract: AgentHostContractV1,
+    managed_provider_credential_id: Option<String>,
+}
+async fn profile_publish_with_credentials(
+    State((store, credentials)): State<(AgentProfileStoreV1, ModelProviderCredentialRegistryV1)>,
+    Json(value): Json<NamedProfilePublishV2>,
+) -> Result<Json<AgentProfileRevisionViewV1>, AgentProfileErrorV1> {
+    if value.schema != "worldstream/studio-agent-profile-publish/v2" {
+        return Err(AgentProfileErrorV1::InvalidProfile);
+    }
+    let secret_settings = match (&value.host_contract, value.managed_provider_credential_id) {
+        (AgentHostContractV1::GenericMcp, None) => Vec::new(),
+        (AgentHostContractV1::ManagedReference { provider, .. }, Some(id)) => {
+            vec![AgentProfileSecretSettingV1 {
+                key: "MODEL_PROVIDER_TOKEN".to_owned(),
+                kind: SecretKindV1::ModelProvider,
+                reference: credentials
+                    .resolve(&id, *provider)
+                    .map_err(map_credential_error)?,
+            }]
+        }
+        _ => return Err(AgentProfileErrorV1::InvalidProfile),
+    };
+    let revision = AgentProfileRevisionV1 {
+        schema: PROFILE_SCHEMA_V1.to_owned(),
+        profile_id: value.profile_id,
+        revision: value.revision,
+        display_name: value.display_name,
+        non_secret_configuration: value.non_secret_configuration,
+        secret_settings,
+        host_contract: value.host_contract,
+    };
+    tokio::task::spawn_blocking(move || store.publish(&revision))
+        .await
+        .map_err(|_| AgentProfileErrorV1::Unavailable)?
+        .map(Json)
+}
+fn map_credential_error(error: ModelProviderCredentialErrorV1) -> AgentProfileErrorV1 {
+    match error {
+        ModelProviderCredentialErrorV1::Unavailable => AgentProfileErrorV1::Unavailable,
+        ModelProviderCredentialErrorV1::Invalid
+        | ModelProviderCredentialErrorV1::Immutable
+        | ModelProviderCredentialErrorV1::NotFound => AgentProfileErrorV1::InvalidProfile,
+    }
 }
 
 async fn profile_publish(

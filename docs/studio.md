@@ -77,6 +77,26 @@ it contains no credential reference, filesystem path, or secret value. The
 exact-reference diagnostic endpoint is likewise metadata-only. Vault failures
 use a closed, pathless error vocabulary suitable for logs and diagnostics.
 
+## Deterministic managed Counter fixture
+
+`examples/counter/run_managed_acceptance.py` is the disposable local acceptance
+lane for the managed Counter reference host. It installs the exact Counter v3
+Runner Template and its `counter-managed` Agent Profile, runs a loopback-only
+OpenAI-compatible provider, and proves the host's managed-turn path through
+the real daemon and Supervisor. The provider is a deterministic development
+fixture only; it is not a production model-provider recommendation.
+
+Run it after building the debug binaries:
+
+```bash
+uv run --project sdk/python --python 3.14.7 python examples/counter/run_managed_acceptance.py
+```
+
+The lane owns a fresh protected state directory and process groups, emits only
+bounded status evidence, and runs `scripts/verify-secret-absence.py` against
+its host, member-session, and model-credential canaries. It intentionally does
+not scan protected state where runner and membership authorities are retained.
+
 ## Owner-installed Runner Templates
 
 Runner Templates are installed from the owner-controlled directory selected by
