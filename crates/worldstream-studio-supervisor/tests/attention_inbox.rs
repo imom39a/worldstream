@@ -165,6 +165,26 @@ fn room_creation_and_backup_failures_are_stable_safe_and_resolve() {
 }
 
 #[test]
+fn active_at_genesis_setup_does_not_report_lobby_readiness_while_runner_attention_remains() {
+    let temporary = TempDir::new().expect("temporary");
+    let mut snapshot = healthy_snapshot(1_000);
+    snapshot.task_setups = vec![active_at_genesis_setup()];
+    snapshot.task_attention = attention_snapshot(1_000).task_attention;
+    let inbox = open(&temporary, FakeSource(Arc::new(Mutex::new(Ok(snapshot)))));
+
+    let response = inbox.refresh().expect("inbox");
+    assert!(!response.items.iter().any(|item| {
+        item.condition == AttentionConditionV1::TaskReadiness && item.target_id == "counter-active"
+    }));
+    assert!(
+        response
+            .items
+            .iter()
+            .any(|item| item.condition == AttentionConditionV1::ActivationLease)
+    );
+}
+
+#[test]
 fn resolution_leaves_active_inbox_and_retains_only_a_minimal_transition() {
     let temporary = TempDir::new().expect("temporary");
     let source = FakeSource(Arc::new(Mutex::new(Ok(attention_snapshot(1_000)))));
@@ -450,4 +470,24 @@ fn setup_needing_attention() -> TaskSetupStatusV1 {
         "launch":null
     }))
     .expect("setup status")
+}
+
+fn active_at_genesis_setup() -> TaskSetupStatusV1 {
+    serde_json::from_value(serde_json::json!({
+        "version":"studio_task_setup.v1",
+        "draft_id":"counter-active",
+        "operation_id":"01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "room_id":ROOM,
+        "state":"ready",
+        "attempts":1,
+        "completed_stages":0,
+        "total_stages":0,
+        "active_stage":null,
+        "attention":null,
+        "seats":[],
+        "readiness":{"ready_to_launch":false,"seats":[]},
+        "launch_applicability":"active_at_genesis",
+        "launch":null
+    }))
+    .expect("active-at-genesis setup status")
 }

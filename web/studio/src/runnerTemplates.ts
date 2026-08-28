@@ -1,3 +1,5 @@
+import { isActivityPackId } from "./activityPacks";
+
 export type RunnerInstanceState =
   | "stopped"
   | "starting"
@@ -147,7 +149,7 @@ function isRunnerTemplate(value: unknown): value is RunnerTemplateRevision {
 
 function isCompatibilityRule(value: unknown): value is RunnerCompatibilityRule {
   return isExactRecord(value, ["activity_pack_id", "exact_revisions"])
-    && isStableId(value.activity_pack_id)
+    && isActivityPackId(value.activity_pack_id)
     && isBoundedArray(value.exact_revisions, isRevision)
     && value.exact_revisions.length > 0
     && unique(value.exact_revisions);
@@ -187,7 +189,7 @@ function isRunnerInstanceStatus(value: unknown): value is RunnerInstanceStatus {
     || Number(value.capacity.in_use) + Number(value.capacity.available) !== value.capacity.maximum
     || !["healthy", "stopped", "unavailable"].includes(String(value.health))
     || !["fresh", "stale", "unavailable"].includes(String(value.freshness))
-    || !(value.observed_at_unix_ms === null || isCount(value.observed_at_unix_ms))) return false;
+    || !(value.observed_at_unix_ms === null || isUnixMillis(value.observed_at_unix_ms))) return false;
   return value.failure === null || (
     isExactRecord(value.failure, ["code", "explanation", "next_action"])
     && isStableId(value.failure.code)
@@ -229,6 +231,10 @@ function isText(value: unknown): value is string {
 
 function isCount(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isUnixMillis(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
 function isPositiveCount(value: unknown): value is number {

@@ -207,7 +207,16 @@ function LiveStudio() {
           nextTaskSetup.availability === "available" ? nextTaskSetup.setup : null,
           nextTaskSetup.availability === "available",
         ));
-        setOperatorView(nextOperatorView);
+        const selectedStillVisible = selectedRoomId === null ||
+          nextRoomInventory.status !== "available" ||
+          nextRoomInventory.page.rooms.some((room) => room.room_id === selectedRoomId);
+        if (selectedStillVisible) {
+          setOperatorView(nextOperatorView);
+        } else {
+          setSelectedRoomId(null);
+          setOperatorView(null);
+          setTaskAgentAttention(null);
+        }
         setRoomCreation(nextRoomCreation.operation);
         setRoomCreationStatusAvailable(nextRoomCreation.availability === "available");
         setTaskSetup(nextTaskSetup.availability === "available" ? nextTaskSetup.setup : null);
@@ -274,7 +283,7 @@ function LiveStudio() {
     setTaskAgentAttention(nextTask);
   };
 
-  const requestManagedHost = async (seatId: string, action: "start" | "retry") => {
+  const requestManagedHost = async (seatId: string, action: "start" | "retry" | "stop") => {
     if (selectedRoomId === null || managedHostBusySeats.has(seatId)) return;
     setManagedHostBusySeats((current) => new Set(current).add(seatId));
     try {
@@ -420,6 +429,9 @@ function LiveStudio() {
     setRoomCreation(result);
     setRoomCreationStatusAvailable(result !== null);
     setRoomCreationLoading(false);
+    if (result?.state === "succeeded" && result.room_id !== null) {
+      await inspectRoom(result.room_id);
+    }
   };
 
   const runTaskSetup = async (action: "start" | "retry" | "launch") => {
@@ -428,6 +440,19 @@ function LiveStudio() {
     setTaskSetup(result);
     setTaskSetupStatusAvailable(result !== null);
     setTaskSetupLoading(false);
+  };
+
+  const loadTemplateDraft = (draft: RoomDraft) => {
+    setActiveDraftId(draft.draft_id);
+    setRoomDraft(draft);
+    setRoomDraftStep(resumeRoomDraftStep(draft));
+    setRoomDraftErrors([]);
+    setRoomDraftSaved(draft.last_valid_step === "review");
+    setRoomCreation(null);
+    setRoomCreationStatusAvailable(false);
+    setTaskSetup(null);
+    setTaskSetupStatusAvailable(false);
+    if (draft.pack !== null) void inspectActivityPack(draft.pack.digest);
   };
 
   return (
@@ -495,18 +520,8 @@ function LiveStudio() {
       onTaskTemplateCatalogChanged={() => {
         void loadTaskTemplates().then(setTaskTemplates);
       }}
-      onTaskTemplateDraftCreated={(draft) => {
-        setActiveDraftId(draft.draft_id);
-        setRoomDraft(draft);
-        setRoomDraftStep(resumeRoomDraftStep(draft));
-        setRoomDraftErrors([]);
-        setRoomDraftSaved(true);
-        setRoomCreation(null);
-        setRoomCreationStatusAvailable(false);
-        setTaskSetup(null);
-        setTaskSetupStatusAvailable(false);
-        if (draft.pack !== null) void inspectActivityPack(draft.pack.digest);
-      }}
+      onTaskTemplateDraftCreated={loadTemplateDraft}
+      onTaskTemplateDraftOpened={loadTemplateDraft}
       onOpenParticipantView={(seatId) => void openParticipantView(activeDraftId, seatId)}
       backupProfile={backupProfile}
       backupOperation={backupOperation}

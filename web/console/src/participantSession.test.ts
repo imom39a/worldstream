@@ -27,7 +27,8 @@ describe("Participant Console handed-off session", () => {
         .mockResolvedValueOnce({ version: "participant_console_session.v1", state: "usable", nextAction: "continue" }),
       observe: vi.fn().mockResolvedValue(OBSERVATION),
       act: vi.fn(),
-    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act">;
+      replay: vi.fn(),
+    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act" | "replay">;
 
     const opened = new ParticipantConsoleSession(client);
     await expect(opened.start({ kind: "handoff", handoff: HANDOFF })).resolves.toMatchObject({ state: "live" });
@@ -37,6 +38,20 @@ describe("Participant Console handed-off session", () => {
     await expect(refreshed.start({ kind: "direct" })).resolves.toMatchObject({ state: "disconnected", action: "reconnect" });
     await expect(refreshed.reconnect()).resolves.toMatchObject({ state: "live" });
     expect(client.observe).toHaveBeenCalledWith(null);
+  });
+
+  it("deduplicates a repeated handoff start so Strict Mode cannot redeem it twice", async () => {
+    const client = {
+      redeem: vi.fn().mockResolvedValue({ version: "participant_console_session.v1", state: "usable", nextAction: "continue" }),
+      resume: vi.fn(),
+      observe: vi.fn().mockResolvedValue(OBSERVATION),
+      act: vi.fn(),
+      replay: vi.fn(),
+    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act" | "replay">;
+    const session = new ParticipantConsoleSession(client);
+    await Promise.all([session.start({ kind: "handoff", handoff: HANDOFF }), session.start({ kind: "handoff", handoff: HANDOFF })]);
+    expect(client.redeem).toHaveBeenCalledTimes(1);
+    expect(client.observe).toHaveBeenCalledTimes(1);
   });
 
   it("returns missing or invalid retained authority to actionable setup", async () => {
@@ -50,7 +65,8 @@ describe("Participant Console handed-off session", () => {
       )),
       observe: vi.fn(),
       act: vi.fn(),
-    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act">;
+      replay: vi.fn(),
+    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act" | "replay">;
     const session = new ParticipantConsoleSession(client);
     await expect(session.start({ kind: "direct" })).resolves.toEqual({
       state: "setup_required",
@@ -59,13 +75,36 @@ describe("Participant Console handed-off session", () => {
     });
   });
 
+  it("keeps a redeemed session reconnectable when its first Room observation is transiently unavailable", async () => {
+    const client = {
+      redeem: vi.fn().mockResolvedValue({ version: "participant_console_session.v1", state: "usable", nextAction: "continue" }),
+      resume: vi.fn(),
+      observe: vi.fn().mockRejectedValue(new ParticipantHandoffError(
+        "participant_session_unavailable",
+        "The Participant View cannot reach the Room service safely.",
+        "reconnect",
+        true,
+      )),
+      act: vi.fn(),
+      replay: vi.fn(),
+    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act" | "replay">;
+    const session = new ParticipantConsoleSession(client);
+    await expect(session.start({ kind: "handoff", handoff: HANDOFF })).resolves.toEqual({
+      state: "disconnected",
+      action: "reconnect",
+      message: "The Participant View cannot reach the Room service safely.",
+    });
+    expect(client.redeem).toHaveBeenCalledOnce();
+  });
+
   it("submits no routing or authority values from Console state", async () => {
     const client = {
       redeem: vi.fn().mockResolvedValue({ version: "participant_console_session.v1", state: "usable", nextAction: "continue" }),
       resume: vi.fn(),
       observe: vi.fn().mockResolvedValue(OBSERVATION),
       act: vi.fn().mockResolvedValue({ state: "accepted", room_seq: 1 }),
-    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act">;
+      replay: vi.fn(),
+    } satisfies Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act" | "replay">;
     const session = new ParticipantConsoleSession(client);
     await session.start({ kind: "handoff", handoff: HANDOFF });
     await session.act({

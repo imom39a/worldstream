@@ -22,7 +22,7 @@ export function RunnerAttentionPanel({
   managedHostRoomId?: string | null;
   managedReferenceSeatIds?: ReadonlySet<string>;
   managedHostBusySeats?: ReadonlySet<string>;
-  onManagedHostAction?: (seatId: string, action: "start" | "retry") => void;
+  onManagedHostAction?: (seatId: string, action: "start" | "retry" | "stop") => void;
 }) {
   return (
     <>
@@ -138,7 +138,7 @@ function SeatRow({
   seat: AgentSeatAttention;
   canControlHost: boolean;
   busy: boolean;
-  onManagedHostAction?: (seatId: string, action: "start" | "retry") => void;
+  onManagedHostAction?: (seatId: string, action: "start" | "retry" | "stop") => void;
 }) {
   return (
     <article className={`runner-attention-row is-${seat.activation.state}`}>
@@ -155,6 +155,7 @@ function SeatRow({
       <p>{seat.next_action}</p>
       {canControlHost && ["idle", "waiting", "delayed"].includes(seat.activation.state) ? <button type="button" disabled={busy} onClick={() => onManagedHostAction?.(seat.seat_id, "start")}>{busy ? "Starting managed host…" : "Start managed host"}</button> : null}
       {canControlHost && (seat.activation.state === "attention" || seat.activation.state === "unavailable") ? <button type="button" disabled={busy} onClick={() => onManagedHostAction?.(seat.seat_id, "retry")}>{busy ? "Retrying managed host…" : "Retry managed host"}</button> : null}
+      {canControlHost ? <button type="button" disabled={busy} onClick={() => onManagedHostAction?.(seat.seat_id, "stop")}>{busy ? "Stopping managed host…" : "Stop managed host"}</button> : null}
     </article>
   );
 }

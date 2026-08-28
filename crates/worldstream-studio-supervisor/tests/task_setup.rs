@@ -352,6 +352,29 @@ fn reviewed_operator_genesis_member_is_excluded_from_ordinary_task_setup_seats()
     );
     let ledger = ledger.lock().unwrap_or_else(PoisonError::into_inner);
     assert_eq!(ledger.member_requests.len(), 2);
+    let human = ledger
+        .member_requests
+        .iter()
+        .find(|request| request.member_id.as_deref() == Some("01ARZ3NDEKTSV4RRFFQ69G5FAY"))
+        .unwrap_or_else(|| unreachable!("human member request"));
+    assert_eq!(
+        human.scopes,
+        [
+            "room:attach",
+            "room:act",
+            "room:observe_member",
+            "room:replay"
+        ]
+    );
+    let agent = ledger
+        .member_requests
+        .iter()
+        .find(|request| request.member_id.as_deref() == Some("01ARZ3NDEKTSV4RRFFQ69G5FAZ"))
+        .unwrap_or_else(|| unreachable!("agent member request"));
+    assert_eq!(
+        agent.scopes,
+        ["room:attach", "room:act", "room:observe_member"]
+    );
     assert!(
         ledger
             .member_requests

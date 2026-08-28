@@ -8,6 +8,7 @@ import type {
 import {
   buildSeatPolicy,
   invalidateRoomDraftReview,
+  seatPolicyFitsDeclaredRoles,
   validateConfiguration,
   type RoomDraft,
   type RoomDraftFieldError,
@@ -330,23 +331,34 @@ function SeatsStep({
             candidate.template_id === seat.runner_template?.template_id &&
             candidate.revision === seat.runner_template.revision);
           return (
-          <label key={seat.seat_id}>
+          <article key={seat.seat_id}>
             <span><strong>{seat.display_name}</strong><small>{seat.role} · {seat.required ? "Required" : "Optional"}</small></span>
             <span className="draft-seat-inputs">
               <input
                 aria-label={`${seat.display_name} label`}
                 value={seat.display_name}
-                onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
+                onChange={(event) => updateSeat(draft, seats, seat.seat_id, {
                   display_name: event.currentTarget.value,
                 }, onChange)}
               />
+              <label className="draft-seat-required">
+                <input
+                  aria-label={`${seat.display_name} required for this Task`}
+                  type="checkbox"
+                  checked={seat.required}
+                  onChange={(event) => updateSeat(draft, seats, seat.seat_id, {
+                    required: event.currentTarget.checked,
+                  }, onChange)}
+                />
+                Required for this Task
+              </label>
               <input
                 aria-label={`${seat.display_name} principal ID`}
                 placeholder={seat.required ? "Required principal ULID" : "Optional principal ULID"}
                 value={seat.principal_id ?? ""}
                 onChange={(event) => {
                   const principalId = event.currentTarget.value;
-                  updateSeat(draft, seats, policy, seat.seat_id, principalId === ""
+                  updateSeat(draft, seats, seat.seat_id, principalId === ""
                     ? { principal_id: undefined, principal_kind: undefined, agent_assignment: undefined, agent_profile: undefined, runner_template: undefined }
                     : { principal_id: principalId, principal_kind: seat.principal_kind ?? "human" }, onChange);
                 }}
@@ -355,7 +367,7 @@ function SeatsStep({
                 <select
                   aria-label={`${seat.display_name} principal kind`}
                   value={seat.principal_kind ?? "human"}
-                  onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
+                  onChange={(event) => updateSeat(draft, seats, seat.seat_id, {
                     principal_kind: event.currentTarget.value === "agent" ? "agent" : "human",
                     agent_assignment: event.currentTarget.value === "agent"
                       ? seat.agent_assignment ?? "external"
@@ -372,7 +384,7 @@ function SeatsStep({
                 <><select
                   aria-label={`${seat.display_name} agent assignment`}
                   value={seat.agent_assignment ?? "external"}
-                  onChange={(event) => updateSeat(draft, seats, policy, seat.seat_id, {
+                  onChange={(event) => updateSeat(draft, seats, seat.seat_id, {
                     agent_assignment: event.currentTarget.value === "managed" ? "managed" : "external",
                     runner_template: event.currentTarget.value === "managed" ? seat.runner_template : undefined,
                   }, onChange)}
@@ -416,7 +428,7 @@ function SeatsStep({
                       const runner = runners?.templates.find((candidate) =>
                         `${candidate.template_id}:${candidate.revision}` === event.currentTarget.value);
                       if (runner === undefined) return;
-                      updateSeat(draft, seats, policy, seat.seat_id, {
+                      updateSeat(draft, seats, seat.seat_id, {
                         runner_template: {
                           template_id: runner.template_id,
                           revision: runner.revision,
@@ -442,7 +454,7 @@ function SeatsStep({
                 ) : null}</>
               ) : null}
             </span>
-          </label>
+          </article>
           );
         })}
       </div>
@@ -510,7 +522,7 @@ function ReviewStep({
       </label>
       <p>Creates one reviewed nonparticipant Operator Membership at Room Genesis so Studio may request the Counter public projection.</p>
       <button type="button" disabled={saving} onClick={() => onSave?.({ ...draft, last_valid_step: "review" })}>
-        {saving ? "Saving…" : saved ? "Draft saved" : "Save draft"}
+        {saving ? "Saving Review…" : saved ? "Review saved" : "Save Review"}
       </button>
     </div>
   );
@@ -545,8 +557,7 @@ function stepIsValid(
   if (step === "configuration") return detail !== null && errors.length === 0;
   if (step === "seats") {
     if (detail === null) return false;
-    const policy = buildSeatPolicy(detail.revision.roles);
-    return sameSeatPolicy(draft, policy) && draft.seats.every((seat) => {
+    return sameSeatPolicy(draft, detail.revision.roles) && draft.seats.every((seat) => {
       if (seat.principal_kind !== "agent") return true;
       const profile = profiles?.profiles.find((candidate) =>
         candidate.profile_id === seat.agent_profile?.profile_id &&
@@ -571,12 +582,15 @@ function stepIsValid(
   return true;
 }
 
-function sameSeatPolicy(draft: RoomDraft, policy: ReturnType<typeof buildSeatPolicy>): boolean {
-  return draft.seats.length === policy.seats.length && draft.seats.every((seat, index) => {
-    const declared = policy.seats[index];
-    return declared !== undefined && seat.seat_id === declared.seat_id &&
-      seat.role === declared.role && seat.required === declared.required && seat.display_name.length > 0;
-  });
+function sameSeatPolicy(draft: RoomDraft, roles: ActivityPackDetailResponse["revision"]["roles"]): boolean {
+  const declared = buildSeatPolicy(roles).seats;
+  return draft.seats.length === declared.length &&
+    seatPolicyFitsDeclaredRoles(draft.seats, roles) &&
+    draft.seats.every((seat, index) => {
+      const expected = declared[index];
+      return expected !== undefined && seat.seat_id === expected.seat_id &&
+        seat.role === expected.role && seat.display_name.length > 0;
+    });
 }
 
 function exactReferenceEquals(left: ActivityPackReference, right: ActivityPackReference | null): boolean {
@@ -606,11 +620,14 @@ function parseScalar(event: ChangeEvent<HTMLInputElement | HTMLSelectElement>, t
 function updateSeat(
   draft: RoomDraft,
   seats: RoomDraft["seats"],
-  policy: ReturnType<typeof buildSeatPolicy>,
   seatId: string,
   patch: Partial<RoomDraft["seats"][number]>,
   onChange?: (draft: RoomDraft) => void,
 ) {
   const nextSeats = seats.map((seat) => seat.seat_id === seatId ? { ...seat, ...patch } : seat);
-  onChange?.({ ...draft, seats: nextSeats, readiness: policy.readiness });
+  onChange?.({
+    ...draft,
+    seats: nextSeats,
+    readiness: nextSeats.map(({ seat_id, role, required }) => ({ seat_id, role, required })),
+  });
 }

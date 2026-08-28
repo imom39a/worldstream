@@ -110,6 +110,38 @@ impl ParticipantConsoleGatewayV1 for FakeGateway {
             ));
         Ok(json!({"state": "accepted", "room_seq": 8}))
     }
+
+    fn replay(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        at_room_seq: u64,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((
+                authority.room_id().to_owned(),
+                authority.member_id().to_owned(),
+                "replay",
+            ));
+        Ok(json!({
+            "requested_room_seq": at_room_seq,
+            "room_head": {
+                "room_seq": at_room_seq,
+                "genesis_or_transition_hash": format!("blake3:{}", "1".repeat(64)),
+                "core_schema_version": "core.v1",
+                "pack_digest": format!("blake3:{}", "2".repeat(64)),
+                "core_state_hash": format!("blake3:{}", "3".repeat(64)),
+                "activity_state_hash": format!("blake3:{}", "4".repeat(64)),
+                "authoritative_state_hash": format!("blake3:{}", "5".repeat(64)),
+            },
+            "projection": {"core": {}, "activity": {"value": 2}, "action_offers": []},
+            "projection_hash": format!("blake3:{}", "6".repeat(64)),
+            "verification": "verified",
+            "room_health": "healthy",
+            "integrity_generation": 1,
+        }))
+    }
 }
 
 fn app(source: FakeAuthoritySource, gateway: FakeGateway) -> axum::Router {
@@ -269,6 +301,7 @@ async fn redemption_is_origin_bound_one_use_and_rotates_a_scoped_http_only_cooki
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn refresh_observe_and_act_reuse_only_the_bound_membership_authority() {
     let source = FakeAuthoritySource::usable();
     let gateway = FakeGateway::default();
@@ -330,6 +363,36 @@ async fn refresh_observe_and_act_reuse_only_the_bound_membership_authority() {
         .unwrap_or_else(|error| panic!("response: {error}"));
     assert_eq!(act.status(), StatusCode::OK);
     assert_eq!(json_response(act).await["state"], "accepted");
+
+    let replay = router
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/participant-console/session:replay")
+                .header(header::ORIGIN, CONSOLE_ORIGIN)
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"at_room_seq":2}"#))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"));
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay = json_response(replay).await;
+    assert_eq!(replay["requested_room_seq"], 2);
+    assert_eq!(replay["room_head"]["room_seq"], 2);
+    assert_eq!(replay["projection"]["activity"]["value"], 2);
+    assert_eq!(
+        replay["room_head"]["genesis_or_transition_hash"],
+        format!("blake3:{}", "1".repeat(64))
+    );
+    assert_eq!(
+        replay["room_head"]["authoritative_state_hash"],
+        format!("blake3:{}", "5".repeat(64))
+    );
+    assert_eq!(replay["verification"], "verified");
+    assert!(!replay.to_string().contains(ROOM_ID));
+    assert!(!replay.to_string().contains(MEMBER_ID));
+    assert!(!replay.to_string().contains("prompt"));
     assert_eq!(
         gateway
             .calls
@@ -339,6 +402,7 @@ async fn refresh_observe_and_act_reuse_only_the_bound_membership_authority() {
         &[
             (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), "observe"),
             (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), "act"),
+            (ROOM_ID.to_owned(), MEMBER_ID.to_owned(), "replay"),
         ]
     );
 
@@ -386,6 +450,13 @@ async fn rejects_unknown_fields_and_browser_unsafe_gateway_payloads() {
         ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
             Ok(json!({"nested": {"member_id": MEMBER_ID}}))
         }
+        fn replay(
+            &self,
+            _: &HumanSeatAuthorityV1,
+            _: u64,
+        ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+            Ok(json!({"projection": {"activity": {"prompt": "hidden"}}}))
+        }
     }
     let broker = ParticipantHandoffBrokerV1::new(
         STUDIO_ORIGIN,
@@ -424,10 +495,11 @@ async fn rejects_unknown_fields_and_browser_unsafe_gateway_payloads() {
         .unwrap_or_default()
         .to_owned();
     let leaking = router
+        .clone()
         .oneshot(
             Request::post("/api/v1/participant-console/session:observe")
                 .header(header::ORIGIN, CONSOLE_ORIGIN)
-                .header(header::COOKIE, cookie)
+                .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(r#"{"after_frame_seq":null}"#))
                 .unwrap_or_else(|error| panic!("request: {error}")),
@@ -436,6 +508,20 @@ async fn rejects_unknown_fields_and_browser_unsafe_gateway_payloads() {
         .unwrap_or_else(|error| panic!("response: {error}"));
     assert_eq!(leaking.status(), StatusCode::BAD_GATEWAY);
     assert!(!json_response(leaking).await.to_string().contains(BEARER));
+
+    let replay = router
+        .oneshot(
+            Request::post("/api/v1/participant-console/session:replay")
+                .header(header::ORIGIN, CONSOLE_ORIGIN)
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"at_room_seq":2}"#))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"));
+    assert_eq!(replay.status(), StatusCode::BAD_GATEWAY);
+    assert!(!json_response(replay).await.to_string().contains("hidden"));
 }
 
 #[tokio::test]

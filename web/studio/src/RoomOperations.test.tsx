@@ -55,4 +55,14 @@ describe("Room Operations", () => {
       status: "unavailable", reason: "connection_failed",
     }} />)).toContain("Rooms unavailable");
   });
+
+  it("does not visually select the first Room before the operator selects one", () => {
+    const dom = renderToStaticMarkup(<RoomOperations inventory={{
+      status: "available",
+      page: { schema: "worldstream/studio-room-inventory/v1", rooms: [base], next_after_room_id: null },
+    }} selectedRoomId={null} />);
+
+    expect(dom).toContain("Select a Room");
+    expect(dom).not.toContain('class="is-selected"');
+  });
 });

@@ -1,422 +1,278 @@
 # Counter: the smallest working pack
 
-Counter is the best first end-to-end WorldStream exercise. It proves the real
-Room runtime with one tiny rule set: create a Room, attach two Memberships,
-receive exact Action Offers, submit Actions against an exact Room Head, observe
-authorized Transitions, restart the daemon, and Replay the same history.
+This is the first complete WorldStream story. It uses Counter only: one human
+Participant, one managed Agent Participant, a deterministic local provider, and
+one Room. You will see an acknowledged private Action cause one managed
+`increment`, then verify that the resulting Canonical History replays without
+starting a Runner or contacting a model.
 
-Counter is deliberately a test-oriented conformance Activity, not the release
-Activity. It exists to make the kernel understandable before adding agent
-Runners, models, multi-phase rules, timers, or the Studio control plane.
+The local provider is a demonstration fixture. It always makes the prescribed
+decision for this guide; it is not a model-provider recommendation.
 
-## Start with the right boundary
+## What you need
 
-The Counter acceptance path is independent of the normal Studio development
-stack:
+Run the commands from the repository root. The story creates its own protected
+temporary state and uses local loopback ports. It does not ask you to delete,
+reset, or modify existing WorldStream data.
 
-```text
-Python acceptance harness
-        │
-        ├── HTTP: create Room, read Projection, request Replay
-        ├── WebSocket: attach, submit Action, receive Frame, ACK
-        ▼
-   worldstreamd
-        │
-        ├── WorldStream Core
-        ├── exact Counter v2 executor
-        └── temporary bundled SQLite database
-```
-
-The harness creates its own authority secret and data directory, selects an
-unused loopback port, starts a real `worldstreamd`, and removes the temporary
-state when it finishes. It does not read, reset, or modify the repository's
-`.worldstream/` directory.
-
-An already-running Studio daemon on `127.0.0.1:9410` does not conflict with this
-exercise because the harness uses a separate random port.
-
-### What this exercise covers
-
-- the production `worldstreamd` process boundary;
-- bundled SQLite startup, durable commits, shutdown, and recovery;
-- operator Room creation and scoped Membership capabilities;
-- HTTP Projections and historical Replay;
-- WebSocket attach, synchronization, Action submission, Frames, and ACKs;
-- participant-versus-spectator visibility;
-- idempotent retries and conflicting Action IDs;
-- stale Room Head rejection and resynchronization;
-- exact post-restart state and lineage hash parity.
-
-### What it intentionally skips
-
-- Studio and the Studio Supervisor;
-- Task setup and Task Templates;
-- Runner processes, Agent Profiles, and model providers;
-- the Participant Console;
-- Agent Heist's phases, timers, attention, and Outcome.
-
-Counter proves the runtime foundation. The skipped components build on that
-foundation and are easier to understand afterward.
-
-## Run it locally
-
-Run every command from the repository root. The commands below assume the
-repository-pinned Rust, Python, and `uv` versions from the
-[local quickstart](#/quickstart). Node and pnpm are not required for this
-Counter path.
-
-### 1. Enter the repository
-
-```sh
-cd /path/to/agent-streamer
-```
-
-### 2. Verify the required tools
-
-```sh
-rustc --version
-uv --version
-uv run --python 3.14.7 python --version
-```
-
-The required identities are:
-
-| Tool | Required version |
+| Tool | Version |
 | --- | --- |
 | Rust | 1.97.1 |
 | Python | 3.14.7 |
-| uv | 0.12.5 |
+| Node | 24.18.1 |
+| pnpm | 11.19.0 |
 
-### 3. Install the locked Python SDK environment
+Install the repository dependencies once:
 
 ```sh
+pnpm install --frozen-lockfile
 uv sync --project sdk/python --locked --python 3.14.7
 ```
 
-The acceptance scenario imports the public `worldstream_sdk`; it does not call
-private Rust storage APIs.
+## Start the complete local story
 
-### 4. Build the real daemon
-
-```sh
-cargo build --locked -p worldstream-server --bins
-```
-
-The acceptance harness uses `target/debug/worldstreamd` by default. Check that
-it exists before continuing:
+Use the one entrypoint:
 
 ```sh
-test -x target/debug/worldstreamd
+pnpm counter:studio
 ```
 
-No output and exit code `0` mean the binary exists and is executable.
-
-### 5. Run the live Counter story
-
-```sh
-uv run --project sdk/python --python 3.14.7 \
-  python examples/counter/run_live_acceptance.py
-```
-
-The command emits one bounded JSON report. A successful run exits with code
-`0` and contains:
-
-```json
-{"status":"completed"}
-```
-
-That snippet illustrates the success field; the real report also contains the
-storage identity, passed criteria, hashes, frame shapes, and reference
-measurements. It does not emit capability or authority secrets.
-
-For a report that is easier to inspect, save and format it:
-
-```sh
-uv run --project sdk/python --python 3.14.7 \
-  python examples/counter/run_live_acceptance.py \
-  --report target/counter-live-report.json
-
-uv run --python 3.14.7 \
-  python -m json.tool target/counter-live-report.json
-```
-
-A failed required criterion exits with code `2` and reports `"status":"blocked"`
-plus a safe `reason_code` or failing `stage`. A blocked report is not a pass.
-
-### 6. Run the focused harness tests
-
-```sh
-uv run --project sdk/python --python 3.14.7 \
-  pytest -q examples/counter/test_acceptance.py
-```
-
-These focused tests validate the report's canonical hashing, safe error
-redaction, and owner-only PostgreSQL DSN-file boundary. They complement the
-live scenario; they do not replace it.
-
-## What the live story does
-
-The scenario is intentionally small, but it exercises the complete client and
-commit loop.
-
-### 1. Start a disposable authoritative runtime
-
-The harness creates a temporary owner-only authority secret and SQLite data
-directory. It starts `worldstreamd` on an unused loopback port and waits for
-`/readyz` before making any Room request. It also verifies `/version` reports a
-verified bundled-SQLite engine.
-
-### 2. Create one Counter v2 Room
-
-The operator client creates a Room with this Activity configuration:
-
-```json
-{
-  "initial_value": 0,
-  "maximum_value": 8
-}
-```
-
-The Room has two Memberships:
-
-| Membership | Access mode | What it may do and see |
-| --- | --- | --- |
-| participant | participant | attach, act, Replay, see `value` and `private_ack_count` |
-| spectator | spectator | attach, Replay, see only public `value` |
-
-The harness issues each Membership a different scoped capability. It proves
-that the spectator capability cannot attach as the participant.
-
-### 3. Read initial Projections and Replay
-
-Before opening the live streams, both clients request the current Projection
-and Replay at Room sequence `0`.
-
-- The participant Projection contains `value` and `private_ack_count`.
-- The spectator Projection contains only `value`.
-- The same visibility boundary applies to historical Replay.
-
-Private data is structurally absent from the spectator response; it is not
-sent as a null or redacted field.
-
-### 4. Attach and synchronize both Memberships
-
-Each client opens a Room WebSocket, installs its initial Projection Reset, and
-completes the Session's synchronization barrier. It separately ACKs its starting
-frame position. Synchronization makes the Session live; the observation ACK
-records the Membership's Cursor. The server now has two independently scoped
-delivery streams for one authoritative Room.
-
-### 5. Submit a private Action
-
-The participant submits `private_ack` against Room sequence `0`. The accepted
-Transition advances the Room to sequence `1` and increments only
-`private_ack_count`.
-
-- The participant receives a Frame containing `value` and
-  `private_ack_count`.
-- The spectator receives no Frame because its authorized Projection did not
-  change.
-
-### 6. Submit a public increment
-
-The participant submits `increment` against Room sequence `1`. Counter v2 adds
-`2`, so the public value changes from `0` to `2` and the Room advances to
-sequence `2`.
-
-- The participant Frame contains `value` and `private_ack_count`.
-- The spectator Frame contains only `value`.
-- Both clients ACK their own contiguous Frame sequence.
-
-### 7. Prove Action identity and stale-state safety
-
-The harness then exercises three important failure boundaries:
-
-1. Retrying the same Action ID with the same payload returns the original
-   Transition as a duplicate; it does not increment twice.
-2. Reusing that Action ID with a different payload fails with
-   `idempotency_conflict`.
-3. Using a new Action ID against the old Room sequence `1` returns
-   `stale_room_state`.
-
-After the stale response, the participant resynchronizes and submits a fresh
-`increment` against sequence `2`. Counter v2 adds another `2`, producing value
-`4` at Room sequence `3`.
-
-The resulting authoritative progression is:
-
-| Room sequence | Accepted stimulus | Public value | Private ACK count |
-| ---: | --- | ---: | ---: |
-| 0 | Genesis | 0 | 0 |
-| 1 | `private_ack` | 0 | 1 |
-| 2 | `increment` | 2 | 1 |
-| 3 | fresh `increment` after resync | 4 | 1 |
-
-Duplicate, conflicting, and stale submissions do not create additional
-Transitions.
-
-### 8. Replay, restart, and reconnect
-
-Both Memberships request current and historical Replay under their own present
-authority. The harness records their Projection and Room Head hashes, closes
-the WebSockets, stops the daemon, and starts it again against the same temporary
-SQLite database.
-
-After reconnecting from each Membership's last acknowledged Cursor, it requests
-the current Projections and Replay at sequence `3` again. The run passes only if
-the before-and-after Projection and Room Head hash snapshots match exactly.
-This proves that the committed history, viewer-scoped projection, and exact pack
-executor survive restart.
-
-## Counter's domain model
-
-Counter keeps its authoritative Activity State deliberately compact:
+It coordinates these real local components:
 
 ```text
-configuration
-  initial_value
-  maximum_value
-
-authoritative Activity State
-  value
-  maximum_value
-  private_ack_count
+Studio browser ── Supervisor ── worldstreamd
+      │                 │
+      │                 ├── managed Agent Host ── assignment MCP helper
+      │                 └── deterministic loopback provider
+      └── Participant Console (protected cookie handoff)
 ```
 
-It exposes two Actions, both with an empty `{}` payload:
+In its normal mode, the command builds the local daemon, Supervisor binaries,
+Studio, and Console, then starts Supervisor (`9410`), daemon (`9420`), Studio
+(`5174`), Participant Console (`5173`), and provider (`19431`). It prints the
+local addresses and keeps the fixture processes running. Leave that terminal
+open. Its state directory is separate from your normal local state, so stopping
+the story only stops its own processes.
 
-| Action | Rule |
+For a fast rerun after a successful build, use:
+
+```sh
+pnpm counter:studio --skip-build
+```
+
+`--state-dir PATH` requires a fresh owner-only directory. Reusing one requires
+the explicit `--retain-state` flag; the entrypoint never clears it for you.
+
+## Follow the story in Studio
+
+### 1. Publish the reusable template
+
+Open Studio at the address printed by the entrypoint. The fixture installs only
+the exact Runner Template and one named, configured credential. It does **not**
+create an Agent Profile, a Room draft, a Task Template, a Room, or participant
+authority. Complete the following values in **Build**.
+
+#### Publish the managed Agent Profile
+
+Under **Agent Profiles**, enter these exact values, then choose **Publish
+immutable revision**:
+
+| Studio field | Value |
 | --- | --- |
-| `increment` | Add the exact revision's delta if the result does not exceed `maximum_value` |
-| `private_ack` | Increment the private count while it is below its fixed bound |
+| Profile ID | `counter-managed` |
+| Execution kind | `Managed reference host` |
+| Host contract revision | `v1` |
+| Approved Runner Template | `Counter deterministic managed reference · v1` (`counter-managed-reference` / `v1`) |
+| Provider loopback address | `127.0.0.1:19431` |
+| Model ID | `counter-deterministic` |
+| Owner-installed provider credential | `Counter deterministic loopback · configured` (`local-openai`) |
+| Revision | `v1` |
+| Display name | `Counter managed reference` |
+| Non-secret configuration | `{}` |
 
-Only participant viewers receive Action Offers. The pack removes an offer when
-its corresponding bound is reached. The host admits only an exact current
-offer with the declared payload schema.
+The credential selector names a Supervisor-held credential; do not paste a
+credential value into any Studio field. Wait for **Published exact revision
+v1** before continuing.
 
-Counter has separate authorized projections:
+#### Make the reviewed source draft that the Task Template needs
 
-```text
-participant Projection       spectator Projection
-  value                        value
-  private_ack_count
-```
+The empty Room draft is named `new-room`. It is the required **source reviewed
+draft** for the immutable template; publishing a profile alone is not enough.
 
-`maximum_value` remains authoritative state but is not included in either
-Activity Projection.
+1. In **Plan a new Room**, open **1. Activity**. On the Counter card for
+   `worldstream.counter` **3.0.0** (digest
+   `blake3:7572a62b364fb9c88c02d79c85efba9e5b9cef22211da4a66827f64704970a55`),
+   choose **Use exact revision**.
+2. Open **2. Configuration** and set `initial_value` to `0` and `maximum_value`
+   to `3`.
+3. Open **3. Seats** and choose **Use declared seat policy**. Counter 3 permits
+   eight `counter` seats. Configure only the first two and leave seats 3–8
+   blank with **Required for this Task** unchecked:
 
-## The minimal client loop
+   | Seat | Required and participant | Exact managed binding |
+   | --- | --- | --- |
+   | `counter 1` | Check **Required for this Task**; label it `Human Counter`; enter principal ID `01ARZ3NDEKTSV4RRFFQ69G5FB0`; choose `Human`. | None |
+   | `counter 2` | Check **Required for this Task**; label it `Managed Counter`; enter principal ID `01ARZ3NDEKTSV4RRFFQ69G5FB1`; choose `Agent`. | Choose `Managed agent`, `Counter managed reference · v1`, and `Counter deterministic managed reference · v1`. |
 
-The live scenario follows this protocol loop:
+4. Open **4. Readiness**. It must list the two populated seats as required and
+   the remaining six as optional and unfilled. Then open **5. Review**, check
+   **Include read-only operator view**, and choose **Save Review**. Wait until
+   the button reads **Review saved**.
 
-```text
-attach Membership
-  → install Projection Reset
-  → read current Action Offers and Room Head
-  → submit exact offer + payload + Head precondition
-  → retain the accepted or rejected receipt
-  → process the authorized Observation Frame durably
-  → ACK the contiguous Frame sequence
-```
+The source review still has no Room and no authority. It is a frozen planning
+snapshot used to publish a reusable template.
 
-Do not simplify this to “send an increment command.” The Action Offer says the
-Action is currently available to this viewer. The Room Head precondition says
-which exact state the decision was made against. Together they prevent clients
-from applying stale decisions to newer authoritative state.
+#### Publish and instantiate the Task Template
 
-This example uses the repository's
-[canonical domain model](https://github.com/imom39a/worldstream/blob/main/CONTEXT.md).
-The [protocol contract](https://github.com/imom39a/worldstream/blob/main/docs/protocol.md)
-defines Room Heads, capabilities, synchronization, and observation ACKs.
+Under **Task Templates**, use this reviewed `new-room` source and enter:
 
-## Why Counter has v1 and v2
+| Field | Value |
+| --- | --- |
+| Template ID | `counter3-managed-task` |
+| New revision | `v1` |
+| Display name | `Counter 3 managed task` |
 
-Counter v1 increments by `1`; Counter v2 increments by `2`. Both revisions
-remain compiled and runnable, while only v2 is selectable for new conformance
-Rooms.
+Choose **Publish immutable revision**. Studio shows `Source draft: new-room`;
+that line confirms the reviewed-source dependency. Set **New independent draft
+ID** to `counter3-demo` and choose **Create editable draft**. The confirmation
+must say that no Room was created.
 
-The version string alone is not the historical identity. A Room is pinned to
-an exact revision digest that binds its schemas, codecs, rule source, and
-deterministic dependencies. The registry retains the executor and frozen golden
-transcript for that revision. Replay must execute that original revision rather
-than substituting the newest Counter behavior.
+### 2. Review the independent Task draft and provision it
 
-This is the smallest demonstration of the rule that an Activity Pack revision
-is executable history, not a mutable label.
+The new `counter3-demo` draft is an independent copy of the exact template. Go
+to **5. Review**, confirm the Counter 3 configuration, the two required seats,
+the exact Profile and Runner bindings, six empty optional seats, and the
+read-only operator view. Choose **Save Review** again, then **Create from
+reviewed draft**. Confirm the resulting Task setup shows both populated seats,
+the selected Agent Profile, and the selected Runner Template. Use **Provision
+participant access** to create the distinct participant authorities.
 
-## Read the implementation in this order
+Review creates exactly one Counter Room. The setup screen then shows **Room
+active** at Genesis. Counter has no separate launch step in this story: the
+first authoritative Room Head is sequence `0`.
 
-| Step | Question | Repository source |
-| ---: | --- | --- |
-| 1 | What happens across the real public boundary? | `examples/counter/run_live_acceptance.py`, starting at `run_acceptance` |
-| 2 | What does the public client expose? | `sdk/python/src/worldstream_sdk/client.py`, especially `Client` and `Room` |
-| 3 | What are Counter's configuration, state, and projections? | `crates/worldstream-core/src/counter.rs` |
-| 4 | How do `initialize`, `reduce`, `view`, and `observe` work? | `crates/worldstream-core/src/counter.rs` |
-| 5 | How are v1, v2, and golden transcripts retained? | `crates/worldstream-core/src/counter_registry.rs` |
-| 6 | What must work for every storage backend? | `crates/worldstream-conformance` |
+| Room sequence | Counter value | What happened |
+| ---: | ---: | --- |
+| 0 | 0 | Genesis; the reviewed setup is ready |
 
-Read the live scenario before the lower-level server implementation. It gives
-each protocol operation a concrete purpose, making the deeper commit and
-storage code easier to follow.
+### 3. Open the protected human Participant Console
 
-## Troubleshooting
+On the human seat, choose **Open Participant View ↗**. Studio opens the
+separate Participant Console through a short-lived fragment handoff. The
+fragment is immediately exchanged for a local HttpOnly cookie and removed from
+the browser URL.
 
-### `worldstreamd_binary_missing`
+You do not copy a Room identifier, Membership identifier, or bearer credential.
+The Console shows **Participant session** and **Authorized Room projection**.
+Those are membership-authorized views; they are not a second Room runtime.
 
-Build the daemon and confirm the default path is executable:
+### 4. Submit `private_ack`
+
+In the Console, use the offered **Submit private_ack** Action with the shown
+JSON payload. The Action is admitted against the exact current Room Head.
+
+The Room moves to sequence `1`. The human's authorized projection changes, and
+Studio displays a bounded agent-attention status. That status means the Activity
+Pack has requested that the managed Agent Participant be considered for one
+Invocation. It is not proof that a model has already run.
+
+| Room sequence | Counter value | What happened |
+| ---: | ---: | --- |
+| 1 | 0 | Human `private_ack`; managed-agent attention is available |
+
+### 5. Watch the managed turn converge
+
+Choose **Start managed host** when Studio presents that readiness operation.
+The managed Agent Host consumes the Activation through the assignment MCP
+helper. The deterministic provider selects the currently offered `increment`
+Action. The Agent Host submits that Action through its own bounded Membership
+authority; it does not use the human Console cookie.
+
+Studio's Runner status returns to a healthy or idle state after the Invocation.
+The Participant Console performs bounded, one-at-a-time refreshes from its last
+received frame. It does not advance the Membership Cursor itself, and it does
+not issue overlapping request storms while it waits for the managed turn.
+
+Both Studio and the Console then show the same Counter result:
+
+| Room sequence | Counter value | What happened |
+| ---: | ---: | --- |
+| 2 | 2 | One managed `increment` committed |
+
+If the Console briefly says it is reconnecting, use **Reconnect**. It resumes
+from the retained cookie and last received frame, rather than creating a new
+participant authority or repeating an Action.
+
+## Restart recovery
+
+Use Studio's managed-host controls; the entrypoint intentionally does not
+restart a host for you.
+
+**Mid-turn recovery.** Immediately after **Start managed host**, while the
+managed-seat card reports an Activation state of **Waiting** or **Leased**,
+choose **Stop managed host**. Wait for the same card to report **Attention** or
+**Unavailable**, then choose **Retry managed host**. Studio should return the
+managed host to its bounded work and eventually show an idle/healthy result;
+the Console and operator view converge to sequence `2`, `Counter value: 2`.
+The retained activation cursor and lease are resumed, so this recovery commits
+one increment, not two.
+
+**Completed-turn restart.** After the table below already shows sequence `2`
+and value `2`, choose **Stop managed host**, wait for its stopped/unavailable
+state, then choose **Retry managed host** when Studio offers it. Check that the
+Room Head is still sequence `2`, `Counter value: 2` remains visible, and the
+managed-seat card has no new waiting or leased work. A completed activation is
+not invoked again and the deterministic provider is not contacted again.
+
+In both cases, the human Console reconnects from its retained session without
+leaking a credential into its URL or page.
+
+The repeated Action identity returns its original result; a different request
+with that identity is rejected. A request made against an old Room Head is
+rejected until the client synchronizes again.
+
+## Verify read-only Replay
+
+In the Participant Console, choose **Verify Replay at current sequence** under
+**Authorized Replay**. This asks the local Supervisor to call the daemon's
+existing member-authorized Replay API with the Room address and bearer retained
+server-side. The browser sends only the cookie and `{ "at_room_seq": 2 }`.
+
+The Console displays **Verified Canonical History at sequence 2**, the
+authorized historical projection (`value: 2`), its projection hash, the
+authoritative-state hash, and the lineage hash. They must agree with the
+committed sequence-2 Room Head shown in the live story.
+
+Replay reconstructs the immutable Canonical History with the exact retained
+Counter executor. It is read-only: it does not invoke the managed Agent Host,
+the assignment MCP helper, the Runner, or the deterministic provider.
+
+## Recovery guide
+
+| What you see | What to do |
+| --- | --- |
+| Studio cannot reach the Supervisor | Keep `pnpm counter:studio` running and reload Studio. To resume the retained `counter3-demo` draft or its Task setup, use **Open existing draft counter3-demo** on its retained template usage instead of creating another draft. The fixture owns its local processes. |
+| Participant Console says reconnect | Choose **Reconnect**. Do not reopen the handoff URL or copy its old fragment. |
+| No managed turn appears | Check the bounded attention and Runner status in Studio. The deterministic provider should be labeled as a local fixture. |
+| Replay is unavailable | The existing human credential may predate Replay scope provisioning. Return to Task setup and create a new reviewed Counter draft; old credentials are intentionally not upgraded. |
+| A value differs from `2` at sequence `2` | Stop the fixture, keep any diagnostic output, and rerun the complete story. Do not delete existing WorldStream data. |
+
+## Verify the implementation
+
+The entrypoint is the acceptance path. These focused checks are useful when
+changing it:
 
 ```sh
-cargo build --locked -p worldstream-server --bins
-test -x target/debug/worldstreamd
+uv run --project sdk/python --python 3.14.7 pytest -q examples/counter/test_run_studio_demo.py
+pnpm --dir web/console test
+pnpm --dir web/studio test
 ```
 
-Use `--binary /absolute/path/to/worldstreamd` only when deliberately testing a
-different binary.
+The older low-level Counter v2 harness remains a regression check for the
+daemon protocol and retained replay executor:
 
-### Cargo waits for the build-directory lock
+```sh
+uv run --project sdk/python --python 3.14.7 python examples/counter/run_live_acceptance.py
+```
 
-Another Cargo command is compiling or testing in the same checkout. Let it
-finish, then rerun the build. Do not delete Cargo locks or the `target/`
-directory to force concurrent writers.
-
-### Node reports an unsupported engine
-
-Node is not used by this Counter harness. Fix the Node version to the pinned
-`24.18.1` before running Studio or the web applications, but it does not block
-the Rust daemon plus Python SDK exercise.
-
-### The normal `.worldstream/` authority state is broken
-
-The Counter harness does not use it. Its authority secret and database live in
-a temporary directory and are deleted together. Diagnose persistent Studio
-state separately; do not clear it merely to run this exercise.
-
-### The report says `blocked`
-
-Use `reason_code` and `stage` to locate the failed boundary. The harness emits
-safe typed errors rather than raw exception or credential material. Fix the
-reported boundary and rerun the whole scenario; never reinterpret a blocked
-criterion as acceptance.
-
-## Use Counter as a template
-
-When creating a new small pack, copy the shape rather than the Counter domain
-names:
-
-1. define one compact canonical Activity State;
-2. define one or two closed Action types and strict payload schemas;
-3. initialize deterministically from recorded configuration;
-4. reduce only exact offers against exact Room Heads;
-5. project state and offers separately for every viewer class;
-6. derive authorized observations from before-and-after views;
-7. freeze a reviewed golden transcript;
-8. prove both current execution and retained Replay through a real boundary.
-
-Add complexity one axis at a time: Roles, private views, timers, attention,
-Membership changes, and Outcome. Continue with
-[Agent Heist](#/activity-packs/agent-heist) when the Counter path is familiar.
-
-Primary sources: [Counter executor and schemas](https://github.com/imom39a/worldstream/blob/main/crates/worldstream-core/src/counter.rs),
-[Counter registry](https://github.com/imom39a/worldstream/blob/main/crates/worldstream-core/src/counter_registry.rs),
-[live acceptance](https://github.com/imom39a/worldstream/blob/main/examples/counter/run_live_acceptance.py),
-and [protocol conformance requirements](https://github.com/imom39a/worldstream/blob/main/docs/protocol.md#required-conformance-scenarios).
+It is not the setup path taught above.

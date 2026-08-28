@@ -95,7 +95,7 @@ export interface TaskAgentAttention {
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export async function requestManagedHostSeatAction(roomId: string, seatId: string, action: "start" | "retry", fetcher: Fetcher = fetch): Promise<boolean> {
+export async function requestManagedHostSeatAction(roomId: string, seatId: string, action: "start" | "retry" | "stop", fetcher: Fetcher = fetch): Promise<boolean> {
   if (!isUlid(roomId) || !isIdentifier(seatId)) return false;
   try { return (await fetcher(`/api/v1/rooms/${encodeURIComponent(roomId)}/agent-seats/${encodeURIComponent(seatId)}/managed-host/${action}`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ schema: "worldstream/studio-managed-agent-host-action/v1" }) })).ok; } catch { return false; }
 }
@@ -270,7 +270,11 @@ export function isTaskAgentAttention(value: unknown): value is TaskAgentAttentio
   ]) || value.schema !== "worldstream/studio-task-agent-attention/v1" ||
     !isFreshness(value.freshness) || !isObservedAt(value.observed_at_unix_ms) ||
     !isBoundedArray(value.seats, isSeat)) return false;
-  if ((value.freshness === "unavailable") !== (value.observed_at_unix_ms === null)) return false;
+  // A managed-reference seat can have live daemon Activation counts while its
+  // first local host has not registered Runner presence. That is valid
+  // unavailable compatibility with an observed activation timestamp.
+  if (value.observed_at_unix_ms === null
+    && !(value.freshness === "unavailable" && value.seats.length === 0)) return false;
   return unique((value.seats as AgentSeatAttention[]).map((seat) => seat.seat_id));
 }
 
@@ -303,10 +307,15 @@ function isSeat(value: unknown): value is AgentSeatAttention {
     "seat_id", "instance_id", "compatibility", "capacity", "activation", "freshness", "next_action",
   ]) || !isIdentifier(value.seat_id) || !(value.instance_id === null || isIdentifier(value.instance_id)) ||
     !["compatible", "incompatible", "unavailable"].includes(String(value.compatibility)) ||
-    !isCapacity(value.capacity) || !isFreshness(value.freshness) || !isText(value.next_action) ||
+    !isFreshness(value.freshness) || !isText(value.next_action) ||
     !isExactRecord(value.activation, ["state", "waiting", "leased"]) ||
     !["idle", "waiting", "leased", "delayed", "attention", "unavailable"].includes(String(value.activation.state)) ||
     !isCount(value.activation.waiting) || !isCount(value.activation.leased)) return false;
+  const noKnownRunnerCapacity = isZeroCapacity(value.capacity);
+  if (!isCapacity(value.capacity)
+    && !(noKnownRunnerCapacity
+      && value.compatibility === "unavailable"
+      && value.freshness === "unavailable")) return false;
   const activation = value.activation as AgentSeatAttention["activation"];
   if (activation.state === "idle" || activation.state === "unavailable") {
     return activation.waiting === 0 && activation.leased === 0;
@@ -323,6 +332,13 @@ function isCapacity(value: unknown): value is RunnerAttentionCapacity {
     && isCount(value.in_use)
     && isCount(value.available)
     && Number(value.in_use) + Number(value.available) === value.advertised;
+}
+
+function isZeroCapacity(value: unknown): boolean {
+  return isExactRecord(value, ["advertised", "in_use", "available"])
+    && value.advertised === 0
+    && value.in_use === 0
+    && value.available === 0;
 }
 
 function containsSensitiveField(value: unknown, depth = 0): boolean {
@@ -358,7 +374,11 @@ function isFreshness(value: unknown): value is RunnerAttentionFreshness {
 }
 
 function isObservedAt(value: unknown): value is number | null {
-  return value === null || (isCount(value) && value > 0);
+  return value === null || isUnixMillis(value);
+}
+
+function isUnixMillis(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
 function isCount(value: unknown): value is number {

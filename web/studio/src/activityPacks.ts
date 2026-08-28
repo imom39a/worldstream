@@ -51,6 +51,18 @@ export interface ActivityPackDetailResponse {
   revision: ActivityPackRevisionDetail;
 }
 
+/**
+ * Activity Pack IDs are stable local names or dotted namespaces. This mirrors
+ * the Supervisor's wire contract; Runner and instance IDs use a narrower
+ * local-ID grammar.
+ */
+export function isActivityPackId(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 64
+    && value.split(".").every((segment) => /^[a-z0-9_-]+$/.test(segment));
+}
+
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -181,7 +193,7 @@ function isRevisionSummary(value: unknown): value is ActivityPackRevisionSummary
 function isPackReference(value: unknown): value is ActivityPackReference {
   return (
     isRecordWithKeys(value, ["id", "version", "digest"]) &&
-    isBoundedString(value.id) &&
+    isActivityPackId(value.id) &&
     isBoundedString(value.version) &&
     isDigest(value.digest)
   );

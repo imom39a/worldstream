@@ -42,6 +42,10 @@ pub fn managed_agent_host_seat_router(
             "/api/v1/rooms/{room_id}/agent-seats/{seat_id}/managed-host/retry",
             post(start),
         )
+        .route(
+            "/api/v1/rooms/{room_id}/agent-seats/{seat_id}/managed-host/stop",
+            post(stop),
+        )
         .with_state(ManagedHostSeatStateV1 { profiles, hosts })
 }
 
@@ -67,6 +71,39 @@ async fn start(
         state
             .hosts
             .start(&assignment.assignment_id)
+            .map_err(map_host_error)
+    })
+    .await
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+    .map(Json)
+}
+
+/// Stops only the host already bound to the exact persisted Room seat.
+///
+/// This resolution reads the durable assignment mapping and deliberately does
+/// not resolve provider credentials or construct a new launch plan.
+async fn stop(
+    State(state): State<ManagedHostSeatStateV1>,
+    AxumPath((room_id, seat_id)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ManagedAgentHostStatusV1>, StatusCode> {
+    if !is_json_content_type(&headers) {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+    let request: ManagedHostSeatActionRequestV1 =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if request.schema != "worldstream/studio-managed-agent-host-action/v1" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    tokio::task::spawn_blocking(move || {
+        let assignment = state
+            .profiles
+            .assignment_for_room_seat(&room_id, &seat_id)
+            .map_err(map_profile_error)?;
+        state
+            .hosts
+            .stop(&assignment.assignment_id)
             .map_err(map_host_error)
     })
     .await

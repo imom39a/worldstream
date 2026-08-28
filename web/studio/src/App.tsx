@@ -59,7 +59,7 @@ export interface AppProps {
   onRestartApprovedRunner?: (instanceId: string) => void;
   managedHostRoomId?: string | null;
   managedHostBusySeats?: ReadonlySet<string>;
-  onManagedHostAction?: (seatId: string, action: "start" | "retry") => void;
+  onManagedHostAction?: (seatId: string, action: "start" | "retry" | "stop") => void;
   attentionInbox?: AttentionInboxResponse | null;
   attentionNotificationsEnabled?: boolean;
   attentionNotificationsAvailable?: boolean;
@@ -103,6 +103,7 @@ export interface AppProps {
   taskTemplates?: TaskTemplateCatalog | null;
   onTaskTemplateCatalogChanged?: () => void;
   onTaskTemplateDraftCreated?: (draft: RoomDraft) => void;
+  onTaskTemplateDraftOpened?: (draft: RoomDraft) => void;
   onOpenParticipantView?: (seatId: string) => void;
   backupProfile?: BackupProfileStatus | null;
   backupOperation?: BackupOperationStatus | null;
@@ -170,6 +171,7 @@ export function App({
   taskTemplates = null,
   onTaskTemplateCatalogChanged,
   onTaskTemplateDraftCreated,
+  onTaskTemplateDraftOpened,
   onOpenParticipantView,
   backupProfile = null,
   backupOperation = null,
@@ -313,6 +315,7 @@ export function App({
             reviewedDraft={roomDraft}
             onCatalogChanged={onTaskTemplateCatalogChanged}
             onDraftCreated={onTaskTemplateDraftCreated}
+            onDraftOpened={onTaskTemplateDraftOpened}
           />
         </div>
 

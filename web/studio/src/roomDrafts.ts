@@ -167,6 +167,22 @@ export function buildSeatPolicy(roles: ActivityPackRole[]): {
   };
 }
 
+/**
+ * Keeps an editable Task policy inside the pinned Role declaration while
+ * allowing the operator to require more seats than the pack minimum.
+ */
+export function seatPolicyFitsDeclaredRoles(
+  seats: RoomDraftSeat[],
+  roles: ActivityPackRole[],
+): boolean {
+  return roles.every((role) => {
+    const matching = seats.filter((seat) => seat.role === role.role);
+    const required = matching.filter((seat) => seat.required).length;
+    return matching.length >= role.minimum && matching.length <= role.maximum &&
+      required >= role.minimum && required <= matching.length;
+  }) && seats.every((seat) => roles.some((role) => role.role === seat.role));
+}
+
 export function validateConfiguration(
   schema: unknown,
   configuration: unknown,

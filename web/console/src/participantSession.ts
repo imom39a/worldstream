@@ -1,6 +1,7 @@
 import {
   ParticipantHandoffError,
   type ParticipantActionInput,
+  type ParticipantBrowserReplay,
   type ParticipantBrowserObservation,
   type ParticipantConsoleStartup,
   type ParticipantHandoffClient,
@@ -29,14 +30,20 @@ export class ParticipantConsoleSession {
     action: "wait",
     message: "Opening Participant View…",
   };
+  private startTask: Promise<ParticipantConsoleSessionState> | null = null;
 
-  constructor(private readonly client: Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act">) {}
+  constructor(private readonly client: Pick<ParticipantHandoffClient, "redeem" | "resume" | "observe" | "act" | "replay">) {}
 
   get state(): ParticipantConsoleSessionState {
     return this.current;
   }
 
   async start(startup: ParticipantConsoleStartup): Promise<ParticipantConsoleSessionState> {
+    this.startTask ??= this.startOnce(startup);
+    return this.startTask;
+  }
+
+  private async startOnce(startup: ParticipantConsoleStartup): Promise<ParticipantConsoleSessionState> {
     if (startup.kind === "invalid_handoff") {
       return this.setSetupRequired("This Participant View handoff is invalid or incomplete.");
     }
@@ -81,6 +88,47 @@ export class ParticipantConsoleSession {
       payload: action.payload,
     };
     return this.client.act(request);
+  }
+
+  /** Refreshes from the last received frame without advancing the Membership Cursor. */
+  async refresh(): Promise<ParticipantConsoleSessionState> {
+    if (this.current.state !== "live") return this.current;
+    try {
+      const previous = this.current.observation;
+      const next = await this.client.observe(previous.frame_head);
+      this.current = {
+        state: "live",
+        action: "continue",
+        message: null,
+        observation: {
+          ...next,
+          // An empty retained range does not discard the currently installed
+          // authorized Projection or its Action Offers.
+          delivery: next.delivery.length === 0 ? previous.delivery : next.delivery,
+        },
+      };
+      return this.current;
+    } catch (error) {
+      return this.applyError(error);
+    }
+  }
+
+  /** Reads verified Canonical History only; it never invokes the Runner path. */
+  async replay(): Promise<ParticipantBrowserReplay> {
+    if (this.current.state !== "live") {
+      throw new ParticipantHandoffError(
+        "participant_session_not_live",
+        "Participant View must reconnect before reading historical Replay.",
+        "reconnect",
+        true,
+      );
+    }
+    return this.client.replay(this.current.observation.room_head.room_seq);
+  }
+
+  /** Converts one bounded client failure into the same actionable session state. */
+  fail(error: unknown): ParticipantConsoleSessionState {
+    return this.applyError(error);
   }
 
   private async applyStatus(status: ParticipantSessionStatus): Promise<ParticipantConsoleSessionState> {

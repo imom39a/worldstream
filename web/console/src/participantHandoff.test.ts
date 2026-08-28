@@ -150,4 +150,31 @@ describe("Participant Console opaque handoff", () => {
     const rejected = new ParticipantHandoffClient("http://127.0.0.1:9420", vi.fn().mockResolvedValue(new Response(JSON.stringify(leaking), { status: 200 })));
     await expect(rejected.observe(null)).rejects.toMatchObject({ code: "participant_session_invalid_response" });
   });
+
+  it("requests authorized Replay through the cookie-only Supervisor route", async () => {
+    const replay = {
+      requested_room_seq: 2,
+      room_head: {
+        room_seq: 2,
+        genesis_or_transition_hash: `blake3:${"1".repeat(64)}`,
+        core_schema_version: "core.v1",
+        pack_digest: `blake3:${"2".repeat(64)}`,
+        core_state_hash: `blake3:${"3".repeat(64)}`,
+        activity_state_hash: `blake3:${"4".repeat(64)}`,
+        authoritative_state_hash: `blake3:${"5".repeat(64)}`,
+      },
+      projection: { core: {}, activity: { value: 2 }, action_offers: [] },
+      projection_hash: `blake3:${"6".repeat(64)}`,
+      verification: "verified" as const,
+      room_health: "healthy",
+      integrity_generation: 1,
+    };
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(replay), { status: 200 }));
+    const client = new ParticipantHandoffClient("http://127.0.0.1:9420", fetch);
+    await expect(client.replay(2)).resolves.toEqual(replay);
+    expect(fetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:9420/api/v1/participant-console/session:replay");
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: "POST", credentials: "include", cache: "no-store" });
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe('{"at_room_seq":2}');
+    expect(JSON.stringify(fetch.mock.calls)).not.toMatch(/room_id|member_id|wsb1:|prompt|provider_response/);
+  });
 });

@@ -34,7 +34,7 @@ const catalog: TaskTemplateCatalog = {
 };
 
 describe("Task Template Build", () => {
-  it("shows exact pins, dependency blockers, and usage before successor publication", () => {
+  it("shows exact pins, dependency blockers, and a read-only retained-draft resume control", () => {
     const html = renderToStaticMarkup(
       <TaskTemplateBuild catalog={catalog} reviewedDraft={null} />,
     );
@@ -44,6 +44,8 @@ describe("Task Template Build", () => {
     expect(html).toContain("local-runner · runner-r3");
     expect(html).toContain("The exact Runner Template revision is unavailable.");
     expect(html).toContain("task-from-template");
+    expect(html).toContain('aria-label="Open existing draft task-from-template"');
+    expect(html).toContain(">Open existing draft</button>");
     expect(html).toContain("disabled");
   });
 

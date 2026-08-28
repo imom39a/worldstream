@@ -17,7 +17,7 @@ const catalog: RunnerTemplateCatalog = {
     revision: "r2",
     display_name: "Local MCP Helper",
     executable_blake3: digest,
-    compatibility: [{ activity_pack_id: "agent-heist", exact_revisions: ["1.0", "1.1"] }],
+    compatibility: [{ activity_pack_id: "worldstream.counter", exact_revisions: ["3.0.0"] }],
     capacity: { maximum_concurrent_invocations: 4 },
     health_stale_after_ms: 5_000,
     non_secret_settings: ["LOG_LEVEL"],
@@ -39,13 +39,13 @@ const instances: RunnerInstanceStatusResponse = {
     capacity: { maximum: 4, in_use: 1, available: 3 },
     health: "healthy",
     freshness: "fresh",
-    observed_at_unix_ms: 1_800_000_000_000,
+    observed_at_unix_ms: 1_787_930_228_773,
     failure: null,
   }],
 };
 
 describe("Runner Template Supervisor client", () => {
-  it("loads immutable installed revisions and complete bounded instance status", async () => {
+  it("loads namespaced Activity Pack compatibility for templates and Runner instances", async () => {
     const fetchCatalog = vi.fn(async () => new Response(JSON.stringify(catalog), { status: 200 }));
     const fetchInstances = vi.fn(async () => new Response(JSON.stringify(instances), { status: 200 }));
 
@@ -79,5 +79,15 @@ describe("Runner Template Supervisor client", () => {
     ).resolves.toBeNull();
     await expect(loadRunnerInstances(fetcher)).resolves.toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed Activity Pack namespaces in template and instance compatibility", async () => {
+    const malformedCatalog = structuredClone(catalog);
+    malformedCatalog.templates[0].compatibility[0].activity_pack_id = "worldstream..counter";
+    const malformedInstances = structuredClone(instances);
+    malformedInstances.instances[0].compatibility[0].activity_pack_id = "worldstream..counter";
+
+    await expect(loadRunnerTemplates(async () => new Response(JSON.stringify(malformedCatalog)))).resolves.toBeNull();
+    await expect(loadRunnerInstances(async () => new Response(JSON.stringify(malformedInstances)))).resolves.toBeNull();
   });
 });

@@ -35,7 +35,10 @@ use crate::{
         RunnerAttentionFreshnessV1, RunnerAttentionOperationsResponseV1, RunnerAttentionSourceV1,
         RunnerAttentionSupervisorV1, RunnerRestartOperationStateV1, TaskAgentAttentionResponseV1,
     },
-    task_setup::{TaskLaunchStateV1, TaskSetupStateV1, TaskSetupStatusV1, TaskSetupSupervisorV1},
+    task_setup::{
+        TaskLaunchApplicabilityV1, TaskLaunchStateV1, TaskSetupStateV1, TaskSetupStatusV1,
+        TaskSetupSupervisorV1,
+    },
 };
 
 const INBOX_SCHEMA_V1: &str = "worldstream/studio-attention-inbox/v1";
@@ -576,7 +579,10 @@ fn derive_setup(
             next_action,
         )?;
     }
-    if setup.state == TaskSetupStateV1::Ready && !setup.readiness.ready_to_launch {
+    if setup.state == TaskSetupStateV1::Ready
+        && setup.launch_applicability != TaskLaunchApplicabilityV1::ActiveAtGenesis
+        && !setup.readiness.ready_to_launch
+    {
         insert_candidate(
             items,
             AttentionTargetKindV1::Task,

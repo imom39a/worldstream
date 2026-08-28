@@ -296,6 +296,71 @@ async fn supervisor_enforces_declared_roles_and_cardinality_before_persisting() 
 }
 
 #[tokio::test]
+async fn supervisor_allows_task_requirements_stricter_than_a_role_minimum() {
+    let detail = serde_json::from_value(json!({
+        "version": "activity_pack_catalog.v1",
+        "revision": {
+            "summary": {
+                "pack": { "id": "counter", "version": "1.0.0", "digest": DIGEST },
+                "name": "Counter",
+                "selectable_for_new_rooms": true,
+                "runnable_for_retained_rooms": true
+            },
+            "roles": [{ "role": "participant", "minimum": 0, "maximum": 2 }],
+            "configuration_schema": {
+                "schema_id": "counter.config.v1",
+                "schema_digest": format!("blake3:{}", "b".repeat(64)),
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "initial_value": { "type": "integer", "minimum": 0 },
+                        "maximum_value": { "type": "integer", "maximum": 8 }
+                    },
+                    "required": ["initial_value", "maximum_value"],
+                    "additionalProperties": false
+                }
+            },
+            "actions": []
+        }
+    }))
+    .unwrap_or_else(|error| unreachable!("detail fixture: {error}"));
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+    let store = RoomDraftStoreV1::open(
+        &directory.path().join("drafts"),
+        ExactActivityPackDraftValidatorV1::new(FixedPackSource(detail)),
+    )
+    .unwrap_or_else(|error| unreachable!("open draft store: {error:?}"));
+    let stricter = json!({
+        "schema": "worldstream/studio-room-draft/v1",
+        "draft_id": "counter-three",
+        "pack": { "id": "counter", "version": "1.0.0", "digest": DIGEST },
+        "configuration": { "initial_value": 0, "maximum_value": 3 },
+        "seats": [
+            { "seat_id": "human", "role": "participant", "required": true, "display_name": "Required human", "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "principal_kind": "human" },
+            { "seat_id": "agent", "role": "participant", "required": true, "display_name": "Required managed agent", "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW", "principal_kind": "agent", "agent_assignment": "managed", "agent_profile": { "profile_id": "counter-managed", "revision": "v1" }, "runner_template": { "template_id": "counter-managed-reference", "revision": "v1" } }
+        ],
+        "readiness": [
+            { "seat_id": "human", "role": "participant", "required": true },
+            { "seat_id": "agent", "role": "participant", "required": true }
+        ],
+        "last_valid_step": "review"
+    });
+    let response = room_draft_router(store)
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/room-drafts/counter-three")
+                .header("content-type", "application/json")
+                .body(Body::from(stricter.to_string()))
+                .unwrap_or_else(|error| unreachable!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| unreachable!("response: {error}"));
+
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
 async fn partial_draft_persists_only_through_its_last_valid_step() {
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
     let root = directory.path().join("drafts");

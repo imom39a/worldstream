@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import type { ParticipantConsoleStartup, ParticipantHandoffClient } from "./participantHandoff";
+import type { ParticipantBrowserReplay, ParticipantConsoleStartup, ParticipantHandoffClient } from "./participantHandoff";
 import {
   ParticipantConsoleSession,
   type ParticipantConsoleAction,
@@ -20,24 +20,104 @@ export function HandedOffParticipant({
   startup: ParticipantConsoleStartup;
   client: ParticipantHandoffClient;
 }) {
-  const session = useMemo(() => new ParticipantConsoleSession(client), [client]);
+  const sessionRef = useRef<ParticipantConsoleSession | null>(null);
+  if (sessionRef.current === null) sessionRef.current = new ParticipantConsoleSession(client);
+  const session = sessionRef.current;
   const [state, setState] = useState<ParticipantConsoleSessionState>(session.state);
-  useEffect(() => { void session.start(startup).then(setState); }, [session, startup]);
+  const [replay, setReplay] = useState<ParticipantBrowserReplay | null>(null);
+  const startTask = useRef<Promise<ParticipantConsoleSessionState> | null>(null);
+  const requestInFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => {
+    let disposed = false;
+    startTask.current ??= session.start(startup);
+    void startTask.current.then((next) => { if (!disposed) setState(next); });
+    return () => { disposed = true; };
+  }, [session, startup]);
+
+  useEffect(() => {
+    if (state.state !== "live") return undefined;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      if (disposed) return;
+      if (requestInFlight.current) {
+        timer = setTimeout(poll, 1_000);
+        return;
+      }
+      requestInFlight.current = true;
+      try {
+        const next = await session.refresh();
+        if (!disposed) setState(next);
+      } finally {
+        requestInFlight.current = false;
+        if (!disposed) timer = setTimeout(poll, 1_000);
+      }
+    };
+    timer = setTimeout(poll, 1_000);
+    return () => {
+      disposed = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [session, state.state]);
+
   const submit = async (action: ParticipantConsoleAction) => {
-    await session.act(action);
-    setState(await session.reconnect());
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
+    try {
+      await session.act(action);
+      const next = await session.refresh();
+      if (mounted.current) setState(next);
+    } catch (error) {
+      if (mounted.current) setState(session.fail(error));
+    } finally {
+      requestInFlight.current = false;
+    }
   };
-  return <ParticipantHandoffView state={state} onReconnect={async () => setState(await session.reconnect())} onAct={submit} />;
+  const verifyReplay = async () => {
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
+    try {
+      const result = await session.replay();
+      if (mounted.current) setReplay(result);
+    } catch (error) {
+      if (mounted.current) setState(session.fail(error));
+    } finally {
+      requestInFlight.current = false;
+    }
+  };
+  return <ParticipantHandoffView
+    state={state}
+    replay={replay}
+    onReconnect={async () => {
+      if (requestInFlight.current) return;
+      requestInFlight.current = true;
+      try {
+        const next = await session.reconnect();
+        if (mounted.current) setState(next);
+      } finally { requestInFlight.current = false; }
+    }}
+    onAct={submit}
+    onReplay={verifyReplay}
+  />;
 }
 
 export function ParticipantHandoffView({
   state,
+  replay,
   onReconnect,
   onAct,
+  onReplay,
 }: {
   state: ParticipantConsoleSessionState;
+  replay?: ParticipantBrowserReplay | null;
   onReconnect: () => Promise<void>;
   onAct: (action: ParticipantConsoleAction) => Promise<void>;
+  onReplay?: () => Promise<void>;
 }) {
   const [payloads, setPayloads] = useState<Record<string, string>>({});
   const offers = state.state === "live" ? actionOffers(state) : [];
@@ -90,6 +170,20 @@ export function ParticipantHandoffView({
                 </form>
               );
             })}
+          </section>
+          <section aria-labelledby="participant-replay">
+            <h2 id="participant-replay">Authorized Replay</h2>
+            <p>Replay reconstructs your authorized historical view from committed Canonical History at this synchronized sequence. It does not start a Runner or model.</p>
+            {onReplay ? <button type="button" onClick={() => void onReplay()}>Verify Replay at current sequence</button> : null}
+            {replay ? (
+              <article>
+                <h3>Verified Canonical History at sequence {replay.requested_room_seq}</h3>
+                <p>Projection hash: {replay.projection_hash}</p>
+                <p>Lineage hash: {replay.room_head.genesis_or_transition_hash}</p>
+                <p>Authoritative state hash: {replay.room_head.authoritative_state_hash}</p>
+                <pre>{JSON.stringify(replay.projection, null, 2)}</pre>
+              </article>
+            ) : null}
           </section>
         </>
       ) : null}

@@ -39,7 +39,9 @@ if (isStudioPrototype) {
   document.documentElement.dataset.worldstreamClientContractIdentity =
     CLIENT_CONTRACT_IDENTITY_JSON;
 
-  const client = new ParticipantHandoffClient("http://127.0.0.1:9420");
+  const client = new ParticipantHandoffClient(
+    import.meta.env.VITE_WORLDSTREAM_SUPERVISOR_URL ?? "http://127.0.0.1:9420",
+  );
   const startup = selectParticipantConsoleStartup(window);
   void resumeRetainedParticipantConsole(startup, client).then((resolvedStartup) => {
     if (resolvedStartup.kind !== "direct") {

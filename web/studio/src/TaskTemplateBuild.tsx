@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 
-import type { RoomDraft } from "./roomDrafts";
+import { loadRoomDraft, type RoomDraft } from "./roomDrafts";
 import {
   instantiateTaskTemplate,
   publishTaskTemplate,
@@ -14,6 +14,7 @@ export interface TaskTemplateBuildProps {
   reviewedDraft: RoomDraft | null;
   onCatalogChanged?: () => void;
   onDraftCreated?: (draft: RoomDraft) => void;
+  onDraftOpened?: (draft: RoomDraft) => void;
 }
 
 export function TaskTemplateBuild({
@@ -21,6 +22,7 @@ export function TaskTemplateBuild({
   reviewedDraft,
   onCatalogChanged,
   onDraftCreated,
+  onDraftOpened,
 }: TaskTemplateBuildProps) {
   const [publish, setPublish] = useState<Omit<TaskTemplatePublishRequest, "source_draft_id">>({
     template_id: "",
@@ -74,6 +76,16 @@ export function TaskTemplateBuild({
       onDraftCreated?.(result);
       onCatalogChanged?.();
     }
+  }
+
+  async function openExistingDraft(draftId: string) {
+    setBusy(true);
+    const result = await loadRoomDraft(draftId);
+    setBusy(false);
+    setMessage(result === null
+      ? "The existing draft could not be opened. Refresh the template catalog and retry."
+      : `Opened editable draft ${result.draft.draft_id}; no Room was created.`);
+    if (result !== null) onDraftOpened?.(result.draft);
   }
 
   return (
@@ -160,6 +172,19 @@ export function TaskTemplateBuild({
                 <p>Used by: {view.used_by_draft_ids.length === 0
                   ? "No drafts yet"
                   : view.used_by_draft_ids.join(", ")}</p>
+                {view.used_by_draft_ids.map((usedDraftId) => (
+                  <button
+                    key={usedDraftId}
+                    type="button"
+                    disabled={busy}
+                    aria-label={`Open existing draft ${usedDraftId}`}
+                    onClick={() => void openExistingDraft(usedDraftId)}
+                  >
+                    {view.used_by_draft_ids.length === 1
+                      ? "Open existing draft"
+                      : `Open existing draft ${usedDraftId}`}
+                  </button>
+                ))}
                 <button
                   type="button"
                   disabled={busy || view.dependencies.status !== "ready"}

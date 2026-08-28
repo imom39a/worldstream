@@ -63,6 +63,13 @@ const SETUP_SCHEMA_V1: &str = "worldstream/studio-task-setup-operation/v1";
 const SETUP_STATUS_VERSION_V1: &str = "studio_task_setup.v1";
 const MAX_OPERATION_BYTES: usize = 256 * 1024;
 const MAX_SETUP_OPERATIONS: usize = 256;
+const LEGACY_MEMBER_SCOPES: [&str; 3] = ["room:attach", "room:act", "room:observe_member"];
+const HUMAN_MEMBER_SCOPES: [&str; 4] = [
+    "room:attach",
+    "room:act",
+    "room:observe_member",
+    "room:replay",
+];
 
 /// The immutable Genesis-time lifecycle declared by an exact Activity Pack.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -209,6 +216,10 @@ struct SetupSeatIntentV1 {
     agent_profile: Option<AgentProfileRevisionReferenceV1>,
     member_id: Option<String>,
     member_capability: Option<CapabilityIntentV1>,
+    /// Exact scopes chosen when this setup was created. Missing is the
+    /// pre-Replay durable shape and must keep its original retry request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    member_scopes: Option<Vec<String>>,
     runner: Option<RunnerIntentV1>,
 }
 
@@ -1521,6 +1532,7 @@ impl TaskSetupSupervisorV1 {
                     agent_profile: None,
                     member_id: None,
                     member_capability: None,
+                    member_scopes: None,
                     runner: None,
                 }
             });
@@ -1633,6 +1645,12 @@ impl TaskSetupSupervisorV1 {
             agent_profile: seat.agent_profile.clone(),
             member_id: Some(member_id),
             member_capability: Some(member_capability),
+            member_scopes: (principal_kind == PrincipalKind::Human).then(|| {
+                HUMAN_MEMBER_SCOPES
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            }),
             runner,
         })
     }
@@ -1730,11 +1748,7 @@ impl TaskSetupSupervisorV1 {
                         .ok_or(TaskSetupAttemptErrorV1::Rejected)?,
                     role: Some(seat.role.clone()),
                     access_mode: AccessMode::Participant,
-                    scopes: vec![
-                        "room:attach".to_owned(),
-                        "room:act".to_owned(),
-                        "room:observe_member".to_owned(),
-                    ],
+                    scopes: member_scopes(seat),
                     capability: SealedCapabilityInputV1 {
                         capability_id: intent.capability_id.clone(),
                         capability_idempotency_key: intent.change_id.clone(),
@@ -2619,6 +2633,12 @@ fn validate_operation(
         if !is_ulid(&member.capability_id) || !is_ulid(&member.change_id) {
             return Err(TaskSetupErrorV1::Unavailable);
         }
+        if let Some(scopes) = &seat.member_scopes
+            && (seat.principal_kind != Some(PrincipalKind::Human)
+                || scopes.iter().map(String::as_str).ne(HUMAN_MEMBER_SCOPES))
+        {
+            return Err(TaskSetupErrorV1::Unavailable);
+        }
         if let Some(runner) = &seat.runner
             && (!is_ulid(&runner.runner_id)
                 || runner.principal_change_id != seat.principal_id.as_deref().unwrap_or_default()
@@ -2748,6 +2768,8 @@ fn setup_intent_hash(operation: &TaskSetupOperationV1) -> Result<String, TaskSet
         member_capability_id: Option<&'a str>,
         member_change_id: Option<&'a str>,
         member_secret_reference: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        member_scopes: Option<&'a Vec<String>>,
         runner_id: Option<&'a str>,
         runner_principal_change_id: Option<&'a str>,
         runner_change_id: Option<&'a str>,
@@ -2781,6 +2803,7 @@ fn setup_intent_hash(operation: &TaskSetupOperationV1) -> Result<String, TaskSet
                 .member_capability
                 .as_ref()
                 .map(|value| value.secret_reference.as_str()),
+            member_scopes: seat.member_scopes.as_ref(),
             runner_id: seat.runner.as_ref().map(|value| value.runner_id.as_str()),
             runner_principal_change_id: seat
                 .runner
@@ -2818,6 +2841,15 @@ fn setup_intent_hash(operation: &TaskSetupOperationV1) -> Result<String, TaskSet
     })
     .map_err(|_| TaskSetupErrorV1::Unavailable)?;
     Ok(format!("blake3:{}", blake3::hash(&bytes).to_hex()))
+}
+
+fn member_scopes(seat: &SetupSeatIntentV1) -> Vec<String> {
+    seat.member_scopes.clone().unwrap_or_else(|| {
+        LEGACY_MEMBER_SCOPES
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    })
 }
 
 fn checkpoint_hash(operation: &TaskSetupOperationV1) -> Result<String, TaskSetupErrorV1> {
@@ -2893,6 +2925,63 @@ fn parse_http_response(bytes: &[u8]) -> Result<(u16, &[u8]), TaskSetupAttemptErr
 mod readiness_selection_tests {
     use super::*;
     use crate::runner_templates::{RunnerCapacityStatusV1, RunnerCompatibilityRuleV1};
+
+    #[test]
+    fn raw_legacy_human_intent_keeps_its_hash_and_three_scope_request() {
+        let reference = SecretReferenceV1::parse("a".repeat(64))
+            .unwrap_or_else(|error| unreachable!("secret reference: {error:?}"));
+        let seat = SetupSeatIntentV1 {
+            seat_id: "navigator-1".to_owned(),
+            role: "navigator".to_owned(),
+            required: true,
+            display_name: "Navigator".to_owned(),
+            principal_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned()),
+            principal_kind: Some(PrincipalKind::Human),
+            agent_assignment: None,
+            agent_profile: None,
+            member_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAY".to_owned()),
+            member_capability: Some(CapabilityIntentV1 {
+                capability_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+                change_id: "01ARZ3NDEKTSV4RRFFQ69G5FB2".to_owned(),
+                secret_reference: reference,
+                provisioned: false,
+            }),
+            member_scopes: None,
+            runner: None,
+        };
+        let mut operation = TaskSetupOperationV1 {
+            schema: SETUP_SCHEMA_V1.to_owned(),
+            draft_id: "setup-alpha".to_owned(),
+            operation_id: "01ARZ3NDEKTSV4RRFFQ69G5FB3".to_owned(),
+            room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+            pack: PackReference {
+                id: "counter".to_owned(),
+                version: "3.0.0".to_owned(),
+                digest: format!("blake3:{}", "b".repeat(64)),
+            },
+            creation_intent_hash: format!("blake3:{}", "c".repeat(64)),
+            setup_intent_hash: String::new(),
+            checkpoint_hash: String::new(),
+            seats: vec![seat],
+            state: TaskSetupStateV1::Waiting,
+            attempts: 0,
+            active_stage: None,
+            attention: None,
+            launch_applicability: TaskLaunchApplicabilityV1::Unknown,
+            launch: None,
+        };
+
+        let raw = serde_json::to_value(&operation)
+            .unwrap_or_else(|error| unreachable!("legacy operation: {error}"));
+        assert!(raw["seats"][0].get("member_scopes").is_none());
+        assert_eq!(member_scopes(&operation.seats[0]), LEGACY_MEMBER_SCOPES);
+
+        operation.setup_intent_hash = setup_intent_hash(&operation)
+            .unwrap_or_else(|error| unreachable!("intent hash: {error:?}"));
+        operation.checkpoint_hash = checkpoint_hash(&operation)
+            .unwrap_or_else(|error| unreachable!("checkpoint hash: {error:?}"));
+        assert_eq!(validate_operation(&operation, "setup-alpha"), Ok(()));
+    }
 
     fn candidate(instance_id: &str, health: RunnerInstanceHealthV1) -> RunnerInstanceStatusV1 {
         RunnerInstanceStatusV1 {

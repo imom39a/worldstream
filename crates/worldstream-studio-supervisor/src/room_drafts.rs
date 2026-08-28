@@ -978,11 +978,11 @@ fn validate_declared_seats(
                 "A declared Role has more seats than its maximum.",
             ));
         }
-        if required != role.minimum {
+        if required < role.minimum || required > count {
             errors.push(field_error(
                 "/seats",
                 "required_cardinality",
-                "Required seats must match the declared Role minimum.",
+                "Required seats must be within the declared Role minimum and selected seat count.",
             ));
         }
     }

@@ -6,6 +6,7 @@ import {
   invalidateRoomDraftReview,
   loadRoomDraft,
   saveRoomDraft,
+  seatPolicyFitsDeclaredRoles,
   validateConfiguration,
   type RoomDraft,
 } from "./roomDrafts";
@@ -45,6 +46,17 @@ describe("Studio Room drafts", () => {
       policy.seats.map(({ seat_id, role, required }) => ({ seat_id, role, required })),
     );
     expect(policy.readiness).not.toHaveProperty("ready");
+  });
+
+  it("allows a Task to require more seats than its Role minimum", () => {
+    const roles = [{ role: "participant", minimum: 0, maximum: 3 }];
+    const seats = buildSeatPolicy(roles).seats.map((seat, index) => ({
+      ...seat,
+      required: index < 2,
+    }));
+
+    expect(seatPolicyFitsDeclaredRoles(seats, roles)).toBe(true);
+    expect(seats.filter((seat) => seat.required)).toHaveLength(2);
   });
 
   it("returns bounded JSON Pointer errors for exact configuration fields", () => {

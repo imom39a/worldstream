@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    io::{Read as _, Write as _},
     net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
@@ -23,7 +24,7 @@ use tungstenite::handshake::client::generate_key;
 use tungstenite::{Message, WebSocket, client, http};
 use worldstream_protocol::{
     ClientHello, ClientMode, ObservationDeliver, PROTOCOL_VERSION, ProjectionReset,
-    REQUIRED_CLIENT_CAPABILITIES, RoomAttached, RoomHead, SealedCapabilityBearerV1,
+    REQUIRED_CLIENT_CAPABILITIES, ReplayResponse, RoomAttached, RoomHead, SealedCapabilityBearerV1,
     VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
 };
 use zeroize::Zeroizing;
@@ -40,6 +41,7 @@ const MAX_SEAT_ID_BYTES: usize = 128;
 const MAX_ACTION_TYPE_BYTES: usize = 128;
 const MAX_OFFER_ID_BYTES: usize = 256;
 const MAX_ACTION_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_REPLAY_RESPONSE_BYTES: u64 = 256 * 1024;
 
 /// Exact, non-serializable authority for one provisioned human participant seat.
 pub struct HumanSeatAuthorityV1 {
@@ -167,6 +169,20 @@ pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
         request: &ParticipantActionRequestV1,
     ) -> Result<Value, ParticipantConsoleGatewayErrorV1>;
 
+    /// Replays one historical Head through the exact existing Membership
+    /// authority. The browser-facing result must contain no routing data.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed connectivity, authorization, or availability failure.
+    fn replay(
+        &self,
+        _authority: &HumanSeatAuthorityV1,
+        _at_room_seq: u64,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+
     /// Reports whether the exact Membership session can currently reconnect.
     ///
     /// # Errors
@@ -222,8 +238,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             .header("Upgrade", "websocket")
             .body(())
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
-        let (mut socket, response) =
-            client(request, stream).map_err(|_| ParticipantConsoleGatewayErrorV1::Rejected)?;
+        let (mut socket, response) = client(request, stream).map_err(handshake_error)?;
         if response.status() != http::StatusCode::SWITCHING_PROTOCOLS {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
@@ -421,6 +436,54 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
         Self::read_type(&mut socket, "action.accepted").map(strip_routing)
     }
 
+    fn replay(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        at_room_seq: u64,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        let request = Zeroizing::new(format!(
+            "GET /v1/rooms/{}/replay?at_room_seq={at_room_seq} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            authority.room_id(),
+            self.address,
+            authority.bearer().as_str(),
+        ));
+        let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        let mut response = Vec::new();
+        stream
+            .take(MAX_REPLAY_RESPONSE_BYTES + 1)
+            .read_to_end(&mut response)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        if u64::try_from(response.len()).unwrap_or(u64::MAX) > MAX_REPLAY_RESPONSE_BYTES {
+            return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+        }
+        let (status, body) = parse_http_response(&response)?;
+        match status {
+            200 => {
+                let replay: ReplayResponse = serde_json::from_slice(body)
+                    .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+                if replay.room_id != authority.room_id()
+                    || replay.requested_room_seq != at_room_seq
+                    || replay.room_head.room_id != authority.room_id()
+                    || replay.room_head.room_seq != at_room_seq
+                    || replay.verification != "verified"
+                {
+                    return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+                }
+                browser_replay(replay)
+            }
+            400 | 401 | 403 | 404 | 409 | 422 => Err(ParticipantConsoleGatewayErrorV1::Rejected),
+            _ => Err(ParticipantConsoleGatewayErrorV1::Unavailable),
+        }
+    }
+
     fn health(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -433,6 +496,36 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
             _ => Err(ParticipantConsoleGatewayErrorV1::Rejected),
         }
     }
+}
+
+fn handshake_error(
+    error: tungstenite::HandshakeError<tungstenite::handshake::client::ClientHandshake<TcpStream>>,
+) -> ParticipantConsoleGatewayErrorV1 {
+    match error {
+        // A short daemon timeout and an interrupted TCP handshake are
+        // reconnectable transport conditions. They are not evidence that the
+        // retained Membership authority was revoked.
+        tungstenite::HandshakeError::Interrupted(_)
+        | tungstenite::HandshakeError::Failure(tungstenite::Error::Io(_)) => {
+            ParticipantConsoleGatewayErrorV1::Disconnected
+        }
+        // Only explicit authentication or authorization statuses can
+        // invalidate a participant session. Route and protocol failures stay
+        // bounded upstream failures rather than being shown as revoked access.
+        tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
+            if handshake_http_status_error(response.status()) =>
+        {
+            ParticipantConsoleGatewayErrorV1::Rejected
+        }
+        tungstenite::HandshakeError::Failure(_) => ParticipantConsoleGatewayErrorV1::Unavailable,
+    }
+}
+
+fn handshake_http_status_error(status: http::StatusCode) -> bool {
+    matches!(
+        status,
+        http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN
+    )
 }
 
 #[derive(Serialize)]
@@ -466,6 +559,20 @@ fn browser_delivery(
     let body =
         serde_json::to_value(body).map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
     Ok(serde_json::json!({"kind": kind, "body": strip_routing(body)}))
+}
+
+fn browser_replay(replay: ReplayResponse) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+    let projection = serde_json::to_value(replay.projection)
+        .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+    Ok(serde_json::json!({
+        "requested_room_seq": replay.requested_room_seq,
+        "room_head": browser_room_head(&replay.room_head),
+        "projection": strip_routing(projection),
+        "projection_hash": replay.projection_hash,
+        "verification": "verified",
+        "room_health": replay.room_health,
+        "integrity_generation": replay.integrity_generation,
+    }))
 }
 
 fn strip_routing(mut value: Value) -> Value {
@@ -723,6 +830,25 @@ impl ParticipantHandoffBrokerV1 {
         browser_safe_gateway_value(value)
     }
 
+    fn replay(
+        &self,
+        cookie: Option<&str>,
+        request: ReplayRequestV1,
+    ) -> Result<Value, ParticipantHandoffErrorV1> {
+        let authority = self.resolve_session(cookie)?;
+        let value = self
+            .inner
+            .gateway
+            .replay(&authority, request.at_room_seq)
+            .map_err(|error| match error {
+                ParticipantConsoleGatewayErrorV1::Rejected => {
+                    ParticipantHandoffErrorV1::ReplayUnavailable
+                }
+                other => ParticipantHandoffErrorV1::from_gateway(other),
+            })?;
+        browser_safe_gateway_value(value)
+    }
+
     fn resolve_session(
         &self,
         cookie: Option<&str>,
@@ -828,6 +954,12 @@ struct ObserveRequestV1 {
     after_frame_seq: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayRequestV1 {
+    at_room_seq: u64,
+}
+
 /// Exact participant Action request with routing and authority supplied server-side.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -888,6 +1020,10 @@ pub fn participant_handoff_router(broker: ParticipantHandoffBrokerV1) -> Router 
         .route(
             "/api/v1/participant-console/session:act",
             post(act).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/participant-console/session:replay",
+            post(replay).options(cors_preflight),
         )
         .layer(from_fn_with_state(broker.clone(), local_cors))
         .with_state(broker)
@@ -1079,6 +1215,21 @@ async fn act(
         .map(Json)
 }
 
+async fn replay(
+    State(broker): State<ParticipantHandoffBrokerV1>,
+    headers: HeaderMap,
+    Json(request): Json<ReplayRequestV1>,
+) -> Result<Json<Value>, ParticipantHandoffErrorV1> {
+    require_origin(&headers, &broker.inner.console_origin)?;
+    let cookie = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| Zeroizing::new(value.to_owned()));
+    run_blocking(move || broker.replay(cookie.as_ref().map(|value| value.as_str()), request))
+        .await
+        .map(Json)
+}
+
 async fn run_blocking<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, ParticipantHandoffErrorV1> + Send + 'static,
 ) -> Result<T, ParticipantHandoffErrorV1> {
@@ -1095,6 +1246,7 @@ enum ParticipantHandoffErrorV1 {
     HumanSeatRequired,
     NotProvisioned,
     AuthorityInvalid,
+    ReplayUnavailable,
     InvalidHandoff,
     SessionMissing,
     Capacity,
@@ -1163,6 +1315,13 @@ impl IntoResponse for ParticipantHandoffErrorV1 {
                 StatusCode::UNAUTHORIZED,
                 "participant_session_authority_invalid",
                 "The retained Participant authority is no longer valid.",
+                "return_to_task_setup",
+                false,
+            ),
+            Self::ReplayUnavailable => (
+                StatusCode::FORBIDDEN,
+                "participant_replay_unavailable",
+                "Historical Replay is not available for this provisioned participant authority.",
                 "return_to_task_setup",
                 false,
             ),
@@ -1285,6 +1444,11 @@ fn contains_prohibited_browser_material(value: &Value) -> bool {
                     | "membership_id"
                     | "path"
                     | "file_path"
+                    | "agent_private_memory"
+                    | "invocation_context"
+                    | "prompt"
+                    | "provider_response"
+                    | "model_response"
             ) || contains_prohibited_browser_material(child)
         }),
         Value::Array(values) => values.iter().any(contains_prohibited_browser_material),
@@ -1387,4 +1551,50 @@ fn target_fingerprint(key: &[u8; 32], room_id: &str, member_id: &str) -> [u8; 32
     input.push(0);
     input.extend_from_slice(member_id.as_bytes());
     *blake3::keyed_hash(key, &input).as_bytes()
+}
+
+fn parse_http_response(bytes: &[u8]) -> Result<(u16, &[u8]), ParticipantConsoleGatewayErrorV1> {
+    let separator = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or(ParticipantConsoleGatewayErrorV1::Unavailable)?;
+    let headers = std::str::from_utf8(&bytes[..separator])
+        .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_ascii_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or(ParticipantConsoleGatewayErrorV1::Unavailable)?;
+    Ok((status, &bytes[(separator + 4)..]))
+}
+
+#[cfg(test)]
+mod transport_error_tests {
+    use super::*;
+
+    type ClientHandshake = tungstenite::handshake::client::ClientHandshake<TcpStream>;
+
+    #[test]
+    fn handshake_transport_failure_is_reconnectable_not_authority_invalid() {
+        let error: tungstenite::HandshakeError<ClientHandshake> =
+            tungstenite::HandshakeError::Failure(tungstenite::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::TimedOut,
+            )));
+        assert_eq!(
+            handshake_error(error),
+            ParticipantConsoleGatewayErrorV1::Disconnected
+        );
+    }
+
+    #[test]
+    fn only_authorization_style_handshake_statuses_reject_authority() {
+        assert!(handshake_http_status_error(http::StatusCode::UNAUTHORIZED));
+        assert!(handshake_http_status_error(http::StatusCode::FORBIDDEN));
+        assert!(!handshake_http_status_error(http::StatusCode::BAD_REQUEST));
+        assert!(!handshake_http_status_error(http::StatusCode::NOT_FOUND));
+        assert!(!handshake_http_status_error(
+            http::StatusCode::SERVICE_UNAVAILABLE
+        ));
+    }
 }

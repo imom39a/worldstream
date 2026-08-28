@@ -14,6 +14,11 @@ const PROHIBITED_KEYS = new Set([
   "membership_id",
   "path",
   "file_path",
+  "agent_private_memory",
+  "invocation_context",
+  "prompt",
+  "provider_response",
+  "model_response",
 ]);
 
 export interface BrowserNavigationTarget {
@@ -91,6 +96,17 @@ export interface ParticipantBrowserObservation {
   room_head: ParticipantBrowserRoomHead;
   frame_head: number;
   delivery: ParticipantBrowserDelivery[];
+}
+
+/** Read-only, verified historical projection returned by the local session proxy. */
+export interface ParticipantBrowserReplay {
+  requested_room_seq: number;
+  room_head: ParticipantBrowserRoomHead;
+  projection: Record<string, unknown>;
+  projection_hash: string;
+  verification: "verified";
+  room_health: string;
+  integrity_generation: number;
 }
 
 /** Tries a retained HttpOnly session before preserving the direct Console flow. */
@@ -173,6 +189,33 @@ export class ParticipantHandoffClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
     });
+  }
+
+  async replay(atRoomSeq: number): Promise<ParticipantBrowserReplay> {
+    if (!Number.isSafeInteger(atRoomSeq) || atRoomSeq < 0) {
+      throw new ParticipantHandoffError(
+        "participant_replay_invalid_request",
+        "Historical Replay requires a valid Room sequence.",
+        "return_to_task_setup",
+        false,
+      );
+    }
+    const value = await this.jsonRequest("/api/v1/participant-console/session:replay", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ at_room_seq: atRoomSeq }),
+    });
+    if (!isParticipantReplay(value)) {
+      throw new ParticipantHandoffError(
+        "participant_replay_invalid_response",
+        "Participant View returned an invalid historical Replay.",
+        "return_to_task_setup",
+        false,
+      );
+    }
+    return value;
   }
 
   private async statusRequest(path: string, init: RequestInit): Promise<ParticipantSessionStatus> {
@@ -263,7 +306,35 @@ function isSessionStatus(value: unknown): value is {
 function isParticipantObservation(value: unknown): value is ParticipantBrowserObservation {
   if (!isExactObject(value, ["room_head", "frame_head", "delivery"])) return false;
   if (!Number.isSafeInteger(value.frame_head) || (value.frame_head as number) < 0) return false;
-  if (!isExactObject(value.room_head, [
+  if (!isParticipantRoomHead(value.room_head)) return false;
+  if (!Array.isArray(value.delivery) || value.delivery.length > 10_000) return false;
+  return value.delivery.every((item) => isExactObject(item, ["kind", "body"])
+    && (item.kind === "projection_reset" || item.kind === "observation")
+    && isRecord(item.body));
+}
+
+function isParticipantReplay(value: unknown): value is ParticipantBrowserReplay {
+  if (!isExactObject(value, [
+    "requested_room_seq",
+    "room_head",
+    "projection",
+    "projection_hash",
+    "verification",
+    "room_health",
+    "integrity_generation",
+  ])) return false;
+  return Number.isSafeInteger(value.requested_room_seq)
+    && (value.requested_room_seq as number) >= 0
+    && isParticipantRoomHead(value.room_head)
+    && isRecord(value.projection)
+    && typeof value.projection_hash === "string" && value.projection_hash.length > 0
+    && value.verification === "verified"
+    && typeof value.room_health === "string" && value.room_health.length > 0
+    && Number.isSafeInteger(value.integrity_generation) && (value.integrity_generation as number) >= 0;
+}
+
+function isParticipantRoomHead(value: unknown): value is ParticipantBrowserRoomHead {
+  if (!isExactObject(value, [
     "room_seq",
     "genesis_or_transition_hash",
     "core_schema_version",
@@ -272,14 +343,9 @@ function isParticipantObservation(value: unknown): value is ParticipantBrowserOb
     "activity_state_hash",
     "authoritative_state_hash",
   ])) return false;
-  const head = value.room_head;
-  if (!Number.isSafeInteger(head.room_seq) || (head.room_seq as number) < 0) return false;
-  if (![head.genesis_or_transition_hash, head.core_schema_version, head.pack_digest, head.core_state_hash, head.activity_state_hash, head.authoritative_state_hash]
-    .every((item) => typeof item === "string" && item.length > 0)) return false;
-  if (!Array.isArray(value.delivery) || value.delivery.length > 10_000) return false;
-  return value.delivery.every((item) => isExactObject(item, ["kind", "body"])
-    && (item.kind === "projection_reset" || item.kind === "observation")
-    && isRecord(item.body));
+  if (!Number.isSafeInteger(value.room_seq) || (value.room_seq as number) < 0) return false;
+  return [value.genesis_or_transition_hash, value.core_schema_version, value.pack_digest, value.core_state_hash, value.activity_state_hash, value.authoritative_state_hash]
+    .every((item) => typeof item === "string" && item.length > 0);
 }
 
 function readSafeError(value: unknown): ParticipantHandoffError {

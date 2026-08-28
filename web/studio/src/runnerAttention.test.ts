@@ -38,6 +38,31 @@ describe("runner attention browser boundary", () => {
     })).toBe(false);
   });
 
+  it("accepts observed idle managed-reference work before its first host registration", async () => {
+    const unregistered = {
+      schema: "worldstream/studio-task-agent-attention/v1",
+      freshness: "unavailable",
+      observed_at_unix_ms: 1_787_930_228_773,
+      seats: [{
+        seat_id: "navigator-agent",
+        instance_id: "managed-runner-01",
+        compatibility: "unavailable",
+        capacity: { advertised: 0, in_use: 0, available: 0 },
+        activation: { state: "idle", waiting: 0, leased: 0 },
+        freshness: "unavailable",
+        next_action: "No operator action is required.",
+      }],
+    };
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(unregistered), { status: 200 }));
+
+    expect(isTaskAgentAttention(unregistered)).toBe(true);
+    await expect(loadTaskAgentAttention(ROOM, fetcher)).resolves.toEqual(unregistered);
+    expect(isTaskAgentAttention({
+      ...unregistered,
+      seats: [{ ...unregistered.seats[0], compatibility: "compatible" }],
+    })).toBe(false);
+  });
+
   it("binds Task and restart responses to the requested exact identity", async () => {
     const taskFetcher = vi.fn(async () => new Response(JSON.stringify(task()), { status: 200 }));
     expect((await loadTaskAgentAttention(ROOM, taskFetcher))?.seats[0]?.seat_id).toBe("navigator-agent");
@@ -74,6 +99,15 @@ describe("runner attention browser boundary", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ schema: "worldstream/studio-managed-agent-host-action/v1" }),
+      }),
+    );
+
+    await expect(requestManagedHostSeatAction(ROOM, "navigator-agent", "stop", fetcher)).resolves.toBe(true);
+    expect(fetcher).toHaveBeenLastCalledWith(
+      `/api/v1/rooms/${ROOM}/agent-seats/navigator-agent/managed-host/stop`,
+      expect.objectContaining({
+        method: "POST",
         body: JSON.stringify({ schema: "worldstream/studio-managed-agent-host-action/v1" }),
       }),
     );

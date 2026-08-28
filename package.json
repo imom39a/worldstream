@@ -16,6 +16,7 @@
     "studio:prototype": "pnpm --dir web/console prototype:studio",
     "studio:dev": "scripts/studio-dev.sh",
     "studio:supervisor": "cargo run -p worldstream-studio-supervisor --bin worldstream-studio-supervisor --",
+    "counter:studio": "sdk/python/.venv/bin/python examples/counter/run_studio_demo.py",
     "studio:build": "pnpm --dir web/studio build",
     "studio:test": "pnpm --dir web/studio test",
     "ui:dev": "pnpm --dir web/console dev",

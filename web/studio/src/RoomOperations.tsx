@@ -37,8 +37,7 @@ export function RoomOperations({
     );
   }
 
-  const selected = inventory.page.rooms.find((room) => room.room_id === selectedRoomId)
-    ?? inventory.page.rooms[0];
+  const selected = inventory.page.rooms.find((room) => room.room_id === selectedRoomId);
   return (
     <section className="room-operations" aria-label="Room operations">
       <div className="room-list">
@@ -57,7 +56,12 @@ export function RoomOperations({
           </button>
         ))}
       </div>
-      {selected ? <RoomDetail room={selected} operatorView={operatorView?.room_id === selected.room_id ? operatorView : null} operatorViewLoading={operatorViewLoading} onEnableOperatorView={onEnableOperatorView} /> : null}
+      {selected ? <RoomDetail room={selected} operatorView={operatorView?.room_id === selected.room_id ? operatorView : null} operatorViewLoading={operatorViewLoading} onEnableOperatorView={onEnableOperatorView} /> : (
+        <aside className="room-detail" role="status">
+          <h2>Select a Room</h2>
+          <p>Select a listed Room to load its current operator detail.</p>
+        </aside>
+      )}
     </section>
   );
 }

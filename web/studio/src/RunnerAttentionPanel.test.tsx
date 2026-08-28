@@ -74,6 +74,7 @@ describe("Runner attention", () => {
       />,
     );
     expect(enabled).toContain("Start managed host");
+    expect(enabled).toContain("Stop managed host");
 
     const attention = renderToStaticMarkup(
       <RunnerAttentionPanel
@@ -85,6 +86,7 @@ describe("Runner attention", () => {
       />,
     );
     expect(attention).toContain("Retry managed host");
+    expect(attention).toContain("Stop managed host");
 
     const generic = renderToStaticMarkup(
       <RunnerAttentionPanel
@@ -107,6 +109,30 @@ describe("Runner attention", () => {
       />,
     );
     expect(absentRoom).not.toContain("Start managed host");
+  });
+
+  it("offers Start before a managed-reference host has registered Runner capacity", () => {
+    const unregistered = task();
+    unregistered.freshness = "unavailable";
+    unregistered.observed_at_unix_ms = 1_000;
+    unregistered.seats[0] = {
+      ...unregistered.seats[0],
+      compatibility: "unavailable",
+      capacity: { advertised: 0, in_use: 0, available: 0 },
+      activation: { state: "idle", waiting: 0, leased: 0 },
+      freshness: "unavailable",
+    };
+
+    const dom = renderToStaticMarkup(
+      <RunnerAttentionPanel
+        operations={operations()}
+        task={unregistered}
+        managedHostRoomId="01ARZ3NDEKTSV4RRFFQ69G5FB3"
+        managedReferenceSeatIds={new Set(["navigator-agent"])}
+        onManagedHostAction={() => undefined}
+      />,
+    );
+    expect(dom).toContain("Start managed host");
   });
 });
 

@@ -129,6 +129,21 @@ describe("five-step Room draft wizard", () => {
     expect(readiness).not.toContain("Participant online");
   });
 
+  it("makes task-required status an accessible choice for each declared seat", () => {
+    const dom = renderToStaticMarkup(
+      <RoomDraftWizard
+        draft={configuredDraft()}
+        catalog={catalog}
+        detail={detail}
+        activeStep="seats"
+      />,
+    );
+
+    expect(dom).toContain('aria-label="player 1 required for this Task"');
+    expect(dom).toContain('aria-label="player 2 required for this Task"');
+    expect(dom).toContain("Required for this Task");
+  });
+
   it("keeps an unavailable saved exact revision inspectable without migration", () => {
     const unavailable = { id: "counter", version: "1.0.0", digest: `blake3:${"c".repeat(64)}` };
     const dom = renderToStaticMarkup(
@@ -158,7 +173,7 @@ describe("five-step Room draft wizard", () => {
 
     expect(dom).toContain("Review draft snapshot");
     expect(dom).toContain("Alpha");
-    expect(dom).toContain("Save draft");
+    expect(dom).toContain("Save Review");
     expect(dom).toContain("does not create a Room");
     expect(dom).not.toContain("Create Room");
     expect(dom).not.toContain("Create authority");
