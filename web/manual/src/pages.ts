@@ -55,7 +55,7 @@ export const manualPages: readonly ManualPage[] = [
   { route: "/maintainers/workflow", title: "Maintainer workflow", summary: "Make repository changes without breaking generated mirrors, compatibility, or local policy.", group: "Maintain", source: maintenance },
   { route: "/maintainers/testing-release", title: "Testing and release", summary: "Run the focused and full gates and prepare evidence for the eventual public v0.1.", group: "Maintain", source: testingRelease },
   { route: "/maintainers/troubleshooting", title: "Troubleshooting", summary: "Diagnose common build, authority, Studio, agent, storage, and recovery failures.", group: "Maintain", source: troubleshooting },
-  { route: "/maintainers/manual", title: "Manual maintenance", summary: "Edit, verify, build, and publish this developer manual through GitLab Pages.", group: "Maintain", source: manualMaintenance },
+  { route: "/maintainers/manual", title: "Manual maintenance", summary: "Edit, verify, build, and publish this developer manual through GitHub or GitLab Pages.", group: "Maintain", source: manualMaintenance },
 ] as const;
 
 export const navigationGroups = Array.from(new Set(manualPages.map((page) => page.group))).map((group) => ({

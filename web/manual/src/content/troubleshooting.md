@@ -100,9 +100,10 @@ pnpm docs:build
 pnpm docs:preview
 ```
 
-If GitLab Pages assets 404, rebuild with a `DOCS_BASE` matching the project Pages
-subpath. A successful local build is not deployment proof; inspect the actual
-GitLab pipeline and Pages URL.
+If Pages assets return 404, rebuild with a `DOCS_BASE` matching the project
+Pages subpath. A successful local build is not deployment proof; inspect the
+actual GitHub Actions or GitLab pipeline, the deploy job, and the live Pages
+URL.
 
 For deeper diagnosis, use the owning source linked from the relevant page and
 the [security model](#/concepts/security) before collecting logs.

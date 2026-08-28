@@ -72,5 +72,5 @@ export const capabilities: readonly Capability[] = [
   { name: "Studio Supervisor", area: "CLI", interface: "CLI", status: "Implemented", description: "Own the bounded local daemon process lifecycle for Studio.", route: "/reference/cli" },
   { name: "Python SDK", area: "SDK", interface: "Python", status: "Implemented", description: "Use typed clients and examples against the local HTTP authority.", route: "/reference/repository-map" },
   { name: "First-party TypeScript web clients", area: "Studio", interface: "TypeScript", status: "Implemented", description: "Use the internal typed protocol clients that power Studio and the Participant Console; no public TypeScript SDK is shipped.", route: "/reference/repository-map" },
-  { name: "GitLab Pages manual", area: "Documentation", interface: "Browser", status: "Reference", description: "Build this local-first manual as a static artifact ready for GitLab Pages.", route: "/maintainers/manual" },
+  { name: "GitHub Pages manual", area: "Documentation", interface: "Browser", status: "Implemented", description: "Verify, build, and deploy the public developer manual from main with GitHub Actions.", route: "/maintainers/manual" },
 ] as const;
