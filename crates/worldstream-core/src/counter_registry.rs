@@ -68,6 +68,18 @@ pub fn counter_v1_only_registry_for_conformance() -> Result<PackRegistryV1, Pack
     PackRegistryV1::try_new([counter_entry(false, true, CounterRevision::V1)?])
 }
 
+/// Builds the historical v3 creation registry used only to construct retained
+/// v3 lineages before replaying them through the current registry.
+///
+/// # Errors
+///
+/// Fails closed under the same registry verification as the complete fixture.
+#[cfg(any(test, feature = "conformance-tracer"))]
+pub fn counter_v3_historical_creation_registry_for_conformance()
+-> Result<PackRegistryV1, PackRegistryErrorV1> {
+    PackRegistryV1::try_new([counter_entry(true, true, CounterRevision::V3)?])
+}
+
 /// Builds the complete fixture with the v2 executor replaced by one that
 /// panics at the selected pure host invocation.
 ///
@@ -923,8 +935,11 @@ mod tests {
     fn counter_v3_human_ack_emits_eligible_agent_attention_and_replays_without_effects() {
         let registry = builtin_counter_registry()
             .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"));
+        let historical_creation_registry =
+            counter_v3_historical_creation_registry_for_conformance()
+                .unwrap_or_else(|error| unreachable!("historical Counter v3 registry: {error}"));
         let corpus = counter_corpus(CounterRevision::V3, counter_v3_digest());
-        let prepared = registry
+        let prepared = historical_creation_registry
             .prepare_genesis_for_new_room(&corpus.genesis)
             .unwrap_or_else(|error| unreachable!("Counter v3 genesis: {error}"));
         let mut trace = CoreTraceV1::create_uncommitted(prepared)
@@ -998,7 +1013,7 @@ mod tests {
         assert_eq!(replay.external_effect_count, 0);
         assert_eq!(replay.receipt_count, 0);
 
-        let prepared = registry
+        let prepared = historical_creation_registry
             .prepare_genesis_for_new_room(&corpus.genesis)
             .unwrap_or_else(|error| unreachable!("Counter v3 agent genesis: {error}"));
         let mut agent_trace = CoreTraceV1::create_uncommitted(prepared)

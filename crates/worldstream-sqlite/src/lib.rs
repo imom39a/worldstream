@@ -18751,7 +18751,8 @@ mod tests {
         counter_v2_returned_fault_registry_for_conformance,
         counter_v2_runtime_fault_registry_for_conformance,
         counter_v2_semantic_mismatch_registry_for_conformance, counter_v3_digest,
-        counter_v4_digest, external_input_request_hash, recover_room_from_storage,
+        counter_v3_historical_creation_registry_for_conformance, counter_v4_digest,
+        external_input_request_hash, recover_room_from_storage,
     };
     use worldstream_transfer::{
         BundleProfileV1, DeploymentIdentityV1, DigestV1, PackIdentityV1, ResourceKindV1,
@@ -19191,8 +19192,8 @@ mod tests {
     fn committed_counter_v3_trace(
         store: &SqliteRoomStore,
     ) -> (CoreTraceV1, PreparedAuthorityWitnessV1) {
-        let registry =
-            builtin_counter_registry().unwrap_or_else(|error| panic!("Counter registry: {error}"));
+        let registry = counter_v3_historical_creation_registry_for_conformance()
+            .unwrap_or_else(|error| panic!("historical Counter v3 registry: {error}"));
         let configuration = canonical(br#"{"initial_value":0,"maximum_value":4}"#);
         let human = MembershipV1::new(
             parsed(PARTICIPANT),

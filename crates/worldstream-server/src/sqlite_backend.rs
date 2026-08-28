@@ -3637,7 +3637,7 @@ mod tests {
         CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
         CapabilityScopeV1, NewCapabilityV1, PresentedCapabilityV1, PrincipalKindV1,
         agent_heist_lobby_digest, builtin_agent_heist_registry, builtin_counter_registry,
-        counter_v2_digest, counter_v3_digest,
+        counter_v2_digest, counter_v3_digest, counter_v4_digest,
     };
     use worldstream_protocol::{
         AccessMode, BearerWireV1, CreateMember, MemberCapabilityProvisionRequestV1, PackReference,
@@ -3798,7 +3798,7 @@ mod tests {
         let catalog = backend
             .activity_pack_catalog(&gateway_session)
             .unwrap_or_else(|error| panic!("catalog: {error:?}"));
-        assert_eq!(catalog.revisions.len(), 3);
+        assert_eq!(catalog.revisions.len(), 4);
         assert!(catalog.revisions.iter().any(|revision| {
             revision.pack.digest == counter_v2_digest().to_string()
                 && revision.selectable_for_new_rooms
@@ -3806,6 +3806,11 @@ mod tests {
         }));
         assert!(catalog.revisions.iter().any(|revision| {
             revision.pack.digest == counter_v3_digest().to_string()
+                && !revision.selectable_for_new_rooms
+                && revision.runnable_for_retained_rooms
+        }));
+        assert!(catalog.revisions.iter().any(|revision| {
+            revision.pack.digest == counter_v4_digest().to_string()
                 && revision.selectable_for_new_rooms
                 && revision.runnable_for_retained_rooms
         }));

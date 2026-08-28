@@ -5363,6 +5363,7 @@ mod tests {
     use worldstream_core::{
         AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1, CapabilityBearerV1, CapabilityId,
         PrincipalKindV1, builtin_worldstream_registry, counter_v1_digest, counter_v2_digest,
+        counter_v3_digest, counter_v4_digest,
     };
     use worldstream_protocol::{
         AccessMode, ActionSubmit, BEARER_WIRE_PREFIX, BearerWireV1,
@@ -7130,7 +7131,7 @@ mod tests {
             list.version,
             worldstream_protocol::ACTIVITY_PACK_CATALOG_VERSION
         );
-        assert_eq!(list.revisions.len(), 6);
+        assert_eq!(list.revisions.len(), 7);
         assert!(
             list.revisions
                 .windows(2)
@@ -7143,6 +7144,20 @@ mod tests {
             .unwrap_or_else(|| unreachable!("retained Counter revision"));
         assert!(!retained.selectable_for_new_rooms);
         assert!(retained.runnable_for_retained_rooms);
+        let retained_v3 = list
+            .revisions
+            .iter()
+            .find(|revision| revision.pack.digest == counter_v3_digest().to_string())
+            .unwrap_or_else(|| unreachable!("retained Counter v3 revision"));
+        assert!(!retained_v3.selectable_for_new_rooms);
+        assert!(retained_v3.runnable_for_retained_rooms);
+        let selectable_v4 = list
+            .revisions
+            .iter()
+            .find(|revision| revision.pack.digest == counter_v4_digest().to_string())
+            .unwrap_or_else(|| unreachable!("selectable Counter v4 revision"));
+        assert!(selectable_v4.selectable_for_new_rooms);
+        assert!(selectable_v4.runnable_for_retained_rooms);
 
         let selected_digest = counter_v2_digest().to_string();
         let detail = app

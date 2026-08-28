@@ -110,6 +110,7 @@ pub use counter_registry::{
     counter_v2_returned_fault_registry_for_conformance,
     counter_v2_runtime_fault_registry_for_conformance,
     counter_v2_semantic_mismatch_registry_for_conformance,
+    counter_v3_historical_creation_registry_for_conformance,
 };
 pub use lineage::{
     CANONICAL_CODEC_ID, CORE_SCHEMA_VERSION, GENESIS_VERSION, GenesisV1, HASH_SUITE_ID,
