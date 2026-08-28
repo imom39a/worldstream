@@ -72,6 +72,25 @@ class StudioAcceptanceVerifierTests(unittest.TestCase):
             connection.close()
         database.chmod(0o600)
 
+    @staticmethod
+    def completion_witness(
+        activation_id: str, *, claim_id: str = "claim", lease_generation: int = 1
+    ) -> tuple[str, str, bytes, dict[str, object]]:
+        return (
+            "operation",
+            activation_id,
+            b"a" * 32,
+            {
+                "operation_id": "operation",
+                "activation_id": activation_id,
+                "claim_id": claim_id,
+                "code": "completed",
+                "state": "completed",
+                "lease_generation": lease_generation,
+                "context": None,
+            },
+        )
+
     def test_replay_hash_mismatch_cannot_pass(self) -> None:
         studio, console = self.root / "studio.html", self.root / "console.html"
         studio.write_text("<main>Agent Profile prompt label</main>", encoding="utf-8")
@@ -85,6 +104,51 @@ class StudioAcceptanceVerifierTests(unittest.TestCase):
                 "genesis_or_transition_hash": "blake3:" + "c" * 64,
                 "authoritative_state_hash": "blake3:" + "b" * 64,
             })
+
+    def test_verify_capture_witness_keeps_safe_completion_shape(self) -> None:
+        room_id = "01ARZ3NDEKTSV4RRFFQ69G5FB0"
+        activation_id = "01ARZ3NDEKTSV4RRFFQ69G5FB1"
+        args = SimpleNamespace(
+            control_file=self.root / "control.json",
+            state_dir=self.root / "studio",
+            draft_name="counter4-demo",
+            provider_status_url="http://127.0.0.1:19431",
+            studio_dom=self.root / "studio.html",
+            console_dom=self.root / "console.html",
+            url_evidence=self.root / "urls.json",
+            mode="capture",
+            before_witness=self.root / "before.json",
+            witness=self.root / "capture.json",
+            channel=[],
+        )
+        completed = self.completion_witness(activation_id)[3]
+        patches = {
+            "control_metadata": lambda _path: {"supervisor": "http://127.0.0.1:9410"},
+            "setup_for_draft": lambda _state, _draft: {},
+            "setup_bindings": lambda _setup: (room_id, "human", "agent", "runner"),
+            "exact_template_lineage": lambda *_args: True,
+            "creation_and_ready_genesis": lambda *_args: True,
+            "loopback_url": lambda value, _code: value,
+            "provider_counts": lambda _url: (2, 2),
+            "public_room_state": lambda *_args: (2, 2, {
+                "genesis_or_transition_hash": "blake3:" + "a" * 64,
+                "authoritative_state_hash": "blake3:" + "b" * 64,
+            }),
+            "completion_receipts": lambda *_args: (("operation", activation_id, b"a" * 32, completed),),
+            "bound_launch": lambda *_args: ("c" * 64, {}, {}),
+            "recovery_evidence": lambda *_args: True,
+            "committed_increment_evidence": lambda *_args: True,
+            "dom_evidence": lambda *_args: (True, True),
+            "url_evidence": lambda *_args: True,
+            "scan_secret_absence": lambda *_args: True,
+        }
+        with patch.multiple(validator, **patches):
+            report = validator.verify(args)
+        witness = validator.private_witness(args.witness)
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(
+            witness["completion_receipts"], [["operation", activation_id, (b"a" * 32).hex()]]
+        )
 
     def test_wrong_template_pack_cannot_pass(self) -> None:
         usage = {"template_id": "template", "revision": "v1", "draft": {"draft_id": "editable"}}
@@ -123,7 +187,7 @@ class StudioAcceptanceVerifierTests(unittest.TestCase):
                 "01ARZ3NDEKTSV4RRFFQ69G5FB2",
                 assignment,
                 reference,
-                ("operation", assignment, b"a" * 32),
+                self.completion_witness(assignment),
             )
 
     def test_recovery_evidence_requires_the_bound_accepted_completion_ledger(self) -> None:
@@ -169,20 +233,23 @@ class StudioAcceptanceVerifierTests(unittest.TestCase):
             state_dir, room_id, activation, 2, "claim-generation-two"
         )
         self.assertTrue(validator.recovery_evidence(
-            state_dir, room_id, assignment, reference, ("operation", activation, b"a" * 32)
+            state_dir, room_id, assignment, reference,
+            self.completion_witness(activation, lease_generation=2),
         ))
         record["intent"]["identity"]["operation_id"] = "other-operation"
         self.write_json(path, record)
         with self.assertRaisesRegex(validator.VerificationFailure, "activation_lease_recovery_not_retained"):
             validator.recovery_evidence(
-                state_dir, room_id, assignment, reference, ("operation", activation, b"a" * 32)
+                state_dir, room_id, assignment, reference,
+                self.completion_witness(activation, lease_generation=2),
             )
         record["intent"]["identity"]["operation_id"] = "operation"
         record["remote_acceptance"]["kind"]["activation_id"] = "wrong"
         self.write_json(path, record)
         with self.assertRaisesRegex(validator.VerificationFailure, "activation_lease_recovery_not_retained"):
             validator.recovery_evidence(
-                state_dir, room_id, assignment, reference, ("operation", activation, b"a" * 32)
+                state_dir, room_id, assignment, reference,
+                self.completion_witness(activation, lease_generation=2),
             )
 
     def test_recovery_evidence_accepts_a_retained_same_generation_lease(self) -> None:
@@ -212,7 +279,7 @@ class StudioAcceptanceVerifierTests(unittest.TestCase):
         )
         self.write_claim_receipt(state_dir, room_id, activation, 1, "claim-generation-one")
         self.assertTrue(validator.recovery_evidence(
-            state_dir, room_id, assignment, reference, ("operation", activation, b"a" * 32)
+            state_dir, room_id, assignment, reference, self.completion_witness(activation)
         ))
         completion["intent"]["kind"]["claim_id"] = "different-claim"
         self.write_json(
@@ -220,7 +287,18 @@ class StudioAcceptanceVerifierTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(validator.VerificationFailure, "activation_acquisition_not_retained"):
             validator.recovery_evidence(
-                state_dir, room_id, assignment, reference, ("operation", activation, b"a" * 32)
+                state_dir, room_id, assignment, reference, self.completion_witness(
+                    activation, claim_id="different-claim"
+                )
+            )
+        completion["intent"]["kind"]["claim_id"] = "claim"
+        completion["intent"]["kind"]["lease_generation"] = 2
+        self.write_json(
+            state_dir / f"assignment-mcp-activations/{reference}/operations/completion.json", completion
+        )
+        with self.assertRaisesRegex(validator.VerificationFailure, "activation_lease_recovery_not_retained"):
+            validator.recovery_evidence(
+                state_dir, room_id, assignment, reference, self.completion_witness(activation)
             )
 
     def test_completed_increment_action_must_bind_the_completed_activation(self) -> None:

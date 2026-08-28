@@ -227,7 +227,9 @@ def creation_and_ready_genesis(state_dir: Path, draft_name: str, setup: dict[str
     return True
 
 
-def completion_receipts(state_dir: Path, room_id: str) -> tuple[tuple[str, str, bytes], ...]:
+def completion_receipts(
+    state_dir: Path, room_id: str
+) -> tuple[tuple[str, str, bytes, dict[str, Any]], ...]:
     database = state_dir.parent / "data" / "worldstream.sqlite3"
     try:
         metadata = database.lstat()
@@ -237,7 +239,7 @@ def completion_receipts(state_dir: Path, room_id: str) -> tuple[tuple[str, str, 
         try:
             connection.execute("PRAGMA query_only = ON")
             rows = connection.execute(
-                "SELECT operation_id, activation_id, canonical_request_hash "
+                "SELECT operation_id, activation_id, canonical_request_hash, result_bytes "
                 "FROM activation_operation_receipts WHERE room_id = ? "
                 "AND operation_kind = 'complete' AND result_code = 'completed' "
                 "ORDER BY operation_id",
@@ -248,16 +250,30 @@ def completion_receipts(state_dir: Path, room_id: str) -> tuple[tuple[str, str, 
     except (OSError, sqlite3.Error) as error:
         raise VerificationFailure("completion_receipts_unavailable") from error
     result = []
-    for operation_id, activation_id, request_hash in rows:
+    for operation_id, activation_id, request_hash, raw_result in rows:
+        try:
+            receipt = json.loads(raw_result) if isinstance(raw_result, bytes) else None
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            receipt = None
         if (
             not isinstance(operation_id, str)
             or not isinstance(activation_id, str)
             or not ULID.fullmatch(activation_id)
             or not isinstance(request_hash, bytes)
             or len(request_hash) != 32
+            or not isinstance(receipt, dict)
+            or receipt.get("operation_id") != operation_id
+            or receipt.get("activation_id") != activation_id
+            or not isinstance(receipt.get("claim_id"), str)
+            or not ULID.fullmatch(receipt["claim_id"])
+            or receipt.get("code") != "completed"
+            or receipt.get("state") != "completed"
+            or not isinstance(receipt.get("lease_generation"), int)
+            or receipt["lease_generation"] <= 0
+            or receipt.get("context") is not None
         ):
             raise VerificationFailure("completion_receipt_invalid")
-        result.append((operation_id, activation_id, request_hash))
+        result.append((operation_id, activation_id, request_hash, receipt))
     if len(result) != 1:
         raise VerificationFailure("completion_receipt_count_invalid")
     return tuple(result)
@@ -374,7 +390,7 @@ def recovery_evidence(
     room_id: str,
     assignment_id: str,
     launch_reference: str,
-    completion: tuple[str, str, bytes],
+    completion: tuple[str, str, bytes, dict[str, Any]],
 ) -> bool:
     operation_root = state_dir / "managed-agent-hosts" / "operations"
     try:
@@ -403,7 +419,7 @@ def recovery_evidence(
         ]
     except OSError as error:
         raise VerificationFailure("activation_ledger_invalid") from error
-    expected_operation, expected_activation, _request_hash = completion
+    expected_operation, expected_activation, _request_hash, completed_receipt = completion
     matching = [
         record for record in records
         if record.get("schema") == "worldstream/studio-assignment-mcp-operation@1"
@@ -415,11 +431,11 @@ def recovery_evidence(
         and isinstance(kind := intent.get("kind"), dict)
         and kind.get("kind") == "activation_completion"
         and kind.get("activation_id") == expected_activation
-        and isinstance(kind.get("claim_id"), str)
+        and kind.get("claim_id") == completed_receipt["claim_id"]
         and isinstance(kind.get("acquisition_cursor"), int)
         and kind["acquisition_cursor"] > 0
         and isinstance(kind.get("lease_generation"), int)
-        and kind["lease_generation"] > 0
+        and kind["lease_generation"] == completed_receipt["lease_generation"]
         and isinstance(remote := record.get("remote_acceptance"), dict)
         and remote.get("outcome") == "accepted"
         and isinstance(remote_kind := remote.get("kind"), dict)
@@ -835,7 +851,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "human_member_id": human_member,
         "agent_member_id": agent_member,
         "runner_id": runner_id,
-        "completion_receipts": [[operation, activation, digest.hex()] for operation, activation, digest in receipts],
+        "completion_receipts": [
+            [operation, activation, digest.hex()]
+            for operation, activation, digest, _completed_receipt in receipts
+        ],
         "provider": list(provider),
         "room": [counter_value, room_seq, head["genesis_or_transition_hash"], head["authoritative_state_hash"]],
         "launch_reference": launch_reference,
