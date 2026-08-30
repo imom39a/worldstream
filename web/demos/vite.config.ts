@@ -18,6 +18,7 @@ export default defineConfig({
       input: {
         catalog: fileURLToPath(new URL("./index.html", import.meta.url)),
         agentHeist: fileURLToPath(new URL("./demos/agent-heist/index.html", import.meta.url)),
+        agentHeistDocs: fileURLToPath(new URL("./docs/agent-heist/index.html", import.meta.url)),
       },
     },
   },

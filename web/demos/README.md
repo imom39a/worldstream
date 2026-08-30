@@ -14,6 +14,12 @@ pnpm demos:dev
 
 Open `http://127.0.0.1:5180/`.
 
+Public routes:
+
+- `/` — filterable demo catalog;
+- `/demos/agent-heist/` — recorded Agent Heist inspector; and
+- `/docs/agent-heist/` — technical fixture documentation.
+
 ## Checks
 
 ```sh

@@ -26,6 +26,10 @@
     {
       "source": "/demos/agent-heist",
       "destination": "/demos/agent-heist/index.html"
+    },
+    {
+      "source": "/docs/agent-heist",
+      "destination": "/docs/agent-heist/index.html"
     }
   ]
 }

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { defaultDemoCatalogFilter, demos, filterDemos, getDemoById } from "./catalog";
+import {
+  defaultDemoCatalogFilter,
+  demos,
+  deriveDemoCatalogFacets,
+  filterDemos,
+  getDemoById,
+} from "./catalog";
 
 describe("demo catalog", () => {
   it("returns the complete catalog for an empty filter", () => {
@@ -47,9 +53,37 @@ describe("demo catalog", () => {
         fixtureId: "service_window",
       },
       backendRequirement: { required: false },
-      documentationRoute: "/demos/agent-heist/#what-this-shows",
+      documentationUrl: "/docs/agent-heist/",
       thumbnail: { kind: "css-diagram" },
     });
     expect(agentHeist?.buildIdentity?.revisionDigest).toMatch(/^blake3:[0-9a-f]{64}$/);
+  });
+
+  it("derives only populated facet options from the manifest", () => {
+    expect(deriveDemoCatalogFacets(demos)).toEqual({
+      activityPacks: [
+        { id: "worldstream.agent-heist", label: "Agent Heist" },
+        { id: "worldstream.negotiate", label: "WorldStream Negotiate" },
+      ],
+      availabilities: ["available", "planned"],
+      capabilities: [
+        "Action Offers",
+        "Attention",
+        "Evidence",
+        "Recorded Replay evidence",
+        "Scoped Projections",
+        "Sealed commitments",
+        "Semantic Time",
+      ],
+      categories: [
+        { id: "application", label: "Application Activity Pack" },
+        { id: "technical-fixture", label: "Recorded technical fixture" },
+      ],
+      experiences: [
+        { id: "interactive-fixture", label: "Interactive fixture" },
+        { id: "live-shared-room", label: "Live shared Room" },
+      ],
+      perspectives: ["integrator", "operator", "participant", "spectator"],
+    });
   });
 });

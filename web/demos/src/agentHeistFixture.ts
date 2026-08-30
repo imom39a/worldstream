@@ -9,7 +9,7 @@ export type FixtureRecordKind =
   | "Replay evidence"
   | "Transition summary";
 export type FixtureRecordTone = "blue" | "green" | "amber" | "violet";
-export type FixturePhase = "briefing" | "negotiation" | "commitment" | "resolution" | "result";
+export type FixturePhase = "briefing" | "negotiation" | "commitment" | "resolution" | "result" | "complete";
 
 export interface FixtureStep {
   readonly value: number;
@@ -56,7 +56,7 @@ export const agentHeistRecords: readonly AgentHeistFixtureRecord[] = [
     id: "baseline",
     fixtureStep: fixtureStep(0),
     roomSequence: null,
-    semanticTime: semanticTime("12:00:00.000"),
+    semanticTime: null,
     kind: "Projection example",
     phase: "briefing",
     title: "Illustrative baseline",
@@ -156,7 +156,7 @@ export const agentHeistRecords: readonly AgentHeistFixtureRecord[] = [
     kind: "Attention summary",
     phase: "commitment",
     title: "A commitment response was requested",
-    detail: "The recorded reason is commitment_opened. Claiming an Activation does not grant Action authority.",
+    detail: "The recorded reason is commitment_opened. Claiming an Activation Intent does not grant Action authority.",
     audiences: ["operator"],
     tone: "violet",
   },
@@ -202,7 +202,7 @@ export const agentHeistRecords: readonly AgentHeistFixtureRecord[] = [
     roomSequence: null,
     semanticTime: null,
     kind: "Replay evidence",
-    phase: "result",
+    phase: "complete",
     title: "The retained story records verified Replay",
     detail: `${agentHeistEvidence.verifiedTransitionCount} Transitions were verified by read-only Replay. The browser does not run Replay.`,
     audiences: ["public", "navigator", "operator"],

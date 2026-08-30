@@ -29,8 +29,8 @@ at `web/demos`, deployed as one Vercel project, with route-based demos and a
 data-driven catalog. The first card uses selected identity and Replay metadata
 from `examples/heist/parity_fixture.json`. Its browser records are illustrative
 summaries of the retained story. The browser does not execute the Activity Pack
-Revision, Replay, or an authorization boundary. The same-site `How it works`
-section is the first public explanation surface. A live WorldStream Negotiate
+Revision, Replay, or an authorization boundary. The dedicated same-site
+`/docs/agent-heist/` route is the first public explanation surface. A live WorldStream Negotiate
 demo should be a second milestone, backed by a separately hosted, persistent
 `worldstreamd`, not a prerequisite for launching the gallery.
 
@@ -276,7 +276,7 @@ public demo must preserve that boundary.
 
 | Existing surface | Relevance to the gallery | Recommendation |
 | --- | --- | --- |
-| `web/manual` | Static React/Vite manual with a typed, filterable capability catalog and explicit Implemented/Reference/Design only/Deferred states. It already has GitHub and GitLab Pages publication paths. | Link it as **How it works** and reuse its status vocabulary and catalog concepts, not necessarily its entire visual shell. |
+| `web/manual` | Static React/Vite manual with a typed, filterable capability catalog and GitHub/GitLab Pages workflows. The recorded GitHub Pages URL returned 404 during the 2026-08-30 publication check. | Reuse its status vocabulary and catalog concepts. Do not link it until the public deployment resolves. |
 | `examples/heist/parity_fixture.json` | Records exact retained Agent Heist revision identity, final Room sequence, outcome, and read-only Replay verification. | Read selected safe metadata for the first browser demo. Label separate presentation records as illustrative. |
 | `web/console` | Contains reusable console transport, fixture, and privacy patterns. Its current browser fixture is not an Agent Heist parity-view component. | Reuse patterns only. Do not claim that the demo page is the console fixture. |
 | `web/console` Negotiate | Has fixture and live-session paths and demonstrates an application Activity Pack. | Add it after the catalog shell is stable; treat live mode as a separate backend milestone. |
@@ -505,7 +505,7 @@ branch as required by the prototype workflow.
 2. Implement gallery, filters, demo-detail shell, honest availability states,
    metadata, accessibility, and responsive behavior.
 3. Add one Agent Heist fixture/guided-replay demo using existing safe UI/data.
-4. Link the public developer manual for details; do not link private source.
+4. Publish a dedicated public technical-documentation route. Do not link private source or a manual URL that returns 404.
 5. Add build/version identity and a clear “fixture — no network” notice.
 6. Verify locally, then deploy only to a protected/private Preview for review.
 

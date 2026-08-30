@@ -1,6 +1,9 @@
 import compatibilityManifest from "../../../compatibility.json";
 import parityFixture from "../../../examples/heist/parity_fixture.json";
 
+const finalPhase = parityFixture.phase_path.at(-1);
+if (finalPhase === undefined) throw new Error("Agent Heist parity fixture has no final phase");
+
 export const demoBuildIdentity = Object.freeze({
   catalogSchema: "worldstream/demo-catalog/v1",
   productVersion: compatibilityManifest.contracts.product,
@@ -11,6 +14,7 @@ export const demoBuildIdentity = Object.freeze({
 
 export const agentHeistEvidence = Object.freeze({
   finalOutcome: parityFixture.expected_fixture_outcome.outcome,
+  finalPhase,
   finalRoomSequence: parityFixture.final_head.room_seq,
   fixtureId: parityFixture.fixture.fixture_id,
   packId: parityFixture.retained_executor.pack_id,

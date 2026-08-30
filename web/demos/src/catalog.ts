@@ -39,7 +39,7 @@ export interface DemoDefinition {
   readonly experience: DemoExperience;
   readonly experienceLabel: string;
   readonly route: string;
-  readonly documentationRoute: string;
+  readonly documentationUrl: string;
   readonly thumbnail: {
     readonly kind: "css-diagram";
     readonly variant: DemoThumbnailVariant;
@@ -100,7 +100,7 @@ export const demos: readonly DemoDefinition[] = [
     experience: "interactive-fixture",
     experienceLabel: "Interactive fixture",
     route: "/demos/agent-heist",
-    documentationRoute: "/demos/agent-heist/#what-this-shows",
+    documentationUrl: "/docs/agent-heist/",
     thumbnail: {
       kind: "css-diagram",
       variant: "agent-heist",
@@ -132,7 +132,7 @@ export const demos: readonly DemoDefinition[] = [
     experience: "live-shared-room",
     experienceLabel: "Live shared Room",
     route: "/demos/negotiate/",
-    documentationRoute: "/#planned-demo",
+    documentationUrl: "/#planned-demo",
     thumbnail: {
       kind: "css-diagram",
       variant: "negotiate",
@@ -184,4 +184,42 @@ export function getDemoById(
   id: string,
 ): DemoDefinition | undefined {
   return catalog.find((demo) => demo.id === id);
+}
+
+export interface DemoCatalogFacets {
+  readonly activityPacks: readonly { readonly id: DemoActivityPack["id"]; readonly label: string }[];
+  readonly availabilities: readonly DemoAvailability[];
+  readonly capabilities: readonly DemoCapability[];
+  readonly categories: readonly { readonly id: DemoCategory; readonly label: string }[];
+  readonly experiences: readonly { readonly id: DemoExperience; readonly label: string }[];
+  readonly perspectives: readonly DemoPerspective[];
+}
+
+export function deriveDemoCatalogFacets(catalog: readonly DemoDefinition[]): DemoCatalogFacets {
+  return {
+    activityPacks: uniqueBy(
+      catalog.map((demo) => ({ id: demo.activityPack.id, label: demo.activityPack.label })),
+      (item) => item.id,
+    ),
+    availabilities: uniqueSorted(catalog.map((demo) => demo.availability)),
+    capabilities: uniqueSorted(catalog.flatMap((demo) => demo.capabilities)),
+    categories: uniqueBy(
+      catalog.map((demo) => ({ id: demo.category, label: demo.categoryLabel })),
+      (item) => item.id,
+    ),
+    experiences: uniqueBy(
+      catalog.map((demo) => ({ id: demo.experience, label: demo.experienceLabel })),
+      (item) => item.id,
+    ),
+    perspectives: uniqueSorted(catalog.flatMap((demo) => demo.perspectives)),
+  };
+}
+
+function uniqueSorted<Value extends string>(values: readonly Value[]): readonly Value[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function uniqueBy<Value>(values: readonly Value[], key: (value: Value) => string): readonly Value[] {
+  return [...new Map(values.map((value) => [key(value), value])).values()]
+    .sort((left, right) => key(left).localeCompare(key(right)));
 }

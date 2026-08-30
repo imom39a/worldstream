@@ -55,4 +55,17 @@ describe("Agent Heist fixture inspector", () => {
     expect(nonTransitionRecords.length).toBeGreaterThan(0);
     expect(nonTransitionRecords.every((record) => record.roomSequence === null)).toBe(true);
   });
+
+  it("keeps Genesis separate from Semantic Time and ends at the retained Complete phase", () => {
+    expect(agentHeistRecords[0]?.semanticTime).toBeNull();
+    expect(agentHeistRecords.at(-1)?.phase).toBe("complete");
+    expect(agentHeistEvidence.finalPhase).toBe("Complete");
+  });
+
+  it("uses the canonical Activation Intent term", () => {
+    const text = agentHeistRecords.map((record) => `${record.title} ${record.detail}`).join(" ");
+
+    expect(text).not.toMatch(/\bActivation\b(?! Intent)/);
+    expect(text).toContain("Activation Intent");
+  });
 });
