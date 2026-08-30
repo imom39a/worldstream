@@ -3,7 +3,7 @@
 > - **Status:** Non-normative product and deployment research
 > - **Current as of:** 2026-08-30
 > - **Repository state reviewed:** local and remote default branch at `b0c1889c1e5f`, plus the existing uncommitted workspace
-> - **Implementation status:** The selected catalog and Agent Heist fixture are implemented on `feature/demo-catalog-vercel`. The production prototype files were removed. This note does not claim that a Vercel deployment is complete.
+> - **Implementation status:** The selected catalog and Agent Heist fixture are published at [worldstream-demos.vercel.app](https://worldstream-demos.vercel.app/). The developer manual is published separately at [worldstream-manual.vercel.app](https://worldstream-manual.vercel.app/). Both Vercel projects use local deployment and have no Git connection.
 >
 > **Decision authority:** This note recommends a presentation and deployment
 > direction. It does not change WorldStream's frozen requirements, security
@@ -276,7 +276,7 @@ public demo must preserve that boundary.
 
 | Existing surface | Relevance to the gallery | Recommendation |
 | --- | --- | --- |
-| `web/manual` | Static React/Vite manual with a typed, filterable capability catalog and GitHub/GitLab Pages workflows. The recorded GitHub Pages URL returned 404 during the 2026-08-30 publication check. | Reuse its status vocabulary and catalog concepts. Do not link it until the public deployment resolves. |
+| `web/manual` | Static React/Vite manual with a typed, filterable capability catalog and GitHub/GitLab Pages workflows. It is published as a separate Vercel project. | Reuse its status vocabulary and catalog concepts. Link the stable Vercel publication rather than the former Pages URL. |
 | `examples/heist/parity_fixture.json` | Records exact retained Agent Heist revision identity, final Room sequence, outcome, and read-only Replay verification. | Read selected safe metadata for the first browser demo. Label separate presentation records as illustrative. |
 | `web/console` | Contains reusable console transport, fixture, and privacy patterns. Its current browser fixture is not an Agent Heist parity-view component. | Reuse patterns only. Do not claim that the demo page is the console fixture. |
 | `web/console` Negotiate | Has fixture and live-session paths and demonstrates an application Activity Pack. | Add it after the catalog shell is stable; treat live mode as a separate backend milestone. |

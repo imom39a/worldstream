@@ -2,6 +2,8 @@ import { demoBuildIdentity } from "./buildIdentity";
 
 export type Navigate = (path: string) => void;
 
+const manualUrl = "https://worldstream-manual.vercel.app";
+
 export function SiteHeader({ onNavigate }: { onNavigate: Navigate }) {
   return (
     <header className="site-header">
@@ -12,6 +14,7 @@ export function SiteHeader({ onNavigate }: { onNavigate: Navigate }) {
       <nav aria-label="Primary navigation">
         <a href="/#demos">Demos</a>
         <a href="/#capabilities">Capabilities</a>
+        <a href={manualUrl}>Manual</a>
         <span className="source-status"><LockIcon /> Source private</span>
       </nav>
     </header>

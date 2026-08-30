@@ -46,7 +46,7 @@ export function App() {
   }, [page]);
 
   const matches = useMemo(() => searchPages(query, manualPages).slice(0, 9), [query]);
-  const sourceUrl = import.meta.env.VITE_SOURCE_URL || "https://github.com/imom39a/worldstream";
+  const demosUrl = import.meta.env.VITE_DEMOS_URL || "https://worldstream-demos.vercel.app";
 
   return (
     <div className="manual-shell">
@@ -65,7 +65,7 @@ export function App() {
             </div>
           )}
         </div>
-        <a className="source-link" href={sourceUrl} target="_blank" rel="noreferrer">Source ↗</a>
+        <a className="source-link" href={demosUrl}>Demos ↗</a>
         <button className="menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>Menu</button>
       </header>
       <aside className={menuOpen ? "sidebar open" : "sidebar"}>
