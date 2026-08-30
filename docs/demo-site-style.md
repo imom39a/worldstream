@@ -49,7 +49,7 @@ Use this developer-manual sequence:
 
 The manual home can use a two-column guide grid. Reference inventories can use the same filter and card structure as the demo catalog.
 
-Do not add a sales action to the header. Show private source status as plain text.
+Do not add a sales action to the header. Do not show repository visibility or access status in the public interface.
 
 ## Design tokens
 
@@ -83,8 +83,9 @@ Purple identifies WorldStream surfaces and controls. Turquoise identifies active
 ### Header
 
 - Keep the header compact.
-- Include the WorldStream name, direct section links, and source status.
+- Include the WorldStream name and direct section links.
 - Do not include a featured-demo, pricing, sign-up, contact, or sales control.
+- Do not include repository visibility or access status.
 
 ### Developer manual
 
@@ -204,7 +205,7 @@ Before publication, confirm all applicable items:
 - [ ] Copy uses canonical WorldStream terms.
 - [ ] Copy is an STE-based draft with no marketing claims.
 - [ ] Data mode and backend state are explicit.
-- [ ] Private source status is not an interactive control.
+- [ ] Public navigation does not mention repository visibility or access.
 - [ ] Recorded data does not contain credentials or private user data.
 - [ ] Public and Operator views do not receive participant-private values.
 - [ ] Keyboard focus, narrow-screen layout, and reduced motion are usable.

@@ -204,9 +204,10 @@ source of reusable assets. Adapt these general principles:
 Keep Lightstreamer's catalog interaction inside that layout. Put search and
 filters in a compact toolbar above the card grid. Do not copy the Heroic Labs
 page order or use customer-logo, testimonial, pricing, or conversion sections.
-The technical header must not contain a featured-demo or sales action. Show a
-private source state as text, not as a link or button. Use normal interface text
-sizes in cards and controls; do not reproduce small decorative website copy.
+The technical header must not contain a featured-demo or sales action. Omit
+repository visibility and access status from the public interface. Use normal
+interface text sizes in cards and controls; do not reproduce small decorative
+website copy.
 
 After plan approval, record the maintained rules in
 `docs/demo-site-style.md`. That document should define tokens, typography,

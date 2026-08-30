@@ -15,7 +15,6 @@ export function SiteHeader({ onNavigate }: { onNavigate: Navigate }) {
         <a href="/#demos">Demos</a>
         <a href="/#capabilities">Capabilities</a>
         <a href={manualUrl}>Manual</a>
-        <span className="source-status"><LockIcon /> Source private</span>
       </nav>
     </header>
   );
@@ -29,8 +28,4 @@ export function SiteFooter() {
       <span>STE-based draft</span>
     </footer>
   );
-}
-
-function LockIcon() {
-  return <span className="lock-icon" aria-hidden="true"><i /></span>;
 }

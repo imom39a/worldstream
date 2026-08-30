@@ -68,7 +68,6 @@ export function App() {
         </div>
         <nav className="topbar-links" aria-label="Related sites">
           <a className="source-link" href={demosUrl}>Demos</a>
-          <span className="source-status"><span className="lock-icon" aria-hidden="true"><i /></span> Source private</span>
         </nav>
         <button className="menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>Menu</button>
       </header>
