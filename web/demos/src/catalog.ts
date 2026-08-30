@@ -1,7 +1,30 @@
-export type DemoCategory = "application" | "conformance";
+import { agentHeistEvidence } from "./buildIdentity";
+
+export type DemoCategory = "application" | "technical-fixture";
+export type DemoAvailability = "available" | "preview" | "planned";
+export type DemoExperience = "interactive-fixture" | "guided-replay" | "live-shared-room";
+export type DemoPerspective = "participant" | "spectator" | "operator" | "integrator" | "pack-author";
+export type DemoCapability =
+  | "Action Offers"
+  | "Attention"
+  | "Evidence"
+  | "Recorded Replay evidence"
+  | "Scoped Projections"
+  | "Sealed commitments"
+  | "Semantic Time";
+export type DemoThumbnailVariant = "agent-heist" | "negotiate";
 export type DemoCategoryFilter = "all" | DemoCategory;
-export type DemoAvailability = "available" | "planned";
-export type DemoExperience = "fixture" | "live";
+export type DemoAvailabilityFilter = "all" | DemoAvailability;
+export type DemoExperienceFilter = "all" | DemoExperience;
+export type DemoPerspectiveFilter = "all" | DemoPerspective;
+export type DemoCapabilityFilter = "all" | DemoCapability;
+export type DemoActivityPackFilter = "all" | "worldstream.agent-heist" | "worldstream.negotiate";
+
+export interface DemoActivityPack {
+  readonly id: Exclude<DemoActivityPackFilter, "all">;
+  readonly label: string;
+  readonly fixtureId?: string;
+}
 
 export interface DemoDefinition {
   readonly id: string;
@@ -9,34 +32,88 @@ export interface DemoDefinition {
   readonly category: DemoCategory;
   readonly categoryLabel: string;
   readonly summary: string;
-  readonly capabilities: readonly string[];
+  readonly activityPack: DemoActivityPack;
+  readonly capabilities: readonly DemoCapability[];
+  readonly perspectives: readonly DemoPerspective[];
   readonly availability: DemoAvailability;
   readonly experience: DemoExperience;
+  readonly experienceLabel: string;
   readonly route: string;
+  readonly documentationRoute: string;
+  readonly thumbnail: {
+    readonly kind: "css-diagram";
+    readonly variant: DemoThumbnailVariant;
+    readonly description: string;
+  };
+  readonly backendRequirement: {
+    readonly required: boolean;
+    readonly label: string;
+  };
+  readonly buildIdentity?: {
+    readonly packVersion: string;
+    readonly revisionDigest: string;
+  };
 }
 
 export interface DemoCatalogFilter {
+  readonly activityPack: DemoActivityPackFilter;
+  readonly availability: DemoAvailabilityFilter;
+  readonly capability: DemoCapabilityFilter;
   readonly category: DemoCategoryFilter;
+  readonly experience: DemoExperienceFilter;
+  readonly perspective: DemoPerspectiveFilter;
   readonly query: string;
 }
+
+export const defaultDemoCatalogFilter: DemoCatalogFilter = Object.freeze({
+  activityPack: "all",
+  availability: "all",
+  capability: "all",
+  category: "all",
+  experience: "all",
+  perspective: "all",
+  query: "",
+});
 
 export const demos: readonly DemoDefinition[] = [
   {
     id: "agent-heist",
     title: "Agent Heist",
-    category: "conformance",
-    categoryLabel: "Visual conformance Activity Pack",
+    category: "technical-fixture",
+    categoryLabel: "Recorded technical fixture",
     summary:
-      "Inspect how three Agent Participants receive scoped Projections, respond to timers, and commit sealed selections in one deterministic fixture.",
+      "Inspect Projection privacy, Semantic Time, Attention summaries, sealed commitments, and recorded Replay evidence.",
+    activityPack: {
+      id: "worldstream.agent-heist",
+      label: "Agent Heist",
+      fixtureId: agentHeistEvidence.fixtureId,
+    },
     capabilities: [
-      "Projection privacy",
+      "Scoped Projections",
       "Semantic Time",
-      "Agent attention",
-      "Recovery and Replay",
+      "Attention",
+      "Sealed commitments",
+      "Recorded Replay evidence",
     ],
+    perspectives: ["participant", "spectator", "operator"],
     availability: "available",
-    experience: "fixture",
+    experience: "interactive-fixture",
+    experienceLabel: "Interactive fixture",
     route: "/demos/agent-heist",
+    documentationRoute: "/demos/agent-heist/#what-this-shows",
+    thumbnail: {
+      kind: "css-diagram",
+      variant: "agent-heist",
+      description: "One Room connected to three scoped views.",
+    },
+    backendRequirement: {
+      required: false,
+      label: "No backend required",
+    },
+    buildIdentity: {
+      packVersion: agentHeistEvidence.packVersion,
+      revisionDigest: agentHeistEvidence.revisionDigest,
+    },
   },
   {
     id: "negotiate",
@@ -45,15 +122,26 @@ export const demos: readonly DemoDefinition[] = [
     categoryLabel: "Application Activity Pack",
     summary:
       "Inspect the planned approval and signing flow for four Roles. This demo needs a persistent WorldStream authority.",
-    capabilities: [
-      "Action Offers",
-      "Scoped Projections",
-      "Evidence",
-      "Recovery and Replay",
-    ],
+    activityPack: {
+      id: "worldstream.negotiate",
+      label: "WorldStream Negotiate",
+    },
+    capabilities: ["Action Offers", "Scoped Projections", "Evidence", "Recorded Replay evidence"],
+    perspectives: ["participant", "operator", "integrator"],
     availability: "planned",
-    experience: "live",
-    route: "/demos/negotiate",
+    experience: "live-shared-room",
+    experienceLabel: "Live shared Room",
+    route: "/demos/negotiate/",
+    documentationRoute: "/#planned-demo",
+    thumbnail: {
+      kind: "css-diagram",
+      variant: "negotiate",
+      description: "One planned Room with proposal, approval, and signing Roles.",
+    },
+    backendRequirement: {
+      required: true,
+      label: "Persistent authority required",
+    },
   },
 ] as const;
 
@@ -64,17 +152,25 @@ export function filterDemos(
   const terms = filter.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
 
   return catalog.filter((demo) => {
-    if (filter.category !== "all" && demo.category !== filter.category) {
-      return false;
-    }
+    if (filter.category !== "all" && demo.category !== filter.category) return false;
+    if (filter.activityPack !== "all" && demo.activityPack.id !== filter.activityPack) return false;
+    if (filter.availability !== "all" && demo.availability !== filter.availability) return false;
+    if (filter.capability !== "all" && !demo.capabilities.includes(filter.capability)) return false;
+    if (filter.experience !== "all" && demo.experience !== filter.experience) return false;
+    if (filter.perspective !== "all" && !demo.perspectives.includes(filter.perspective)) return false;
 
     const searchableText = [
       demo.title,
       demo.categoryLabel,
       demo.summary,
+      demo.activityPack.id,
+      demo.activityPack.label,
       demo.availability,
       demo.experience,
+      demo.experienceLabel,
+      demo.backendRequirement.label,
       ...demo.capabilities,
+      ...demo.perspectives,
     ]
       .join(" ")
       .toLocaleLowerCase();

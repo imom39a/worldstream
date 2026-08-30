@@ -25,14 +25,14 @@ content:
    page.
 
 For this repository, the safest first release is one new static Vite application
-such as `web/demos`, deployed as one Vercel project, with route-based demos and a
-data-driven catalog. The first card should wrap or adapt the existing Agent Heist
-fixture experience in `web/console`: it already presents public, participant,
-operator, and replay perspectives without requiring a public authority or any
-credentials. The public developer manual should be linked as the explanation
-surface. A live WorldStream Negotiate demo should be a second milestone, backed
-by a separately hosted, persistent `worldstreamd`, not a prerequisite for
-launching the gallery.
+at `web/demos`, deployed as one Vercel project, with route-based demos and a
+data-driven catalog. The first card uses selected identity and Replay metadata
+from `examples/heist/parity_fixture.json`. Its browser records are illustrative
+summaries of the retained story. The browser does not execute the Activity Pack
+Revision, Replay, or an authorization boundary. The same-site `How it works`
+section is the first public explanation surface. A live WorldStream Negotiate
+demo should be a second milestone, backed by a separately hosted, persistent
+`worldstreamd`, not a prerequisite for launching the gallery.
 
 This direction has four gates before implementation or deployment:
 
@@ -277,7 +277,8 @@ public demo must preserve that boundary.
 | Existing surface | Relevance to the gallery | Recommendation |
 | --- | --- | --- |
 | `web/manual` | Static React/Vite manual with a typed, filterable capability catalog and explicit Implemented/Reference/Design only/Deferred states. It already has GitHub and GitLab Pages publication paths. | Link it as **How it works** and reuse its status vocabulary and catalog concepts, not necessarily its entire visual shell. |
-| `web/console` Agent Heist | Defaults to fixture mode and exposes public, participant, operator, and replay views with an explicit “Fixture mode” banner. | Use as the first demo because it is useful without public infrastructure or credentials. |
+| `examples/heist/parity_fixture.json` | Records exact retained Agent Heist revision identity, final Room sequence, outcome, and read-only Replay verification. | Read selected safe metadata for the first browser demo. Label separate presentation records as illustrative. |
+| `web/console` | Contains reusable console transport, fixture, and privacy patterns. Its current browser fixture is not an Agent Heist parity-view component. | Reuse patterns only. Do not claim that the demo page is the console fixture. |
 | `web/console` Negotiate | Has fixture and live-session paths and demonstrates an application Activity Pack. | Add it after the catalog shell is stable; treat live mode as a separate backend milestone. |
 | `web/studio` | Calls a loopback Supervisor and exposes operator workflows, daemon lifecycle, secrets, and room operations. | Do not publish it as a public demo. Build a bounded demo-specific surface instead. |
 | `worldstreamd` | A stateful Rust authority with HTTP/WebSocket admission, SQLite/PostgreSQL storage, observation streams, and replay. It binds loopback by default and the product boundary is one live process. | Host it as a deliberately provisioned persistent service for live demos; do not disguise it as a static Vercel function migration. |

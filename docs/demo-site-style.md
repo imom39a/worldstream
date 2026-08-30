@@ -21,7 +21,7 @@ Use this catalog sequence:
 1. Compact primary header.
 2. Centered technical introduction.
 3. Full-width light catalog section.
-4. Search and type filters above an equal-width card grid.
+4. Search and typed facet filters above an equal-width card grid.
 5. Contrasting status band with factual system data.
 6. Centered capability reference.
 7. Small technical footer.
@@ -75,6 +75,17 @@ Purple identifies WorldStream surfaces and controls. Turquoise identifies active
 
 ### Demo cards
 
+Define each card in the typed demo manifest. Each entry must include a stable ID, title, summary, Activity Pack, capabilities, experience, perspectives, availability, thumbnail, route, documentation route, backend requirement, and optional build identity.
+
+The catalog can filter these facets:
+
+- Activity Pack;
+- capability;
+- experience;
+- perspective;
+- availability; and
+- demo type.
+
 Each card must state:
 
 - what the demo contains;
@@ -84,6 +95,7 @@ Each card must state:
 - whether a backend is required.
 
 Use `Open recorded demo` only for an available fixture. Use `Live demo planned` when the required backend does not exist.
+Provide a `How it works` link for each card. The link must resolve on the public demo site or in public technical documentation.
 
 ### Status surfaces
 
@@ -91,6 +103,7 @@ Use `Open recorded demo` only for an available fixture. Use `Live demo planned` 
 - Derive live status from a bounded readiness check.
 - Do not show a hard-coded live or healthy state for a network service.
 - For recorded fixtures, label all health and lineage values as fixture data.
+- Show an exact browser build revision and exact protocol identity where the values are relevant.
 
 ### Technical diagrams
 
@@ -98,6 +111,17 @@ Use `Open recorded demo` only for an available fixture. Use `Live demo planned` 
 - Label the source, authorization boundary, and visible output.
 - Do not copy a reference-site illustration.
 - Do not imply that illustrative hashes or lineage values are verified.
+- State when the browser represents an authorization boundary but does not enforce it.
+
+### Recorded evidence
+
+- Read exact identity and Replay status from a checked-in evidence artifact when one exists.
+- Name the evidence schema, Activity Pack version, and semantic revision digest.
+- State when the browser does not execute the Activity Pack Revision or Replay.
+- Do not call a Room sequence a Cursor.
+- A Cursor is a Membership's acknowledged Observation Stream position.
+- Do not call a mixed list of summaries an Observation Stream.
+- Do not bundle credentials, capabilities, private user data, or live Room data in a public fixture.
 
 ## Language rules
 
