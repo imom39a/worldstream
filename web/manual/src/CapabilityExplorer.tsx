@@ -20,7 +20,7 @@ export function CapabilityExplorer() {
     <article className="capability-page">
       <p className="eyebrow">Reference · live inventory</p>
       <h1>Capability explorer</h1>
-      <p className="lede">Find the right WorldStream surface and distinguish shipped code from reference integrations, design documents, and deliberately deferred work.</p>
+      <p className="lede">Filter WorldStream capabilities by area, interface, and implementation status. Each result links to its manual page.</p>
       <div className="capability-filters">
         <label className="capability-query"><span>Search</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="replay, Studio, MCP…" /></label>
         <Filter label="Area" value={area} values={unique("area")} onChange={setArea} />

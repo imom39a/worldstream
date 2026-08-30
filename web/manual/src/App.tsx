@@ -50,10 +50,11 @@ export function App() {
 
   return (
     <div className="manual-shell">
+      <a className="skip-link" href="#main-content">Skip to manual content</a>
       <header className="topbar">
         <a className="brand" href="#/" aria-label="WorldStream manual home">
-          <span className="brand-mark">WS</span>
-          <span><strong>WorldStream</strong><small>Developer Manual · local v0.1</small></span>
+          <span className="brand-mark" aria-hidden="true"><i /><b /><em /></span>
+          <span><strong>WorldStream</strong><small>Developer manual</small></span>
         </a>
         <div className="search-wrap">
           <input ref={search} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search concepts, commands, APIs…" aria-label="Search the manual" />
@@ -65,14 +66,17 @@ export function App() {
             </div>
           )}
         </div>
-        <a className="source-link" href={demosUrl}>Demos ↗</a>
+        <nav className="topbar-links" aria-label="Related sites">
+          <a className="source-link" href={demosUrl}>Demos</a>
+          <span className="source-status"><span className="lock-icon" aria-hidden="true"><i /></span> Source private</span>
+        </nav>
         <button className="menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>Menu</button>
       </header>
       <aside className={menuOpen ? "sidebar open" : "sidebar"}>
         <nav aria-label="Home"><a className={route === "/" ? "active" : ""} href="#/">Manual home</a></nav>
         {navigationGroups.map((group) => <nav key={group.label} aria-label={group.label}><p>{group.label}</p>{group.items.map((item) => <a className={route === item.route ? "active" : ""} key={item.route} href={`#${item.route}`}>{item.title}</a>)}</nav>)}
       </aside>
-      <main className="content">
+      <main className="content" id="main-content">
         {route === "/" ? <Home /> : route === "/reference/capabilities" ? <CapabilityExplorer /> : page ? <MarkdownPage page={page} /> : <Home />}
       </main>
     </div>
