@@ -132,6 +132,8 @@ Provide a `How it works` link for each card. The link must resolve on the public
 ### Technical diagrams
 
 - Build simple diagrams from CSS layout and text where possible.
+- Use named stages and a clear direction when the diagram represents a process.
+- Do not use decorative crossing lines or unexplained abbreviations.
 - Label the source, authorization boundary, and visible output.
 - Do not copy a reference-site illustration.
 - Do not imply that illustrative hashes or lineage values are verified.
