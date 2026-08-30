@@ -1,0 +1,10 @@
+package worldstream:prototype@0.1.0;
+
+world activity-pack {
+  export descriptor: func() -> list<u8>;
+  export initialize: func(input: list<u8>) -> list<u8>;
+  export reduce: func(input: list<u8>) -> list<u8>;
+  export view: func(input: list<u8>) -> list<u8>;
+  export observe: func(input: list<u8>) -> list<u8>;
+}
+

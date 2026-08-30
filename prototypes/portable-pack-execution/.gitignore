@@ -1,0 +1,4 @@
+/artifacts/*.component.wasm
+/artifacts/PROTOTYPE-pack-store/
+/host/target/
+
