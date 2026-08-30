@@ -92,7 +92,14 @@ export interface ParticipantBrowserDelivery {
   body: Record<string, unknown>;
 }
 
+export interface ParticipantBrowserPack {
+  id: string;
+  version: string;
+  digest: string;
+}
+
 export interface ParticipantBrowserObservation {
+  pack: ParticipantBrowserPack;
   room_head: ParticipantBrowserRoomHead;
   frame_head: number;
   delivery: ParticipantBrowserDelivery[];
@@ -304,13 +311,21 @@ function isSessionStatus(value: unknown): value is {
 }
 
 function isParticipantObservation(value: unknown): value is ParticipantBrowserObservation {
-  if (!isExactObject(value, ["room_head", "frame_head", "delivery"])) return false;
+  if (!isExactObject(value, ["pack", "room_head", "frame_head", "delivery"])) return false;
   if (!Number.isSafeInteger(value.frame_head) || (value.frame_head as number) < 0) return false;
+  if (!isParticipantPack(value.pack)) return false;
   if (!isParticipantRoomHead(value.room_head)) return false;
   if (!Array.isArray(value.delivery) || value.delivery.length > 10_000) return false;
   return value.delivery.every((item) => isExactObject(item, ["kind", "body"])
     && (item.kind === "projection_reset" || item.kind === "observation")
     && isRecord(item.body));
+}
+
+function isParticipantPack(value: unknown): value is ParticipantBrowserPack {
+  return isExactObject(value, ["id", "version", "digest"])
+    && typeof value.id === "string" && value.id.length > 0 && value.id.length <= 256
+    && typeof value.version === "string" && value.version.length > 0 && value.version.length <= 256
+    && typeof value.digest === "string" && /^(?:blake3|sha256):[0-9a-f]{64}$/.test(value.digest);
 }
 
 function isParticipantReplay(value: unknown): value is ParticipantBrowserReplay {

@@ -20,7 +20,38 @@ leases/backlog, managed hosts, and backup operations.
 ## Build: Activity Packs, profiles, templates
 
 **Activity Packs** reads the exact daemon-installed catalog and revision detail.
-Studio cannot upload or substitute pack code.
+Studio guides exact bundle inspection, Host Operator approval, offline install
+status, and restart readiness. It cannot download, hot-load, auto-approve, or
+substitute Pack code.
+
+The Pack Operations card shows the seven exact `worldstreamctl pack` commands
+in order and consumes their typed JSON receipts. Every command starts with
+`worldstreamctl --config <WORLDSTREAM_CONFIG> pack`; PostgreSQL
+`restart-readiness` also shows
+`--dsn-file <POSTGRES_ADMIN_DSN_FILE>`. Use one reviewed config for every step.
+
+The first inspection pins the physical bundle and semantic revision for the
+whole browser workflow. Studio requires an explicit stopped-daemon confirmation
+before approval or inventory mutation and rejects a reordered or substituted
+bundle-bearing receipt. For each inventory it verifies the declared row count,
+strict digest order, and recomputed canonical `inventory_digest`; it also
+requires the receipts' `storage_profile` to match the selected configuration.
+
+After selectability changes, Studio matches the second inventory's
+`storage_profile` and `inventory_digest` to restart readiness. That final check
+uses original-byte production Component admission and configured-store
+executable Replay, then writes a durable startup-readiness seal binding the
+exact inventory to a pathless `deployment_binding`. The binding is derived from
+the canonical data-directory identity, storage profile, and available provider
+metadata. The daemon independently verifies that seal against its actual target
+before accepting installed portable bundles.
+
+Install, approval revocation, selectability change, retained-bundle restore, or
+removal clears the seal and removes “Start-ready” status until restart readiness
+runs again. The readiness receipt remains aggregate and pathless, so it must be
+pasted directly from the displayed config-aware command. Paths, bundle bytes,
+operator approval inputs, DSNs, process control, and shell execution stay in the
+owner's terminal.
 
 **Agent Profiles** publishes immutable exact revisions that pin external or
 managed host behavior, provider/model configuration, Runner Template revision,

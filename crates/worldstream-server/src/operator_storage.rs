@@ -23,6 +23,7 @@ use worldstream_backup::{
     NativeSqliteEnvelopeOriginV1, NativeSqliteNativeWitnessV1, VerifierLimits,
     native_evidence_digest, native_membership_digest, verify_native_restore,
 };
+use worldstream_pack_bundle::PackBundleStoreV1;
 #[cfg(windows)]
 use worldstream_runtime::create_owner_only_renameable_file;
 use worldstream_runtime::{
@@ -345,6 +346,7 @@ where
         envelope_input.require_exact_bytes(&envelope_bytes, MAX_ENVELOPE_BYTES)?;
         restored_artifact_ref.revalidate()?;
         envelope_input.revalidate()?;
+        restore_retained_pack_bundles(&reread_envelope, &database)?;
         Ok(full_result(
             "restore",
             &transfer,
@@ -370,6 +372,27 @@ where
         Err(SqliteOperatorError::IncompleteArtifact)
     };
     finish_or_scrub(result, &mut [restored_artifact.as_mut()])
+}
+
+fn restore_retained_pack_bundles(
+    envelope: &NativeSqliteBackupEnvelopeV1,
+    database: &Path,
+) -> Result<(), SqliteOperatorError> {
+    if envelope.pack_bundles.is_empty() {
+        return Ok(());
+    }
+    let parent = database.parent().ok_or(SqliteOperatorError::Filesystem(
+        "restore destination parent",
+    ))?;
+    let store = PackBundleStoreV1::open(parent.join("activity-packs"))
+        .map_err(|_| SqliteOperatorError::Filesystem("portable Pack restore store"))?;
+    let restored_at = format!("native-restore:{}", envelope.envelope_digest.as_str());
+    for artifact in &envelope.pack_bundles {
+        store
+            .restore_retained(artifact, restored_at.clone())
+            .map_err(|_| SqliteOperatorError::Companion("portable Pack restore"))?;
+    }
+    Ok(())
 }
 
 fn open_validated_envelope(
@@ -2301,7 +2324,8 @@ mod tests {
             "2026-08-15T12:00:00Z".parse::<AuthorityCheckedAt>()?,
         )?;
         let registry = Arc::new(builtin_counter_registry()?);
-        let descriptor = registry.load_retained(&counter_v2_digest())?.descriptor();
+        let retained_pack = registry.load_retained(&counter_v2_digest())?;
+        let descriptor = retained_pack.descriptor();
         let request = CreateRoomRequest {
             pack: PackReference {
                 id: descriptor.pack_id.clone(),
@@ -2580,6 +2604,7 @@ mod tests {
                 resource_id: "fixture-executor".to_owned(),
                 bytes: executor,
             }],
+            pack_bundles: Vec::new(),
             request_witnesses: Vec::new(),
             authoritative_materializations: Vec::new(),
             timer_relations: Vec::new(),

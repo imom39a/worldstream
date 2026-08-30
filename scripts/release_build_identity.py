@@ -25,13 +25,15 @@ import tomllib
 BUILD_IDENTITY_SCHEMA = "worldstream/release-build-identity/v2"
 REPOSITORY = "https://github.com/imom39a/worldstream"
 WORKFLOW_PATH = ".github/workflows/compatibility-gates.yml"
-BUILD_TYPE_PATH = "docs/build-types/pre-sign-subject-aggregation-v3.md"
-BUILD_TYPE_SHA256 = "578384b30ac3e5de2fd62f1054f276585406bf305f79fc6a1d7ad2bc2c1ab089"
+BUILD_TYPE_PATH = "docs/build-types/pre-sign-subject-aggregation-v4.md"
+BUILD_TYPE_SHA256 = "d7cfc8b809f13d21e3b48a79534bcc7db5d6fe7cc165bf867874d0113ca4ccb2"
 BUILD_TYPE_EXAMPLE_PATH = (
-    "docs/build-types/pre-sign-subject-aggregation-v3.example.json"
+    "docs/build-types/pre-sign-subject-aggregation-v4.example.json"
 )
-BUILD_TYPE = (
-    f"{REPOSITORY}/blob/9a130028c0631e1eaff2f57037e2c8b3b0659ac8/{BUILD_TYPE_PATH}"
+BUILD_TYPE = f"urn:worldstream:build-type:sha256:{BUILD_TYPE_SHA256}"
+WITHDRAWN_BUILD_TYPE_V3 = (
+    f"{REPOSITORY}/blob/9a130028c0631e1eaff2f57037e2c8b3b0659ac8/"
+    "docs/build-types/pre-sign-subject-aggregation-v3.md"
 )
 WITHDRAWN_BUILD_TYPE_V2 = (
     f"{REPOSITORY}/blob/ceae0cb85578f3ec202605032ca09aa05849bd18/"
@@ -41,7 +43,7 @@ WITHDRAWN_BUILD_TYPE_V2_EXAMPLE_PATH = (
     "docs/build-types/pre-sign-subject-aggregation-v2.example.json"
 )
 BUILD_TYPE_TOMBSTONE_SCHEMA = "worldstream/build-type-example-tombstone/v1"
-RELEASE_AGGREGATION_SCHEMA = "worldstream/release-aggregation/v1"
+RELEASE_AGGREGATION_SCHEMA = "worldstream/release-aggregation/v2"
 SOURCE_REVISION_FILE = ".worldstream-source-revision"
 BUILD_METADATA_PATH = "metadata/build.json"
 OCI_BASE_IMAGE_PATH = "packaging/oci/base-image.txt"
@@ -96,6 +98,7 @@ PINNED_MATERIAL_PATHS = (
     "pnpm-lock.yaml",
     "rust-toolchain.toml",
     "scripts/gates.py",
+    "scripts/generate-build-type-example.py",
     THIRD_PARTY_NOTICE_GENERATOR_PATH,
     "scripts/package.py",
     "scripts/package-oci.ps1",
@@ -104,9 +107,13 @@ PINNED_MATERIAL_PATHS = (
     "scripts/package-release.sh",
     "scripts/release-evidence-collect.py",
     "scripts/release-evidence-produce.py",
+    "scripts/release-evidence-produce-runtime-packs.py",
     "scripts/release-evidence-assemble.py",
     "scripts/release-evidence-assemble.sh",
     "scripts/release-supply-chain.py",
+    "scripts/release-qualification.py",
+    "scripts/starter-distribution.py",
+    "scripts/starter-release-subjects.py",
     "scripts/release-supply-chain.sh",
     "scripts/release_build_identity.py",
     "scripts/reference_host_environment.py",
@@ -168,6 +175,8 @@ PRE_SIGN_DYNAMIC_IMPORT_PATHS = (
     "scripts/release-evidence-assemble.py",
     "scripts/release-evidence-collect.py",
     "scripts/release-evidence-produce.py",
+    "scripts/starter-distribution.py",
+    "scripts/starter-release-subjects.py",
     "scripts/release_build_identity.py",
     "scripts/verify-oci-layout.py",
 )
@@ -177,6 +186,20 @@ PAYLOAD_TARGETS = {
     "native-windows-x64-archive": "windows-x64",
     "oci-linux-amd64-image": "oci-linux-amd64",
 }
+PORTABLE_SUBJECT_ARTIFACT_IDS = (
+    "worldstream-a202-adapter",
+    "worldstream-deterministic-agents",
+    "worldstream-documentation",
+    "worldstream-examples",
+    "worldstream-licenses",
+    "worldstream-negotiate-bundle",
+    "worldstream-negotiate-evidence-verifier",
+    "worldstream-pack-toolchain",
+    "worldstream-participant-console",
+    "worldstream-release-metadata",
+    "worldstream-studio",
+    "worldstream-typescript-pack-sdk",
+)
 TARGET_TRIPLES = {
     "source": "source",
     "linux-x86_64": "x86_64-unknown-linux-musl",
@@ -251,10 +274,10 @@ OCI_SETUP_STEP_SHA256 = (
     "cdb0942efb3e5fe8953c93c031a215c0469e99342c679d1494cfa497591f59bd"
 )
 RELEASE_SIGNING_JOB_SHA256 = (
-    "6042a72514a633a251846cbab8aff47a4830e8574fe464f2a5a7523e3b0b3111"
+    "c10b251ee07833e5de348c642af8e4042493c536036f3e670c4b9cf8fcda844d"
 )
 RELEASE_MANIFEST_SIGNING_JOB_SHA256 = (
-    "b66a7e888f645fac7deff0e4335a5e4750d4d9f1ba062bcce77ab7d15636fa06"
+    "881e60913a2c55b21648de9b26bc41a5eeb0d537afd0e289250c01ec5598ba7f"
 )
 SLSA_EXECUTION_STEP_CONTRACTS = {
     (
@@ -320,7 +343,7 @@ SLSA_EXECUTION_STEP_CONTRACTS = {
     (
         "release-evidence",
         "Produce and verify unsigned subject inventory, SPDX SBOM, and SLSA provenance",
-    ): "46002e396c56b9b92b80f156c0db290160018bd0f63ef1f6ff42cd339a064b25",
+    ): "0f417a20a3505289ff9f4b936db79df621c2f050769cd40431ea08c831e9f643",
     (
         "release-verify",
         "Enable pinned pnpm and install byte-pinned scanners",
@@ -348,6 +371,16 @@ EVIDENCE_UPSTREAM_JOBS = {
     "reference-performance": (
         "reference-performance-release",
         ("ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd",),
+    ),
+    "pack-component-conformance": ("release-evidence", ("ubuntu-24.04",)),
+    "negotiate-policy": ("release-evidence", ("ubuntu-24.04",)),
+    "negotiate-sqlite-restart": (
+        "packaged-backend-release",
+        ("ubuntu-24.04",),
+    ),
+    "negotiate-postgres-restart": (
+        "packaged-backend-release",
+        ("ubuntu-24.04",),
     ),
 }
 PAYLOAD_UPSTREAM_JOBS = {
@@ -497,6 +530,54 @@ BUILD_TYPE_EXAMPLE_EVIDENCE = (
             "packaged_workload_identity",
             "postgresql_measurements",
             "sqlite_measurements",
+        ],
+    },
+    {
+        "source_id": "pack-component-conformance",
+        "evidence_id": "worldstream-negotiate-evidence",
+        "producer_id": "runtime-packs/pack-component-conformance/v1",
+        "platform": "all-supported-platforms",
+        "checks": [
+            "bundle_exact_identity",
+            "component_host_contract",
+            "production_core_proof",
+            "resource_and_capability_denial",
+        ],
+    },
+    {
+        "source_id": "negotiate-policy",
+        "evidence_id": "negotiate-oracle-a202-and-privacy",
+        "producer_id": "runtime-packs/negotiate-policy/v1",
+        "platform": "all-supported-platforms",
+        "checks": [
+            "a202_operated_profile",
+            "dual_evidence_verification",
+            "independent_oracle",
+            "participant_privacy",
+        ],
+    },
+    {
+        "source_id": "negotiate-sqlite-restart",
+        "evidence_id": "negotiate-released-artifact-sqlite-restart-replay",
+        "producer_id": "runtime-packs/negotiate-sqlite-restart/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "exact_executable_replay",
+            "forced_restart_and_reconnect",
+            "offline_dual_evidence",
+            "released_artifact_only",
+        ],
+    },
+    {
+        "source_id": "negotiate-postgres-restart",
+        "evidence_id": "negotiate-released-artifact-postgresql-restart-replay",
+        "producer_id": "runtime-packs/negotiate-postgres-restart/v1",
+        "platform": "native-linux-x86_64",
+        "checks": [
+            "exact_executable_replay",
+            "forced_restart_and_reconnect",
+            "offline_dual_evidence",
+            "released_artifact_only",
         ],
     },
 )
@@ -2115,15 +2196,18 @@ def pnpm_locked_components(content: bytes) -> list[tuple[str, str, str]]:
     return sorted((*key, integrity) for key, integrity in components.items())
 
 
-def _third_party_license_ids(expression: str) -> list[str]:
-    identifiers = [
-        token
-        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.+-]*", expression)
-        if token not in {"AND", "OR", "WITH"}
-    ]
-    if not identifiers:
+def _third_party_license_terms(expression: str) -> list[tuple[str, str]]:
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9.+-]*", expression)
+    terms: set[tuple[str, str]] = set()
+    previous = ""
+    for token in tokens:
+        if token not in {"AND", "OR", "WITH"}:
+            kind = "exception" if previous == "WITH" else "license"
+            terms.add((token, kind))
+        previous = token
+    if not terms:
         reject("third-party component has no declared license identifiers")
-    return sorted(set(identifiers))
+    return sorted(terms)
 
 
 def _third_party_notice_sections(content: bytes) -> set[str]:
@@ -2183,6 +2267,7 @@ def validate_third_party_notices(
         != {
             "components",
             "inputs",
+            "license_kinds",
             "license_texts",
             "notices",
             "schema",
@@ -2207,6 +2292,7 @@ def validate_third_party_notices(
         reject("third-party notice text identity differs from the manifest")
     sections = _third_party_notice_sections(notice_text)
     license_texts = manifest.get("license_texts")
+    license_kinds = manifest.get("license_kinds")
     if (
         not isinstance(license_texts, dict)
         or not license_texts
@@ -2219,6 +2305,12 @@ def validate_third_party_notices(
         )
     ):
         reject("third-party standard-license mapping is invalid")
+    if (
+        not isinstance(license_kinds, dict)
+        or set(license_kinds) != set(license_texts)
+        or any(kind not in {"license", "exception"} for kind in license_kinds.values())
+    ):
+        reject("third-party SPDX identifier-role mapping is invalid")
 
     components = manifest.get("components")
     if not isinstance(components, dict) or set(components) != {
@@ -2277,12 +2369,15 @@ def validate_third_party_notices(
             )
         ):
             reject(f"third-party {ecosystem} component notice is invalid")
-        identifiers = _third_party_license_ids(expression)
+        terms = _third_party_license_terms(expression)
+        identifiers = [identifier for identifier, _kind in terms]
         if any(
             license_texts.get(identifier) not in notice_ids
             for identifier in identifiers
         ):
             reject(f"third-party {ecosystem} component omits declared license terms")
+        if any(license_kinds.get(identifier) != kind for identifier, kind in terms):
+            reject(f"third-party {ecosystem} component has invalid SPDX roles")
         key = (ecosystem, name, version)
         if key in declared:
             reject(f"third-party {ecosystem} component is repeated")
@@ -2372,7 +2467,9 @@ def validate_third_party_notices(
     return declared
 
 
-def spdx_license_expression(declared: str, known_identifiers: set[str]) -> str | None:
+def spdx_license_expression(
+    declared: str, known_identifiers: dict[str, str]
+) -> str | None:
     """Return a valid SPDX expression without erasing the raw upstream value."""
 
     candidate = "MIT OR Apache-2.0" if declared == "MIT/Apache-2.0" else declared
@@ -2395,12 +2492,18 @@ def spdx_license_expression(declared: str, known_identifiers: set[str]) -> str |
             position += 1
             return True
         token = tokens[position]
-        if token in {"AND", "OR", "WITH", ")"} or token not in known_identifiers:
+        if (
+            token in {"AND", "OR", "WITH", ")"}
+            or known_identifiers.get(token) != "license"
+        ):
             return False
         position += 1
         if position < len(tokens) and tokens[position] == "WITH":
             position += 1
-            if position >= len(tokens) or tokens[position] not in known_identifiers:
+            if (
+                position >= len(tokens)
+                or known_identifiers.get(tokens[position]) != "exception"
+            ):
                 return False
             position += 1
         return True
@@ -2473,7 +2576,7 @@ def apk_component_packages(source_entries: dict[str, bytes]) -> list[dict[str, A
         source_entries[THIRD_PARTY_NOTICE_MANIFEST_PATH],
         "third-party notice manifest",
     )
-    known_identifiers = set(manifest["license_texts"])
+    known_identifiers = manifest["license_kinds"]
     base = manifest["components"]["oci_base"]
     packages = []
     for row in base["packages"]:
@@ -2527,7 +2630,7 @@ def component_packages(
         source_entries[THIRD_PARTY_NOTICE_MANIFEST_PATH],
         "third-party notice manifest",
     )
-    known_license_identifiers = set(notice_manifest["license_texts"])
+    known_license_identifiers = notice_manifest["license_kinds"]
     packages: list[dict[str, Any]] = []
     relationships: list[tuple[str, str]] = []
     observed: set[tuple[str, str, str]] = set()
@@ -3630,8 +3733,8 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         ):
             reject(f"release workflow producer interpreter drifted for job {job}")
     if (
-        producer_run_lines.count("corepack enable") != 3
-        or producer_run_lines.count("corepack install") != 3
+        producer_run_lines.count("corepack enable") != 4
+        or producer_run_lines.count("corepack install") != 4
         or any(
             line.startswith("corepack install") and line != "corepack install"
             for line in producer_run_lines
@@ -3707,6 +3810,58 @@ def evidence_producer_rows(
     return rows
 
 
+def portable_subject_basename(version: str, artifact_id: str) -> str:
+    """Return the deterministic detached filename for a portable Starter subject."""
+
+    names = {
+        "worldstream-a202-adapter": f"worldstream-{version}-a202-adapter.tar.gz",
+        "worldstream-deterministic-agents": f"worldstream-{version}-deterministic-agents.tar.gz",
+        "worldstream-documentation": f"worldstream-{version}-documentation.tar.gz",
+        "worldstream-examples": f"worldstream-{version}-examples.tar.gz",
+        "worldstream-licenses": f"worldstream-{version}-licenses.tar.gz",
+        "worldstream-negotiate-bundle": f"worldstream-{version}-negotiate.wspack",
+        "worldstream-negotiate-evidence-verifier": f"worldstream-{version}-negotiate-evidence-verifier.tar.gz",
+        "worldstream-pack-toolchain": f"worldstream-{version}-pack-toolchain.tar.gz",
+        "worldstream-participant-console": f"worldstream-{version}-participant-console.tar.gz",
+        "worldstream-release-metadata": f"worldstream-{version}-release-metadata.tar.gz",
+        "worldstream-studio": f"worldstream-{version}-studio.tar.gz",
+        "worldstream-typescript-pack-sdk": f"worldstream-{version}-typescript-pack-sdk.tar.gz",
+    }
+    try:
+        return names[artifact_id]
+    except KeyError as error:  # pragma: no cover - code-owned caller inventory.
+        raise IdentityError(
+            f"unknown portable release subject: {artifact_id}"
+        ) from error
+
+
+def portable_subject_rows(
+    release_subjects: dict[str, Path], version: str
+) -> list[dict[str, Any]]:
+    """Bind the twelve deterministic Starter subjects without claiming compilation."""
+
+    rows: list[dict[str, Any]] = []
+    for artifact_id in PORTABLE_SUBJECT_ARTIFACT_IDS:
+        subject = portable_subject_basename(version, artifact_id)
+        path = release_subjects.get(subject)
+        if path is None:
+            reject(f"release provenance is missing portable subject: {artifact_id}")
+        rows.append(
+            {
+                "artifact_id": artifact_id,
+                "subject": subject,
+                "subject_sha256": "sha256:" + sha256_path(path),
+                "input_uri": f"file:release-inputs/payload/{subject}",
+                "producer_id": "starter-release-subjects/v1",
+                "upstream_job": "release-evidence",
+                "configured_runner": "ubuntu-24.04",
+                "aggregation_job": "release-evidence",
+                "aggregation_runner": "ubuntu-24.04",
+            }
+        )
+    return rows
+
+
 def payload_ui_commands(artifact_id: str) -> list[list[str]]:
     commands = [
         ["pnpm", "install", "--frozen-lockfile"],
@@ -3748,8 +3903,16 @@ def provenance_graph(
     if invocation_parameters is None:
         invocation_parameters = local_invocation_parameters()
     validate_invocation_parameters(invocation_parameters, require_github=False)
-    if len(release_subjects) != 17:
-        reject("release provenance requires exactly seventeen aggregation subjects")
+    expected_subject_count = (
+        len(PAYLOAD_TARGETS)
+        + len(PORTABLE_SUBJECT_ARTIFACT_IDS)
+        + len(EVIDENCE_UPSTREAM_JOBS)
+    )
+    if len(release_subjects) != expected_subject_count:
+        reject(
+            "release provenance requires exactly "
+            f"{expected_subject_count} aggregation subjects"
+        )
     payload_rows = []
     names = {
         artifact_id: path.name
@@ -3797,7 +3960,11 @@ def provenance_graph(
                 ),
             }
         )
-    evidence_rows = evidence_producer_rows(release_subjects, set(names.values()))
+    portable_rows = portable_subject_rows(release_subjects, version)
+    payload_subject_names = set(names.values()) | {
+        row["subject"] for row in portable_rows
+    }
+    evidence_rows = evidence_producer_rows(release_subjects, payload_subject_names)
     dependencies = [
         {
             "uri": f"git+{REPOSITORY}",
@@ -3839,7 +4006,7 @@ def provenance_graph(
             "uri": row["input_uri"],
             "digest": {"sha256": row["subject_sha256"].removeprefix("sha256:")},
         }
-        for row in [*payload_rows, *evidence_rows]
+        for row in [*payload_rows, *portable_rows, *evidence_rows]
     ]
     dependencies.extend(input_descriptors)
     dependencies.sort(
@@ -3863,6 +4030,10 @@ def provenance_graph(
                 {"artifact_id": row["artifact_id"], "uri": row["input_uri"]}
                 for row in sorted(payload_rows, key=lambda item: item["artifact_id"])
             ],
+            "portable_subject_inputs": [
+                {"artifact_id": row["artifact_id"], "uri": row["input_uri"]}
+                for row in sorted(portable_rows, key=lambda item: item["artifact_id"])
+            ],
             "evidence_inputs": [
                 {"source_id": row["source_id"], "uri": row["input_uri"]}
                 for row in sorted(evidence_rows, key=lambda item: item["source_id"])
@@ -3881,6 +4052,7 @@ def provenance_graph(
         + sha256_bytes(canonical_json(component_rows)),
         "evidence_producers": evidence_rows,
         "payload_producers": payload_rows,
+        "portable_subject_producers": portable_rows,
         "source_date_epoch": identities["source-archive"]["source_date_epoch"],
         "toolchains": identities["source-archive"]["toolchains"],
     }
@@ -3899,6 +4071,7 @@ def aggregation_byproduct(value: dict[str, Any]) -> dict[str, Any]:
         "component_graph_sha256",
         "evidence_producers",
         "payload_producers",
+        "portable_subject_producers",
         "source_date_epoch",
         "toolchains",
     }
@@ -3906,20 +4079,22 @@ def aggregation_byproduct(value: dict[str, Any]) -> dict[str, Any]:
         set(value) != expected_fields
         or value.get("schema") != RELEASE_AGGREGATION_SCHEMA
         or value.get("operation") != "validate-and-copy"
-        or value.get("subject_count") != 17
+        or value.get("subject_count") != 33
         or GIT_REVISION.fullmatch(value.get("source_revision", "")) is None
         or SHA256_REF.fullmatch(value.get("component_graph_sha256", "")) is None
         or not isinstance(value.get("payload_producers"), list)
         or len(value["payload_producers"]) != 4
+        or not isinstance(value.get("portable_subject_producers"), list)
+        or len(value["portable_subject_producers"]) != 12
         or not isinstance(value.get("evidence_producers"), list)
-        or len(value["evidence_producers"]) != 13
+        or len(value["evidence_producers"]) != 17
     ):
         reject("SLSA aggregation byproduct is malformed")
     content = canonical_json(value)
     return {
-        "name": "worldstream-release-aggregation-v1.json",
+        "name": "worldstream-release-aggregation-v2.json",
         "digest": {"sha256": sha256_bytes(content)},
-        "mediaType": "application/vnd.worldstream.release-aggregation.v1+json",
+        "mediaType": "application/vnd.worldstream.release-aggregation.v2+json",
         "content": base64.b64encode(content).decode("ascii"),
     }
 
@@ -3945,7 +4120,7 @@ def _build_type_example_digest(label: str) -> str:
     """Return a stable illustrative digest that cannot be mistaken for a build."""
 
     return "sha256:" + sha256_bytes(
-        f"worldstream-build-type-v3-example:{label}".encode()
+        f"worldstream-build-type-v4-example:{label}".encode()
     )
 
 
@@ -4111,8 +4286,8 @@ def _build_type_example_identity(
     return identity
 
 
-def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
-    """Build the complete deterministic documentation example for build type v3."""
+def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
+    """Build the complete deterministic documentation example for build type v4."""
 
     revision = "0123456789abcdef0123456789abcdef01234567"
     version = _product_version(source_entries)
@@ -4172,6 +4347,22 @@ def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
                     if artifact_id == "oci-linux-amd64-image"
                     else {}
                 ),
+            }
+        )
+    portable_rows = []
+    for artifact_id in PORTABLE_SUBJECT_ARTIFACT_IDS:
+        subject = portable_subject_basename(version, artifact_id)
+        portable_rows.append(
+            {
+                "artifact_id": artifact_id,
+                "subject": subject,
+                "subject_sha256": _build_type_example_digest(f"subject:{subject}"),
+                "input_uri": f"file:release-inputs/payload/{subject}",
+                "producer_id": "starter-release-subjects/v1",
+                "upstream_job": "release-evidence",
+                "configured_runner": "ubuntu-24.04",
+                "aggregation_job": "release-evidence",
+                "aggregation_runner": "ubuntu-24.04",
             }
         )
     evidence_rows: list[dict[str, Any]] = []
@@ -4240,7 +4431,7 @@ def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
             "uri": row["input_uri"],
             "digest": {"sha256": row["subject_sha256"].removeprefix("sha256:")},
         }
-        for row in [*payload_rows, *evidence_rows]
+        for row in [*payload_rows, *portable_rows, *evidence_rows]
     )
     dependencies.sort(
         key=lambda item: (
@@ -4256,10 +4447,11 @@ def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
         "operation": "validate-and-copy",
         "product": version,
         "source_revision": revision,
-        "subject_count": 17,
+        "subject_count": 33,
         "component_graph_sha256": "sha256:" + sha256_bytes(canonical_json(components)),
         "evidence_producers": evidence_rows,
         "payload_producers": payload_rows,
+        "portable_subject_producers": portable_rows,
         "source_date_epoch": source_date_epoch,
         "toolchains": identities["source-archive"]["toolchains"],
     }
@@ -4268,7 +4460,7 @@ def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
             "name": row["subject"],
             "digest": {"sha256": row["subject_sha256"].removeprefix("sha256:")},
         }
-        for row in [*payload_rows, *evidence_rows]
+        for row in [*payload_rows, *portable_rows, *evidence_rows]
     ]
     subject_rows.sort(key=lambda row: row["name"])
     runner = {
@@ -4305,6 +4497,15 @@ def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
                             payload_rows, key=lambda item: item["artifact_id"]
                         )
                     ],
+                    "portable_subject_inputs": [
+                        {
+                            "artifact_id": row["artifact_id"],
+                            "uri": row["input_uri"],
+                        }
+                        for row in sorted(
+                            portable_rows, key=lambda item: item["artifact_id"]
+                        )
+                    ],
                     "evidence_inputs": [
                         {"source_id": row["source_id"], "uri": row["input_uri"]}
                         for row in sorted(
@@ -4327,10 +4528,10 @@ def build_type_v3_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
     }
 
 
-def validate_build_type_v3_example(
+def validate_build_type_v4_example(
     value: object, source_entries: dict[str, bytes]
 ) -> None:
-    """Require the checked-in example to be the exact complete v3 graph."""
+    """Require the checked-in example to be the exact complete v4 graph."""
 
     validate_build_type_material(source_entries)
     if not isinstance(value, dict) or set(value) != {
@@ -4339,11 +4540,13 @@ def validate_build_type_v3_example(
         "predicateType",
         "predicate",
     }:
-        reject("build-type v3 example is not a closed in-toto Statement")
-    if value != build_type_v3_example(source_entries):
-        reject("build-type v3 example differs from the canonical illustrative graph")
-    if BUILD_TYPE == WITHDRAWN_BUILD_TYPE_V2:
-        reject("active build type must not equal the withdrawn v2 URI")
+        reject("build-type v4 example is not a closed in-toto Statement")
+    if value != build_type_v4_example(source_entries):
+        reject("build-type v4 example differs from the canonical illustrative graph")
+    if BUILD_TYPE in {WITHDRAWN_BUILD_TYPE_V2, WITHDRAWN_BUILD_TYPE_V3}:
+        reject("active build type must not equal a superseded Type URI")
+    if BUILD_TYPE != f"urn:worldstream:build-type:sha256:{BUILD_TYPE_SHA256}":
+        reject("active build type is not content-addressed to its exact definition")
 
 
 def build_type_v2_tombstone() -> dict[str, Any]:
@@ -4357,7 +4560,7 @@ def build_type_v2_tombstone() -> dict[str, Any]:
             "v2 omitted the static archiver/librarian identity required by the "
             "final native payload build graph and was superseded before activation"
         ),
-        "supersededBy": BUILD_TYPE,
+        "supersededBy": WITHDRAWN_BUILD_TYPE_V3,
     }
 
 

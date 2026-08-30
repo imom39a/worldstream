@@ -1,0 +1,37 @@
+{
+  "name": "@worldstream/pack-cli",
+  "version": "0.1.0",
+  "description": "Owned TypeScript build and proof toolchain for WorldStream Activity Packs",
+  "type": "module",
+  "engines": {
+    "node": "24.18.1"
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "bin": {
+    "worldstream-pack": "dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@bytecodealliance/componentize-js": "0.22.0",
+    "@bytecodealliance/jco": "1.32.1",
+    "@noble/hashes": "2.4.0",
+    "@worldstream/pack-sdk": "workspace:*",
+    "typescript": "5.9.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3"
+  }
+}

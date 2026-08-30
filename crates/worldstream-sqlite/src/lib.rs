@@ -1564,6 +1564,16 @@ pub enum SqliteCanonicalMetadataInitializationV1 {
     AlreadyInitialized,
 }
 
+/// Exact canonical deployment metadata currently retained by the live store.
+///
+/// This read-only view lets startup admission bind an offline proof to the
+/// same durable target that the daemon is about to serve.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteCanonicalMetadataStatusV1 {
+    pub deployment_lineage: String,
+    pub storage_epoch: u64,
+}
+
 #[derive(Debug, Eq, Error, PartialEq)]
 pub enum SqliteCanonicalMetadataInitializationErrorV1 {
     #[error("deployment lineage must be non-empty")]
@@ -4111,11 +4121,55 @@ impl SqliteRoomStore {
             .map_err(|_| SqliteCanonicalMetadataInitializationErrorV1::StorageUnavailable)?
     }
 
-    /// Persists the complete source deployment identity exactly once.
+    /// Reads and validates the exact canonical deployment metadata without
+    /// mutating the database. A deployment that has never configured the
+    /// optional metadata returns `None`.
     ///
-    /// The writer owns the transaction and the identity rows are immutable;
-    /// repeated identical initialization is idempotent, while a different,
-    /// partial, duplicate, or reordered identity set is rejected.
+    /// # Errors
+    ///
+    /// Returns a closed storage or corruption error when the singleton cannot
+    /// be read or its retained values are not canonical.
+    pub fn canonical_metadata_status(
+        &self,
+    ) -> Result<Option<SqliteCanonicalMetadataStatusV1>, SqliteCanonicalMetadataInitializationErrorV1>
+    {
+        let connection = self
+            .writer
+            .open_read_connection()
+            .map_err(|_| SqliteCanonicalMetadataInitializationErrorV1::StorageUnavailable)?;
+        let row = connection
+            .query_row(
+                "SELECT deployment_lineage, storage_epoch \
+                 FROM canonical_export_metadata WHERE metadata_id = 1",
+                (),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|_| SqliteCanonicalMetadataInitializationErrorV1::StorageUnavailable)?;
+        let Some((deployment_lineage, storage_epoch)) = row else {
+            return Ok(None);
+        };
+        if !is_canonical_deployment_lineage(&deployment_lineage)
+            || storage_epoch <= 0
+            || storage_epoch > MAX_SAFE_INTEGER
+        {
+            return Err(SqliteCanonicalMetadataInitializationErrorV1::Corrupt);
+        }
+        let storage_epoch = u64::try_from(storage_epoch)
+            .map_err(|_| SqliteCanonicalMetadataInitializationErrorV1::Corrupt)?;
+        Ok(Some(SqliteCanonicalMetadataStatusV1 {
+            deployment_lineage,
+            storage_epoch,
+        }))
+    }
+
+    /// Persists the immutable base Runtime Distribution identity exactly once.
+    ///
+    /// This ledger covers embedded distribution Packs; it is not the mutable
+    /// local Activity Pack Bundle approval/installation inventory. The writer
+    /// owns the transaction and the identity rows are immutable; repeated
+    /// identical initialization is idempotent, while a different, partial,
+    /// duplicate, or reordered identity set is rejected.
     ///
     /// # Errors
     ///
@@ -33086,9 +33140,21 @@ mod tests {
         let store =
             SqliteRoomStore::open(file.path()).unwrap_or_else(|error| panic!("open: {error}"));
         assert_eq!(
+            store
+                .canonical_metadata_status()
+                .unwrap_or_else(|error| panic!("empty metadata status: {error}")),
+            None
+        );
+        assert_eq!(
             store.initialize_canonical_metadata("deployment/one", 7),
             Ok(SqliteCanonicalMetadataInitializationV1::Initialized)
         );
+        let status = store
+            .canonical_metadata_status()
+            .unwrap_or_else(|error| panic!("metadata status: {error}"))
+            .unwrap_or_else(|| panic!("initialized metadata must be present"));
+        assert_eq!(status.deployment_lineage, "deployment/one");
+        assert_eq!(status.storage_epoch, 7);
         assert_eq!(
             store.initialize_canonical_metadata("deployment/one", 7),
             Ok(SqliteCanonicalMetadataInitializationV1::AlreadyInitialized)

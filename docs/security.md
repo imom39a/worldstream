@@ -2,7 +2,7 @@
 
 ## Status
 
-WorldStream v0.1 and v0.2 are self-hosted developer previews. They are not a hardened public multi-tenant service, payment system, compliance product, or secure execution sandbox.
+WorldStream's first public release is a self-hosted developer preview. It is not a hardened public multi-tenant service, payment system, compliance product, or hostile-code isolation service.
 
 The project should make narrow guarantees honestly and fail closed where it cannot preserve them.
 
@@ -12,7 +12,7 @@ Trusted:
 
 - the host operator;
 - the installed WorldStream binary, compatibility manifest, and explicitly selected configuration;
-- the exact compiled-in Activity Pack revisions;
+- embedded first-party revisions and exact Host Operator approval records;
 - the operating system, selected durable storage profile, and its operator-controlled credentials/backup boundary.
 
 Untrusted:
@@ -25,8 +25,14 @@ Untrusted:
 - browser state and URLs;
 - remote network transport and any hosted PostgreSQL control-plane API;
 - network timing, duplication, reordering across reconnect, and disconnection.
+- portable Activity Pack code and its self-reported conformance claims.
 
-Rust packs run in the WorldStream process and are not sandboxed. A malicious or buggy compiled-in pack can compromise the process. The operator must trust the source and build. Do not describe the frozen releases as accepting untrusted plugins.
+Portable Packs are operator-approved untrusted application code executed by a
+capability-denying Wasmtime host. Approval authorizes exact bytes; it does not
+make them intrinsically trusted. WorldStream claims zero imported capabilities,
+deterministic limits, and fail-closed Room semantics—not immunity from engine
+defects or hostile multi-tenant process isolation. Embedded Rust revisions are
+trusted internal bridges/oracles and retain ordinary same-process risk.
 
 ## Protected assets
 
@@ -363,35 +369,34 @@ WorldStream does not store private chain-of-thought as a debugging or reputation
 
 ## Activity Pack security
 
-### Frozen trusted Rust model
+### Portable and embedded execution model
 
-- packs are compiled into the binary;
+- public Packs are exact `.wspack` bundles approved by digest and loaded only at startup;
 - PackRevisionLock semantic digest is pinned per Room;
-- the embedded registry maps the digest to exact executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status;
+- one immutable startup registry maps embedded and approved revisions to exact executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status;
 - every retained digest remains runnable even when no longer selectable;
 - ActivityPackV1 exposes exactly descriptor, initialize, reduce, view, and observe and no I/O, clock, scheduler, Activation, Session, delivery, telemetry, or artifact-byte handle;
 - Canonical Activity State, events, timer requests, Attention, Projection, Action Offer, observation, nesting, collection, and text limits apply;
-- panics are caught at the host boundary where possible;
+- a public Component has exactly five exports, zero imports, no WASI linker, and a fresh Store/instance per callback;
+- original Component bytes are authoritative; AOT cache is host-owned and disposable;
+- fixed revision-bound fuel, memory, table, stack, byte, and concurrency limits apply;
+- traps and panics are classified at the host boundary where possible;
 - malformed output, mandatory-Core veto, privacy/view failure, or bound violation commits nothing;
 - repeated deterministic required-input fault faults the Room; hash/Replay disagreement quarantines it;
 - replay tests detect nondeterminism;
 - supply-chain review covers pack dependencies.
 
-This prevents accidental ambient I/O through the API, not malicious Rust code. Same-process code can still access process capabilities by other Rust APIs.
+The zero-import profile denies guest clock, entropy, filesystem, network,
+environment, process, storage, scheduler, model, credential, thread, and host
+callback access. Aggregate process exhaustion and engine aborts remain
+process-level risks.
 
-### Deferred untrusted packs
+### Deliberately deferred capabilities
 
-A future sandbox would require:
-
-- no filesystem, socket, environment, clock, or random capability by default;
-- memory, CPU/fuel, output, and call limits;
-- deterministic execution and canonical ABI;
-- signed immutable artifacts and provenance;
-- malicious fixture and escape testing;
-- renderer isolation;
-- incident response and revocation.
-
-None of that is promised in v0.1 or v0.2.
+The first profile has no generic helper imports, WASI, host effects, hot loading,
+network registry, automatic approval, or executable renderer code.
+Signatures/provenance are optional evidence and never replace exact-digest
+approval or host verification.
 
 ## Timer security
 
@@ -513,7 +518,13 @@ Metrics use low-cardinality counts and sizes, never entity IDs or raw participan
 
 ## Required security tests
 
-Before Heist v0.1:
+Before the first public portable-Pack release:
+
+- bundle traversal/link/duplicate/member-tamper and atomic-install crash tests;
+- exact import/export/version preflight, forbidden-feature, Component-size, original-byte restart, and cache-misbinding tests;
+- fuel, memory, table, stack, byte-boundary, compile-concurrency, and diagnostic-redaction tests;
+- missing/corrupt retained bundle readiness plus backup/restore/transfer and engine-upgrade Replay tests;
+- Negotiate exact-approval mutation, signer/mandate/head/deadline, privacy, and dual-evidence verification tests;
 
 - PackRevisionLock/digest collision and exact-executor/codec retention tests;
 - Action Offer byte parity across Projection, reset, Frame, Invocation Context, and admission;
@@ -557,7 +568,7 @@ Before Heist v0.1:
 - recovery with every paired snapshot/current materialization deleted on both profiles;
 - corrupt paired-snapshot fallback, Genesis verification, referential checks, all three state hashes, and Transition-hash failure on both profiles.
 
-Before Investigation v0.2:
+Before any future Investigation artifact release:
 
 - artifact path traversal and symlink cases;
 - byte-limit and temp-space exhaustion;

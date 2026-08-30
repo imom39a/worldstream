@@ -1,4 +1,17 @@
 {
+  "activity_pack_bundles": [
+    {
+      "bundle_digest": "blake3:9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5",
+      "bundle_digest_algorithm": "blake3",
+      "bundle_format_id": "worldstream/activity-pack-bundle/v1",
+      "explanatory_version": "0.1.0",
+      "pack_id": "worldstream.negotiate",
+      "path": "packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack",
+      "required_for_release": true,
+      "revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+      "status": "resolved"
+    }
+  ],
   "authored_date": "2026-08-15",
   "canonical_mirror": "compatibility.json",
   "codecs": {
@@ -165,6 +178,58 @@
       "id": "reference-performance-per-backend",
       "release_gate": true,
       "status": "detached"
+    },
+    {
+      "artifact_digest": "",
+      "artifact_digest_location": "release-manifest.json",
+      "id": "worldstream-negotiate-evidence",
+      "release_gate": true,
+      "status": "detached"
+    },
+    {
+      "artifact_digest": "",
+      "artifact_digest_location": "release-manifest.json",
+      "id": "negotiate-oracle-a202-and-privacy",
+      "release_gate": true,
+      "status": "detached"
+    },
+    {
+      "artifact_digest": "",
+      "artifact_digest_location": "release-qualification-manifest.json",
+      "id": "starter-distribution-and-custom-pack-recovery",
+      "qualification_gate": true,
+      "release_gate": false,
+      "status": "detached"
+    },
+    {
+      "artifact_digest": "",
+      "artifact_digest_location": "release-manifest.json",
+      "id": "negotiate-released-artifact-sqlite-restart-replay",
+      "release_gate": true,
+      "status": "detached"
+    },
+    {
+      "artifact_digest": "",
+      "artifact_digest_location": "release-manifest.json",
+      "id": "negotiate-released-artifact-postgresql-restart-replay",
+      "release_gate": true,
+      "status": "detached"
+    },
+    {
+      "artifact_digest": "",
+      "artifact_digest_location": "release-qualification-manifest.json",
+      "id": "outside-adopter-pack-author-journey",
+      "qualification_gate": true,
+      "release_gate": false,
+      "status": "detached"
+    },
+    {
+      "artifact_digest": "",
+      "artifact_digest_location": "release-qualification-manifest.json",
+      "id": "outside-adopter-application-integrator-journey",
+      "qualification_gate": true,
+      "release_gate": false,
+      "status": "detached"
     }
   ],
   "evidence_digest_source": "detached_release_manifest",
@@ -186,7 +251,10 @@
         "config",
         "schema",
         "golden",
-        "secret"
+        "secret",
+        "pack_contract",
+        "official_pack_identity",
+        "qualification_contract"
       ],
       "warm_p95_seconds": 20
     },
@@ -194,7 +262,9 @@
       "hard_seconds": 1500,
       "scope": [
         "parallel_linux",
-        "native_windows_build_package_acl_filesystem_sqlite_postgresql_connect_recovery"
+        "native_windows_build_package_acl_filesystem_sqlite_postgresql_connect_recovery",
+        "released_pack_subject_identity",
+        "negotiate_restart_reconnect_replay"
       ],
       "target_seconds": 900
     },
@@ -211,7 +281,11 @@
         "ui",
         "protocol",
         "hash",
-        "local_postgresql_smoke"
+        "local_postgresql_smoke",
+        "component_host",
+        "pack_sdk",
+        "negotiate_oracle_privacy_a202",
+        "starter_distribution"
       ],
       "warm_target_seconds": 360
     },
@@ -228,7 +302,11 @@
         "failure",
         "fuzz",
         "benchmark",
-        "one_hour_sqlite_soak"
+        "one_hour_sqlite_soak",
+        "runtime_plus_packs",
+        "negotiate_both_storage_profiles",
+        "starter_subjects",
+        "post_sign_outside_adopter_qualification"
       ],
       "target_seconds": 10800
     }
@@ -293,12 +371,13 @@
     "local_postgresql_is_optional": true,
     "provider_smoke_requires_credentials": false,
     "release_artifact_manifest": "release-manifest.json",
+    "release_qualification_manifest": "release-qualification-manifest.json",
     "schema": "worldstream/compatibility-gates/v1",
     "strict_ci_skips": true,
     "unavailable_dependency_policy": "explicit_skip_or_fail",
     "validation": "fail_closed"
   },
-  "manifest_kind": "release",
+  "manifest_kind": "specification",
   "manifest_revision": 1,
   "migrations": {
     "atomic_or_restart_safe": true,
@@ -577,6 +656,23 @@
       "schema_bundle_digest": "blake3:6dfb0613326e19f27ede58048ccb4804d6d5832b59e3d0c5ee697bd6f7df1a4f",
       "selectable_for_new_rooms": true,
       "status": "resolved"
+    },
+    {
+      "codec_bundle_digest": "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30",
+      "descriptor_digest": "blake3:37608c23cdea8a8df63a5281167aecdbe875c7f5a4cbfcb1ced07330fefe74b7",
+      "executor_artifact_digest": "blake3:17ab497995271c36b4ddc753eb85519cd9210a1c0c26e97b29c35ce5c95d8aff",
+      "explanatory_version": "0.1.0",
+      "golden_corpus_digest": "blake3:3f37852137085a5c9954d1ae53a9e377eef4a0d63eee32d525389ee39cda40c1",
+      "host_contract_id": "worldstream/activity-pack/v1",
+      "pack_id": "worldstream.negotiate",
+      "required_for_release": true,
+      "revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+      "revision_digest_algorithm": "blake3",
+      "revision_lock_id": "worldstream/pack-revision-lock/v1",
+      "runnable_for_retained_rooms": true,
+      "schema_bundle_digest": "blake3:b3c4d9a0d06684a8736164639077a1c9b39f9088738b804cfce3dccce746f98f",
+      "selectable_for_new_rooms": true,
+      "status": "resolved"
     }
   ],
   "platforms": [
@@ -678,6 +774,7 @@
     "scope": "dated_migration_backup_isolated_restore_full_replay_exact_combination",
     "status": "unresolved"
   },
+  "qualification_evidence_digest_source": "detached_release_qualification_manifest",
   "quickstart": {
     "certified_heist_minutes": 5,
     "certified_reference": "ubuntu-24.04-x86_64-ext4-4vcpu-8gib-local-ssd",
@@ -759,6 +856,102 @@
       "digest": "",
       "digest_algorithm": "sha256",
       "digest_location": "release-manifest.json",
+      "id": "worldstream-a202-adapter",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-deterministic-agents",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-documentation",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-examples",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-licenses",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-negotiate-bundle",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-negotiate-evidence-verifier",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-pack-toolchain",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-participant-console",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-release-metadata",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-studio",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
+      "id": "worldstream-typescript-pack-sdk",
+      "profile": "all",
+      "status": "detached"
+    },
+    {
+      "digest": "",
+      "digest_algorithm": "sha256",
+      "digest_location": "release-manifest.json",
       "id": "checksums",
       "profile": "all",
       "status": "detached"
@@ -807,8 +1000,8 @@
       "slsa_provenance"
     ]
   },
-  "release_ready": true,
-  "release_status": "embedded_contract_complete_detached_release_evidence_required",
+  "release_ready": false,
+  "release_status": "specification_release_gates_pending",
   "reviewed_source": "compatibility.toml",
   "schema": "worldstream/storage-compatibility-manifest/v1",
   "security": {

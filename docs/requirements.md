@@ -1,21 +1,21 @@
-# Frozen Requirements
+# Runtime-plus-Packs Requirements
 
 ## Document authority
 
-Status: **FROZEN for Agent Heist v0.1 and Investigation Room v0.2**
+Status: **FROZEN Room Kernel; accepted portable Pack and Negotiate release direction**
 
 Freeze date: 2026-08-15
 
-Reconciliation status: **implementation and acceptance evidence underway against the frozen specification**. The repository has pinned build/config/probe scaffolding, Core/lineage and operational-authority implementation, exact retained Counter and Agent Heist executors, both storage adapters, the public Python SDK, and the first-party UI. The portable implementation identities in [`compatibility.toml`](../compatibility.toml) are complete and therefore set `release_ready = true`; under [ADR 0012](adr/0012-detach-release-evidence-from-embedded-compatibility.md), that means the embedded contract is buildable, not that a distribution has been verified. Native/OCI, cross-platform, supply-chain, failure/soak, and final acceptance evidence remains detached and must verify before a release claim. The [Canonical Decision Index](decision-index.md) locates each invariant's normative source, accepted decision, conformance evidence, and implementation owner without redefining this document.
+Reconciliation status: **portable Pack and Negotiate implementation is present against the accepted specification; packaged qualification remains underway**. The durable Room Kernel, exact retained Counter and Agent Heist executors, both storage adapters, public TypeScript Pack path, production Component Host, exact Negotiate Bundle, application SDK, and first-party UI foundations exist. [`compatibility.toml`](../compatibility.toml) remains an intentionally fail-closed specification with `release_ready = false`: the exact Negotiate Component, revision, schema/codec/golden, and physical Bundle identities are resolved, while native/OCI packaging, expanded detached gates, and genuine outside-adopter trials remain pending. Counter is internal, Heist is demo/conformance, Investigation is deferred, and [WorldStream Negotiate](negotiate.md) is the first serious public Pack.
 
 This is the normative product-behavior and release-scope document. If an architecture, protocol, roadmap, or example conflicts on behavior or scope, this document wins. The root [WorldStream Domain Context](../CONTEXT.md) is authoritative for domain term names and meanings; a conflict between terminology and requirements is a documentation defect that must be reconciled rather than silently redefined.
 
 Change control:
 
 1. A requirement addition needs a short ADR describing the demonstrated need.
-2. Before v0.2, new scope must replace scope of comparable cost unless it fixes correctness, security, or the ability to deliver either reference activity.
+2. New scope must replace scope of comparable cost unless it fixes correctness, security, portable Pack adoption, or the Negotiate proof.
 3. Ideas that do not block a release gate go into the non-normative research backlog.
-4. The trusted semantic `ActivityPackV1` seam is frozen for v0.1 retained Rooms. Public protocol stability and any portable, dynamically loaded, or untrusted pack ABI remain unpromised until a separate post-v0.2 decision.
+4. The semantic `ActivityPackV1` seam and retained-Room behavior remain frozen. ADR 0014 adds one public portable representation of that same seam; it does not create a second rules contract.
 
 The words MUST, MUST NOT, SHOULD, and MAY are normative in this document.
 
@@ -23,7 +23,7 @@ The words MUST, MUST NOT, SHOULD, and MAY are normative in this document.
 
 WorldStream is a self-hosted realtime room runtime for multi-agent applications. Its precise model is multi-participant: external humans and independently hosted AI agents join a rule-governed room, receive scoped realtime observations, submit typed actions, and retain continuity across connections and ephemeral agent invocations. Multiplayer server design is the architectural analogy, not a game-only product boundary.
 
-Primary adopter: an AI application developer building a multi-participant application.
+Primary adopters: Pack Authors defining deterministic shared activities and Application Integrators connecting human clients, external Runners, and protocol adapters.
 
 Primary value:
 
@@ -74,6 +74,9 @@ Delivery resume means observation catch-up. The word resume MUST NOT imply cogni
 - durable activation intents, claim leases, retries, and status;
 - bounded network queues, rate limits, and slow-consumer handling;
 - a minimal operator-membership/reference UI and protocol/SDK conformance fixtures.
+- exact-digest Activity Pack Bundle verification, Host Operator approval state,
+  offline installation, startup registry assembly, retained-bundle inventory,
+  and safe export/removal.
 
 ### Activity Packs MUST own
 
@@ -83,6 +86,8 @@ Delivery resume means observation catch-up. The word resume MUST NOT imply cogni
 - public, participant, and operator projection rules;
 - semantic timer mutation requests, attention reasons, completion rules, and result scoring;
 - activity-specific UI projection schemas.
+- their immutable portable Component, schemas, codecs, static material,
+  dependency lock, golden corpus, and deterministic conformance facts.
 
 ### External clients and runners MUST own
 
@@ -102,15 +107,19 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - A room MUST NOT silently switch pack versions.
 - A Room MUST NOT change its pinned digest or rewrite canonical Activity State in place. A semantic pack revision creates a new Room.
 - Every revision digest MUST be the build-computed digest of a canonical `PackRevisionLockV1` covering the host contract and codec versions, manifest, exact schema-content digests, deterministic static data, pack rule source, and deterministic dependency lock.
-- The embedded registry MUST map each digest to its exact executor, descriptor/schema bundle, state/stimulus/output codecs, golden-corpus digest, and separate selectable-for-new-Rooms and runnable-for-retained-Rooms status. Selectable MUST imply runnable.
+- One immutable startup registry MUST map each digest to its exact executor, descriptor/schema bundle, state/stimulus/output codecs, golden-corpus digest, and separate selectable-for-new-Rooms and runnable-for-retained-Rooms status. It is assembled from embedded revisions and approved local Activity Pack Bundles and injected identically into both storage adapters. Selectable MUST imply runnable.
 - Every digest referenced by retained lineage MUST remain runnable for load, advance, view, observe, Recovery, and Replay even after it becomes non-selectable.
 - `CoreRoomState v1` MUST contain exactly Room Status plus the canonically sorted semantic Membership map. Room Head, hashes, Room Integrity State, Sessions, delivery, receipts, Activation, policy, diagnostics, telemetry, and commit time MUST NOT be Core fields.
 - Room Status MUST be active or archived. Archive MUST be an irreversible administrative Stimulus and Core Transition in the Room order, as decided in [ADR 0002](adr/0002-sequence-domain-relevant-room-changes.md); reaching a Terminal Phase or Outcome MUST NOT archive automatically.
 - In the winning Room order, archive MUST atomically cancel scheduled timers and generation-fence pending and leased Activation work. A healthy archived Room MAY serve authorized reads, export, and Replay and accept ordered suspend/depart changes, but MUST reject joins, resumes, participant work, and Access/Role elevation.
 - Room Integrity State MUST be `healthy`, `faulted`, or `quarantined` and MUST remain durable operational state outside Core, Authoritative Room State, `room_seq`, Replay state, and every canonical hash. Activity Phase and Outcome MUST remain separate pack-defined values.
-- v0.1 packs MUST be trusted, compiled into the server, and selected from an allowlist.
-- Dynamic pack download, public plugin upload/registry service, untrusted code execution, and a portable plugin ABI are deferred until after v0.2. The required embedded exact-revision registry is not a plugin marketplace.
-- These pack-seam and executable-retention boundaries are decided in [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
+- A public portable revision MUST be a WASI-free WebAssembly Component with exactly the five `ActivityPackV1` exports and zero imports under `worldstream/component-deterministic/v1`.
+- The Host Operator MUST approve one verified exact `.wspack` digest before offline installation. Startup MUST use original Component bytes, build no authority from names/versions/signatures alone, and fail readiness closed for every missing or corrupt retained revision.
+- The complete offline Pack lifecycle MUST resolve one reviewed `worldstreamctl --config <WORLDSTREAM_CONFIG> pack ...` configuration. Inventory and restart-readiness receipts MUST include the resolved `storage_profile`; a receipt from another profile or configuration MUST NOT be accepted as equivalent. PostgreSQL restart readiness MUST use a separately supplied owner-only direct-admin `--dsn-file` rather than placing a credential in configuration output, argv text, a browser request, or a receipt.
+- Pack restart readiness MUST admit every installed original Component through the production host and execute exact Genesis-to-Head Replay for every healthy retained Room. It MUST bind the canonical inventory digest to a pathless deployment binding derived from the canonical data-directory identity, storage profile, and available provider deployment-lineage/storage-epoch metadata, then durably record one startup-readiness seal only after those checks succeed.
+- When any portable bundle is installed, daemon startup MUST independently derive the actual inventory digest, storage profile, and deployment binding and MUST refuse readiness unless all three exactly match the durable startup-readiness seal. Installation, approval revocation, selectability change, retained-bundle restore, and removal MUST clear that seal before changing inventory authority; no stale readiness receipt or seal may authorize startup after such a mutation.
+- Hot loading, network download, a registry service, automatic approval, name/version fallback, and force removal of a retained executor MUST NOT exist in the first release.
+- These pack-seam, bundle, containment, and retention boundaries are decided in [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md) as partially superseded by [ADR 0014](adr/0014-installable-wasi-free-activity-pack-bundles.md).
 
 ### FR-2: Human and agent participation
 
@@ -258,23 +267,23 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 
 - The server MUST be usable without the web UI.
 - The first-party UI MUST consume only authorized public, participant, or operator projections.
-- v0.1 MUST include a Heist public board/map, participants, current phase/deadline, activation state, timeline, and replay controls.
-- v0.2 MUST add Investigation evidence, claim, challenge, correction, timeline, final brief, and deterministic score views.
+- Studio MUST guide exact bundle inspection/approval/install/restart readiness, schema-driven Genesis configuration, Membership/handoff creation, opaque Runner credential references, diagnostics, Replay, and evidence export without becoming a Participant or rules engine.
+- Studio Pack Operations MUST display config-aware CLI commands and consume only the closed typed receipts. It MUST verify canonical inventory row count/order/digest, require inventory and readiness `storage_profile` agreement, match the post-selection `inventory_digest` to restart readiness, and treat the pathless `deployment_binding` as opaque target identity. Studio MUST NOT itself create, retain, bypass, or claim daemon acceptance of the durable startup-readiness seal.
+- The Participant Console MUST support independent attach/reconnect, authorized Projection/Observation delivery, exact Action Offers, Negotiate approval/signing panels, receipts, Replay, and evidence download.
 - The UI MUST submit the same typed commands as another client and MUST NOT enforce server authorization by itself.
 - Runtime LLM-generated UI, arbitrary pack JavaScript, third-party renderers, and a general View Pack ABI are deferred.
 
 ### FR-10: Developer experience
 
-- v0.1 MUST provide an async Python SDK and raw protocol examples.
-- The SDK MUST handle reconnect, observation acknowledgement, duplicate delivery, activation claim lease, and safe action retry.
-- The SDK MUST expose Runner activation-control authority separately from Room Member observation and participant Action authority.
-- Deterministic bot runners MUST exercise the complete Heist without a paid model API.
-- v0.2 MUST provide deterministic Investigation agents and one human action path.
+- The Application SDK MUST handle reconnect, observation acknowledgement, duplicate delivery, Activation claim lease, safe Action retry, canonical protocol objects, signer hooks, and evidence verification while keeping activation-control and Participant Action authority separate.
+- The first public Pack Author SDK MUST be TypeScript and expose deterministic scaffold, strict check, test, build, inspect, and production-host proof over one code-first project contract.
+- Optional prompt assistance MUST ship in the first release, emit that same reviewable project, and confer no special authority. A model, paid service, or credential MUST NOT be required for deterministic scaffolding/build.
+- Negotiate MUST dogfood the exact public TypeScript Component path and pass native-oracle parity, privacy, resource, restart, retained-revision, and real-Room proof.
 - A fresh checkout MUST start the server, reference clients, and UI in under ten minutes on a documented supported platform.
 
-## Reference release A: Agent Heist v0.1
+## Demo/conformance activity: Agent Heist
 
-Agent Heist is a deliberately small deterministic game and one ordinary ActivityPackV1 implementation. Its exact schema and golden corpus are normative in [Activity Pack Design](activity-packs.md); no Heist-specific Kernel primitive is permitted.
+Agent Heist is a deliberately small deterministic game and one ordinary ActivityPackV1 implementation. Its retained schema and golden corpus remain compatibility obligations, but it is a demo/conformance Pack rather than the first public product.
 
 The frozen configuration contains exactly three immutable Genesis seats (Navigator, Insider, Broker); Briefing 30 seconds; Negotiation 90 seconds; Commitment 30 seconds; a reminder 10 seconds before its deadline; Result 20 seconds; at most twelve plans; and at most four open offers per seat. The Room seed selects canal_shift, service_window, or roof_signal with deterministic label agent-heist/fixture/v1.
 
@@ -308,9 +317,9 @@ Required Heist acceptance gates:
 8. Byte-identical corpus results pass through the exact retained executor/codecs on every supported platform and storage profile.
 9. The deterministic demo requires no network service, model key, wallet, or paid API.
 
-## Reference release B: Investigation Room v0.2
+## Deferred boundary probe: Investigation Room
 
-Investigation Room proves the Room Kernel supports serious non-game collaboration without Investigation-specific room, protocol, storage, or activation semantics. It uses the generic artifact subsystem already planned for v0.2.
+Investigation Room is retained as design research for serious non-game collaboration. It is not committed to the first public release; its detailed scenario below is a deferred boundary probe, not an implementation requirement.
 
 The bundled fictional fixture is Cold Chain Incident: a shipment appears to have exceeded its permitted temperature range. Evidence arrives in recorded waves, including sensor readings, manifest data, maintenance records, a witness report, and a later timestamp correction.
 
@@ -418,10 +427,10 @@ The report MUST separate connection count, active rooms, transition rate, observ
 ### Security posture
 
 - The frozen releases are a self-hosted developer preview, not a hardened public multi-tenant service.
-- The host operator and compiled-in packs are trusted.
+- The Host Operator and server build are trusted. A portable Pack is operator-approved untrusted application code contained by a capability-denying Wasmtime profile; this is not hostile multi-tenant process isolation.
 - Network clients, human input, agent output, evidence text, and file metadata are untrusted.
 - Authentication, authorization, payload limits, rate limits, path safety, projection isolation, HTML escaping, and secret-safe logging are required.
-- Investigation artifacts MUST be immutable, content-addressed, size-limited, MIME-checked, and never executed by WorldStream.
+- Activity Pack Bundles and Negotiate evidence exports MUST be immutable, content-addressed, size-limited, verified, and never gain undeclared capabilities.
 
 ## Explicit non-goals through v0.2
 
@@ -433,17 +442,17 @@ The following are frozen out:
 - coding harnesses, repository worktrees, tool sandboxes, branch promotion, or cloud agent execution;
 - model hosting, prompt management, provider routing, consumer-subscription pooling, or raw model resale;
 - generic RAG, vector database, embedding pipeline, semantic wake classifier, or automatic summarization;
-- Activity Pack marketplace, dynamic/public pack registry or upload, public agent marketplace, reputation, payments, token, wallet, escrow, or blockchain integration;
+- Activity Pack marketplace or network registry, public agent marketplace, reputation, payments, token, wallet, escrow, or blockchain integration;
 - arbitrary process snapshots, hidden-model-state capture, or claims of continuous agent life;
 - timeline forks, branch merge, or counterfactual promotion;
 - runtime-generated UI, general dashboard builder, arbitrary third-party JavaScript, or renderer marketplace;
 - A2A, MCP, AG-UI, OpenClaw, Hermes, or other full protocol integrations beyond small examples;
-- Wasmtime or another untrusted plugin sandbox;
+- generic pack effects, WASI capabilities, hot loading, or hostile multi-tenant sandbox claims;
 - Redis, NATS, Kafka, Temporal, a service mesh, Kubernetes requirement, Raft, CRDTs, federation, active-active mutation, or multi-region operation;
 - live backend switching, dual writes, PostgreSQL-to-SQLite or room-at-a-time transfer, reverse transfer, multi-process serving, authoritative replica reads, automatic failover, HA orchestration, provider services or correctness dependencies, and cloud-resource provisioning;
 - production SaaS tenancy, billing, moderation, compliance certification, or uptime SLA.
 
-These ideas are not rejected forever. They require evidence after both reference releases and a separate ADR.
+These ideas are not rejected forever. They require demonstrated adopter need and a separate ADR.
 
 ## Requirements freeze checklist
 
@@ -454,11 +463,11 @@ These ideas are not rejected forever. They require evidence after both reference
 - [x] Action ordering, idempotency, commit-before-ack, projection privacy, cursor catch-up, activation, recovery, and replay have testable invariants.
 - [x] ActivityPackV1, exact Action Offer parity, host-owned timers, PackRevisionLock, retained executability, and no in-place upgrade are frozen.
 - [x] Agent Heist has exact three-seat/six-phase, majority, scoring, privacy, Attention, and golden-corpus contracts.
-- [x] Agent Heist is the only v0.1 activity.
-- [x] Investigation Room is the only v0.2 application goal.
-- [x] Investigation adds no Investigation-specific Room Kernel concept beyond the preplanned generic artifact subsystem.
+- [x] Counter is internal, Agent Heist is demo/conformance, and Investigation Room is deferred.
+- [x] Negotiate is the first serious public Pack and uses the pinned A202 compatibility profile.
+- [x] One WASI-free Component contract, deterministic `.wspack`, exact-digest approval, and retained original bytes define portable Pack execution.
 - [x] Bundled SQLite and `postgres-primary` are the only storage profiles, with one WorldStream process and backend-neutral semantics.
 - [x] Forward-only migrations, retained codecs, offline one-way transfer, Storage Epoch fencing, backend-native recovery, and full semantic verification are testable invariants.
 - [x] Native Linux/Windows, Linux/amd64 OCI, macOS source-only, config/secrets/probes/telemetry, supply-chain evidence, and all negative release clauses are explicit.
-- [x] All excluded marketplace, crypto, workflow, cross-room, coding, memory, plugin, and generated-UI ideas are non-normative.
+- [x] Marketplace, crypto, workflow, cross-room, coding, memory, arbitrary-effect, and generated-UI ideas remain non-normative.
 - [x] Every performance statement is labeled target or accompanied by a reproducible report.

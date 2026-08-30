@@ -1,8 +1,14 @@
 # Canonical Decision Index
 
-Status: **Reconciled and implementation-ready, 2026-08-15**
+Status: **Runtime-plus-Packs contract reconciled, implementation underway, 2026-08-30**
 
-This is a normative locator, not a competing specification. The repository has the pinned workspace, Core/lineage and operational-authority implementation, exact retained Counter and Agent Heist executors, both storage adapters, the public Python SDK, and the first-party UI. [`compatibility.toml`](../compatibility.toml) now has `release_ready = true` because its embedded implementation identities are complete; per ADR 0012, the still-detached cross-platform artifacts and acceptance reports must verify before that contract can support a distribution claim. When wording conflicts, use this authority order:
+This is a normative locator, not a competing specification. The Room Kernel,
+retained Counter/Agent Heist revisions, storage adapters, application SDK, and
+UI foundations exist. The portable Pack platform and Negotiate proof are now
+the implementation frontier. [`compatibility.toml`](../compatibility.toml) is a
+fail-closed specification with `release_ready = false` until its named
+Negotiate identities are independently resolved. When wording conflicts, use
+this authority order:
 
 1. [`CONTEXT.md`](../CONTEXT.md) for whole-product domain language;
 2. [Frozen Requirements](requirements.md) for normative behavior and scope;
@@ -28,6 +34,9 @@ This is a normative locator, not a competing specification. The repository has t
 | [0011](adr/0011-release-compatibility-recovery-and-supply-chain-gate.md) | Compatibility, migration, transfer, recovery, distribution, and evidence release gate |
 | [0012](adr/0012-detach-release-evidence-from-embedded-compatibility.md) | Embedded compatibility contract plus detached signed artifact/evidence inventory |
 | [0013](adr/0013-studio-companion-control-plane.md) | Studio companion control plane, Supervisor boundary, and unchanged daemon authority |
+| [0014](adr/0014-installable-wasi-free-activity-pack-bundles.md) | Exact-digest `.wspack` lifecycle and WASI-free Component execution through the existing five-operation seam |
+| [0015](adr/0015-a202-operated-single-session-formation-profile.md) | Pinned A202 single-session formation compatibility profile for WorldStream Negotiate |
+| [0016](adr/0016-expanded-runtime-pack-release-and-qualification.md) | 33-subject Runtime-plus-Packs release graph and separately signed post-release qualification |
 
 ## Frozen invariants, evidence, and implementation ownership
 

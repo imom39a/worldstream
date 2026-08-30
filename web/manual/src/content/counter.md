@@ -36,7 +36,7 @@ Use the one entrypoint:
 ```sh
 DEMO_ROOT="$(mktemp -d)"
 chmod 700 "$DEMO_ROOT"
-pnpm counter:studio -- --state-dir "$DEMO_ROOT/state" --control-file "$DEMO_ROOT/control.json"
+pnpm counter:studio --state-dir "$DEMO_ROOT/state" --control-file "$DEMO_ROOT/control.json"
 ```
 
 It coordinates these real local components:
@@ -65,33 +65,11 @@ pnpm counter:studio --skip-build
 `--state-dir PATH` requires a fresh owner-only directory. Reusing one requires
 the explicit `--retain-state` flag; the entrypoint never clears it for you.
 
-### Run the repeatable browser acceptance
-
-Keep the coordinator above running. In another terminal, install the local
-Playwright Chromium once, then run the checked-in public fixture. The
-owner-only control file and state directory bind this browser run to that one
-coordinator; neither argument is copied into the Participant Console.
-
-```sh
-pnpm exec playwright install chromium
-pnpm counter:studio:browser -- \
-  --adapter playwright \
-  --fixture examples/counter/counter_studio_browser_fixture.json \
-  --studio-url http://127.0.0.1:5174 \
-  --control-file "$DEMO_ROOT/control.json" \
-  --state-dir "$DEMO_ROOT/state/studio" \
-  --draft-name counter4-demo \
-  --provider-status-url http://127.0.0.1:19431 \
-  --artifact-dir "$DEMO_ROOT/browser-evidence" \
-  --capture-witness "$DEMO_ROOT/browser-evidence/before-replay.json" \
-  --check-witness "$DEMO_ROOT/browser-evidence/after-replay.json"
-```
-
-It uses the same Studio controls as the guide, stops and retries the managed
-host at the provider boundary, performs a completed-host restart, and then
-verifies Replay. Its owner-only report checks DOM and request-URL disclosure,
-retained context canaries, one committed `increment`, recovery, and replay
-without printing protected values.
+Continue with the interactive Studio walkthrough below. It is the recommended
+first experience. The automated browser acceptance near the end of this page
+is an alternative verification path: do not run it before the walkthrough
+against this same state, because it deliberately creates the same immutable
+Profile, template, draft, and Room identities for repeatability.
 
 ## Follow the story in Studio
 
@@ -289,8 +267,56 @@ the assignment MCP helper, the Runner, or the deterministic provider.
 
 ## Verify the implementation
 
-The entrypoint is the acceptance path. These focused checks are useful when
-changing it:
+The interactive walkthrough above is the product story. The checked-in browser
+acceptance repeats that story automatically for implementation verification.
+Run it with a fresh coordinator state, not with the state used for the manual
+walkthrough.
+
+### Run the automated browser acceptance
+
+In terminal A, start a fresh coordinator. The small marker file lets terminal B
+read the exact temporary path without relying on a shell variable from another
+terminal:
+
+```sh
+mkdir -p target
+AUTO_ROOT="$(mktemp -d)"
+chmod 700 "$AUTO_ROOT"
+printf '%s\n' "$AUTO_ROOT" > target/counter-studio-demo-root
+pnpm counter:studio \
+  --state-dir "$AUTO_ROOT/state" \
+  --control-file "$AUTO_ROOT/control.json"
+```
+
+Keep terminal A running. In terminal B, install the local Playwright Chromium
+once and run the public fixture:
+
+```sh
+AUTO_ROOT="$(cat target/counter-studio-demo-root)"
+pnpm exec playwright install chromium
+pnpm counter:studio:browser \
+  --adapter playwright \
+  --fixture examples/counter/counter_studio_browser_fixture.json \
+  --studio-url http://127.0.0.1:5174 \
+  --control-file "$AUTO_ROOT/control.json" \
+  --state-dir "$AUTO_ROOT/state/studio" \
+  --draft-name counter4-demo \
+  --provider-status-url http://127.0.0.1:19431 \
+  --artifact-dir "$AUTO_ROOT/browser-evidence" \
+  --capture-witness "$AUTO_ROOT/browser-evidence/before-replay.json" \
+  --check-witness "$AUTO_ROOT/browser-evidence/after-replay.json"
+```
+
+The automation uses the same Studio controls as the guide, stops and retries
+the managed host at the provider boundary, performs a completed-host restart,
+and verifies Replay. Its owner-only report checks DOM and request-URL
+disclosure, retained context canaries, exactly one committed `increment`,
+recovery, and Replay without printing protected values. When it finishes,
+press **Ctrl+C** in terminal A to stop only the processes owned by this fixture.
+
+### Run focused checks
+
+These checks are useful when changing the coordinator or either web app:
 
 ```sh
 uv run --project sdk/python --python 3.14.7 pytest -q examples/counter/test_run_studio_demo.py

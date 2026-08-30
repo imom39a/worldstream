@@ -932,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn counter_v3_human_ack_emits_eligible_agent_attention_and_replays_without_effects() {
         let registry = builtin_counter_registry()
             .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"));
@@ -944,20 +945,23 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("Counter v3 genesis: {error}"));
         let mut trace = CoreTraceV1::create_uncommitted(prepared)
             .unwrap_or_else(|error| unreachable!("Counter v3 trace: {error}"));
-        let private_ack = trace
+        let private_ack_schema_digest = trace
             .retained_pack()
             .unwrap_or_else(|| unreachable!("Counter v3 retained pack"))
             .descriptor()
             .actions
             .iter()
             .find(|action| action.action_type == "private_ack")
-            .unwrap_or_else(|| unreachable!("Counter v3 private acknowledgement"));
+            .unwrap_or_else(|| unreachable!("Counter v3 private acknowledgement"))
+            .payload_schema
+            .schema_digest
+            .clone();
         trace
             .advance(RecordedStimulusV1::ParticipantAction(ParticipantActionV1 {
                 member_id: parsed(PARTICIPANT),
                 action_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC3"),
                 action_type: "private_ack".to_owned(),
-                payload_schema_digest: private_ack.payload_schema.schema_digest.clone(),
+                payload_schema_digest: private_ack_schema_digest.clone(),
                 canonical_payload: canonical(br"{}"),
                 exact_basis_head: trace.head().clone(),
                 admitted_at: parsed("2026-08-15T12:00:01Z"),
@@ -1023,7 +1027,7 @@ mod tests {
                 member_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC5"),
                 action_id: parsed("01ARZ3NDEKTSV4RRFFQ69G5FC4"),
                 action_type: "private_ack".to_owned(),
-                payload_schema_digest: private_ack.payload_schema.schema_digest.clone(),
+                payload_schema_digest: private_ack_schema_digest,
                 canonical_payload: canonical(br"{}"),
                 exact_basis_head: agent_trace.head().clone(),
                 admitted_at: parsed("2026-08-15T12:00:01Z"),

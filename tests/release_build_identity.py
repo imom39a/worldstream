@@ -171,7 +171,7 @@ def test_locked_component_graph_contains_cargo_python_and_all_pnpm_packages():
     assert "pkg:cargo/openssl-src@300.6.1%2B3.6.3" in purls
     assert "pkg:cargo/wasi@0.14.7%2Bwasi-0.2.4" in purls
     assert all("+" not in purl for purl in purls)
-    assert len(module.pnpm_locked_packages(entries["pnpm-lock.yaml"])) == 95
+    assert len(module.pnpm_locked_packages(entries["pnpm-lock.yaml"])) == 333
     by_name = {package["name"]: package for package in packages}
     assert by_name["pydantic"]["downloadLocation"] == "https://pypi.org/simple"
     assert by_name["worldstream-sdk"]["downloadLocation"] == module.REPOSITORY
@@ -185,8 +185,8 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
         entries[module.THIRD_PARTY_NOTICE_MANIFEST_PATH], "notice manifest"
     )
 
-    assert sum(ecosystem == "cargo" for ecosystem, _name, _version in declared) == 248
-    assert sum(ecosystem == "npm" for ecosystem, _name, _version in declared) == 95
+    assert sum(ecosystem == "cargo" for ecosystem, _name, _version in declared) == 323
+    assert sum(ecosystem == "npm" for ecosystem, _name, _version in declared) == 333
     assert sum(ecosystem == "apk" for ecosystem, _name, _version in declared) == 15
     assert manifest["inputs"] == {
         "Cargo.lock": "sha256:" + hashlib.sha256(entries["Cargo.lock"]).hexdigest(),
@@ -201,6 +201,9 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
     assert manifest["components"]["oci_base"]["installed_database_sha256"].startswith(
         "sha256:"
     )
+    assert set(manifest["license_kinds"]) == set(manifest["license_texts"])
+    assert manifest["license_kinds"]["Apache-2.0"] == "license"
+    assert manifest["license_kinds"]["LLVM-exception"] == "exception"
     assert all(
         line == line.rstrip(b" \t")
         for line in entries[module.THIRD_PARTY_NOTICE_TEXT_PATH].splitlines()
@@ -211,6 +214,14 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
         row["declared_license"] == "MIT/Apache-2.0"
         for row in manifest["components"]["cargo"]
     )
+    for version in ("0.19.3", "0.22.0"):
+        evidence = (
+            f"Component: npm:@bytecodealliance/componentize-js@{version}\n"
+            "Declared license: Apache-2.0 WITH LLVM-exception\n"
+            "License evidence: exact package-root LICENSE "
+            "(sha256:268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5)\n"
+        ).encode()
+        assert evidence in entries[module.THIRD_PARTY_NOTICE_TEXT_PATH]
     for material in (
         module.THIRD_PARTY_NOTICE_GENERATOR_PATH,
         module.THIRD_PARTY_NOTICE_MANIFEST_PATH,
@@ -237,6 +248,20 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
     with pytest.raises(module.IdentityError, match="npm notice coverage"):
         module.validate_third_party_notices(drifted_inventory)
 
+    reversed_roles = copy.deepcopy(manifest)
+    componentize = next(
+        row
+        for row in reversed_roles["components"]["npm"]
+        if row["name"] == "@bytecodealliance/componentize-js"
+    )
+    componentize["declared_license"] = "LLVM-exception WITH Apache-2.0"
+    drifted_roles = dict(entries)
+    drifted_roles[module.THIRD_PARTY_NOTICE_MANIFEST_PATH] = module.canonical_json(
+        reversed_roles
+    )
+    with pytest.raises(module.IdentityError, match="invalid SPDX roles"):
+        module.validate_third_party_notices(drifted_roles)
+
 
 def test_notice_normalization_removes_per_line_ascii_trailing_whitespace():
     generator = load_notice_generator()
@@ -261,7 +286,7 @@ def test_spdx_preserves_legacy_license_text_and_models_every_apk_package():
     notice_manifest = module.strict_json(
         entries[module.THIRD_PARTY_NOTICE_MANIFEST_PATH], "notice manifest"
     )
-    known = set(notice_manifest["license_texts"])
+    known = notice_manifest["license_kinds"]
     legacy = next(
         package
         for package in packages
@@ -287,9 +312,7 @@ def test_spdx_preserves_legacy_license_text_and_models_every_apk_package():
     for package in packages:
         declared = package.get("licenseDeclared")
         if declared not in {None, "NONE", "NOASSERTION"}:
-            assert module.spdx_license_expression(declared, known | {"Apache-2.0"}) == (
-                declared
-            )
+            assert module.spdx_license_expression(declared, known) == declared
     base_id = "SPDXRef-WorldStream-OCI-Base"
     assert {
         relationship["relatedSpdxElement"]
@@ -297,6 +320,21 @@ def test_spdx_preserves_legacy_license_text_and_models_every_apk_package():
         if relationship["spdxElementId"] == base_id
         and relationship["relationshipType"] == "CONTAINS"
     } == {package["SPDXID"] for package in apk_packages}
+
+
+def test_spdx_with_requires_a_license_then_an_exception():
+    module = load_module()
+    known = {"Apache-2.0": "license", "LLVM-exception": "exception"}
+
+    assert (
+        module.spdx_license_expression("Apache-2.0 WITH LLVM-exception", known)
+        == "Apache-2.0 WITH LLVM-exception"
+    )
+    assert (
+        module.spdx_license_expression("LLVM-exception WITH Apache-2.0", known) is None
+    )
+    assert module.spdx_license_expression("LLVM-exception", known) is None
+    assert module.spdx_license_expression("Apache-2.0 WITH Apache-2.0", known) is None
 
 
 def test_source_package_manifests_reject_duplicate_identity_keys():
@@ -422,26 +460,24 @@ def test_uv_is_an_exact_pinned_material_and_toolchain():
     assert module.BUILD_TYPE_PATH in value["materials"]
 
 
-def test_build_type_v3_example_is_canonical_complete_and_non_recursive():
+def test_build_type_v4_example_is_canonical_complete_and_non_recursive():
     module = load_module()
     entries = source_entries(module)
     raw = module.regular_bytes(
-        ROOT / module.BUILD_TYPE_EXAMPLE_PATH, "build-type v3 example"
+        ROOT / module.BUILD_TYPE_EXAMPLE_PATH, "build-type v4 example"
     )
-    example = module.strict_json(raw, "build-type v3 example")
+    example = module.strict_json(raw, "build-type v4 example")
 
-    module.validate_build_type_v3_example(example, entries)
+    module.validate_build_type_v4_example(example, entries)
     assert hashlib.sha256(entries[module.BUILD_TYPE_PATH]).hexdigest() == (
         module.BUILD_TYPE_SHA256
     )
     assert raw == module.canonical_json(example)
     assert module.BUILD_TYPE == (
-        "https://github.com/imom39a/worldstream/blob/"
-        "9a130028c0631e1eaff2f57037e2c8b3b0659ac8/"
-        "docs/build-types/pre-sign-subject-aggregation-v3.md"
+        "urn:worldstream:build-type:sha256:" + module.BUILD_TYPE_SHA256
     )
     assert example["predicate"]["buildDefinition"]["buildType"] == module.BUILD_TYPE
-    assert len(example["subject"]) == 17
+    assert len(example["subject"]) == 33
     assert example["subject"] == sorted(example["subject"], key=lambda row: row["name"])
 
     definition = example["predicate"]["buildDefinition"]
@@ -458,12 +494,13 @@ def test_build_type_v3_example_is_canonical_complete_and_non_recursive():
     byproducts = example["predicate"]["runDetails"]["byproducts"]
     assert [item["name"] for item in byproducts] == [
         "worldstream-runner-identity.json",
-        "worldstream-release-aggregation-v1.json",
+        "worldstream-release-aggregation-v2.json",
     ]
     aggregation = json.loads(base64.b64decode(byproducts[1]["content"], validate=True))
-    assert aggregation["subject_count"] == 17
+    assert aggregation["subject_count"] == 33
     assert len(aggregation["payload_producers"]) == 4
-    assert len(aggregation["evidence_producers"]) == 13
+    assert len(aggregation["portable_subject_producers"]) == 12
+    assert len(aggregation["evidence_producers"]) == 17
 
     payloads = {row["artifact_id"]: row for row in aggregation["payload_producers"]}
     assert set(payloads) == set(module.PAYLOAD_TARGETS)
@@ -545,14 +582,14 @@ def test_provenance_materials_bind_release_evidence_execution_sources():
 def test_immutable_build_type_bytes_are_required_by_identity_and_example():
     module = load_module()
     entries = source_entries(module)
-    example = module.build_type_v3_example(entries)
+    example = module.build_type_v4_example(entries)
     drifted = dict(entries)
     drifted[module.BUILD_TYPE_PATH] += b"\n"
 
     with pytest.raises(module.IdentityError, match="immutable published bytes"):
         source_identity(module, drifted)
     with pytest.raises(module.IdentityError, match="immutable published bytes"):
-        module.validate_build_type_v3_example(example, drifted)
+        module.validate_build_type_v4_example(example, drifted)
 
 
 def test_withdrawn_build_type_v2_has_only_a_canonical_non_statement_tombstone():
@@ -568,22 +605,22 @@ def test_withdrawn_build_type_v2_has_only_a_canonical_non_statement_tombstone():
     assert tombstone["buildType"] == module.WITHDRAWN_BUILD_TYPE_V2
     assert tombstone["statementEmitted"] is False
     assert tombstone["statementAccepted"] is False
-    assert tombstone["supersededBy"] == module.BUILD_TYPE
+    assert tombstone["supersededBy"] == module.WITHDRAWN_BUILD_TYPE_V3
     assert not {"_type", "subject", "predicateType", "predicate"} & set(tombstone)
     assert module.BUILD_TYPE != module.WITHDRAWN_BUILD_TYPE_V2
 
 
-def test_build_type_contract_rejects_unknown_fields_missing_archiver_and_v2_reuse(
+def test_build_type_contract_rejects_unknown_fields_missing_archiver_and_old_type_reuse(
     monkeypatch,
 ):
     module = load_module()
     entries = source_entries(module)
-    example = module.build_type_v3_example(entries)
+    example = module.build_type_v4_example(entries)
 
     unknown = copy.deepcopy(example)
     unknown["predicate"]["unknown"] = True
     with pytest.raises(module.IdentityError, match="illustrative graph"):
-        module.validate_build_type_v3_example(unknown, entries)
+        module.validate_build_type_v4_example(unknown, entries)
 
     missing_archiver = copy.deepcopy(example)
     aggregation_descriptor = missing_archiver["predicate"]["runDetails"]["byproducts"][
@@ -605,12 +642,12 @@ def test_build_type_contract_rejects_unknown_fields_missing_archiver_and_v2_reus
         module.canonical_json(aggregation)
     ).hexdigest()
     with pytest.raises(module.IdentityError, match="illustrative graph"):
-        module.validate_build_type_v3_example(missing_archiver, entries)
+        module.validate_build_type_v4_example(missing_archiver, entries)
 
-    monkeypatch.setattr(module, "BUILD_TYPE", module.WITHDRAWN_BUILD_TYPE_V2)
-    with pytest.raises(module.IdentityError, match="withdrawn v2"):
-        module.validate_build_type_v3_example(
-            module.build_type_v3_example(entries), entries
+    monkeypatch.setattr(module, "BUILD_TYPE", module.WITHDRAWN_BUILD_TYPE_V3)
+    with pytest.raises(module.IdentityError, match="superseded Type URI"):
+        module.validate_build_type_v4_example(
+            module.build_type_v4_example(entries), entries
         )
 
 
@@ -682,6 +719,8 @@ def test_every_repo_local_pre_sign_dynamic_import_is_a_pinned_material():
         "scripts/release-evidence-collect.py",
         "scripts/release-evidence-produce.py",
         "scripts/release_build_identity.py",
+        "scripts/starter-distribution.py",
+        "scripts/starter-release-subjects.py",
         "scripts/verify-oci-layout.py",
     }
     assert set(module.PRE_SIGN_DYNAMIC_IMPORT_PATHS) == expected
@@ -692,7 +731,9 @@ def test_every_repo_local_pre_sign_dynamic_import_is_a_pinned_material():
         "scripts/release-evidence-assemble.py",
         "scripts/release-evidence-collect.py",
         "scripts/release-evidence-produce.py",
+        "scripts/release-evidence-produce-runtime-packs.py",
         "scripts/release-supply-chain.py",
+        "scripts/starter-release-subjects.py",
     )
     discovered = set()
     for importer in importers:

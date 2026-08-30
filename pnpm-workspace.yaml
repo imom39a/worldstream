@@ -1,4 +1,6 @@
 packages:
+  - packs/*
+  - sdk/typescript-pack/packages/*
   - web/console
   - web/manual
   - web/studio

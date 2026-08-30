@@ -398,6 +398,7 @@ validation_policy = 'fail_closed'
 reviewed_source = 'compatibility.toml'
 canonical_mirror = 'compatibility.json'
 release_artifact_digest_source = 'detached_release_manifest'
+qualification_evidence_digest_source = 'detached_release_qualification_manifest'
 
 [gate_framework]
 validation = 'fail_closed'
@@ -513,6 +514,60 @@ digest = ''
 status = 'detached'
 digest_location = 'release-manifest.json'
 """
+        portable_artifact_ids = PACKAGE.RELEASE_ARTIFACT_IDS[4:16]
+        manifest_toml += "".join(
+            "\n[[release_artifacts]]\n"
+            f"id = '{artifact_id}'\n"
+            "profile = 'all'\n"
+            "digest_algorithm = 'sha256'\n"
+            "digest = ''\n"
+            "status = 'detached'\n"
+            "digest_location = 'release-manifest.json'\n"
+            for artifact_id in portable_artifact_ids
+        ).encode()
+        root_manifest = json.loads(
+            (REPOSITORY_ROOT / "compatibility.json").read_text(encoding="utf-8")
+        )
+        official_executor = next(
+            row
+            for row in root_manifest["pack_executors"]
+            if row["pack_id"] == "worldstream.negotiate"
+        )
+        official_bundle = next(
+            row
+            for row in root_manifest["activity_pack_bundles"]
+            if row["pack_id"] == "worldstream.negotiate"
+        )
+        manifest_toml += f"""
+
+[[pack_executors]]
+pack_id = '{official_executor["pack_id"]}'
+explanatory_version = '{official_executor["explanatory_version"]}'
+host_contract_id = '{official_executor["host_contract_id"]}'
+revision_lock_id = '{official_executor["revision_lock_id"]}'
+revision_digest_algorithm = '{official_executor["revision_digest_algorithm"]}'
+revision_digest = '{official_executor["revision_digest"]}'
+descriptor_digest = '{official_executor["descriptor_digest"]}'
+executor_artifact_digest = '{official_executor["executor_artifact_digest"]}'
+schema_bundle_digest = '{official_executor["schema_bundle_digest"]}'
+codec_bundle_digest = '{official_executor["codec_bundle_digest"]}'
+golden_corpus_digest = '{official_executor["golden_corpus_digest"]}'
+selectable_for_new_rooms = true
+runnable_for_retained_rooms = true
+status = 'resolved'
+required_for_release = true
+
+[[activity_pack_bundles]]
+pack_id = '{official_bundle["pack_id"]}'
+explanatory_version = '{official_bundle["explanatory_version"]}'
+bundle_format_id = '{official_bundle["bundle_format_id"]}'
+revision_digest = '{official_bundle["revision_digest"]}'
+bundle_digest_algorithm = 'blake3'
+bundle_digest = '{official_bundle["bundle_digest"]}'
+path = '{official_bundle["path"]}'
+status = 'resolved'
+required_for_release = true
+""".encode()
         fixture_evidence_ids = (
             "manifest-syntax-parity",
             "sqlite-conformance-migration-backup-restore-crash",
@@ -528,6 +583,10 @@ digest_location = 'release-manifest.json'
             "checksums-signature-sbom-provenance",
             "failure-fuzz-resource-and-one-hour-sqlite-soak",
             "reference-performance-per-backend",
+            "worldstream-negotiate-evidence",
+            "negotiate-oracle-a202-and-privacy",
+            "negotiate-released-artifact-sqlite-restart-replay",
+            "negotiate-released-artifact-postgresql-restart-replay",
         )
         manifest_toml += "".join(
             "\n[[evidence]]\n"
@@ -537,6 +596,21 @@ digest_location = 'release-manifest.json'
             "artifact_digest = ''\n"
             "artifact_digest_location = 'release-manifest.json'\n"
             for evidence_id in fixture_evidence_ids
+        ).encode()
+        qualification_evidence_ids = (
+            "starter-distribution-and-custom-pack-recovery",
+            "outside-adopter-pack-author-journey",
+            "outside-adopter-application-integrator-journey",
+        )
+        manifest_toml += "".join(
+            "\n[[evidence]]\n"
+            f"id = '{evidence_id}'\n"
+            "qualification_gate = true\n"
+            "release_gate = false\n"
+            "status = 'detached'\n"
+            "artifact_digest = ''\n"
+            "artifact_digest_location = 'release-qualification-manifest.json'\n"
+            for evidence_id in qualification_evidence_ids
         ).encode()
         manifest = tomllib.loads(manifest_toml.decode())
         manifest_json = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
@@ -755,6 +829,32 @@ digest_location = 'release-manifest.json'
             lambda: PACKAGE.validate_manifest_shape(detached_without_location),
             "detached artifact without an external digest location was accepted",
         )
+        for field, value, label in (
+            ("status", "unresolved", "non-detached release evidence"),
+            (
+                "artifact_digest",
+                "sha256:" + "0" * 64,
+                "embedded release evidence digest",
+            ),
+            (
+                "artifact_digest_location",
+                "checkout/evidence.json",
+                "non-authoritative release evidence location",
+            ),
+        ):
+            drifted_evidence_manifest = json.loads(json.dumps(manifest))
+            release_evidence_row = next(
+                row
+                for row in drifted_evidence_manifest["evidence"]
+                if row.get("release_gate") is True
+            )
+            release_evidence_row[field] = value
+            expect_package_error(
+                lambda value=drifted_evidence_manifest: PACKAGE.validate_manifest_shape(
+                    value
+                ),
+                f"{label} was accepted",
+            )
 
         expect_package_error(
             lambda: PACKAGE.checksums_file([("unsafe\nname", b"payload")]),
@@ -963,15 +1063,14 @@ digest_location = 'release-manifest.json'
         valid_evidence = root / "dist" / "valid-evidence"
         valid_evidence.mkdir(parents=True)
         artifact_paths = {
-            "source-archive": "worldstream-0.1.0-source.tar.gz",
-            "native-linux-x86_64-archive": "worldstream-0.1.0-linux-x86_64.tar.gz",
-            "native-windows-x64-archive": "worldstream-0.1.0-windows-x64.zip",
-            "oci-linux-amd64-image": "worldstream-0.1.0-oci-linux-amd64.oci.tar",
-            "checksums": "SHA256SUMS",
-            "sigstore-bundle": "sigstore.bundle.json",
-            "spdx-sbom": "sbom.spdx.json",
-            "slsa-provenance": "provenance.json",
+            artifact_id: (
+                "worldstream-0.1.0-oci-linux-amd64.oci.tar"
+                if artifact_id == "oci-linux-amd64-image"
+                else PACKAGE.release_artifact_basename("0.1.0", artifact_id)
+            )
+            for artifact_id in PACKAGE.RELEASE_ARTIFACT_IDS
         }
+        assert all(isinstance(relative, str) for relative in artifact_paths.values())
 
         windows_inputs = {group: list(entries) for group, entries in inputs.items()}
         windows_inputs["bin"] = []
@@ -1087,6 +1186,32 @@ digest_location = 'release-manifest.json'
             artifact_paths["native-windows-x64-archive"]: release_windows.read_bytes(),
             artifact_paths["oci-linux-amd64-image"]: synthetic_oci.read_bytes(),
         }
+        starter_path = repository_root / "scripts/starter-release-subjects.py"
+        starter_spec = importlib.util.spec_from_file_location(
+            "worldstream_package_smoke_starter_subjects", starter_path
+        )
+        if starter_spec is None or starter_spec.loader is None:
+            raise AssertionError("could not load Starter subject fixture builder")
+        starter = importlib.util.module_from_spec(starter_spec)
+        sys.modules[starter_spec.name] = starter
+        starter_spec.loader.exec_module(starter)
+        official = next(
+            row
+            for row in manifest["activity_pack_bundles"]
+            if row["pack_id"] == "worldstream.negotiate"
+            and row.get("required_for_release") is True
+        )
+        for artifact_id in starter.SUBJECT_IDS:
+            relative = artifact_paths[artifact_id]
+            if artifact_id == "worldstream-negotiate-bundle":
+                payloads[relative] = (repository_root / official["path"]).read_bytes()
+            else:
+                subject_inputs = {
+                    "fixture.txt": f"fixture for {artifact_id}\n".encode()
+                }
+                payloads[relative] = starter.archive_bytes(
+                    starter.artifact_files(artifact_id, "0.1.0", subject_inputs)
+                )
         for relative, content in payloads.items():
             write(valid_evidence / relative, content)
         ready_manifest = json.loads(json.dumps(manifest))
@@ -1115,12 +1240,44 @@ digest_location = 'release-manifest.json'
                 },
                 "artifacts": {},
             }
-            payload_artifact_id = {
+            payload_artifact_ids = {
                 "native-linux": "native-linux-x86_64-archive",
                 "native-windows": "native-windows-x64-archive",
                 "oci-linux": "oci-linux-amd64-image",
-            }.get(spec.source_id)
+                "failure-soak": "native-linux-x86_64-archive",
+                "reference-performance": "native-linux-x86_64-archive",
+            }
+            exact_bindings = {
+                (
+                    "pack-component-conformance",
+                    "negotiate-bundle",
+                ): "worldstream-negotiate-bundle",
+                (
+                    "pack-component-conformance",
+                    "linux-release-profile",
+                ): "native-linux-x86_64-archive",
+                ("negotiate-policy", "a202-adapter"): "worldstream-a202-adapter",
+                (
+                    "negotiate-sqlite-restart",
+                    "linux-release-profile",
+                ): "native-linux-x86_64-archive",
+                (
+                    "negotiate-sqlite-restart",
+                    "negotiate-bundle",
+                ): "worldstream-negotiate-bundle",
+                (
+                    "negotiate-postgres-restart",
+                    "linux-release-profile",
+                ): "native-linux-x86_64-archive",
+                (
+                    "negotiate-postgres-restart",
+                    "negotiate-bundle",
+                ): "worldstream-negotiate-bundle",
+            }
             for binding in collector.REQUIRED_ARTIFACT_BINDINGS[spec.source_id]:
+                payload_artifact_id = exact_bindings.get(
+                    (spec.source_id, binding), payload_artifact_ids.get(spec.source_id)
+                )
                 if payload_artifact_id is None:
                     details["artifacts"][binding] = {
                         "sha256": "sha256:" + "a" * 64,
@@ -1242,7 +1399,7 @@ digest_location = 'release-manifest.json'
         payload_paths_by_id = {
             artifact_id: valid_evidence / relative
             for artifact_id, relative in artifact_paths.items()
-            if artifact_id in PACKAGE.CHECKSUM_PAYLOAD_ARTIFACT_IDS
+            if artifact_id in PACKAGE.BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS
         }
         build_identities, release_source_entries = (
             PACKAGE.BUILD_IDENTITY.release_payload_identities(
@@ -1830,12 +1987,25 @@ digest_location = 'release-manifest.json'
         )
         original_read_manifest = PACKAGE.read_manifest
         original_oci_files = PACKAGE.OCI_FILES
+        original_source_revision = PACKAGE.BUILD_IDENTITY.source_revision
         PACKAGE.read_manifest = lambda: (
             oci_manifest,
             manifest_toml,
             oci_manifest_json,
         )
         PACKAGE.OCI_FILES = oci_sources
+        # This reproducibility fixture intentionally runs in the developer's dirty
+        # checkout.  Keep the production OCI path fail-closed while isolating the
+        # fixture from unrelated shared-worktree changes.
+        PACKAGE.BUILD_IDENTITY.source_revision = (
+            lambda source_root, explicit=None, *, require_clean_checkout=False: (
+                original_source_revision(
+                    source_root,
+                    explicit,
+                    require_clean_checkout=False,
+                )
+            )
+        )
         try:
             oci_args = {
                 "binary_dir": str(root),
@@ -1903,6 +2073,7 @@ digest_location = 'release-manifest.json'
         finally:
             PACKAGE.read_manifest = original_read_manifest
             PACKAGE.OCI_FILES = original_oci_files
+            PACKAGE.BUILD_IDENTITY.source_revision = original_source_revision
 
         # Exercise the shell wrappers against a complete, release-valid
         # fixture workspace.  The wrappers must verify the produced archive or

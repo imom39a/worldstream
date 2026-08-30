@@ -56,24 +56,47 @@ PRODUCER_DETAIL_FIELDS = {"producer_id", "phase", "outcomes", "artifacts"}
 OUTCOME_FIELDS = {"status", "observations"}
 ARTIFACT_BINDING_FIELDS = {"sha256", "size_bytes"}
 SOURCE_REPORT_FIELDS = {"source_id", "evidence_id", "schema", "sha256"}
-REQUIRED_RELEASE_EVIDENCE_COUNT = 14
-RELEASE_ARTIFACT_IDS = (
+BASE_RELEASE_EVIDENCE_COUNT = 14
+REQUIRED_RELEASE_EVIDENCE_COUNT = 18
+RUNTIME_PAYLOAD_ARTIFACT_IDS = (
     "source-archive",
     "native-linux-x86_64-archive",
     "native-windows-x64-archive",
     "oci-linux-amd64-image",
+)
+STARTER_SUBJECT_ARTIFACT_IDS = (
+    "worldstream-a202-adapter",
+    "worldstream-deterministic-agents",
+    "worldstream-documentation",
+    "worldstream-examples",
+    "worldstream-licenses",
+    "worldstream-negotiate-bundle",
+    "worldstream-negotiate-evidence-verifier",
+    "worldstream-pack-toolchain",
+    "worldstream-participant-console",
+    "worldstream-release-metadata",
+    "worldstream-studio",
+    "worldstream-typescript-pack-sdk",
+)
+PAYLOAD_ARTIFACT_IDS = RUNTIME_PAYLOAD_ARTIFACT_IDS + STARTER_SUBJECT_ARTIFACT_IDS
+RELEASE_ARTIFACT_IDS = PAYLOAD_ARTIFACT_IDS + (
     "checksums",
     "sigstore-bundle",
     "spdx-sbom",
     "slsa-provenance",
 )
+RELEASE_ARTIFACT_PROFILES = {
+    "source-archive": "source",
+    "native-linux-x86_64-archive": "native-linux-x86_64",
+    "native-windows-x64-archive": "native-windows-x64",
+    "oci-linux-amd64-image": "oci-linux-amd64",
+    **{artifact_id: "all" for artifact_id in STARTER_SUBJECT_ARTIFACT_IDS},
+    "checksums": "all",
+    "sigstore-bundle": "all",
+    "spdx-sbom": "all",
+    "slsa-provenance": "all",
+}
 SIGNED_ARTIFACT_IDS = frozenset(RELEASE_ARTIFACT_IDS) - {"sigstore-bundle"}
-PAYLOAD_ARTIFACT_IDS = (
-    "source-archive",
-    "native-linux-x86_64-archive",
-    "native-windows-x64-archive",
-    "oci-linux-amd64-image",
-)
 SIDECAR_PATHS = {
     "checksums": "SHA256SUMS",
     "sigstore-bundle": "sigstore.bundle.json",
@@ -115,6 +138,41 @@ PAYLOAD_EVIDENCE_BINDINGS = (
         "reference-performance-per-backend",
         "native-linux-x86_64-archive",
         "linux-release-profile",
+    ),
+    (
+        "worldstream-negotiate-evidence",
+        "worldstream-negotiate-bundle",
+        "negotiate-bundle",
+    ),
+    (
+        "worldstream-negotiate-evidence",
+        "native-linux-x86_64-archive",
+        "linux-release-profile",
+    ),
+    (
+        "negotiate-oracle-a202-and-privacy",
+        "worldstream-a202-adapter",
+        "a202-adapter",
+    ),
+    (
+        "negotiate-released-artifact-sqlite-restart-replay",
+        "native-linux-x86_64-archive",
+        "linux-release-profile",
+    ),
+    (
+        "negotiate-released-artifact-sqlite-restart-replay",
+        "worldstream-negotiate-bundle",
+        "negotiate-bundle",
+    ),
+    (
+        "negotiate-released-artifact-postgresql-restart-replay",
+        "native-linux-x86_64-archive",
+        "linux-release-profile",
+    ),
+    (
+        "negotiate-released-artifact-postgresql-restart-replay",
+        "worldstream-negotiate-bundle",
+        "negotiate-bundle",
     ),
 )
 
@@ -171,6 +229,21 @@ def oci_layout_verifier():
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         fail(f"cannot load OCI layout verifier: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@cache
+def starter_subject_verifier():
+    """Load the canonical portable Starter subject verifier."""
+
+    path = ROOT / "scripts/starter-release-subjects.py"
+    name = "worldstream_release_assembly_starter_subjects"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        fail(f"cannot load Starter subject verifier: {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
@@ -378,6 +451,16 @@ def release_evidence_ids(manifest: dict[str, Any]) -> tuple[str, ...]:
             fail(f"release-gated evidence row {index} has no id")
         if evidence_id in ids:
             fail(f"duplicate release-gated evidence id: {evidence_id}")
+        if (
+            row.get("status") != "detached"
+            or row.get("artifact_digest") != ""
+            or row.get("artifact_digest_location") != "release-manifest.json"
+        ):
+            fail(
+                f"release-gated evidence row {evidence_id} must be detached with "
+                "an empty embedded digest and artifact_digest_location="
+                "release-manifest.json"
+            )
         ids.append(evidence_id)
     if len(ids) != REQUIRED_RELEASE_EVIDENCE_COUNT:
         fail(
@@ -418,6 +501,8 @@ def validate_release_contract(manifest: dict[str, Any]) -> tuple[str, tuple[str,
         if artifact_id not in RELEASE_ARTIFACT_IDS or artifact_id in observed:
             fail(f"invalid or duplicate release artifact id: {artifact_id!r}")
         observed.add(artifact_id)
+        if row.get("profile") != RELEASE_ARTIFACT_PROFILES[artifact_id]:
+            fail(f"release artifact profile is invalid: {artifact_id}")
         if artifact_id == "sigstore-bundle":
             if (
                 row.get("status") != "verification_material"
@@ -458,6 +543,18 @@ def payload_names(version: str) -> dict[str, str]:
         "native-linux-x86_64-archive": f"worldstream-{version}-linux-x86_64.tar.gz",
         "native-windows-x64-archive": f"worldstream-{version}-windows-x64.zip",
         "oci-linux-amd64-image": f"worldstream-{version}-oci-linux-amd64.oci.tar",
+        "worldstream-a202-adapter": f"worldstream-{version}-a202-adapter.tar.gz",
+        "worldstream-deterministic-agents": f"worldstream-{version}-deterministic-agents.tar.gz",
+        "worldstream-documentation": f"worldstream-{version}-documentation.tar.gz",
+        "worldstream-examples": f"worldstream-{version}-examples.tar.gz",
+        "worldstream-licenses": f"worldstream-{version}-licenses.tar.gz",
+        "worldstream-negotiate-bundle": f"worldstream-{version}-negotiate.wspack",
+        "worldstream-negotiate-evidence-verifier": f"worldstream-{version}-negotiate-evidence-verifier.tar.gz",
+        "worldstream-pack-toolchain": f"worldstream-{version}-pack-toolchain.tar.gz",
+        "worldstream-participant-console": f"worldstream-{version}-participant-console.tar.gz",
+        "worldstream-release-metadata": f"worldstream-{version}-release-metadata.tar.gz",
+        "worldstream-studio": f"worldstream-{version}-studio.tar.gz",
+        "worldstream-typescript-pack-sdk": f"worldstream-{version}-typescript-pack-sdk.tar.gz",
     }
 
 
@@ -700,6 +797,7 @@ def validate_release_payloads(
     payload_paths: dict[str, Path],
     report_paths: dict[str, Path],
     expected_manifest_sha256: str,
+    manifest: dict[str, Any] | None = None,
 ) -> None:
     """Deep-verify every payload and bind platform claims to its exact bytes."""
 
@@ -725,8 +823,12 @@ def validate_release_payloads(
         for report in binding_reports.values()
         if isinstance(report.get("contract"), dict)
     }
+    expected_binding_report_ids = {
+        evidence_id
+        for evidence_id, _artifact_id, _binding_id in PAYLOAD_EVIDENCE_BINDINGS
+    }
     if (
-        len(binding_reports) != len(PAYLOAD_EVIDENCE_BINDINGS)
+        set(binding_reports) != expected_binding_report_ids
         or len(require_contracts) != 1
     ):
         fail("platform payload reports do not share one exact release contract")
@@ -734,11 +836,7 @@ def validate_release_payloads(
 
     native = package_verifier()
     embedded_manifests: set[bytes] = set()
-    for artifact_id in (
-        "source-archive",
-        "native-linux-x86_64-archive",
-        "native-windows-x64-archive",
-    ):
+    for artifact_id in RUNTIME_PAYLOAD_ARTIFACT_IDS[:3]:
         try:
             payload = regular_file(payload_paths[artifact_id], artifact_id)
             native.verify_archive(payload)
@@ -778,6 +876,52 @@ def validate_release_payloads(
         )
     except oci.VerificationError as error:
         fail(f"release payload oci-linux-amd64-image failed deep verification: {error}")
+
+    if manifest is None:
+        embedded_manifest = strict_json_bytes(
+            embedded_manifest_bytes, "embedded compatibility manifest"
+        )
+        if not isinstance(embedded_manifest, dict):
+            fail("embedded compatibility manifest is not an object")
+        manifest = embedded_manifest
+    starter = starter_subject_verifier()
+    official_rows = [
+        row
+        for row in manifest.get("activity_pack_bundles", [])
+        if isinstance(row, dict)
+        and row.get("pack_id") == "worldstream.negotiate"
+        and row.get("required_for_release") is True
+        and row.get("status") == "resolved"
+    ]
+    if len(official_rows) != 1:
+        fail("release compatibility contract has no unique official Negotiate bundle")
+    for artifact_id in STARTER_SUBJECT_ARTIFACT_IDS:
+        path = regular_file(payload_paths[artifact_id], artifact_id)
+        try:
+            content = starter.read_stable(path, artifact_id)
+            if artifact_id == "worldstream-negotiate-bundle":
+                identity = starter.negotiate_pack_identity(
+                    content, "official Negotiate release subject"
+                )
+                row = official_rows[0]
+                if (
+                    identity.get("pack_id") != row.get("pack_id")
+                    or identity.get("explanatory_version")
+                    != row.get("explanatory_version")
+                    or identity.get("revision_digest") != row.get("revision_digest")
+                    or identity.get("bundle_digest") != row.get("bundle_digest")
+                ):
+                    fail(
+                        "official Negotiate release subject differs from the exact compatibility identity"
+                    )
+            else:
+                starter.verify_wrapped(
+                    content,
+                    artifact_id,
+                    str(manifest.get("release_candidate", "")),
+                )
+        except starter.SubjectError as error:
+            fail(f"release payload {artifact_id} failed deep verification: {error}")
 
     for evidence_id, artifact_id, binding_id in PAYLOAD_EVIDENCE_BINDINGS:
         report_path = report_paths.get(evidence_id)

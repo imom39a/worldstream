@@ -1,2 +1,14 @@
-# RFC 6455 sample WebSocket nonce from pre-existing test history; not a secret.
+# Exact fingerprints for eleven historical public test fixtures. These findings
+# predate this file; new findings, including the same value at a new location
+# or commit, remain release-blocking.
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/lib.rs:generic-api-key:8169
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/postgres_backend.rs:generic-api-key:3404
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/postgres_backend.rs:generic-api-key:3421
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/postgres_backend.rs:generic-api-key:3424
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/sqlite_backend.rs:generic-api-key:3614
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/sqlite_backend.rs:generic-api-key:3640
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/sqlite_backend.rs:generic-api-key:3641
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/sqlite_backend.rs:generic-api-key:3644
+a8bbb3e58f9e9125d3f985cf523e526d9e22fbfc:crates/worldstream-server/src/sqlite_backend.rs:generic-api-key:3899
+647452eb6a277365ab0a92903a3368f0907b6769:crates/worldstream-server/src/postgres_backend.rs:generic-api-key:3287
 16923b3068df1db111e16df9eeeb86eeb52cde28:crates/worldstream-server/src/lib.rs:generic-api-key:7131

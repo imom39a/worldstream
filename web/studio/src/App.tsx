@@ -4,6 +4,7 @@ import type {
 } from "./daemonLifecycle";
 import type { DaemonStatus } from "./daemonStatus";
 import { ActivityPackCatalogView } from "./ActivityPackCatalog";
+import { PackOperatorWorkflow } from "./PackOperatorWorkflow";
 import type {
   ActivityPackCatalog,
   ActivityPackDetailResponse,
@@ -349,6 +350,8 @@ export function App({
           onSelect={onSelectActivityPack}
           onClearSelection={onClearActivityPackSelection}
         />
+
+        <PackOperatorWorkflow />
 
         <BackupOperations
           profile={backupProfile}

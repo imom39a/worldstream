@@ -16,6 +16,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
+worldstream-pack-bundle = { path = "../worldstream-pack-bundle", version = "=0.1.0" }
 worldstream-sqlite-open.workspace = true
 
 [target.'cfg(unix)'.dependencies]

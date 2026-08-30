@@ -14,6 +14,7 @@ use thiserror::Error;
 use worldstream_backup::native_sqlite::{
     NativeSqliteOperationalRowsV1, NativeSqliteRowV1, NativeSqliteValueV1,
 };
+use worldstream_pack_bundle::RetainedPackBundleArtifactV1;
 
 use crate::{
     BackendFingerprintV1, CanonicalRecordKindV1, DeploymentIdentityV1, DigestV1,
@@ -70,6 +71,8 @@ pub struct NativeSqliteTransferSpecV1 {
     /// Exact resource payloads corresponding one-for-one with `resources`.
     /// An empty vector is authoritative only when `resources` is empty.
     pub resource_payloads: Vec<ResourcePayloadV1>,
+    /// Exact original portable Pack archives required by retained Rooms.
+    pub portable_pack_bundles: Vec<RetainedPackBundleArtifactV1>,
     /// Session state policy carried by the transfer contract.
     pub session_state: SessionStatePolicyV1,
     /// Complete source-authenticated pack/resource identity set. Its
@@ -100,6 +103,7 @@ impl NativeSqliteTransferSpecV1 {
             pack: pack.clone(),
             resources: resources.clone(),
             resource_payloads: Vec::new(),
+            portable_pack_bundles: Vec::new(),
             session_state,
             deployment_identity: DeploymentIdentityV1::new(vec![pack], resources).ok(),
         }
@@ -132,6 +136,7 @@ impl NativeSqliteTransferSpecV1 {
             pack,
             resources: deployment_identity.resources().to_vec(),
             resource_payloads: Vec::new(),
+            portable_pack_bundles: Vec::new(),
             session_state,
             deployment_identity: Some(deployment_identity),
         }
@@ -161,6 +166,18 @@ impl NativeSqliteTransferSpecV1 {
         );
         spec.resource_payloads = resource_payloads;
         spec
+    }
+
+    /// Adds the exact verified portable Pack archive set to the transfer
+    /// specification. Complete canonicalization and verification happens when
+    /// the transfer bundle is assembled.
+    #[must_use]
+    pub fn with_portable_pack_bundles(
+        mut self,
+        portable_pack_bundles: Vec<RetainedPackBundleArtifactV1>,
+    ) -> Self {
+        self.portable_pack_bundles = portable_pack_bundles;
+        self
     }
 
     /// Returns the complete source identity set that must be carried by a
@@ -577,21 +594,7 @@ impl NativeSqliteTransferAdapterV1 {
                 row.bytes,
             ));
         }
-        records.sort_by(|left, right| (left.0 as u8, &left.1).cmp(&(right.0 as u8, &right.1)));
-        let records = records
-            .into_iter()
-            .enumerate()
-            .map(|(ordinal, (kind, identity, bytes))| {
-                LogicalRecordV1::canonical(
-                    u64::try_from(ordinal).map_err(|_| TransferError::BoundExceeded {
-                        what: "native operational ordinal",
-                    })?,
-                    kind,
-                    identity,
-                    &bytes,
-                )
-            })
-            .collect::<Result<Vec<_>, TransferError>>()?;
+        let records = canonicalize_native_records(records)?;
         TransferBundleV1::new_with_backend_fingerprints(
             spec.bundle_id.clone(),
             spec.lineage_id.clone(),
@@ -602,9 +605,30 @@ impl NativeSqliteTransferAdapterV1 {
             spec.resources.clone(),
             spec.session_state,
             records,
-        )
+        )?
+        .with_portable_pack_bundles(spec.portable_pack_bundles.clone())
         .map_err(Into::into)
     }
+}
+
+fn canonicalize_native_records(
+    mut records: Vec<(CanonicalRecordKindV1, String, Vec<u8>)>,
+) -> Result<Vec<LogicalRecordV1>, TransferError> {
+    records.sort_by(|left, right| (left.0 as u8, &left.1).cmp(&(right.0 as u8, &right.1)));
+    records
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, (kind, identity, bytes))| {
+            LogicalRecordV1::canonical(
+                u64::try_from(ordinal).map_err(|_| TransferError::BoundExceeded {
+                    what: "native operational ordinal",
+                })?,
+                kind,
+                identity,
+                &bytes,
+            )
+        })
+        .collect()
 }
 
 fn external_input_preparation_rows(
@@ -2057,6 +2081,7 @@ mod tests {
     use super::*;
     use crate::BundleProfileV1;
     use worldstream_backup::native_sqlite::NativeSqliteValueV1 as Value;
+    use worldstream_core::{PackRevisionLockV1, builtin_counter_registry};
 
     fn row(table: &str, values: Vec<Value>) -> NativeSqliteRowV1 {
         NativeSqliteRowV1 {
@@ -2309,6 +2334,15 @@ mod tests {
         rows
     }
 
+    fn fixture_pack_revision_lock() -> PackRevisionLockV1 {
+        builtin_counter_registry()
+            .expect("counter registry")
+            .retained_revision_locks()
+            .next()
+            .expect("counter revision lock")
+            .clone()
+    }
+
     fn fixture_spec() -> NativeSqliteTransferSpecV1 {
         let schema = crate::SchemaMigrationContractV1::new(
             "worldstream-storage-v1",
@@ -2328,19 +2362,31 @@ mod tests {
         let target =
             BackendFingerprintV1::new(BundleProfileV1::PostgresPrimary17, "postgresql-17", schema)
                 .expect("test target");
+        let pack_revision_lock = fixture_pack_revision_lock();
+        let pack_revision_lock_bytes = pack_revision_lock
+            .canonical_bytes()
+            .expect("canonical pack revision lock");
         NativeSqliteTransferSpecV1::new(
             "bundle/native",
             "lineage/native",
             7,
             source,
             target,
-            PackIdentityV1::new("pack", "r1", DigestV1::hash(b"pack")).expect("test pack"),
+            PackIdentityV1::new(
+                pack_revision_lock.pack_id,
+                pack_revision_lock.explanatory_version,
+                DigestV1::hash(&pack_revision_lock_bytes),
+            )
+            .expect("test pack"),
             Vec::new(),
             SessionStatePolicyV1::InvalidateAndRebuild,
         )
     }
 
     fn canonical_records() -> Vec<LogicalRecordV1> {
+        let pack_revision_lock_bytes = fixture_pack_revision_lock()
+            .canonical_bytes()
+            .expect("canonical pack revision lock");
         [
             (
                 CanonicalRecordKindV1::DeploymentLineage,
@@ -2365,7 +2411,12 @@ mod tests {
         .into_iter()
         .enumerate()
         .map(|(ordinal, (kind, identity))| {
-            LogicalRecordV1::canonical(ordinal as u64, kind, identity, identity.as_bytes())
+            let bytes = if identity.ends_with("/pack-revision-lock") {
+                pack_revision_lock_bytes.as_slice()
+            } else {
+                identity.as_bytes()
+            };
+            LogicalRecordV1::canonical(ordinal as u64, kind, identity, bytes)
                 .expect("canonical fixture")
         })
         .collect()

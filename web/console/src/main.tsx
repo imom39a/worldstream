@@ -10,6 +10,11 @@ import { consumeLiveSessionBootstrap } from "./liveSession";
 import { scenarioFromSearch } from "./scenario";
 import { StudioPrototype } from "./StudioPrototype";
 import { HandedOffParticipant } from "./HandedOffParticipant";
+import { NegotiateApp, NegotiateLiveApp } from "./NegotiateApp";
+import {
+  consumeNegotiateConsoleBootstrap,
+  negotiateBootstrapMatchesLiveSession,
+} from "./negotiate";
 import {
   ParticipantHandoffClient,
   resumeRetainedParticipantConsole,
@@ -48,9 +53,39 @@ if (isStudioPrototype) {
       createRoot(root).render(<StrictMode><HandedOffParticipant startup={resolvedStartup} client={client} /></StrictMode>);
       return;
     }
-    const scenario = scenarioFromSearch(window.location.search);
     const liveBootstrap = window as Window & { __WORLDSTREAM_LIVE_SESSION__?: unknown };
     const consumedLiveSession = consumeLiveSessionBootstrap(liveBootstrap);
+    const negotiateBootstrap = consumeNegotiateConsoleBootstrap(
+      window as Window & { __WORLDSTREAM_NEGOTIATE_CONSOLE__?: unknown },
+    );
+    if (negotiateBootstrap !== null) {
+      const mismatchedLiveSession = consumedLiveSession.config !== null
+        && !negotiateBootstrapMatchesLiveSession(
+          negotiateBootstrap,
+          consumedLiveSession.config,
+        );
+      createRoot(root).render(
+        <StrictMode>
+          {mismatchedLiveSession ? (
+            <NegotiateApp
+              session={{ ...negotiateBootstrap, connection: "disconnected", action_offers: [] }}
+              error="The Negotiate view and live Membership authority do not identify the same Room Session."
+            />
+          ) : consumedLiveSession.config === null ? (
+            <NegotiateApp session={negotiateBootstrap} />
+          ) : (
+            <NegotiateLiveApp
+              initial={negotiateBootstrap}
+              config={consumedLiveSession.config}
+              transport={consumedLiveSession.transport}
+              replayClient={consumedLiveSession.replayClient}
+            />
+          )}
+        </StrictMode>,
+      );
+      return;
+    }
+    const scenario = scenarioFromSearch(window.location.search);
 
     createRoot(root).render(
       <StrictMode>

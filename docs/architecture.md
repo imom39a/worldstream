@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document implements the [Frozen Requirements](requirements.md). It is normative for v0.1 and v0.2 where it defines an invariant or a frozen technology decision.
+This document implements the [Runtime-plus-Packs Requirements](requirements.md). It is normative where it defines a Room Kernel invariant, portable Pack boundary, or frozen technology decision.
 
 The intended system is exactly one self-hosted Rust process with strong internal module boundaries and one startup-selected durable storage profile. The default bundled SQLite files are local; the optional hosted or self-managed PostgreSQL 17 primary may be remote without imposing a same-host process limit. Those boundaries do not authorize multiple WorldStream processes or microservices.
 
@@ -16,7 +16,7 @@ flowchart LR
     AR["External agent runner"] --> GW
     GW --> RS["Room supervisor"]
     RS --> RA["Single-writer room actor"]
-    RA --> AP["Trusted Activity Pack"]
+    RA --> AP["Approved exact Activity Pack revision"]
     RA --> ST["Storage service"]
     ST --> DB["Bundled SQLite or PostgreSQL 17 primary"]
     RA --> DL["Committed frame delivery"]
@@ -45,7 +45,7 @@ The important boundary is not WebSocket versus HTTP. It is:
 7. An external runner can receive an at-least-once activation without WorldStream hosting a model.
 8. Recovery and Replay reproduce Core, Activity, aggregate Authoritative State, and lineage hashes.
 9. One ordinary developer machine can run the complete system.
-10. The second activity can be added without Room Kernel special cases.
+10. An outside author can add a portable Activity Pack without Rust or Room Kernel changes.
 
 ## Frozen technology stack
 
@@ -66,12 +66,18 @@ Library versions are pinned in Cargo.lock and the frontend/Python lockfiles when
 | Errors | thiserror in libraries; anyhow only at binary boundary | Typed protocol/storage errors without application boilerplate |
 | Telemetry | Structured JSON logs, Prometheus text metrics, W3C trace correlation, optional OpenTelemetry/OTLP export seam | Vendor-neutral diagnostics outside correctness paths |
 | Python SDK | Python 3.11–3.14, websockets, Pydantic | Fastest path for external agent runners and typed examples |
+| Portable Pack host | Wasmtime 48.0.1+ Component support, synchronous, zero-import profile | Language-neutral five-operation execution with deterministic capability denial |
+| Pack Author SDK | TypeScript on the pinned Node line through WorldStream-owned Jco/ComponentizeJS wrappers | One supported code-first author path without exposing raw toolchain defaults |
 | Web UI | React, TypeScript, Vite, native browser WebSocket | Small first-party reference UI; no realtime framework dependency |
 | Packaging | Native Linux x86-64, native Windows x64, Linux/amd64 OCI, macOS source quickstart | Explicitly tested release and development profiles |
 
 The authored v0.1.0 compatibility specification pins Rust 1.97.1 edition 2024, Node 24.18.1 LTS for builds only, Python SDK 3.11–3.14, and Python 3.14.7 for the quickstart. It selects SQLite 3.53.4, recognizes 3.51.3 as the frozen corrective floor, and denies 3.52.0; WorldStream never loads host SQLite. It accepts PostgreSQL major 17 from 17.11 and defines newer-17.x versus other-major policy. It is not a release-valid manifest until exact bundled-build identity, verified PostgreSQL patches, and every required evidence field are populated.
 
-Not selected for v0.1 or v0.2: an ORM, Redis, NATS, Kafka, Temporal, Wasmtime, Kubernetes, a provider database API as a correctness dependency, an embedded model SDK, or a frontend realtime platform. Every selected adapter MUST preserve this document's backend-neutral Room Commit semantics.
+Not selected for the first public release: an ORM, Redis, NATS, Kafka,
+Temporal, Kubernetes, a provider database API as a correctness dependency, an
+embedded model SDK, a frontend realtime platform, WASI capabilities, or generic
+Pack host imports. Every selected adapter MUST preserve this document's
+backend-neutral Room Commit semantics.
 
 Primary implementation references:
 
@@ -101,11 +107,12 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   │   └── PostgreSQL 17 migrations, storage port and verification operations
     │   └── worldstream-server/
     │       └── gateway, auth, supervisor, scheduler, binaries
-    ├── activities/
-    │   ├── agent-heist/
-    │   └── investigation-room/       added after Heist v0.1
+    ├── packs/
+    │   ├── negotiate/                public TypeScript Component source
+    │   └── agent-heist/              demo/conformance Pack
     ├── sdk/
-    │   └── python/
+    │   ├── python/                   application/runner SDK
+    │   └── typescript-pack/          Pack Author SDK and CLI
     ├── web/
     │   └── console/
     ├── examples/
@@ -126,7 +133,12 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   └── systemd/
     └── docs/
 
-The storage interface belongs in worldstream-core; bundled SQLite and `postgres-primary` are its only frozen implementations. Each implements the same logical Room Commit and resolution port, and providers do not alter semantics. There are no provider, broker, crypto, workflow, plugin, or generic connector crates.
+The storage interface belongs in `worldstream-core`; bundled SQLite and
+`postgres-primary` are its only frozen implementations. A deep portable-Pack
+module owns bundle verification/CAS lifecycle and a Wasmtime adapter implements
+the existing `ActivityPackV1`; neither storage backend owns a second registry
+or semantic execution path. There are no provider, broker, crypto, workflow,
+marketplace, or generic connector crates.
 
 ## Runtime components
 
@@ -208,11 +220,11 @@ Each Membership component is typed Join, Resume, AccessModeChange, RoleChange, S
 
 ### Activity host
 
-The Activity host invokes one exact trusted compiled-in revision through the frozen five-operation seam:
+The Activity host invokes one exact retained revision through the frozen five-operation seam:
 
 ~~~rust
 pub trait ActivityPackV1: Send + Sync + 'static {
-    fn descriptor(&self) -> &'static PackRevisionDescriptorV1;
+    fn descriptor(&self) -> &PackRevisionDescriptorV1;
     fn initialize(
         &self,
         input: &GenesisInputV1,
@@ -245,9 +257,21 @@ view returns one authorized Activity Projection and ordered canonical Action Off
 
 WorldStream wraps the pack projection and exact Action Offers with authorized Core facts using that single Projection shape. Operator Membership never receives raw Activity State. Callback panic where catchable, malformed output, bound violation, mandatory-Core veto, privacy/view failure, or deterministic disagreement fails closed before commit.
 
-PackRegistryV1 maps each PackRevisionLockV1 semantic digest to the exact executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status. Selectable implies runnable; every retained digest remains runnable even when non-selectable. A Room never changes digest or rewrites Activity State in place. Missing retained executor/codec is an explicit compatibility failure.
+`PackRegistryV1` maps each `PackRevisionLockV1` semantic digest to the exact
+executor, descriptor/schemas, codecs, golden digest, and selectable/runnable
+status. It is assembled once at startup from embedded revisions plus approved
+local bundles and the same immutable value is injected into both storage
+backends. Selectable implies runnable; every retained digest remains runnable
+even when non-selectable. A Room never changes digest or rewrites Activity
+State in place. Missing retained executor/codec is an explicit compatibility
+failure.
 
-Same-process Rust is trusted, not sandboxed. Dynamic/public pack loading and a portable plugin ABI remain unsupported. See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
+Embedded Rust revisions are trusted internal bridges/oracles. Public portable
+revisions implement the same five operations as WASI-free Components under
+`worldstream/component-deterministic/v1`: exactly five exports, zero imports,
+fresh Store/instance per callback, original bytes as authority, and fixed
+revision-bound limits. Offline installation takes effect on restart; hot
+loading and network download are unsupported. See [ADR 0014](adr/0014-installable-wasi-free-activity-pack-bundles.md).
 
 ### Storage service
 
@@ -1186,7 +1210,15 @@ One configured data directory contains WorldStream-owned runtime data. Under the
     │   ├── worldstream.sqlite3
     │   ├── worldstream.sqlite3-wal
     │   └── worldstream.sqlite3-shm
-    ├── artifacts/                    v0.2
+    ├── activity-packs/
+    │   ├── objects/
+    │   │   └── blake3/
+    │   │       └── <bundle-digest>/
+    │   │           └── bundle.wspack
+    │   ├── approvals/
+    │   ├── inventory/
+    │   └── tombstones/
+    ├── artifacts/                    deferred application artifacts
     │   └── blake3/
     │       └── aa/
     │           └── bb/
@@ -1260,9 +1292,11 @@ Transfer and recovery race resolutions are frozen independently of adapter imple
 | PostgreSQL disappears or a provider promotes/replaces a primary | Readiness and mutation fail closed until the configured supported primary and full contract are verified; WorldStream performs no automatic fallback/failover. |
 | Restore/transfer finds a new mismatch | The whole target stays non-serving. An exactly preserved pre-existing faulted/quarantined Room is the only per-Room isolation exception. |
 
-## v0.2 artifact store
+## Deferred application artifact store
 
-Investigation Room needs immutable source evidence, not a generic knowledge base.
+This design is retained for a future activity that needs immutable source
+evidence. It is not a committed first-release Investigation subsystem and is
+separate from the required Activity Pack Bundle CAS above.
 
 Upload flow:
 
@@ -1289,13 +1323,16 @@ Trusted:
 
 - the host operator;
 - the WorldStream binary;
-- compiled-in Activity Packs.
+- embedded first-party Activity Packs;
+- exact Host Operator approval records.
 
 Untrusted:
 
 - network clients;
 - human and agent actions;
 - runner claims and outputs;
+- portable Activity Pack code before and after approval (approval authorizes
+  installation; it does not make code intrinsically trustworthy);
 - evidence text and metadata;
 - all text rendered by the UI.
 
@@ -1465,7 +1502,18 @@ Each native archive contains `worldstreamd`, `worldstreamctl`, embedded UI, exam
 | Minimal CI | Target 15 minutes, hard 25 minutes; parallel Linux plus focused native Windows build/package/ACL/filesystem/SQLite/PostgreSQL-connect/recovery |
 | Release | Target 3 hours, hard 4 hours; every artifact/platform, signature/SBOM/provenance, full backend conformance, all prior migrations, transfer, isolated restore, verifier, failure/fuzz/benchmark suites, and one-hour SQLite soak |
 
-The deterministic quickstart release target uses SQLite by default and requires no cloud account, paid model, or remote service; PostgreSQL is opt-in. Release evidence MUST demonstrate deterministic Heist in under five minutes on the documented Ubuntu reference of 4 vCPU, 8 GiB, and local SSD, and a fresh checkout in under ten minutes. The required PostgreSQL evidence harness MUST use the official PostgreSQL 17.11 image pinned by an exact digest in the release evidence, a unique project and disposable volume, loopback random port, SCRAM, non-superuser runtime role, separate direct-admin and transaction-pooler runtime DSNs, PgBouncer transaction pooling, and scoped teardown. These are configuration and evidence obligations, not claims satisfied by the current unwired, Counter-only SQLite Room/authority conformance adapter. Provider verification, when supplied, is optional, dated, and limited to a migration plus backup/isolated-restore/full-Replay drill for the exact combination; it asserts no HA, SLA, durability, plan, region, or provider service.
+The deterministic quickstart release target uses SQLite by default and requires
+no cloud account, paid model, or remote service; PostgreSQL is opt-in. Release
+evidence MUST demonstrate the official portable Pack install/Room/Replay story
+and a fresh checkout in under ten minutes. Agent Heist may remain the offline
+visual demo workload, but it is not the public Pack-adoption gate. The required
+PostgreSQL evidence harness uses the official PostgreSQL 17.11 image pinned by
+exact digest, a unique project/disposable volume, loopback random port, SCRAM,
+least-privilege runtime role, direct-admin and transaction-pooler DSNs,
+PgBouncer transaction pooling, and scoped teardown. Provider verification is
+optional, dated, and limited to migration plus backup/isolated-restore/full
+Replay for the exact combination; it asserts no HA, SLA, durability, plan,
+region, or provider service.
 
 ## Reference performance envelope
 
@@ -1477,7 +1525,7 @@ Reference profile:
 - 4 vCPU and 8 GiB RAM;
 - local SSD or NVMe;
 - the exact bundled SQLite profile; PostgreSQL is measured and published separately;
-- small Heist/Investigation states and ten or fewer live participants per benchmark room.
+- small Negotiate/Heist states and ten or fewer live participants per benchmark Room.
 
 Targets, not claims:
 
@@ -1537,8 +1585,8 @@ PostgreSQL support changes the storage location and concurrency implementation, 
 27. A committed artifact reference points only to bytes made durable before the linking transaction.
 28. Passivation is generation-fenced; no command is routed to an actor that may disappear.
 29. Slow clients and full queues cannot create unbounded memory growth.
-30. Investigation-specific semantics stay outside the Room Kernel; only the preplanned generic artifact subsystem is added.
-31. v0.1 and v0.2 run exactly one WorldStream process with exactly one startup-selected supported storage profile.
+30. Negotiate/A202 semantics and every future activity-specific protocol stay outside the Room Kernel.
+31. The first public release runs exactly one WorldStream process with exactly one startup-selected supported storage profile.
 32. Core Room State is exactly Room Status plus the semantic Membership map; Room Integrity State is operational.
 33. The Core reducer alone mutates Core; a pack may veto only individual or homogeneous all-vetoable Join, Resume, Access Mode, and Role proposals.
 34. Multi-Membership administration rejects mixed veto classes before pack entry and otherwise validates and commits or rejects one homogeneous final state without an observable invalid intermediate.
@@ -1551,3 +1599,6 @@ PostgreSQL support changes the storage location and concurrency implementation, 
 41. Both storage profiles preserve identical canonical bytes, Room Commit resolution classes, receipts, timers, Frames/Cursors, Activation fences, recovery, and Replay.
 42. A Storage Epoch identifies the sole authoritative deployment lineage; offline transfer advances it only at explicit verified finalization.
 43. Backend-native restore or SQLite-to-PostgreSQL transfer is never ready before the full WorldStream semantic verifier passes, except that exactly preserved pre-existing unhealthy Rooms remain isolated.
+44. A public portable Pack has exactly five exports and zero imports; its original Component bytes and exact bundle bytes remain available for every retained Room lineage.
+45. Host Operator approval is exact-digest installation authority, not Pack authorship, publisher reputation, or Room Membership.
+46. Backup, restore, transfer, and server upgrade remain incomplete until every referenced Activity Pack Bundle is present, independently verified, and Replay-compatible.

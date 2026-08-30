@@ -1,0 +1,23 @@
+[package]
+name = "worldstream-component-host"
+description = "Deterministic WASI-free WebAssembly Component Activity Pack host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wasmtime.workspace = true
+worldstream-core = { path = "../worldstream-core" }
+worldstream-pack-bundle = { path = "../worldstream-pack-bundle" }
+
+[dev-dependencies]
+wat.workspace = true
+
+[lints]
+workspace = true

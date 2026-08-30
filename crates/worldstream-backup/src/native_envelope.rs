@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use worldstream_core::{CanonicalJsonV1, CompleteHeadV1 as CoreCompleteHead};
+use worldstream_pack_bundle::{RetainedPackBundleArtifactV1, VerifiedPackBundleV1};
 
 use crate::native_sqlite::{
     NativeSqliteCanonicalRecordV1, NativeSqliteOperationalRowsV1, NativeSqliteRestoreEvidenceV1,
@@ -55,7 +56,7 @@ const REQUIRED_COVERAGE_TABLES: [&str; 19] = [
 ];
 
 const TRUSTED_COMPATIBILITY_JSON_DIGEST: &str =
-    "ad697c08416368f92bbdd593564bd90bfc9cad112ba7fde6d8e01a5529cf6fb0";
+    "976b0f0c7271395e9593d176c7c5432f730b65d8a08a5b8e5862f46621fc2c0e";
 
 type RequestKey = (NativeSqliteRequestLedgerV1, Vec<u8>);
 type RequestMap = BTreeMap<RequestKey, Vec<u8>>;
@@ -166,6 +167,10 @@ pub struct NativeSqliteBackupEnvelopeV1 {
     pub manifest: crate::BackupManifestV1,
     /// Exact expected resource bytes.
     pub resources: Vec<ResourceBlobV1>,
+    /// Exact original portable Pack archives required by retained Rooms.
+    /// Approval and selectability are deliberately absent.
+    #[serde(default)]
+    pub pack_bundles: Vec<RetainedPackBundleArtifactV1>,
     /// Request bytes absent from native `SQLite` ledgers.
     pub request_witnesses: Vec<NativeSqliteRequestWitnessV1>,
     /// Authoritative-state bytes absent from native `SQLite` materializations.
@@ -220,6 +225,10 @@ pub enum NativeSqliteEnvelopeError {
     /// authority and therefore cannot become restore evidence by resealing.
     #[error("native SQLite companion facts are not trusted by the compatibility authority")]
     UntrustedCompanion,
+    /// A carried portable Pack archive is malformed, substituted, duplicated,
+    /// unreferenced, or absent for a retained portable revision.
+    #[error("native SQLite companion portable Pack Bundle set is invalid")]
+    InvalidPackBundles,
 }
 
 impl NativeSqliteBackupEnvelopeV1 {
@@ -263,6 +272,7 @@ impl NativeSqliteBackupEnvelopeV1 {
             return Err(NativeSqliteEnvelopeError::EnvelopeDigestMismatch);
         }
         validate_resources(&self.resources, &self.manifest.expected_resources, limits)?;
+        validate_pack_bundles(&self.pack_bundles, &self.manifest, limits)?;
         validate_requests(&self.request_witnesses, limits)?;
         validate_authoritative(&self.authoritative_materializations, limits)?;
         validate_timer_relations(&self.timer_relations, limits)?;
@@ -454,7 +464,7 @@ impl NativeSqliteBackupEnvelopeV1 {
         {
             return Err(NativeSqliteEnvelopeError::CaptureWitnessMismatch);
         }
-        validate_trusted_manifest(&self.manifest, &self.resources)?;
+        validate_trusted_manifest(&self.manifest, &self.resources, &self.pack_bundles)?;
         Ok(())
     }
 }
@@ -462,6 +472,7 @@ impl NativeSqliteBackupEnvelopeV1 {
 fn validate_trusted_manifest(
     manifest: &crate::BackupManifestV1,
     resources: &[ResourceBlobV1],
+    pack_bundles: &[RetainedPackBundleArtifactV1],
 ) -> Result<(), NativeSqliteEnvelopeError> {
     let compatibility = include_bytes!("../../../compatibility.json");
     if DigestV1::hash(compatibility).as_str() != TRUSTED_COMPATIBILITY_JSON_DIGEST {
@@ -469,6 +480,20 @@ fn validate_trusted_manifest(
     }
     let root: serde_json::Value = serde_json::from_slice(compatibility)
         .map_err(|_| NativeSqliteEnvelopeError::UntrustedCompanion)?;
+    validate_trusted_product_and_storage(&root, manifest)?;
+    let pack_executors = root
+        .get("pack_executors")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(NativeSqliteEnvelopeError::UntrustedCompanion)?;
+    validate_expected_pack_trust(manifest, pack_bundles, pack_executors)?;
+    validate_portable_pack_inventory(manifest, pack_bundles)?;
+    validate_expected_resource_trust(manifest, resources, pack_executors)
+}
+
+fn validate_trusted_product_and_storage(
+    root: &serde_json::Value,
+    manifest: &crate::BackupManifestV1,
+) -> Result<(), NativeSqliteEnvelopeError> {
     if root
         .get("contracts")
         .and_then(|contracts| contracts.get("product"))
@@ -497,15 +522,19 @@ fn validate_trusted_manifest(
     {
         return Err(NativeSqliteEnvelopeError::UntrustedCompanion);
     }
-    let pack_executors = root
-        .get("pack_executors")
-        .and_then(serde_json::Value::as_array)
-        .ok_or(NativeSqliteEnvelopeError::UntrustedCompanion)?;
+    Ok(())
+}
+
+fn validate_expected_pack_trust(
+    manifest: &crate::BackupManifestV1,
+    pack_bundles: &[RetainedPackBundleArtifactV1],
+    pack_executors: &[serde_json::Value],
+) -> Result<(), NativeSqliteEnvelopeError> {
     if manifest.expected_packs.is_empty() {
         return Err(NativeSqliteEnvelopeError::UntrustedCompanion);
     }
     for pack in &manifest.expected_packs {
-        let expected = pack_executors.iter().find(|candidate| {
+        let embedded = pack_executors.iter().any(|candidate| {
             candidate.get("pack_id").and_then(serde_json::Value::as_str)
                 == Some(pack.pack_id.as_str())
                 && digest_field(candidate, "revision_digest", &pack.revision_digest)
@@ -522,7 +551,12 @@ fn validate_trusted_manifest(
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
         });
-        if expected.is_none() || pack.resource_ids.is_empty() {
+        let portable = pack_bundles.iter().any(|artifact| {
+            artifact
+                .verify()
+                .is_ok_and(|verified| portable_pack_matches(pack, &verified))
+        });
+        if embedded == portable {
             return Err(NativeSqliteEnvelopeError::UntrustedCompanion);
         }
         for resource_id in &pack.resource_ids {
@@ -535,6 +569,33 @@ fn validate_trusted_manifest(
             }
         }
     }
+    Ok(())
+}
+
+fn validate_portable_pack_inventory(
+    manifest: &crate::BackupManifestV1,
+    pack_bundles: &[RetainedPackBundleArtifactV1],
+) -> Result<(), NativeSqliteEnvelopeError> {
+    for artifact in pack_bundles {
+        let verified = artifact
+            .verify()
+            .map_err(|_| NativeSqliteEnvelopeError::InvalidPackBundles)?;
+        if !manifest
+            .expected_packs
+            .iter()
+            .any(|pack| portable_pack_matches(pack, &verified))
+        {
+            return Err(NativeSqliteEnvelopeError::InvalidPackBundles);
+        }
+    }
+    Ok(())
+}
+
+fn validate_expected_resource_trust(
+    manifest: &crate::BackupManifestV1,
+    resources: &[ResourceBlobV1],
+    pack_executors: &[serde_json::Value],
+) -> Result<(), NativeSqliteEnvelopeError> {
     for resource in &manifest.expected_resources {
         let trusted = pack_executors.iter().any(|candidate| {
             let field = match resource.kind.as_str() {
@@ -555,6 +616,71 @@ fn validate_trusted_manifest(
         }
     }
     Ok(())
+}
+
+fn validate_pack_bundles(
+    bundles: &[RetainedPackBundleArtifactV1],
+    manifest: &crate::BackupManifestV1,
+    limits: VerifierLimits,
+) -> Result<(), NativeSqliteEnvelopeError> {
+    if bundles.len() > limits.max_packs {
+        return Err(NativeSqliteEnvelopeError::EnvelopeBoundExceeded);
+    }
+    let mut previous = None;
+    let mut physical = BTreeSet::new();
+    let mut semantic = BTreeSet::new();
+    let mut total_bytes = 0_usize;
+    for artifact in bundles {
+        let order = (
+            artifact.revision_digest.to_string(),
+            artifact.bundle_digest.to_string(),
+        );
+        if previous.as_ref().is_some_and(|previous| previous >= &order)
+            || !semantic.insert(order.0.clone())
+            || !physical.insert(order.1.clone())
+        {
+            return Err(NativeSqliteEnvelopeError::InvalidPackBundles);
+        }
+        previous = Some(order);
+        total_bytes = total_bytes
+            .checked_add(artifact.archive_bytes.len())
+            .ok_or(NativeSqliteEnvelopeError::EnvelopeBoundExceeded)?;
+        let verified = artifact
+            .verify()
+            .map_err(|_| NativeSqliteEnvelopeError::InvalidPackBundles)?;
+        if !manifest
+            .expected_packs
+            .iter()
+            .any(|pack| portable_pack_matches(pack, &verified))
+        {
+            return Err(NativeSqliteEnvelopeError::InvalidPackBundles);
+        }
+    }
+    if total_bytes > limits.max_object_bytes.saturating_mul(4) {
+        return Err(NativeSqliteEnvelopeError::EnvelopeBoundExceeded);
+    }
+    Ok(())
+}
+
+fn portable_pack_matches(
+    expected: &crate::PackIdentityV1,
+    verified: &VerifiedPackBundleV1,
+) -> bool {
+    let descriptor = verified.descriptor();
+    let lock = verified.revision_lock();
+    expected.pack_id == descriptor.pack_id
+        && strip_blake3(&verified.revision_digest().to_string())
+            == Some(expected.revision_digest.as_str())
+        && strip_blake3(&verified.component_digest().to_string())
+            == Some(expected.executor_digest.as_str())
+        && strip_blake3(&lock.schema_bundle_digest.to_string())
+            == Some(expected.schema_bundle_digest.as_str())
+        && strip_blake3(&lock.codec_bundle_digest.to_string())
+            == Some(expected.codec_bundle_digest.as_str())
+}
+
+fn strip_blake3(value: &str) -> Option<&str> {
+    value.strip_prefix("blake3:")
 }
 
 fn digest_field(value: &serde_json::Value, field: &str, expected: &DigestV1) -> bool {

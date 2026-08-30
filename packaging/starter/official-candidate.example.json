@@ -1,0 +1,181 @@
+{
+  "activity_packs": [
+    {
+      "bundle_digest": "blake3:9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5",
+      "bundle_subject_id": "worldstream-negotiate",
+      "evidence_subject_id": "worldstream-negotiate-evidence",
+      "explanatory_version": "0.1.0",
+      "official": true,
+      "pack_id": "worldstream.negotiate",
+      "revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
+    }
+  ],
+  "distribution": {
+    "id": "worldstream-starter",
+    "mode": "official",
+    "profile": "native-linux-x86_64",
+    "version": "0.1.0"
+  },
+  "schema": "worldstream/starter-candidate/v1",
+  "subjects": [
+    {
+      "binding": {
+        "id": "worldstream-a202-adapter",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-a202-adapter",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "a202-adapter"
+    },
+    {
+      "binding": {
+        "id": "worldstream-documentation",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-documentation",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "documentation"
+    },
+    {
+      "binding": {
+        "id": "worldstream-examples",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-examples",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "examples"
+    },
+    {
+      "binding": {
+        "id": "worldstream-deterministic-agents",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-deterministic-agents",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "deterministic-agents"
+    },
+    {
+      "binding": {
+        "id": "worldstream-licenses",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-licenses",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "licenses"
+    },
+    {
+      "binding": {
+        "id": "worldstream-negotiate-bundle",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-negotiate",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/vnd.worldstream.wspack",
+      "role": "negotiate-bundle"
+    },
+    {
+      "binding": {
+        "id": "worldstream-negotiate-evidence",
+        "inventory": "evidence",
+        "kind": "release"
+      },
+      "id": "worldstream-negotiate-evidence",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/json",
+      "role": "negotiate-evidence"
+    },
+    {
+      "binding": {
+        "id": "worldstream-negotiate-evidence-verifier",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-negotiate-evidence-verifier",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "negotiate-evidence-verifier"
+    },
+    {
+      "binding": {
+        "id": "worldstream-pack-toolchain",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-pack-toolchain",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "pack-toolchain"
+    },
+    {
+      "binding": {
+        "id": "worldstream-participant-console",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-participant-console",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "participant-console"
+    },
+    {
+      "binding": {
+        "id": "worldstream-release-metadata",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-release-metadata",
+      "license_expression": "CC0-1.0 AND Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "release-metadata"
+    },
+    {
+      "binding": {
+        "id": "native-linux-x86_64-archive",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-runtime-linux-x86-64",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "runtime-distribution"
+    },
+    {
+      "binding": {
+        "id": "worldstream-studio",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-studio",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "studio"
+    },
+    {
+      "binding": {
+        "id": "worldstream-typescript-pack-sdk",
+        "inventory": "artifact",
+        "kind": "release"
+      },
+      "id": "worldstream-typescript-pack-sdk",
+      "license_expression": "Apache-2.0",
+      "media_type": "application/gzip",
+      "role": "typescript-pack-sdk"
+    }
+  ],
+  "trust": {
+    "compatibility_manifest": "../../compatibility.json",
+    "release_manifest": "../../dist/release/release-manifest.json",
+    "sigstore_bundle": "../../dist/release/sigstore.bundle.json"
+  }
+}

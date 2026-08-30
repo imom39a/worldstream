@@ -1,627 +1,242 @@
-# Frozen Delivery Roadmap
-
-## Planning assumptions
-
-- One primary developer working 8–12 focused hours per week.
-- Design began from a documentation-only repository; IMO-39 adds only the pinned bootstrap workspace before the Room and storage implementation frontiers.
-- The project favors correctness evidence and a memorable demo over feature count.
-- Agent Heist v0.1 is the first usable milestone.
-- Investigation Room v0.2 is the only committed application beyond Heist.
-- Total realistic horizon is approximately 20–22 hobby weeks, not a weekend build.
-- Deterministic local runners are mandatory; paid LLM APIs are optional demonstrations.
-- Every newly discovered idea goes to the non-normative backlog unless a frozen acceptance gate cannot pass without it.
-
-The normative scope is [Frozen Requirements](requirements.md); implementation ownership and evidence obligations are indexed in the [Canonical Decision Index](decision-index.md).
-
-## Release story
-
-### v0.1: Agent Heist
-
-Three independently run Agent Participants enter one authoritative Room with different private clues. They exchange structured information, propose a plan, and submit sealed decisions within one shared window. One Invocation ends before a critical phase. A later Transition creates an Activation Intent; an authorized Runner starts a fresh Invocation, catches up from the Membership Cursor, and acts with separate participant authority. The server is forcibly terminated after another Action commits, restarts without losing acknowledged state, and replays the same final Outcome.
-
-### v0.2: Investigation Room
-
-The unchanged Room Kernel, plus the preplanned generic v0.2 artifact subsystem, runs a serious evidence investigation with a human Lead and three external agents. Immutable evidence arrives in recorded waves. Participants publish source-linked facts, claims, and challenges. A timestamp correction supersedes earlier evidence, deterministically marks dependent claims stale, and activates affected agents. The human submits a structured brief that a deterministic rubric scores. Restart and replay reconstruct the same board, brief, and result.
-
-If these two stories work without hiding domain special cases in core, the project has earned a broader Activity Pack conversation.
-
-## Frozen release scope
-
-### v0.1 required
-
-- Rust/Tokio/Axum server.
-- Frozen trusted five-operation ActivityPackV1 seam plus embedded exact-revision registry.
-- One Activity Pack: Agent Heist.
-- One logical writer actor per active room.
-- Backend-neutral durable-storage port with the default release-bundled SQLite profile and optional hosted/self-managed PostgreSQL 17 primary, one process, and forward-only logical migrations.
-- Atomic transition/action-receipt/timer/frame/activation commit.
-- JSON HTTP/WebSocket protocol.
-- Human and agent principals/memberships.
-- Versioned Core reducer with immutable identity, full Membership lifecycle, atomic multi-Membership administration, and irreversible archive.
-- Separate Core, Activity, and aggregate Authoritative State hashes under one Genesis/Transition lineage hash.
-- Paired disposable Core-and-Activity postcommit snapshots plus verified current materializations.
-- Generation-fenced Room Integrity State and verifier-only repair without history rewrite.
-- Typed action validation and idempotency.
-- Public and participant-specific projections.
-- Durable observation frames, cursors, reconnect, and explicit projection reset.
-- Durable timers.
-- Durable activation intents with control WebSocket or HTTP long poll and claim leases.
-- External ephemeral agent runners.
-- Deterministic recovery and read-only replay.
-- Async Python SDK.
-- Three deterministic Heist runners.
-- Small first-party Heist public/operator-membership UI.
-- Native Linux x86-64 and Windows x64 archives, Linux/amd64 OCI image, macOS source quickstart, compatibility/supply-chain evidence, failure tests, and reproducible per-backend benchmark report.
-
-### v0.2 required
-
-- One additional Activity Pack: Investigation Room.
-- One acting human Lead client path.
-- Generic local content-addressed artifact storage.
-- Exact evidence versions, source references, and visibility.
-- Deterministic evidence correction and dependency invalidation.
-- Investigation projections and first-party UI.
-- Deterministic structured brief rubric.
-- Generality/conformance report proving no domain-specific Room Kernel behavior.
-
-### Frozen out through v0.2
-
-- timeline branching or merge;
-- Project/Workspace entities and cross-room exchange;
-- workflow/node canvas and connector catalog;
-- coding harness, shell/container execution, or model hosting;
-- public/dynamic plugin upload or registry service, WASM, or portable plugin ABI;
-- dynamic or LLM-generated UI;
-- A2A/MCP platform integrations;
-- vector search and automatic summaries;
-- marketplace, payments, crypto, wallets, or token;
-- NATS, Redis, Kafka, clustering, multiple live WorldStream processes, federation, or multi-region writes;
-- live storage switching, dual writes, reverse or room-at-a-time transfer, automatic failover, provider HA/services as a correctness dependency, or cloud resources;
-- ARM64 release artifacts, macOS binaries, Windows containers, MSI/MSIX, Windows Service integration, package repositories, or Kubernetes/Helm;
-- production SaaS tenancy and billing.
-
-## Phase A: Agent Heist v0.1
-
-### Milestone A0 — Repository and contracts
-
-Target: week 1, 8–12 hours
-
-Build:
-
-- create Cargo workspace and four initial crates;
-- pin Rust toolchain and dependencies;
-- add format, Clippy, unit-test, dependency-audit, and secret-scan CI;
-- define one checksummed forward-only logical migration history with SQLite and PostgreSQL 17 execution harnesses;
-- maintain reviewed `compatibility.toml` and semantically identical canonical `compatibility.json`; populate exact migration and codec/executor identities, declare the closed detached artifact/evidence inventory, and set `release_ready = true` only when the embedded contract is complete; verify exact final subject digests through the signed detached release manifest and provenance;
-- define canonical JSON, ID, room sequence, frame cursor, hash, error, and message envelope types;
-- define ActivityPackV1 (`descriptor`, `initialize`, `reduce`, `view`, `observe`), PackRevisionLockV1, exact codecs, Action Offers, and embedded selectable/runnable registry;
-- implement worldstreamd health, readiness, version, and one WebSocket handshake;
-- implement a tiny test-only Counter activity solely as a walking skeleton; it is not registered as a release Activity, but its exact `worldstream.counter` executor digest remains a required compatibility-manifest entry beside `worldstream.agent-heist`;
-- create Python SDK package skeleton and protocol golden fixtures.
-
-Exit tests:
-
-1. Two local clients authenticate, attach, submit typed Counter actions, and see one persisted order.
-2. Restart reconstructs the Counter value.
-3. Rust and Python agree on Canonical Request Hash fixtures.
-
-Scope gate:
-
-Do not add Heist content, UI, plugins, or unrelated adapters until the backend-neutral storage port and SQLite walking skeleton work.
-
-### Milestone A1 — Durable Room Kernel
-
-Target: weeks 2–4, 26–36 hours
-
-Build:
-
-- room supervisor and lazy room loading;
-- one bounded actor per active room;
-- logical schema/contract fingerprint, backend-specific forward migrations, and retained canonical/receipt codecs;
-- bundled SQLite 3.53.4 with foreign keys, WAL, FULL synchronous durability, bounded busy handling, a controlled writer, and exact-version check;
-- PostgreSQL major 17 from 17.11 under the manifest's verified-versus-newer-supported patch policy, over direct and transaction pooling with Read Committed Room fences, `synchronous_commit=on`, TLS remote, and a least-privilege role;
-- immutable canonical Room Genesis, pinned Core schema/pack digest, and complete Head;
-- Core, Activity, aggregate Authoritative State, and Genesis/Transition hash lineage;
-- versioned Core reducer and typed Core Stimulus with authority/idempotency/expected-sequence/reason fields;
-- immutable Membership identity/kind, enabled ↔ suspended/terminal-departed lifecycle, atomic Access/Role shape, and final-state multi-Membership changesets;
-- stable vetoable-administration rejection versus mandatory archive/suspend/depart semantics;
-- irreversible archive with timer cancellation and Activation fencing;
-- action receipts and same-ID/different-payload detection;
-- atomic Room Create, accepted Advance, and stable-disposition commit;
-- one transaction-scoped Operation Identity serialization guard shared by every Create/Existing commit branch and `resolve`, with identity-first lock ordering, authoritative-primary reread, SQLite controlled-writer/reservation implementation, and transaction-pool-safe PostgreSQL exclusion;
-- stable receipts only for deterministic admitted domain rejections; transient errors do not consume action IDs;
-- paired Core-and-Activity snapshots written postcommit and load from a verified pair plus tail, with Genesis fallback after every cache/materialization is absent;
-- healthy/faulted/quarantined Room Integrity State, monotonic generation fence, incident audit, restricted serving, and verifier-only repair;
-- durable timers and idempotent TimerFired stimulus;
-- conditional timer-generation update inside the transition transaction;
-- supervisor Loading/CatchingUp/Active/Passivating lifecycle and generation-fenced Room passivation;
-- generic HTTP mutation receipts for idempotent room/membership administration;
-- failure-injection points before/after commit and before reply.
-
-Exit tests:
-
-1. Concurrent clients create one deterministic room order.
-2. Retrying one action one hundred times creates one accepted transition.
-3. A reused action ID with changed payload is rejected.
-4. Termination after commit and before reply returns the original result on retry.
-5. Removing every paired snapshot and current materialization still reconstructs the complete Head and all three state hashes from immutable Genesis and Transitions.
-6. A timer due during shutdown fires once logically after restart.
-7. A duplicated TimerFired candidate conditionally commits at most once.
-8. A lost room-creation HTTP reply returns the original room on idempotent retry.
-9. A normalized Membership changeset whose desired state is already true bypasses pack admission, writes a durable `NoChange` receipt without advancing sequence, and returns that original receipt on identical retry.
-10. On both backends, `resolve` racing an in-flight same-identity commit never reports false `KnownAbsent`; an ambiguous commit later resolved as synchronized `KnownAbsent` maps to `RetryableKnownAbsent`.
-11. After synchronized `KnownAbsent`, a retained prepared creation retries identically, while process loss permits fresh preparation only of generated Room/Member IDs, seed, logical creation time, and their derived bundle under the unchanged caller identity/hash and current authority; an actual generated Room-ID collision remains `Reprepare`.
-12. One atomic two-Membership Role swap passes final cardinality without exposing an invalid intermediate.
-13. Faulted versus quarantined serving, Existing integrity-generation commit races, Create initialization at exactly healthy generation 1, and verifier-only cache repair pass without changing Genesis/Transition bytes.
-14. The same conformance fixtures produce identical canonical bytes, receipts, timers, Frames/Cursors, Activation fences, failure classes, resolution outcomes, and Replay hashes on SQLite and PostgreSQL.
-
-Gate A:
-
-Stop feature work if durability, idempotency, or replay hashes remain flaky. They are the Room Kernel's foundation.
-
-### Milestone A2 — Membership, scoped projections, and reconnect
-
-Target: weeks 5–6, 18–26 hours
-
-Build:
-
-- development principal and scoped bearer-capability creation;
-- separate human/agent Principal kind and pack-defined Role;
-- immutable Membership binding/kind; enabled ↔ suspended, terminal departed/new-ID rejoin lifecycle independent of Session state;
-- atomic participant-Role versus roleless spectator/operator Access shape and one non-departed Membership per Principal;
-- participant room.attach;
-- public/participant/operator-membership Viewer types;
-- durable observation frames and one frame sequence per membership;
-- observation acknowledgement cursor;
-- actor-barrier attach with complete Room/frame capture, Session sync-token acknowledgement, and explicit Projection Reset;
-- zero-or-one coalesced frame per Transition/viewer, no Genesis frame, and independent frame-head/retained-floor/Cursor tracking;
-- bounded WebSocket input/output;
-- slow-consumer disconnect;
-- Python SDK connection, reconnect, ack, and safe action retry loop;
-- randomized projection noninterference test harness.
-
-Exit tests:
-
-1. Human and agent clients use the same action path.
-2. Disconnect after frame receipt but before acknowledgement causes safe redelivery.
-3. A first/pruned Cursor produces an explicit authorized Reset; pruning never advances Cursor or reuses a frame sequence.
-4. A slow consumer cannot block another participant or grow process memory without bound.
-5. Hidden Counter fixture fields never enter the unauthorized frame serializer.
-6. A Transition committed during catch-up is buffered; only the matching Session sync-token acknowledgement enters Live and releases it without a gap.
-7. Suspended/departed Memberships cannot attach, act, receive new frames, or be activated; a rejoin receives a new empty private stream.
-8. Historical Replay uses the reconstructed Membership/Access/Role at N rather than current Role assignment.
-
-Gate B:
-
-A runner author should no longer write raw WebSocket recovery or idempotency logic.
-
-### Milestone A3 — Activation and ephemeral runners
-
-Target: week 7, 10–16 hours
-
-Build:
-
-- manifest-declared attention reason types;
-- per-member exact activation policy;
-- activation_intents persistence in transition transaction;
-- runner control WebSocket and HTTP long-poll fallback;
-- activation offer, claim, renew, complete, release, expiry, and cancellation;
-- five-state intents, one live lease per Membership, independent operation receipts, lease generation, and atomic claim;
-- post-claim exact authorized context with complete Head/witnesses and retained-frames-or-reset union;
-- Python runner abstraction that starts a fresh callback/invocation;
-- replay suppression of activation delivery.
-
-Exit tests:
-
-1. One transition creates one logical activation despite duplicate offers.
-2. Two authorized runners race; one receives the live lease.
-3. Lease expiration permits another claim.
-4. An offer contains no private room projection.
-5. A successful claim returns only the target Agent Participant Membership's exact authorized context and one delivery branch.
-6. Replay verifies Attention/decision evidence but creates no intent or Runner effect.
-7. A lost control/non-grant reply returns its exact original result; a granted-claim retry returns exact original context/result bytes only while context is retained; a changed hash conflicts.
-8. After granted context is tombstoned, an identical retry returns deterministic `result_retired` while original result/context hashes remain unchanged.
-9. An expired prior lease generation cannot complete a newer claim.
-10. Archive, eligibility change, capability revocation, and backward-clock anomaly fence stale leases.
-
-Terminology gate:
-
-Code, UI, and normative docs use membership, runner, invocation, activation, and catch-up. They do not model a sleeping or continuously alive agent.
-
-### Milestone A4 — Agent Heist rules
-
-Target: weeks 8–9, 22–32 hours
-
-Build:
-
-- frozen small facility fixture and seed-derived hidden configuration;
-- exactly three immutable Genesis seats: Navigator, Insider, and Broker;
-- Briefing, Negotiation, Commitment, Resolution, Result, and Complete phases;
-- private clues and structured exchanges;
-- public clue claims, plans, endorsements, and challenges;
-- sealed structured `{selected_plan_id, contribute_required_resource}` commitment action;
-- strict two-of-three plan selection with no fallback or tie-break;
-- five-check scoring: route, entry window, required tool, extraction, and supporting resource contribution;
-- generation-fenced reminder/deadline, early-close, resolve-now, and Result timers;
-- exact public/participant/operator/Result/final-reveal privacy rules;
-- pack projections and observation deltas;
-- typed attention reasons;
-- three deterministic strategies: cooperative, cautious, and withholding;
-- golden replay fixtures and privacy matrix tests.
-
-Exit tests:
-
-1. Three deterministic runners cover success, partial failure, ordinary failure, and no-strict-majority fixtures through the public SDK.
-2. The zero/one/2-0/1-1/3-0/2-1/1-1-1 matrix and 0–5 score matrix pass.
-3. Private clues, exchanges, commitments, operator view, Result, Replay, and final reveal pass paired isolation fixtures.
-4. Early third-commitment and deadline closure produce the exact strictly-forward timer effects; concurrent/stale/duplicate cases remain deterministic.
-5. Pack code performs no I/O, assigns no timer generation, receives only immutable scheduled timer time, and uses no floating-point state.
-6. The same stimuli produce byte-identical state, events, timers, Attention, Action Offers, explanations, and hashes.
-
-Scope guard:
-
-No avatar system, inventory tree, procedural map, combat engine, general chat, profile/feed, marketplace, or rich game content.
-
-### Milestone A5 — Heist end-to-end demo, replay, and UI
-
-Target: weeks 10–12, 24–34 hours
-
-Build:
-
-- scripted run in which one invocation exits before Commitment;
-- targeted activation and fresh runner invocation;
-- public Heist board and small SVG map;
-- phase/deadline, participant, session, runner, and activation status;
-- public plans/clues and outcome timeline;
-- operator-membership complete-Head/integrity/cursor/timer/activation inspector;
-- present-plus-historical-authorized read-only Replay slider and all four hash statuses;
-- completed final-reveal projection;
-- controlled termination after commit and automatic recovery;
-- optional LLM-backed one-role example behind a user-owned API key;
-- one-command deterministic demo harness.
-
-Exit demonstration:
-
-1. Start server, UI, and runners.
-2. Three agents receive different views.
-3. One invocation terminates.
-4. Commitment opens and creates activation.
-5. A fresh invocation claims it, catches up, and acts.
-6. The server is killed after another committed action but before delivery.
-7. Restart and retry preserve the original result.
-8. The Heist activity reaches its terminal Complete phase; the core room remains active for authorized inspection/replay until the host operator archives it.
-9. Replay produces the same outcome and hashes.
-
-UI gate:
-
-If UI work exceeds two weeks, cut animation and decoration. Keep map, state, timeline, activation, and replay.
-
-### Milestone A6 — Hardening and v0.1 release
-
-Target: weeks 13–14, 18–28 hours
-
-Build:
-
-- kill-point matrix around actions, frames, timers, and activation leases;
-- protocol fuzzing and payload-limit tests;
-- one-hour soak and reproducible load profile;
-- metrics and JSON structured logs;
-- database/WAL/version/integrity startup diagnostics and append-only incident audit;
-- backend-native backup/isolated restore, full WorldStream semantic verification, and generation-fenced verifier repair commands;
-- resumable two-phase whole-deployment SQLite-to-PostgreSQL transfer with byte parity and Storage Epoch fences;
-- deterministic config/secret/startup/probe/telemetry contracts;
-- non-root Linux/amd64 OCI image and persistent-volume example;
-- native Linux x86-64 and Windows x64 release archives plus macOS source quickstart;
-- compatibility manifest, checksums, Sigstore signature, SPDX SBOM, SLSA provenance, and platform/backend evidence matrix;
-- SECURITY.md, CONTRIBUTING.md, code of conduct, issue templates, and limitations;
-- architecture article and 60–90 second demo recording.
-
-v0.1 exit:
-
-- every Heist release gate passes;
-- fresh checkout to running deterministic demo is under ten minutes;
-- benchmark report labels targets versus measured results;
-- one-process developer-preview and unsupported HA/provider-service boundaries are prominent;
-- tag v0.1.0.
-
-## v0.1 definition of done
-
-### Correctness
-
-- [ ] One total committed order exists per room.
-- [ ] Accepted actions are acknowledged only after durable commit.
-- [ ] Retrying an action never mutates twice.
-- [ ] Same action ID with different payload is rejected.
-- [ ] Timer fires once logically across restart/retry.
-- [ ] Paired snapshot plus tail reproduces the complete Room Head and all three state hashes.
-- [ ] Genesis plus full Transition history reproduces that Head after every snapshot and current materialization is removed.
-- [ ] Full read-only Replay reproduces Core, Activity, aggregate, and lineage hashes.
-- [ ] Integrity-generation races commit either the canonical mutation or integrity change, never both, and consume no losing sequence/receipt.
-- [ ] Verifier repair rebuilds caches/materializations and restores healthy without changing Genesis/Transition bytes.
-- [ ] Every retained non-selectable pack digest remains fully runnable through its exact executor/codecs.
-- [ ] Projection, reset, Frame, Invocation Context, and admission use byte-identical Action Offers.
-
-### Participation
-
-- [ ] Human and agent Principals can occupy participant Memberships and use the same Action path.
-- [ ] Membership survives session disconnect and invocation termination.
-- [ ] Membership binding/kind, lifecycle, Access/Role shape, atomic Role swaps, and new-ID rejoin invariants pass.
-- [ ] Private projection tests cover live, catch-up, reset, replay, logs, and public UI.
-- [ ] The Session-token actor barrier returns no silent gaps, including a commit during handoff and an acknowledgement from another Session.
-- [ ] Slow consumer memory is bounded.
-
-### Activation
-
-- [ ] Canonical Attention and noncanonical policy/intent evidence commit atomically with the causing Transition.
-- [ ] Offers are at least once; every Activation control operation has a durable receipt, lease generation witnesses, and idempotent retry.
-- [ ] One live lease per Membership and exact retained-or-reset Invocation Context are enforced.
-- [ ] No runner means no model execution claim.
-- [ ] One fresh invocation catches up and acts in the Heist demo.
-- [ ] Replay never offers or claims an activation.
-
-### Developer experience
-
-- [ ] Python SDK hides raw reconnect/ack/retry mechanics.
-- [ ] Deterministic runners require no paid API.
-- [ ] Public protocol examples and golden fixtures exist.
-- [ ] One command starts server, Heist, runners, and UI.
-- [ ] Local filesystem and backup requirements are documented.
-- [ ] SQLite and PostgreSQL profiles pass the same semantic conformance, migration, recovery, receipt/codec, and hash fixtures.
-- [ ] A restored backup and a finalized SQLite-to-PostgreSQL transfer pass the full semantic verifier before readiness.
-- [ ] Native Linux, native Windows, OCI, and macOS source-quickstart evidence match the frozen profile matrix.
-
-### Performance target
-
-Measured on documented hardware:
-
-- [ ] 1,000 mostly idle WebSocket sessions.
-- [ ] 100 loaded small rooms.
-- [ ] 100 accepted transitions per second aggregate target tested.
-- [ ] p95 local commit-to-ack under 100 ms target tested.
-- [ ] 100,000-transition recovery target tested.
-- [ ] one-hour soak has bounded memory, queue, WAL, and temp growth.
-
-A missed performance target does not justify hiding results. Publish the profile, identify the bottleneck, and decide whether it blocks the intended demo.
-
-## Phase B: Investigation Room v0.2
-
-Before beginning, freeze the Activity Pack host interface used by Heist. Investigation may add generic artifact metadata that was explicitly planned, but it may not add domain fields to core.
-
-### Milestone B0 — Post-Heist review
-
-Target: week 15, 6–10 hours
-
-- remove Heist-specific naming from core;
-- document every Activity Pack host-interface change made during Heist;
-- freeze conformance fixtures;
-- record any proposed Room Kernel change and prove Investigation requires it;
-- tag a protocol/pack candidate baseline.
-
-Exit:
-
-Counter and Heist compile and pass without any Investigation code.
-
-### Milestone B1 — Immutable evidence storage
-
-Target: weeks 15–16, 14–22 hours
-
-Build:
-
-- local content-addressed artifact layout;
-- streaming bounded upload to temp, BLAKE3 verification, file fsync, atomic rename, and parent-directory fsync;
-- durable owner-scoped staged-upload records and conservative orphan reconciliation;
-- artifacts and room_artifacts generic metadata, with artifact metadata created atomically with each staged-upload receipt;
-- room/member authorization before upload/download;
-- safe media handling and text/image preview;
-- quota, orphan-temp cleanup, backup consistency, and digest audit;
-- Cold Chain immutable local fixture installer.
-
-Exit tests:
-
-1. Path traversal, symlink, size, MIME, and digest attacks fail safely.
-2. Unauthorized members cannot infer or fetch hidden evidence.
-3. Duplicate bytes deduplicate without changing evidence version semantics.
-4. Database backup plus artifact copy verifies every reference.
-5. Forced termination around rename/stage/link never leaves a committed room reference to missing bytes.
-6. Expired unlinked uploads are reclaimed only after the grace period, while linked or still-staged bytes survive reconciliation.
-
-FTS and embeddings are not required.
-
-### Milestone B2 — Investigation domain model
-
-Target: weeks 17–18, 22–32 hours
-
-Build:
-
-- human Lead, Timeline analyst, Evidence analyst, and Challenger roles;
-- Intake, Analysis, Review, Brief, and Closed phases;
-- evidence assignment and visibility;
-- immutable facts, claims, revisions, support/challenge edges;
-- verification requests and dispositions;
-- structured final brief;
-- deterministic answer key and scoring;
-- private drafts and public/participant/operator-membership projections;
-- deterministic evidence-release timers.
-
-Exit tests:
-
-1. Human Lead and deterministic agents complete the original uncorrected fixture.
-2. Every fact and claim names exact source/revision IDs.
-3. Private drafts and assignments remain isolated.
-4. Scoring uses no LLM judge.
-5. Replay reproduces board, brief, and score.
-
-### Milestone B3 — Correction, invalidation, and activation
-
-Target: weeks 19–20, 18–28 hours
-
-Build:
-
-- corrected clock-offset evidence version;
-- explicit supersedes graph;
-- deterministic fact/claim/verification invalidation;
-- cited_evidence_superseded and dependent_claim_stale attention reasons;
-- fresh analyst invocation with authorized corrected context;
-- human Lead review and brief revision;
-- timeline view of the invalidation chain.
-
-Exit demonstration:
-
-1. An agent publishes a claim using original evidence.
-2. Its invocation exits.
-3. Correction arrives as a recorded stimulus.
-4. Dependent work becomes stale by explicit IDs.
-5. One activation is claimed by a fresh invocation.
-6. The agent revises or withdraws its work.
-7. Human Lead submits the corrected brief.
-8. Replay reconstructs all decisions and score.
-
-### Milestone B4 — Investigation UI, generality audit, and v0.2
-
-Target: weeks 21–22, 18–28 hours
-
-Build:
-
-- evidence panel and safe artifact viewer;
-- fact/claim/challenge board;
-- accessible dependency list and optional small graph;
-- correction markers and case timeline;
-- typed human Lead forms;
-- final brief and deterministic score breakdown;
-- both demos in one quickstart;
-- cross-pack core-change audit;
-- updated benchmark with Investigation payload profile.
-
-v0.2 exit:
-
-- every Investigation acceptance gate passes;
-- no Investigation-specific protocol message or Room Kernel table exists;
-- existing Heist conformance remains green;
-- the Activity Pack host interface is documented from two real implementations;
-- tag v0.2.0.
-
-## v0.2 generality gate
-
-The abstraction passes if Investigation adds only:
-
-- a new pack;
-- new activity schemas/state/actions;
-- the preplanned generic artifact store;
-- new first-party UI components;
-- conformance fixtures.
-
-It fails if Investigation requires:
-
-- a new room lifecycle;
-- a domain-specific core protocol branch;
-- a workflow executor;
-- cross-room project state;
-- server-side LLM or tool execution;
-- a generic semantic memory system;
-- special-case storage beyond generic artifact metadata;
-- weakening Heist privacy or determinism.
-
-Failure means revise the Activity boundary and repeat the gate. It does not automatically justify expanding the platform.
-
-## Testing strategy
-
-| Layer | Required tests |
+# Runtime-plus-Packs Delivery Roadmap
+
+## Goal
+
+Ship WorldStream as a self-hosted Room Runtime with one adoptable public
+Activity Pack contract, then prove it with WorldStream Negotiate. The project
+does not need another Room Kernel rewrite. It needs a narrow portable execution
+adapter, a safe bundle lifecycle, author/operator tooling, and one application
+whose value depends on authoritative realtime collaboration.
+
+Planning assumes one primary developer working roughly 8–12 focused hours per
+week. Correctness and first-success evidence take priority over feature count.
+
+## Product story
+
+A Pack Author describes deterministic Roles, Actions, visibility, phases,
+timers, Attention, and Outcomes in one code-first TypeScript project. Optional
+prompt assistance can draft the same project. WorldStream-owned tooling checks
+it, compiles it to a WASI-free WebAssembly Component, runs conformance/privacy
+proof, and builds one immutable `.wspack`.
+
+A Host Operator inspects and explicitly approves the exact bundle digest,
+installs it offline, and restarts `worldstreamd`. An Application Integrator uses
+the ordinary protocol/Application SDK to configure a Room, attach humans and
+external Runners, submit Actions, reconnect, recover, Replay, and export
+evidence. No author or client gains a second state-mutation path.
+
+WorldStream Negotiate is the first serious public Pack. Counter remains an
+internal walking skeleton/tutorial. Agent Heist remains a visual
+demo/conformance workload. Investigation Room is deferred design research.
+
+## Frozen invariants
+
+- One process hosts many independent Rooms; each Room pins exactly one
+  `PackRevisionLockV1` digest for its whole lineage.
+- `ActivityPackV1` still has exactly `descriptor`, `initialize`, `reduce`,
+  `view`, and `observe`.
+- Room authority, Action Offers, privacy, Semantic Time, timers, Recovery,
+  Replay, integrity, storage, and one-process deployment semantics do not
+  change for portable Packs.
+- Public Components use `worldstream/component-deterministic/v1`: zero imports,
+  no WASI linker, synchronous calls, fresh Store/instance, and fixed
+  revision-bound limits.
+- Host Operator approval names exact verified bytes. Names, semantic versions,
+  authorship, and signatures alone never select or authorize behavior.
+- Original bundle and Component bytes follow retained Room lineage through
+  backup, restore, transfer, upgrade, export, and safe removal checks.
+- Models, prompts, private memory, tools, credentials, strategy, commercial
+  signing keys, and network calls remain in external clients/Runners.
+
+## Phase 0 — Contract migration
+
+Outcome: every normative source says Runtime plus installable Packs and fails
+closed while portable identities are not implemented.
+
+Deliver ADRs 0014/0015, partial-supersession annotations for ADRs 0001/0010,
+reconciled normative/manual sources, and a compatibility pair reset to
+`manifest_kind = "specification"` and `release_ready = false`. Any unresolved
+required identity must be named explicitly; Phase 5 replaces the Negotiate
+placeholders with the exact production-proven identities.
+
+Exit gate: documentation, manifest parity, and embedded-manifest validation
+pass without claiming a release.
+
+## Phase 1 — One portable admission seam
+
+Outcome: the existing checked `ActivityPackV1` host remains the only semantic
+validator while a portable adapter supplies owned descriptor and canonical
+request/result bytes.
+
+Deliver an adapter-owned descriptor lifetime, canonical owned envelopes for all
+five operations, one narrow validated registry admission interface, and one
+startup registry injected into SQLite and PostgreSQL. Embedded Rust revisions
+remain internal oracle/compatibility entries; no legality, privacy, timer, or
+fault semantics are duplicated.
+
+Exit gate: existing Counter/Heist and storage/Replay tests retain their meaning,
+and an invalid portable registry entry cannot become runnable.
+
+## Phase 2 — Bundle verifier, Component Host, and local CAS
+
+Outcome: exact approved portable revisions load safely and reproducibly after
+restart.
+
+Deliver one deep bundle/CAS module with a small public surface: `inspect`,
+`install`, `set_selectable`, `export`, and safe `remove`. Its implementation
+owns deterministic ustar parsing, path/size policy, member digests, revision
+cross-identity, Component preflight, Wasmtime configuration, golden/privacy
+execution, fsync/atomic rename, approval recovery, retained-reference checks,
+and tombstones.
+
+The Component Host pins Wasmtime 48.0.1 or newer within the tested line,
+preflights exact imports/exports before linking, installs no WASI, creates a
+fresh Store/instance for each callback, and enforces fixed fuel/memory/table/
+stack/input/output/concurrency limits. AOT cache bytes are host-owned,
+engine/config/source-bound, integrity checked, and disposable.
+
+Exit gates:
+
+1. Byte tampering, traversal, links, duplicates, forbidden imports/exports,
+   malformed output, resource exhaustion, and cache mismatch fail closed.
+2. Crash-point and idempotent reinstall tests preserve exact originals.
+3. Both storage profiles use the same startup registry.
+4. Retained missing/corrupt bundles close readiness.
+5. No callback failure reaches persistence.
+
+## Phase 3 — Operator lifecycle and portability
+
+Outcome: a Host Operator can manage Packs without editing Rust or databases.
+
+Deliver `worldstreamctl pack` commands for inspect, approve, install,
+inventory/status, restart-readiness, export, selection changes, safe removal,
+Replay, and offline evidence verification.
+
+Extend backup, restore, and SQLite-to-PostgreSQL transfer inventories to include
+the original bundle bytes for every referenced semantic revision. Restore may
+reestablish retained-runnable status but selection defaults off. Upgrade
+preflight recompiles from original Component bytes and proves every retained
+Replay before readiness.
+
+Exit gate: a database-only backup with referenced portable lineage is reported
+incomplete; there is no force-remove or newer-revision substitution path.
+
+## Phase 4 — TypeScript Pack Author experience
+
+Outcome: an outside TypeScript developer can build a nontrivial Pack without
+Rust or manual WIT/schema/digest work.
+
+Publish release-pinned `@worldstream/pack-sdk` and
+`@worldstream/pack-cli`. One project contains:
+
+```text
+worldstream-pack.json
+src/pack.ts
+fixtures/golden.ts
+fixtures/privacy.ts
+test/pack.test.ts
+package.json
+package-lock.json
+tsconfig.json
+```
+
+Supported commands are scaffold, `pack:check`, `pack:test`, `pack:build`,
+`pack:inspect`, and `pack:prove`. The owned wrapper pins TypeScript, Jco 1.32.1,
+and ComponentizeJS 0.22.0; runs strict `tsc`; rejects ambient nondeterministic
+APIs and mutable module authority; forces `--disable all`; checks exactly five
+exports/zero imports; generates schemas/codecs/locks/evidence; invokes the
+production host; and emits one `.wspack` plus a first-success receipt.
+
+Prompt assistance is required for the first release but optional for the
+author. It asks bounded domain questions and a trusted generator writes the
+same project. It cannot execute model-supplied shell commands, escape the
+project root, approve/install a Pack, or place provider/model/key/prompt data in
+the bundle, Room, daemon, or evidence.
+
+Exit gates:
+
+- 60-minute clean-directory outside-adopter path from scaffold to one real
+  local Room, two distinct Roles/views, one accepted Action, one expected
+  rejection, complete proof, and retained old-revision verification;
+- 30-minute guided prompt-assisted path to the same project and proof;
+- no Rust, paid service, manual digest editing, or maintainer intervention.
+
+## Phase 5 — WorldStream Negotiate
+
+Outcome: the platform proves a serious realtime application that benefits from
+shared authority, exact privacy, independent participants, deadlines,
+reconnect, and audit evidence.
+
+Implement `worldstream.negotiate` through the public TypeScript path and a
+first-party native oracle. The exact profile, Roles, phases, Actions, approval,
+privacy, timers, Attention, Outcomes, adapter authority, and dual evidence
+export are frozen in [WorldStream Negotiate](negotiate.md) and ADR 0015.
+
+The golden story is:
+
+`buyer Proposal → seller counter → approval request → Human exact signed
+approval → restart/reconnect → buyer acceptance → selection → independent
+Agreement signatures → commitment → identical Replay/evidence export`.
+
+Exit gates include byte mutation, stale Room and A202 heads, expiry, wrong
+signer, Role violations, privacy noninterference, signed deadline resolution,
+original-byte restart, native/Component parity, and offline dual-proof
+verification.
+
+## Phase 6 — Product surfaces
+
+Outcome: users operate the platform without learning Kernel internals.
+
+- **Studio:** bundle digest/compatibility inspection, approval/install/restart
+  readiness, schema-driven Genesis setup, Membership/handoff, opaque runner
+  credential references, runner readiness, timers, Replay, and evidence export.
+- **Participant Console:** independent cursors/reconnect, Projections/Frames,
+  exact Action Offers, approval/signing panels, receipts, Replay, and evidence
+  download.
+- **Application SDK:** sessions, cursor/reset/reconnect, Actions/receipts,
+  canonical wrappers, signer hooks, and evidence verification. Activation and
+  Participant Action capabilities remain separate.
+- **Runners:** own every model, prompt, tool, private memory, strategy,
+  credential, invocation, and private signature.
+
+Studio never becomes Pack source, a participant, a commercial signer, an
+arbitrary shell, a private-Projection bypass, or a second rules engine.
+
+## Phase 7 — Release qualification
+
+Promote the compatibility pair to `manifest_kind = "release"` and
+`release_ready = true` only after every Negotiate semantic/component/schema/
+codec/golden/bundle identity is independently resolved and checked. Then run
+the existing native Linux, native Windows, Linux/amd64 OCI, macOS source,
+SQLite, PostgreSQL, migration, transfer, restore, failure, resource, soak,
+privacy, and supply-chain gates with the new Pack/bundle subjects.
+
+A distribution is verified only when its detached `release-manifest.json`,
+checksums, Sigstore material, SPDX SBOM, SLSA provenance, and every hard-gate
+evidence subject bind the exact final bytes.
+
+## Deferred work
+
+- Go and additional Pack Author SDK languages;
+- network Pack registry, discovery, marketplace, or hot loading;
+- generic host imports/effects or WASI capabilities;
+- generated arbitrary UI or third-party renderer code;
+- Investigation Room and generic application artifact upload;
+- multi-supplier/auction negotiation and post-commit commercial lifecycle;
+- A2CN adapter;
+- payments, crypto, agent labor marketplace, workflow canvas, coding harness,
+  model hosting, vector memory, multiple live WorldStream processes,
+  clustering, federation, and multi-region writes.
+
+## Principal risks
+
+| Risk | Containment |
 |---|---|
-| Canonical data | Cross-language Core/Activity/aggregate/Genesis/Transition golden vectors, duplicate keys, prohibited floats |
-| Core reducer | Lifecycle, one-live-seat uniqueness, Access/Role shape, atomic multi-Membership final state, archive, veto/mandatory administration |
-| Pack | Revision-lock/codec registry, five-op contract, Core veto, Action Offer parity, Heist state/timer/outcome goldens, bounds/panic, projection noninterference, retained executability |
-| Room actor | Ordering, stale action, mailbox bound, passivation/reload, pack fault |
-| Storage profiles | Shared semantic conformance, including the Operation Identity guard, resolve-versus-in-flight-commit races, synchronized `KnownAbsent`, lost-plan creation recovery, Room-ID collision, and Create integrity initialization; SQLite Genesis/WAL/disk-full/backup; PostgreSQL direct/transaction-pooler/TLS/least-privilege/COMMIT-failure; every prior migration |
-| Portability | Resumable SQLite-to-PostgreSQL export/import/finalize/abort, Storage Epoch fencing, byte parity, exact timers/Activations/artifacts, no reverse/live/dual-write path |
-| Recovery | Backend-native isolated restore plus full all-healthy-Room semantic verification and preserved unhealthy-Room isolation |
-| Release profiles | Native Linux and Windows, Linux/amd64 OCI persistence, macOS source quickstart, config/secrets/probes/telemetry, checksums/signature/SBOM/provenance |
-| Timer | Schedule/cancel/firing retry, overdue restart storm |
-| Observation | audience isolation, duplicate delivery, actor-barrier handoff, cursor ack, reset, slow consumer |
-| Activation | duplicate offer, claim receipt, claim race, lease generation/expiry, authorization, replay suppression |
-| SDK | reconnect state machine, retry, cancellation, runner callback failure |
-| UI | public/private DOM isolation, XSS, present-plus-historical Replay, fault/quarantine surfaces, stale-Action disable |
-| Artifact | path, size, MIME, digest, quota, authorization, backup consistency |
-| System | forced termination matrix, deterministic demo, soak, quickstart |
-
-## Risk register
-
-| Risk | Early warning | Response |
-|---|---|---|
-| The product still feels like a WebSocket wrapper | Demo shows frames but no scoped Action Offers, activation, or recovery | Preserve projection, activation, cursor, and deterministic replay before integrations |
-| Activity Pack tax is too high | Most application code rebuilds infrastructure or edits core | Measure both packs; stop broadening if the reusable share is small |
-| Scope turns into a game platform | Time goes to art, profiles, chat, or content | Keep Heist fixture and SVG map fixed |
-| Scope turns into n8n | Generic nodes, connectors, jobs, or workflow canvas appear | Keep participant-selected typed actions inside one state machine |
-| Agent metaphor stays misleading | UI says asleep/awake or suggests continuous cognition | Enforce lifecycle vocabulary in code review and docs |
-| Projection leaks private state | Shared serializer or cache key omits audience | Separate types, exact audiences, randomized noninterference tests |
-| Determinism fails | Replay hash differs by run/platform | Eliminate ambient I/O/floats and expand golden fixtures |
-| Backend pressure appears early | Commit latency, SQLite checkpoint delay, PostgreSQL pool pressure, or mailbox depth rises | Preserve short fenced transactions and bounded lanes; measure profiles separately and do not introduce a broker |
-| Activation becomes a workflow runtime | Predicates, retries, callbacks, and job state expand | Exact typed reasons and one simple lease lifecycle only |
-| UI consumes the schedule | General renderer/components grow | First-party reference screens only; cut polish |
-| LLM demos are flaky or costly | Provider availability controls release | Deterministic runners are normative; LLM example optional |
-| Investigation becomes enterprise PM | Generic tasks, approvals, dashboards appear | Keep one evidence/claim state machine and one fixture |
-| Artifact handling creates security burden | Format parsing and previews expand | Small allowlist, bounded bytes, no conversion/unpacking |
-| PostgreSQL is mistaken for distributed serving | A second WorldStream process, replicas, provider failover, or HA claims appear | Keep one-process authority explicit and require a later distributed RFC |
-| OSS adoption remains weak | Setup is slow or explanation remains abstract | One-command demos, short video, clear extension seam and limitations |
-
-## Frozen cut order
-
-If the schedule slips, cut in this order:
-
-1. Decorative animation and graph layout.
-2. Optional LLM-backed example.
-3. HTTP activation long poll if runner WebSocket is complete.
-4. Operator-membership convenience screens beyond required diagnostics.
-5. Optional artifact preview types; retain safe download.
-6. Performance beyond the documented core profile.
-
-Do not cut:
-
-- commit-before-ack and idempotency;
-- private projections;
-- cursor catch-up/reset;
-- explicit activation and fresh invocation;
-- timer durability;
-- restart recovery;
-- deterministic replay;
-- complete Heist;
-- complete Investigation correction/generalization story;
-- acting human participant;
-- deterministic scoring.
-
-## Open-source recognition plan
-
-Recognition should come from a small, demonstrably correct system:
-
-1. One sentence:
-   WorldStream is a realtime room runtime where human and Agent Participants share Authoritative Room State.
-2. One Heist video:
-   private views, absent invocation, activation, server termination, recovery, and replay.
-3. One serious follow-up video:
-   human plus agents, evidence correction, dependency invalidation, fresh invocation, source-linked brief.
-4. One-command deterministic reproduction:
-   no provider key or internet dependency.
-5. One architecture article:
-   single-writer rooms, backend-neutral transaction boundary, audience-specific frames, activation lease, offline portability, and honest failure semantics.
-6. One reproducible benchmark:
-   ordinary hardware and clear payload profile.
-7. One conformance package:
-   protocol fixtures and Activity privacy/replay tests that contributors can run.
-8. Public RFC only after v0.2:
-   ask whether outside activity authors need a stable Rust API, WASM, or neither.
-
-## First implementation backlog
-
-The first ten issues should be:
-
-1. Scaffold Cargo workspace and pinned toolchain.
-2. Define canonical JSON plus Core/Activity/aggregate/lineage Rust/Python hash vectors.
-3. Add the compatibility manifest, bundled-SQLite assertion, PostgreSQL 17 capability check, and first logical migration for both profiles.
-4. Implement `CoreRoomState v1`, Core reducer, Membership lifecycle, and atomic administrative changesets.
-5. Implement Counter through `ActivityPackV1` against immutable Core-before/proposed-after views and the embedded exact-revision registry.
-6. Implement the single-writer Room actor, atomic accepted Transition, Action receipts, and idempotency conflict.
-7. Implement complete Head, paired postcommit snapshots, current-materialization rebuild, and recovery hash verification.
-8. Implement WebSocket hello/attach/action/observation path.
-9. Implement membership cursor acknowledgement and projection reset.
-10. Add forced termination plus integrity-generation/verifier-repair tests without history rewrite.
-
-Heist work begins only after these establish the Room Kernel.
+| Portable adapter duplicates semantic checks | Keep `ActivityPackHostV1` as the sole checked validator; adapter only translates exact canonical envelopes. |
+| Bundle identity diverges from Room identity | Preserve `PackRevisionLockV1`, bind exact Component through `rule_source_digest`, and keep physical bundle digest separate. |
+| Backup claims durability without executable rules | Treat every referenced original `.wspack` as required recovery material. |
+| TypeScript toolchain is large or nondeterministic | Pin owned wrappers, retain exact bytes, compare behavior/goldens, and do not promise byte-reproducible upstream output. |
+| Wasmtime limits are mistaken for hostile tenancy | State the capability/fail-closed claim narrowly; add process/container ceilings and upgrade tests. |
+| Negotiate becomes a second protocol authority | Keep one Room order and one Pack; adapters only submit recorded input and export linked proof. |
+| Studio becomes orchestration or hidden rules | Keep it a typed operator client and Participant Console separate. |
+| Adoption gate is self-certified | Require clean-directory outside-developer observations before making the time-to-first-success claim. |

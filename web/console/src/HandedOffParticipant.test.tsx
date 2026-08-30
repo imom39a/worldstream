@@ -11,6 +11,7 @@ describe("handed-off Participant Console", () => {
         action: "continue",
         message: null,
         observation: {
+          pack: { id: "worldstream.agent-heist", version: "0.1.0", digest: `blake3:${"2".repeat(64)}` },
           room_head: {
             room_seq: 12,
             genesis_or_transition_hash: `blake3:${"1".repeat(64)}`,

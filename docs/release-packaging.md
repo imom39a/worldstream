@@ -1,5 +1,21 @@
 # Release packaging
 
+The checked-in compatibility pair is currently a fail-closed specification,
+not a release contract: `manifest_kind = "specification"` and
+`release_ready = false`. Exact Negotiate Component, semantic revision,
+schema/codec/golden, and Activity Pack Bundle identities are resolved and have
+passed the production Bundle → Component Host → Core proof; native/OCI
+artifacts and the detached release evidence/signatures below remain pending.
+None of the commands below may promote that state as a verified release.
+
+The deterministic [Starter Distribution](starter-distribution.md) is a
+self-contained carrier over exact subjects already authenticated by the
+detached release manifest. It keeps Runtime Distribution bytes unchanged,
+adds the Participant Console, Studio, TypeScript Pack authoring surface,
+official Negotiate material, adapters, fixtures, docs, and legal metadata, and
+still requires target-local exact-digest Pack approval. It is not a registry or
+a second release authority.
+
 WorldStream ships four explicitly bounded distribution surfaces:
 
 - native Linux x86-64 `tar.gz` archives;
@@ -39,13 +55,27 @@ hashed inside the manifest they help verify. The signed provenance and
 checksum verification remain mandatory; detaching an embedded digest never
 relaxes finished-byte verification.
 
+The official Negotiate `.wspack` is a separately versioned release subject,
+not one of the self-containing native/OCI artifacts. Its exact physical BLAKE3,
+semantic revision, bundle format, explanatory version, and digest-named path
+therefore live in the normative `activity_pack_bundles` compatibility inventory.
+The manifest verifier requires the filename to contain the complete physical
+digest and requires that row to reference the resolved Negotiate executor
+revision. Its canonical embedded `conformance.json` member binds the Component
+and semantic identities. During release aggregation, the `worldstreamctl`
+binary extracted from the detached native Linux archive runs `pack prove`
+against that detached `.wspack`; the producer binds both exact artifacts and
+the resulting Bundle → Component Host → Core proof. It does not accept a
+checkout copy of the binary or proof as a substitute.
+
 ### Two-level release supply chain
 
 Supply-chain evidence is intentionally produced in two levels. First,
-`release-supply-chain.py` validates exactly thirteen typed source reports (all
-release evidence except `checksums-signature-sbom-provenance`), copies those
-source bytes into a closed subject inventory with the four payloads, and
-generates/verifies `SHA256SUMS`, SPDX, and SLSA over that 17-subject set. SPDX
+`release-supply-chain.py` validates exactly seventeen typed source reports (all
+primary release evidence except `checksums-signature-sbom-provenance`), copies
+those source bytes into a closed subject inventory with four Runtime/source
+payloads and twelve portable Starter subjects, and generates/verifies
+`SHA256SUMS`, SPDX, and SLSA over that exact 33-subject set. SPDX
 contains the locked Cargo, uv, and pnpm component graph and its source/build
 relationships. Corepack installs pnpm only through the exact
 `packageManager` value, which binds pnpm 11.19.0 to its SHA-512 registry
@@ -58,11 +88,11 @@ supply-chain producer report is emitted. That report binds the inventory,
 inventory signature bundle, and all three sidecars by exact SHA-256 and byte
 count, with observations for each verified check.
 
-The collector then normalizes all fourteen reports. Assembly creates a
+The collector then normalizes all eighteen reports. Assembly creates a
 separate detached `release-manifest.json`, which is separately keylessly
 signed. Final verification checks both signatures, the final artifact and
-evidence digest maps, the thirteen source-report citations to the signed
-inventory, and exactly the fourteenth supply-chain report. The supply-chain
+evidence digest maps, the seventeen source-report citations to the signed
+inventory, and exactly the eighteenth supply-chain report. The supply-chain
 report is not a subject of the inventory or the pre-sign sidecars, so no
 attestation contains a digest of itself or of a signature over itself.
 
@@ -70,12 +100,78 @@ The GitHub workflow enforces that boundary as five dependent jobs. The
 `release-evidence` job performs only unsigned aggregation and uploads its exact
 inventory bytes; a checkout-free signer downloads and verifies that closed
 set before signing only the inventory. A no-OIDC finalizer verifies that
-signature, emits the fourteenth report, and assembles the detached manifest. A
+signature, emits the eighteenth report, and assembles the detached manifest. A
 second checkout-free signer downloads the exact assembled layout and signs
 only that manifest. The last no-OIDC job binds the detached bundle, verifies
 both signature levels and every digest, and uploads the finished release. All
 five jobs are restricted to a manual release from `refs/heads/main`; only the
 two minimal signing jobs have `id-token: write`.
+
+The portable subject builder accepts twelve explicitly named paths and never
+discovers a checkout. It copies the official Negotiate `.wspack` byte for byte
+and wraps each other input in deterministic gzip/ustar with a canonical file
+manifest. The release workflow builds the Console, Studio, Pack Toolchain, and
+TypeScript SDK first, includes the A202 interoperability and outside-adopter
+kits in their documented subjects, and rejects caches, links, credentials,
+approvals, backups, databases, secrets, extra subjects, and non-canonical
+archives. Those twelve artifacts are verified again during unsigned
+aggregation, final assembly, package verification, and every compatibility
+gate tier.
+
+The four Runtime-plus-Packs rows are produced by
+`release-evidence-produce-runtime-packs.py`. Bundle/Component/Core conformance
+can be emitted independently from the exact official Bundle, its embedded
+conformance member, and a proof emitted by the exact released Linux
+`worldstreamctl`. The policy producer additionally requires explicit
+released-artifact qualification reports for the exact oracle, privacy,
+offline-evidence, and pinned A202 adapter identities. The local
+`negotiate-golden-flow.py` report declares `release_evidence=false` and is
+therefore rejected by this producer. SQLite and PostgreSQL restart producers
+each require one released native archive, an actual forced daemon restart,
+four independent Membership cursor reconnects, committed Negotiate outcome,
+exact retained Replay Head, and offline dual-evidence verification. Checkout
+binaries, debug targets, narrative/prototype receipts, reports that disclaim
+release-evidence status, and manual database access are rejected.
+
+### Post-sign qualification
+
+Starter and outside-adopter evidence is intentionally not inserted into the
+primary release manifest: a Starter embeds that already signed manifest, and
+adoption trials consume the resulting Starter. `release-qualification.py`
+instead assembles `release-qualification-manifest.json`, which binds the exact
+primary manifest and signature, authenticated official and custom Starters,
+and the canonical six-person adopter summary. Its three evidence rows are
+separately signed qualification claims and are not primary release gates.
+
+Structural verification returns a non-success qualification code and cannot
+stand in for Cosign authentication. A passing adopter summary requires three
+real Pack Authors, three real Application Integrators, both authoring routes,
+and at least two installation profiles. The repository creates neither
+passing receipts nor signatures.
+
+```sh
+scripts/release-qualification.py assemble \
+  --release-dir ./verified-release \
+  --starter official=./worldstream-starter-official.tar.gz \
+  --starter custom=./worldstream-starter-custom.tar.gz \
+  --adopter-qualification ./outside-adopter-qualification.json \
+  --output-dir ./qualification
+
+scripts/release-qualification.py verify \
+  --qualification-dir ./qualification
+```
+
+## Current expanded-gate blockers
+
+The code-owned inventories, deterministic subject builders, Component
+conformance producer, strict policy/restart adapters, qualification assembler,
+and adversarial validators exist. The checked-in contract still has
+`release_ready = false`; the release workflow explicitly marks the Negotiate
+oracle/privacy/A202 producer and both released-artifact restart producers
+missing. No authentic official/custom Starter signatures or six outside-
+adopter receipts exist. Therefore the release and qualification tiers must and
+do fail closed. None of these gaps may be replaced by a checkout test or a
+hand-authored passing JSON document.
 
 Persistent self-hosted release jobs and both signing jobs declare the
 `worldstream-release` GitHub environment. That declaration is not proof that a
@@ -87,7 +183,8 @@ The native package command also checks the release identity before writing an
 archive: the daemon's Cargo package, Python SDK `pyproject.toml`, and console
 `package.json` must all use the manifest `contracts.product` version. Archive
 verification accepts only the documented layout (daemon/operator binaries,
-UI, SDK, examples, licenses, compatibility manifests, metadata, and
+UI, SDK, examples, official original Activity Pack Bundles, licenses,
+compatibility manifests, metadata, and
 checksums); every member must be an ordinary regular file or a canonical
 directory entry. Unlisted paths, symlinks, special members, traversal, and
 unsafe permissions fail closed.

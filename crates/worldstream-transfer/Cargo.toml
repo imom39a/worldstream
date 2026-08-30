@@ -11,6 +11,8 @@ repository = "https://github.com/imom39a/worldstream"
 blake3.workspace = true
 thiserror.workspace = true
 worldstream-backup = { path = "../worldstream-backup", version = "=0.1.0" }
+worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
+worldstream-pack-bundle = { path = "../worldstream-pack-bundle", version = "=0.1.0" }
 
 [lints.rust]
 unsafe_code = "forbid"

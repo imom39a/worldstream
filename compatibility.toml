@@ -1,15 +1,16 @@
 schema = "worldstream/storage-compatibility-manifest/v1"
 manifest_revision = 1
-manifest_kind = "release"
+manifest_kind = "specification"
 authored_date = "2026-08-15"
 release_candidate = "0.1.0"
-release_ready = true
-release_status = "embedded_contract_complete_detached_release_evidence_required"
+release_ready = false
+release_status = "specification_release_gates_pending"
 validation_policy = "fail_closed"
 reviewed_source = "compatibility.toml"
 canonical_mirror = "compatibility.json"
 release_artifact_digest_source = "detached_release_manifest"
 evidence_digest_source = "detached_release_manifest"
+qualification_evidence_digest_source = "detached_release_qualification_manifest"
 unresolved_required_fields = []
 
 [contracts]
@@ -333,25 +334,25 @@ warm_p95_seconds = 20
 hard_seconds = 60
 network_allowed = false
 container_allowed = false
-scope = ["changed_format", "config", "schema", "golden", "secret"]
+scope = ["changed_format", "config", "schema", "golden", "secret", "pack_contract", "official_pack_identity", "qualification_contract"]
 
 [evidence_tiers.pre_push]
 warm_target_seconds = 360
 cold_target_seconds = 900
 hard_seconds = 1200
-scope = ["lint", "unit", "sqlite", "sdk", "ui", "protocol", "hash", "local_postgresql_smoke"]
+scope = ["lint", "unit", "sqlite", "sdk", "ui", "protocol", "hash", "local_postgresql_smoke", "component_host", "pack_sdk", "negotiate_oracle_privacy_a202", "starter_distribution"]
 local_postgresql_skip = "visible_incomplete"
 remote_ci_skip_allowed = false
 
 [evidence_tiers.minimal_ci]
 target_seconds = 900
 hard_seconds = 1500
-scope = ["parallel_linux", "native_windows_build_package_acl_filesystem_sqlite_postgresql_connect_recovery"]
+scope = ["parallel_linux", "native_windows_build_package_acl_filesystem_sqlite_postgresql_connect_recovery", "released_pack_subject_identity", "negotiate_restart_reconnect_replay"]
 
 [evidence_tiers.release]
 target_seconds = 10800
 hard_seconds = 14400
-scope = ["all_artifacts_and_platforms", "signature_sbom_provenance", "full_backend_conformance", "all_prior_migrations", "transfer", "isolated_restore", "semantic_verifier", "failure", "fuzz", "benchmark", "one_hour_sqlite_soak"]
+scope = ["all_artifacts_and_platforms", "signature_sbom_provenance", "full_backend_conformance", "all_prior_migrations", "transfer", "isolated_restore", "semantic_verifier", "failure", "fuzz", "benchmark", "one_hour_sqlite_soak", "runtime_plus_packs", "negotiate_both_storage_profiles", "starter_subjects", "post_sign_outside_adopter_qualification"]
 
 [provider_verification]
 required_for_release = false
@@ -370,6 +371,7 @@ strict_ci_skips = true
 local_postgresql_is_optional = true
 provider_smoke_requires_credentials = false
 release_artifact_manifest = "release-manifest.json"
+release_qualification_manifest = "release-qualification-manifest.json"
 
 [[gate_cells]]
 id = "native-linux-x86_64"
@@ -550,6 +552,34 @@ runnable_for_retained_rooms = true
 status = "resolved"
 required_for_release = true
 
+[[pack_executors]]
+pack_id = "worldstream.negotiate"
+explanatory_version = "0.1.0"
+host_contract_id = "worldstream/activity-pack/v1"
+revision_lock_id = "worldstream/pack-revision-lock/v1"
+revision_digest_algorithm = "blake3"
+revision_digest = "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
+descriptor_digest = "blake3:37608c23cdea8a8df63a5281167aecdbe875c7f5a4cbfcb1ced07330fefe74b7"
+executor_artifact_digest = "blake3:17ab497995271c36b4ddc753eb85519cd9210a1c0c26e97b29c35ce5c95d8aff"
+schema_bundle_digest = "blake3:b3c4d9a0d06684a8736164639077a1c9b39f9088738b804cfce3dccce746f98f"
+codec_bundle_digest = "blake3:67b814baf1511b6c29ffe9862eeeb2b130988972c9c3a2c2ab6ff1f7018a6b30"
+golden_corpus_digest = "blake3:3f37852137085a5c9954d1ae53a9e377eef4a0d63eee32d525389ee39cda40c1"
+selectable_for_new_rooms = true
+runnable_for_retained_rooms = true
+status = "resolved"
+required_for_release = true
+
+[[activity_pack_bundles]]
+pack_id = "worldstream.negotiate"
+explanatory_version = "0.1.0"
+bundle_format_id = "worldstream/activity-pack-bundle/v1"
+revision_digest = "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
+bundle_digest_algorithm = "blake3"
+bundle_digest = "blake3:9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5"
+path = "packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack"
+status = "resolved"
+required_for_release = true
+
 [[release_artifacts]]
 id = "source-archive"
 profile = "source"
@@ -577,6 +607,102 @@ digest_location = "release-manifest.json"
 [[release_artifacts]]
 id = "oci-linux-amd64-image"
 profile = "oci-linux-amd64"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-a202-adapter"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-deterministic-agents"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-documentation"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-examples"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-licenses"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-negotiate-bundle"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-negotiate-evidence-verifier"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-pack-toolchain"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-participant-console"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-release-metadata"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-studio"
+profile = "all"
+digest_algorithm = "sha256"
+digest = ""
+status = "detached"
+digest_location = "release-manifest.json"
+
+[[release_artifacts]]
+id = "worldstream-typescript-pack-sdk"
+profile = "all"
 digest_algorithm = "sha256"
 digest = ""
 status = "detached"
@@ -711,6 +837,58 @@ release_gate = true
 status = "detached"
 artifact_digest = ""
 artifact_digest_location = "release-manifest.json"
+
+[[evidence]]
+id = "worldstream-negotiate-evidence"
+release_gate = true
+status = "detached"
+artifact_digest = ""
+artifact_digest_location = "release-manifest.json"
+
+[[evidence]]
+id = "negotiate-oracle-a202-and-privacy"
+release_gate = true
+status = "detached"
+artifact_digest = ""
+artifact_digest_location = "release-manifest.json"
+
+[[evidence]]
+id = "starter-distribution-and-custom-pack-recovery"
+release_gate = false
+qualification_gate = true
+status = "detached"
+artifact_digest = ""
+artifact_digest_location = "release-qualification-manifest.json"
+
+[[evidence]]
+id = "negotiate-released-artifact-sqlite-restart-replay"
+release_gate = true
+status = "detached"
+artifact_digest = ""
+artifact_digest_location = "release-manifest.json"
+
+[[evidence]]
+id = "negotiate-released-artifact-postgresql-restart-replay"
+release_gate = true
+status = "detached"
+artifact_digest = ""
+artifact_digest_location = "release-manifest.json"
+
+[[evidence]]
+id = "outside-adopter-pack-author-journey"
+release_gate = false
+qualification_gate = true
+status = "detached"
+artifact_digest = ""
+artifact_digest_location = "release-qualification-manifest.json"
+
+[[evidence]]
+id = "outside-adopter-application-integrator-journey"
+release_gate = false
+qualification_gate = true
+status = "detached"
+artifact_digest = ""
+artifact_digest_location = "release-qualification-manifest.json"
 
 [evidence_policy]
 correctness = "hard_gate"

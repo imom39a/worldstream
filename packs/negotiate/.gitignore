@@ -1,0 +1,3 @@
+.worldstream/
+node_modules/
+releases/*/*-candidate.wspack

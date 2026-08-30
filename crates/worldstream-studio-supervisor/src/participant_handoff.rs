@@ -405,6 +405,11 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
         let delivery = Self::read_delivery(&mut socket, authority)?;
         Ok(ParticipantConsoleObservationV1 {
             browser_value: serde_json::json!({
+                "pack": {
+                    "id": attached.pack.id,
+                    "version": attached.pack.version,
+                    "digest": attached.pack.digest,
+                },
                 "room_head": browser_room_head(&attached.room_head),
                 "frame_head": attached.frame_head,
                 "delivery": delivery,

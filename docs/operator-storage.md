@@ -16,10 +16,12 @@ rewriting source evidence during backup.
 
 ## SQLite backup and restore
 
-A complete SQLite backup is a pair: the native database image and its exact
-sealed companion envelope. The command does not report success until both have
-been published, reopened, and independently verified by the native SQLite
-checks and the full WorldStream semantic verifier.
+A complete SQLite backup contains the native database image, its exact sealed
+companion envelope, and the original `.wspack` bytes for every Activity Pack
+Bundle referenced by retained Room lineage. A database/envelope pair without
+that referenced bundle set is incomplete. The command does not report success
+until all parts have been published, reopened, and independently verified by
+the native SQLite, bundle, and full WorldStream semantic verifiers.
 
 ```text
 worldstreamctl sqlite backup \
@@ -35,7 +37,7 @@ worldstreamctl sqlite restore \
 ```
 
 The canonical companion template supplies facts that SQLite intentionally does
-not persist: exact trusted pack/resource bytes, canonical request witnesses,
+not persist: exact referenced bundle/resource identities and bytes, canonical request witnesses,
 authoritative materializations, and fired-timer relations. A deployment
 integration must collect those facts at the same offline boundary. The backup
 command binds the template to the operation-minted native capture witness,
@@ -47,8 +49,12 @@ Restore admits the backup through an owner-only open handle, copies those exact
 bytes to a private owner-only snapshot, and performs every native reopen and
 source-evidence pass against that snapshot. It restores only to a new path and
 reports `semantic_verifier: "pass"` only after rebuilding a full verifier
-`Ready` result from the exact published envelope. Keep the backup and envelope
-together and immutable.
+`Ready` result from the exact published envelope. Referenced portable archives
+are re-verified and atomically published under the restored database's sibling
+`activity-packs/` store as `retained_only`. Source approval and selectability
+are never restored; the target operator must inspect, approve the exact physical
+digest, select it, and restart before creating a new Room with that revision.
+Keep the backup and envelope together and immutable.
 
 `sqlite verify` is deliberately narrower:
 
@@ -82,7 +88,8 @@ worldstreamctl postgres transfer begin \
 `begin` fsyncs an immutable intent before freezing the source, creates and
 verifies the exact SQLite backup, rechecks the complete transfer point under an
 immediate write transaction, enters `transfer_pending`, builds the deterministic
-bundle, and publishes the first immutable checkpoint generation. A retry must
+bundle, includes exactly the original `.wspack` bytes for non-embedded revisions
+named by retained Room locks, and publishes the first immutable checkpoint generation. A retry must
 match the persisted intent. If the source changed between capture and freeze,
 the operation rolls back, removes the verified backup, and leaves SQLite
 authoritative.
@@ -119,6 +126,21 @@ pre-handoff state, reconfirms the durable provider and source witnesses,
 performs the whole-deployment authority handoff, and then persists the terminal
 state. After PostgreSQL is authoritative, SQLite cannot be resumed as
 continuity.
+
+On the target host, restore the transfer-carried archives into its local CAS
+before starting the PostgreSQL-backed daemon:
+
+```text
+worldstreamctl postgres transfer restore-packs \
+  --bundle /srv/worldstream-transfer/deployment.bundle \
+  --data-dir /srv/worldstream
+```
+
+This command accepts only the canonical transfer bundle, re-verifies both the
+physical bundle digest and semantic revision digest, and publishes each archive
+as retained-only inventory. It imports zero approval records and reports that a
+restart is required. Missing, corrupt, substituted, duplicate, unreferenced, or
+extra portable archives make the transfer bundle invalid.
 
 Before finalization, abort discards/tombstones the matching provider import and
 restores SQLite authority:

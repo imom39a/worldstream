@@ -5,6 +5,7 @@
 | Room | one authoritative shared situation governed by one Activity Pack |
 | Activity Pack | deterministic reusable Room rules |
 | Activity Pack Revision | immutable executable semantic identity pinned by a Room |
+| Activity Pack Bundle | immutable `.wspack` bytes carrying one portable revision and its proof material |
 | Activity Phase | pack-defined stage, separate from Room status |
 | Outcome | pack-defined final result, separate from archive |
 | Principal | durable human or agent identity |
@@ -33,6 +34,8 @@
 | Semantic Receipt | durable stable result for one operation identity |
 | Runner Template | owner-installed immutable executable/health/capacity manifest |
 | Agent Profile | immutable assignment/host/provider configuration revision |
+| Pack Author | person or organization defining an Activity Pack; authorship grants no install or Room authority |
+| Application Integrator | person or organization connecting a Pack, clients, Runners, protocol adapters, and deployment |
 
 Use the full [domain context](https://github.com/imom39a/worldstream/blob/main/CONTEXT.md)
 for canonical definitions and explicit “avoid” guidance.

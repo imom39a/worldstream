@@ -2,11 +2,11 @@
 
 ## Status
 
-This is the frozen trusted `ActivityPackV1` host contract and the normative Agent Heist v0.1 pack specification. Investigation Room remains the v0.2 boundary probe.
+This is the frozen semantic `ActivityPackV1` host contract plus the accepted portable Activity Pack Bundle lifecycle. The exact first public Pack is [WorldStream Negotiate](negotiate.md).
 
-`ActivityPackV1` is a stable semantic contract for retained v0.1 Rooms, not a portable or sandboxed public plugin ABI. Trusted implementations are compiled into the release; dynamic loading, third-party upload, and a generic effect interface remain out of scope.
+`ActivityPackV1` remains one stable semantic contract for every retained Room. Public Pack revisions represent its five operations as a WASI-free WebAssembly Component; embedded Rust implementations remain an internal bridge/oracle rather than a second public Pack type.
 
-The host seam and executable-retention decision are accepted in [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
+The host seam and executable-retention decision are accepted in [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md), as partially superseded by the bundle/execution decision in [ADR 0014](adr/0014-installable-wasi-free-activity-pack-bundles.md).
 
 ## Purpose
 
@@ -22,7 +22,7 @@ An Activity Pack defines what one room means:
 
 WorldStream defines how the room is ordered, persisted, recovered, streamed, reattached, activated, and replayed.
 
-One room pins exactly one Activity Pack revision. Packs cannot call each other or mutate another room in v0.1 or v0.2.
+One Room pins exactly one Activity Pack Revision. Packs cannot call each other or mutate another Room in the first public release.
 
 ## When an activity fits
 
@@ -44,22 +44,27 @@ An activity is a poor fit when it is merely:
 
 The pack author still owns the domain model. WorldStream is valuable only if its room semantics remove substantial repeated infrastructure. This Activity Pack tax is an explicit validation risk.
 
-## Package contents in the frozen releases
+## Activity Pack Bundle contents
 
-Each trusted built-in pack contains:
+One canonical `.wspack` is a deterministic uncompressed ustar archive with
+sorted paths, zeroed metadata, regular files only, and bounded members. It
+contains:
 
-    activity/
-    ├── manifest data
-    ├── PackRevisionLockV1 and semantic digest
-    ├── canonical Rust state and input types
-    ├── initialization
-    ├── reduction
-    ├── view, Action Offer, and observation construction
-    ├── timer and attention reason definitions
-    ├── deterministic fixture data
-    ├── state, stimulus, and output codecs
-    ├── conformance and privacy tests
-    └── first-party UI projection schemas
+    bundle-manifest.json
+    revision-lock.json
+    descriptor.json
+    schemas.json
+    codec-bundle.json
+    executor.component.wasm
+    golden-corpus.json
+    conformance.json
+    dependency-lock.json
+    static/*                    optional, declared immutable material
+
+The external BLAKE3 of every exact archive byte is the Activity Pack Bundle
+identity; the archive cannot self-hash. Every member size/digest is declared
+and independently verified. Absolute/traversal/duplicate paths, links, devices,
+undeclared members, and mutable directories are rejected.
 
 It does not contain:
 
@@ -109,7 +114,11 @@ The explanatory version is for people. Only the semantic revision digest selects
 
 The Activity Pack defines Role names, cardinality, permissions, and Action Offers. The WorldStream Core reducer exclusively records current assignment in the semantic Membership map. Pack Activity State MUST NOT persist a second role-to-Membership ownership index; reduction derives any needed lookup from the supplied immutable Core view.
 
-The revision digest pins the exact compiled behavior and schemas. A semantic version is explanatory; replay trusts the digest.
+The revision digest pins the exact behavior and schemas. For a portable
+revision, `PackRevisionLockV1.rule_source_digest` is the exact original
+Component BLAKE3. A semantic version is explanatory; Replay trusts the Room's
+semantic digest, and installation/transfer trust the separate exact bundle
+digest.
 
 ## Core boundary seen by packs
 
@@ -125,7 +134,7 @@ The complete trusted host seam is:
 
 ~~~rust
 pub trait ActivityPackV1: Send + Sync + 'static {
-    fn descriptor(&self) -> &'static PackRevisionDescriptorV1;
+    fn descriptor(&self) -> &PackRevisionDescriptorV1;
 
     fn initialize(
         &self,
@@ -148,6 +157,13 @@ pub trait ActivityPackV1: Send + Sync + 'static {
 ~~~
 
 There are exactly five operations: descriptor, initialize, reduce, view, and observe. Typed implementation helpers may exist behind this boundary, but no sixth semantic callback or pack-name branch is part of v1.
+
+For a portable Component, the `descriptor` export returns the canonical
+descriptor content with only `revision_digest` omitted. This avoids a hash
+cycle: exact Component bytes determine `rule_source_digest`, the complete lock
+then determines `revision_digest`, and `descriptor.json` retains the full
+descriptor. The Component Host compares the exported content byte-for-byte
+with the full descriptor's content form before its adapter enters this trait.
 
 Every callback is pure, synchronous, bounded, and complete before persistence handoff. The pack receives no storage, network, filesystem, environment, scheduler, HostClock, database clock, Session, delivery, telemetry, Activation, Runner, model, wallet, secret, or artifact-byte capability. Same-process Rust remains trusted and is not a sandbox.
 
@@ -378,11 +394,11 @@ PackFault includes:
 - view/observation privacy-contract failure;
 - deterministic disagreement during Recovery or Replay.
 
-A PackFault before commit creates no Transition, timer change, Frame, Activation, or new receipt. Repeated deterministic failure on required input faults the Room; canonical hash disagreement quarantines it. OOM, aborting panic, and a permanently blocked trusted in-process callback cannot be preempted safely, so an external process supervisor is the v0.1 recovery boundary.
+A PackFault before commit creates no Transition, timer change, Frame, Activation, or new receipt. Repeated deterministic failure on required input faults the Room; canonical hash disagreement quarantines it. Portable callbacks run in a fresh Wasmtime Store/instance with fixed fuel, memory, table, stack, byte, and concurrency limits. Engine panic/abort and aggregate process exhaustion remain process-level risks handled by pinned-engine review, process/container limits, restart tests, and upgrade gates rather than a hostile-tenancy claim.
 
-## PackRevisionLock and embedded registry
+## PackRevisionLock and startup registry
 
-revision_digest is a build-computed semantic identity, not a pack-declared label and not a digest of platform-specific machine bytes. It is the digest of canonical PackRevisionLockV1:
+`revision_digest` is a build-computed semantic identity, not a pack-declared label and not a digest of platform-specific machine bytes. It is the digest of canonical `PackRevisionLockV1`:
 
 - pack ID and explanatory version;
 - host-contract version and canonical-codec version;
@@ -394,7 +410,9 @@ revision_digest is a build-computed semantic identity, not a pack-declared label
 
 Every behavior, legality, rejection, event, timer, Attention, projection, observation, or visibility change requires a new digest.
 
-Each release embeds PackRegistryV1 mapping an exact digest to:
+At startup the daemon constructs one immutable `PackRegistryV1` from embedded
+first-party revisions plus approved local bundles. The same registry is
+injected into every storage adapter and maps an exact digest to:
 
 - the compiled executor;
 - PackRevisionLockV1 and descriptor/schema bundle;
@@ -405,7 +423,10 @@ Each release embeds PackRegistryV1 mapping an exact digest to:
 
 selectable_for_new_rooms implies runnable_for_retained_rooms. A digest may become non-selectable while remaining runnable, but every digest referenced by retained Room lineage MUST remain runnable for load, advance, view, observe, Recovery, and Replay. Retaining only decoders is insufficient.
 
-Startup rejects digest/lock/descriptor collisions. Recovery never downloads or dynamically loads code. A referenced digest with a missing executor or codec makes the affected Room unavailable and prevents a verified restore or transfer from becoming ready.
+Startup rejects digest/lock/descriptor collisions and missing/corrupt approved
+bytes. It never downloads, hot-loads, or compiles author source. A referenced
+digest with a missing executor or codec makes the affected Room unavailable
+and prevents readiness, verified restore, or transfer.
 
 There is no in-place Room upgrade. A Room's digest and canonical Activity bytes never change except through ordinary Transitions under that same digest. A new semantic revision creates a new Room. Removing retained execution support is a future explicit compatibility break with a defined export/purge policy, never a silent migration.
 
@@ -417,17 +438,127 @@ Retain for the Room lineage lifetime:
 
 Snapshots, current materializations, indexes, caches, telemetry, pruned delivery payloads, and retired Invocation Context bytes are replaceable or bounded. Removing every snapshot must still permit initialization and exact full Replay.
 
-The release compatibility manifest enumerates every bundled executor/codec and its golden evidence. Release upgrade, verified restore, and storage transfer gates fully Replay every retained digest rather than merely decoding old state.
+The release compatibility manifest enumerates the runtime ABI/profile and
+official starter bundles. Each installation separately owns its exact approved
+inventory. Backup and transfer carry the original bundle bytes for every
+referenced lineage; release upgrade, restore, and transfer fully Replay every
+retained digest rather than merely decoding old state.
 
-## Public plugins
+The existing immutable `DeploymentIdentityV1` ledger identifies the base
+Runtime Distribution and its embedded Pack revisions. It is not rewritten as
+local bundles are installed or revoked and is never interpreted as installed
+bundle authority. The local CAS/inventory is the separate startup authority;
+backup and transfer carry referenced original bundles in a separately verified
+section with target-local approval.
 
-Not supported. ActivityPackV1 freezes the trusted semantic seam required by retained v0.1 Rooms; it does not promise Wasmtime, a Component Model ABI, signing, dynamic registry service, third-party renderer isolation, untrusted resource metering, or a marketplace. Those require a separate post-v0.2 decision.
+## Offline operator lifecycle
+
+Stop `worldstreamd` before changing Pack inventory. Every command resolves the
+same owner-only data directory and storage profile as the daemon from one
+reviewed configuration file, emits a typed JSON receipt, and requires restart
+before the new inventory can affect Room creation. Use the identical
+`<WORLDSTREAM_CONFIG>` for the complete lifecycle; a receipt from another
+configuration is not interchangeable.
+
+~~~bash
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack inspect \
+  --bundle ./worldstream.negotiate.wspack
+
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack approve \
+  --bundle ./worldstream.negotiate.wspack \
+  --operator-id host-operator-1 \
+  --decided-at 2026-08-30T12:00:00Z
+
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack install \
+  --bundle ./worldstream.negotiate.wspack \
+  --installed-at 2026-08-30T12:01:00Z
+
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack inventory
+
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack set-selectable \
+  --bundle-digest blake3:<exact-physical-digest> \
+  --selectable true
+
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack inventory
+
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack restart-readiness
+~~~
+
+`restart-readiness` rereads every installed original archive and rebuilds the
+same immutable registry through production Component admission, then executes
+every healthy Room's exact Genesis-to-Head Replay with every retained
+executor. For SQLite it reads the configured `worldstream.sqlite3`; an absent
+database is a verified empty deployment. For PostgreSQL, pass the same
+owner-only direct-admin credential boundary used by offline maintenance:
+
+~~~bash
+worldstreamctl --config <WORLDSTREAM_CONFIG> \
+  pack restart-readiness \
+  --dsn-file <POSTGRES_ADMIN_DSN_FILE>
+~~~
+
+PostgreSQL Replay runs in one repeatable-read, read-only snapshot. Both typed
+receipt kinds carry `storage_profile`. Inventory and readiness receipts share
+`inventory_digest`, the canonical identity of the digest-sorted Pack/version,
+physical bundle, semantic revision, and install-state rows. Compare readiness
+with the second inventory receipt emitted after `set-selectable`; its
+`storage_profile` and `inventory_digest` must match exactly. The earlier
+retained-only snapshot must have a different digest.
+
+The readiness receipt also carries a pathless `deployment_binding`. It is
+derived from the canonical data-directory identity, the configured storage
+profile, and the available provider deployment-lineage/storage-epoch metadata;
+raw paths and provider identity bytes are not disclosed. After production
+Component admission and executable Replay succeed, `restart-readiness` writes
+one durable startup-readiness seal binding that `deployment_binding` to the
+exact `inventory_digest` and `storage_profile`. It also reports
+`rooms_replayed` and `isolated_rooms_skipped`. Existing faulted or quarantined
+Rooms remain isolated.
+
+At startup, `worldstreamd` independently assembles the immutable inventory and
+derives the binding from its actual configured storage target. If any portable
+bundle is installed, the daemon refuses readiness unless the durable seal
+matches all three values exactly. Installation, approval revocation,
+selectability change, retained-bundle restore, or removal durably clears the
+seal, so the operator must run `restart-readiness` again. A changed inventory,
+different configuration or storage target, missing/substituted retained
+executor, canonical mismatch, or healthy-Room Replay disagreement therefore
+fails closed instead of reusing stale readiness evidence.
+
+Export preserves the exact `.wspack` bytes and carries no approval:
+
+~~~bash
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack export \
+  --bundle-digest blake3:<exact-physical-digest> \
+  --output ./exported.wspack
+~~~
+
+Revocation immediately records a local negative decision and changes installed
+inventory to retained-only for the next restart. Removal has no force option:
+it first performs a complete bounded retained-Room reference proof against the
+configured SQLite or PostgreSQL profile and fails closed if the revision is
+still named. PostgreSQL removal additionally requires an owner-only direct
+admin DSN file through `--dsn-file`.
+
+## Public portable Packs
+
+The first public contract is `worldstream/component-deterministic/v1`: exactly
+the five `ActivityPackV1` exports, zero imports, synchronous Wasmtime execution,
+no WASI linker, fresh Store/instance per callback, original Component bytes as
+authority, and fail-closed preflight/golden/privacy/resource verification.
+
+Host Operator approval of one verified `.wspack` digest is the trust root.
+Publisher signatures/provenance may add evidence but never grant authority.
+Installation is offline and restart-based. There is no network registry,
+marketplace, hot loading, automatic approval, name/version fallback, generic
+host-import/effect surface, or force removal.
 
 ## Presentation boundary
 
 A pack publishes typed projection schemas and semantic labels. It does not ship executable frontend code.
 
-v0.1 has a first-party Heist renderer plus generic state/timeline panels. v0.2 adds a first-party Investigation renderer. Both use the same authorized protocol.
+The first product surface has curated Negotiate setup, exact approval/signing,
+timeline, Replay, and evidence views. Agent Heist retains its demo renderer.
 
 The project deliberately does not freeze:
 
@@ -438,11 +569,11 @@ The project deliberately does not freeze:
 - runtime LLM-generated layout;
 - a renderer marketplace.
 
-## Reference Activity A: Agent Heist
+## Demo/conformance Activity: Agent Heist
 
 ### Purpose
 
-Agent Heist is the v0.1 reference Activity and uses pack schema v1. It is one ordinary ActivityPackV1 implementation with no Heist-specific Kernel primitive. It proves:
+Agent Heist is a retained visual demo/conformance Activity and one ordinary ActivityPackV1 implementation with no Heist-specific Kernel primitive. It proves:
 
 - private participant views;
 - structured negotiation;
@@ -695,7 +826,7 @@ Replay folds Genesis through the exact typed Stimuli with the retained executor.
 
 The corrected executable prototype on branch prototype/agent-heist-recovery at commit 932c06c supports these semantics. It is logic evidence only; it does not prove production database/transport concurrency, authorization enforcement, power-loss recovery, browser behavior, queue bounds, performance, or cryptography.
 
-## Reference Activity B: Investigation Room
+## Deferred design probe: Investigation Room
 
 ### Purpose
 
@@ -908,7 +1039,7 @@ If these fail, the team must revise and retest the abstraction rather than hidin
 
 ## Activity conformance suite
 
-Every built-in pack MUST pass:
+Every portable or embedded retained revision MUST pass:
 
 - PackRevisionLock, descriptor, schema, codec, executor, and golden-corpus consistency;
 - initialization determinism and no Genesis event, Attention, or Frame;
@@ -931,14 +1062,42 @@ Every built-in pack MUST pass:
 - absence of floating-point authoritative values;
 - no core changes specific to the pack.
 
-## Future portable ABI decision
+## Pack Author path
 
-ActivityPackV1 is frozen for trusted retained Rooms. After v0.2, use the two real implementations to decide whether a separate portable/untrusted ABI is justified:
+The first public SDK is TypeScript through release-pinned
+`@worldstream/pack-sdk` and `@worldstream/pack-cli`. One code-first project
+supports scaffold, strict check, tests, build, inspect, and production-host
+proof. Optional first-release prompt assistance emits the same reviewable
+project and gains no install or Room authority. Authors never hand-write WIT,
+schemas, digests, revision locks, Component bytes, or conformance evidence.
 
-- whether the interface should remain a Rust crate API;
-- whether a WebAssembly Component Model boundary is justified;
-- which schema/version compatibility rules are real;
-- how resource limits and deterministic execution are enforced;
-- whether third-party packs are worth the security and support cost.
+The offline command `worldstream-pack new <directory>` remains canonical.
+`worldstream-pack create <directory> --prompt "<description>"` may call a
+configured OpenAI-compatible endpoint, but it accepts only a closed blueprint
+selecting the fixed starter plus its display name and description. WorldStream
+renders every file locally below one private staging root and returns
+`review_required`; only the separate
+`worldstream-pack create <directory> --confirm <review-id>` command promotes
+the exact reviewed bytes. Both routes then use the identical `check`, `test`,
+`build`, `inspect`, and `prove` pipeline.
 
-No marketplace or public upload flow should be built merely because an Activity Pack host interface exists.
+`prove` compiles the Component once and submits that draft bundle to the
+production verifier, Component Host, and Core registry. When Core returns the
+authoritative retained-transcript digest for that exact semantic revision, the
+CLI may finalize only `golden-corpus.json`, `conformance.json`, and the bundle
+manifest before submitting the exact same Component and revision a second
+time. Every other member is byte-compared across finalization; revision drift,
+a repeated finalization response, or any non-transcript admission failure is
+fatal.
+
+Prompt assistance cannot accept provider-authored source, paths, dependencies,
+shell commands, or executable rules; follow symlinks or escape either root;
+install packages; build, approve, or install a bundle; or contact the daemon.
+Provider response bodies and the endpoint, model, key, and prompt transcript
+are discarded and MUST NOT enter project or bundle bytes, proof evidence,
+command receipts, or normal diagnostic logs. External endpoints require HTTPS;
+unencrypted HTTP is permitted only for a loopback provider.
+
+Negotiate MUST dogfood this exact path and match a native first-party oracle.
+Go and additional source languages are deferred; Wasm remains the neutral
+deployment target rather than the authoring language.

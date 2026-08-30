@@ -1,0 +1,7 @@
+{
+  "format": "worldstream/pack-project/v1",
+  "entrypoint": "src/pack.ts",
+  "output": "releases/0.1.0/worldstream-negotiate-candidate.wspack",
+  "goldenFixture": "fixtures/golden.ts",
+  "privacyFixture": "fixtures/privacy.ts"
+}

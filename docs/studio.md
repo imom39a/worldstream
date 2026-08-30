@@ -4,6 +4,56 @@ WorldStream Studio is the local host-operator portal. It is a companion control
 plane, not the Participant Console, and `worldstreamd` remains the only
 authoritative Room runtime.
 
+For the Runtime-plus-Packs release, Studio guides exact bundle inspection,
+digest approval, offline install status, restart readiness, schema-driven
+Genesis configuration, Membership/handoff creation, opaque external-Runner
+credential references, timers, Replay, and evidence export.
+
+Studio never authors Pack source, auto-approves generated code, executes a
+model, holds commercial signing keys, submits Participant Actions, shows
+another participant's private Projection, exposes an arbitrary shell, or
+implements a second rules/state machine. Exact approval/signing and ordinary
+Actions belong in the Participant Console; `worldstreamctl pack` remains the
+complete operator interface.
+
+The Pack Operations card makes that offline interface approachable without
+adding a mutation endpoint. It presents the exact `inspect → approve → install
+→ inventory → set-selectable → inventory → restart-readiness` command order and
+consumes only the closed `worldstream/pack-operator-receipt/v1` JSON shapes.
+Every displayed command begins with
+`worldstreamctl --config <WORLDSTREAM_CONFIG> pack`; PostgreSQL
+`restart-readiness` additionally requires the owner-only
+`--dsn-file <POSTGRES_ADMIN_DSN_FILE>` argument. The same reviewed config must
+be used for the complete workflow.
+
+Before the first mutation, Studio requires the Host Operator to confirm that
+`worldstreamd` was stopped through the ordinary service manager; the card
+itself has no stop or process-inspection authority. Every bundle-bearing
+receipt is pinned to the first inspected physical bundle digest and semantic
+revision. Studio validates the inventory row count and order, recomputes the
+canonical `inventory_digest`, and requires both inventory receipts to name the
+configured `storage_profile`. Reordering, substitution, a malformed count or
+digest, an unexpected field, or a profile change fails closed.
+
+The second inventory proves the selectable startup snapshot. Its
+`storage_profile` and canonical `inventory_digest` must equal those in the
+readiness receipt. The readiness receipt also carries a pathless
+`deployment_binding` derived from the canonical configured data-directory
+identity, storage profile, and available provider deployment metadata. It is
+accepted only after production Component admission and configured-store
+executable Replay; the CLI then writes a durable startup-readiness seal over
+that exact target/inventory pair. The daemon independently derives the same
+binding at startup and refuses installed portable bundles if the seal is
+missing or differs. Installation, approval revocation, selectability change,
+retained-bundle restore, or removal clears the seal and returns the workflow to
+not start-ready.
+
+The final receipt remains aggregate and pathless, so the operator must paste it
+directly from the displayed config-aware command. The browser never receives a
+filesystem path, `.wspack` bytes, operator identifier, decision time, command,
+DSN, or approval authority. A successful final receipt permits an ordinary
+configured daemon start; it does not hot-load the Pack.
+
 ## Run locally
 
 Start the Studio Supervisor and separately served portal:

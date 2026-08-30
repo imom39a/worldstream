@@ -827,6 +827,40 @@ pub enum PostgresTimerError {
     Corrupt,
 }
 
+/// Closed failure while proving whether a semantic Activity Pack revision is
+/// still named by any retained PostgreSQL Room lineage.
+#[derive(Debug, Error)]
+pub enum PostgresPackReferenceErrorV1 {
+    #[error("PostgreSQL retained Pack reference query is unavailable")]
+    Unavailable,
+    #[error("PostgreSQL retained Pack reference evidence is corrupt")]
+    Corrupt,
+    #[error("PostgreSQL retained Pack reference evidence exceeds its fixed bound")]
+    BoundExceeded,
+}
+
+/// Bounded summary from one repeatable-read, read-only executable Replay
+/// preflight across every retained PostgreSQL Room.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PostgresPackReplaySummaryV1 {
+    pub rooms_replayed: usize,
+    pub isolated_rooms_skipped: usize,
+}
+
+/// Closed failure while proving that original retained Pack executors can
+/// replay every healthy PostgreSQL Room before a Runtime upgrade.
+#[derive(Debug, Error)]
+pub enum PostgresPackReplayErrorV1 {
+    #[error("PostgreSQL retained Pack Replay preflight is unavailable")]
+    Unavailable,
+    #[error("PostgreSQL retained Pack Replay evidence exceeds its fixed bound")]
+    BoundExceeded,
+    #[error("PostgreSQL retained Pack Replay evidence is corrupt")]
+    Corrupt,
+    #[error("a retained Activity Pack executor cannot reproduce its Room")]
+    Replay,
+}
+
 /// Closed production failure for the present-authorized historical replay
 /// façade. PostgreSQL supplies only verified immutable bytes; Core performs
 /// the replay and projection reduction.
@@ -1039,6 +1073,122 @@ impl PostgresAdmin {
             );
         }
         result
+    }
+
+    /// Reports whether any retained Room Genesis names `revision_digest`.
+    ///
+    /// This is an offline, read-only proof used by the Activity Pack removal
+    /// path. It reads the complete bounded Genesis inventory, strictly decodes
+    /// every canonical revision lock, and fails closed on provider, bound, or
+    /// canonical-data errors.
+    pub fn is_pack_revision_referenced(
+        &self,
+        revision_digest: &worldstream_core::PackDigestV1,
+    ) -> Result<bool, PostgresPackReferenceErrorV1> {
+        let mut client = self
+            .connect()
+            .map_err(|_| PostgresPackReferenceErrorV1::Unavailable)?;
+        verify_runtime_schema_client(&mut client)
+            .map_err(|_| PostgresPackReferenceErrorV1::Unavailable)?;
+        let maximum_rooms = VerifierLimits::default().max_rooms;
+        let query_limit = i64::try_from(maximum_rooms.saturating_add(1))
+            .map_err(|_| PostgresPackReferenceErrorV1::BoundExceeded)?;
+        let rows = client
+            .query(
+                "SELECT pack_revision_lock_bytes FROM worldstream_genesis ORDER BY room_id LIMIT $1",
+                &[&query_limit],
+            )
+            .map_err(|_| PostgresPackReferenceErrorV1::Unavailable)?;
+        if rows.len() > maximum_rooms {
+            return Err(PostgresPackReferenceErrorV1::BoundExceeded);
+        }
+        for row in rows {
+            let bytes = row
+                .try_get::<_, Vec<u8>>(0)
+                .map_err(|_| PostgresPackReferenceErrorV1::Corrupt)?;
+            let lock: PackRevisionLockV1 = CanonicalJsonV1::decode_canonical(&bytes)
+                .map_err(|_| PostgresPackReferenceErrorV1::Corrupt)?;
+            let observed = lock
+                .revision_digest()
+                .map_err(|_| PostgresPackReferenceErrorV1::Corrupt)?;
+            if observed == *revision_digest {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Verifies every healthy retained Room against the exact supplied Pack
+    /// registry under one repeatable-read, read-only provider snapshot.
+    /// Existing faulted or quarantined Rooms remain isolated and are counted,
+    /// never promoted. The method performs no writes and returns no Room data.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed provider, bound, canonical-data, or executable Replay
+    /// failure. A missing retained revision therefore blocks upgrade readiness.
+    pub fn verify_all_executable_pack_replays(
+        &self,
+        registry: &PackRegistryV1,
+    ) -> Result<PostgresPackReplaySummaryV1, PostgresPackReplayErrorV1> {
+        let mut client = self
+            .connect()
+            .map_err(|_| PostgresPackReplayErrorV1::Unavailable)?;
+        verify_runtime_schema_client(&mut client)
+            .map_err(|_| PostgresPackReplayErrorV1::Unavailable)?;
+        let mut transaction = client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .map_err(|_| PostgresPackReplayErrorV1::Unavailable)?;
+        let maximum_rooms = VerifierLimits::default().max_rooms;
+        let query_limit = i64::try_from(maximum_rooms.saturating_add(1))
+            .map_err(|_| PostgresPackReplayErrorV1::BoundExceeded)?;
+        let rows = transaction
+            .query(
+                "SELECT room_id, integrity_status FROM worldstream_room_roots ORDER BY room_id LIMIT $1",
+                &[&query_limit],
+            )
+            .map_err(|_| PostgresPackReplayErrorV1::Unavailable)?;
+        if rows.len() > maximum_rooms {
+            return Err(PostgresPackReplayErrorV1::BoundExceeded);
+        }
+        let mut rooms_replayed = 0_usize;
+        let mut isolated_rooms_skipped = 0_usize;
+        for row in rows {
+            let room_id = row
+                .try_get::<_, String>(0)
+                .map_err(|_| PostgresPackReplayErrorV1::Corrupt)?;
+            let integrity = row
+                .try_get::<_, String>(1)
+                .map_err(|_| PostgresPackReplayErrorV1::Corrupt)?;
+            match integrity.as_str() {
+                "healthy" => {
+                    let verification = Self::verify_room_with_client(&mut transaction, &room_id)
+                        .map_err(|_| PostgresPackReplayErrorV1::Corrupt)?;
+                    verification
+                        .verify_executable_replay(registry)
+                        .map_err(|_| PostgresPackReplayErrorV1::Replay)?;
+                    rooms_replayed = rooms_replayed
+                        .checked_add(1)
+                        .ok_or(PostgresPackReplayErrorV1::BoundExceeded)?;
+                }
+                "faulted" | "quarantined" => {
+                    isolated_rooms_skipped = isolated_rooms_skipped
+                        .checked_add(1)
+                        .ok_or(PostgresPackReplayErrorV1::BoundExceeded)?;
+                }
+                _ => return Err(PostgresPackReplayErrorV1::Corrupt),
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|_| PostgresPackReplayErrorV1::Unavailable)?;
+        Ok(PostgresPackReplaySummaryV1 {
+            rooms_replayed,
+            isolated_rooms_skipped,
+        })
     }
 
     /// Verifies one persisted Room without changing provider state.

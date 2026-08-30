@@ -1289,11 +1289,11 @@ impl SqliteGatewayBackend {
         let projection_hash = worldstream_core::projection_hash_for_canonical_bytes(&view_bytes)
             .map_err(|_| BackendError::InvalidResult)?
             .to_string();
-        let descriptor = self
+        let retained_pack = self
             .registry
             .load_retained(replay.verified_head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-            .descriptor();
+            .map_err(|_| BackendError::InvalidResult)?;
+        let descriptor = retained_pack.descriptor();
         Ok(ReplayResponse {
             room_id: room_id.to_string(),
             pack: worldstream_protocol::PackReference {
@@ -2209,11 +2209,11 @@ impl GatewayBackend for SqliteGatewayBackend {
             integrity_status(current.integrity().status()),
         )?;
         let trace = current.trace();
-        let descriptor = self
+        let retained_pack = self
             .registry
             .load_retained(trace.head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-            .descriptor();
+            .map_err(|_| BackendError::InvalidResult)?;
+        let descriptor = retained_pack.descriptor();
         Ok(AttachReply {
             attached: RoomAttached {
                 room_id: room_id.to_string(),
@@ -3751,6 +3751,17 @@ mod tests {
                 .validated_live_backup_destination("../escape")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn sqlite_gateway_retains_the_injected_startup_registry() {
+        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
+        let registry =
+            Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
+        let backend = SqliteGatewayBackend::new(store, Arc::clone(&registry));
+
+        assert!(Arc::ptr_eq(&registry, &backend.registry));
     }
 
     #[test]

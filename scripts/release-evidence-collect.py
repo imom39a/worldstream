@@ -35,7 +35,25 @@ DEFAULT_MANIFEST_JSON = ROOT / "compatibility.json"
 SOURCE_SCHEMA_PREFIX = "worldstream/release-evidence/"
 NORMALIZED_SCHEMA = "worldstream/release-evidence-report/v1"
 PRE_SIGN_PHASE = "pre-sign"
-REQUIRED_RELEASE_EVIDENCE_COUNT = 14
+BASE_RELEASE_EVIDENCE_IDS = frozenset(
+    {
+        "manifest-syntax-parity",
+        "sqlite-conformance-migration-backup-restore-crash",
+        "postgresql-direct-and-transaction-pooler-conformance",
+        "all-prior-forward-migrations-both-backends",
+        "sqlite-postgresql-transfer-byte-parity-and-epoch-fencing",
+        "backend-native-isolated-restore-and-bounded-semantic-verifier",
+        "native-linux-release-profile",
+        "native-windows-release-profile",
+        "oci-linux-amd64-release-profile",
+        "macos-source-quickstart",
+        "config-secrets-probes-observability-security",
+        "checksums-signature-sbom-provenance",
+        "failure-fuzz-resource-and-one-hour-sqlite-soak",
+        "reference-performance-per-backend",
+    }
+)
+REQUIRED_RELEASE_EVIDENCE_COUNT = 18
 STATUS_VALUES = frozenset({"pass", "passed", "failed", "unavailable", "incomplete"})
 EXPECTED_SOURCE_FIELDS = {
     "schema",
@@ -73,6 +91,26 @@ REQUIRED_ARTIFACT_BINDINGS = {
     ),
     "failure-soak": ("failure-soak", "linux-release-profile"),
     "reference-performance": ("reference-performance", "linux-release-profile"),
+    "pack-component-conformance": (
+        "negotiate-bundle",
+        "negotiate-conformance-evidence",
+        "linux-release-profile",
+    ),
+    "negotiate-policy": (
+        "negotiate-policy-qualification",
+        "a202-adapter-report",
+        "a202-adapter",
+    ),
+    "negotiate-sqlite-restart": (
+        "sqlite-restart-replay-report",
+        "linux-release-profile",
+        "negotiate-bundle",
+    ),
+    "negotiate-postgres-restart": (
+        "postgres-restart-replay-report",
+        "linux-release-profile",
+        "negotiate-bundle",
+    ),
 }
 EXPECTED_PRODUCER_IDS = {
     "manifest-contract": "conformance/manifest-contract/v1",
@@ -89,6 +127,10 @@ EXPECTED_PRODUCER_IDS = {
     "supply-chain": "release-supply-chain-pre-sign-v1",
     "failure-soak": "linux-failure-soak-release-v1",
     "reference-performance": "reference-performance-publication/v1",
+    "pack-component-conformance": "runtime-packs/pack-component-conformance/v1",
+    "negotiate-policy": "runtime-packs/negotiate-policy/v1",
+    "negotiate-sqlite-restart": "runtime-packs/negotiate-sqlite-restart/v1",
+    "negotiate-postgres-restart": "runtime-packs/negotiate-postgres-restart/v1",
 }
 
 
@@ -219,6 +261,50 @@ SOURCE_SPECS = (
             "non_sla_publication",
         ),
     ),
+    SourceSpec(
+        "pack-component-conformance",
+        "worldstream-negotiate-evidence",
+        "all-supported-platforms",
+        (
+            "bundle_exact_identity",
+            "component_host_contract",
+            "production_core_proof",
+            "resource_and_capability_denial",
+        ),
+    ),
+    SourceSpec(
+        "negotiate-policy",
+        "negotiate-oracle-a202-and-privacy",
+        "all-supported-platforms",
+        (
+            "independent_oracle",
+            "a202_operated_profile",
+            "participant_privacy",
+            "dual_evidence_verification",
+        ),
+    ),
+    SourceSpec(
+        "negotiate-sqlite-restart",
+        "negotiate-released-artifact-sqlite-restart-replay",
+        "native-linux-x86_64",
+        (
+            "released_artifact_only",
+            "forced_restart_and_reconnect",
+            "exact_executable_replay",
+            "offline_dual_evidence",
+        ),
+    ),
+    SourceSpec(
+        "negotiate-postgres-restart",
+        "negotiate-released-artifact-postgresql-restart-replay",
+        "native-linux-x86_64",
+        (
+            "released_artifact_only",
+            "forced_restart_and_reconnect",
+            "exact_executable_replay",
+            "offline_dual_evidence",
+        ),
+    ),
 )
 SOURCE_BY_ID = {spec.source_id: spec for spec in SOURCE_SPECS}
 EVIDENCE_BY_ID = {spec.evidence_id: spec for spec in SOURCE_SPECS}
@@ -342,6 +428,12 @@ def release_evidence_ids(manifest: dict[str, Any]) -> tuple[str, ...]:
             "collector requires exactly "
             f"{REQUIRED_RELEASE_EVIDENCE_COUNT} release-gated evidence IDs; "
             f"found {len(ids)}"
+        )
+    missing_base = sorted(BASE_RELEASE_EVIDENCE_IDS - set(ids))
+    if missing_base:
+        fail(
+            "collector cannot remove any of the original fourteen release evidence rows: "
+            + ", ".join(missing_base)
         )
     return tuple(sorted(ids))
 

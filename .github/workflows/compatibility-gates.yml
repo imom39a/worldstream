@@ -1133,6 +1133,18 @@ jobs:
         with:
           version: 0.12.5
           enable-cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm and build portable release inputs
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
+          pnpm pack:build
+          pnpm ui:build
+          pnpm studio:build
       - name: Install pinned gate Python
         run: |
           uv python install 3.14.7
@@ -1210,6 +1222,34 @@ jobs:
           source_archive="$RUNNER_TEMP/worldstream-clean-source-payload/worldstream-${version}-source.tar.gz"
           test -f "$source_archive" && test ! -L "$source_archive"
           cp --no-clobber "$source_archive" release-inputs/payload/
+      - name: Build and bind the twelve deterministic portable release subjects
+        run: |
+          set -euo pipefail
+          version=$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
+          mkdir release-inputs/release-metadata
+          cp --no-clobber compatibility.json compatibility.toml release-inputs/release-metadata/
+          mkdir -p release-inputs/portable/a202 release-inputs/portable/documentation
+          cp --recursive --no-clobber crates/worldstream-a202-adapter release-inputs/portable/a202/crate
+          cp --recursive --no-clobber interop/a202-peer-v1 release-inputs/portable/a202/interop-kit
+          cp --recursive --no-clobber docs release-inputs/portable/documentation/docs
+          cp --recursive --no-clobber qualification/outside-adopter-v1 release-inputs/portable/documentation/outside-adopter-kit
+          "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/starter-release-subjects.py build \
+            --version "$version" \
+            --output-dir release-inputs/starter-subjects \
+            --compatibility-json compatibility.json \
+            --subject worldstream-a202-adapter=release-inputs/portable/a202 \
+            --subject worldstream-deterministic-agents=crates/worldstream-negotiate-oracle/fixtures/corpus-v1.json \
+            --subject worldstream-documentation=release-inputs/portable/documentation \
+            --subject worldstream-examples=examples \
+            --subject worldstream-licenses=licenses \
+            --subject worldstream-negotiate-bundle=packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack \
+            --subject worldstream-negotiate-evidence-verifier=crates/worldstream-negotiate-evidence \
+            --subject worldstream-pack-toolchain=sdk/typescript-pack/packages/pack-cli/dist \
+            --subject worldstream-participant-console=web/console/dist \
+            --subject worldstream-release-metadata=release-inputs/release-metadata \
+            --subject worldstream-studio=web/studio/dist \
+            --subject worldstream-typescript-pack-sdk=sdk/typescript-pack/packages/pack-sdk/dist
+          cp --no-clobber release-inputs/starter-subjects/* release-inputs/payload/
       - name: Collect platform gate reports
         if: ${{ always() }}
         continue-on-error: true
@@ -1244,6 +1284,22 @@ jobs:
           linux_archive="release-inputs/payload/worldstream-${version}-linux-x86_64.tar.gz"
           windows_archive="release-inputs/payload/worldstream-${version}-windows-x64.zip"
           oci_archive="release-inputs/payload/worldstream-${version}-oci-linux-amd64.oci.tar"
+          negotiate_bundle="release-inputs/payload/worldstream-${version}-negotiate.wspack"
+          mkdir -p release-inputs/runtime-packs/released-linux
+          tar -xzf "$linux_archive" \
+            -C release-inputs/runtime-packs/released-linux \
+            --strip-components=1
+          release-inputs/runtime-packs/released-linux/bin/worldstreamctl \
+            pack prove "$negotiate_bundle" --json \
+            > release-inputs/runtime-packs/negotiate-pack-proof.json
+          "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-evidence-produce-runtime-packs.py \
+            --component-only \
+            --output-dir release-inputs/runtime-packs/producers \
+            --bundle "$negotiate_bundle" \
+            --pack-proof release-inputs/runtime-packs/negotiate-pack-proof.json \
+            --linux-archive "$linux_archive" \
+            --manifest-toml compatibility.toml \
+            --manifest-json compatibility.json
           producer_status=0
           "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-evidence-produce.py \
             --output-dir release-inputs/source-reports \
@@ -1260,6 +1316,10 @@ jobs:
             --producer security-observability=release-inputs/security/producers/config-secrets-probes-observability-security.json \
             --producer failure-soak=release-inputs/failure/producers/failure-soak.json \
             --producer reference-performance=release-inputs/reference/producers/reference-performance.json \
+            --producer pack-component-conformance=release-inputs/runtime-packs/producers/pack-component-conformance.json \
+            --missing negotiate-policy=exact-negotiate-oracle-privacy-a202-producer-not-uploaded \
+            --missing negotiate-sqlite-restart=released-artifact-sqlite-restart-producer-not-uploaded \
+            --missing negotiate-postgres-restart=released-artifact-postgresql-restart-producer-not-uploaded \
             --missing supply-chain=supply-chain-pre-sign-typed-producer-not-uploaded \
             --artifact manifest-contract/compatibility-pair=release-inputs/conformance/artifacts/manifest-contract.json \
             --artifact sqlite-conformance/sqlite-conformance-result=release-inputs/conformance/artifacts/sqlite-conformance.json \
@@ -1276,8 +1336,10 @@ jobs:
             --artifact failure-soak/linux-release-profile="$linux_archive" \
             --artifact reference-performance/reference-performance=release-inputs/reference/artifacts/reference-performance.json \
             --artifact reference-performance/linux-release-profile="$linux_archive" \
+            --artifact pack-component-conformance/negotiate-bundle="$negotiate_bundle" \
+            --artifact pack-component-conformance/negotiate-conformance-evidence=packs/negotiate/evidence/conformance-v1.json \
             || producer_status=$?
-          printf 'typed producer adapter exit=%s; only the pre-sign supply-chain input remains intentionally absent in this phase\n' "$producer_status"
+          printf 'typed producer adapter exit=%s; supply-chain plus three Negotiate policy/restart producers remain explicitly unavailable in this phase\n' "$producer_status"
       - name: Produce and verify unsigned subject inventory, SPDX SBOM, and SLSA provenance
         run: |
           set -euo pipefail
@@ -1301,7 +1363,11 @@ jobs:
             --source macos-source=release-inputs/source-reports/macos-source-quickstart.json \
             --source security-observability=release-inputs/source-reports/config-secrets-probes-observability-security.json \
             --source failure-soak=release-inputs/source-reports/failure-fuzz-resource-and-one-hour-sqlite-soak.json \
-            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json
+            --source reference-performance=release-inputs/source-reports/reference-performance-per-backend.json \
+            --source pack-component-conformance=release-inputs/source-reports/worldstream-negotiate-evidence.json \
+            --source negotiate-policy=release-inputs/source-reports/negotiate-oracle-a202-and-privacy.json \
+            --source negotiate-sqlite-restart=release-inputs/source-reports/negotiate-released-artifact-sqlite-restart-replay.json \
+            --source negotiate-postgres-restart=release-inputs/source-reports/negotiate-released-artifact-postgresql-restart-replay.json
       - id: unsigned_inventory
         name: Bind exact unsigned signing inputs
         run: |
@@ -1310,8 +1376,9 @@ jobs:
           test -f "$inventory" && test ! -L "$inventory"
           test ! -e dist/supply-chain/subject-inventory.bundle.json
           test ! -e dist/sigstore.bundle.json
-          test "$(find dist -type f | wc -l)" -eq 21
-          test "$(wc -l < dist/SHA256SUMS)" -eq 17
+          test "$(find dist -type f | wc -l)" -eq 37
+          test "$(find dist/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
+          test "$(wc -l < dist/SHA256SUMS)" -eq 33
           (cd dist && sha256sum --strict --check SHA256SUMS)
           version=$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
           printf 'inventory_sha256=%s\n' "$(sha256sum "$inventory" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
@@ -1368,9 +1435,9 @@ jobs:
           test ! -e signing-input/supply-chain/subject-inventory.bundle.json
           test ! -e signing-input/sigstore.bundle.json
           test "$(find signing-input -type l | wc -l)" -eq 0
-          test "$(find signing-input -type f | wc -l)" -eq 21
-          test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 13
-          test "$(wc -l < signing-input/SHA256SUMS)" -eq 17
+          test "$(find signing-input -type f | wc -l)" -eq 37
+          test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
+          test "$(wc -l < signing-input/SHA256SUMS)" -eq 33
           test "$(sha256sum "$inventory" | cut -d ' ' -f 1)" = "$EXPECTED_INVENTORY_SHA256"
           test "$(stat -c %s "$inventory")" = "$EXPECTED_INVENTORY_SIZE_BYTES"
           test "$(cd signing-input && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "$EXPECTED_LAYOUT_SHA256"
@@ -1487,13 +1554,29 @@ jobs:
             --source security-observability=dist/supply-chain/subjects/config-secrets-probes-observability-security.json \
             --source supply-chain=release-inputs/source-reports/checksums-signature-sbom-provenance.json \
             --source failure-soak=dist/supply-chain/subjects/failure-fuzz-resource-and-one-hour-sqlite-soak.json \
-            --source reference-performance=dist/supply-chain/subjects/reference-performance-per-backend.json
+            --source reference-performance=dist/supply-chain/subjects/reference-performance-per-backend.json \
+            --source pack-component-conformance=dist/supply-chain/subjects/worldstream-negotiate-evidence.json \
+            --source negotiate-policy=dist/supply-chain/subjects/negotiate-oracle-a202-and-privacy.json \
+            --source negotiate-sqlite-restart=dist/supply-chain/subjects/negotiate-released-artifact-sqlite-restart-replay.json \
+            --source negotiate-postgres-restart=dist/supply-chain/subjects/negotiate-released-artifact-postgresql-restart-replay.json
           version='${{ needs.release-evidence.outputs.product_version }}'
           mkdir -p final-inputs/payload
           cp --no-clobber "dist/worldstream-${version}-source.tar.gz" final-inputs/payload/
           cp --no-clobber "dist/worldstream-${version}-linux-x86_64.tar.gz" final-inputs/payload/
           cp --no-clobber "dist/worldstream-${version}-windows-x64.zip" final-inputs/payload/
           cp --no-clobber "dist/worldstream-${version}-oci-linux-amd64.oci.tar" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-a202-adapter.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-deterministic-agents.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-documentation.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-examples.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-licenses.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-negotiate.wspack" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-negotiate-evidence-verifier.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-pack-toolchain.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-participant-console.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-release-metadata.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-studio.tar.gz" final-inputs/payload/
+          cp --no-clobber "dist/worldstream-${version}-typescript-pack-sdk.tar.gz" final-inputs/payload/
           scripts/release-evidence-assemble.sh \
             --release-dir dist \
             --payload-dir final-inputs/payload \
@@ -1521,9 +1604,9 @@ jobs:
           test -f dist/supply-chain/subject-inventory.bundle.json
           test ! -e dist/sigstore.bundle.json
           test "$(find dist -type l | wc -l)" -eq 0
-          test "$(find dist -type f | wc -l)" -eq 37
-          test "$(find dist/evidence -maxdepth 1 -type f | wc -l)" -eq 14
-          test "$(find dist/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 13
+          test "$(find dist -type f | wc -l)" -eq 57
+          test "$(find dist/evidence -maxdepth 1 -type f | wc -l)" -eq 18
+          test "$(find dist/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
           (cd dist && sha256sum --strict --check SHA256SUMS)
           printf 'manifest_sha256=%s\n' "$(sha256sum "$manifest" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           printf 'manifest_size_bytes=%s\n' "$(stat -c %s "$manifest")" >> "$GITHUB_OUTPUT"
@@ -1582,9 +1665,9 @@ jobs:
           test -f "$inventory_bundle" && test ! -L "$inventory_bundle"
           test ! -e signing-input/sigstore.bundle.json
           test "$(find signing-input -type l | wc -l)" -eq 0
-          test "$(find signing-input -type f | wc -l)" -eq 37
-          test "$(find signing-input/evidence -maxdepth 1 -type f | wc -l)" -eq 14
-          test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 13
+          test "$(find signing-input -type f | wc -l)" -eq 57
+          test "$(find signing-input/evidence -maxdepth 1 -type f | wc -l)" -eq 18
+          test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
           test "$(sha256sum "$inventory" | cut -d ' ' -f 1)" = "$EXPECTED_INVENTORY_SHA256"
           test "$(sha256sum "$manifest" | cut -d ' ' -f 1)" = "$EXPECTED_MANIFEST_SHA256"
           test "$(stat -c %s "$manifest")" = "$EXPECTED_MANIFEST_SIZE_BYTES"
@@ -1685,7 +1768,7 @@ jobs:
           test ! -e dist/sigstore.bundle.json
           cp --no-clobber "$bundle" dist/sigstore.bundle.json
           test "$(find dist -type l | wc -l)" -eq 0
-          test "$(find dist -type f | wc -l)" -eq 38
+          test "$(find dist -type f | wc -l)" -eq 58
       - name: Verify both detached release signatures and all subjects
         run: scripts/verify-release.sh dist
       - name: Run final release gate without OIDC

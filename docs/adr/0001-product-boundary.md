@@ -4,6 +4,12 @@ Date: 2026-08-13
 
 Status: Accepted
 
+Partial supersession: [ADR 0014](0014-installable-wasi-free-activity-pack-bundles.md)
+replaces the compiled-in-only Pack distribution boundary and the Heist-first /
+Investigation-committed release ordering. The Room authority boundary, one
+process, external model execution, and excluded workflow/marketplace scope in
+this decision remain accepted.
+
 ## Context
 
 Exploration began with a Rust alternative to realtime streaming products and expanded into agent worlds, games, marketplaces, crypto rewards, coding harnesses, enterprise project rooms, shared context, dynamic UI, long-running agents, and cross-room work.

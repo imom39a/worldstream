@@ -1,0 +1,23 @@
+{
+  "attestation": {
+    "independent_implementation": null,
+    "non_contributor": null,
+    "receipt_origin": "external_peer",
+    "released_artifact_only": null,
+    "worldstream_serializer_used": null,
+    "worldstream_source_dependency": null
+  },
+  "cases": [],
+  "completed_at": "REPLACE_WITH_CANONICAL_UTC_SECOND",
+  "invitation_sha256": "REPLACE_WITH_VALIDATE_INVITATION_OUTPUT",
+  "notice": "INCOMPLETE TEMPLATE; NOT A RECEIPT OR EVIDENCE",
+  "participant": {
+    "implementation_artifact_sha256": "REPLACE_WITH_EXACT_PEER_ARTIFACT_SHA256",
+    "implementation_id": "REPLACE_WITH_SAFE_CODE",
+    "implementation_language": "REPLACE_WITH_LANGUAGE",
+    "implementation_version": "REPLACE_WITH_VERSION",
+    "participant_id": "REPLACE_WITH_PSEUDONYMOUS_SAFE_CODE"
+  },
+  "schema": "worldstream/a202-peer-exchange-receipt-template/v1",
+  "started_at": "REPLACE_WITH_CANONICAL_UTC_SECOND"
+}

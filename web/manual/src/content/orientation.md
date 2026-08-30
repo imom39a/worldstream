@@ -38,7 +38,7 @@ these three concepts is interchangeable.
   17 storage.
 - A typed Room protocol for attach, scoped observation delivery, ACK, exact
   Action submission, Activation leasing, and Replay.
-- A trusted Rust `ActivityPackV1` host with retained exact revisions.
+- One five-operation `ActivityPackV1` host with retained embedded revisions and an accepted WASI-free portable Pack contract now under implementation.
 - Reference Counter and Agent Heist behavior plus conformance and acceptance
   fixtures.
 - WorldStream Studio, its bounded local Supervisor, Task setup, Participant
@@ -53,8 +53,9 @@ these three concepts is interchangeable.
 
 - A general workflow engine, queue, project manager, browser automation host,
   agent framework, prompt store, or vector database.
-- Arbitrary public plugin loading. v0.1 Activity Packs are trusted Rust code
-  resolved from the embedded exact-revision registry.
+- Network Pack registries, hot loading, automatic approval, generic Pack
+  effects, or arbitrary renderer code. Public bundles are offline,
+  exact-digest-approved WASI-free Components.
 - A distributed multi-writer Room runtime. One process and one logical writer
   per Room are core v0.1 boundaries.
 - Anonymous public Room state. “Public Projection” still means an authorized
@@ -69,8 +70,9 @@ these three concepts is interchangeable.
 4. [Studio setup](#/studio/setup) — operate the local control plane.
 5. [Activity Pack overview](#/activity-packs/overview) — build rules on the
    kernel.
-6. [Generic MCP agent](#/agents/mcp) — attach any external policy.
-7. [Operations runbook](#/operations/runbook) — diagnose and recover safely.
+6. [WorldStream Negotiate](#/activity-packs/negotiate) — understand the first serious public Pack.
+7. [Generic MCP agent](#/agents/mcp) — attach any external policy.
+8. [Operations runbook](#/operations/runbook) — diagnose and recover safely.
 
 ## Sources of truth
 

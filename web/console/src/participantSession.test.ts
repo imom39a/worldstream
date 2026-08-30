@@ -5,6 +5,7 @@ import { ParticipantConsoleSession } from "./participantSession";
 
 const HANDOFF = `wsh1:${"ab".repeat(32)}`;
 const OBSERVATION = {
+  pack: { id: "worldstream.counter", version: "0.1.0", digest: `blake3:${"2".repeat(64)}` },
   room_head: {
     room_seq: 7,
     genesis_or_transition_hash: `blake3:${"1".repeat(64)}`,

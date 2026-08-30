@@ -877,6 +877,18 @@ RELEASE_ARTIFACT_PROFILES = {
     "native-linux-x86_64-archive": "native-linux-x86_64",
     "native-windows-x64-archive": "native-windows-x64",
     "oci-linux-amd64-image": "oci-linux-amd64",
+    "worldstream-a202-adapter": "all",
+    "worldstream-deterministic-agents": "all",
+    "worldstream-documentation": "all",
+    "worldstream-examples": "all",
+    "worldstream-licenses": "all",
+    "worldstream-negotiate-bundle": "all",
+    "worldstream-negotiate-evidence-verifier": "all",
+    "worldstream-pack-toolchain": "all",
+    "worldstream-participant-console": "all",
+    "worldstream-release-metadata": "all",
+    "worldstream-studio": "all",
+    "worldstream-typescript-pack-sdk": "all",
     "checksums": "all",
     "sigstore-bundle": "all",
     "spdx-sbom": "all",
@@ -891,12 +903,28 @@ SIGSTORE_VERIFICATION_ARTIFACT_ID = "sigstore-bundle"
 SIGSTORE_VERIFICATION_LOCATION = (
     "release-manifest.json#verification_material.sigstore-bundle.path"
 )
-CHECKSUM_PAYLOAD_ARTIFACT_IDS = frozenset(
+BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS = frozenset(
     {
         "source-archive",
         "native-linux-x86_64-archive",
         "native-windows-x64-archive",
         "oci-linux-amd64-image",
+    }
+)
+CHECKSUM_PAYLOAD_ARTIFACT_IDS = BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS | frozenset(
+    {
+        "worldstream-a202-adapter",
+        "worldstream-deterministic-agents",
+        "worldstream-documentation",
+        "worldstream-examples",
+        "worldstream-licenses",
+        "worldstream-negotiate-bundle",
+        "worldstream-negotiate-evidence-verifier",
+        "worldstream-pack-toolchain",
+        "worldstream-participant-console",
+        "worldstream-release-metadata",
+        "worldstream-studio",
+        "worldstream-typescript-pack-sdk",
     }
 )
 PRE_SIGN_SUBJECT_DIRECTORY = "supply-chain/subjects"
@@ -1048,18 +1076,18 @@ def release_evidence_collector_contract():
 
 
 def build_type_contract_gate(runner: GateRunner) -> None:
-    """Validate the active immutable build type, example, and v2 tombstone."""
+    """Validate the active content-addressed build type and historical tombstone."""
 
     identity = release_build_identity_verifier()
     try:
         entries = identity.source_entries_from_root(ROOT)
         example_bytes = identity.regular_bytes(
-            ROOT / identity.BUILD_TYPE_EXAMPLE_PATH, "build-type v3 example"
+            ROOT / identity.BUILD_TYPE_EXAMPLE_PATH, "build-type v4 example"
         )
-        example = identity.strict_json(example_bytes, "build-type v3 example")
-        identity.validate_build_type_v3_example(example, entries)
+        example = identity.strict_json(example_bytes, "build-type v4 example")
+        identity.validate_build_type_v4_example(example, entries)
         if example_bytes != identity.canonical_json(example):
-            raise identity.IdentityError("build-type v3 example is not canonical JSON")
+            raise identity.IdentityError("build-type v4 example is not canonical JSON")
 
         collector = release_evidence_collector_contract()
         expected_evidence = {
@@ -1078,7 +1106,7 @@ def build_type_contract_gate(runner: GateRunner) -> None:
         }
         if declared_evidence != expected_evidence:
             raise identity.IdentityError(
-                "build-type v3 example evidence inventory differs from the typed collector contract"
+                "build-type v4 example evidence inventory differs from the typed collector contract"
             )
 
         tombstone_bytes = identity.regular_bytes(
@@ -1093,12 +1121,90 @@ def build_type_contract_gate(runner: GateRunner) -> None:
             raise identity.IdentityError(
                 "withdrawn build-type v2 tombstone is not canonical JSON"
             )
-    except identity.IdentityError as error:
+    except (identity.IdentityError, OSError) as error:
         runner.fail("release-build-type-contract", str(error))
     else:
         runner.pass_(
             "release-build-type-contract",
-            "immutable v3 definition, complete example, and withdrawn v2 tombstone verified",
+            "content-addressed v4 definition, 33-subject example, and withdrawn v2 tombstone verified",
+        )
+
+
+def load_release_tool(name: str, relative: str):
+    path = ROOT / relative
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load release tool: {relative}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def runtime_pack_contract_gate(runner: GateRunner, manifest: dict[str, Any]) -> None:
+    """Verify the exact official Pack and expanded evidence/subject contracts."""
+
+    try:
+        producer = load_release_tool(
+            "worldstream_gate_runtime_pack_producer",
+            "scripts/release-evidence-produce-runtime-packs.py",
+        )
+        assembler = release_evidence_verifier()
+        starter_subjects = load_release_tool(
+            "worldstream_gate_starter_release_subjects",
+            "scripts/starter-release-subjects.py",
+        )
+        qualification = load_release_tool(
+            "worldstream_gate_release_qualification",
+            "scripts/release-qualification.py",
+        )
+        rows = [
+            row
+            for row in manifest.get("activity_pack_bundles", [])
+            if isinstance(row, dict)
+            and row.get("pack_id") == "worldstream.negotiate"
+            and row.get("required_for_release") is True
+            and row.get("status") == "resolved"
+        ]
+        if len(rows) != 1 or not isinstance(rows[0].get("path"), str):
+            raise producer.RuntimePackEvidenceError(
+                "compatibility contract has no unique official Negotiate Bundle"
+            )
+        bundle_path = ROOT / rows[0]["path"]
+        try:
+            bundle_path.resolve(strict=True).relative_to(ROOT.resolve())
+        except (OSError, ValueError) as error:
+            raise producer.RuntimePackEvidenceError(
+                "official Negotiate Bundle path escapes or is unavailable"
+            ) from error
+        producer.validate_pack_contract(bundle_path, manifest)
+        collector = producer.ADAPTER.COLLECTOR
+        release_ids = {
+            row.get("id")
+            for row in manifest.get("evidence", [])
+            if isinstance(row, dict) and row.get("release_gate") is True
+        }
+        if (
+            len(release_ids) != collector.REQUIRED_RELEASE_EVIDENCE_COUNT
+            or not collector.BASE_RELEASE_EVIDENCE_IDS <= release_ids
+            or tuple(starter_subjects.SUBJECT_IDS)
+            != tuple(assembler.STARTER_SUBJECT_ARTIFACT_IDS)
+            or set(qualification.QUALIFICATION_IDS)
+            != {
+                row.get("id")
+                for row in manifest.get("evidence", [])
+                if isinstance(row, dict) and row.get("qualification_gate") is True
+            }
+        ):
+            raise producer.RuntimePackEvidenceError(
+                "Runtime + Pack subject/evidence inventories drifted"
+            )
+    except (OSError, RuntimeError, KeyError, TypeError, ValueError) as error:
+        runner.fail("runtime-pack-release-contract", str(error))
+    else:
+        runner.pass_(
+            "runtime-pack-release-contract",
+            "official Negotiate Bundle/Component/Core proof, original 14 rows, four expanded release rows, twelve Starter subjects, and three post-sign qualification rows agree",
         )
 
 
@@ -2050,9 +2156,49 @@ def manifest_gate(
     runner: GateRunner, manifest: dict[str, Any], *, release: bool
 ) -> None:
     build_type_contract_gate(runner)
+    runtime_pack_contract_gate(runner, manifest)
     if manifest.get("validation_policy") != "fail_closed":
         runner.fail("manifest-policy", "validation_policy is not fail_closed")
         return
+    if (
+        manifest.get("qualification_evidence_digest_source")
+        != "detached_release_qualification_manifest"
+    ):
+        runner.fail(
+            "manifest-qualification-evidence",
+            "post-sign qualification evidence must use release-qualification-manifest.json",
+        )
+    else:
+        qualification_rows = [
+            row
+            for row in manifest.get("evidence", [])
+            if isinstance(row, dict) and row.get("qualification_gate") is True
+        ]
+        expected_qualification = {
+            "starter-distribution-and-custom-pack-recovery",
+            "outside-adopter-pack-author-journey",
+            "outside-adopter-application-integrator-journey",
+        }
+        observed_qualification = {row.get("id") for row in qualification_rows}
+        invalid_qualification = [
+            row
+            for row in qualification_rows
+            if row.get("release_gate") is not False
+            or row.get("status") != "detached"
+            or row.get("artifact_digest") != ""
+            or row.get("artifact_digest_location")
+            != "release-qualification-manifest.json"
+        ]
+        if observed_qualification != expected_qualification or invalid_qualification:
+            runner.fail(
+                "manifest-qualification-evidence",
+                "qualification evidence inventory or detached identity is invalid",
+            )
+        else:
+            runner.pass_(
+                "manifest-qualification-evidence",
+                "three post-sign Starter/adopter qualifications remain detached from the non-recursive release manifest",
+            )
     if manifest.get("reviewed_source") != MANIFEST_PATH.name:
         runner.fail(
             "manifest-source", "reviewed_source does not name compatibility.toml"
@@ -2133,16 +2279,16 @@ def manifest_gate(
                 "manifest-contract-state",
                 "embedded release contract is complete; detached distribution evidence is not asserted by this tier",
             )
-        elif manifest_kind == "specification" and release_ready is False and unresolved:
+        elif manifest_kind == "specification" and release_ready is False:
             runner.pass_(
                 "manifest-contract-state",
-                "specification contract is structurally valid; detached distribution evidence is not asserted by this tier",
+                "specification contract is structurally valid; detached release and qualification evidence is not asserted by this tier",
             )
         else:
             runner.fail(
                 "manifest-contract-state",
                 "non-release tiers require either a complete release contract "
-                "or a specification contract with unresolved fields",
+                "or a coherent fail-closed specification contract",
             )
 
     inventory_failures, inventory_incompletes = release_artifact_inventory_diagnostics(
@@ -4669,7 +4815,7 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
                 },
                 payloads_by_id={
                     artifact_id: artifact_files[artifact_id]
-                    for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+                    for artifact_id in BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS
                 },
                 require_github=True,
             )

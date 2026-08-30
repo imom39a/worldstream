@@ -31,10 +31,31 @@ SPDX_LICENSE_URL = (
     "https://raw.githubusercontent.com/spdx/license-list-data/"
     f"{SPDX_LICENSE_LIST_REVISION}/text/{{license_id}}.txt"
 )
+SPDX_EXCEPTION_URL = (
+    "https://raw.githubusercontent.com/spdx/license-list-data/"
+    f"{SPDX_LICENSE_LIST_REVISION}/text/{{exception_id}}.txt"
+)
 NOTICE_SCHEMA = "worldstream/third-party-notices/v1"
 SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}\Z")
 INTEGRITY = re.compile(r"sha512-[A-Za-z0-9+/]+={0,2}\Z")
 LICENSE_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
+
+# These exact npm tarballs omit package.json's `license` field while carrying
+# an unambiguous package-root LICENSE and naming the expression upstream. Keep
+# exceptions pinned to package version and exact distributed license bytes;
+# every other missing declaration remains a closed failure.
+NPM_LICENSE_FILE_DECLARATIONS = {
+    ("@bytecodealliance/componentize-js", "0.19.3"): (
+        "Apache-2.0 WITH LLVM-exception",
+        "LICENSE",
+        "sha256:268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+    ),
+    ("@bytecodealliance/componentize-js", "0.22.0"): (
+        "Apache-2.0 WITH LLVM-exception",
+        "LICENSE",
+        "sha256:268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+    ),
+}
 
 
 class NoticeError(RuntimeError):
@@ -104,37 +125,84 @@ def add_notice(notices: dict[str, bytes], content: bytes, label: str) -> str:
     return identifier
 
 
-def license_ids(expression: str) -> list[str]:
-    identifiers = [
-        token
-        for token in LICENSE_TOKEN.findall(expression)
-        if token not in {"AND", "OR", "WITH"}
-    ]
-    if not identifiers:
+def spdx_terms(expression: str) -> list[tuple[str, bool]]:
+    """Return unique SPDX terms as `(identifier, is_exception)` pairs."""
+
+    tokens = LICENSE_TOKEN.findall(expression)
+    terms: set[tuple[str, bool]] = set()
+    previous = ""
+    for token in tokens:
+        if token not in {"AND", "OR", "WITH"}:
+            terms.add((token, previous == "WITH"))
+        previous = token
+    if not terms:
         fail(f"declared license has no identifiers: {expression!r}")
-    return sorted(set(identifiers))
+    return sorted(terms)
 
 
 def standard_license_notice(
-    notices: dict[str, bytes], cache: dict[str, str], license_id: str
+    notices: dict[str, bytes],
+    cache: dict[str, str],
+    kinds: dict[str, str],
+    identifier: str,
+    is_exception: bool,
 ) -> str:
-    existing = cache.get(license_id)
+    kind = "exception" if is_exception else "license"
+    previous_kind = kinds.setdefault(identifier, kind)
+    if previous_kind != kind:
+        fail(f"SPDX identifier has conflicting roles: {identifier}")
+    existing = cache.get(identifier)
     if existing is not None:
         return existing
-    content = exact_url(SPDX_LICENSE_URL.format(license_id=license_id))
-    identifier = add_notice(notices, content, f"SPDX {license_id}")
-    cache[license_id] = identifier
-    return identifier
+    url = (
+        SPDX_EXCEPTION_URL.format(exception_id=identifier)
+        if is_exception
+        else SPDX_LICENSE_URL.format(license_id=identifier)
+    )
+    content = exact_url(url)
+    notice_id = add_notice(notices, content, f"SPDX {identifier}")
+    cache[identifier] = notice_id
+    return notice_id
 
 
 def metadata_notice(
-    *, ecosystem: str, name: str, version: str, license_expression: str, source: str
+    *,
+    ecosystem: str,
+    name: str,
+    version: str,
+    license_expression: str,
+    source: str,
+    license_evidence: str | None = None,
 ) -> bytes:
-    return (
-        f"Component: {ecosystem}:{name}@{version}\n"
-        f"Declared license: {license_expression}\n"
-        f"Source: {source}\n"
-    ).encode()
+    lines = [
+        f"Component: {ecosystem}:{name}@{version}",
+        f"Declared license: {license_expression}",
+    ]
+    if license_evidence is not None:
+        lines.append(f"License evidence: {license_evidence}")
+    lines.append(f"Source: {source}")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def npm_license_expression(
+    metadata: object,
+    name: str,
+    version: str,
+    license_files: list[tuple[str, bytes]],
+) -> tuple[str, str]:
+    expression = metadata.get("license") if isinstance(metadata, dict) else None
+    if isinstance(expression, str) and expression.strip():
+        return expression, ""
+    declaration = NPM_LICENSE_FILE_DECLARATIONS.get((name, version))
+    if declaration is None:
+        fail(f"npm dependency has no declared license: {name}@{version}")
+    expression, expected_name, expected_digest = declaration
+    matches = [
+        content for relative, content in license_files if relative == expected_name
+    ]
+    if len(matches) != 1 or sha256(matches[0]) != expected_digest:
+        fail(f"npm dependency license evidence differs: {name}@{version}")
+    return expression, f"exact package-root {expected_name} ({expected_digest})"
 
 
 def tar_members(
@@ -157,7 +225,7 @@ def tar_members(
 
 
 def cargo_components(
-    notices: dict[str, bytes], standard: dict[str, str]
+    notices: dict[str, bytes], standard: dict[str, str], standard_kinds: dict[str, str]
 ) -> list[dict[str, Any]]:
     lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
     packages = lock.get("package")
@@ -278,8 +346,10 @@ def cargo_components(
             )
         ]
         identifiers.extend(
-            standard_license_notice(notices, standard, license_id)
-            for license_id in license_ids(expression)
+            standard_license_notice(
+                notices, standard, standard_kinds, identifier, is_exception
+            )
+            for identifier, is_exception in spdx_terms(expression)
         )
         identifiers.extend(
             add_notice(notices, content, f"cargo:{name}@{version}:{relative}")
@@ -356,7 +426,10 @@ def pnpm_integrities(
 
 
 def npm_components(
-    notices: dict[str, bytes], standard: dict[str, str], identity
+    notices: dict[str, bytes],
+    standard: dict[str, str],
+    standard_kinds: dict[str, str],
+    identity,
 ) -> list[dict[str, Any]]:
     lock_content = (ROOT / "pnpm-lock.yaml").read_bytes()
     packages = identity.pnpm_locked_packages(lock_content)
@@ -404,9 +477,9 @@ def npm_components(
                     license_files.append((relative, extracted.read()))
         finally:
             archive.close()
-        expression = metadata.get("license") if isinstance(metadata, dict) else None
-        if not isinstance(expression, str) or not expression.strip():
-            fail(f"npm dependency has no declared license: {name}@{version}")
+        expression, license_evidence = npm_license_expression(
+            metadata, name, version, license_files
+        )
         identifiers = [
             add_notice(
                 notices,
@@ -416,13 +489,16 @@ def npm_components(
                     version=version,
                     license_expression=expression,
                     source=url,
+                    license_evidence=license_evidence or None,
                 ),
                 f"npm metadata {name}@{version}",
             )
         ]
         identifiers.extend(
-            standard_license_notice(notices, standard, license_id)
-            for license_id in license_ids(expression)
+            standard_license_notice(
+                notices, standard, standard_kinds, identifier, is_exception
+            )
+            for identifier, is_exception in spdx_terms(expression)
         )
         identifiers.extend(
             add_notice(notices, notice, f"npm:{name}@{version}:{relative}")
@@ -441,7 +517,10 @@ def npm_components(
 
 
 def oci_base_components(
-    image: str, notices: dict[str, bytes], standard: dict[str, str]
+    image: str,
+    notices: dict[str, bytes],
+    standard: dict[str, str],
+    standard_kinds: dict[str, str],
 ) -> dict[str, Any]:
     try:
         installed_database = subprocess.check_output(
@@ -495,8 +574,10 @@ def oci_base_components(
             )
         ]
         identifiers.extend(
-            standard_license_notice(notices, standard, license_id)
-            for license_id in license_ids(expression)
+            standard_license_notice(
+                notices, standard, standard_kinds, identifier, is_exception
+            )
+            for identifier, is_exception in spdx_terms(expression)
         )
         packages.append(
             {
@@ -558,10 +639,11 @@ def generate() -> None:
     image = identity.expected_base_image(source_entries)
     sections: dict[str, bytes] = {}
     standard: dict[str, str] = {}
+    standard_kinds: dict[str, str] = {}
     components = {
-        "cargo": cargo_components(sections, standard),
-        "npm": npm_components(sections, standard, identity),
-        "oci_base": oci_base_components(image, sections, standard),
+        "cargo": cargo_components(sections, standard, standard_kinds),
+        "npm": npm_components(sections, standard, standard_kinds, identity),
+        "oci_base": oci_base_components(image, sections, standard, standard_kinds),
     }
     notices = render_notices(sections)
     manifest = {
@@ -574,6 +656,7 @@ def generate() -> None:
             "pnpm-lock.yaml": sha256((ROOT / "pnpm-lock.yaml").read_bytes()),
             "spdx_license_list_revision": SPDX_LICENSE_LIST_REVISION,
         },
+        "license_kinds": dict(sorted(standard_kinds.items())),
         "license_texts": dict(sorted(standard.items())),
         "notices": {
             "path": "licenses/THIRD-PARTY-NOTICES.txt",

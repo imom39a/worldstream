@@ -95,6 +95,18 @@ RELEASE_ARTIFACT_IDS = (
     "native-linux-x86_64-archive",
     "native-windows-x64-archive",
     "oci-linux-amd64-image",
+    "worldstream-a202-adapter",
+    "worldstream-deterministic-agents",
+    "worldstream-documentation",
+    "worldstream-examples",
+    "worldstream-licenses",
+    "worldstream-negotiate-bundle",
+    "worldstream-negotiate-evidence-verifier",
+    "worldstream-pack-toolchain",
+    "worldstream-participant-console",
+    "worldstream-release-metadata",
+    "worldstream-studio",
+    "worldstream-typescript-pack-sdk",
     "checksums",
     "sigstore-bundle",
     "spdx-sbom",
@@ -105,6 +117,18 @@ RELEASE_ARTIFACT_PROFILES = {
     "native-linux-x86_64-archive": "native-linux-x86_64",
     "native-windows-x64-archive": "native-windows-x64",
     "oci-linux-amd64-image": "oci-linux-amd64",
+    "worldstream-a202-adapter": "all",
+    "worldstream-deterministic-agents": "all",
+    "worldstream-documentation": "all",
+    "worldstream-examples": "all",
+    "worldstream-licenses": "all",
+    "worldstream-negotiate-bundle": "all",
+    "worldstream-negotiate-evidence-verifier": "all",
+    "worldstream-pack-toolchain": "all",
+    "worldstream-participant-console": "all",
+    "worldstream-release-metadata": "all",
+    "worldstream-studio": "all",
+    "worldstream-typescript-pack-sdk": "all",
     "checksums": "all",
     "sigstore-bundle": "all",
     "spdx-sbom": "all",
@@ -131,13 +155,28 @@ OCI_CONTEXT_REQUIRED_FILES = frozenset(
         "checksums.sha256",
     }
 )
-CHECKSUM_PAYLOAD_ARTIFACT_IDS = {
+BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS = {
     "source-archive",
     "native-linux-x86_64-archive",
     "native-windows-x64-archive",
     "oci-linux-amd64-image",
 }
+CHECKSUM_PAYLOAD_ARTIFACT_IDS = BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS | {
+    "worldstream-a202-adapter",
+    "worldstream-deterministic-agents",
+    "worldstream-documentation",
+    "worldstream-examples",
+    "worldstream-licenses",
+    "worldstream-negotiate-bundle",
+    "worldstream-negotiate-evidence-verifier",
+    "worldstream-pack-toolchain",
+    "worldstream-participant-console",
+    "worldstream-release-metadata",
+    "worldstream-studio",
+    "worldstream-typescript-pack-sdk",
+}
 RELEASE_EVIDENCE_DIRECTORY = "evidence"
+REQUIRED_RELEASE_EVIDENCE_COUNT = 18
 PRE_SIGN_SUBJECT_DIRECTORY = "supply-chain/subjects"
 PRE_SIGN_SUPPLY_CHAIN_FILES = {
     "supply-chain/subject-inventory.json",
@@ -361,15 +400,51 @@ def validate_manifest_shape(manifest: dict) -> None:
             + (f"; missing={missing}" if missing else "")
             + (f"; unsupported={extra}" if extra else "")
         )
+
+    evidence_rows = manifest.get("evidence")
+    if not isinstance(evidence_rows, list):
+        fail("compatibility manifest has no evidence inventory")
+    release_evidence_ids: set[str] = set()
+    for index, row in enumerate(evidence_rows):
+        if not isinstance(row, dict):
+            fail(f"compatibility manifest evidence row {index} is not an object")
+        if row.get("release_gate") is not True:
+            continue
+        evidence_id = row.get("id")
+        if not isinstance(evidence_id, str) or not evidence_id:
+            fail(f"release-gated compatibility evidence row {index} has no id")
+        if evidence_id in release_evidence_ids:
+            fail(
+                f"compatibility release-gated evidence ID is duplicated: {evidence_id}"
+            )
+        if (
+            row.get("status") != "detached"
+            or row.get("artifact_digest") != ""
+            or row.get("artifact_digest_location") != "release-manifest.json"
+        ):
+            fail(
+                f"release-gated compatibility evidence {evidence_id} must be "
+                "detached with an empty embedded digest and "
+                "artifact_digest_location=release-manifest.json"
+            )
+        release_evidence_ids.add(evidence_id)
+    if len(release_evidence_ids) != REQUIRED_RELEASE_EVIDENCE_COUNT:
+        fail(
+            "compatibility manifest must declare exactly "
+            f"{REQUIRED_RELEASE_EVIDENCE_COUNT} unique release-gated evidence rows"
+        )
     if ready and (kind != "release" or unresolved):
         fail("release-ready compatibility manifest has unresolved release identity")
 
 
-def read_manifest() -> tuple[dict, bytes, bytes]:
+def read_manifest(
+    manifest_toml_path: Path = MANIFEST_TOML,
+    manifest_json_path: Path = MANIFEST_JSON,
+) -> tuple[dict, bytes, bytes]:
     try:
-        authored_bytes = bounded_regular_bytes(MANIFEST_TOML, "compatibility.toml")
+        authored_bytes = bounded_regular_bytes(manifest_toml_path, "compatibility.toml")
         authored = tomllib.loads(authored_bytes.decode("utf-8"))
-        mirror_bytes = bounded_regular_bytes(MANIFEST_JSON, "compatibility.json")
+        mirror_bytes = bounded_regular_bytes(manifest_json_path, "compatibility.json")
     except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
         fail(f"cannot read compatibility manifest pair: {error}")
     mirror = json_object(mirror_bytes, "compatibility.json")
@@ -2065,6 +2140,22 @@ def release_artifact_basename(version: str, artifact_id: str) -> str | None:
         return f"worldstream-{version}-linux-x86_64.tar.gz"
     if artifact_id == "native-windows-x64-archive":
         return f"worldstream-{version}-windows-x64.zip"
+    portable_subject_names = {
+        "worldstream-a202-adapter": f"worldstream-{version}-a202-adapter.tar.gz",
+        "worldstream-deterministic-agents": f"worldstream-{version}-deterministic-agents.tar.gz",
+        "worldstream-documentation": f"worldstream-{version}-documentation.tar.gz",
+        "worldstream-examples": f"worldstream-{version}-examples.tar.gz",
+        "worldstream-licenses": f"worldstream-{version}-licenses.tar.gz",
+        "worldstream-negotiate-bundle": f"worldstream-{version}-negotiate.wspack",
+        "worldstream-negotiate-evidence-verifier": f"worldstream-{version}-negotiate-evidence-verifier.tar.gz",
+        "worldstream-pack-toolchain": f"worldstream-{version}-pack-toolchain.tar.gz",
+        "worldstream-participant-console": f"worldstream-{version}-participant-console.tar.gz",
+        "worldstream-release-metadata": f"worldstream-{version}-release-metadata.tar.gz",
+        "worldstream-studio": f"worldstream-{version}-studio.tar.gz",
+        "worldstream-typescript-pack-sdk": f"worldstream-{version}-typescript-pack-sdk.tar.gz",
+    }
+    if artifact_id in portable_subject_names:
+        return portable_subject_names[artifact_id]
     if artifact_id == "checksums":
         return "SHA256SUMS"
     if artifact_id == "sigstore-bundle":
@@ -2762,7 +2853,13 @@ def verify_oci_context(context: Path) -> dict:
     return report
 
 
-def verify_release_directory(release_dir: Path, *, structural_only: bool) -> int:
+def verify_release_directory(
+    release_dir: Path,
+    *,
+    structural_only: bool,
+    manifest_toml_path: Path = MANIFEST_TOML,
+    manifest_json_path: Path = MANIFEST_JSON,
+) -> int:
     """Verify the release bundle without ever treating shape as a signature."""
 
     if not release_dir.is_dir() or release_dir.is_symlink():
@@ -2771,7 +2868,12 @@ def verify_release_directory(release_dir: Path, *, structural_only: bool) -> int
         release_dir, "release-manifest.json", "release manifest"
     )
     metadata = load_json_file(metadata_path, "release manifest")
-    manifest, _, manifest_json = read_manifest()
+    if manifest_toml_path == MANIFEST_TOML and manifest_json_path == MANIFEST_JSON:
+        manifest, _, manifest_json = read_manifest()
+    else:
+        manifest, _, manifest_json = read_manifest(
+            manifest_toml_path, manifest_json_path
+        )
     validate_manifest_identity(metadata, manifest, manifest_json)
     validate_release_manifest(manifest, dry_run=False)
     artifacts = metadata.get("artifacts")
@@ -2937,7 +3039,7 @@ def verify_release_directory(release_dir: Path, *, structural_only: bool) -> int
         fail("checksums artifact must be named SHA256SUMS")
     checksums = parse_checksums(bounded_regular_bytes(checksums_path, "SHA256SUMS"))
     checksum_artifact_paths = {artifacts["checksums"]}
-    # Checksums cover the four distributable payloads and every signed
+    # Checksums cover all sixteen distributable subjects and every signed
     # non-supply-chain source report. The supply-chain report is emitted
     # after these sidecars exist and is deliberately excluded.
     pre_sign_subject_paths = {
@@ -3033,7 +3135,7 @@ def verify_release_directory(release_dir: Path, *, structural_only: bool) -> int
                     artifact_path_by_id[artifact_id],
                     "supply-chain identity payload",
                 )
-                for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+                for artifact_id in BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS
             },
             require_github=True,
         )
@@ -3775,6 +3877,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--report",
         help="write a deterministic inventory report when verifying an OCI context",
     )
+    verify_parser.add_argument(
+        "--manifest-toml",
+        type=Path,
+        default=MANIFEST_TOML,
+        help="trusted compatibility TOML used to verify a release evidence directory",
+    )
+    verify_parser.add_argument(
+        "--manifest-json",
+        type=Path,
+        default=MANIFEST_JSON,
+        help="canonical compatibility JSON used to verify a release evidence directory",
+    )
 
     report_parser = subparsers.add_parser("report")
     report_parser.add_argument("artifact")
@@ -3799,7 +3913,12 @@ def build_parser() -> argparse.ArgumentParser:
                 return 0
             if args.report:
                 fail("--report is only supported when verifying an OCI context")
-            return verify_release_directory(path, structural_only=args.structural_only)
+            return verify_release_directory(
+                path,
+                structural_only=args.structural_only,
+                manifest_toml_path=args.manifest_toml,
+                manifest_json_path=args.manifest_json,
+            )
         if args.structural_only:
             fail("--structural-only is only valid for a release evidence directory")
         if args.report:

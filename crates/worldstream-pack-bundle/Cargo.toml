@@ -1,0 +1,20 @@
+[package]
+name = "worldstream-pack-bundle"
+description = "Canonical Activity Pack Bundle verification and local lifecycle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+worldstream-core = { path = "../worldstream-core" }
+
+[lints]
+workspace = true

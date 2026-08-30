@@ -27,8 +27,8 @@ use worldstream_core::{
     DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt, ExternalInputV1,
     HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
     InitialMembershipProposalV1, InputId, MemberReadOperationV1, MembershipStandingV1,
-    MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackGenesisRequestV1, PackRegistryV1,
-    PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
+    MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1,
+    PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
     ParticipantActionRequestV1, PreparedRoomCreationV1, PrincipalKindV1, ReplayProjectionKindV1,
     RoomAdmissionLanesV1, RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1,
     RoomCreationRequestV1, RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1,
@@ -124,7 +124,7 @@ pub fn read_postgres_dsn(source: &SecretSource) -> Result<String> {
 /// seams.
 pub struct PostgresGatewayBackend {
     store: Arc<PostgresRoomStore>,
-    registry: Option<Arc<PackRegistryV1>>,
+    registry: Arc<PackRegistryV1>,
     bindings: SessionBindings,
     host_clock: Arc<dyn HostClockV1>,
     admission_lanes: RoomAdmissionLanesV1,
@@ -155,10 +155,15 @@ impl fmt::Debug for PostgresGatewayBackend {
 }
 
 impl PostgresGatewayBackend {
-    /// Retains the already-configured least-privilege runtime store.
+    /// Retains the already-configured least-privilege runtime store and the
+    /// process-wide startup registry. No profile-local fallback is constructed.
     #[must_use]
-    pub fn new(store: PostgresRoomStore) -> Self {
-        Self::with_host_clock(store, Arc::new(MonotonicHostClockV1::new(RuntimeWallClock)))
+    pub fn new(store: PostgresRoomStore, registry: Arc<PackRegistryV1>) -> Self {
+        Self::with_host_clock(
+            store,
+            registry,
+            Arc::new(MonotonicHostClockV1::new(RuntimeWallClock)),
+        )
     }
 
     /// Wires the gateway to one application-owned semantic `HostClock`.
@@ -166,20 +171,23 @@ impl PostgresGatewayBackend {
     /// Callers providing a raw wall source should wrap it in
     /// [`MonotonicHostClockV1`].
     #[must_use]
-    pub fn with_host_clock(store: PostgresRoomStore, host_clock: Arc<dyn HostClockV1>) -> Self {
-        Self::with_runtime(store, host_clock, RoomAdmissionLanesV1::default())
+    pub fn with_host_clock(
+        store: PostgresRoomStore,
+        registry: Arc<PackRegistryV1>,
+        host_clock: Arc<dyn HostClockV1>,
+    ) -> Self {
+        Self::with_runtime(store, registry, host_clock, RoomAdmissionLanesV1::default())
     }
 
     fn with_runtime(
         store: PostgresRoomStore,
+        registry: Arc<PackRegistryV1>,
         host_clock: Arc<dyn HostClockV1>,
         admission_lanes: RoomAdmissionLanesV1,
     ) -> Self {
         Self {
             store: Arc::new(store),
-            registry: worldstream_core::builtin_worldstream_registry()
-                .ok()
-                .map(Arc::new),
+            registry,
             bindings: SessionBindings::default(),
             host_clock,
             admission_lanes,
@@ -195,12 +203,6 @@ impl PostgresGatewayBackend {
     /// capability, or migration admission fails.
     pub fn verify_schema(&self) -> Result<(), PostgresSchemaVerificationError> {
         self.store.verify_schema()
-    }
-
-    fn registry(&self) -> Result<&PackRegistryV1, BackendError> {
-        self.registry
-            .as_deref()
-            .ok_or(BackendError::StorageUnavailable)
     }
 
     fn authority(&self) -> AuthorityV1 {
@@ -893,10 +895,23 @@ impl PostgresGatewayBackend {
         }
         let trace = self
             .store
-            .recover_room(self.registry()?, room_id.as_ref())
+            .recover_room(self.registry.as_ref(), room_id.as_ref())
             .map_err(map_recovery_error)?
             .ok_or(BackendError::NotFound)?;
         Ok((trace, verification))
+    }
+
+    fn pack_reference(&self, digest: &PackDigestV1) -> Result<PackReference, BackendError> {
+        let retained = self
+            .registry
+            .load_retained(digest)
+            .map_err(|_| BackendError::InvalidResult)?;
+        let descriptor = retained.descriptor();
+        Ok(PackReference {
+            id: descriptor.pack_id.clone(),
+            version: descriptor.explanatory_version.clone(),
+            digest: digest.to_string(),
+        })
     }
 
     fn member_for_principal(
@@ -920,7 +935,8 @@ impl PostgresGatewayBackend {
         trace: &worldstream_core::CoreTraceV1,
         membership: &MembershipV1,
     ) -> Result<worldstream_core::ValidatedPackViewV1, BackendError> {
-        self.registry()?
+        self.registry
+            .as_ref()
             .load_retained(trace.head().pack_digest())
             .map_err(|_| BackendError::InvalidResult)?
             .host()
@@ -1049,7 +1065,8 @@ impl PostgresGatewayBackend {
             RoomCreationIngressV1::Authorized(grant) => *grant,
         };
         let selected = self
-            .registry()?
+            .registry
+            .as_ref()
             .select_for_new_room(core_request.pack_digest())
             .map_err(|_| BackendError::Rejected)?;
         if selected.descriptor().pack_id != request.pack.id
@@ -1059,7 +1076,8 @@ impl PostgresGatewayBackend {
         }
         let room_id = next_core_id::<RoomId>()?;
         let genesis = self
-            .registry()?
+            .registry
+            .as_ref()
             .prepare_genesis_for_new_room(&PackGenesisRequestV1 {
                 room_id,
                 pack_digest: core_request.pack_digest().clone(),
@@ -1162,7 +1180,7 @@ impl PostgresGatewayBackend {
         let replay = self
             .store
             .replay_authorized(
-                self.registry()?,
+                self.registry.as_ref(),
                 self.authority()
                     .authorize_replay(
                         &authenticated.into_presented(),
@@ -1177,18 +1195,10 @@ impl PostgresGatewayBackend {
             .map_err(map_replay_error)?;
         let view_bytes = replay_view_bytes(replay.canonical_envelope())?;
         let projection = projection_from_canonical_bytes(&view_bytes)?;
-        let descriptor = self
-            .registry()?
-            .load_retained(replay.verified_head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-            .descriptor();
+        let pack = self.pack_reference(replay.verified_head().pack_digest())?;
         Ok(ReplayResponse {
             room_id: room_id.to_string(),
-            pack: worldstream_protocol::PackReference {
-                id: descriptor.pack_id.clone(),
-                version: descriptor.explanatory_version.clone(),
-                digest: replay.verified_head().pack_digest().to_string(),
-            },
+            pack,
             requested_room_seq: at_room_seq.get(),
             room_head: room_head(replay.verified_head()),
             projection,
@@ -1275,11 +1285,7 @@ impl PostgresGatewayBackend {
                 core_token: barrier.sync_token().clone(),
             },
         )?;
-        let descriptor = self
-            .registry()?
-            .load_retained(trace.head().pack_digest())
-            .map_err(|_| BackendError::InvalidResult)?
-            .descriptor();
+        let pack = self.pack_reference(trace.head().pack_digest())?;
         Ok(AttachReply {
             attached: RoomAttached {
                 room_id: room_id.to_string(),
@@ -1297,11 +1303,7 @@ impl PostgresGatewayBackend {
                 retained_floor,
                 sync_token: token,
                 sync,
-                pack: worldstream_protocol::PackReference {
-                    id: descriptor.pack_id.clone(),
-                    version: descriptor.explanatory_version.clone(),
-                    digest: trace.head().pack_digest().to_string(),
-                },
+                pack,
             },
             reset,
             frames,
@@ -1369,7 +1371,7 @@ impl PostgresGatewayBackend {
                 let resolution = self
                     .store
                     .commit_authorized_participant_action(
-                        self.registry()?,
+                        self.registry.as_ref(),
                         *authority,
                         &core_request,
                         stimulus,
@@ -1396,7 +1398,9 @@ impl GatewayBackend for PostgresGatewayBackend {
         session: &GatewaySession,
     ) -> Result<worldstream_protocol::ActivityPackCatalogResponse, BackendError> {
         self.authorize_activity_pack_catalog(session)?;
-        Ok(crate::activity_pack_catalog_from_registry(self.registry()?))
+        Ok(crate::activity_pack_catalog_from_registry(
+            self.registry.as_ref(),
+        ))
     }
 
     fn activity_pack_revision(
@@ -1405,7 +1409,7 @@ impl GatewayBackend for PostgresGatewayBackend {
         revision_digest: &str,
     ) -> Result<worldstream_protocol::ActivityPackCatalogRevisionResponse, BackendError> {
         self.authorize_activity_pack_catalog(session)?;
-        crate::activity_pack_revision_from_registry(self.registry()?, revision_digest)
+        crate::activity_pack_revision_from_registry(self.registry.as_ref(), revision_digest)
     }
 
     fn hello(
@@ -1713,7 +1717,7 @@ impl GatewayBackend for PostgresGatewayBackend {
         let resolution = self
             .store
             .commit_authorized_timer_fired(
-                self.registry()?,
+                self.registry.as_ref(),
                 authority,
                 timer_request,
                 next_core_id::<TransitionId>()?,
@@ -1794,7 +1798,7 @@ impl GatewayBackend for PostgresGatewayBackend {
         }
         let (trace, _) = self.verified_trace(&room_id)?;
         if !worldstream_core::agent_heist_lobby_contract_declared(
-            self.registry()?,
+            self.registry.as_ref(),
             trace.head().pack_digest(),
         ) || !worldstream_core::agent_heist_lobby_launch_applicable(trace.activity_state())
         {
@@ -1821,14 +1825,14 @@ impl GatewayBackend for PostgresGatewayBackend {
         }
         let (trace, _) = self.verified_trace(&room_id)?;
         if !worldstream_core::agent_heist_lobby_contract_declared(
-            self.registry()?,
+            self.registry.as_ref(),
             trace.head().pack_digest(),
         ) || !worldstream_core::agent_heist_lobby_launch_applicable(trace.activity_state())
         {
             return Err(BackendError::WrongPhase);
         }
         let resolution = match self.store.commit_authorized_external_input(
-            self.registry()?,
+            self.registry.as_ref(),
             authority,
             &room_id,
             based_on_room_seq,
@@ -2122,7 +2126,7 @@ impl GatewayBackend for PostgresGatewayBackend {
         });
         match self
             .store
-            .prepare_activation_claim(self.registry()?, authority, operation)
+            .prepare_activation_claim(self.registry.as_ref(), authority, operation)
             .map_err(map_activation_error)?
         {
             worldstream_postgres::PostgresActivationClaimPreparationV1::Existing(result) => {
@@ -3153,7 +3157,8 @@ mod tests {
     use worldstream_core::{
         AdmissionLaneErrorV1, AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1,
         CapabilityBearerV1, CapabilityScopeV1, PrincipalKindV1, agent_heist_lobby_digest,
-        builtin_agent_heist_registry, builtin_counter_registry, counter_v2_digest,
+        builtin_agent_heist_registry, builtin_counter_registry, builtin_worldstream_registry,
+        counter_v2_digest,
     };
     use worldstream_postgres::{
         PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore,
@@ -3241,7 +3246,12 @@ mod tests {
         .unwrap_or_else(|error| unreachable!("runtime config: {error}"));
         let store = PostgresRoomStore::new(config)
             .unwrap_or_else(|error| unreachable!("runtime store: {error}"));
-        let backend = PostgresGatewayBackend::new(store);
+        let registry = Arc::new(
+            builtin_worldstream_registry()
+                .unwrap_or_else(|error| unreachable!("test registry: {error}")),
+        );
+        let backend = PostgresGatewayBackend::new(store, Arc::clone(&registry));
+        assert!(Arc::ptr_eq(&registry, &backend.registry));
         assert!(backend.verify_schema().is_err());
         assert_eq!(backend.admission_lanes.capacity(), 256);
         assert!(backend.admission_lanes.host_reserve() > 0);
@@ -3353,7 +3363,11 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("runtime config: {error}"));
         let store = PostgresRoomStore::new(config)
             .unwrap_or_else(|error| unreachable!("runtime store: {error}"));
-        let backend = PostgresGatewayBackend::new(store);
+        let registry = Arc::new(
+            builtin_worldstream_registry()
+                .unwrap_or_else(|error| unreachable!("test registry: {error}")),
+        );
+        let backend = PostgresGatewayBackend::new(store, Arc::clone(&registry));
         backend
             .verify_schema()
             .unwrap_or_else(|error| unreachable!("verified schema: {error}"));
@@ -3792,6 +3806,7 @@ mod tests {
                     .unwrap_or_else(|error| unreachable!("restart config: {error}")),
             )
             .unwrap_or_else(|error| unreachable!("restart store: {error}")),
+            registry,
         );
         let projection_after = restarted
             .projection(&member, &room_id)

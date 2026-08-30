@@ -5551,6 +5551,7 @@ mod tests {
                 resource_id: "fixture-executor".to_owned(),
                 bytes: executor_bytes,
             }],
+            pack_bundles: Vec::new(),
             request_witnesses: Vec::new(),
             authoritative_materializations: vec![NativeSqliteAuthoritativeMaterializationV1 {
                 room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),

@@ -6,19 +6,42 @@ freshness, storage support, and task readiness are independent facts.
 ## Startup sequence
 
 1. Validate config and owner-only paths with `worldstreamctl`.
-2. Start `worldstreamd` or use Studio Operations.
-3. Wait for `/healthz` before assuming the listener is live.
-4. Wait for `/readyz` before creating/serving ordinary Room work.
-5. Confirm `/version` matches the expected source/compatibility identity.
-6. Start or reconcile approved Runners.
-7. Confirm required human session and agent Runner readiness before launch.
+2. While the daemon is stopped, run config-aware Pack restart readiness after
+   any install, approval revocation, selectability change, retained-bundle
+   restore, or removal.
+3. Start `worldstreamd` or use Studio Operations.
+4. Wait for `/healthz` before assuming the listener is live.
+5. Wait for `/readyz` before creating/serving ordinary Room work.
+6. Confirm `/version` matches the expected source/compatibility identity.
+7. Start or reconcile approved Runners.
+8. Confirm required human session and agent Runner readiness before launch.
+
+For bundled SQLite:
+
+```sh
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack restart-readiness
+```
+
+For PostgreSQL, use the same config plus an owner-only direct-admin DSN file:
+
+```sh
+worldstreamctl --config <WORLDSTREAM_CONFIG> pack restart-readiness \
+  --dsn-file <POSTGRES_ADMIN_DSN_FILE>
+```
+
+The command performs production Component admission and executable Replay,
+then writes a durable seal over the receipt's exact `storage_profile`,
+`inventory_digest`, and pathless `deployment_binding`. The daemon independently
+derives the actual target binding at startup and refuses installed portable
+bundles when the seal is missing or stale. Do not copy a receipt or seal from a
+different config, data directory, profile, or provider deployment.
 
 ## First-response table
 
 | Symptom | Inspect first | Safe next action |
 | --- | --- | --- |
 | process not reachable | `/healthz`, process output, configured bind | correct fixed config/port; start once |
-| health works, readiness fails | `/readyz`, startup facts, storage/integrity reason | fix the reported prerequisite; do not bypass readiness |
+| health works, readiness fails | `/readyz`, startup facts, storage/integrity reason, Pack readiness seal | fix the reported prerequisite; rerun config-aware Pack restart readiness while stopped when the seal is missing/stale; do not bypass readiness |
 | Studio disconnected | Supervisor process and `9420/api/v1/daemon/status` | restart the fixed Supervisor process |
 | Room unavailable | operator Room detail/integrity | keep fault local; follow repair evidence, not direct edits |
 | Task cannot launch | Task setup readiness axes | provision missing seat/Runner or establish required session |

@@ -9,6 +9,7 @@ pub const EMBEDDED_COMPATIBILITY_JSON: &str = include_str!("../../../compatibili
 const MANIFEST_SCHEMA_V1: &str = "worldstream/storage-compatibility-manifest/v1";
 const COUNTER_PACK_ID: &str = "worldstream.counter";
 const AGENT_HEIST_PACK_ID: &str = "worldstream.agent-heist";
+const NEGOTIATE_PACK_ID: &str = "worldstream.negotiate";
 
 /// Compatibility fields consumed by the process shell.
 #[derive(Clone, Debug, Deserialize)]
@@ -160,6 +161,13 @@ impl CompatibilityManifest {
         if self.manifest_revision != 1 {
             return Err(ManifestError::UnsupportedRevision(self.manifest_revision));
         }
+        if !matches!(self.manifest_kind.as_str(), "specification" | "release")
+            || (self.manifest_kind == "specification") == self.release_ready
+        {
+            return Err(ManifestError::Inconsistent(
+                "specification manifests must be release_ready=false and release manifests true",
+            ));
+        }
         if self.release_candidate != self.contracts.product {
             return Err(ManifestError::Inconsistent(
                 "release_candidate must equal contracts.product",
@@ -200,7 +208,7 @@ impl CompatibilityManifest {
         let mut revision_digests = BTreeSet::new();
         let mut required_pack_ids = BTreeSet::new();
         let mut counter_versions = BTreeSet::new();
-        let mut selectable_release_activity = false;
+        let mut selectable_public_activity = false;
         for entry in &self.pack_executors {
             if entry.pack_id.is_empty() || entry.explanatory_version.is_empty() {
                 return Err(ManifestError::Inconsistent(
@@ -251,9 +259,14 @@ impl CompatibilityManifest {
             ];
             match entry.status.as_str() {
                 "unresolved" => {
-                    if self.release_ready || digests.iter().any(|digest| !digest.is_empty()) {
+                    if self.release_ready
+                        || entry.selectable_for_new_rooms
+                        || entry.runnable_for_retained_rooms
+                        || !entry.required_for_release
+                        || digests.iter().any(|digest| !digest.is_empty())
+                    {
                         return Err(ManifestError::Inconsistent(
-                            "unresolved pack executor is allowed only in a non-release manifest with empty digest fields",
+                            "unresolved required pack executor is allowed only in a non-release manifest with empty digests and disabled selection/execution",
                         ));
                     }
                 }
@@ -279,9 +292,9 @@ impl CompatibilityManifest {
                     if entry.required_for_release
                         && entry.selectable_for_new_rooms
                         && entry.runnable_for_retained_rooms
-                        && entry.pack_id == AGENT_HEIST_PACK_ID
+                        && entry.pack_id == NEGOTIATE_PACK_ID
                     {
-                        selectable_release_activity = true;
+                        selectable_public_activity = true;
                     }
                 }
                 _ => {
@@ -296,9 +309,10 @@ impl CompatibilityManifest {
         }
         if !required_pack_ids.contains(COUNTER_PACK_ID)
             || !required_pack_ids.contains(AGENT_HEIST_PACK_ID)
+            || !required_pack_ids.contains(NEGOTIATE_PACK_ID)
         {
             return Err(ManifestError::Inconsistent(
-                "required pack executor entries must include Counter and Agent Heist",
+                "required pack executor entries must include Counter, Agent Heist, and Negotiate",
             ));
         }
         if counter_versions != BTreeSet::from(["1.0.0", "2.0.0", "3.0.0", "4.0.0"]) {
@@ -306,9 +320,9 @@ impl CompatibilityManifest {
                 "manifest must retain exact Counter v1, v2, v3, and v4 executors",
             ));
         }
-        if self.release_ready && !selectable_release_activity {
+        if self.release_ready && !selectable_public_activity {
             return Err(ManifestError::Inconsistent(
-                "release-ready manifest requires a selectable runnable Agent Heist Activity Pack",
+                "release-ready manifest requires a selectable runnable Negotiate Activity Pack",
             ));
         }
         Ok(())
@@ -434,12 +448,24 @@ mod tests {
             .unwrap_or_else(|| unreachable!("authored manifest entry {pack_id} {version}"))
     }
 
+    fn release_manifest() -> CompatibilityManifest {
+        let mut manifest = manifest();
+        manifest.manifest_kind = "release".to_owned();
+        manifest.release_ready = true;
+        let negotiate = entry_mut(&mut manifest, super::NEGOTIATE_PACK_ID, "0.1.0");
+        resolve(negotiate, 'd');
+        negotiate.selectable_for_new_rooms = true;
+        negotiate.runnable_for_retained_rooms = true;
+        manifest
+    }
+
     #[test]
     fn embedded_manifest_is_valid_and_fail_closed() {
         let manifest = embedded_manifest();
         assert!(manifest.is_ok());
         let manifest = manifest.unwrap_or_else(|error| unreachable!("validated above: {error}"));
-        assert!(manifest.release_ready);
+        assert_eq!(manifest.manifest_kind, "specification");
+        assert!(!manifest.release_ready);
         assert_eq!(manifest.contracts.config, 1);
     }
 
@@ -451,9 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn all_retained_pack_entries_are_resolved_and_current_heist_is_selectable() {
+    fn retained_demo_entries_and_official_negotiate_are_resolved() {
         let summary = manifest().summary();
-        assert_eq!(summary.pack_executors.len(), 7);
+        assert_eq!(summary.pack_executors.len(), 8);
         let counter: Vec<_> = summary
             .pack_executors
             .iter()
@@ -486,6 +512,19 @@ mod tests {
         assert!(heists.iter().any(|entry| {
             entry.explanatory_version == "0.0.1" && !entry.selectable_for_new_rooms
         }));
+        let negotiate = summary
+            .pack_executors
+            .iter()
+            .find(|entry| entry.pack_id == super::NEGOTIATE_PACK_ID)
+            .unwrap_or_else(|| unreachable!("Negotiate specification row"));
+        assert_eq!(negotiate.status, "resolved");
+        assert_eq!(
+            negotiate.revision_digest,
+            "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
+        );
+        assert!(negotiate.selectable_for_new_rooms);
+        assert!(negotiate.runnable_for_retained_rooms);
+        assert!(negotiate.required_for_release);
     }
 
     #[test]
@@ -517,7 +556,7 @@ mod tests {
 
     #[test]
     fn unresolved_entries_reject_release_manifests_or_partial_digests() {
-        let mut release = manifest();
+        let mut release = release_manifest();
         let unresolved = entry_mut(&mut release, super::AGENT_HEIST_PACK_ID, "0.2.0");
         unresolved.status = "unresolved".to_owned();
         for digest in [
@@ -533,8 +572,10 @@ mod tests {
         assert!(release.validate().is_err());
 
         let mut partial = manifest();
-        let partial_entry = entry_mut(&mut partial, super::AGENT_HEIST_PACK_ID, "0.2.0");
+        let partial_entry = entry_mut(&mut partial, super::NEGOTIATE_PACK_ID, "0.1.0");
         partial_entry.status = "unresolved".to_owned();
+        partial_entry.selectable_for_new_rooms = false;
+        partial_entry.runnable_for_retained_rooms = false;
         for digest in [
             &mut partial_entry.revision_digest,
             &mut partial_entry.descriptor_digest,
@@ -567,6 +608,12 @@ mod tests {
             .pack_executors
             .retain(|entry| entry.pack_id != super::AGENT_HEIST_PACK_ID);
         assert!(missing_heist.validate().is_err());
+
+        let mut missing_negotiate = manifest();
+        missing_negotiate
+            .pack_executors
+            .retain(|entry| entry.pack_id != super::NEGOTIATE_PACK_ID);
+        assert!(missing_negotiate.validate().is_err());
     }
 
     #[test]
@@ -626,30 +673,21 @@ mod tests {
     }
 
     #[test]
-    fn release_ready_manifest_rejects_no_selectable_release_activity() {
-        let mut no_selectable_release_activity = manifest();
-        let heist = entry_mut(
-            &mut no_selectable_release_activity,
-            super::AGENT_HEIST_PACK_ID,
-            "0.2.0",
-        );
-        heist.selectable_for_new_rooms = false;
-        entry_mut(
-            &mut no_selectable_release_activity,
-            super::AGENT_HEIST_PACK_ID,
+    fn release_ready_manifest_rejects_no_selectable_public_activity() {
+        let mut no_selectable_public_activity = release_manifest();
+        let negotiate = entry_mut(
+            &mut no_selectable_public_activity,
+            super::NEGOTIATE_PACK_ID,
             "0.1.0",
-        )
-        .selectable_for_new_rooms = false;
-        assert!(no_selectable_release_activity.validate().is_err());
+        );
+        negotiate.selectable_for_new_rooms = false;
+        assert!(no_selectable_public_activity.validate().is_err());
     }
 
     #[test]
-    fn release_ready_manifest_requires_selectable_agent_heist_not_an_arbitrary_pack() {
-        let mut invalid = manifest();
-        let heist = entry_mut(&mut invalid, super::AGENT_HEIST_PACK_ID, "0.2.0");
-        heist.selectable_for_new_rooms = false;
-        entry_mut(&mut invalid, super::AGENT_HEIST_PACK_ID, "0.1.0").selectable_for_new_rooms =
-            false;
+    fn release_ready_manifest_requires_selectable_negotiate_not_an_arbitrary_pack() {
+        let mut invalid = release_manifest();
+        entry_mut(&mut invalid, super::NEGOTIATE_PACK_ID, "0.1.0").selectable_for_new_rooms = false;
 
         let mut substitute = invalid
             .pack_executors

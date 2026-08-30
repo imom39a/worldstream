@@ -12,6 +12,11 @@ members = [
     "crates/worldstream-transfer",
     "crates/worldstream-windows-handle",
     "crates/worldstream-studio-supervisor",
+    "crates/worldstream-pack-bundle",
+    "crates/worldstream-component-host",
+    "crates/worldstream-a202-adapter",
+    "crates/worldstream-negotiate-evidence",
+    "crates/worldstream-negotiate-oracle",
     "xtask",
 ]
 resolver = "3"
@@ -26,6 +31,7 @@ repository = "https://github.com/imom39a/worldstream"
 [workspace.dependencies]
 anyhow = "=1.0.104"
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio", "ws"] }
+base64 = "=0.22.1"
 blake3 = { version = "=1.8.6", features = ["pure"] }
 clap = { version = "=4.6.6", features = ["derive"] }
 command-group = "=5.0.1"
@@ -57,7 +63,11 @@ tower = { version = "=0.5.3", features = ["util"] }
 tungstenite = "=0.29.0"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }
+wasmtime = { version = "=48.0.1", default-features = false, features = ["component-model", "cranelift", "parallel-compilation", "runtime", "std", "threads"] }
+wat = "=1.258.0"
 rustls = { version = "=0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
+ring = "=0.17.14"
+sha2 = "=0.10.9"
 webpki-roots = "=1.0.3"
 windows-permissions = "=0.2.4"
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }

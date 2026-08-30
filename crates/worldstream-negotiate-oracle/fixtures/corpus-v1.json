@@ -1,0 +1,1563 @@
+{
+  "corpus_id": "worldstream/negotiate-conformance-corpus/v1",
+  "roles": [
+    "buyer_agent",
+    "seller_agent",
+    "buyer_approver",
+    "venue_signer"
+  ],
+  "phases": [
+    "formation_open",
+    "approval_pending",
+    "offer_accepted",
+    "agreement_pending",
+    "withdrawn_pending_expiry",
+    "deadline_resolution",
+    "complete",
+    "expired"
+  ],
+  "actions": [
+    "submit_proposal_revision",
+    "withdraw_live_proposal",
+    "request_exact_approval",
+    "record_exact_approval",
+    "accept_current_proposal",
+    "select_accepted_proposal",
+    "record_agreement_signature",
+    "commit_agreement",
+    "record_session_deadline_elapsed",
+    "record_transaction_deadline_elapsed",
+    "close_transaction_expired_session"
+  ],
+  "attention_reasons": [
+    "proposal_received",
+    "agreement_signature_required",
+    "agreement_ready",
+    "venue_signature_required"
+  ],
+  "personas": [
+    "buyer_agent",
+    "seller_agent",
+    "buyer_approver",
+    "venue_signer",
+    "operator",
+    "spectator"
+  ],
+  "privacy_matrix": [
+    {
+      "class": "proposal_revision",
+      "buyer_agent": "full",
+      "seller_agent": "full",
+      "buyer_approver": "full",
+      "venue_signer": "reference",
+      "operator": "bounded",
+      "spectator": "none"
+    },
+    {
+      "class": "current_term_diff",
+      "buyer_agent": "full",
+      "seller_agent": "full",
+      "buyer_approver": "full",
+      "venue_signer": "none",
+      "operator": "bounded",
+      "spectator": "none"
+    },
+    {
+      "class": "buyer_acceptance_envelope",
+      "buyer_agent": "full",
+      "seller_agent": "none",
+      "buyer_approver": "full",
+      "venue_signer": "reference",
+      "operator": "bounded",
+      "spectator": "none"
+    },
+    {
+      "class": "signed_approval",
+      "buyer_agent": "full",
+      "seller_agent": "full",
+      "buyer_approver": "full",
+      "venue_signer": "reference",
+      "operator": "bounded",
+      "spectator": "none"
+    },
+    {
+      "class": "signed_stream_event",
+      "buyer_agent": "full",
+      "seller_agent": "full",
+      "buyer_approver": "reference",
+      "venue_signer": "reference",
+      "operator": "bounded",
+      "spectator": "none"
+    },
+    {
+      "class": "committed_agreement",
+      "buyer_agent": "full",
+      "seller_agent": "full",
+      "buyer_approver": "full",
+      "venue_signer": "reference",
+      "operator": "full",
+      "spectator": "none"
+    },
+    {
+      "class": "operational_diagnostic",
+      "buyer_agent": "none",
+      "seller_agent": "none",
+      "buyer_approver": "none",
+      "venue_signer": "none",
+      "operator": "bounded",
+      "spectator": "none"
+    },
+    {
+      "class": "public_status",
+      "buyer_agent": "full",
+      "seller_agent": "full",
+      "buyer_approver": "full",
+      "venue_signer": "full",
+      "operator": "full",
+      "spectator": "full"
+    }
+  ],
+  "privacy_mutations": [
+    {
+      "source": "buyer_agent",
+      "viewer": "seller_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_agent",
+      "viewer": "buyer_approver",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_agent",
+      "viewer": "venue_signer",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_agent",
+      "viewer": "operator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_agent",
+      "viewer": "spectator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "seller_agent",
+      "viewer": "buyer_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "seller_agent",
+      "viewer": "buyer_approver",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "seller_agent",
+      "viewer": "venue_signer",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "seller_agent",
+      "viewer": "operator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "seller_agent",
+      "viewer": "spectator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_approver",
+      "viewer": "buyer_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_approver",
+      "viewer": "seller_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_approver",
+      "viewer": "venue_signer",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_approver",
+      "viewer": "operator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "buyer_approver",
+      "viewer": "spectator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "venue_signer",
+      "viewer": "buyer_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "venue_signer",
+      "viewer": "seller_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "venue_signer",
+      "viewer": "buyer_approver",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "venue_signer",
+      "viewer": "operator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "venue_signer",
+      "viewer": "spectator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "operator",
+      "viewer": "buyer_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "operator",
+      "viewer": "seller_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "operator",
+      "viewer": "buyer_approver",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "operator",
+      "viewer": "venue_signer",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "operator",
+      "viewer": "spectator",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "spectator",
+      "viewer": "buyer_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "spectator",
+      "viewer": "seller_agent",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "spectator",
+      "viewer": "buyer_approver",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "spectator",
+      "viewer": "venue_signer",
+      "expected_projection_unchanged": true
+    },
+    {
+      "source": "spectator",
+      "viewer": "operator",
+      "expected_projection_unchanged": true
+    }
+  ],
+  "golden": {
+    "corpus_id": "worldstream/negotiate-golden-corpus/v1",
+    "oracle_id": "worldstream/negotiate-oracle/v1",
+    "a202_revision": "fa85aa8b49bfe7b3f7ded487c98500a600e92e41",
+    "a202_fixture_provenance": "A202 calibration-service shapes pinned at fa85aa8b49bfe7b3f7ded487c98500a600e92e41; WorldStream fixture signatures are deterministic conformance proofs, not claims of upstream cryptographic conformance",
+    "restart_after_step": 4,
+    "steps": [
+      {
+        "index": 1,
+        "label": "act_01_buyer_proposal",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "submit_proposal_revision",
+            "action_id": "act_01_buyer_proposal",
+            "actor": "buyer_agent",
+            "basis": {
+              "room": {
+                "sequence": 0,
+                "digest": "blake3:6608ad5db3a31f64561f9c77e6c4a1f273de4d274b997c81deaadddd1d1d2bbb"
+              },
+              "transaction": {
+                "sequence": 3,
+                "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "session": {
+                "sequence": 1,
+                "event_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            },
+            "admitted_at": 100,
+            "proposal": {
+              "author": "buyer_agent",
+              "offer": {
+                "object_id": "off_worldstream_buyer_01",
+                "object_type": "offer",
+                "declared_content_hash": "f0355964099f46e7abf4c9c04f1250f4e87b19d1e3b85e3ed0f0577433963798",
+                "canonical_json": "{\"content_hash\":\"f0355964099f46e7abf4c9c04f1250f4e87b19d1e3b85e3ed0f0577433963798\",\"id\":\"off_worldstream_buyer_01\",\"object_type\":\"offer\",\"payload\":{\"offeree\":\"org_delta\",\"offeror\":\"org_northstar\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"supersedes_offer_id\":null,\"terms\":{\"core\":{\"description\":\"Calibration and digital certificates for 20 pressure transmitters\",\"quantity\":\"20\",\"total\":{\"amount\":\"3350.00\",\"currency\":\"EUR\"},\"unit_code\":\"H87\",\"unit_name\":\"piece\"},\"profile\":\"a202-profile/calibration-service/0.1\",\"profile_terms\":{\"acceptance\":{\"certificate_required\":true,\"machine_readable_result_required\":true,\"qualification_standard\":\"ISO/IEC 17025:2017\"},\"completion\":{\"business_calendar\":\"NL\",\"business_days_after_collection\":15},\"payment\":{\"balance_trigger\":\"buyer_acceptance\",\"prepayment_percent\":\"20\"},\"rework\":{\"included_attempts\":1}}},\"valid_until\":900},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+                "wire_digest": "blake3:de3388da83965852dee0f92a35ed6c0b4816f946de61e18b6ee439ab91e415dc",
+                "signature": {
+                  "signer_id": "agent:northstar:buyer",
+                  "signer_role": "buyer_agent",
+                  "purpose": "offer_submission",
+                  "signed_wire_digest": "blake3:de3388da83965852dee0f92a35ed6c0b4816f946de61e18b6ee439ab91e415dc",
+                  "proof": "blake3:bf5012f06775585b891594ef7e6294a27bf069c7878a9fda006587d4f4617598"
+                }
+              },
+              "session_event": {
+                "object_id": "evt_session_offer_02",
+                "object_type": "transaction_event",
+                "declared_content_hash": "599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd",
+                "canonical_json": "{\"content_hash\":\"599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd\",\"id\":\"evt_session_offer_02\",\"object_type\":\"transaction_event\",\"payload\":{\"event_type\":\"offer.submitted\",\"previous_event_hash\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"sequence\":2,\"stream\":{\"id\":\"ses_northstar_delta_worldstream_01\",\"kind\":\"session\"}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+                "wire_digest": "blake3:8c4336d88c1783061dc9ed1a02f27453deb33f38afd007c0dea683899f58a916",
+                "signature": {
+                  "signer_id": "agent:worldstream:venue_signer",
+                  "signer_role": "venue_signer",
+                  "purpose": "event_append",
+                  "signed_wire_digest": "blake3:8c4336d88c1783061dc9ed1a02f27453deb33f38afd007c0dea683899f58a916",
+                  "proof": "blake3:88d6f95847beb0e40694efec99235e18b923689589a20408a47c4a34ead7269d"
+                }
+              },
+              "valid_until": 900,
+              "supersedes_offer_id": null
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_1",
+          "phase": "formation_open",
+          "room_head": {
+            "sequence": 1,
+            "digest": "blake3:935b9af23eac44c8594663ac27646e30ea6916ad4727e6ddd024997adeb14932"
+          },
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 2,
+            "event_hash": "sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd"
+          },
+          "outcome": null,
+          "state_digest": "blake3:df0f6f3dc6d9092c3e3e0b22b755c3f2fa6287e93a0e54bb502aee079f84e123"
+        }
+      },
+      {
+        "index": 2,
+        "label": "act_02_seller_counter",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "submit_proposal_revision",
+            "action_id": "act_02_seller_counter",
+            "actor": "seller_agent",
+            "basis": {
+              "room": {
+                "sequence": 1,
+                "digest": "blake3:935b9af23eac44c8594663ac27646e30ea6916ad4727e6ddd024997adeb14932"
+              },
+              "transaction": {
+                "sequence": 3,
+                "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "session": {
+                "sequence": 2,
+                "event_hash": "sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd"
+              }
+            },
+            "admitted_at": 200,
+            "proposal": {
+              "author": "seller_agent",
+              "offer": {
+                "object_id": "off_worldstream_seller_02",
+                "object_type": "offer",
+                "declared_content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+                "canonical_json": "{\"content_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"id\":\"off_worldstream_seller_02\",\"object_type\":\"offer\",\"payload\":{\"offeree\":\"org_northstar\",\"offeror\":\"org_delta\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"supersedes_offer_id\":\"off_worldstream_buyer_01\",\"terms\":{\"core\":{\"description\":\"Calibration and digital certificates for 20 pressure transmitters\",\"quantity\":\"20\",\"total\":{\"amount\":\"3200.00\",\"currency\":\"EUR\"},\"unit_code\":\"H87\",\"unit_name\":\"piece\"},\"profile\":\"a202-profile/calibration-service/0.1\",\"profile_terms\":{\"acceptance\":{\"certificate_required\":true,\"machine_readable_result_required\":true,\"qualification_standard\":\"ISO/IEC 17025:2017\"},\"completion\":{\"business_calendar\":\"NL\",\"business_days_after_collection\":15},\"payment\":{\"balance_trigger\":\"buyer_acceptance\",\"prepayment_percent\":\"20\"},\"rework\":{\"included_attempts\":1}}},\"valid_until\":850},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+                "wire_digest": "blake3:7336792d2e0393ecfbe9c2f8a15673fa19e76614d7c3ae9862e73aa557fce8b2",
+                "signature": {
+                  "signer_id": "agent:delta:seller",
+                  "signer_role": "seller_agent",
+                  "purpose": "offer_submission",
+                  "signed_wire_digest": "blake3:7336792d2e0393ecfbe9c2f8a15673fa19e76614d7c3ae9862e73aa557fce8b2",
+                  "proof": "blake3:9e5970bdc680795708cb93159d44aec05f109ef8b65cfb8858b9d709df73d611"
+                }
+              },
+              "session_event": {
+                "object_id": "evt_session_offer_03",
+                "object_type": "transaction_event",
+                "declared_content_hash": "f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731",
+                "canonical_json": "{\"content_hash\":\"f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731\",\"id\":\"evt_session_offer_03\",\"object_type\":\"transaction_event\",\"payload\":{\"event_type\":\"offer.submitted\",\"previous_event_hash\":\"sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd\",\"sequence\":3,\"stream\":{\"id\":\"ses_northstar_delta_worldstream_01\",\"kind\":\"session\"}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+                "wire_digest": "blake3:0d34d48122907267c5bea618a9c8e73ec9278d5f5b83f6e86ef5b254e2f2413b",
+                "signature": {
+                  "signer_id": "agent:worldstream:venue_signer",
+                  "signer_role": "venue_signer",
+                  "purpose": "event_append",
+                  "signed_wire_digest": "blake3:0d34d48122907267c5bea618a9c8e73ec9278d5f5b83f6e86ef5b254e2f2413b",
+                  "proof": "blake3:bf62fd424b7dad2df3d0e825e269a65bb9f4950f798f384dd413586619a73661"
+                }
+              },
+              "valid_until": 850,
+              "supersedes_offer_id": "off_worldstream_buyer_01"
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_2",
+          "phase": "formation_open",
+          "room_head": {
+            "sequence": 2,
+            "digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467"
+          },
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 3,
+            "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+          },
+          "outcome": null,
+          "state_digest": "blake3:99444668e21f2752e5ba9286c3026beb15ad61c8559e938c1bdbf10d2ae038d3"
+        }
+      },
+      {
+        "index": 3,
+        "label": "act_03_request_exact_approval",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "request_exact_approval",
+            "action_id": "act_03_request_exact_approval",
+            "actor": "buyer_agent",
+            "basis": {
+              "room": {
+                "sequence": 2,
+                "digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467"
+              },
+              "transaction": {
+                "sequence": 3,
+                "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "session": {
+                "sequence": 3,
+                "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+              }
+            },
+            "admitted_at": 240,
+            "binding": {
+              "candidate_canonical_json": "{\"action\":\"offer.accept\",\"expected_sequence\":4,\"offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"offer_id\":\"off_worldstream_seller_02\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+              "candidate_wire_digest": "blake3:60bab68f5b846f458c21d4c034cbb8a770fb7d92f51fa7b35e8bda75c3875cea",
+              "transaction_id": "txn_calibration_worldstream_01",
+              "proposal_id": "off_worldstream_seller_02",
+              "proposal_content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+              "room_head_at_request": {
+                "sequence": 2,
+                "digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467"
+              },
+              "transaction_head_at_request": {
+                "sequence": 3,
+                "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "session_head_at_request": {
+                "sequence": 3,
+                "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+              },
+              "approver_id": "principal:northstar:procurement_director",
+              "expires_at": 500
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_3",
+          "phase": "approval_pending",
+          "room_head": {
+            "sequence": 3,
+            "digest": "blake3:88e718a5249666b0c5549a770970f1266cafcdee1bab9c806316c455d0843d3d"
+          },
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 3,
+            "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+          },
+          "outcome": null,
+          "state_digest": "blake3:5fcb5753347886bddfcd14b6355a287689d46a136d468e6569535cc55a67506d"
+        }
+      },
+      {
+        "index": 4,
+        "label": "act_04_human_signed_approval",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "record_exact_approval",
+            "action_id": "act_04_human_signed_approval",
+            "actor": "buyer_approver",
+            "basis": {
+              "room": {
+                "sequence": 3,
+                "digest": "blake3:88e718a5249666b0c5549a770970f1266cafcdee1bab9c806316c455d0843d3d"
+              },
+              "transaction": {
+                "sequence": 3,
+                "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "session": {
+                "sequence": 3,
+                "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+              }
+            },
+            "admitted_at": 260,
+            "approval": {
+              "binding": {
+                "candidate_canonical_json": "{\"action\":\"offer.accept\",\"expected_sequence\":4,\"offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"offer_id\":\"off_worldstream_seller_02\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+                "candidate_wire_digest": "blake3:60bab68f5b846f458c21d4c034cbb8a770fb7d92f51fa7b35e8bda75c3875cea",
+                "transaction_id": "txn_calibration_worldstream_01",
+                "proposal_id": "off_worldstream_seller_02",
+                "proposal_content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+                "room_head_at_request": {
+                  "sequence": 2,
+                  "digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467"
+                },
+                "transaction_head_at_request": {
+                  "sequence": 3,
+                  "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "session_head_at_request": {
+                  "sequence": 3,
+                  "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+                },
+                "approver_id": "principal:northstar:procurement_director",
+                "expires_at": 500
+              },
+              "decision": "approved",
+              "approval": {
+                "object_id": "apr_worldstream_exact_01",
+                "object_type": "approval",
+                "declared_content_hash": "321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a",
+                "canonical_json": "{\"content_hash\":\"321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a\",\"id\":\"apr_worldstream_exact_01\",\"object_type\":\"approval\",\"payload\":{\"action_hash\":\"blake3:60bab68f5b846f458c21d4c034cbb8a770fb7d92f51fa7b35e8bda75c3875cea\",\"approver\":\"principal:northstar:procurement_director\",\"decision\":\"approved\",\"expires_at\":500,\"proposal_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"room_head\":{\"digest\":\"blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467\",\"sequence\":2},\"session_head\":{\"event_hash\":\"sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731\",\"sequence\":3},\"transaction_head\":{\"event_hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":3}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+                "wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+                "signature": {
+                  "signer_id": "principal:northstar:procurement_director",
+                  "signer_role": "buyer_approver",
+                  "purpose": "object_issuance",
+                  "signed_wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+                  "proof": "blake3:11e9595bf64611a4ceb210690a1dc8036e5a78d06182b8a45fa589db728e9904"
+                }
+              }
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_4",
+          "phase": "approval_pending",
+          "room_head": {
+            "sequence": 4,
+            "digest": "blake3:c05a58c0e94d96ae33d20a0bee3c928595593953621d93bf8fad0b6a80dce9bf"
+          },
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 3,
+            "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+          },
+          "outcome": null,
+          "state_digest": "blake3:33ac3f1c6a675eaf685f101d7b490f551073d78a8f211b0118869682c15e92e7"
+        }
+      },
+      {
+        "index": 5,
+        "label": "act_05_accept_current_proposal",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "accept_current_proposal",
+            "action_id": "act_05_accept_current_proposal",
+            "actor": "buyer_agent",
+            "basis": {
+              "room": {
+                "sequence": 4,
+                "digest": "blake3:c05a58c0e94d96ae33d20a0bee3c928595593953621d93bf8fad0b6a80dce9bf"
+              },
+              "transaction": {
+                "sequence": 3,
+                "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "session": {
+                "sequence": 3,
+                "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+              }
+            },
+            "admitted_at": 300,
+            "candidate_canonical_json": "{\"action\":\"offer.accept\",\"expected_sequence\":4,\"offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"offer_id\":\"off_worldstream_seller_02\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+            "approval": {
+              "binding": {
+                "candidate_canonical_json": "{\"action\":\"offer.accept\",\"expected_sequence\":4,\"offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"offer_id\":\"off_worldstream_seller_02\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+                "candidate_wire_digest": "blake3:60bab68f5b846f458c21d4c034cbb8a770fb7d92f51fa7b35e8bda75c3875cea",
+                "transaction_id": "txn_calibration_worldstream_01",
+                "proposal_id": "off_worldstream_seller_02",
+                "proposal_content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+                "room_head_at_request": {
+                  "sequence": 2,
+                  "digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467"
+                },
+                "transaction_head_at_request": {
+                  "sequence": 3,
+                  "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "session_head_at_request": {
+                  "sequence": 3,
+                  "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+                },
+                "approver_id": "principal:northstar:procurement_director",
+                "expires_at": 500
+              },
+              "decision": "approved",
+              "approval": {
+                "object_id": "apr_worldstream_exact_01",
+                "object_type": "approval",
+                "declared_content_hash": "321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a",
+                "canonical_json": "{\"content_hash\":\"321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a\",\"id\":\"apr_worldstream_exact_01\",\"object_type\":\"approval\",\"payload\":{\"action_hash\":\"blake3:60bab68f5b846f458c21d4c034cbb8a770fb7d92f51fa7b35e8bda75c3875cea\",\"approver\":\"principal:northstar:procurement_director\",\"decision\":\"approved\",\"expires_at\":500,\"proposal_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"room_head\":{\"digest\":\"blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467\",\"sequence\":2},\"session_head\":{\"event_hash\":\"sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731\",\"sequence\":3},\"transaction_head\":{\"event_hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":3}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+                "wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+                "signature": {
+                  "signer_id": "principal:northstar:procurement_director",
+                  "signer_role": "buyer_approver",
+                  "purpose": "object_issuance",
+                  "signed_wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+                  "proof": "blake3:11e9595bf64611a4ceb210690a1dc8036e5a78d06182b8a45fa589db728e9904"
+                }
+              }
+            },
+            "acceptance": {
+              "object_id": "acc_worldstream_01",
+              "object_type": "acceptance",
+              "declared_content_hash": "23e75cbf8e7448f7856e68ab64514a2838eff7d51316b2e4b4c0e152d763439e",
+              "canonical_json": "{\"content_hash\":\"23e75cbf8e7448f7856e68ab64514a2838eff7d51316b2e4b4c0e152d763439e\",\"id\":\"acc_worldstream_01\",\"object_type\":\"acceptance\",\"payload\":{\"accepting_party\":\"org_northstar\",\"offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"offer_id\":\"off_worldstream_seller_02\",\"session_id\":\"ses_northstar_delta_worldstream_01\"},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+              "wire_digest": "blake3:d72424012efe1ed7fa838be7c2e7602ca930e34cb49a249b71079ec49465f04d",
+              "signature": {
+                "signer_id": "agent:northstar:buyer",
+                "signer_role": "buyer_agent",
+                "purpose": "offer_acceptance",
+                "signed_wire_digest": "blake3:d72424012efe1ed7fa838be7c2e7602ca930e34cb49a249b71079ec49465f04d",
+                "proof": "blake3:ce445248e73a4d9037f1e1d6995e812333b27c97022497f512ca15ea76a9ca79"
+              }
+            },
+            "acceptance_event": {
+              "object_id": "evt_session_accept_03",
+              "object_type": "transaction_event",
+              "declared_content_hash": "9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625",
+              "canonical_json": "{\"content_hash\":\"9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625\",\"id\":\"evt_session_accept_03\",\"object_type\":\"transaction_event\",\"payload\":{\"event_type\":\"offer.accepted\",\"previous_event_hash\":\"sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731\",\"sequence\":4,\"stream\":{\"id\":\"ses_northstar_delta_worldstream_01\",\"kind\":\"session\"}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+              "wire_digest": "blake3:e05e1df9b482432297f389e4bedb717007a8971a606be29aa7d0b9d9d141bab4",
+              "signature": {
+                "signer_id": "agent:worldstream:venue_signer",
+                "signer_role": "venue_signer",
+                "purpose": "event_append",
+                "signed_wire_digest": "blake3:e05e1df9b482432297f389e4bedb717007a8971a606be29aa7d0b9d9d141bab4",
+                "proof": "blake3:6012841c1725593bbc205f2fa47fd5669a27fc4d2c1fa840b9ca359ebb70a916"
+              }
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_5",
+          "phase": "offer_accepted",
+          "room_head": {
+            "sequence": 5,
+            "digest": "blake3:103d310350957394440afa8aa925e7fcc4e0aa0c8bb8e3c7449038b85a7d02a2"
+          },
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          },
+          "outcome": null,
+          "state_digest": "blake3:35a9d8b32080cef1abef8e2790cfdf131c0252b39c7de5501d36c52612456863"
+        }
+      },
+      {
+        "index": 6,
+        "label": "act_06_select_accepted_proposal",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "select_accepted_proposal",
+            "action_id": "act_06_select_accepted_proposal",
+            "actor": "buyer_agent",
+            "basis": {
+              "room": {
+                "sequence": 5,
+                "digest": "blake3:103d310350957394440afa8aa925e7fcc4e0aa0c8bb8e3c7449038b85a7d02a2"
+              },
+              "transaction": {
+                "sequence": 3,
+                "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "session": {
+                "sequence": 4,
+                "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+              }
+            },
+            "admitted_at": 320,
+            "selection_event": {
+              "object_id": "evt_transaction_select_04",
+              "object_type": "transaction_event",
+              "declared_content_hash": "6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710",
+              "canonical_json": "{\"content_hash\":\"6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710\",\"id\":\"evt_transaction_select_04\",\"object_type\":\"transaction_event\",\"payload\":{\"event_type\":\"offer.selected\",\"previous_event_hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":4,\"stream\":{\"id\":\"txn_calibration_worldstream_01\",\"kind\":\"transaction\"}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+              "wire_digest": "blake3:7cbebb163a9a97e5809a630ae75337027426248c5437511cc8f6261737824e66",
+              "signature": {
+                "signer_id": "agent:northstar:buyer",
+                "signer_role": "buyer_agent",
+                "purpose": "event_append",
+                "signed_wire_digest": "blake3:7cbebb163a9a97e5809a630ae75337027426248c5437511cc8f6261737824e66",
+                "proof": "blake3:4322487e697b03fd9927648a82147343d332fccfe1137ceb24ff5600d5d7b149"
+              }
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_6",
+          "phase": "agreement_pending",
+          "room_head": {
+            "sequence": 6,
+            "digest": "blake3:27fd985cbd63adb944b7946c0c90febfdb02305e1f84a2e9e1910d37c2b5d3a0"
+          },
+          "transaction_head": {
+            "sequence": 4,
+            "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          },
+          "outcome": null,
+          "state_digest": "blake3:1b43f0f9d409df415164bae69106e5c6369e8e6d19e0b665064284b7a9c15bcb"
+        }
+      },
+      {
+        "index": 7,
+        "label": "act_07_buyer_agreement_signature",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "record_agreement_signature",
+            "action_id": "act_07_buyer_agreement_signature",
+            "actor": "buyer_agent",
+            "basis": {
+              "room": {
+                "sequence": 6,
+                "digest": "blake3:27fd985cbd63adb944b7946c0c90febfdb02305e1f84a2e9e1910d37c2b5d3a0"
+              },
+              "transaction": {
+                "sequence": 4,
+                "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+              },
+              "session": {
+                "sequence": 4,
+                "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+              }
+            },
+            "admitted_at": 340,
+            "signature": {
+              "agreement_id": "agr_worldstream_01",
+              "agreement_content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+              "agreement_canonical_json": "{\"accepted_offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"accepted_offer_id\":\"off_worldstream_seller_02\",\"agreement_id\":\"agr_worldstream_01\",\"buyer\":\"org_northstar\",\"object_type\":\"agreement\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"spec_version\":\"a202-commercial/0.1\",\"supplier\":\"org_delta\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+              "agreement_wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+              "signer_id": "agent:northstar:buyer",
+              "signer_role": "buyer_agent",
+              "proof": "blake3:d094f98ea6906c62788fa1b75a2f6636a4624fc580b041c53945f91d525b5034"
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_7",
+          "phase": "agreement_pending",
+          "room_head": {
+            "sequence": 7,
+            "digest": "blake3:c6bf481e2d7ab020c2560bd6bbe35e0ffe06194ab6572102aab218c44a33fe49"
+          },
+          "transaction_head": {
+            "sequence": 4,
+            "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          },
+          "outcome": null,
+          "state_digest": "blake3:bb8c1155cbb26196b15e785312ebbad8fdc04eefe736cefae8c805e88fd4c035"
+        }
+      },
+      {
+        "index": 8,
+        "label": "act_08_seller_agreement_signature",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "record_agreement_signature",
+            "action_id": "act_08_seller_agreement_signature",
+            "actor": "seller_agent",
+            "basis": {
+              "room": {
+                "sequence": 7,
+                "digest": "blake3:c6bf481e2d7ab020c2560bd6bbe35e0ffe06194ab6572102aab218c44a33fe49"
+              },
+              "transaction": {
+                "sequence": 4,
+                "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+              },
+              "session": {
+                "sequence": 4,
+                "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+              }
+            },
+            "admitted_at": 360,
+            "signature": {
+              "agreement_id": "agr_worldstream_01",
+              "agreement_content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+              "agreement_canonical_json": "{\"accepted_offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"accepted_offer_id\":\"off_worldstream_seller_02\",\"agreement_id\":\"agr_worldstream_01\",\"buyer\":\"org_northstar\",\"object_type\":\"agreement\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"spec_version\":\"a202-commercial/0.1\",\"supplier\":\"org_delta\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+              "agreement_wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+              "signer_id": "agent:delta:seller",
+              "signer_role": "seller_agent",
+              "proof": "blake3:0c2abc2f01f2b1f91521c1075c321f85a5c9c29172bf73c8156011e25bf1d117"
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_8",
+          "phase": "agreement_pending",
+          "room_head": {
+            "sequence": 8,
+            "digest": "blake3:eda8b62977b6be95afb9e5640f3ed92a19b20c95e0d270454214a09a42625f27"
+          },
+          "transaction_head": {
+            "sequence": 4,
+            "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          },
+          "outcome": null,
+          "state_digest": "blake3:3d25faca31a84293728fd33f836da389b93972656d953458a8dbde7ed5ec0e7d"
+        }
+      },
+      {
+        "index": 9,
+        "label": "act_09_dual_signed_commitment",
+        "stimulus": {
+          "stimulus": "action",
+          "value": {
+            "action": "commit_agreement",
+            "action_id": "act_09_dual_signed_commitment",
+            "actor": "buyer_agent",
+            "basis": {
+              "room": {
+                "sequence": 8,
+                "digest": "blake3:eda8b62977b6be95afb9e5640f3ed92a19b20c95e0d270454214a09a42625f27"
+              },
+              "transaction": {
+                "sequence": 4,
+                "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+              },
+              "session": {
+                "sequence": 4,
+                "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+              }
+            },
+            "admitted_at": 380,
+            "agreement": {
+              "object_id": "agr_worldstream_01",
+              "object_type": "agreement",
+              "declared_content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+              "canonical_json": "{\"accepted_offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"accepted_offer_id\":\"off_worldstream_seller_02\",\"agreement_id\":\"agr_worldstream_01\",\"buyer\":\"org_northstar\",\"object_type\":\"agreement\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"spec_version\":\"a202-commercial/0.1\",\"supplier\":\"org_delta\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+              "wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+              "signature": {
+                "signer_id": "agent:northstar:buyer",
+                "signer_role": "buyer_agent",
+                "purpose": "agreement_commitment",
+                "signed_wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+                "proof": "blake3:7312984ab1193f6a56a3aedefec96953014338e2c29f23e7d22794c49fad65c4"
+              }
+            },
+            "commitment_event": {
+              "object_id": "evt_transaction_commit_05",
+              "object_type": "transaction_event",
+              "declared_content_hash": "4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2",
+              "canonical_json": "{\"content_hash\":\"4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2\",\"id\":\"evt_transaction_commit_05\",\"object_type\":\"transaction_event\",\"payload\":{\"event_type\":\"agreement.committed\",\"previous_event_hash\":\"sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710\",\"sequence\":5,\"stream\":{\"id\":\"txn_calibration_worldstream_01\",\"kind\":\"transaction\"}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+              "wire_digest": "blake3:e147fa7f743ea886b1e86a4ca335546cc1d41a81e6df3cd83ee0291545f8308b",
+              "signature": {
+                "signer_id": "agent:northstar:buyer",
+                "signer_role": "buyer_agent",
+                "purpose": "event_append",
+                "signed_wire_digest": "blake3:e147fa7f743ea886b1e86a4ca335546cc1d41a81e6df3cd83ee0291545f8308b",
+                "proof": "blake3:f365e97ddf7c1d2e5ea133e77a1f85cbb138eeec0a97eefd205575a6c8ac2e43"
+              }
+            }
+          }
+        },
+        "expected": {
+          "label": "after_step_9",
+          "phase": "complete",
+          "room_head": {
+            "sequence": 9,
+            "digest": "blake3:cc9e58c79dd35a2b15f1339443a775110661ad5ee356c7d982dc02072a7c112a"
+          },
+          "transaction_head": {
+            "sequence": 5,
+            "event_hash": "sha256:4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          },
+          "outcome": {
+            "kind": "agreement_committed",
+            "transaction_id": "txn_calibration_worldstream_01",
+            "agreement_id": "agr_worldstream_01",
+            "agreement_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1"
+          },
+          "state_digest": "blake3:ef21d87b038785b8cfa28226938cc68821e7cbf5067a9da93ea6991b412b6f7b"
+        }
+      }
+    ],
+    "final_state": {
+      "oracle_id": "worldstream/negotiate-oracle/v1",
+      "a202_revision": "fa85aa8b49bfe7b3f7ded487c98500a600e92e41",
+      "transaction_id": "txn_calibration_worldstream_01",
+      "session_id": "ses_northstar_delta_worldstream_01",
+      "phase": "complete",
+      "aggregate_state": "committed",
+      "session_state": "accepted",
+      "room_head": {
+        "sequence": 9,
+        "digest": "blake3:cc9e58c79dd35a2b15f1339443a775110661ad5ee356c7d982dc02072a7c112a"
+      },
+      "transaction_head": {
+        "sequence": 5,
+        "event_hash": "sha256:4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2"
+      },
+      "session_head": {
+        "sequence": 4,
+        "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+      },
+      "formation_deadline": 1000,
+      "proposal_expired": false,
+      "current_proposal": {
+        "author": "seller_agent",
+        "offer": {
+          "object_id": "off_worldstream_seller_02",
+          "object_type": "offer",
+          "declared_content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+          "canonical_json": "{\"content_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"id\":\"off_worldstream_seller_02\",\"object_type\":\"offer\",\"payload\":{\"offeree\":\"org_northstar\",\"offeror\":\"org_delta\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"supersedes_offer_id\":\"off_worldstream_buyer_01\",\"terms\":{\"core\":{\"description\":\"Calibration and digital certificates for 20 pressure transmitters\",\"quantity\":\"20\",\"total\":{\"amount\":\"3200.00\",\"currency\":\"EUR\"},\"unit_code\":\"H87\",\"unit_name\":\"piece\"},\"profile\":\"a202-profile/calibration-service/0.1\",\"profile_terms\":{\"acceptance\":{\"certificate_required\":true,\"machine_readable_result_required\":true,\"qualification_standard\":\"ISO/IEC 17025:2017\"},\"completion\":{\"business_calendar\":\"NL\",\"business_days_after_collection\":15},\"payment\":{\"balance_trigger\":\"buyer_acceptance\",\"prepayment_percent\":\"20\"},\"rework\":{\"included_attempts\":1}}},\"valid_until\":850},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+          "wire_digest": "blake3:7336792d2e0393ecfbe9c2f8a15673fa19e76614d7c3ae9862e73aa557fce8b2",
+          "signature": {
+            "signer_id": "agent:delta:seller",
+            "signer_role": "seller_agent",
+            "purpose": "offer_submission",
+            "signed_wire_digest": "blake3:7336792d2e0393ecfbe9c2f8a15673fa19e76614d7c3ae9862e73aa557fce8b2",
+            "proof": "blake3:9e5970bdc680795708cb93159d44aec05f109ef8b65cfb8858b9d709df73d611"
+          }
+        },
+        "session_event": {
+          "object_id": "evt_session_offer_03",
+          "object_type": "transaction_event",
+          "declared_content_hash": "f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731",
+          "canonical_json": "{\"content_hash\":\"f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731\",\"id\":\"evt_session_offer_03\",\"object_type\":\"transaction_event\",\"payload\":{\"event_type\":\"offer.submitted\",\"previous_event_hash\":\"sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd\",\"sequence\":3,\"stream\":{\"id\":\"ses_northstar_delta_worldstream_01\",\"kind\":\"session\"}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+          "wire_digest": "blake3:0d34d48122907267c5bea618a9c8e73ec9278d5f5b83f6e86ef5b254e2f2413b",
+          "signature": {
+            "signer_id": "agent:worldstream:venue_signer",
+            "signer_role": "venue_signer",
+            "purpose": "event_append",
+            "signed_wire_digest": "blake3:0d34d48122907267c5bea618a9c8e73ec9278d5f5b83f6e86ef5b254e2f2413b",
+            "proof": "blake3:bf62fd424b7dad2df3d0e825e269a65bb9f4950f798f384dd413586619a73661"
+          }
+        },
+        "valid_until": 850,
+        "supersedes_offer_id": "off_worldstream_buyer_01"
+      },
+      "pending_approval": null,
+      "recorded_approval": {
+        "binding": {
+          "candidate_canonical_json": "{\"action\":\"offer.accept\",\"expected_sequence\":4,\"offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"offer_id\":\"off_worldstream_seller_02\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+          "candidate_wire_digest": "blake3:60bab68f5b846f458c21d4c034cbb8a770fb7d92f51fa7b35e8bda75c3875cea",
+          "transaction_id": "txn_calibration_worldstream_01",
+          "proposal_id": "off_worldstream_seller_02",
+          "proposal_content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+          "room_head_at_request": {
+            "sequence": 2,
+            "digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467"
+          },
+          "transaction_head_at_request": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head_at_request": {
+            "sequence": 3,
+            "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+          },
+          "approver_id": "principal:northstar:procurement_director",
+          "expires_at": 500
+        },
+        "decision": "approved",
+        "approval": {
+          "object_id": "apr_worldstream_exact_01",
+          "object_type": "approval",
+          "declared_content_hash": "321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a",
+          "canonical_json": "{\"content_hash\":\"321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a\",\"id\":\"apr_worldstream_exact_01\",\"object_type\":\"approval\",\"payload\":{\"action_hash\":\"blake3:60bab68f5b846f458c21d4c034cbb8a770fb7d92f51fa7b35e8bda75c3875cea\",\"approver\":\"principal:northstar:procurement_director\",\"decision\":\"approved\",\"expires_at\":500,\"proposal_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"room_head\":{\"digest\":\"blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467\",\"sequence\":2},\"session_head\":{\"event_hash\":\"sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731\",\"sequence\":3},\"transaction_head\":{\"event_hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":3}},\"spec_version\":\"a202-commercial/0.1\",\"transaction_id\":\"txn_calibration_worldstream_01\",\"version\":1}",
+          "wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+          "signature": {
+            "signer_id": "principal:northstar:procurement_director",
+            "signer_role": "buyer_approver",
+            "purpose": "object_issuance",
+            "signed_wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+            "proof": "blake3:11e9595bf64611a4ceb210690a1dc8036e5a78d06182b8a45fa589db728e9904"
+          }
+        }
+      },
+      "accepted_offer_id": "off_worldstream_seller_02",
+      "accepted_offer_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+      "agreement_id": "agr_worldstream_01",
+      "agreement_content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+      "agreement_canonical_json": "{\"accepted_offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"accepted_offer_id\":\"off_worldstream_seller_02\",\"agreement_id\":\"agr_worldstream_01\",\"buyer\":\"org_northstar\",\"object_type\":\"agreement\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"spec_version\":\"a202-commercial/0.1\",\"supplier\":\"org_delta\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+      "agreement_signatures": {
+        "buyer_agent": {
+          "agreement_id": "agr_worldstream_01",
+          "agreement_content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+          "agreement_canonical_json": "{\"accepted_offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"accepted_offer_id\":\"off_worldstream_seller_02\",\"agreement_id\":\"agr_worldstream_01\",\"buyer\":\"org_northstar\",\"object_type\":\"agreement\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"spec_version\":\"a202-commercial/0.1\",\"supplier\":\"org_delta\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+          "agreement_wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+          "signer_id": "agent:northstar:buyer",
+          "signer_role": "buyer_agent",
+          "proof": "blake3:d094f98ea6906c62788fa1b75a2f6636a4624fc580b041c53945f91d525b5034"
+        },
+        "seller_agent": {
+          "agreement_id": "agr_worldstream_01",
+          "agreement_content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+          "agreement_canonical_json": "{\"accepted_offer_hash\":\"b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645\",\"accepted_offer_id\":\"off_worldstream_seller_02\",\"agreement_id\":\"agr_worldstream_01\",\"buyer\":\"org_northstar\",\"object_type\":\"agreement\",\"session_id\":\"ses_northstar_delta_worldstream_01\",\"spec_version\":\"a202-commercial/0.1\",\"supplier\":\"org_delta\",\"transaction_id\":\"txn_calibration_worldstream_01\"}",
+          "agreement_wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+          "signer_id": "agent:delta:seller",
+          "signer_role": "seller_agent",
+          "proof": "blake3:0c2abc2f01f2b1f91521c1075c321f85a5c9c29172bf73c8156011e25bf1d117"
+        }
+      },
+      "deadline_progress": "none",
+      "outcome": {
+        "kind": "agreement_committed",
+        "transaction_id": "txn_calibration_worldstream_01",
+        "agreement_id": "agr_worldstream_01",
+        "agreement_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1"
+      },
+      "evidence": [
+        {
+          "object_id": "off_worldstream_buyer_01",
+          "object_type": "offer",
+          "content_hash": "f0355964099f46e7abf4c9c04f1250f4e87b19d1e3b85e3ed0f0577433963798",
+          "wire_digest": "blake3:de3388da83965852dee0f92a35ed6c0b4816f946de61e18b6ee439ab91e415dc",
+          "action_id": "act_01_buyer_proposal",
+          "room_sequence": 1,
+          "room_digest": "blake3:935b9af23eac44c8594663ac27646e30ea6916ad4727e6ddd024997adeb14932",
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 2,
+            "event_hash": "sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd"
+          }
+        },
+        {
+          "object_id": "evt_session_offer_02",
+          "object_type": "transaction_event",
+          "content_hash": "599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd",
+          "wire_digest": "blake3:8c4336d88c1783061dc9ed1a02f27453deb33f38afd007c0dea683899f58a916",
+          "action_id": "act_01_buyer_proposal",
+          "room_sequence": 1,
+          "room_digest": "blake3:935b9af23eac44c8594663ac27646e30ea6916ad4727e6ddd024997adeb14932",
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 2,
+            "event_hash": "sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd"
+          }
+        },
+        {
+          "object_id": "off_worldstream_seller_02",
+          "object_type": "offer",
+          "content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+          "wire_digest": "blake3:7336792d2e0393ecfbe9c2f8a15673fa19e76614d7c3ae9862e73aa557fce8b2",
+          "action_id": "act_02_seller_counter",
+          "room_sequence": 2,
+          "room_digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467",
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 3,
+            "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+          }
+        },
+        {
+          "object_id": "evt_session_offer_03",
+          "object_type": "transaction_event",
+          "content_hash": "f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731",
+          "wire_digest": "blake3:0d34d48122907267c5bea618a9c8e73ec9278d5f5b83f6e86ef5b254e2f2413b",
+          "action_id": "act_02_seller_counter",
+          "room_sequence": 2,
+          "room_digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467",
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 3,
+            "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+          }
+        },
+        {
+          "object_id": "apr_worldstream_exact_01",
+          "object_type": "approval",
+          "content_hash": "321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a",
+          "wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+          "action_id": "act_04_human_signed_approval",
+          "room_sequence": 4,
+          "room_digest": "blake3:c05a58c0e94d96ae33d20a0bee3c928595593953621d93bf8fad0b6a80dce9bf",
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 3,
+            "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+          }
+        },
+        {
+          "object_id": "acc_worldstream_01",
+          "object_type": "acceptance",
+          "content_hash": "23e75cbf8e7448f7856e68ab64514a2838eff7d51316b2e4b4c0e152d763439e",
+          "wire_digest": "blake3:d72424012efe1ed7fa838be7c2e7602ca930e34cb49a249b71079ec49465f04d",
+          "action_id": "act_05_accept_current_proposal",
+          "room_sequence": 5,
+          "room_digest": "blake3:103d310350957394440afa8aa925e7fcc4e0aa0c8bb8e3c7449038b85a7d02a2",
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          }
+        },
+        {
+          "object_id": "evt_session_accept_03",
+          "object_type": "transaction_event",
+          "content_hash": "9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625",
+          "wire_digest": "blake3:e05e1df9b482432297f389e4bedb717007a8971a606be29aa7d0b9d9d141bab4",
+          "action_id": "act_05_accept_current_proposal",
+          "room_sequence": 5,
+          "room_digest": "blake3:103d310350957394440afa8aa925e7fcc4e0aa0c8bb8e3c7449038b85a7d02a2",
+          "transaction_head": {
+            "sequence": 3,
+            "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          }
+        },
+        {
+          "object_id": "evt_transaction_select_04",
+          "object_type": "transaction_event",
+          "content_hash": "6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710",
+          "wire_digest": "blake3:7cbebb163a9a97e5809a630ae75337027426248c5437511cc8f6261737824e66",
+          "action_id": "act_06_select_accepted_proposal",
+          "room_sequence": 6,
+          "room_digest": "blake3:27fd985cbd63adb944b7946c0c90febfdb02305e1f84a2e9e1910d37c2b5d3a0",
+          "transaction_head": {
+            "sequence": 4,
+            "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          }
+        },
+        {
+          "object_id": "agr_worldstream_01",
+          "object_type": "agreement",
+          "content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+          "wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+          "action_id": "act_09_dual_signed_commitment",
+          "room_sequence": 9,
+          "room_digest": "blake3:cc9e58c79dd35a2b15f1339443a775110661ad5ee356c7d982dc02072a7c112a",
+          "transaction_head": {
+            "sequence": 5,
+            "event_hash": "sha256:4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          }
+        },
+        {
+          "object_id": "evt_transaction_commit_05",
+          "object_type": "transaction_event",
+          "content_hash": "4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2",
+          "wire_digest": "blake3:e147fa7f743ea886b1e86a4ca335546cc1d41a81e6df3cd83ee0291545f8308b",
+          "action_id": "act_09_dual_signed_commitment",
+          "room_sequence": 9,
+          "room_digest": "blake3:cc9e58c79dd35a2b15f1339443a775110661ad5ee356c7d982dc02072a7c112a",
+          "transaction_head": {
+            "sequence": 5,
+            "event_hash": "sha256:4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2"
+          },
+          "session_head": {
+            "sequence": 4,
+            "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+          }
+        }
+      ]
+    },
+    "final_state_digest": "blake3:ef21d87b038785b8cfa28226938cc68821e7cbf5067a9da93ea6991b412b6f7b",
+    "outcome": {
+      "kind": "agreement_committed",
+      "transaction_id": "txn_calibration_worldstream_01",
+      "agreement_id": "agr_worldstream_01",
+      "agreement_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1"
+    },
+    "evidence_cross_index": [
+      {
+        "object_id": "off_worldstream_buyer_01",
+        "object_type": "offer",
+        "content_hash": "f0355964099f46e7abf4c9c04f1250f4e87b19d1e3b85e3ed0f0577433963798",
+        "wire_digest": "blake3:de3388da83965852dee0f92a35ed6c0b4816f946de61e18b6ee439ab91e415dc",
+        "action_id": "act_01_buyer_proposal",
+        "room_sequence": 1,
+        "room_digest": "blake3:935b9af23eac44c8594663ac27646e30ea6916ad4727e6ddd024997adeb14932",
+        "transaction_head": {
+          "sequence": 3,
+          "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "session_head": {
+          "sequence": 2,
+          "event_hash": "sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd"
+        }
+      },
+      {
+        "object_id": "evt_session_offer_02",
+        "object_type": "transaction_event",
+        "content_hash": "599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd",
+        "wire_digest": "blake3:8c4336d88c1783061dc9ed1a02f27453deb33f38afd007c0dea683899f58a916",
+        "action_id": "act_01_buyer_proposal",
+        "room_sequence": 1,
+        "room_digest": "blake3:935b9af23eac44c8594663ac27646e30ea6916ad4727e6ddd024997adeb14932",
+        "transaction_head": {
+          "sequence": 3,
+          "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "session_head": {
+          "sequence": 2,
+          "event_hash": "sha256:599c82ead58812aab8811fe76c00d37668cdbff4ad6f80bef8d36469854b54cd"
+        }
+      },
+      {
+        "object_id": "off_worldstream_seller_02",
+        "object_type": "offer",
+        "content_hash": "b5393acfbdf6045b5ea249c3d9fa38fae86381beea54707e1ce27a35e6d13645",
+        "wire_digest": "blake3:7336792d2e0393ecfbe9c2f8a15673fa19e76614d7c3ae9862e73aa557fce8b2",
+        "action_id": "act_02_seller_counter",
+        "room_sequence": 2,
+        "room_digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467",
+        "transaction_head": {
+          "sequence": 3,
+          "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "session_head": {
+          "sequence": 3,
+          "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+        }
+      },
+      {
+        "object_id": "evt_session_offer_03",
+        "object_type": "transaction_event",
+        "content_hash": "f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731",
+        "wire_digest": "blake3:0d34d48122907267c5bea618a9c8e73ec9278d5f5b83f6e86ef5b254e2f2413b",
+        "action_id": "act_02_seller_counter",
+        "room_sequence": 2,
+        "room_digest": "blake3:ecf512c1768f37c97eb2a202d59b10d5fdbfc842af9a5458af2434568f56a467",
+        "transaction_head": {
+          "sequence": 3,
+          "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "session_head": {
+          "sequence": 3,
+          "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+        }
+      },
+      {
+        "object_id": "apr_worldstream_exact_01",
+        "object_type": "approval",
+        "content_hash": "321f45cc93d877f6e0f2fc7db7a2a9d0144626ffcd80f41ea3c7e89f080d861a",
+        "wire_digest": "blake3:3f44c14faaaed632b061299b20df284ddb9f23ca4fbd88bdf042b91a7db9452f",
+        "action_id": "act_04_human_signed_approval",
+        "room_sequence": 4,
+        "room_digest": "blake3:c05a58c0e94d96ae33d20a0bee3c928595593953621d93bf8fad0b6a80dce9bf",
+        "transaction_head": {
+          "sequence": 3,
+          "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "session_head": {
+          "sequence": 3,
+          "event_hash": "sha256:f3a6b5355a87919d292969512d6e5fadd9f844fb822a2a893644029ef1fba731"
+        }
+      },
+      {
+        "object_id": "acc_worldstream_01",
+        "object_type": "acceptance",
+        "content_hash": "23e75cbf8e7448f7856e68ab64514a2838eff7d51316b2e4b4c0e152d763439e",
+        "wire_digest": "blake3:d72424012efe1ed7fa838be7c2e7602ca930e34cb49a249b71079ec49465f04d",
+        "action_id": "act_05_accept_current_proposal",
+        "room_sequence": 5,
+        "room_digest": "blake3:103d310350957394440afa8aa925e7fcc4e0aa0c8bb8e3c7449038b85a7d02a2",
+        "transaction_head": {
+          "sequence": 3,
+          "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "session_head": {
+          "sequence": 4,
+          "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+        }
+      },
+      {
+        "object_id": "evt_session_accept_03",
+        "object_type": "transaction_event",
+        "content_hash": "9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625",
+        "wire_digest": "blake3:e05e1df9b482432297f389e4bedb717007a8971a606be29aa7d0b9d9d141bab4",
+        "action_id": "act_05_accept_current_proposal",
+        "room_sequence": 5,
+        "room_digest": "blake3:103d310350957394440afa8aa925e7fcc4e0aa0c8bb8e3c7449038b85a7d02a2",
+        "transaction_head": {
+          "sequence": 3,
+          "event_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "session_head": {
+          "sequence": 4,
+          "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+        }
+      },
+      {
+        "object_id": "evt_transaction_select_04",
+        "object_type": "transaction_event",
+        "content_hash": "6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710",
+        "wire_digest": "blake3:7cbebb163a9a97e5809a630ae75337027426248c5437511cc8f6261737824e66",
+        "action_id": "act_06_select_accepted_proposal",
+        "room_sequence": 6,
+        "room_digest": "blake3:27fd985cbd63adb944b7946c0c90febfdb02305e1f84a2e9e1910d37c2b5d3a0",
+        "transaction_head": {
+          "sequence": 4,
+          "event_hash": "sha256:6e48bc4624c0c956f34e788ccfe30707e7e6d913d1d28d4d9bf8e3684841a710"
+        },
+        "session_head": {
+          "sequence": 4,
+          "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+        }
+      },
+      {
+        "object_id": "agr_worldstream_01",
+        "object_type": "agreement",
+        "content_hash": "980efca4fff23096fa191e48a0e448c6f3eb1fa5c017aa6031c4f9d0b0dde9b1",
+        "wire_digest": "blake3:29fec90c84526b5137b38e74f8b50ecf95ef8a8bd882a23ffe3d0fe137872902",
+        "action_id": "act_09_dual_signed_commitment",
+        "room_sequence": 9,
+        "room_digest": "blake3:cc9e58c79dd35a2b15f1339443a775110661ad5ee356c7d982dc02072a7c112a",
+        "transaction_head": {
+          "sequence": 5,
+          "event_hash": "sha256:4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2"
+        },
+        "session_head": {
+          "sequence": 4,
+          "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+        }
+      },
+      {
+        "object_id": "evt_transaction_commit_05",
+        "object_type": "transaction_event",
+        "content_hash": "4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2",
+        "wire_digest": "blake3:e147fa7f743ea886b1e86a4ca335546cc1d41a81e6df3cd83ee0291545f8308b",
+        "action_id": "act_09_dual_signed_commitment",
+        "room_sequence": 9,
+        "room_digest": "blake3:cc9e58c79dd35a2b15f1339443a775110661ad5ee356c7d982dc02072a7c112a",
+        "transaction_head": {
+          "sequence": 5,
+          "event_hash": "sha256:4a4ef2daac7211d9b7700de33fe23da22b9be14cc50d6ef2796a26f1b1b9dda2"
+        },
+        "session_head": {
+          "sequence": 4,
+          "event_hash": "sha256:9ae9f4c73143eca4248818ce9ebf43b143d3029908d925da3cc9aabf6f183625"
+        }
+      }
+    ]
+  },
+  "signed_expiry": {
+    "outcome": {
+      "kind": "formation_expired",
+      "transaction_id": "txn_calibration_worldstream_01",
+      "final_session_state": "closed"
+    },
+    "final_state_digest": "blake3:e795b57f70c7809c2367c78810b0592f7378d47ac927a9a7ad644f7f50c4d923",
+    "evidence_cross_index": [
+      {
+        "object_id": "evt_transaction_deadline_04",
+        "object_type": "transaction_event",
+        "content_hash": "e307d9449a9c73e18cafef9f894badbcd1a81f9a686f64de4c7454dee6964a18",
+        "wire_digest": "blake3:03e05a38839a9b6d06fd1150c4d80fcd60cfd15033a78aabd94bad8a9513d6e2",
+        "action_id": "act_expire_transaction",
+        "room_sequence": 2,
+        "room_digest": "blake3:8d14060a54857ad538f292aa271ecdea5cbc4af499de81c884708588bf429317",
+        "transaction_head": {
+          "sequence": 4,
+          "event_hash": "sha256:e307d9449a9c73e18cafef9f894badbcd1a81f9a686f64de4c7454dee6964a18"
+        },
+        "session_head": {
+          "sequence": 1,
+          "event_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      {
+        "object_id": "evt_session_close_02",
+        "object_type": "transaction_event",
+        "content_hash": "33552f5dc623516d0b8edd56e155b97e06bf28cf29ff850f853989e3299c69f7",
+        "wire_digest": "blake3:f0af92deea06caf6da955445647d6a279eb269700b5c1d8a872ae78e2959e1d7",
+        "action_id": "act_close_expired_session",
+        "room_sequence": 3,
+        "room_digest": "blake3:17e14d998dcf3b124d592c46570be74252810845d654c56ade9843c074710b88",
+        "transaction_head": {
+          "sequence": 4,
+          "event_hash": "sha256:e307d9449a9c73e18cafef9f894badbcd1a81f9a686f64de4c7454dee6964a18"
+        },
+        "session_head": {
+          "sequence": 2,
+          "event_hash": "sha256:33552f5dc623516d0b8edd56e155b97e06bf28cf29ff850f853989e3299c69f7"
+        }
+      }
+    ]
+  },
+  "negatives": [
+    {
+      "id": "neg_01_mutatedapprovedbyte",
+      "kind": "mutated_approved_byte",
+      "expected_code": "byte_mutation",
+      "invariant": "one changed candidate byte cannot consume approval"
+    },
+    {
+      "id": "neg_02_staleroomhead",
+      "kind": "stale_room_head",
+      "expected_code": "stale_room_head",
+      "invariant": "Room Head is an independent concurrency witness"
+    },
+    {
+      "id": "neg_03_changedtransactionhead",
+      "kind": "changed_transaction_head",
+      "expected_code": "stale_transaction_head",
+      "invariant": "approval cannot cross a changed A202 transaction head"
+    },
+    {
+      "id": "neg_04_changedsessionhead",
+      "kind": "changed_session_head",
+      "expected_code": "stale_session_head",
+      "invariant": "approval cannot cross a changed A202 session head"
+    },
+    {
+      "id": "neg_05_expiredproposalvalidity",
+      "kind": "expired_proposal_validity",
+      "expected_code": "proposal_expired",
+      "invariant": "proposal validity is half-open"
+    },
+    {
+      "id": "neg_06_expiredapproval",
+      "kind": "expired_approval",
+      "expected_code": "approval_expired",
+      "invariant": "approval expiry is half-open"
+    },
+    {
+      "id": "neg_07_wrongsigner",
+      "kind": "wrong_signer",
+      "expected_code": "wrong_signer",
+      "invariant": "protocol purpose must be signed by the assigned identity"
+    },
+    {
+      "id": "neg_08_roleauthorityviolation",
+      "kind": "role_authority_violation",
+      "expected_code": "role_violation",
+      "invariant": "the eleven Actions retain exact Role authority"
+    },
+    {
+      "id": "neg_09_deadlineatequality",
+      "kind": "deadline_at_equality",
+      "expected_code": "deadline_not_passed",
+      "invariant": "A202 signed deadline event requires strict passage"
+    },
+    {
+      "id": "neg_10_signedformationexpiry",
+      "kind": "signed_formation_expiry",
+      "expected_code": null,
+      "invariant": "expiry requires independently signed session and transaction events"
+    },
+    {
+      "id": "neg_11_privacynoninterference",
+      "kind": "privacy_noninterference",
+      "expected_code": null,
+      "invariant": "unauthorized pairwise mutations do not change any projection"
+    },
+    {
+      "id": "neg_12_forbiddenimport",
+      "kind": "forbidden_import",
+      "expected_code": "forbidden_import",
+      "invariant": "portable Component has zero imports"
+    },
+    {
+      "id": "neg_13_resourceexhaustion",
+      "kind": "resource_exhaustion",
+      "expected_code": "resource_limit",
+      "invariant": "resource excess fails closed"
+    },
+    {
+      "id": "neg_14_callbackfaultbeforecommit",
+      "kind": "callback_fault_before_commit",
+      "expected_code": "callback_fault_before_commit",
+      "invariant": "fault produces no authoritative commit"
+    },
+    {
+      "id": "neg_15_missingretainedbundle",
+      "kind": "missing_retained_bundle",
+      "expected_code": "missing_retained_bundle",
+      "invariant": "replay cannot substitute a missing revision"
+    },
+    {
+      "id": "neg_16_corruptretainedbundle",
+      "kind": "corrupt_retained_bundle",
+      "expected_code": "corrupt_retained_bundle",
+      "invariant": "replay rejects corrupt retained bytes"
+    }
+  ]
+}

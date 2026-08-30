@@ -418,7 +418,7 @@ def test_release_handoff_preserves_unresolved_manifest_evidence():
     assert handoff["required_evidence"][0]["artifact_digest"] == ""
 
 
-def test_nonrelease_tiers_accept_complete_embedded_release_contract():
+def test_nonrelease_tiers_accept_coherent_fail_closed_specification():
     gates = load_gates()
     manifest = gates.load_manifest()
     runner = gates.GateRunner(strict=True, offline=True, ci=False)
@@ -431,7 +431,9 @@ def test_nonrelease_tiers_accept_complete_embedded_release_contract():
         if outcome.name == "manifest-contract-state"
     ]
     assert state and state[0].status == "PASS"
-    assert "detached distribution evidence is not asserted" in state[0].detail
+    assert (
+        "detached release and qualification evidence is not asserted" in state[0].detail
+    )
 
 
 def test_release_metadata_requires_exact_inventory_and_digests(tmp_path, monkeypatch):

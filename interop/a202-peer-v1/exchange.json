@@ -1,0 +1,358 @@
+{
+  "cases": [
+    {
+      "case_id": "action_initial_head",
+      "expected": {
+        "fresh_signature_required": false,
+        "outcomes": {
+          "a202_content_hash": "verified",
+          "exact_byte_digest": "verified",
+          "logical_head": "verified",
+          "media_type": "verified",
+          "signature": "verified",
+          "signer_status": "verified"
+        },
+        "retry_decision": "not_applicable",
+        "returned_exact_bytes_sha256": null
+      },
+      "input": {
+        "key_set": "active",
+        "media_type": "application/a202-commercial+json",
+        "object_id": "action_valid",
+        "observed_basis": null,
+        "submission_basis": {
+          "room": {
+            "digest": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": 10
+          },
+          "session": {
+            "event_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "sequence": 7
+          },
+          "transaction": {
+            "event_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "sequence": 3
+          }
+        }
+      }
+    },
+    {
+      "case_id": "offer_missing_key",
+      "expected": {
+        "fresh_signature_required": false,
+        "outcomes": {
+          "a202_content_hash": "verified",
+          "exact_byte_digest": "verified",
+          "logical_head": "not_checkable",
+          "media_type": "verified",
+          "signature": "not_checkable",
+          "signer_status": "not_checkable"
+        },
+        "retry_decision": "not_applicable",
+        "returned_exact_bytes_sha256": null
+      },
+      "input": {
+        "key_set": "empty",
+        "media_type": "application/a202-commercial+json",
+        "object_id": "offer_valid",
+        "observed_basis": null,
+        "submission_basis": null
+      }
+    },
+    {
+      "case_id": "offer_tampered_content",
+      "expected": {
+        "fresh_signature_required": false,
+        "outcomes": {
+          "a202_content_hash": "failed",
+          "exact_byte_digest": "verified",
+          "logical_head": "not_checkable",
+          "media_type": "verified",
+          "signature": "failed",
+          "signer_status": "verified"
+        },
+        "retry_decision": "not_applicable",
+        "returned_exact_bytes_sha256": null
+      },
+      "input": {
+        "key_set": "active",
+        "media_type": "application/a202-commercial+json",
+        "object_id": "offer_tampered",
+        "observed_basis": null,
+        "submission_basis": null
+      }
+    },
+    {
+      "case_id": "offer_valid",
+      "expected": {
+        "fresh_signature_required": false,
+        "outcomes": {
+          "a202_content_hash": "verified",
+          "exact_byte_digest": "verified",
+          "logical_head": "not_checkable",
+          "media_type": "verified",
+          "signature": "verified",
+          "signer_status": "verified"
+        },
+        "retry_decision": "not_applicable",
+        "returned_exact_bytes_sha256": null
+      },
+      "input": {
+        "key_set": "active",
+        "media_type": "application/a202-commercial+json",
+        "object_id": "offer_valid",
+        "observed_basis": null,
+        "submission_basis": null
+      }
+    },
+    {
+      "case_id": "offer_wrong_media_type",
+      "expected": {
+        "fresh_signature_required": false,
+        "outcomes": {
+          "a202_content_hash": "not_checkable",
+          "exact_byte_digest": "not_checkable",
+          "logical_head": "not_checkable",
+          "media_type": "failed",
+          "signature": "not_checkable",
+          "signer_status": "not_checkable"
+        },
+        "retry_decision": "not_applicable",
+        "returned_exact_bytes_sha256": null
+      },
+      "input": {
+        "key_set": "active",
+        "media_type": "application/json",
+        "object_id": "offer_valid",
+        "observed_basis": null,
+        "submission_basis": null
+      }
+    },
+    {
+      "case_id": "retry_room_head_only",
+      "expected": {
+        "fresh_signature_required": false,
+        "outcomes": {
+          "a202_content_hash": "verified",
+          "exact_byte_digest": "verified",
+          "logical_head": "verified",
+          "media_type": "verified",
+          "signature": "verified",
+          "signer_status": "verified"
+        },
+        "retry_decision": "reuse_exact_bytes",
+        "returned_exact_bytes_sha256": "sha256:39788b975505c6914ecc846721a7955ec898d79b3b93eab5784a0c81c3bcf5a6"
+      },
+      "input": {
+        "key_set": "active",
+        "media_type": "application/a202-commercial+json",
+        "object_id": "action_valid",
+        "observed_basis": {
+          "room": {
+            "digest": "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+            "sequence": 11
+          },
+          "session": {
+            "event_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "sequence": 7
+          },
+          "transaction": {
+            "event_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "sequence": 3
+          }
+        },
+        "submission_basis": {
+          "room": {
+            "digest": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": 10
+          },
+          "session": {
+            "event_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "sequence": 7
+          },
+          "transaction": {
+            "event_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "sequence": 3
+          }
+        }
+      }
+    },
+    {
+      "case_id": "retry_session_head_changed",
+      "expected": {
+        "fresh_signature_required": true,
+        "outcomes": {
+          "a202_content_hash": "verified",
+          "exact_byte_digest": "verified",
+          "logical_head": "failed",
+          "media_type": "verified",
+          "signature": "verified",
+          "signer_status": "verified"
+        },
+        "retry_decision": "rebuild_and_resign",
+        "returned_exact_bytes_sha256": null
+      },
+      "input": {
+        "key_set": "active",
+        "media_type": "application/a202-commercial+json",
+        "object_id": "action_valid",
+        "observed_basis": {
+          "room": {
+            "digest": "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+            "sequence": 11
+          },
+          "session": {
+            "event_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "sequence": 8
+          },
+          "transaction": {
+            "event_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "sequence": 3
+          }
+        },
+        "submission_basis": {
+          "room": {
+            "digest": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": 10
+          },
+          "session": {
+            "event_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "sequence": 7
+          },
+          "transaction": {
+            "event_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "sequence": 3
+          }
+        }
+      }
+    },
+    {
+      "case_id": "retry_transaction_head_changed",
+      "expected": {
+        "fresh_signature_required": true,
+        "outcomes": {
+          "a202_content_hash": "verified",
+          "exact_byte_digest": "verified",
+          "logical_head": "failed",
+          "media_type": "verified",
+          "signature": "verified",
+          "signer_status": "verified"
+        },
+        "retry_decision": "rebuild_and_resign",
+        "returned_exact_bytes_sha256": null
+      },
+      "input": {
+        "key_set": "active",
+        "media_type": "application/a202-commercial+json",
+        "object_id": "action_valid",
+        "observed_basis": {
+          "room": {
+            "digest": "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+            "sequence": 11
+          },
+          "session": {
+            "event_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "sequence": 7
+          },
+          "transaction": {
+            "event_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "sequence": 4
+          }
+        },
+        "submission_basis": {
+          "room": {
+            "digest": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": 10
+          },
+          "session": {
+            "event_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "sequence": 7
+          },
+          "transaction": {
+            "event_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "sequence": 3
+          }
+        }
+      }
+    }
+  ],
+  "evidence_class": "specification_invitation",
+  "objects": [
+    {
+      "a202_content_hash": "3fed38448970451d2f3f2a6be00d16988dbac4d2d01106deab59901f082a4545",
+      "exact_bytes_base64url": "eyJjb250ZW50X2hhc2giOiIzZmVkMzg0NDg5NzA0NTFkMmYzZjJhNmJlMDBkMTY5ODhkYmFjNGQyZDAxMTA2ZGVhYjU5OTAxZjA4MmE0NTQ1IiwiY3JlYXRlZF9hdCI6IjIwMjYtMDgtMzBUMTI6MDA6MDBaIiwiY3JlYXRlZF9ieSI6eyJhZ2VudF9pZCI6ImFndF9wZWVyXzAwMSIsIm1hbmRhdGVfaWQiOiJtbmRfcGVlcl8wMDEiLCJvcmdhbml6YXRpb25faWQiOiJvcmdfcGVlcl8wMDEifSwiaWQiOiJhY3RfcGVlcl8wMDEiLCJvYmplY3RfdHlwZSI6ImFjdGlvbl9lbnZlbG9wZSIsInBheWxvYWQiOnsiYWN0aW9uX3R5cGUiOiJvZmZlci5zdWJtaXQiLCJleHBlY3RlZF9zZXF1ZW5jZSI6NywiaWRlbXBvdGVuY3lfa2V5IjoicGVlci1hY3Rpb24tMDAxIiwicHJvcG9zZWRfb2JqZWN0Ijp7fSwic2Vzc2lvbl9pZCI6InNlc19wZWVyXzAwMSJ9LCJwcmV2aW91c192ZXJzaW9uX2lkIjpudWxsLCJzaWduYXR1cmVzIjpbeyJhbGdvcml0aG0iOiJFUzI1NiIsImtleV9pZCI6ImtleV9wZWVyXzAwMSIsInB1cnBvc2UiOiJhY3Rpb25fc3VibWlzc2lvbiIsInNpZ25hdHVyZSI6IjNGNFdXRGsxYjB2UlFtcEFEWEZYc2JYTWRFd0NOcVVfR2Nlb3UzWW1HY0xwYlhFWGVXZ2tEUl9CVnJzSTNuNTlMcVg0NHpvRnNwS0lJa2R2ME5wdURBIiwic2lnbmVkX2F0IjoiMjAyNi0wOC0zMFQxMjowMDowMFoifV0sInNwZWNfdmVyc2lvbiI6ImEyMDItY29tbWVyY2lhbC8wLjEiLCJ0cmFuc2FjdGlvbl9pZCI6InR4bl9wZWVyXzAwMSIsInZlcnNpb24iOjF9",
+      "exact_bytes_sha256": "sha256:39788b975505c6914ecc846721a7955ec898d79b3b93eab5784a0c81c3bcf5a6",
+      "expected_signature": {
+        "key_id": "key_peer_001",
+        "purpose": "action_submission",
+        "subject_id": "agt_peer_001"
+      },
+      "id": "action_valid",
+      "media_type": "application/a202-commercial+json",
+      "object_type": "action_envelope",
+      "wire_digest": "blake3:14d6a8ddc177b9d086b86c80c9e17981ff7bfdede7424c42a40483a0d3a762f7"
+    },
+    {
+      "a202_content_hash": "dc8741b32211e3f74c9b76466b33db9daa8e4308bf155000b49b2ad3629578cf",
+      "exact_bytes_base64url": "eyJjb250ZW50X2hhc2giOiJkYzg3NDFiMzIyMTFlM2Y3NGM5Yjc2NDY2YjMzZGI5ZGFhOGU0MzA4YmYxNTUwMDBiNDliMmFkMzYyOTU3OGNmIiwiY3JlYXRlZF9hdCI6IjIwMjYtMDgtMzBUMTI6MDA6MDBaIiwiY3JlYXRlZF9ieSI6eyJhZ2VudF9pZCI6ImFndF9wZWVyXzAwMSIsIm1hbmRhdGVfaWQiOiJtbmRfcGVlcl8wMDEiLCJvcmdhbml6YXRpb25faWQiOiJvcmdfdGFtcGVyZWRfMDAxIn0sImlkIjoib2ZmX3BlZXJfMDAxIiwib2JqZWN0X3R5cGUiOiJvZmZlciIsInBheWxvYWQiOnsic2Vzc2lvbl9pZCI6InNlc19wZWVyXzAwMSIsInRlcm1zIjp7InByb2ZpbGUiOiJhMjAyLXByb2ZpbGUvY2FsaWJyYXRpb24tc2VydmljZS8wLjEifX0sInByZXZpb3VzX3ZlcnNpb25faWQiOm51bGwsInNpZ25hdHVyZXMiOlt7ImFsZ29yaXRobSI6IkVTMjU2Iiwia2V5X2lkIjoia2V5X3BlZXJfMDAxIiwicHVycG9zZSI6Im9mZmVyX3N1Ym1pc3Npb24iLCJzaWduYXR1cmUiOiJqeFZQcUFVODJJTXA0VVJ6a2x5YWs4OWpQZ2NyV2NzRkx4TU03WjUyU1JKclQxaUNZd3M5ZjlMRGNLOWw2SXZaZjNYamdxa3hXbHBxTFF2NmNGcER5dyIsInNpZ25lZF9hdCI6IjIwMjYtMDgtMzBUMTI6MDA6MDBaIn1dLCJzcGVjX3ZlcnNpb24iOiJhMjAyLWNvbW1lcmNpYWwvMC4xIiwidHJhbnNhY3Rpb25faWQiOiJ0eG5fcGVlcl8wMDEiLCJ2ZXJzaW9uIjoxfQ",
+      "exact_bytes_sha256": "sha256:d151ee2b63cf664bb8a65dade80ea25acfdc388702fe8b2137af8cac1757895e",
+      "expected_signature": {
+        "key_id": "key_peer_001",
+        "purpose": "offer_submission",
+        "subject_id": "agt_peer_001"
+      },
+      "id": "offer_tampered",
+      "media_type": "application/a202-commercial+json",
+      "object_type": "offer",
+      "wire_digest": "blake3:408dfa723dc286eb4676c732acc98a701f67cdbe4ac139974c14b2dbbf79aee7"
+    },
+    {
+      "a202_content_hash": "dc8741b32211e3f74c9b76466b33db9daa8e4308bf155000b49b2ad3629578cf",
+      "exact_bytes_base64url": "eyJjb250ZW50X2hhc2giOiJkYzg3NDFiMzIyMTFlM2Y3NGM5Yjc2NDY2YjMzZGI5ZGFhOGU0MzA4YmYxNTUwMDBiNDliMmFkMzYyOTU3OGNmIiwiY3JlYXRlZF9hdCI6IjIwMjYtMDgtMzBUMTI6MDA6MDBaIiwiY3JlYXRlZF9ieSI6eyJhZ2VudF9pZCI6ImFndF9wZWVyXzAwMSIsIm1hbmRhdGVfaWQiOiJtbmRfcGVlcl8wMDEiLCJvcmdhbml6YXRpb25faWQiOiJvcmdfcGVlcl8wMDEifSwiaWQiOiJvZmZfcGVlcl8wMDEiLCJvYmplY3RfdHlwZSI6Im9mZmVyIiwicGF5bG9hZCI6eyJzZXNzaW9uX2lkIjoic2VzX3BlZXJfMDAxIiwidGVybXMiOnsicHJvZmlsZSI6ImEyMDItcHJvZmlsZS9jYWxpYnJhdGlvbi1zZXJ2aWNlLzAuMSJ9fSwicHJldmlvdXNfdmVyc2lvbl9pZCI6bnVsbCwic2lnbmF0dXJlcyI6W3siYWxnb3JpdGhtIjoiRVMyNTYiLCJrZXlfaWQiOiJrZXlfcGVlcl8wMDEiLCJwdXJwb3NlIjoib2ZmZXJfc3VibWlzc2lvbiIsInNpZ25hdHVyZSI6Imp4VlBxQVU4MklNcDRVUnprbHlhazg5alBnY3JXY3NGTHhNTTdaNTJTUkpyVDFpQ1l3czlmOUxEY0s5bDZJdlpmM1hqZ3FreFdscHFMUXY2Y0ZwRHl3Iiwic2lnbmVkX2F0IjoiMjAyNi0wOC0zMFQxMjowMDowMFoifV0sInNwZWNfdmVyc2lvbiI6ImEyMDItY29tbWVyY2lhbC8wLjEiLCJ0cmFuc2FjdGlvbl9pZCI6InR4bl9wZWVyXzAwMSIsInZlcnNpb24iOjF9",
+      "exact_bytes_sha256": "sha256:96daa3e2f83bd951c5c505d5262d6d60e38ca25f235c63265a131094a137b41e",
+      "expected_signature": {
+        "key_id": "key_peer_001",
+        "purpose": "offer_submission",
+        "subject_id": "agt_peer_001"
+      },
+      "id": "offer_valid",
+      "media_type": "application/a202-commercial+json",
+      "object_type": "offer",
+      "wire_digest": "blake3:6fc0481764fa665ab7eb2cad9cf663e70b9e28b4f6be64fb675cc83933a63712"
+    }
+  ],
+  "profile": {
+    "bilateral_scope": "a202-scope/bilateral/0.1",
+    "operated_scope": "a202-scope/operated/0.1",
+    "repository_revision": "fa85aa8b49bfe7b3f7ded487c98500a600e92e41",
+    "rules_version": "1.3",
+    "spec_version": "a202-commercial/0.1",
+    "transaction_profile": "a202-profile/calibration-service/0.1"
+  },
+  "reference_material": [
+    {
+      "canonical_content_bytes_base64url": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0zMFQxMjowMDowMFoiLCJjcmVhdGVkX2J5Ijp7ImFnZW50X2lkIjoiYWd0X3BlZXJfMDAxIiwibWFuZGF0ZV9pZCI6Im1uZF9wZWVyXzAwMSIsIm9yZ2FuaXphdGlvbl9pZCI6Im9yZ19wZWVyXzAwMSJ9LCJpZCI6ImFjdF9wZWVyXzAwMSIsIm9iamVjdF90eXBlIjoiYWN0aW9uX2VudmVsb3BlIiwicGF5bG9hZCI6eyJhY3Rpb25fdHlwZSI6Im9mZmVyLnN1Ym1pdCIsImV4cGVjdGVkX3NlcXVlbmNlIjo3LCJpZGVtcG90ZW5jeV9rZXkiOiJwZWVyLWFjdGlvbi0wMDEiLCJwcm9wb3NlZF9vYmplY3QiOnt9LCJzZXNzaW9uX2lkIjoic2VzX3BlZXJfMDAxIn0sInByZXZpb3VzX3ZlcnNpb25faWQiOm51bGwsInNwZWNfdmVyc2lvbiI6ImEyMDItY29tbWVyY2lhbC8wLjEiLCJ0cmFuc2FjdGlvbl9pZCI6InR4bl9wZWVyXzAwMSIsInZlcnNpb24iOjF9",
+      "object_id": "action_valid",
+      "signature_message_base64url": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0zMFQxMjowMDowMFoiLCJjcmVhdGVkX2J5Ijp7ImFnZW50X2lkIjoiYWd0X3BlZXJfMDAxIiwibWFuZGF0ZV9pZCI6Im1uZF9wZWVyXzAwMSIsIm9yZ2FuaXphdGlvbl9pZCI6Im9yZ19wZWVyXzAwMSJ9LCJpZCI6ImFjdF9wZWVyXzAwMSIsIm9iamVjdF90eXBlIjoiYWN0aW9uX2VudmVsb3BlIiwicGF5bG9hZCI6eyJhY3Rpb25fdHlwZSI6Im9mZmVyLnN1Ym1pdCIsImV4cGVjdGVkX3NlcXVlbmNlIjo3LCJpZGVtcG90ZW5jeV9rZXkiOiJwZWVyLWFjdGlvbi0wMDEiLCJwcm9wb3NlZF9vYmplY3QiOnt9LCJzZXNzaW9uX2lkIjoic2VzX3BlZXJfMDAxIn0sInByZXZpb3VzX3ZlcnNpb25faWQiOm51bGwsInNwZWNfdmVyc2lvbiI6ImEyMDItY29tbWVyY2lhbC8wLjEiLCJ0cmFuc2FjdGlvbl9pZCI6InR4bl9wZWVyXzAwMSIsInZlcnNpb24iOjF9LnsiYWxnb3JpdGhtIjoiRVMyNTYiLCJrZXlfaWQiOiJrZXlfcGVlcl8wMDEiLCJwdXJwb3NlIjoiYWN0aW9uX3N1Ym1pc3Npb24iLCJzaWduZWRfYXQiOiIyMDI2LTA4LTMwVDEyOjAwOjAwWiJ9"
+    },
+    {
+      "canonical_content_bytes_base64url": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0zMFQxMjowMDowMFoiLCJjcmVhdGVkX2J5Ijp7ImFnZW50X2lkIjoiYWd0X3BlZXJfMDAxIiwibWFuZGF0ZV9pZCI6Im1uZF9wZWVyXzAwMSIsIm9yZ2FuaXphdGlvbl9pZCI6Im9yZ19wZWVyXzAwMSJ9LCJpZCI6Im9mZl9wZWVyXzAwMSIsIm9iamVjdF90eXBlIjoib2ZmZXIiLCJwYXlsb2FkIjp7InNlc3Npb25faWQiOiJzZXNfcGVlcl8wMDEiLCJ0ZXJtcyI6eyJwcm9maWxlIjoiYTIwMi1wcm9maWxlL2NhbGlicmF0aW9uLXNlcnZpY2UvMC4xIn19LCJwcmV2aW91c192ZXJzaW9uX2lkIjpudWxsLCJzcGVjX3ZlcnNpb24iOiJhMjAyLWNvbW1lcmNpYWwvMC4xIiwidHJhbnNhY3Rpb25faWQiOiJ0eG5fcGVlcl8wMDEiLCJ2ZXJzaW9uIjoxfQ",
+      "object_id": "offer_valid",
+      "signature_message_base64url": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0zMFQxMjowMDowMFoiLCJjcmVhdGVkX2J5Ijp7ImFnZW50X2lkIjoiYWd0X3BlZXJfMDAxIiwibWFuZGF0ZV9pZCI6Im1uZF9wZWVyXzAwMSIsIm9yZ2FuaXphdGlvbl9pZCI6Im9yZ19wZWVyXzAwMSJ9LCJpZCI6Im9mZl9wZWVyXzAwMSIsIm9iamVjdF90eXBlIjoib2ZmZXIiLCJwYXlsb2FkIjp7InNlc3Npb25faWQiOiJzZXNfcGVlcl8wMDEiLCJ0ZXJtcyI6eyJwcm9maWxlIjoiYTIwMi1wcm9maWxlL2NhbGlicmF0aW9uLXNlcnZpY2UvMC4xIn19LCJwcmV2aW91c192ZXJzaW9uX2lkIjpudWxsLCJzcGVjX3ZlcnNpb24iOiJhMjAyLWNvbW1lcmNpYWwvMC4xIiwidHJhbnNhY3Rpb25faWQiOiJ0eG5fcGVlcl8wMDEiLCJ2ZXJzaW9uIjoxfS57ImFsZ29yaXRobSI6IkVTMjU2Iiwia2V5X2lkIjoia2V5X3BlZXJfMDAxIiwicHVycG9zZSI6Im9mZmVyX3N1Ym1pc3Npb24iLCJzaWduZWRfYXQiOiIyMDI2LTA4LTMwVDEyOjAwOjAwWiJ9"
+    }
+  ],
+  "release_evidence": false,
+  "schema": "worldstream/a202-peer-exchange-invitation/v1",
+  "session": {
+    "session_id": "ses_peer_001",
+    "transaction_id": "txn_peer_001"
+  },
+  "verification_key": {
+    "current_status": "active",
+    "key_id": "key_peer_001",
+    "public_key_sec1_base64url": "BC5-tM_waA12ljDWLk7JC2ZqLb7AcQ4RhkTAdssqR3R8z2mmv8f1tu7XW3bNcOF0nWcsB1GBfEFov0BhSP7osso",
+    "status_at": "2026-08-30T12:00:00Z",
+    "status_at_signing_time": "active",
+    "subject_id": "agt_peer_001"
+  }
+}

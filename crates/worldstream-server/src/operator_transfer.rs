@@ -17,6 +17,8 @@ use worldstream_backup::native_sqlite::{
     NativeSqliteLimits, durable_transfer_point_digest_retained, extract_operational_rows_retained,
     verify_retained_file,
 };
+use worldstream_core::{CanonicalJsonV1, PackDigestV1, PackRevisionLockV1};
+use worldstream_pack_bundle::{PackBundleStoreV1, RetainedPackBundleArtifactV1};
 use worldstream_postgres::{
     PostgresAdmin, PostgresTransferDestination, postgres_backend_fingerprint,
 };
@@ -80,6 +82,19 @@ pub struct TransferOperatorResultV1 {
     pub next_ordinal: usize,
     /// Whether every bundle record has been checkpointed.
     pub chunks_complete: bool,
+}
+
+/// Redacted receipt for restoring exact transfer-carried portable archives to
+/// one target-local retained-only Pack store.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TransferPackRestoreResultV1 {
+    pub schema: &'static str,
+    pub status: &'static str,
+    pub operation: &'static str,
+    pub bundle_hash: String,
+    pub restored_bundle_count: usize,
+    pub approval_records_imported: bool,
+    pub restart_required: bool,
 }
 
 /// Redacted closed failures from the transfer operator.
@@ -507,6 +522,43 @@ pub fn begin_transfer(
     )
 }
 
+/// Restores only exact portable Pack archive bytes carried by a verified
+/// transfer bundle. Every archive is retained-only; source approval and
+/// selectability are never represented by the transfer wire contract.
+///
+/// # Errors
+///
+/// Returns a closed error if the transfer artifact, target data directory, or
+/// any staged Pack archive fails complete verification.
+pub fn restore_transfer_pack_bundles(
+    bundle_path: &Path,
+    target_data_dir: &Path,
+) -> Result<TransferPackRestoreResultV1, TransferOperatorError> {
+    let bundle = read_canonical_bundle(bundle_path)?;
+    let bundle_hash = bundle
+        .bundle_hash()
+        .map_err(|_| TransferOperatorError::Bundle("bundle digest"))?;
+    let target_data_dir = prepare_data_directory(target_data_dir)
+        .map_err(|_| TransferOperatorError::State("target data directory"))?;
+    let store = PackBundleStoreV1::open(target_data_dir.join("activity-packs"))
+        .map_err(|_| TransferOperatorError::Bundle("target portable Pack store"))?;
+    let restored_at = format!("transfer-restore:{bundle_hash}");
+    for artifact in bundle.portable_pack_bundles() {
+        store
+            .restore_retained(artifact, restored_at.clone())
+            .map_err(|_| TransferOperatorError::Bundle("target portable Pack restore"))?;
+    }
+    Ok(TransferPackRestoreResultV1 {
+        schema: "worldstream/transfer-pack-restore-result/v1",
+        status: "ok",
+        operation: "restore_pack_bundles",
+        bundle_hash: bundle_hash.to_string(),
+        restored_bundle_count: bundle.portable_pack_bundles().len(),
+        approval_records_imported: false,
+        restart_required: true,
+    })
+}
+
 #[cfg(test)]
 fn begin_transfer_with_hook<F>(
     sqlite: &Path,
@@ -602,7 +654,11 @@ where
     let backup_digest = status
         .backup_digest()
         .ok_or(TransferOperatorError::Source("backup digest"))?;
-    let bundle = build_frozen_bundle(&source, &backup, &status, transfer_id)?;
+    let pack_store_root = source_path
+        .parent()
+        .ok_or(TransferOperatorError::Source("SQLite source parent"))?
+        .join("activity-packs");
+    let bundle = build_frozen_bundle(&source, &backup, &status, transfer_id, &pack_store_root)?;
     retained_source.revalidate()?;
     let target = TargetFingerprintV1::for_bundle(&bundle)
         .map_err(|_| TransferOperatorError::Bundle("target fingerprint"))?;
@@ -992,7 +1048,19 @@ fn revalidate_pending_source(loaded: &LoadedTransferV1) -> Result<(), TransferOp
     let backup = revalidate_bound_backup_path(loaded, &status, "pending backup path")?;
     validate_owner_only_file(&backup)
         .map_err(|_| TransferOperatorError::Source("owner-only pending backup"))?;
-    let rebuilt = build_frozen_bundle(&loaded.source, &backup, &status, loaded.bundle.bundle_id())?;
+    let pack_store_root = loaded
+        .retained_source
+        .path
+        .parent()
+        .ok_or(TransferOperatorError::Source("SQLite source parent"))?
+        .join("activity-packs");
+    let rebuilt = build_frozen_bundle(
+        &loaded.source,
+        &backup,
+        &status,
+        loaded.bundle.bundle_id(),
+        &pack_store_root,
+    )?;
     if rebuilt
         .bundle_hash()
         .map_err(|_| TransferOperatorError::Bundle("rebuilt digest"))?
@@ -1088,6 +1156,7 @@ fn build_frozen_bundle(
     backup: &Path,
     status: &SqliteSourceTransferStatusV1,
     transfer_id: &str,
+    pack_store_root: &Path,
 ) -> Result<TransferBundleV1, TransferOperatorError> {
     let retained = RetainedBackupV1::open(backup, status)?;
     let report = verify_retained_file(
@@ -1133,6 +1202,7 @@ fn build_frozen_bundle(
         target_backend.schema().clone(),
     )
     .map_err(|_| TransferOperatorError::Bundle("SQLite backend fingerprint"))?;
+    let portable_pack_bundles = retained_portable_pack_bundles(&export, pack_store_root)?;
     let spec = NativeSqliteTransferSpecV1::new_with_deployment_resources(
         transfer_id,
         export.deployment_lineage(),
@@ -1142,13 +1212,81 @@ fn build_frozen_bundle(
         export.deployment_identity().clone(),
         export.resource_payloads().to_vec(),
         SessionStatePolicyV1::InvalidateAndRebuild,
-    );
+    )
+    .with_portable_pack_bundles(portable_pack_bundles);
     NativeSqliteTransferAdapterV1::from_operational_rows_with_canonical_records(
         &rows,
         &spec,
         &canonical_records,
     )
     .map_err(|_| TransferOperatorError::Bundle("construct native transfer bundle"))
+}
+
+fn retained_portable_pack_bundles(
+    export: &SqliteCanonicalExportV1,
+    store_root: &Path,
+) -> Result<Vec<RetainedPackBundleArtifactV1>, TransferOperatorError> {
+    let base_revisions = export
+        .deployment_identity()
+        .packs()
+        .iter()
+        .map(|pack| format!("blake3:{}", pack.digest()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut referenced = std::collections::BTreeSet::<PackDigestV1>::new();
+    for record in export
+        .records()
+        .iter()
+        .filter(|record| record.kind() == SqliteCanonicalRecordKindV1::PackRevisionLock)
+    {
+        let lock: PackRevisionLockV1 = CanonicalJsonV1::decode_canonical(record.bytes())
+            .map_err(|_| TransferOperatorError::Bundle("retained Pack revision lock"))?;
+        let digest = lock
+            .revision_digest()
+            .map_err(|_| TransferOperatorError::Bundle("retained Pack revision digest"))?;
+        if !base_revisions.contains(&digest.to_string()) {
+            referenced.insert(digest);
+        }
+    }
+    if referenced.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !store_root.is_dir() {
+        return Err(TransferOperatorError::Bundle(
+            "referenced portable Pack store",
+        ));
+    }
+    let store = PackBundleStoreV1::open(store_root.to_owned())
+        .map_err(|_| TransferOperatorError::Bundle("portable Pack store"))?;
+    let inventory = store
+        .load_startup_inventory()
+        .map_err(|_| TransferOperatorError::Bundle("portable Pack inventory"))?;
+    let mut artifacts = Vec::with_capacity(referenced.len());
+    for revision in referenced {
+        let entry = inventory
+            .entries()
+            .iter()
+            .find(|entry| entry.bundle().revision_digest() == &revision)
+            .ok_or(TransferOperatorError::Bundle(
+                "missing referenced portable Pack revision",
+            ))?;
+        artifacts.push(
+            RetainedPackBundleArtifactV1::from_archive_bytes(
+                entry.bundle().archive_bytes().to_vec(),
+            )
+            .map_err(|_| TransferOperatorError::Bundle("portable Pack archive"))?,
+        );
+    }
+    artifacts.sort_by(|left, right| {
+        (
+            left.revision_digest.to_string(),
+            left.bundle_digest.to_string(),
+        )
+            .cmp(&(
+                right.revision_digest.to_string(),
+                right.bundle_digest.to_string(),
+            ))
+    });
+    Ok(artifacts)
 }
 
 fn canonical_records(

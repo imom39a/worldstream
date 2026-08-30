@@ -24,6 +24,8 @@ use crate::{
 
 /// Frozen trusted Activity Pack host-contract identity.
 pub const ACTIVITY_PACK_HOST_CONTRACT_ID: &str = "worldstream/activity-pack/v1";
+/// Canonical JSON interface carried by the five WASI-free Component exports.
+pub const ACTIVITY_PACK_OPERATION_CODEC_ID: &str = "worldstream/activity-pack-operation-codec/v1";
 /// Frozen semantic revision-lock identity.
 pub const PACK_REVISION_LOCK_ID: &str = "worldstream/pack-revision-lock/v1";
 /// Frozen Action Offer identity.
@@ -68,7 +70,7 @@ pub enum ActivityPackOperationV1 {
 /// selected only through [`PackRegistryV1`].
 pub trait ActivityPackV1: Send + Sync + 'static {
     /// Returns immutable metadata for this exact semantic revision.
-    fn descriptor(&self) -> &'static PackRevisionDescriptorV1;
+    fn descriptor(&self) -> &PackRevisionDescriptorV1;
 
     /// Produces initial Activity State and generation-free Timer requests.
     ///
@@ -129,7 +131,7 @@ pub struct ActivityGenesisInputV1<'a> {
 /// Owned recorded creation input presented to the registry before Genesis
 /// preparation. It deliberately omits Activity State and Timer generations;
 /// those must come from the selected exact executor and host normalization.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackGenesisRequestV1 {
     pub room_id: RoomId,
@@ -184,7 +186,8 @@ impl VerifiedRetainedGenesisV1 {
 }
 
 /// The only output admitted from `initialize`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct InitialOutputV1 {
     /// Complete initial canonical Activity State.
     pub initial_activity_state: CanonicalJsonV1,
@@ -359,7 +362,7 @@ pub enum PackViewerV1 {
 /// Descriptor key for every host-addressable viewer class. Role-specific
 /// projection differences remain values within the participant schema rather
 /// than untyped string dispatch.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackViewerClassV1 {
     Public,
@@ -679,6 +682,348 @@ impl PackObservationV1 {
     }
 }
 
+/// Owned deterministic helper inputs carried across a portable executor seam.
+///
+/// The values duplicate the existing trusted context exactly; they do not add
+/// an entropy, time, or host-effect source.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackDeterministicContextV1 {
+    pub room_seed: RoomSeedV1,
+    pub pack_digest: PackDigestV1,
+    pub next_room_sequence: RoomSequenceV1,
+}
+
+impl PackDeterministicContextV1 {
+    fn from_borrowed(value: &DeterministicContextV1<'_>) -> Self {
+        Self {
+            room_seed: value.room_seed.clone(),
+            pack_digest: value.pack_digest.clone(),
+            next_room_sequence: value.next_room_sequence,
+        }
+    }
+}
+
+/// Owned, explicitly tagged representation of one typed pack viewer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "viewer_type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PackWireViewerV1 {
+    Public { member_id: MemberId },
+    Participant { member_id: MemberId },
+    Operator { member_id: MemberId },
+    Historical { member_id: MemberId },
+    FinalReveal { member_id: MemberId },
+}
+
+impl PackWireViewerV1 {
+    fn from_borrowed(value: &PackViewerV1) -> Self {
+        match value {
+            PackViewerV1::Public(member_id) => Self::Public {
+                member_id: member_id.clone(),
+            },
+            PackViewerV1::Participant(member_id) => Self::Participant {
+                member_id: member_id.clone(),
+            },
+            PackViewerV1::Operator(member_id) => Self::Operator {
+                member_id: member_id.clone(),
+            },
+            PackViewerV1::Historical(member_id) => Self::Historical {
+                member_id: member_id.clone(),
+            },
+            PackViewerV1::FinalReveal(member_id) => Self::FinalReveal {
+                member_id: member_id.clone(),
+            },
+        }
+    }
+
+    /// Restores the trusted typed viewer represented by this owned value.
+    #[must_use]
+    pub fn into_viewer(self) -> PackViewerV1 {
+        match self {
+            Self::Public { member_id } => PackViewerV1::Public(member_id),
+            Self::Participant { member_id } => PackViewerV1::Participant(member_id),
+            Self::Operator { member_id } => PackViewerV1::Operator(member_id),
+            Self::Historical { member_id } => PackViewerV1::Historical(member_id),
+            Self::FinalReveal { member_id } => PackViewerV1::FinalReveal(member_id),
+        }
+    }
+}
+
+/// Complete owned input for the portable `initialize` operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackInitializeRequestV1 {
+    pub room_id: RoomId,
+    pub pack_digest: PackDigestV1,
+    pub configuration: CanonicalJsonV1,
+    pub initial_core_state: CoreRoomStateV1,
+    pub room_seed: RoomSeedV1,
+    pub created_at: CreationRecordedAt,
+    pub deterministic_context: PackDeterministicContextV1,
+}
+
+/// Complete owned input for the portable `reduce` operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackReduceRequestV1 {
+    pub prior_activity_state: CanonicalJsonV1,
+    pub core_before: CoreRoomStateV1,
+    pub proposed_core_after: CoreRoomStateV1,
+    pub scheduled_timers: BTreeMap<crate::TimerId, ScheduledTimerV1>,
+    pub next_room_seq: RoomSequenceV1,
+    pub recorded_stimulus: RecordedStimulusV1,
+    pub deterministic_context: PackDeterministicContextV1,
+}
+
+/// Complete owned input for the portable `view` operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackViewRequestV1 {
+    pub core: CoreRoomStateV1,
+    pub activity_state: CanonicalJsonV1,
+    pub complete_head: CompleteHeadV1,
+    pub viewer: PackWireViewerV1,
+}
+
+/// Owned checked after-view supplied to portable observation code.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackWireValidatedViewV1 {
+    pub viewer: PackWireViewerV1,
+    pub complete_head: CompleteHeadV1,
+    pub projection_schema: String,
+    pub projection: CanonicalJsonV1,
+    pub action_offers: Vec<ActionOfferV1>,
+}
+
+/// Complete owned input for the portable `observe` operation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackObserveRequestV1 {
+    pub core_before: CoreRoomStateV1,
+    pub activity_before: CanonicalJsonV1,
+    pub core_after: CoreRoomStateV1,
+    pub activity_after: CanonicalJsonV1,
+    pub recorded_stimulus: RecordedStimulusV1,
+    pub ordered_domain_events: Vec<CanonicalJsonV1>,
+    pub viewer: PackWireViewerV1,
+    pub after_view: PackWireValidatedViewV1,
+}
+
+/// The only portable observation choices for Action Offers.
+///
+/// A Component can request reuse of the checked after-view allocation but can
+/// never supply an independently serialized replacement.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackWireObservationOffersV1 {
+    Unchanged,
+    ReuseAfterView,
+}
+
+/// Owned portable observation output before exact offer-reference restoration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackWireObservationV1 {
+    pub observation_schema: String,
+    pub observation: CanonicalJsonV1,
+    pub action_offers: PackWireObservationOffersV1,
+}
+
+/// Bounded semantic faults a portable callback may deliberately return.
+///
+/// Invalid schemas, bounds, declarations, timers, offers, and state remain
+/// checked exclusively by [`ActivityPackHostV1`].
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "callback_fault_type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum PackCallbackFaultV1 {
+    Callback { bounded_safe_detail: String },
+    PrivacyContract { bounded_safe_detail: String },
+}
+
+impl PackCallbackFaultV1 {
+    fn into_pack_fault(self) -> PackFaultV1 {
+        match self {
+            Self::Callback {
+                bounded_safe_detail,
+            } => PackFaultV1::Callback(bounded_safe_detail),
+            Self::PrivacyContract {
+                bounded_safe_detail,
+            } => PackFaultV1::PrivacyContract(bounded_safe_detail),
+        }
+    }
+}
+
+/// Canonical success/fault envelope returned by a portable callback.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "operation_result_type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum PackOperationResultV1<T> {
+    Success { output: T },
+    Fault { fault: PackCallbackFaultV1 },
+}
+
+impl<T> PackOperationResultV1<T> {
+    /// Converts the portable callback result into the existing trusted fault
+    /// channel without bypassing host-side output validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact bounded callback fault carried by a `fault` result.
+    pub fn into_result(self) -> Result<T, PackFaultV1> {
+        match self {
+            Self::Success { output } => Ok(output),
+            Self::Fault { fault } => Err(fault.into_pack_fault()),
+        }
+    }
+
+    fn map<U>(self, convert: impl FnOnce(T) -> U) -> PackOperationResultV1<U> {
+        match self {
+            Self::Success { output } => PackOperationResultV1::Success {
+                output: convert(output),
+            },
+            Self::Fault { fault } => PackOperationResultV1::Fault { fault },
+        }
+    }
+}
+
+/// Sealed canonical codec for the five portable operation envelopes.
+///
+/// This is deliberately separate from [`CanonicalPackCodecV1`], whose bytes
+/// and retained identity remain frozen for persisted Room values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CanonicalPackOperationCodecV1 {
+    _sealed: (),
+}
+
+#[allow(clippy::missing_errors_doc, clippy::unused_self)]
+impl CanonicalPackOperationCodecV1 {
+    #[must_use]
+    pub const fn canonical_v1() -> Self {
+        Self { _sealed: () }
+    }
+
+    pub fn decode_descriptor(
+        self,
+        bytes: &[u8],
+    ) -> Result<PackDescriptorContentV1, CanonicalJsonError> {
+        CanonicalJsonV1::decode_canonical(bytes)
+    }
+
+    pub fn encode_initialize_request(
+        self,
+        input: &ActivityGenesisInputV1<'_>,
+        context: &DeterministicContextV1<'_>,
+    ) -> Result<Vec<u8>, CanonicalJsonError> {
+        encode(&PackInitializeRequestV1 {
+            room_id: input.room_id.clone(),
+            pack_digest: input.pack_digest.clone(),
+            configuration: input.configuration.clone(),
+            initial_core_state: input.initial_core_state.clone(),
+            room_seed: input.room_seed.clone(),
+            created_at: input.created_at.clone(),
+            deterministic_context: PackDeterministicContextV1::from_borrowed(context),
+        })
+    }
+
+    pub fn decode_initialize_result(
+        self,
+        bytes: &[u8],
+    ) -> Result<PackOperationResultV1<InitialOutputV1>, CanonicalJsonError> {
+        CanonicalJsonV1::decode_canonical(bytes)
+    }
+
+    pub fn encode_reduce_request(
+        self,
+        input: &ActivityReduceInputV1<'_>,
+        context: &DeterministicContextV1<'_>,
+    ) -> Result<Vec<u8>, CanonicalJsonError> {
+        encode(&PackReduceRequestV1 {
+            prior_activity_state: input.prior_activity_state.clone(),
+            core_before: input.core_before.clone(),
+            proposed_core_after: input.proposed_core_after.clone(),
+            scheduled_timers: input.scheduled_timers.clone(),
+            next_room_seq: input.next_room_seq,
+            recorded_stimulus: input.recorded_stimulus.clone(),
+            deterministic_context: PackDeterministicContextV1::from_borrowed(context),
+        })
+    }
+
+    pub fn decode_reduce_result(
+        self,
+        bytes: &[u8],
+    ) -> Result<PackOperationResultV1<ActivityDispositionV1>, CanonicalJsonError> {
+        CanonicalJsonV1::decode_canonical(bytes)
+    }
+
+    pub fn encode_view_request(
+        self,
+        input: &ViewInputV1<'_>,
+    ) -> Result<Vec<u8>, CanonicalJsonError> {
+        encode(&PackViewRequestV1 {
+            core: input.core.clone(),
+            activity_state: input.activity_state.clone(),
+            complete_head: input.complete_head.clone(),
+            viewer: PackWireViewerV1::from_borrowed(input.viewer),
+        })
+    }
+
+    pub fn decode_view_result(
+        self,
+        bytes: &[u8],
+    ) -> Result<PackOperationResultV1<PackViewV1>, CanonicalJsonError> {
+        CanonicalJsonV1::decode_canonical(bytes)
+    }
+
+    pub fn encode_observe_request(
+        self,
+        input: &ObserveInputV1<'_>,
+    ) -> Result<Vec<u8>, CanonicalJsonError> {
+        encode(&PackObserveRequestV1 {
+            core_before: input.core_before.clone(),
+            activity_before: input.activity_before.clone(),
+            core_after: input.core_after.clone(),
+            activity_after: input.activity_after.clone(),
+            recorded_stimulus: input.recorded_stimulus.clone(),
+            ordered_domain_events: input.ordered_domain_events.to_vec(),
+            viewer: PackWireViewerV1::from_borrowed(input.viewer),
+            after_view: PackWireValidatedViewV1 {
+                viewer: PackWireViewerV1::from_borrowed(input.after_view.viewer()),
+                complete_head: input.after_view.complete_head().clone(),
+                projection_schema: input.after_view.projection_schema().to_owned(),
+                projection: input.after_view.projection().clone(),
+                action_offers: input.after_view.action_offers().offers().to_vec(),
+            },
+        })
+    }
+
+    pub fn decode_observe_result(
+        self,
+        bytes: &[u8],
+        after_view: &ValidatedPackViewV1,
+    ) -> Result<PackOperationResultV1<Option<PackObservationV1>>, CanonicalJsonError> {
+        let result: PackOperationResultV1<Option<PackWireObservationV1>> =
+            CanonicalJsonV1::decode_canonical(bytes)?;
+        Ok(result.map(|observation| {
+            observation.map(|observation| {
+                let mut restored =
+                    PackObservationV1::new(observation.observation_schema, observation.observation);
+                if observation.action_offers == PackWireObservationOffersV1::ReuseAfterView {
+                    restored = restored.with_action_offers(after_view.action_offers().clone());
+                }
+                restored
+            })
+        }))
+    }
+}
+
 impl PartialEq for CanonicalActionOffersV1 {
     fn eq(&self, other: &Self) -> bool {
         self.offers == other.offers && self.canonical_bytes == other.canonical_bytes
@@ -688,7 +1033,7 @@ impl PartialEq for CanonicalActionOffersV1 {
 impl Eq for CanonicalActionOffersV1 {}
 
 /// One schema-content identity used by descriptors and revision locks.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaReferenceV1 {
     /// Stable schema identity.
@@ -698,7 +1043,7 @@ pub struct SchemaReferenceV1 {
 }
 
 /// One descriptor-declared Role and final-state cardinality.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleDefinitionV1 {
     /// Stable Role name.
@@ -710,7 +1055,7 @@ pub struct RoleDefinitionV1 {
 }
 
 /// One descriptor-declared Action and exact payload schema.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionDefinitionV1 {
     /// Stable Action type, in descriptor offer order.
@@ -720,7 +1065,7 @@ pub struct ActionDefinitionV1 {
 }
 
 /// Hard canonical output limits for one exact revision.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackLimitsV1 {
     pub maximum_state_bytes: u32,
@@ -735,7 +1080,7 @@ pub struct PackLimitsV1 {
 }
 
 /// Immutable descriptor for one semantic revision.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackRevisionDescriptorV1 {
     pub pack_id: String,
@@ -761,7 +1106,62 @@ pub struct PackRevisionDescriptorV1 {
     pub limits: PackLimitsV1,
 }
 
+/// Portable descriptor callback output with the cyclic semantic revision
+/// digest deliberately omitted.
+///
+/// Build order is Component bytes, Component BLAKE3 in the revision lock,
+/// semantic revision digest, then the complete retained descriptor. The
+/// Component Host compares this value byte-for-byte with the retained
+/// descriptor's content form before constructing its adapter-owned complete
+/// descriptor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackDescriptorContentV1 {
+    pub pack_id: String,
+    pub name: String,
+    pub explanatory_version: String,
+    pub host_contract: String,
+    pub canonical_codec: String,
+    pub configuration_schema: SchemaReferenceV1,
+    pub state_schema: SchemaReferenceV1,
+    pub roles: Vec<RoleDefinitionV1>,
+    pub actions: Vec<ActionDefinitionV1>,
+    pub rejection_codes: Vec<String>,
+    pub attention_reasons: Vec<String>,
+    pub stimulus_schemas: BTreeMap<String, SchemaReferenceV1>,
+    pub output_schemas: BTreeMap<String, SchemaReferenceV1>,
+    pub event_schemas: BTreeMap<String, SchemaReferenceV1>,
+    pub projection_schemas: BTreeMap<PackViewerClassV1, SchemaReferenceV1>,
+    pub observation_schemas: BTreeMap<PackViewerClassV1, SchemaReferenceV1>,
+    pub limits: PackLimitsV1,
+}
+
 impl PackRevisionDescriptorV1 {
+    /// Returns the exact descriptor callback form, excluding only the cyclic
+    /// semantic revision digest.
+    #[must_use]
+    pub fn content(&self) -> PackDescriptorContentV1 {
+        PackDescriptorContentV1 {
+            pack_id: self.pack_id.clone(),
+            name: self.name.clone(),
+            explanatory_version: self.explanatory_version.clone(),
+            host_contract: self.host_contract.clone(),
+            canonical_codec: self.canonical_codec.clone(),
+            configuration_schema: self.configuration_schema.clone(),
+            state_schema: self.state_schema.clone(),
+            roles: self.roles.clone(),
+            actions: self.actions.clone(),
+            rejection_codes: self.rejection_codes.clone(),
+            attention_reasons: self.attention_reasons.clone(),
+            stimulus_schemas: self.stimulus_schemas.clone(),
+            output_schemas: self.output_schemas.clone(),
+            event_schemas: self.event_schemas.clone(),
+            projection_schemas: self.projection_schemas.clone(),
+            observation_schemas: self.observation_schemas.clone(),
+            limits: self.limits,
+        }
+    }
+
     /// Recomputes the descriptor-content digest while deliberately excluding
     /// the self-referential revision digest.
     ///
@@ -1342,7 +1742,7 @@ struct SchemaBundleDigestV1<'a> {
 }
 
 /// Every canonical value class retained for exact replay.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackCodecKindV1 {
     Configuration,
@@ -1371,7 +1771,7 @@ impl PackCodecKindV1 {
 }
 
 /// Exact retained codec identities for one revision.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackCodecBundleV1 {
     pub codec_id: String,
@@ -1715,7 +2115,7 @@ impl PackRevisionLockV1 {
 }
 
 /// Registry-side retained artifacts accompanying one executable revision.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackGoldenActionV1 {
     /// Exact enabled participant Membership used by this vector.
@@ -1733,14 +2133,14 @@ pub struct PackGoldenActionV1 {
 }
 
 /// One exact recorded `ExternalInput` in a retained behavioral corpus.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackGoldenExternalInputV1 {
     pub input: ExternalInputV1,
 }
 
 /// Exact typed viewer exercised by a retained behavioral corpus.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackGoldenViewerKindV1 {
     Public,
@@ -1751,7 +2151,7 @@ pub enum PackGoldenViewerKindV1 {
 }
 
 /// One Membership-scoped corpus viewer.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackGoldenViewerV1 {
     pub kind: PackGoldenViewerKindV1,
@@ -1785,7 +2185,7 @@ impl PackGoldenViewerV1 {
 /// time. Registry construction reruns the complete vector through the
 /// candidate checked host; an executor cannot satisfy the row merely by
 /// returning the right descriptor or reporting an artifact digest.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackGoldenCorpusV1 {
     pub corpus_id: String,
@@ -1840,23 +2240,99 @@ pub struct ActivityPackCatalogRevisionV1 {
     pub runnable_for_retained_rooms: bool,
 }
 
+/// One already verified portable revision offered to the retained registry.
+///
+/// Construction grants no execution authority. [`PackRegistryV1::admit_portable`]
+/// reruns the complete semantic lock, descriptor, schema, codec, executor,
+/// golden-corpus, and collision checks before the revision becomes visible.
+pub struct PortablePackAdmissionV1 {
+    revision_lock: PackRevisionLockV1,
+    descriptor: PackRevisionDescriptorV1,
+    schemas: PackSchemaBundleV1,
+    codecs: PackCodecBundleV1,
+    component_digest: Blake3DigestV1,
+    golden_corpus_digest: Blake3DigestV1,
+    golden_corpus: PackGoldenCorpusV1,
+    executor: Arc<dyn ActivityPackV1>,
+    status: PackRegistryStatusV1,
+}
+
+impl PortablePackAdmissionV1 {
+    /// Binds an already verified portable executor to its exact retained
+    /// artifacts. The exact Component digest is checked against
+    /// [`PackRevisionLockV1::rule_source_digest`] during admission.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        revision_lock: PackRevisionLockV1,
+        descriptor: PackRevisionDescriptorV1,
+        schemas: PackSchemaBundleV1,
+        codecs: PackCodecBundleV1,
+        component_digest: Blake3DigestV1,
+        golden_corpus_digest: Blake3DigestV1,
+        golden_corpus: PackGoldenCorpusV1,
+        executor: Arc<dyn ActivityPackV1>,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self {
+            revision_lock,
+            descriptor,
+            schemas,
+            codecs,
+            component_digest,
+            golden_corpus_digest,
+            golden_corpus,
+            executor,
+            status,
+        }
+    }
+
+    fn into_registry_entry(self) -> PackRegistryEntryV1 {
+        PackRegistryEntryV1 {
+            artifacts: PackRegistryArtifactsV1 {
+                expected_revision_digest: self.descriptor.revision_digest.clone(),
+                schemas: Some(self.schemas),
+                codecs: Some(self.codecs),
+                codec_implementation: Some(CanonicalPackCodecV1::canonical_v1()),
+                executor_artifact_digest: self.component_digest.clone(),
+                golden_corpus_digest: self.golden_corpus_digest,
+                golden_corpus: Some(self.golden_corpus),
+            },
+            revision_lock: self.revision_lock,
+            descriptor: self.descriptor,
+            executor_provenance: None,
+            executor: Some(ExecutorBindingV1::Portable {
+                executor: self.executor,
+                component_digest: self.component_digest,
+            }),
+            status: self.status,
+        }
+    }
+}
+
 /// Candidate embedded registry row. Construction alone confers no trust;
 /// [`PackRegistryV1::try_new`] recomputes and cross-checks every identity.
 #[derive(Clone)]
 pub(crate) struct PackRegistryEntryV1 {
     revision_lock: PackRevisionLockV1,
-    descriptor: &'static PackRevisionDescriptorV1,
+    descriptor: PackRevisionDescriptorV1,
     artifacts: PackRegistryArtifactsV1,
     executor_provenance: Option<ReviewedExecutorProvenanceV1>,
-    executor: Option<EmbeddedExecutorBindingV1>,
+    executor: Option<ExecutorBindingV1>,
     status: PackRegistryStatusV1,
 }
 
 #[derive(Clone)]
-struct EmbeddedExecutorBindingV1 {
-    executor: Arc<dyn ActivityPackV1>,
-    concrete_type_id: TypeId,
-    concrete_constructor: &'static str,
+enum ExecutorBindingV1 {
+    Embedded {
+        executor: Arc<dyn ActivityPackV1>,
+        concrete_type_id: TypeId,
+        concrete_constructor: &'static str,
+    },
+    Portable {
+        executor: Arc<dyn ActivityPackV1>,
+        component_digest: Blake3DigestV1,
+    },
 }
 
 #[derive(Clone)]
@@ -1954,10 +2430,10 @@ impl PackRegistryEntryV1 {
     ) -> Self {
         Self {
             revision_lock,
-            descriptor,
+            descriptor: descriptor.clone(),
             artifacts,
             executor_provenance: Some(executor_provenance),
-            executor: Some(EmbeddedExecutorBindingV1 {
+            executor: Some(ExecutorBindingV1::Embedded {
                 executor: Arc::new(executor),
                 concrete_type_id: TypeId::of::<E>(),
                 concrete_constructor: std::any::type_name::<E>(),
@@ -2099,10 +2575,10 @@ impl PackRegistryEntryV1 {
             ),
             (executor_provenance, executor) => Self {
                 revision_lock,
-                descriptor,
+                descriptor: (*descriptor).clone(),
                 artifacts,
                 executor_provenance,
-                executor: executor.map(|executor| EmbeddedExecutorBindingV1 {
+                executor: executor.map(|executor| ExecutorBindingV1::Embedded {
                     executor: Arc::new(executor),
                     concrete_type_id: TypeId::of::<E>(),
                     concrete_constructor: std::any::type_name::<E>(),
@@ -2115,7 +2591,7 @@ impl PackRegistryEntryV1 {
 
 struct ValidatedPackEntryV1 {
     revision_lock: PackRevisionLockV1,
-    descriptor: &'static PackRevisionDescriptorV1,
+    descriptor: PackRevisionDescriptorV1,
     schemas: PackSchemaBundleV1,
     codecs: PackCodecBundleV1,
     codec_implementation: CanonicalPackCodecV1,
@@ -2139,8 +2615,8 @@ impl RetainedActivityPackV1 {
     }
 
     #[must_use]
-    pub fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
-        self.0.descriptor
+    pub fn descriptor(&self) -> &PackRevisionDescriptorV1 {
+        &self.0.descriptor
     }
 
     #[must_use]
@@ -2221,7 +2697,7 @@ impl ActivityPackHostV1 {
 
     /// Returns immutable metadata for the bound exact semantic revision.
     #[must_use]
-    pub fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
+    pub fn descriptor(&self) -> &PackRevisionDescriptorV1 {
         self.retained.descriptor()
     }
 
@@ -3874,7 +4350,7 @@ pub(crate) fn author_golden_transcript_for_test<E: ActivityPackV1>(
 ) -> Result<CanonicalJsonV1, ()> {
     let entry = Arc::new(ValidatedPackEntryV1 {
         revision_lock,
-        descriptor,
+        descriptor: descriptor.clone(),
         schemas,
         codecs,
         codec_implementation: CanonicalPackCodecV1::canonical_v1(),
@@ -4028,22 +4504,50 @@ impl PackRegistryV1 {
             let executor_binding = candidate
                 .executor
                 .ok_or_else(|| PackRegistryErrorV1::MissingExecutor(digest.clone()))?;
-            let provenance = candidate
-                .executor_provenance
-                .ok_or_else(|| PackRegistryErrorV1::MissingExecutorProvenance(digest.clone()))?;
-            if provenance.expected_type_id() != executor_binding.concrete_type_id
-                || provenance.expected_constructor() != executor_binding.concrete_constructor
-                || provenance.executor_artifact_digest()
-                    != candidate.artifacts.executor_artifact_digest
-                || candidate.artifacts.executor_artifact_digest
-                    != candidate.revision_lock.rule_source_digest
-            {
-                return Err(PackRegistryErrorV1::WrongExecutorProvenance(digest));
-            }
-            let executor = executor_binding.executor;
+            let executor = match (executor_binding, candidate.executor_provenance) {
+                (
+                    ExecutorBindingV1::Embedded {
+                        executor,
+                        concrete_type_id,
+                        concrete_constructor,
+                    },
+                    Some(provenance),
+                ) => {
+                    if provenance.expected_type_id() != concrete_type_id
+                        || provenance.expected_constructor() != concrete_constructor
+                        || provenance.executor_artifact_digest()
+                            != candidate.artifacts.executor_artifact_digest
+                        || candidate.artifacts.executor_artifact_digest
+                            != candidate.revision_lock.rule_source_digest
+                    {
+                        return Err(PackRegistryErrorV1::WrongExecutorProvenance(digest));
+                    }
+                    executor
+                }
+                (ExecutorBindingV1::Embedded { .. }, None) => {
+                    return Err(PackRegistryErrorV1::MissingExecutorProvenance(digest));
+                }
+                (
+                    ExecutorBindingV1::Portable {
+                        executor,
+                        component_digest,
+                    },
+                    None,
+                ) => {
+                    if component_digest != candidate.artifacts.executor_artifact_digest
+                        || component_digest != candidate.revision_lock.rule_source_digest
+                    {
+                        return Err(PackRegistryErrorV1::WrongPortableExecutorIdentity(digest));
+                    }
+                    executor
+                }
+                (ExecutorBindingV1::Portable { .. }, Some(_)) => {
+                    return Err(PackRegistryErrorV1::WrongPortableExecutorIdentity(digest));
+                }
+            };
             let executor_descriptor = catch_unwind(AssertUnwindSafe(|| executor.descriptor()))
                 .map_err(|_| PackRegistryErrorV1::DescriptorPanicked(digest.clone()))?;
-            if executor_descriptor != candidate.descriptor {
+            if executor_descriptor != &candidate.descriptor {
                 return Err(PackRegistryErrorV1::WrongExecutor(digest));
             }
             let golden_corpus = candidate
@@ -4078,7 +4582,10 @@ impl PackRegistryV1 {
                     .map_err(PackRegistryErrorV1::Canonical)?,
             );
             if actual_transcript_digest != golden_corpus.expected_transcript_digest {
-                return Err(PackRegistryErrorV1::GoldenMismatch(digest));
+                return Err(PackRegistryErrorV1::GoldenMismatch {
+                    revision_digest: digest,
+                    actual_transcript_digest,
+                });
             }
             if revisions.insert(digest.clone(), entry).is_some() {
                 return Err(PackRegistryErrorV1::DigestCollision(digest));
@@ -4112,6 +4619,29 @@ impl PackRegistryV1 {
         Ok(Self { revisions })
     }
 
+    /// Admits already verified portable revisions through the same semantic
+    /// validation and golden-execution path as embedded revisions.
+    ///
+    /// The receiver is consumed so registry publication remains atomic. No
+    /// mutable registration, name/version lookup, or executor getter is
+    /// introduced by this seam.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing precise registry error for any incomplete or
+    /// inconsistent candidate, or for a semantic digest collision.
+    pub fn admit_portable(
+        self,
+        candidates: impl IntoIterator<Item = PortablePackAdmissionV1>,
+    ) -> Result<Self, PackRegistryErrorV1> {
+        let portable = Self::try_new(
+            candidates
+                .into_iter()
+                .map(PortablePackAdmissionV1::into_registry_entry),
+        )?;
+        Self::combine([self, portable])
+    }
+
     #[cfg(any(test, feature = "conformance-tracer"))]
     pub(crate) fn replace_executor_for_conformance(
         &mut self,
@@ -4124,12 +4654,12 @@ impl PackRegistryV1 {
             .ok_or_else(|| PackRegistryErrorV1::MissingRevision(digest.clone()))?;
         let descriptor = catch_unwind(AssertUnwindSafe(|| executor.descriptor()))
             .map_err(|_| PackRegistryErrorV1::DescriptorPanicked(digest.clone()))?;
-        if descriptor != current.descriptor {
+        if descriptor != &current.descriptor {
             return Err(PackRegistryErrorV1::WrongExecutor(digest.clone()));
         }
         let replacement = ValidatedPackEntryV1 {
             revision_lock: current.revision_lock.clone(),
-            descriptor: current.descriptor,
+            descriptor: current.descriptor.clone(),
             schemas: current.schemas.clone(),
             codecs: current.codecs.clone(),
             codec_implementation: current.codec_implementation,
@@ -4391,14 +4921,19 @@ pub enum PackRegistryErrorV1 {
     MissingExecutorProvenance(PackDigestV1),
     #[error("pack executor lacks its sealed build constructor/artifact provenance: {0}")]
     WrongExecutorProvenance(PackDigestV1),
+    #[error("portable pack executor differs from the exact Component digest in its lock: {0}")]
+    WrongPortableExecutorIdentity(PackDigestV1),
     #[error("pack revision has no retained behavioral golden corpus: {0}")]
     MissingGoldenCorpus(PackDigestV1),
     #[error("pack retained golden corpus digest disagrees with its exact bytes: {0}")]
     GoldenCorpusDigestMismatch(PackDigestV1),
     #[error("pack executor cannot complete its retained behavioral golden corpus: {0}")]
     GoldenExecutionFailed(PackDigestV1),
-    #[error("pack executor behavior disagrees with its retained golden corpus: {0}")]
-    GoldenMismatch(PackDigestV1),
+    #[error("pack executor behavior disagrees with its retained golden corpus: {revision_digest}")]
+    GoldenMismatch {
+        revision_digest: PackDigestV1,
+        actual_transcript_digest: Blake3DigestV1,
+    },
     #[error("pack semantic revision digest collision: {0}")]
     DigestCollision(PackDigestV1),
     #[error("embedded pack registry must retain at least one executable revision")]
@@ -4544,7 +5079,7 @@ mod tests {
     }
 
     impl ActivityPackV1 for ControlledPack {
-        fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
+        fn descriptor(&self) -> &PackRevisionDescriptorV1 {
             self.counts.descriptor.fetch_add(1, AtomicOrdering::Relaxed);
             self.maybe_panic(ActivityPackOperationV1::Descriptor);
             self.descriptor
@@ -4693,7 +5228,7 @@ mod tests {
     }
 
     impl ActivityPackV1 for FixturePack {
-        fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
+        fn descriptor(&self) -> &PackRevisionDescriptorV1 {
             fixture().descriptor
         }
 
@@ -4779,7 +5314,7 @@ mod tests {
     }
 
     impl ActivityPackV1 for CountingFixturePack {
-        fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
+        fn descriptor(&self) -> &PackRevisionDescriptorV1 {
             self.counts.descriptor.fetch_add(1, AtomicOrdering::Relaxed);
             FixturePack.descriptor()
         }
@@ -4830,7 +5365,7 @@ mod tests {
     }
 
     impl ActivityPackV1 for CorpusImpostorPack {
-        fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
+        fn descriptor(&self) -> &PackRevisionDescriptorV1 {
             FixturePack.descriptor()
         }
 
@@ -4922,7 +5457,7 @@ mod tests {
     struct EquivalentFixturePack;
 
     impl ActivityPackV1 for EquivalentFixturePack {
-        fn descriptor(&self) -> &'static PackRevisionDescriptorV1 {
+        fn descriptor(&self) -> &PackRevisionDescriptorV1 {
             FixturePack.descriptor()
         }
 
@@ -4951,6 +5486,163 @@ mod tests {
             input: &ObserveInputV1<'_>,
         ) -> Result<Option<PackObservationV1>, PackFaultV1> {
             FixturePack.observe(input)
+        }
+    }
+
+    struct WireFixturePack {
+        descriptor: PackRevisionDescriptorV1,
+    }
+
+    impl WireFixturePack {
+        fn new() -> Self {
+            let expected_content = fixture().descriptor.content();
+            let descriptor_bytes = encode(&expected_content)
+                .unwrap_or_else(|error| unreachable!("fixture descriptor bytes: {error}"));
+            let actual_content = CanonicalPackOperationCodecV1::canonical_v1()
+                .decode_descriptor(&descriptor_bytes)
+                .unwrap_or_else(|error| unreachable!("fixture descriptor decode: {error}"));
+            assert_eq!(actual_content, expected_content);
+            Self {
+                descriptor: fixture().descriptor.clone(),
+            }
+        }
+
+        fn callback_fault(error: impl Display) -> PackFaultV1 {
+            PackFaultV1::Callback(error.to_string())
+        }
+
+        fn success_bytes<T: Serialize>(output: T) -> Result<Vec<u8>, PackFaultV1> {
+            encode(&PackOperationResultV1::Success { output }).map_err(Self::callback_fault)
+        }
+    }
+
+    impl ActivityPackV1 for WireFixturePack {
+        fn descriptor(&self) -> &PackRevisionDescriptorV1 {
+            &self.descriptor
+        }
+
+        fn initialize(
+            &self,
+            input: &ActivityGenesisInputV1<'_>,
+            cx: &DeterministicContextV1<'_>,
+        ) -> Result<InitialOutputV1, PackFaultV1> {
+            let codec = CanonicalPackOperationCodecV1::canonical_v1();
+            let request_bytes = codec
+                .encode_initialize_request(input, cx)
+                .map_err(Self::callback_fault)?;
+            let request: PackInitializeRequestV1 =
+                CanonicalJsonV1::decode_canonical(&request_bytes).map_err(Self::callback_fault)?;
+            if request.room_id != *input.room_id
+                || request.pack_digest != *input.pack_digest
+                || request.configuration != *input.configuration
+                || request.initial_core_state != *input.initial_core_state
+                || request.room_seed != *input.room_seed
+                || request.created_at != *input.created_at
+                || request.deterministic_context != PackDeterministicContextV1::from_borrowed(cx)
+            {
+                return Err(PackFaultV1::Callback(
+                    "initialize wire request lost an input".to_owned(),
+                ));
+            }
+            let response = Self::success_bytes(FixturePack.initialize(input, cx)?)?;
+            codec
+                .decode_initialize_result(&response)
+                .map_err(Self::callback_fault)?
+                .into_result()
+        }
+
+        fn reduce(
+            &self,
+            input: &ActivityReduceInputV1<'_>,
+            cx: &DeterministicContextV1<'_>,
+        ) -> Result<ActivityDispositionV1, PackFaultV1> {
+            let codec = CanonicalPackOperationCodecV1::canonical_v1();
+            let request_bytes = codec
+                .encode_reduce_request(input, cx)
+                .map_err(Self::callback_fault)?;
+            let request: PackReduceRequestV1 =
+                CanonicalJsonV1::decode_canonical(&request_bytes).map_err(Self::callback_fault)?;
+            if request.prior_activity_state != *input.prior_activity_state
+                || request.core_before != *input.core_before
+                || request.proposed_core_after != *input.proposed_core_after
+                || request.scheduled_timers != *input.scheduled_timers
+                || request.next_room_seq != input.next_room_seq
+                || request.recorded_stimulus != *input.recorded_stimulus
+                || request.deterministic_context != PackDeterministicContextV1::from_borrowed(cx)
+            {
+                return Err(PackFaultV1::Callback(
+                    "reduce wire request lost an input".to_owned(),
+                ));
+            }
+            let response = Self::success_bytes(FixturePack.reduce(input, cx)?)?;
+            codec
+                .decode_reduce_result(&response)
+                .map_err(Self::callback_fault)?
+                .into_result()
+        }
+
+        fn view(&self, input: &ViewInputV1<'_>) -> Result<PackViewV1, PackFaultV1> {
+            let codec = CanonicalPackOperationCodecV1::canonical_v1();
+            let request_bytes = codec
+                .encode_view_request(input)
+                .map_err(Self::callback_fault)?;
+            let request: PackViewRequestV1 =
+                CanonicalJsonV1::decode_canonical(&request_bytes).map_err(Self::callback_fault)?;
+            if request.core != *input.core
+                || request.activity_state != *input.activity_state
+                || request.complete_head != *input.complete_head
+                || request.viewer != PackWireViewerV1::from_borrowed(input.viewer)
+            {
+                return Err(PackFaultV1::Callback(
+                    "view wire request lost an input".to_owned(),
+                ));
+            }
+            let response = Self::success_bytes(FixturePack.view(input)?)?;
+            codec
+                .decode_view_result(&response)
+                .map_err(Self::callback_fault)?
+                .into_result()
+        }
+
+        fn observe(
+            &self,
+            input: &ObserveInputV1<'_>,
+        ) -> Result<Option<PackObservationV1>, PackFaultV1> {
+            let codec = CanonicalPackOperationCodecV1::canonical_v1();
+            let request_bytes = codec
+                .encode_observe_request(input)
+                .map_err(Self::callback_fault)?;
+            let request: PackObserveRequestV1 =
+                CanonicalJsonV1::decode_canonical(&request_bytes).map_err(Self::callback_fault)?;
+            if request.core_before != *input.core_before
+                || request.activity_before != *input.activity_before
+                || request.core_after != *input.core_after
+                || request.activity_after != *input.activity_after
+                || request.recorded_stimulus != *input.recorded_stimulus
+                || request.ordered_domain_events != input.ordered_domain_events
+                || request.viewer != PackWireViewerV1::from_borrowed(input.viewer)
+                || request.after_view.action_offers != input.after_view.action_offers().offers()
+            {
+                return Err(PackFaultV1::Callback(
+                    "observe wire request lost an input".to_owned(),
+                ));
+            }
+            let output = FixturePack
+                .observe(input)?
+                .map(|observation| PackWireObservationV1 {
+                    observation_schema: observation.observation_schema,
+                    observation: observation.observation,
+                    action_offers: if observation.action_offers.is_some() {
+                        PackWireObservationOffersV1::ReuseAfterView
+                    } else {
+                        PackWireObservationOffersV1::Unchanged
+                    },
+                });
+            let response = Self::success_bytes(output)?;
+            codec
+                .decode_observe_result(&response, input.after_view)
+                .map_err(Self::callback_fault)?
+                .into_result()
         }
     }
 
@@ -5185,6 +5877,28 @@ mod tests {
         )
     }
 
+    fn portable_admission(
+        component_digest: Blake3DigestV1,
+        golden: PackGoldenCorpusV1,
+    ) -> PortablePackAdmissionV1 {
+        PortablePackAdmissionV1::new(
+            fixture().lock.clone(),
+            fixture().descriptor.clone(),
+            fixture().schemas.clone(),
+            fixture().codecs.clone(),
+            component_digest,
+            golden
+                .digest()
+                .unwrap_or_else(|error| unreachable!("fixture golden digest: {error}")),
+            golden,
+            Arc::new(WireFixturePack::new()),
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: true,
+                runnable_for_retained_rooms: true,
+            },
+        )
+    }
+
     fn rebind_schema_bundle(candidate: &mut PackRegistryEntryV1) {
         let schemas = candidate
             .artifacts
@@ -5201,7 +5915,7 @@ mod tests {
         candidate.artifacts.expected_revision_digest = revision_digest.clone();
         let mut descriptor = candidate.descriptor.clone();
         descriptor.revision_digest = revision_digest;
-        candidate.descriptor = Box::leak(Box::new(descriptor));
+        candidate.descriptor = descriptor;
     }
 
     fn checked_host(pack: ControlledPack) -> ActivityPackHostV1 {
@@ -5213,7 +5927,7 @@ mod tests {
         ActivityPackHostV1 {
             retained: RetainedActivityPackV1(Arc::new(ValidatedPackEntryV1 {
                 revision_lock: fixture.lock.clone(),
-                descriptor: fixture.descriptor,
+                descriptor: fixture.descriptor.clone(),
                 schemas: fixture.schemas.clone(),
                 codecs: fixture.codecs.clone(),
                 codec_implementation: CanonicalPackCodecV1::canonical_v1(),
@@ -5245,7 +5959,7 @@ mod tests {
         ActivityPackHostV1 {
             retained: RetainedActivityPackV1(Arc::new(ValidatedPackEntryV1 {
                 revision_lock,
-                descriptor,
+                descriptor: (*descriptor).clone(),
                 schemas: fixture().schemas.clone(),
                 codecs: fixture().codecs.clone(),
                 codec_implementation: CanonicalPackCodecV1::canonical_v1(),
@@ -5513,6 +6227,151 @@ mod tests {
     }
 
     #[test]
+    fn portable_operation_codec_preserves_exact_after_view_offer_storage() {
+        let descriptor_content = fixture().descriptor.content();
+        let mut different_revision = fixture().descriptor.clone();
+        different_revision.revision_digest =
+            "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("different fixture digest: {error}"));
+        assert_eq!(descriptor_content, different_revision.content());
+        let descriptor_bytes = encode(&descriptor_content)
+            .unwrap_or_else(|error| unreachable!("descriptor content bytes: {error}"));
+        assert!(!String::from_utf8_lossy(&descriptor_bytes).contains("revision_digest"));
+
+        let host = unchecked_fixture_host(Arc::new(FixturePack));
+        let trace = trace_with_activity(json(r#"{"count":0}"#));
+        let after_view = current_view(&host, &trace)
+            .unwrap_or_else(|error| unreachable!("checked fixture view: {error}"));
+        assert_eq!(after_view.action_offers().offers().len(), 1);
+
+        let response = encode(&PackOperationResultV1::Success {
+            output: Some(PackWireObservationV1 {
+                observation_schema: fixture().descriptor.observation_schemas
+                    [&PackViewerClassV1::Participant]
+                    .schema_id
+                    .clone(),
+                observation: json(r#"{"count":0}"#),
+                action_offers: PackWireObservationOffersV1::ReuseAfterView,
+            }),
+        })
+        .unwrap_or_else(|error| unreachable!("portable observation response: {error}"));
+        let decoded = CanonicalPackOperationCodecV1::canonical_v1()
+            .decode_observe_result(&response, &after_view)
+            .unwrap_or_else(|error| unreachable!("portable observation decode: {error}"))
+            .into_result()
+            .unwrap_or_else(|error| unreachable!("portable observation result: {error}"))
+            .unwrap_or_else(|| unreachable!("portable observation is present"));
+        let emitted = decoded
+            .action_offers
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("after-view offers were requested"));
+        assert!(emitted.shares_storage_with(after_view.action_offers()));
+
+        let malformed = CanonicalJsonV1::from_serialize(&serde_json::json!({
+            "operation_result_type": "success",
+            "output": {
+                "action_offers": [],
+                "observation": {},
+                "observation_schema": "fixture/value/v1"
+            }
+        }))
+        .and_then(|value| value.to_bytes())
+        .unwrap_or_else(|error| unreachable!("malformed fixture bytes: {error}"));
+        assert!(
+            CanonicalPackOperationCodecV1::canonical_v1()
+                .decode_observe_result(&malformed, &after_view)
+                .is_err()
+        );
+
+        let fault = encode(&PackOperationResultV1::<PackViewV1>::Fault {
+            fault: PackCallbackFaultV1::PrivacyContract {
+                bounded_safe_detail: "not yet visible".to_owned(),
+            },
+        })
+        .unwrap_or_else(|error| unreachable!("portable fault response: {error}"));
+        assert!(matches!(
+            CanonicalPackOperationCodecV1::canonical_v1()
+                .decode_view_result(&fault)
+                .unwrap_or_else(|error| unreachable!("portable fault decode: {error}"))
+                .into_result(),
+            Err(PackFaultV1::PrivacyContract(detail)) if detail == "not yet visible"
+        ));
+        assert!(
+            CanonicalPackOperationCodecV1::canonical_v1()
+                .decode_descriptor(b"{ }")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn portable_admission_uses_the_existing_checked_host_and_golden_path() {
+        let registry = crate::builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"))
+            .admit_portable([portable_admission(
+                fixture().artifact.clone(),
+                fixture_golden().clone(),
+            )])
+            .unwrap_or_else(|error| unreachable!("valid portable admission: {error}"));
+        let retained = registry
+            .load_retained(&fixture().digest)
+            .unwrap_or_else(|error| unreachable!("portable retained revision: {error}"));
+        assert_eq!(retained.descriptor(), fixture().descriptor);
+        assert_eq!(retained.revision_lock(), &fixture().lock);
+        assert_eq!(retained.executor_artifact_digest(), &fixture().artifact);
+        let genesis = registry
+            .prepare_genesis_for_new_room(&genesis_request())
+            .unwrap_or_else(|error| unreachable!("portable checked Genesis: {error}"));
+        assert_eq!(
+            genesis.genesis_input().initial_activity_state,
+            json(r#"{"count":0}"#)
+        );
+    }
+
+    #[test]
+    fn portable_admission_rejects_wrong_component_golden_and_collision() {
+        let wrong_component = crate::builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"))
+            .admit_portable([portable_admission(
+                Blake3DigestV1::hash(b"different-component"),
+                fixture_golden().clone(),
+            )]);
+        assert!(matches!(
+            wrong_component,
+            Err(PackRegistryErrorV1::WrongPortableExecutorIdentity(digest))
+                if digest == fixture().digest
+        ));
+
+        let mut wrong_golden = fixture_golden().clone();
+        wrong_golden.expected_transcript_digest = Blake3DigestV1::hash(b"wrong-transcript");
+        let wrong_golden = crate::builtin_counter_registry()
+            .unwrap_or_else(|error| unreachable!("reviewed Counter registry: {error}"))
+            .admit_portable([portable_admission(fixture().artifact.clone(), wrong_golden)]);
+        assert!(matches!(
+            wrong_golden,
+            Err(PackRegistryErrorV1::GoldenMismatch {
+                revision_digest,
+                actual_transcript_digest,
+            }) if revision_digest == fixture().digest
+                && actual_transcript_digest == fixture_golden().expected_transcript_digest
+        ));
+
+        let collision = PackRegistryV1::try_new([entry(PackRegistryStatusV1 {
+            selectable_for_new_rooms: true,
+            runnable_for_retained_rooms: true,
+        })])
+        .unwrap_or_else(|error| unreachable!("fixture registry: {error}"))
+        .admit_portable([portable_admission(
+            fixture().artifact.clone(),
+            fixture_golden().clone(),
+        )]);
+        assert!(matches!(
+            collision,
+            Err(PackRegistryErrorV1::DigestCollision(digest)) if digest == fixture().digest
+        ));
+    }
+
+    #[test]
     fn schema_bundle_rejects_empty_ids_empty_semantic_keys_and_unsupported_constraints() {
         let empty_id = PackSchemaV1::new("", json(r#"{"type":"object"}"#))
             .unwrap_or_else(|error| unreachable!("canonical schema: {error}"));
@@ -5619,7 +6478,8 @@ mod tests {
             let candidate = entry_with_executor(status, CorpusImpostorPack { behavior });
             assert!(matches!(
                 PackRegistryV1::try_new([candidate]),
-                Err(PackRegistryErrorV1::GoldenMismatch(digest)) if digest == fixture().digest
+                Err(PackRegistryErrorV1::GoldenMismatch { revision_digest, .. })
+                    if revision_digest == fixture().digest
             ));
         }
     }
@@ -5774,7 +6634,7 @@ mod tests {
         missing_kind.artifacts.expected_revision_digest = digest.clone();
         let mut descriptor = missing_kind.descriptor.clone();
         descriptor.revision_digest = digest;
-        missing_kind.descriptor = Box::leak(Box::new(descriptor));
+        missing_kind.descriptor = descriptor;
         assert!(matches!(
             PackRegistryV1::try_new([missing_kind]),
             Err(PackRegistryErrorV1::MissingCodec {

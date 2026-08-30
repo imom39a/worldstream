@@ -7,6 +7,10 @@ import {
   type ParticipantConsoleSessionState,
 } from "./participantSession";
 import { ParticipantConsoleRequestQueue } from "./participantRequestQueue";
+import {
+  NegotiateRetainedParticipant,
+  readNegotiateRetainedSessionView,
+} from "./negotiateHandoff";
 
 interface ParticipantOfferView {
   offerId: string;
@@ -112,6 +116,19 @@ export function ParticipantHandoffView({
 }) {
   const [payloads, setPayloads] = useState<Record<string, string>>({});
   const offers = state.state === "live" ? actionOffers(state) : [];
+  const negotiate = state.state === "live"
+    ? readNegotiateRetainedSessionView(state.observation)
+    : null;
+  if (negotiate !== null) {
+    return (
+      <NegotiateRetainedParticipant
+        view={negotiate}
+        replay={replay}
+        onAct={onAct}
+        onReplay={onReplay}
+      />
+    );
+  }
   return (
     <main className="participant-handoff-shell">
       <p className="eyebrow">Participant View</p>

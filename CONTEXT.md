@@ -16,6 +16,10 @@ _Avoid_: Plugin, workflow, prompt pack, room
 One immutable semantic identity for an Activity Pack's rules, schemas, codecs, and executor, pinned by each Room for its whole lineage.
 _Avoid_: Mutable pack version, installed plugin, build label
 
+**Activity Pack Bundle**:
+The immutable installable artifact carrying one exact portable Activity Pack Revision's executor, schemas, static material, and conformance evidence.
+_Avoid_: Plugin package, mutable pack directory, Activity Pack Revision when physical bytes are meant
+
 **Activity Phase**:
 A domain stage defined by an Activity Pack for the activity unfolding in a Room.
 _Avoid_: Room status, activation status, workflow node
@@ -51,6 +55,16 @@ _Avoid_: Room status, Activity phase, canonical health state
 **Canonical History**:
 The immutable lineage of a Room's creation facts and ordered Transitions.
 _Avoid_: Observation stream, UI timeline, snapshot, prompt history
+
+## Product development
+
+**Pack Author**:
+A person or organization responsible for defining and maintaining an Activity Pack and its immutable revisions. Pack authorship grants no authority over a WorldStream installation or Room.
+_Avoid_: Plugin developer, participant, host operator
+
+**Application Integrator**:
+A person or organization that combines an Activity Pack with external clients, Runners, protocol bridges, and deployment configuration into a usable application. Integration grants no Host Operator authority or Room Membership by itself.
+_Avoid_: Agent integrator, Pack Author when rule ownership is meant, host operator
 
 ## Participation
 

@@ -130,6 +130,7 @@ describe("Participant Console opaque handoff", () => {
 
   it("accepts only the exact browser-safe observation projection", async () => {
     const safe = {
+      pack: { id: "worldstream.counter", version: "0.1.0", digest: `blake3:${"2".repeat(64)}` },
       room_head: {
         room_seq: 7,
         genesis_or_transition_hash: `blake3:${"1".repeat(64)}`,

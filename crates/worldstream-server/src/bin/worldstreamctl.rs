@@ -3,12 +3,18 @@ use std::{
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
+use worldstream_component_host::ComponentPackHostV1;
+use worldstream_core::{
+    PackGoldenViewerKindV1, PackRegistryErrorV1, PackRegistryStatusV1, builtin_worldstream_registry,
+};
+use worldstream_pack_bundle::{MAX_BUNDLE_BYTES, PackBundleVerifierV1};
 use worldstream_postgres::{
     PostgresAdmin, PostgresConnectionConfig,
     native_restore::{
@@ -24,13 +30,21 @@ use worldstream_postgres::{
     },
 };
 use worldstream_runtime::{
-    CompatibilitySummary, SecretSource, embedded_manifest, prepare_data_directory,
-    validate_owner_only_file, validate_sqlite_data_filesystem,
+    CompatibilitySummary, EffectiveConfig, SecretSource, StorageProfile, embedded_manifest,
+    prepare_data_directory, validate_owner_only_file, validate_sqlite_data_filesystem,
 };
 use worldstream_server::{
     CommonConfigArgs,
+    operator_packs::{
+        approve_pack, export_pack, inspect_pack, install_pack, inventory, remove_pack_postgres,
+        remove_pack_sqlite, revoke_pack, set_pack_selectable,
+        verify_pack_restart_readiness_postgres, verify_pack_restart_readiness_sqlite,
+    },
     operator_storage::{backup_sqlite, restore_sqlite, verify_sqlite},
-    operator_transfer::{abort_transfer, begin_transfer, finalize_transfer, resume_transfer},
+    operator_transfer::{
+        abort_transfer, begin_transfer, finalize_transfer, restore_transfer_pack_bundles,
+        resume_transfer,
+    },
 };
 
 const MAX_DSN_BYTES: usize = 16 * 1024;
@@ -64,6 +78,11 @@ enum Command {
     Health,
     /// Print the embedded compatibility summary.
     Version,
+    /// Manage exact local Activity Pack Bundles while the daemon is stopped.
+    Pack {
+        #[command(subcommand)]
+        command: PackCommand,
+    },
     /// Run an explicit offline `PostgreSQL` direct-admin operation.
     Postgres {
         #[command(subcommand)]
@@ -74,6 +93,125 @@ enum Command {
         #[command(subcommand)]
         command: SqliteCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum PackCommand {
+    /// Fully verify and describe one untrusted local `.wspack` candidate.
+    Inspect(PackCandidateArgs),
+    /// Prove one bundle through the production verifier, Component Host, and Core registry.
+    Prove(PackProveArgs),
+    /// Record explicit target-local approval for the candidate's exact bytes.
+    Approve(PackApprovalArgs),
+    /// Revoke local approval and retain the installed revision for old Rooms.
+    Revoke(PackDecisionArgs),
+    /// Install an already-approved candidate as retained-only inventory.
+    Install(PackInstallArgs),
+    /// List the complete bounded, fully reverified local inventory.
+    Inventory,
+    /// Change new-Room selectability for the next daemon startup.
+    SetSelectable(PackSelectionArgs),
+    /// Rebuild the production startup registry without serving traffic.
+    RestartReadiness(PackRestartReadinessArgs),
+    /// Export the exact original archive without local approval state.
+    Export(PackExportArgs),
+    /// Remove an exact bundle only after a complete retained-Room proof.
+    Remove(PackRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct PackCandidateArgs {
+    /// Existing local `.wspack` candidate.
+    #[arg(long, value_name = "FILE")]
+    bundle: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PackRestartReadinessArgs {
+    /// Owner-only direct-admin DSN file required only for `PostgreSQL` Room
+    /// Replay preflight. `SQLite` uses the configured local database path.
+    #[arg(long, value_name = "FILE")]
+    dsn_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct PackProveArgs {
+    /// Existing local `.wspack` candidate.
+    #[arg(value_name = "BUNDLE")]
+    bundle: PathBuf,
+    /// Emit the frozen machine-readable proof document.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct PackApprovalArgs {
+    #[command(flatten)]
+    candidate: PackCandidateArgs,
+    /// Stable non-secret Host Operator identifier.
+    #[arg(long)]
+    operator_id: String,
+    /// Explicit RFC 3339 decision time; the CLI never consults an ambient clock.
+    #[arg(long)]
+    decided_at: String,
+}
+
+#[derive(Debug, Args)]
+struct PackDecisionArgs {
+    /// Exact physical BLAKE3 bundle digest, including the `blake3:` prefix.
+    #[arg(long)]
+    bundle_digest: String,
+    /// Stable non-secret Host Operator identifier.
+    #[arg(long)]
+    operator_id: String,
+    /// Explicit RFC 3339 decision time.
+    #[arg(long)]
+    decided_at: String,
+}
+
+#[derive(Debug, Args)]
+struct PackInstallArgs {
+    #[command(flatten)]
+    candidate: PackCandidateArgs,
+    /// Explicit RFC 3339 installation time.
+    #[arg(long)]
+    installed_at: String,
+}
+
+#[derive(Debug, Args)]
+struct PackSelectionArgs {
+    /// Exact physical BLAKE3 bundle digest, including the `blake3:` prefix.
+    #[arg(long)]
+    bundle_digest: String,
+    /// Whether new Rooms may select this revision after daemon restart.
+    #[arg(long, action = clap::ArgAction::Set)]
+    selectable: bool,
+}
+
+#[derive(Debug, Args)]
+struct PackExportArgs {
+    /// Exact physical BLAKE3 bundle digest, including the `blake3:` prefix.
+    #[arg(long)]
+    bundle_digest: String,
+    /// New owner-only output file; existing paths are refused.
+    #[arg(long, value_name = "FILE")]
+    output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PackRemoveArgs {
+    /// Exact physical BLAKE3 bundle digest, including the `blake3:` prefix.
+    #[arg(long)]
+    bundle_digest: String,
+    /// Stable non-secret Host Operator identifier.
+    #[arg(long)]
+    operator_id: String,
+    /// Explicit RFC 3339 removal time.
+    #[arg(long)]
+    removed_at: String,
+    /// Owner-only direct-admin DSN file, required only for `PostgreSQL` profile.
+    #[arg(long, value_name = "FILE")]
+    dsn_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -240,6 +378,19 @@ enum PostgresTransferCommand {
     Finalize(TransferProviderArgs),
     /// Discard the incomplete target before restoring `SQLite` authority.
     Abort(TransferProviderArgs),
+    /// Restore transfer-carried portable Packs as target-local retained-only
+    /// inventory. A separate local approval and daemon restart are required.
+    RestorePacks(TransferPackRestoreArgs),
+}
+
+#[derive(Debug, Args)]
+struct TransferPackRestoreArgs {
+    /// Exact owner-only deterministic transfer bundle.
+    #[arg(long, value_name = "FILE")]
+    bundle: PathBuf,
+    /// Target `WorldStream` data directory that owns `activity-packs/`.
+    #[arg(long, value_name = "DIR")]
+    data_dir: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -401,6 +552,13 @@ fn main() -> Result<()> {
     } = Cli::parse();
 
     match command {
+        Command::Pack {
+            command: PackCommand::Prove(args),
+        } => run_pack_prover(&args),
+        Command::Pack { command } => {
+            let config = config_args.load().context("configuration rejected")?;
+            run_pack_operator(command, &config)
+        }
         Command::Postgres { command } => run_postgres_admin(*command),
         Command::Sqlite { command } => run_sqlite_operator(command),
         Command::Config {
@@ -448,6 +606,244 @@ fn main() -> Result<()> {
             let manifest = embedded_manifest().context("embedded manifest rejected")?;
             write_json(&version_document(manifest.summary()))
         }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_pack_operator(command: PackCommand, config: &EffectiveConfig) -> Result<()> {
+    let data_directory = &config.storage.data_dir;
+    match command {
+        PackCommand::Inspect(args) => write_json(
+            &inspect_pack(data_directory, &args.bundle)
+                .context("Activity Pack inspection failed closed")?,
+        ),
+        PackCommand::Prove(_) => {
+            unreachable!("the configuration-independent prover is dispatched before this seam")
+        }
+        PackCommand::Approve(args) => write_json(
+            &approve_pack(
+                data_directory,
+                &args.candidate.bundle,
+                args.operator_id,
+                args.decided_at,
+            )
+            .context("Activity Pack approval failed closed")?,
+        ),
+        PackCommand::Revoke(args) => write_json(
+            &revoke_pack(
+                data_directory,
+                &args.bundle_digest,
+                args.operator_id,
+                args.decided_at,
+            )
+            .context("Activity Pack revocation failed closed")?,
+        ),
+        PackCommand::Install(args) => write_json(
+            &install_pack(data_directory, &args.candidate.bundle, args.installed_at)
+                .context("Activity Pack installation failed closed")?,
+        ),
+        PackCommand::Inventory => write_json(
+            &inventory(data_directory, &config.storage)
+                .context("Activity Pack inventory failed closed")?,
+        ),
+        PackCommand::SetSelectable(args) => write_json(
+            &set_pack_selectable(data_directory, &args.bundle_digest, args.selectable)
+                .context("Activity Pack selection change failed closed")?,
+        ),
+        PackCommand::RestartReadiness(args) => match config.storage.profile {
+            StorageProfile::SqliteBundled => {
+                if args.dsn_file.is_some() {
+                    bail!("SQLite Activity Pack restart readiness does not accept --dsn-file");
+                }
+                write_json(
+                    &verify_pack_restart_readiness_sqlite(
+                        data_directory,
+                        &data_directory.join("worldstream.sqlite3"),
+                        &config.storage,
+                    )
+                    .context("Activity Pack SQLite restart readiness failed closed")?,
+                )
+            }
+            StorageProfile::PostgresPrimary => {
+                let dsn_file = args
+                    .dsn_file
+                    .as_ref()
+                    .context("PostgreSQL Activity Pack restart readiness requires --dsn-file")?;
+                let admin = direct_admin_from_file(dsn_file)?;
+                write_json(
+                    &verify_pack_restart_readiness_postgres(
+                        data_directory,
+                        &admin,
+                        &config.storage,
+                    )
+                    .context("Activity Pack PostgreSQL restart readiness failed closed")?,
+                )
+            }
+        },
+        PackCommand::Export(args) => write_json(
+            &export_pack(data_directory, &args.bundle_digest, &args.output)
+                .context("Activity Pack exact export failed closed")?,
+        ),
+        PackCommand::Remove(args) => match config.storage.profile {
+            StorageProfile::SqliteBundled => {
+                if args.dsn_file.is_some() {
+                    bail!("SQLite Activity Pack removal does not accept --dsn-file");
+                }
+                write_json(
+                    &remove_pack_sqlite(
+                        data_directory,
+                        &data_directory.join("worldstream.sqlite3"),
+                        &args.bundle_digest,
+                        args.operator_id,
+                        args.removed_at,
+                    )
+                    .context("Activity Pack retained SQLite removal failed closed")?,
+                )
+            }
+            StorageProfile::PostgresPrimary => {
+                let dsn_file = args
+                    .dsn_file
+                    .as_ref()
+                    .context("PostgreSQL Activity Pack removal requires --dsn-file")?;
+                let admin = direct_admin_from_file(dsn_file)?;
+                write_json(
+                    &remove_pack_postgres(
+                        data_directory,
+                        &admin,
+                        &args.bundle_digest,
+                        args.operator_id,
+                        args.removed_at,
+                    )
+                    .context("Activity Pack retained PostgreSQL removal failed closed")?,
+                )
+            }
+        },
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+enum PackProofDocumentV1 {
+    NeedsFinalization(PackNeedsFinalizationProofV1),
+    Complete(PackCompleteProofV1),
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct PackNeedsFinalizationProofV1 {
+    proof_type: &'static str,
+    status: &'static str,
+    pack_id: String,
+    bundle_digest: String,
+    revision_digest: String,
+    expected_transcript_digest: String,
+    actual_transcript_digest: String,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct PackCompleteProofV1 {
+    proof_type: &'static str,
+    status: &'static str,
+    pack_id: String,
+    bundle_digest: String,
+    revision_digest: String,
+    transcript_digest: String,
+    accepted_action: bool,
+    declared_rejection: bool,
+    private_views: usize,
+    retained_old_revision: bool,
+    room_id: String,
+    roles: usize,
+}
+
+fn run_pack_prover(args: &PackProveArgs) -> Result<()> {
+    if !args.json {
+        bail!("Activity Pack proof requires --json");
+    }
+    write_json(&prove_pack_bundle(&args.bundle)?)
+}
+
+fn prove_pack_bundle(bundle_path: &Path) -> Result<PackProofDocumentV1> {
+    let file =
+        fs::File::open(bundle_path).context("Activity Pack proof input could not be read")?;
+    let metadata = file
+        .metadata()
+        .context("Activity Pack proof input metadata could not be read")?;
+    let maximum_bundle_bytes = u64::try_from(MAX_BUNDLE_BYTES).unwrap_or(u64::MAX);
+    if !metadata.is_file() || metadata.len() > maximum_bundle_bytes {
+        bail!("Activity Pack proof input is not a bounded regular bundle");
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).unwrap_or(MAX_BUNDLE_BYTES.saturating_add(1)),
+    );
+    file.take(maximum_bundle_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .context("Activity Pack proof input could not be read")?;
+    if bytes.is_empty() || bytes.len() > MAX_BUNDLE_BYTES {
+        bail!("Activity Pack proof input is outside the bounded size limit");
+    }
+
+    let bundle = PackBundleVerifierV1
+        .inspect(Arc::<[u8]>::from(bytes))
+        .context("Activity Pack bundle verification failed closed")?;
+    let pack_id = bundle.descriptor().pack_id.clone();
+    let bundle_digest = bundle.bundle_digest().to_string();
+    let revision_digest = bundle.revision_digest().clone();
+    let expected_transcript_digest = bundle.golden_corpus().expected_transcript_digest.clone();
+    let room_id = bundle.golden_corpus().genesis.room_id.to_string();
+    let roles = bundle.descriptor().roles.len();
+    let accepted_action = !bundle.golden_corpus().actions.is_empty();
+    let declared_rejection = !bundle.descriptor().rejection_codes.is_empty();
+    let private_views = bundle
+        .golden_corpus()
+        .viewers
+        .iter()
+        .filter(|viewer| viewer.kind == PackGoldenViewerKindV1::Participant)
+        .count();
+
+    let host = ComponentPackHostV1::new().context("Component Pack Host is unavailable")?;
+    let admission = host
+        .admit(
+            bundle,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: true,
+                runnable_for_retained_rooms: true,
+            },
+        )
+        .context("Component Pack Host admission failed closed")?;
+    let registry = builtin_worldstream_registry().context("built-in Pack registry is invalid")?;
+    match registry.admit_portable([admission]) {
+        Ok(registry) => {
+            let retained_old_revision = registry.load_retained(&revision_digest).is_ok();
+            Ok(PackProofDocumentV1::Complete(PackCompleteProofV1 {
+                proof_type: "complete",
+                status: "passed",
+                pack_id,
+                bundle_digest,
+                revision_digest: revision_digest.to_string(),
+                transcript_digest: expected_transcript_digest.to_string(),
+                accepted_action,
+                declared_rejection,
+                private_views,
+                retained_old_revision,
+                room_id,
+                roles,
+            }))
+        }
+        Err(PackRegistryErrorV1::GoldenMismatch {
+            revision_digest: mismatched_revision,
+            actual_transcript_digest,
+        }) if mismatched_revision == revision_digest => Ok(PackProofDocumentV1::NeedsFinalization(
+            PackNeedsFinalizationProofV1 {
+                proof_type: "needs_finalization",
+                status: "needs_finalization",
+                pack_id,
+                bundle_digest,
+                revision_digest: revision_digest.to_string(),
+                expected_transcript_digest: expected_transcript_digest.to_string(),
+                actual_transcript_digest: actual_transcript_digest.to_string(),
+            },
+        )),
+        Err(error) => Err(error).context("Core Pack registry admission failed closed"),
     }
 }
 
@@ -858,6 +1254,10 @@ fn run_postgres_transfer(command: PostgresTransferCommand) -> Result<()> {
                 .context("offline SQLite-to-PostgreSQL transfer abort failed")?,
             )
         }
+        PostgresTransferCommand::RestorePacks(args) => write_json(
+            &restore_transfer_pack_bundles(&args.bundle, &args.data_dir)
+                .context("portable Pack restore from transfer bundle failed")?,
+        ),
     }
 }
 
@@ -917,11 +1317,240 @@ fn write_json(value: &impl Serialize) -> Result<()> {
 mod tests {
     use super::{
         Cli, Command, NativePostgresArtifactDirectoryIdentityV1, NativePostgresRestoreReceipt,
+        PackCommand, PackCompleteProofV1, PackNeedsFinalizationProofV1, PackProofDocumentV1,
         PostgresCommand, PostgresNativeCommand, PostgresSnapshotsCommand, PostgresTransferCommand,
         SqliteCommand, validate_health_response, version_document,
     };
     use clap::Parser as _;
+    use serde_json::json;
     use worldstream_runtime::embedded_manifest;
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn shipped_cli_exposes_complete_offline_pack_lifecycle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let digest = format!("blake3:{}", "0".repeat(64));
+        let cases = vec![
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "inspect",
+                    "--bundle",
+                    "candidate.wspack",
+                ],
+                "inspect",
+            ),
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "prove",
+                    "candidate.wspack",
+                    "--json",
+                ],
+                "prove",
+            ),
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "approve",
+                    "--bundle",
+                    "candidate.wspack",
+                    "--operator-id",
+                    "operator-1",
+                    "--decided-at",
+                    "2026-08-30T12:00:00Z",
+                ],
+                "approve",
+            ),
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "revoke",
+                    "--bundle-digest",
+                    &digest,
+                    "--operator-id",
+                    "operator-1",
+                    "--decided-at",
+                    "2026-08-30T12:01:00Z",
+                ],
+                "revoke",
+            ),
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "install",
+                    "--bundle",
+                    "candidate.wspack",
+                    "--installed-at",
+                    "2026-08-30T12:02:00Z",
+                ],
+                "install",
+            ),
+            (vec!["worldstreamctl", "pack", "inventory"], "inventory"),
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "set-selectable",
+                    "--bundle-digest",
+                    &digest,
+                    "--selectable",
+                    "true",
+                ],
+                "set-selectable",
+            ),
+            (
+                vec!["worldstreamctl", "pack", "restart-readiness"],
+                "restart-readiness",
+            ),
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "export",
+                    "--bundle-digest",
+                    &digest,
+                    "--output",
+                    "export.wspack",
+                ],
+                "export",
+            ),
+            (
+                vec![
+                    "worldstreamctl",
+                    "pack",
+                    "remove",
+                    "--bundle-digest",
+                    &digest,
+                    "--operator-id",
+                    "operator-1",
+                    "--removed-at",
+                    "2026-08-30T12:03:00Z",
+                ],
+                "remove",
+            ),
+        ];
+        for (arguments, expected) in cases {
+            let cli = Cli::try_parse_from(arguments)?;
+            let Command::Pack { command } = cli.command else {
+                return Err("expected Pack command".into());
+            };
+            let actual = match command {
+                PackCommand::Inspect(_) => "inspect",
+                PackCommand::Prove(_) => "prove",
+                PackCommand::Approve(_) => "approve",
+                PackCommand::Revoke(_) => "revoke",
+                PackCommand::Install(_) => "install",
+                PackCommand::Inventory => "inventory",
+                PackCommand::SetSelectable(_) => "set-selectable",
+                PackCommand::RestartReadiness(_) => "restart-readiness",
+                PackCommand::Export(_) => "export",
+                PackCommand::Remove(_) => "remove",
+            };
+            assert_eq!(actual, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pack_selectability_requires_an_explicit_boolean_decision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let digest = format!("blake3:{}", "0".repeat(64));
+        for (wire, expected) in [("true", true), ("false", false)] {
+            let cli = Cli::try_parse_from([
+                "worldstreamctl",
+                "pack",
+                "set-selectable",
+                "--bundle-digest",
+                &digest,
+                "--selectable",
+                wire,
+            ])?;
+            let Command::Pack {
+                command: PackCommand::SetSelectable(arguments),
+            } = cli.command
+            else {
+                return Err("expected Pack set-selectable command".into());
+            };
+            assert_eq!(arguments.selectable, expected);
+        }
+        assert!(
+            Cli::try_parse_from([
+                "worldstreamctl",
+                "pack",
+                "set-selectable",
+                "--bundle-digest",
+                &digest,
+                "--selectable",
+            ])
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pack_proof_json_union_is_frozen() -> Result<(), Box<dyn std::error::Error>> {
+        let needs_finalization =
+            PackProofDocumentV1::NeedsFinalization(PackNeedsFinalizationProofV1 {
+                proof_type: "needs_finalization",
+                status: "needs_finalization",
+                pack_id: "worldstream.example".to_owned(),
+                bundle_digest: format!("blake3:{}", "1".repeat(64)),
+                revision_digest: format!("blake3:{}", "2".repeat(64)),
+                expected_transcript_digest: format!("blake3:{}", "3".repeat(64)),
+                actual_transcript_digest: format!("blake3:{}", "4".repeat(64)),
+            });
+        assert_eq!(
+            serde_json::to_value(needs_finalization)?,
+            json!({
+                "proof_type": "needs_finalization",
+                "status": "needs_finalization",
+                "pack_id": "worldstream.example",
+                "bundle_digest": format!("blake3:{}", "1".repeat(64)),
+                "revision_digest": format!("blake3:{}", "2".repeat(64)),
+                "expected_transcript_digest": format!("blake3:{}", "3".repeat(64)),
+                "actual_transcript_digest": format!("blake3:{}", "4".repeat(64)),
+            })
+        );
+
+        let complete = PackProofDocumentV1::Complete(PackCompleteProofV1 {
+            proof_type: "complete",
+            status: "passed",
+            pack_id: "worldstream.example".to_owned(),
+            bundle_digest: format!("blake3:{}", "5".repeat(64)),
+            revision_digest: format!("blake3:{}", "6".repeat(64)),
+            transcript_digest: format!("blake3:{}", "7".repeat(64)),
+            accepted_action: true,
+            declared_rejection: true,
+            private_views: 4,
+            retained_old_revision: true,
+            room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+            roles: 4,
+        });
+        assert_eq!(
+            serde_json::to_value(complete)?,
+            json!({
+                "proof_type": "complete",
+                "status": "passed",
+                "pack_id": "worldstream.example",
+                "bundle_digest": format!("blake3:{}", "5".repeat(64)),
+                "revision_digest": format!("blake3:{}", "6".repeat(64)),
+                "transcript_digest": format!("blake3:{}", "7".repeat(64)),
+                "accepted_action": true,
+                "declared_rejection": true,
+                "private_views": 4,
+                "retained_old_revision": true,
+                "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "roles": 4,
+            })
+        );
+        Ok(())
+    }
 
     #[test]
     fn shipped_cli_exposes_sqlite_backup_restore_and_full_verification()
@@ -998,6 +1627,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn shipped_cli_exposes_resumable_whole_deployment_transfer()
     -> Result<(), Box<dyn std::error::Error>> {
         let common = [
@@ -1079,6 +1709,19 @@ mod tests {
                 ],
                 "abort",
             ),
+            (
+                vec![
+                    "worldstreamctl",
+                    "postgres",
+                    "transfer",
+                    "restore-packs",
+                    "--bundle",
+                    "transfer.bundle",
+                    "--data-dir",
+                    "worldstream-data",
+                ],
+                "restore-packs",
+            ),
         ];
         for (arguments, expected) in cases {
             let cli = Cli::try_parse_from(arguments)?;
@@ -1093,6 +1736,7 @@ mod tests {
                 PostgresTransferCommand::Resume(_) => "resume",
                 PostgresTransferCommand::Finalize(_) => "finalize",
                 PostgresTransferCommand::Abort(_) => "abort",
+                PostgresTransferCommand::RestorePacks(_) => "restore-packs",
             };
             assert_eq!(actual, expected);
         }

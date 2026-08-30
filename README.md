@@ -4,13 +4,13 @@
 
 WorldStream is a self-hosted realtime room runtime for multi-agent applications. It lets external humans and AI agents participate in the same durable Room. An Activity Pack defines Activity State, Roles, exact Action Offers, visibility rules, timers, and Outcomes. WorldStream owns Core Room State—exactly Room Status plus the semantic Membership map—and supplies ordering, integrity, persistence, scoped realtime observations, cursor-based catch-up, targeted activation, recovery, and deterministic Replay.
 
-The simplest architectural analogy is a multiplayer game server whose players may be humans or AI agents. The product is not game-specific: the server owns the shared reality, an Activity Pack supplies the domain rules, and Heist is only the first reference activity. Participants see only their authorized view and submit typed actions. An AI model does not remain alive inside WorldStream; a developer-owned runner invokes it when work is available.
+The simplest architectural analogy is a multiplayer game server whose players may be humans or AI agents. The product is not game-specific: the server owns the shared reality and an installable Activity Pack supplies the domain rules. Participants see only their authorized view and submit typed actions. An AI model does not remain alive inside WorldStream; an application-owned Runner invokes it when work is available.
 
 ## Frozen product statement
 
 > WorldStream is a self-hosted realtime room runtime for multi-agent applications. Its precise model is multi-participant: external humans and independently hosted AI agents join a rule-governed room, receive scoped realtime observations, submit typed actions, and retain continuity across connections and ephemeral agent invocations. Multiplayer server design is the architectural analogy, not a game-only product boundary.
 
-The initial user is an AI application developer. The first reference application is Agent Heist. The second is Investigation Room, a serious evidence-analysis activity that must run on the same unchanged room semantics.
+The first public users are Pack Authors and Application Integrators. They author one code-first TypeScript project, build a deterministic WASI-free Activity Pack Bundle, and let a Host Operator approve and install its exact digest. WorldStream Negotiate is the first serious public Pack. Counter remains an internal tutorial/conformance fixture, Agent Heist is a visual demo/conformance Pack, and Investigation Room is deferred.
 
 ## How it works
 
@@ -19,7 +19,7 @@ flowchart LR
     H["Human client"] --> G["HTTP and WebSocket gateway"]
     R["External agent runner"] --> G
     G --> W["WorldStream room runtime"]
-    W --> P["One trusted Activity Pack"]
+    W --> P["One approved Activity Pack revision"]
     W --> D["Bundled SQLite or PostgreSQL 17 primary"]
     P --> O["Authorized Membership projections"]
     O --> G
@@ -102,7 +102,7 @@ Activity Packs own:
 - public and private projection rules;
 - timers, activation reasons, and terminal outcomes.
 
-The trusted v0.1 seam is frozen as `ActivityPackV1`: descriptor, initialize, reduce, view, and observe. Each Room pins a build-computed semantic revision lock; retained exact executors/codecs remain runnable, and Rooms never upgrade in place. This is not a dynamic or sandboxed public plugin ABI.
+The semantic seam remains `ActivityPackV1`: `descriptor`, `initialize`, `reduce`, `view`, and `observe`. Each Room pins a build-computed `PackRevisionLockV1`; retained exact executors/codecs remain runnable, and Rooms never upgrade in place. Public portable revisions use the same seam as a WASI-free WebAssembly Component inside an operator-approved `.wspack`; there is no second rules contract.
 
 Agent runners own:
 
@@ -110,16 +110,17 @@ Agent runners own:
 - turning an activation intent into a bounded agent invocation;
 - submitting typed actions back to the room.
 
-## Two reference activities
+## Starter activities
 
-1. Agent Heist freezes three immutable seats and six phases, two-of-three sealed plan selection, five-check scoring, scoped reveal, deadlines, activation separation, restart recovery, and replay.
-2. Investigation Room proves the same Room Kernel works for serious non-game work: evidence arrives over time, agents publish source-linked claims, a correction invalidates dependent claims, affected agents are activated, and a human lead submits a deterministic structured brief.
+1. WorldStream Negotiate is the first serious public Pack: two commercial agents, one Human approver, and one external venue signer perform a pinned single-session A202 formation under exact approval, signature, deadline, evidence, Recovery, and Replay rules.
+2. Agent Heist remains a bundled visual demo and conformance workload for privacy, timers, attention, recovery, and replay.
+3. Counter remains an internal walking skeleton and tutorial, not the product story. Investigation Room is retained as deferred design research, not a committed release.
 
-There is exactly one Activity Pack per room in both reference releases.
+There is exactly one Activity Pack per Room in every starter activity.
 
 ## What this project is not
 
-WorldStream is not n8n, Temporal, a general project manager, a message broker, a context database, a model host, a coding harness, or an agent marketplace. Version 0.1 and 0.2 deliberately exclude workflow canvases, connector catalogs, cross-room projects, payments, crypto, cloud agent execution, vector memory, arbitrary plugins, generated UI, clustering, multiple live WorldStream processes, live/dual-write/reverse storage transfer, provider HA services, cloud resources, and multi-region operation.
+WorldStream is not n8n, Temporal, a general project manager, a message broker, a context database, a model host, a coding harness, or an agent marketplace. The first public release excludes workflow canvases, connector catalogs, cross-room projects, payments, crypto, cloud agent execution, vector memory, arbitrary pack effects, generated UI, a network Pack marketplace, hot loading, clustering, multiple live WorldStream processes, live/dual-write/reverse storage transfer, provider HA services, cloud resources, and multi-region operation.
 
 ## Documentation
 
@@ -127,19 +128,22 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [WorldStream domain context](CONTEXT.md) — canonical whole-product language and concept boundaries
 - [Frozen requirements](docs/requirements.md) — normative release scope and change control
 - [Canonical decision index](docs/decision-index.md) — frozen invariant, normative source, ADR, conformance evidence, and implementation ownership map
-- [Compatibility manifest](compatibility.toml) and [canonical JSON mirror](compatibility.json) — complete embedded contract identity; final distribution evidence remains detached and signed
+- [Compatibility manifest](compatibility.toml) and [canonical JSON mirror](compatibility.json) — fail-closed specification with exact portable-Pack identities; final distribution evidence remains detached and signed
 - [Extended terminology](docs/glossary.md) — protocol, runtime, storage, UI, and lifecycle reference
 - [Product vision](docs/vision.md) — audience, value, and boundaries
 - [System architecture](docs/architecture.md) — stack, storage, filesystem, failure semantics, and scaling
 - [Operator storage and transfer](docs/operator-storage.md) — packaged SQLite backup/restore and resumable SQLite-to-PostgreSQL transfer
 - [Wire protocol](docs/protocol.md) — sessions, actions, observations, cursors, and activations
 - [Observation and Activation](docs/observation-and-activation.md) — frozen attach/reset, delivery, intent, lease, and Invocation Context contracts
-- [Activity Packs](docs/activity-packs.md) — host contract and both reference activities
+- [Activity Packs](docs/activity-packs.md) — host, bundle, authoring, installation, and retained-execution contract
+- [WorldStream Negotiate](docs/negotiate.md) — exact first public Pack and pinned A202 compatibility profile
 - [Context model](docs/context-and-memory.md) — Authoritative Room State versus Invocation Context
 - [UI architecture](docs/ui-architecture.md) — deliberately small first-party presentation layer
 - [Security model](docs/security.md) — trust boundary and required tests
 - [Automated compatibility gates](docs/gates.md) — local, native matrix, release, and credential-free provider-smoke tiers
-- [Delivery roadmap](docs/roadmap.md) — Agent Heist MVP followed by Investigation Room
+- [Starter Distribution](docs/starter-distribution.md) — deterministic offline carrier for the exact Runtime, UIs, Pack authoring kit, Negotiate material, adapters, fixtures, docs, and legal subjects
+- [Outside-adopter trial kit](docs/outside-adopter-trials.md) — redacted receipt contract for the six genuine 0.1.0 adoption trials
+- [Delivery roadmap](docs/roadmap.md) — portable Pack platform followed by the Negotiate product proof
 - [Architecture decisions](docs/adr/) — accepted product, Room sequencing, Core/integrity lineage, observation, Activation, retained pack, storage, portability, recovery, and release decisions
 - [Idea archive](docs/ideas-and-research.md) — non-normative research only
 
@@ -150,9 +154,11 @@ The implemented frontiers currently provide a pinned, deliberately narrow worksp
 - Rust `1.97.1` (edition 2024), Node `24.18.1` with pnpm `11.19.0`, Python `3.14.7`, and uv `0.12.5`;
 - `worldstreamd` and `worldstreamctl` operator-shell binaries, protocol/runtime support crates, and a deterministic `xtask` manifest verifier;
 - a pure canonical Core reducer, lineage tracer, strict Replay verifier, and storage-neutral operational Principal/capability/Membership authority module;
-- the retained exact-revision `ActivityPackV1` host and registry, with executable test-only Counter v1 and v2 conformance revisions;
+- the retained exact-revision `ActivityPackV1` host and registry, WASI-free WebAssembly Component Host, immutable `.wspack` verifier/store, exact-digest operator lifecycle, and executable Counter/Heist compatibility revisions;
+- the public TypeScript Pack SDK/CLI with mandatory first-release prompt assistance and the exact proven WorldStream Negotiate Component Bundle;
+- an independent Negotiate oracle, pinned A202 operated-profile adapter, and offline dual-evidence verifier;
 - bundled-SQLite and PostgreSQL adapters for authenticated Room creation, atomic commit/recovery, durable authority changes, scoped observations, and authorized historical Replay;
-- a locked public Python SDK and a first-party web console with fixture and explicit live-session modes;
+- a locked public Python application SDK and first-party console with Heist reference plus six-persona Negotiate live-session modes;
 - native Linux and Windows bootstrap checks plus opt-in repository hooks.
 
 Install the exact tools named above. The POSIX verifier also requires Python 3.11+ as `python3`
@@ -192,4 +198,4 @@ signed distribution exists.
 
 ## Status
 
-The repository contains the pinned workspace and operator shell, canonical Core/lineage and operational-authority implementation, exact retained Counter and Agent Heist executors, the bundled-SQLite gateway, PostgreSQL storage/runtime adapters, a public Python SDK, and the first-party UI. The checked-in compatibility pair is semantically identical and has `release_ready = true`, meaning its portable implementation identities are complete and buildable. That flag is not distribution evidence: a release exists only after the final native/OCI artifacts, all required evidence reports, checksums, SBOM, provenance, and keyless signature verify through the detached `release-manifest.json`. Performance figures remain reference measurements, never universal SLAs.
+The repository contains the pinned workspace and operator shell, canonical Core/lineage and operational-authority implementation, exact retained Counter and Agent Heist executors, the bundled-SQLite gateway, PostgreSQL storage/runtime adapters, a public Python application SDK, and first-party UI foundations. The checked-in compatibility pair is intentionally `manifest_kind = "specification"` and `release_ready = false`. The exact official Negotiate Component, semantic revision, schema/codec/golden identities, and digest-named bundle now exist and pass the production Bundle → Component Host → Core proof. The expanded release tooling closes four Runtime payloads, twelve portable Starter subjects, and seventeen pre-sign evidence reports into one 33-subject inventory, but genuine Negotiate policy/A202 and released-artifact SQLite/PostgreSQL restart reports, final artifacts, signatures, and outside-adopter qualification remain unavailable. Those gaps fail closed; a separately signed post-release qualification manifest prevents Starter/adopter evidence from creating a recursive primary signature.

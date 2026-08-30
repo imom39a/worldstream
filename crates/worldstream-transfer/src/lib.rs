@@ -22,15 +22,21 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
+use worldstream_core::{CanonicalJsonV1, PackRevisionLockV1};
+use worldstream_pack_bundle::{
+    PackBundleDigestV1, RETAINED_PACK_BUNDLE_ARTIFACT_ID, RetainedPackBundleArtifactV1,
+};
 
 const BUNDLE_MAGIC: &[u8; 8] = b"WSTRANS1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"WSCHECK1";
-const BUNDLE_VERSION: u16 = 3;
+const BUNDLE_VERSION: u16 = 4;
+const PREVIOUS_BUNDLE_VERSION: u16 = 3;
 const LEGACY_BUNDLE_VERSION: u16 = 2;
 const CHECKPOINT_VERSION: u16 = 1;
 const MAX_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RECORDS: usize = 100_000;
 const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PORTABLE_PACK_BUNDLES: usize = 256;
 const MAX_IMPORT_STATE_BYTES: usize = 1024;
 const IMPORT_MAGIC: &[u8; 8] = b"WSIMPORT";
 const IMPORT_VERSION: u16 = 1;
@@ -643,13 +649,16 @@ pub struct ResourcePayloadV1 {
     bytes: Vec<u8>,
 }
 
-/// The complete, source-authoritative deployment identity used by a whole
-/// deployment transfer.
+/// The immutable base Runtime Distribution identity used by a whole-deployment
+/// transfer.
 ///
 /// The presence of this value is the completeness witness: an empty resource
 /// set is valid and distinct from absent metadata.  Identities are sorted and
 /// hashed from their exact canonical encoding, so callers cannot replace the
 /// source set with a partial, duplicated, or differently ordered assertion.
+/// Mutable local Activity Pack Bundle inventory is separate; transfer and
+/// backup must carry every referenced original bundle through its own verified
+/// section rather than rewriting this base identity ledger.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentIdentityV1 {
     packs: Vec<PackIdentityV1>,
@@ -1207,6 +1216,7 @@ pub struct TransferBundleV1 {
     target_backend: BackendFingerprintV1,
     pack: Option<PackIdentityV1>,
     resources: Vec<ResourceIdentityV1>,
+    portable_pack_bundles: Vec<RetainedPackBundleArtifactV1>,
     scope: TransferScopeV1,
     isolated_rooms: Vec<String>,
     session_state: SessionStatePolicyV1,
@@ -1360,6 +1370,7 @@ impl TransferBundleV1 {
             target_backend,
             pack: Some(pack),
             resources,
+            portable_pack_bundles: Vec::new(),
             scope: TransferScopeV1::WholeDeployment,
             isolated_rooms: Vec::new(),
             session_state,
@@ -1422,6 +1433,7 @@ impl TransferBundleV1 {
             target_backend,
             pack: None,
             resources: Vec::new(),
+            portable_pack_bundles: Vec::new(),
             scope: TransferScopeV1::CanonicalExport,
             isolated_rooms,
             session_state: SessionStatePolicyV1::InvalidateAndRebuild,
@@ -1583,7 +1595,10 @@ impl TransferBundleV1 {
             return Err(TransferError::InvalidMagic);
         }
         let version = reader.read_u16()?;
-        if version != BUNDLE_VERSION && version != LEGACY_BUNDLE_VERSION {
+        if !matches!(
+            version,
+            BUNDLE_VERSION | PREVIOUS_BUNDLE_VERSION | LEGACY_BUNDLE_VERSION
+        ) {
             return Err(TransferError::UnsupportedBundleVersion(version));
         }
         let bundle_id = reader.read_string()?;
@@ -1591,98 +1606,112 @@ impl TransferBundleV1 {
         let source_epoch = reader.read_u64()?;
         let source_profile = BundleProfileV1::from_tag(reader.read_u8()?)?;
         let target_profile = BundleProfileV1::from_tag(reader.read_u8()?)?;
-        let (scope, source_backend, isolated_rooms, pack, resources, target_backend) =
-            if version == LEGACY_BUNDLE_VERSION {
-                let source_backend = read_backend_fingerprint(&mut reader)?;
-                let target_backend = read_backend_fingerprint(&mut reader)?;
-                let pack = PackIdentityV1::new(
+        let (
+            scope,
+            source_backend,
+            isolated_rooms,
+            pack,
+            resources,
+            portable_pack_bundles,
+            target_backend,
+        ) = if version == LEGACY_BUNDLE_VERSION {
+            let source_backend = read_backend_fingerprint(&mut reader)?;
+            let target_backend = read_backend_fingerprint(&mut reader)?;
+            let pack = PackIdentityV1::new(
+                reader.read_string()?,
+                reader.read_string()?,
+                reader.read_digest()?,
+            )?;
+            let resource_count = reader.read_count()?;
+            let mut resources = Vec::with_capacity(resource_count);
+            for _ in 0..resource_count {
+                let kind = ResourceKindV1::from_tag(reader.read_u8()?)?;
+                let identity = reader.read_string()?;
+                let size_bytes = reader.read_u64()?;
+                let digest = reader.read_digest()?;
+                resources.push(ResourceIdentityV1 {
+                    kind,
+                    identity,
+                    size_bytes,
+                    digest,
+                });
+            }
+            (
+                TransferScopeV1::WholeDeployment,
+                Some(source_backend),
+                Vec::new(),
+                Some(pack),
+                resources,
+                Vec::new(),
+                target_backend,
+            )
+        } else {
+            let scope = match reader.read_u8()? {
+                1 => TransferScopeV1::WholeDeployment,
+                2 => TransferScopeV1::CanonicalExport,
+                _ => {
+                    return Err(TransferError::InvalidValue {
+                        what: "transfer scope",
+                    });
+                }
+            };
+            let source_backend = match reader.read_u8()? {
+                0 => None,
+                1 => Some(read_backend_fingerprint(&mut reader)?),
+                _ => {
+                    return Err(TransferError::InvalidValue {
+                        what: "source backend presence",
+                    });
+                }
+            };
+            let isolated_count = reader.read_count()?;
+            let mut isolated_rooms = Vec::with_capacity(isolated_count);
+            for _ in 0..isolated_count {
+                isolated_rooms.push(reader.read_string()?);
+            }
+            let pack = match reader.read_u8()? {
+                0 => None,
+                1 => Some(PackIdentityV1::new(
                     reader.read_string()?,
                     reader.read_string()?,
                     reader.read_digest()?,
-                )?;
-                let resource_count = reader.read_count()?;
-                let mut resources = Vec::with_capacity(resource_count);
-                for _ in 0..resource_count {
-                    let kind = ResourceKindV1::from_tag(reader.read_u8()?)?;
-                    let identity = reader.read_string()?;
-                    let size_bytes = reader.read_u64()?;
-                    let digest = reader.read_digest()?;
-                    resources.push(ResourceIdentityV1 {
-                        kind,
-                        identity,
-                        size_bytes,
-                        digest,
+                )?),
+                _ => {
+                    return Err(TransferError::InvalidValue {
+                        what: "pack presence",
                     });
                 }
-                (
-                    TransferScopeV1::WholeDeployment,
-                    Some(source_backend),
-                    Vec::new(),
-                    Some(pack),
-                    resources,
-                    target_backend,
-                )
-            } else {
-                let scope = match reader.read_u8()? {
-                    1 => TransferScopeV1::WholeDeployment,
-                    2 => TransferScopeV1::CanonicalExport,
-                    _ => {
-                        return Err(TransferError::InvalidValue {
-                            what: "transfer scope",
-                        });
-                    }
-                };
-                let source_backend = match reader.read_u8()? {
-                    0 => None,
-                    1 => Some(read_backend_fingerprint(&mut reader)?),
-                    _ => {
-                        return Err(TransferError::InvalidValue {
-                            what: "source backend presence",
-                        });
-                    }
-                };
-                let isolated_count = reader.read_count()?;
-                let mut isolated_rooms = Vec::with_capacity(isolated_count);
-                for _ in 0..isolated_count {
-                    isolated_rooms.push(reader.read_string()?);
-                }
-                let pack = match reader.read_u8()? {
-                    0 => None,
-                    1 => Some(PackIdentityV1::new(
-                        reader.read_string()?,
-                        reader.read_string()?,
-                        reader.read_digest()?,
-                    )?),
-                    _ => {
-                        return Err(TransferError::InvalidValue {
-                            what: "pack presence",
-                        });
-                    }
-                };
-                let resource_count = reader.read_count()?;
-                let mut resources = Vec::with_capacity(resource_count);
-                for _ in 0..resource_count {
-                    let kind = ResourceKindV1::from_tag(reader.read_u8()?)?;
-                    let identity = reader.read_string()?;
-                    let size_bytes = reader.read_u64()?;
-                    let digest = reader.read_digest()?;
-                    resources.push(ResourceIdentityV1 {
-                        kind,
-                        identity,
-                        size_bytes,
-                        digest,
-                    });
-                }
-                let target_backend = read_backend_fingerprint(&mut reader)?;
-                (
-                    scope,
-                    source_backend,
-                    isolated_rooms,
-                    pack,
-                    resources,
-                    target_backend,
-                )
             };
+            let resource_count = reader.read_count()?;
+            let mut resources = Vec::with_capacity(resource_count);
+            for _ in 0..resource_count {
+                let kind = ResourceKindV1::from_tag(reader.read_u8()?)?;
+                let identity = reader.read_string()?;
+                let size_bytes = reader.read_u64()?;
+                let digest = reader.read_digest()?;
+                resources.push(ResourceIdentityV1 {
+                    kind,
+                    identity,
+                    size_bytes,
+                    digest,
+                });
+            }
+            let portable_pack_bundles = if version == BUNDLE_VERSION {
+                read_portable_pack_bundles(&mut reader)?
+            } else {
+                Vec::new()
+            };
+            let target_backend = read_backend_fingerprint(&mut reader)?;
+            (
+                scope,
+                source_backend,
+                isolated_rooms,
+                pack,
+                resources,
+                portable_pack_bundles,
+                target_backend,
+            )
+        };
         if source_backend
             .as_ref()
             .is_some_and(|backend| backend.profile() != source_profile)
@@ -1725,12 +1754,14 @@ impl TransferBundleV1 {
                 resources,
                 session_state,
                 records,
-            ),
+            )?
+            .with_portable_pack_bundles(portable_pack_bundles),
             TransferScopeV1::CanonicalExport => {
                 if source_profile != BundleProfileV1::SqliteBundled
                     || source_backend.is_some()
                     || pack.is_some()
                     || !resources.is_empty()
+                    || !portable_pack_bundles.is_empty()
                 {
                     return Err(TransferError::InvalidValue {
                         what: "canonical-export global evidence",
@@ -1791,6 +1822,7 @@ impl TransferBundleV1 {
             write_u64(&mut output, resource.size_bytes());
             output.extend_from_slice(&resource.digest().as_bytes());
         }
+        write_portable_pack_bundles(&mut output, &self.portable_pack_bundles)?;
         write_backend_fingerprint(&mut output, &self.target_backend)?;
         output.push(SessionStatePolicyV1::tag());
         write_count(&mut output, self.records.len())?;
@@ -1803,6 +1835,36 @@ impl TransferBundleV1 {
             });
         }
         Ok(output)
+    }
+
+    /// Attaches the exact original portable Pack archives required by the
+    /// retained Room lineage. The set is canonicalized by semantic revision
+    /// and verified before it can affect transfer bytes.
+    pub fn with_portable_pack_bundles(
+        mut self,
+        mut bundles: Vec<RetainedPackBundleArtifactV1>,
+    ) -> Result<Self, TransferError> {
+        bundles.sort_by(|left, right| {
+            (
+                left.revision_digest.to_string(),
+                left.bundle_digest.to_string(),
+            )
+                .cmp(&(
+                    right.revision_digest.to_string(),
+                    right.bundle_digest.to_string(),
+                ))
+        });
+        validate_portable_pack_bundles(&bundles)?;
+        if self.scope == TransferScopeV1::WholeDeployment {
+            validate_portable_pack_coverage(&self.records, &bundles)?;
+        }
+        self.portable_pack_bundles = bundles;
+        if self.to_bytes()?.len() > MAX_BUNDLE_BYTES {
+            return Err(TransferError::BoundExceeded {
+                what: "bundle bytes",
+            });
+        }
+        Ok(self)
     }
 
     /// Atomically exports deterministic bundle bytes to a new regular file.
@@ -1920,6 +1982,13 @@ impl TransferBundleV1 {
     #[must_use]
     pub fn resources(&self) -> &[ResourceIdentityV1] {
         &self.resources
+    }
+
+    /// Returns exact verified `.wspack` bytes in canonical semantic-revision
+    /// order. These artifacts never carry target approval or selectability.
+    #[must_use]
+    pub fn portable_pack_bundles(&self) -> &[RetainedPackBundleArtifactV1] {
+        &self.portable_pack_bundles
     }
 
     /// Returns the explicit source-evidence scope.
@@ -3742,6 +3811,177 @@ fn write_backend_fingerprint(
     Ok(())
 }
 
+fn validate_portable_pack_bundles(
+    bundles: &[RetainedPackBundleArtifactV1],
+) -> Result<(), TransferError> {
+    if bundles.len() > MAX_PORTABLE_PACK_BUNDLES {
+        return Err(TransferError::BoundExceeded {
+            what: "portable Pack Bundles",
+        });
+    }
+    let mut semantic = BTreeSet::new();
+    let mut physical = BTreeSet::new();
+    let mut previous = None;
+    let mut total_bytes = 0_usize;
+    for artifact in bundles {
+        if artifact.artifact_id != RETAINED_PACK_BUNDLE_ARTIFACT_ID || artifact.verify().is_err() {
+            return Err(TransferError::InvalidValue {
+                what: "portable Pack Bundle",
+            });
+        }
+        let key = (
+            artifact.revision_digest.to_string(),
+            artifact.bundle_digest.to_string(),
+        );
+        if previous.as_ref().is_some_and(|previous| previous >= &key) {
+            return Err(TransferError::NonDeterministicOrder {
+                what: "portable Pack Bundles",
+            });
+        }
+        if !semantic.insert(key.0.clone()) || !physical.insert(key.1.clone()) {
+            return Err(TransferError::DuplicateIdentity {
+                what: "portable Pack Bundle",
+            });
+        }
+        previous = Some(key);
+        total_bytes = total_bytes
+            .checked_add(artifact.archive_bytes.len())
+            .ok_or(TransferError::BoundExceeded {
+                what: "portable Pack Bundle bytes",
+            })?;
+    }
+    if total_bytes > MAX_BUNDLE_BYTES {
+        return Err(TransferError::BoundExceeded {
+            what: "portable Pack Bundle bytes",
+        });
+    }
+    Ok(())
+}
+
+fn validate_portable_pack_coverage(
+    records: &[LogicalRecordV1],
+    bundles: &[RetainedPackBundleArtifactV1],
+) -> Result<(), TransferError> {
+    let deployment_identity = records
+        .iter()
+        .filter(|record| {
+            record.kind == RecordKindV1::Canonical(CanonicalRecordKindV1::ArtifactMetadata)
+                && record.identity == "deployment/identity"
+        })
+        .map(|record| DeploymentIdentityV1::from_canonical_bytes(&record.bytes))
+        .collect::<Result<Vec<_>, _>>()?;
+    if deployment_identity.is_empty() {
+        return if bundles.is_empty() {
+            Ok(())
+        } else {
+            Err(TransferError::InvalidValue {
+                what: "portable Pack Bundle coverage witness",
+            })
+        };
+    }
+    if deployment_identity.len() != 1 {
+        return Err(TransferError::DuplicateIdentity {
+            what: "deployment identity",
+        });
+    }
+    let base_revisions = deployment_identity[0]
+        .packs()
+        .iter()
+        .map(|pack| format!("blake3:{}", pack.digest()))
+        .collect::<BTreeSet<_>>();
+    let mut required = BTreeSet::new();
+    for record in records.iter().filter(|record| {
+        record.kind == RecordKindV1::Canonical(CanonicalRecordKindV1::ArtifactMetadata)
+            && record.identity.ends_with("/pack-revision-lock")
+    }) {
+        let lock: PackRevisionLockV1 =
+            CanonicalJsonV1::decode_canonical(&record.bytes).map_err(|_| {
+                TransferError::InvalidValue {
+                    what: "retained Pack revision lock",
+                }
+            })?;
+        let revision = lock
+            .revision_digest()
+            .map_err(|_| TransferError::InvalidValue {
+                what: "retained Pack revision digest",
+            })?
+            .to_string();
+        if !base_revisions.contains(&revision) {
+            required.insert(revision);
+        }
+    }
+    let carried = bundles
+        .iter()
+        .map(|artifact| artifact.revision_digest.to_string())
+        .collect::<BTreeSet<_>>();
+    if required != carried {
+        return Err(TransferError::InvalidValue {
+            what: "portable Pack Bundle coverage",
+        });
+    }
+    Ok(())
+}
+
+fn write_portable_pack_bundles(
+    output: &mut Vec<u8>,
+    bundles: &[RetainedPackBundleArtifactV1],
+) -> Result<(), TransferError> {
+    validate_portable_pack_bundles(bundles)?;
+    write_count(output, bundles.len())?;
+    for artifact in bundles {
+        write_string(output, &artifact.artifact_id)?;
+        write_string(output, &artifact.bundle_digest.to_string())?;
+        write_string(output, &artifact.revision_digest.to_string())?;
+        write_u64(
+            output,
+            u64::try_from(artifact.archive_bytes.len()).map_err(|_| {
+                TransferError::BoundExceeded {
+                    what: "portable Pack Bundle bytes",
+                }
+            })?,
+        );
+        output.extend_from_slice(&artifact.archive_bytes);
+    }
+    Ok(())
+}
+
+fn read_portable_pack_bundles(
+    reader: &mut Reader<'_>,
+) -> Result<Vec<RetainedPackBundleArtifactV1>, TransferError> {
+    let count = reader.read_count()?;
+    if count > MAX_PORTABLE_PACK_BUNDLES {
+        return Err(TransferError::BoundExceeded {
+            what: "portable Pack Bundles",
+        });
+    }
+    let mut bundles = Vec::with_capacity(count);
+    for _ in 0..count {
+        let artifact_id = reader.read_string()?;
+        let bundle_digest = reader
+            .read_string()?
+            .parse::<PackBundleDigestV1>()
+            .map_err(|_| TransferError::InvalidValue {
+                what: "portable Pack Bundle physical digest",
+            })?;
+        let revision_digest =
+            reader
+                .read_string()?
+                .parse()
+                .map_err(|_| TransferError::InvalidValue {
+                    what: "portable Pack Bundle revision digest",
+                })?;
+        let archive_bytes = reader.read_blob(MAX_BUNDLE_BYTES)?;
+        bundles.push(RetainedPackBundleArtifactV1 {
+            artifact_id,
+            bundle_digest,
+            revision_digest,
+            archive_bytes,
+        });
+    }
+    validate_portable_pack_bundles(&bundles)?;
+    Ok(bundles)
+}
+
 fn read_backend_fingerprint(
     reader: &mut Reader<'_>,
 ) -> Result<BackendFingerprintV1, TransferError> {
@@ -3917,6 +4157,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
+    use worldstream_core::builtin_counter_registry;
+
     use super::{
         BackendFingerprintV1, BundleProfileV1, CanonicalRecordKindV1, DeploymentIdentityV1,
         DerivedRecordKindV1, DigestV1, ExternalInputPreparationV1, LogicalRecordV1,
@@ -3927,8 +4169,99 @@ mod tests {
         TransferSourceAuthorityBindingV1, TransferSourceAuthorityStateV1,
         TransferSourceAuthorityV1, TransferStateV1, VerifiedTargetAbortV1,
         VerifiedTargetFinalizationV1, WholeDeploymentTransferErrorV1, abort_whole_deployment,
-        default_backend_fingerprint, finalize_whole_deployment,
+        default_backend_fingerprint, finalize_whole_deployment, validate_portable_pack_coverage,
     };
+
+    fn transfer_digest_from_tagged(value: &str) -> Result<DigestV1, TransferError> {
+        let hex = value
+            .strip_prefix("blake3:")
+            .ok_or(TransferError::InvalidValue {
+                what: "tagged fixture digest",
+            })?;
+        if hex.len() != 64 {
+            return Err(TransferError::InvalidValue {
+                what: "tagged fixture digest",
+            });
+        }
+        let mut bytes = [0_u8; 32];
+        for (index, output) in bytes.iter_mut().enumerate() {
+            let offset = index * 2;
+            *output = u8::from_str_radix(&hex[offset..offset + 2], 16).map_err(|_| {
+                TransferError::InvalidValue {
+                    what: "tagged fixture digest",
+                }
+            })?;
+        }
+        DigestV1::from_bytes(&bytes)
+    }
+
+    #[test]
+    fn portable_bundle_coverage_distinguishes_base_and_missing_revisions()
+    -> Result<(), TransferError> {
+        let registry = builtin_counter_registry().map_err(|_| TransferError::InvalidValue {
+            what: "counter registry fixture",
+        })?;
+        let lock = registry
+            .retained_revision_locks()
+            .next()
+            .ok_or(TransferError::InvalidValue {
+                what: "counter revision fixture",
+            })?
+            .clone();
+        let revision = lock
+            .revision_digest()
+            .map_err(|_| TransferError::InvalidValue {
+                what: "counter revision fixture",
+            })?;
+        let matching_base = PackIdentityV1::new(
+            lock.pack_id.clone(),
+            lock.explanatory_version.clone(),
+            transfer_digest_from_tagged(&revision.to_string())?,
+        )?;
+        let identity = DeploymentIdentityV1::new(vec![matching_base], Vec::new())?;
+        let records = vec![
+            LogicalRecordV1::canonical(
+                0,
+                CanonicalRecordKindV1::ArtifactMetadata,
+                "deployment/identity",
+                &identity.canonical_bytes()?,
+            )?,
+            LogicalRecordV1::canonical(
+                1,
+                CanonicalRecordKindV1::ArtifactMetadata,
+                "room/room-a/pack-revision-lock",
+                &lock
+                    .canonical_bytes()
+                    .map_err(|_| TransferError::InvalidValue {
+                        what: "counter revision fixture",
+                    })?,
+            )?,
+        ];
+        validate_portable_pack_coverage(&records, &[])?;
+
+        let different_identity = DeploymentIdentityV1::new(
+            vec![PackIdentityV1::new(
+                "worldstream.other",
+                "1",
+                DigestV1::hash(b"different base revision"),
+            )?],
+            Vec::new(),
+        )?;
+        let mut missing = records;
+        missing[0] = LogicalRecordV1::canonical(
+            0,
+            CanonicalRecordKindV1::ArtifactMetadata,
+            "deployment/identity",
+            &different_identity.canonical_bytes()?,
+        )?;
+        assert!(matches!(
+            validate_portable_pack_coverage(&missing, &[]),
+            Err(TransferError::InvalidValue {
+                what: "portable Pack Bundle coverage"
+            })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn external_input_preparation_encoding_is_exact_and_rejects_trailing_bytes() {

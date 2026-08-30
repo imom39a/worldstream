@@ -22,6 +22,7 @@ Runs the authoritative process shell with one startup-selected profile. Use
 | `doctor` | bounded non-mutating config/manifest/path checks |
 | `health` | probe configured daemon liveness |
 | `version` | print embedded compatibility summary |
+| `pack inspect|approve|revoke|install|inventory|set-selectable|restart-readiness|export|remove` | operate exact local Pack Bundles while the daemon is stopped |
 | `sqlite backup` | publish native backup plus sealed verifier envelope |
 | `sqlite restore` | restore exact backup/envelope to a new destination |
 | `sqlite verify` | read-only native SQLite verification |
@@ -36,6 +37,23 @@ Always run the leaf help before a storage-changing command:
 ```sh
 target/debug/worldstreamctl postgres transfer begin --help
 ```
+
+Pack operator commands are config-aware. Use one exact prefix throughout the
+offline lifecycle so receipts name the same `storage_profile` and inventory:
+
+```sh
+target/debug/worldstreamctl --config <WORLDSTREAM_CONFIG> pack <COMMAND>
+```
+
+`pack restart-readiness` admits installed original Components through the
+production host, executes configured-store Replay, and writes the durable seal
+that an installed-bundle daemon startup requires. Its readiness receipt binds
+the canonical `inventory_digest` to a pathless `deployment_binding` for the
+actual data directory, profile, and provider metadata. With
+`postgres-primary`, also pass
+`--dsn-file <POSTGRES_ADMIN_DSN_FILE>`; never place DSN contents on the command
+line. Install, revoke, set-selectable, retained restore, and remove clear the
+prior seal.
 
 ## Studio and agent binaries
 

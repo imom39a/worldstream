@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 use worldstream_core::{
     AuthorityBootstrapV1, AuthorityChangeId, AuthorityChangeReceiptV1, AuthorityChangeResultV1,
     AuthorityCheckedAt, AuthorityStoreV1, AuthorityV1, CapabilityBearerV1, CapabilityId,
-    PackRegistryV1, PrincipalId, PrincipalKindV1, builtin_worldstream_registry,
+    PrincipalId, PrincipalKindV1,
 };
 use worldstream_postgres::{PostgresConnectionConfig, PostgresConnectionPath, PostgresRoomStore};
 use worldstream_runtime::{
@@ -17,10 +17,11 @@ use worldstream_runtime::{
 };
 use worldstream_server::{
     CommonConfigArgs, OperatorState, PostgresGatewayBackend, SqliteGatewayBackend,
-    StructuredLogTelemetryExporter, operator_router, read_postgres_dsn, telemetry,
+    StructuredLogTelemetryExporter, assemble_startup_pack_registry, operator_router,
+    pack_deployment_binding, read_postgres_dsn, telemetry, verify_startup_pack_readiness_seal,
 };
 use worldstream_sqlite::SqliteRoomStore;
-use worldstream_transfer::{DeploymentIdentityV1, DigestV1, PackIdentityV1};
+use worldstream_transfer::DeploymentIdentityV1;
 
 const BOOTSTRAP_CHANGE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC4";
 const BOOTSTRAP_PRINCIPAL_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC2";
@@ -82,6 +83,10 @@ async fn main() -> Result<()> {
     let sqlite_telemetry: Arc<dyn worldstream_sqlite::SqliteTelemetrySink> = Arc::new(
         telemetry::SqliteTelemetryBridge::new(telemetry_runtime.handle()),
     );
+    let pack_startup = assemble_startup_pack_registry(&data_dir)
+        .context("startup Activity Pack registry assembly failed closed")?;
+    let registry = Arc::clone(pack_startup.registry());
+    let pack_diagnostics = pack_startup.diagnostics();
     let state = match profile {
         StorageProfile::SqliteBundled => {
             validate_sqlite_data_filesystem(&data_dir)
@@ -107,10 +112,36 @@ async fn main() -> Result<()> {
             }
             let canonical_metadata = initialize_canonical_metadata(&store, &config.storage)
                 .context("SQLite canonical deployment metadata initialization failed")?;
-            let registry = builtin_worldstream_registry()
-                .context("WorldStream Activity Pack registry initialization/verification failed")?;
-            let deployment_identity = initialize_deployment_identity(&store, &registry)
-                .context("SQLite deployment Pack identity initialization failed")?;
+            let canonical_metadata_status = store
+                .canonical_metadata_status()
+                .context("SQLite canonical deployment metadata readback failed closed")?;
+            let storage_epoch_bytes = canonical_metadata_status
+                .as_ref()
+                .map(|status| status.storage_epoch.to_string().into_bytes());
+            let deployment_binding = pack_deployment_binding(
+                &data_dir,
+                profile,
+                canonical_metadata_status
+                    .as_ref()
+                    .map(|status| status.deployment_lineage.as_bytes()),
+                storage_epoch_bytes.as_deref(),
+                canonical_metadata_status
+                    .as_ref()
+                    .map(|status| status.storage_epoch),
+            )
+            .context("SQLite Activity Pack deployment binding failed closed")?;
+            verify_startup_pack_readiness_seal(
+                &data_dir,
+                &pack_startup,
+                profile,
+                &deployment_binding,
+            )
+            .context("SQLite Activity Pack restart-readiness seal failed closed")?;
+            let deployment_identity = initialize_deployment_identity(
+                &store,
+                pack_startup.base_distribution_identity().clone(),
+            )
+            .context("SQLite base Runtime Distribution identity initialization failed")?;
             let _bootstrap_receipt =
                 bootstrap_authority(&store, config.authority.bootstrap_secret.as_ref())
                     .context("SQLite authority bootstrap failed closed")?;
@@ -118,7 +149,7 @@ async fn main() -> Result<()> {
             let backup_root = worldstream_runtime::prepare_live_backup_root(&data_dir)
                 .context("shared SQLite live-backup root initialization failed")?;
             let backend = Arc::new(
-                SqliteGatewayBackend::new(store, Arc::new(registry))
+                SqliteGatewayBackend::new(store, Arc::clone(&registry))
                     .with_live_backup_root(&backup_root)
                     .context("SQLite live-backup root initialization failed")?,
             );
@@ -145,6 +176,13 @@ async fn main() -> Result<()> {
                 authority_bootstrap = "verified",
                 canonical_export_metadata = canonical_metadata.as_str(),
                 deployment_identity,
+                pack_embedded_revisions = pack_diagnostics.embedded_revisions,
+                pack_installed_bundles = pack_diagnostics.installed_bundles,
+                pack_installed_selectable = pack_diagnostics.installed_selectable,
+                pack_installed_retained_only = pack_diagnostics.installed_retained_only,
+                pack_registry_revisions = pack_diagnostics.total_revisions,
+                pack_inventory_limit = pack_diagnostics.installed_bundle_limit,
+                pack_registry_refresh = "restart_required",
                 readiness = "ready",
                 "WorldStream SQLite operator shell started; runtime, host authority bootstrap, and Activation scheduler are running"
             );
@@ -155,6 +193,7 @@ async fn main() -> Result<()> {
             // provider call, including the scheduler's first tick, off the
             // daemon's Tokio worker: postgres::Config::connect creates and
             // blocks a private runtime internally.
+            let postgres_data_dir = data_dir.clone();
             let (state, engine_identity) = run_on_blocking_worker(move || {
                 let source = config.storage.postgresql_dsn.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("postgres-primary runtime DSN secret source is missing")
@@ -176,6 +215,44 @@ async fn main() -> Result<()> {
                 store.verify_schema().map_err(|_| {
                     anyhow::anyhow!("postgres-primary runtime schema verification failed closed")
                 })?;
+                if pack_diagnostics.installed_bundles > 0 {
+                    let metadata = store.deployment_metadata_status().map_err(|_| {
+                        anyhow::anyhow!(
+                            "postgres-primary deployment metadata verification failed closed"
+                        )
+                    })?;
+                    let lineage =
+                        metadata
+                            .deployment_lineage_bytes
+                            .as_deref()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("postgres-primary deployment lineage is missing")
+                            })?;
+                    let epoch_bytes = metadata.storage_epoch_bytes.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("postgres-primary storage epoch bytes are missing")
+                    })?;
+                    let epoch = u64::try_from(metadata.storage_epoch.ok_or_else(|| {
+                        anyhow::anyhow!("postgres-primary storage epoch is missing")
+                    })?)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| anyhow::anyhow!("postgres-primary storage epoch is invalid"))?;
+                    let deployment_binding = pack_deployment_binding(
+                        &postgres_data_dir,
+                        profile,
+                        Some(lineage),
+                        Some(epoch_bytes),
+                        Some(epoch),
+                    )
+                    .context("PostgreSQL Activity Pack deployment binding failed closed")?;
+                    verify_startup_pack_readiness_seal(
+                        &postgres_data_dir,
+                        &pack_startup,
+                        profile,
+                        &deployment_binding,
+                    )
+                    .context("PostgreSQL Activity Pack restart-readiness seal failed closed")?;
+                }
                 let engine_identity = store.engine_identity().map_err(|_| {
                     anyhow::anyhow!("postgres-primary engine identity probe failed closed")
                 })?;
@@ -183,7 +260,7 @@ async fn main() -> Result<()> {
                     bootstrap_authority(&store, config.authority.bootstrap_secret.as_ref())
                         .context("PostgreSQL authority bootstrap failed closed")?;
                 let engine_identity = engine_identity.formatted().to_owned();
-                let backend = PostgresGatewayBackend::new(store);
+                let backend = PostgresGatewayBackend::new(store, Arc::clone(&registry));
                 let state = OperatorState::new(config)
                     .context("operator state initialization failed")?
                     .with_backend(Arc::new(backend))
@@ -207,6 +284,13 @@ async fn main() -> Result<()> {
                 writer = "running_at_startup",
                 scheduler = "running",
                 authority_bootstrap = "verified",
+                pack_embedded_revisions = pack_diagnostics.embedded_revisions,
+                pack_installed_bundles = pack_diagnostics.installed_bundles,
+                pack_installed_selectable = pack_diagnostics.installed_selectable,
+                pack_installed_retained_only = pack_diagnostics.installed_retained_only,
+                pack_registry_revisions = pack_diagnostics.total_revisions,
+                pack_inventory_limit = pack_diagnostics.installed_bundle_limit,
+                pack_registry_refresh = "restart_required",
                 readiness = "ready",
                 "WorldStream PostgreSQL operator shell started; durable authority and Activation scheduler are running"
             );
@@ -285,29 +369,11 @@ fn initialize_canonical_metadata(
 
 fn initialize_deployment_identity(
     store: &SqliteRoomStore,
-    registry: &PackRegistryV1,
+    identity: DeploymentIdentityV1,
 ) -> Result<&'static str> {
-    let packs = registry
-        .retained_revision_locks()
-        .map(|revision_lock| {
-            let semantic_digest = revision_lock
-                .revision_digest()
-                .context("validated Pack revision identity could not be reproduced")?;
-            let digest = DigestV1::from_bytes(semantic_digest.digest().as_bytes())
-                .context("validated Pack digest could not be represented for transfer")?;
-            PackIdentityV1::new(
-                revision_lock.pack_id.clone(),
-                revision_lock.explanatory_version.clone(),
-                digest,
-            )
-            .context("validated Pack identity could not be represented for transfer")
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let identity = DeploymentIdentityV1::new(packs, Vec::new())
-        .context("embedded deployment identity was rejected")?;
     let initialized = store
         .initialize_deployment_identity(identity)
-        .context("embedded deployment identity conflicts with durable SQLite identity")?;
+        .context("base Runtime Distribution identity conflicts with durable SQLite identity")?;
     Ok(match initialized {
         worldstream_sqlite::SqliteDeploymentIdentityInitializationV1::Initialized => "initialized",
         worldstream_sqlite::SqliteDeploymentIdentityInitializationV1::AlreadyInitialized => {
@@ -460,9 +526,9 @@ mod tests {
 
     use super::{
         BOOTSTRAP_CHANGE_ID, CanonicalMetadataStartup, TelemetryExporterSelection,
-        bootstrap_authority, bootstrap_authority_at, build_telemetry_exporter,
-        initialize_canonical_metadata, initialize_deployment_identity, run_on_blocking_worker,
-        select_telemetry_exporter,
+        assemble_startup_pack_registry, bootstrap_authority, bootstrap_authority_at,
+        build_telemetry_exporter, initialize_canonical_metadata, initialize_deployment_identity,
+        run_on_blocking_worker, select_telemetry_exporter,
     };
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -571,9 +637,9 @@ mod tests {
             initialize_canonical_metadata(&store, &config.storage)?,
             CanonicalMetadataStartup::Absent
         );
-        let registry = worldstream_core::builtin_worldstream_registry()?;
+        let startup = assemble_startup_pack_registry(directory.path())?;
         assert_eq!(
-            initialize_deployment_identity(&store, &registry)?,
+            initialize_deployment_identity(&store, startup.base_distribution_identity().clone(),)?,
             "initialized"
         );
         assert_eq!(
@@ -601,18 +667,21 @@ mod tests {
             initialize_canonical_metadata(&store, &config.storage)?,
             CanonicalMetadataStartup::Initialized
         );
-        let registry = worldstream_core::builtin_worldstream_registry()?;
+        let startup = assemble_startup_pack_registry(directory.path())?;
         assert_eq!(
-            initialize_deployment_identity(&store, &registry)?,
+            initialize_deployment_identity(&store, startup.base_distribution_identity().clone(),)?,
             "initialized"
         );
         assert_eq!(
-            initialize_deployment_identity(&store, &registry)?,
+            initialize_deployment_identity(&store, startup.base_distribution_identity().clone(),)?,
             "already_initialized"
         );
         store.begin_source_transfer(&backup_path)?;
         let export = store.export_canonical_evidence()?;
-        assert_eq!(export.deployment_identity().packs().len(), registry.len());
+        assert_eq!(
+            export.deployment_identity().packs().len(),
+            startup.diagnostics().embedded_revisions
+        );
         assert!(export.deployment_identity().resources().is_empty());
         Ok(())
     }

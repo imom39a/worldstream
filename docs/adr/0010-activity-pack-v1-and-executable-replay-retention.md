@@ -5,6 +5,12 @@ date: 2026-08-15
 
 # Activity Pack v1 and executable Replay retention
 
+> **Partial supersession:** [ADR 0014](0014-installable-wasi-free-activity-pack-bundles.md)
+> replaces only the embedded-registry-only distribution and “no portable ABI”
+> conclusions below. The five-operation `ActivityPackV1` semantics,
+> `PackRevisionLockV1`, immutable Room pin, exact retained execution, privacy,
+> Recovery, and Replay requirements remain authoritative.
+
 WorldStream freezes one trusted synchronous `ActivityPackV1` seam with exactly five operations: `descriptor`, `initialize`, `reduce`, `view`, and `observe`. The seam is deliberately smaller than a plugin system: packs receive canonical inputs and deterministic helpers, return bounded canonical values, and receive no clock, storage, network, filesystem, scheduler, Activation, Session, delivery, telemetry, or artifact-byte capability.
 
 The `view` result owns both the authorized Activity Projection and its ordered Action Offers. Those exact canonical Action Offer bytes are reused by Projection Reset, Observation Frames, Invocation Context, and host Action pre-admission; WorldStream does not maintain another legality representation.

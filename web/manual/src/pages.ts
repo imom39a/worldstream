@@ -6,6 +6,7 @@ import domainModel from "./content/domain-model.md?raw";
 import securityModel from "./content/security-model.md?raw";
 import kernel from "./content/kernel.md?raw";
 import activityPacks from "./content/activity-packs-overview.md?raw";
+import negotiate from "./content/negotiate.md?raw";
 import counter from "./content/counter.md?raw";
 import agentHeist from "./content/agent-heist.md?raw";
 import studioSetup from "./content/studio-setup.md?raw";
@@ -35,8 +36,9 @@ export const manualPages: readonly ManualPage[] = [
   { route: "/concepts/security", title: "Security and authority", summary: "Understand credentials, privacy projections, authority binding, and trust boundaries.", group: "Core concepts", source: securityModel },
   { route: "/concepts/kernel", title: "Room Kernel", summary: "Build on ordered commits, deterministic reduction, scoped views, timers, and replay.", group: "Core concepts", source: kernel },
   { route: "/activity-packs/overview", title: "Activity Pack development", summary: "Implement a retained deterministic ruleset against the ActivityPackV1 contract.", group: "Activity Packs", source: activityPacks },
+  { route: "/activity-packs/negotiate", title: "WorldStream Negotiate", summary: "Understand the pinned A202 formation Pack, exact approval, privacy, deadlines, and dual evidence.", group: "Activity Packs", source: negotiate },
   { route: "/activity-packs/counter", title: "Counter tutorial", summary: "Follow the smallest complete state, offer, action, observation, and replay example.", group: "Activity Packs", source: counter },
-  { route: "/activity-packs/agent-heist", title: "Agent Heist", summary: "Run and dissect the richer reference pack with roles, hidden state, timers, attention, and outcomes.", group: "Activity Packs", source: agentHeist },
+  { route: "/activity-packs/agent-heist", title: "Agent Heist", summary: "Run and dissect the visual demo/conformance Pack with roles, hidden state, timers, attention, and outcomes.", group: "Activity Packs", source: agentHeist },
   { route: "/studio/setup", title: "Studio setup", summary: "Install, configure, start, and verify the local Studio operator portal and Supervisor.", group: "Studio", source: studioSetup },
   { route: "/studio/workflows", title: "Studio workflows", summary: "Operate rooms, participants, agent assignments, backups, and daemon lifecycle safely.", group: "Studio", source: studioWorkflows },
   { route: "/agents/overview", title: "Agent integrations", summary: "Choose the correct boundary for independently hosted agents and model providers.", group: "Agent integration", source: agentsOverview },

@@ -3,8 +3,10 @@
 //! supervisor wires the verified storage seams into this process.
 
 mod args;
+pub mod operator_packs;
 pub mod operator_storage;
 pub mod operator_transfer;
+mod pack_startup;
 mod postgres_backend;
 mod rate_limit;
 mod sqlite_backend;
@@ -72,6 +74,10 @@ use rate_limit::{
 };
 
 pub use args::CommonConfigArgs;
+pub use pack_startup::{
+    StartupPackRegistryDiagnosticsV1, StartupPackRegistryErrorV1, StartupPackRegistryV1,
+    assemble_startup_pack_registry, pack_deployment_binding, verify_startup_pack_readiness_seal,
+};
 pub use postgres_backend::{PostgresGatewayBackend, read_postgres_dsn};
 pub use sqlite_backend::SqliteGatewayBackend;
 
@@ -8052,7 +8058,7 @@ mod tests {
             value["manifest"]["schema"],
             "worldstream/storage-compatibility-manifest/v1"
         );
-        assert_eq!(value["manifest"]["release_ready"], true);
+        assert_eq!(value["manifest"]["release_ready"], false);
         assert_eq!(value["engine"]["status"], "not_initialized");
         assert!(value["engine"]["exact_identity"].is_null());
 

@@ -24,6 +24,7 @@ VERIFY_RELEASE_SH = ROOT / "scripts/verify-release.sh"
 VERIFY_RELEASE_PS1 = ROOT / "scripts/verify-release.ps1"
 PACKAGE_SMOKE = ROOT / "tests/package_smoke.py"
 OCI_RUNTIME_SMOKE = ROOT / "tests/oci_runtime_smoke.py"
+STARTER_SUBJECTS = ROOT / "scripts/starter-release-subjects.py"
 PAYLOAD_BYTES_CACHE: dict[str, bytes] | None = None
 
 
@@ -87,7 +88,27 @@ def load_module(name: str, path: Path):
 
 
 def manifest() -> dict:
-    return json.loads((ROOT / "compatibility.json").read_text(encoding="utf-8"))
+    value = json.loads((ROOT / "compatibility.json").read_text(encoding="utf-8"))
+    value["manifest_kind"] = "release"
+    value["release_ready"] = True
+    return value
+
+
+def release_manifest_toml() -> bytes:
+    value = (ROOT / "compatibility.toml").read_text(encoding="utf-8")
+    return (
+        value.replace('manifest_kind = "specification"', 'manifest_kind = "release"', 1)
+        .replace("release_ready = false", "release_ready = true", 1)
+        .encode()
+    )
+
+
+def write_release_contract(root: Path, value: dict) -> tuple[Path, Path]:
+    toml_path = root / "compatibility.toml"
+    json_path = root / "compatibility.json"
+    toml_path.write_bytes(release_manifest_toml())
+    json_path.write_bytes((json.dumps(value, indent=2, sort_keys=True) + "\n").encode())
+    return toml_path, json_path
 
 
 def payload_names(version: str) -> dict[str, str]:
@@ -96,6 +117,18 @@ def payload_names(version: str) -> dict[str, str]:
         "native-linux-x86_64-archive": f"worldstream-{version}-linux-x86_64.tar.gz",
         "native-windows-x64-archive": f"worldstream-{version}-windows-x64.zip",
         "oci-linux-amd64-image": f"worldstream-{version}-oci-linux-amd64.oci.tar",
+        "worldstream-a202-adapter": f"worldstream-{version}-a202-adapter.tar.gz",
+        "worldstream-deterministic-agents": f"worldstream-{version}-deterministic-agents.tar.gz",
+        "worldstream-documentation": f"worldstream-{version}-documentation.tar.gz",
+        "worldstream-examples": f"worldstream-{version}-examples.tar.gz",
+        "worldstream-licenses": f"worldstream-{version}-licenses.tar.gz",
+        "worldstream-negotiate-bundle": f"worldstream-{version}-negotiate.wspack",
+        "worldstream-negotiate-evidence-verifier": f"worldstream-{version}-negotiate-evidence-verifier.tar.gz",
+        "worldstream-pack-toolchain": f"worldstream-{version}-pack-toolchain.tar.gz",
+        "worldstream-participant-console": f"worldstream-{version}-participant-console.tar.gz",
+        "worldstream-release-metadata": f"worldstream-{version}-release-metadata.tar.gz",
+        "worldstream-studio": f"worldstream-{version}-studio.tar.gz",
+        "worldstream-typescript-pack-sdk": f"worldstream-{version}-typescript-pack-sdk.tar.gz",
     }
 
 
@@ -110,7 +143,7 @@ def valid_payload_bytes(
     helpers = load_module("release_assembly_package_helpers", PACKAGE_SMOKE)
     package = helpers.PACKAGE
     version = value["release_candidate"]
-    manifest_toml = authored_manifest or (ROOT / "compatibility.toml").read_bytes()
+    manifest_toml = authored_manifest or release_manifest_toml()
     manifest_json = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
     build_root = tmp_path / "valid-payload-builder"
     native_root = build_root / "native"
@@ -250,6 +283,23 @@ def valid_payload_bytes(
         "native-windows-x64-archive": windows_path.read_bytes(),
         "oci-linux-amd64-image": oci_path.read_bytes(),
     }
+    starter_subjects = load_module(
+        "release_assembly_starter_subject_helpers", STARTER_SUBJECTS
+    )
+    official = next(
+        row
+        for row in value["activity_pack_bundles"]
+        if row["pack_id"] == "worldstream.negotiate"
+        and row.get("required_for_release") is True
+    )
+    generated["worldstream-negotiate-bundle"] = (ROOT / official["path"]).read_bytes()
+    for artifact_id in starter_subjects.SUBJECT_IDS:
+        if artifact_id == "worldstream-negotiate-bundle":
+            continue
+        inputs = {"fixture.txt": f"deterministic fixture for {artifact_id}\n".encode()}
+        generated[artifact_id] = starter_subjects.archive_bytes(
+            starter_subjects.artifact_files(artifact_id, version, inputs)
+        )
     for artifact_id, path in (
         ("source-archive", source_path),
         ("native-linux-x86_64-archive", linux_path),
@@ -264,6 +314,7 @@ def valid_payload_bytes(
 
 def make_inputs(tmp_path: Path) -> tuple[Path, Path, Path, tuple[str, ...]]:
     value = manifest()
+    manifest_toml_path, manifest_json_path = write_release_contract(tmp_path, value)
     version = value["release_candidate"]
     payload_dir = tmp_path / "payload"
     source_dir = tmp_path / "sources"
@@ -316,6 +367,31 @@ def make_inputs(tmp_path: Path) -> tuple[Path, Path, Path, tuple[str, ...]]:
                 "reference-performance",
                 "linux-release-profile",
             ): "native-linux-x86_64-archive",
+            (
+                "pack-component-conformance",
+                "negotiate-bundle",
+            ): "worldstream-negotiate-bundle",
+            (
+                "pack-component-conformance",
+                "linux-release-profile",
+            ): "native-linux-x86_64-archive",
+            ("negotiate-policy", "a202-adapter"): "worldstream-a202-adapter",
+            (
+                "negotiate-sqlite-restart",
+                "linux-release-profile",
+            ): "native-linux-x86_64-archive",
+            (
+                "negotiate-sqlite-restart",
+                "negotiate-bundle",
+            ): "worldstream-negotiate-bundle",
+            (
+                "negotiate-postgres-restart",
+                "linux-release-profile",
+            ): "native-linux-x86_64-archive",
+            (
+                "negotiate-postgres-restart",
+                "negotiate-bundle",
+            ): "worldstream-negotiate-bundle",
         }
         for binding in collector.REQUIRED_ARTIFACT_BINDINGS[spec.source_id]:
             payload_binding = payload_bindings.get((spec.source_id, binding))
@@ -394,6 +470,10 @@ def make_inputs(tmp_path: Path) -> tuple[Path, Path, Path, tuple[str, ...]]:
             str(tmp_path / "supply-chain-producer.json"),
             "--source-output",
             str(source_dir / "checksums-signature-sbom-provenance.json"),
+            "--manifest-toml",
+            str(manifest_toml_path),
+            "--manifest-json",
+            str(manifest_json_path),
             *source_args,
         ],
         cwd=ROOT,
@@ -407,9 +487,7 @@ def make_inputs(tmp_path: Path) -> tuple[Path, Path, Path, tuple[str, ...]]:
         spec.source_id: source_dir / f"{spec.evidence_id}.json"
         for spec in collector.SOURCE_SPECS
     }
-    collector.collect(
-        reports_dir, sources, ROOT / "compatibility.toml", ROOT / "compatibility.json"
-    )
+    collector.collect(reports_dir, sources, manifest_toml_path, manifest_json_path)
     return payload_dir, reports_dir, release_dir, evidence_ids
 
 
@@ -428,6 +506,10 @@ def run_script(
             str(payload),
             "--reports-dir",
             str(reports),
+            "--manifest-toml",
+            str(release.parent / "compatibility.toml"),
+            "--manifest-json",
+            str(release.parent / "compatibility.json"),
         ],
         cwd=ROOT,
         env=environment,
@@ -472,6 +554,10 @@ def verify_supply_chain(release: Path) -> subprocess.CompletedProcess[str]:
             "--verify",
             "--release-dir",
             str(release),
+            "--manifest-toml",
+            str(release.parent / "compatibility.toml"),
+            "--manifest-json",
+            str(release.parent / "compatibility.json"),
         ],
         cwd=ROOT,
         env=environment,
@@ -559,19 +645,65 @@ def test_assembly_bounded_json_reader_and_streamed_copy(tmp_path, monkeypatch):
     assert destination.read_bytes() == b"preserved"
 
 
-def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
+@pytest.mark.parametrize(
+    ("field", "toml_before", "toml_after", "json_value"),
+    [
+        ("status", 'status = "detached"', 'status = "unresolved"', "unresolved"),
+        (
+            "artifact_digest",
+            'artifact_digest = ""',
+            f'artifact_digest = "sha256:{"0" * 64}"',
+            "sha256:" + "0" * 64,
+        ),
+        (
+            "artifact_digest_location",
+            'artifact_digest_location = "release-manifest.json"',
+            'artifact_digest_location = "checkout/evidence.json"',
+            "checkout/evidence.json",
+        ),
+    ],
+)
+def test_assembly_rejects_non_detached_release_evidence_declarations(
+    tmp_path, field, toml_before, toml_after, json_value
+):
+    payload, reports, release, _evidence_ids = make_inputs(tmp_path)
+    toml_path = release.parent / "compatibility.toml"
+    json_path = release.parent / "compatibility.json"
+    authored = toml_path.read_text(encoding="utf-8")
+    marker = '[[evidence]]\nid = "manifest-syntax-parity"\n'
+    start = authored.index(marker)
+    end = authored.find("\n[[evidence]]", start + len(marker))
+    if end < 0:
+        end = len(authored)
+    block = authored[start:end]
+    assert toml_before in block
+    authored = (
+        authored[:start] + block.replace(toml_before, toml_after, 1) + authored[end:]
+    )
+    toml_path.write_text(authored, encoding="utf-8")
+
+    mirror = json.loads(json_path.read_text(encoding="utf-8"))
+    row = next(
+        item for item in mirror["evidence"] if item["id"] == "manifest-syntax-parity"
+    )
+    row[field] = json_value
+    json_path.write_text(json.dumps(mirror, indent=2, sort_keys=True) + "\n")
+
+    result = run_script(ASSEMBLE, release, payload, reports)
+
+    assert result.returncode != 0
+    assert "must be detached with an empty embedded digest" in result.stderr
+
+
+def test_assembly_generates_exact_33_subjects_and_no_sigstore_digest(tmp_path):
     identity = load_module(
         "release_build_identity_assembly_assertions",
         ROOT / "scripts/release_build_identity.py",
     )
     _payload, _reports, release, evidence_ids = assembled_release(tmp_path)
     metadata = json.loads((release / "release-manifest.json").read_text())
-    assert len(evidence_ids) == 14
-    assert set(metadata["artifact_digests"]) == {
-        "source-archive",
-        "native-linux-x86_64-archive",
-        "native-windows-x64-archive",
-        "oci-linux-amd64-image",
+    assert len(evidence_ids) == 18
+    assert set(metadata["artifact_digests"]) == set(payload_names("0.1.0")) | {
         "checksums",
         "spdx-sbom",
         "slsa-provenance",
@@ -581,7 +713,7 @@ def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
         "sigstore-bundle": {"path": "sigstore.bundle.json"}
     }
     spdx = json.loads((release / "sbom.spdx.json").read_text())
-    assert len(spdx["files"]) == 17
+    assert len(spdx["files"]) == 33
     assert spdx["dataLicense"] == "CC0-1.0"
     assert spdx["creationInfo"]["creators"] == [
         "Tool: worldstream-release-supply-chain-1.0"
@@ -606,7 +738,7 @@ def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
         }
     ]
     provenance = json.loads((release / "provenance.json").read_text())
-    assert len(provenance["subject"]) == 17
+    assert len(provenance["subject"]) == 33
     aggregation = json.loads(
         base64.b64decode(
             provenance["predicate"]["runDetails"]["byproducts"][1]["content"]
@@ -614,6 +746,8 @@ def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
     )
     payload_rows = aggregation["payload_producers"]
     assert len(payload_rows) == 4
+    assert len(aggregation["portable_subject_producers"]) == 12
+    assert len(aggregation["evidence_producers"]) == 17
     assert all(
         row["observed_build_environment"]["runner"]["provider"] == "github-actions"
         for row in payload_rows
@@ -651,7 +785,7 @@ def test_assembly_generates_exact_17_subjects_and_no_sigstore_digest(tmp_path):
         "oci://docker.io/docker/dockerfile:1.7",
     }
     assert all(set(digest) == {"sha256"} for digest in oci_dependencies.values())
-    assert len((release / "SHA256SUMS").read_text().splitlines()) == 17
+    assert len((release / "SHA256SUMS").read_text().splitlines()) == 33
 
 
 def test_spdx_namespace_is_unique_for_each_exact_document_version(tmp_path):
@@ -698,7 +832,7 @@ def test_spdx_verifier_recomputes_document_and_element_identity(tmp_path, tamper
             subjects,
             version=manifest()["release_candidate"],
             manifest_sha256=hashlib.sha256(
-                (ROOT / "compatibility.json").read_bytes()
+                (release.parent / "compatibility.json").read_bytes()
             ).hexdigest(),
         )
 
@@ -720,7 +854,7 @@ def test_spdx_verifier_rejects_impossible_utc_timestamp(tmp_path):
             subjects,
             version=manifest()["release_candidate"],
             manifest_sha256=hashlib.sha256(
-                (ROOT / "compatibility.json").read_bytes()
+                (release.parent / "compatibility.json").read_bytes()
             ).hexdigest(),
         )
 
@@ -732,7 +866,7 @@ def test_two_level_supply_chain_binds_inventory_and_verifies_both_signatures(tmp
     )
     assert inventory["schema"] == "worldstream/release-subject-inventory/v1"
     assert inventory["phase"] == "pre-sign"
-    assert len(inventory["subjects"]) == 17
+    assert len(inventory["subjects"]) == 33
     supply = json.loads(
         (reports / "checksums-signature-sbom-provenance.json").read_text()
     )
@@ -745,7 +879,7 @@ def test_two_level_supply_chain_binds_inventory_and_verifies_both_signatures(tmp
     }
     for check in ("checksums", "spdx_subjects", "slsa_subjects"):
         assert (
-            "17 signed subjects"
+            "33 signed subjects"
             in supply["producer_details"]["outcomes"][check]["observations"][0]["value"]
         )
     assert (
@@ -779,7 +913,15 @@ def test_structural_only_wrapper_returns_11_without_invoking_cosign(tmp_path):
     )
 
     result = subprocess.run(
-        [str(VERIFY_RELEASE_SH), str(release), "--structural-only"],
+        [
+            str(VERIFY_RELEASE_SH),
+            str(release),
+            "--structural-only",
+            "--manifest-toml",
+            str(release.parent / "compatibility.toml"),
+            "--manifest-json",
+            str(release.parent / "compatibility.json"),
+        ],
         cwd=ROOT,
         env=environment,
         check=False,
@@ -820,7 +962,16 @@ def test_package_and_gate_verifiers_require_both_signature_levels(
     )
 
     verified = subprocess.run(
-        [sys.executable, str(PACKAGE), "verify", str(release)],
+        [
+            sys.executable,
+            str(PACKAGE),
+            "verify",
+            str(release),
+            "--manifest-toml",
+            str(release.parent / "compatibility.toml"),
+            "--manifest-json",
+            str(release.parent / "compatibility.json"),
+        ],
         cwd=ROOT,
         env=environment,
         check=False,
@@ -859,7 +1010,16 @@ def test_package_and_gate_verifiers_require_both_signature_levels(
     marker.unlink()
     environment["COSIGN_REJECT_PRE_SIGN"] = "1"
     rejected = subprocess.run(
-        [sys.executable, str(PACKAGE), "verify", str(release)],
+        [
+            sys.executable,
+            str(PACKAGE),
+            "verify",
+            str(release),
+            "--manifest-toml",
+            str(release.parent / "compatibility.toml"),
+            "--manifest-json",
+            str(release.parent / "compatibility.json"),
+        ],
         cwd=ROOT,
         env=environment,
         check=False,
@@ -935,7 +1095,12 @@ def test_every_final_verifier_rejects_resigned_invalid_normalized_evidence(
         f"release_package_semantics_{tamper}", ROOT / "scripts/package.py"
     )
     with pytest.raises(package.PackageError, match="release evidence verification"):
-        package.verify_release_directory(release, structural_only=True)
+        package.verify_release_directory(
+            release,
+            structural_only=True,
+            manifest_toml_path=release.parent / "compatibility.toml",
+            manifest_json_path=release.parent / "compatibility.json",
+        )
 
     gates = load_module(f"release_gate_semantics_{tamper}", ROOT / "scripts/gates.py")
     monkeypatch.setenv("WORLDSTREAM_RELEASE_DIR", str(release))
@@ -976,6 +1141,8 @@ def test_assembly_reports_missing_evidence_precisely(tmp_path):
         "native-linux-x86_64-archive",
         "native-windows-x64-archive",
         "oci-linux-amd64-image",
+        "worldstream-negotiate-bundle",
+        "worldstream-documentation",
     ],
 )
 def test_assembly_deep_verifies_every_payload_before_signing(tmp_path, artifact_id):
@@ -1002,6 +1169,25 @@ def test_assembly_deep_verifies_every_payload_before_signing(tmp_path, artifact_
             "linux-release-profile",
         ),
         ("reference-performance-per-backend", "linux-release-profile"),
+        ("worldstream-negotiate-evidence", "negotiate-bundle"),
+        ("worldstream-negotiate-evidence", "linux-release-profile"),
+        ("negotiate-oracle-a202-and-privacy", "a202-adapter"),
+        (
+            "negotiate-released-artifact-sqlite-restart-replay",
+            "linux-release-profile",
+        ),
+        (
+            "negotiate-released-artifact-sqlite-restart-replay",
+            "negotiate-bundle",
+        ),
+        (
+            "negotiate-released-artifact-postgresql-restart-replay",
+            "linux-release-profile",
+        ),
+        (
+            "negotiate-released-artifact-postgresql-restart-replay",
+            "negotiate-bundle",
+        ),
     ],
 )
 def test_assembly_requires_platform_binding_to_exact_payload_bytes(
@@ -1024,9 +1210,7 @@ def test_assembly_rejects_self_consistent_archive_with_a_different_contract(tmp_
     helpers = load_module("release_assembly_drift_package_helpers", PACKAGE_SMOKE)
     package = helpers.PACKAGE
     authored = (
-        (ROOT / "compatibility.toml")
-        .read_text(encoding="utf-8")
-        .replace('wire = "0.1"', 'wire = "0.2"', 1)
+        release_manifest_toml().decode().replace('wire = "0.1"', 'wire = "0.2"', 1)
     )
     drifted_manifest = tomllib.loads(authored)
     drifted_json = (
@@ -1068,8 +1252,8 @@ def test_assembly_rejects_self_consistent_archive_with_a_different_contract(tmp_
 def test_payload_verifier_requires_the_exact_authoritative_manifest(tmp_path):
     payload, reports, _release, _evidence_ids = make_inputs(tmp_path)
     authored = (
-        (ROOT / "compatibility.toml")
-        .read_text(encoding="utf-8")
+        release_manifest_toml()
+        .decode()
         .replace('python_sdk_min = "3.11"', 'python_sdk_min = "3.12"', 1)
     )
     assert authored != (ROOT / "compatibility.toml").read_text(encoding="utf-8")
@@ -1087,32 +1271,16 @@ def test_payload_verifier_requires_the_exact_authoritative_manifest(tmp_path):
     for artifact_id, path in paths.items():
         path.write_bytes(drifted_payloads[artifact_id])
 
-    bindings = {
-        "native-linux-release-profile": (
-            "native-linux-x86_64-archive",
-            "linux-release-profile",
-        ),
-        "native-windows-release-profile": (
-            "native-windows-x64-archive",
-            "windows-release-profile",
-        ),
-        "oci-linux-amd64-release-profile": (
-            "oci-linux-amd64-image",
-            "oci-release-profile",
-        ),
-        "failure-fuzz-resource-and-one-hour-sqlite-soak": (
-            "native-linux-x86_64-archive",
-            "linux-release-profile",
-        ),
-        "reference-performance-per-backend": (
-            "native-linux-x86_64-archive",
-            "linux-release-profile",
-        ),
-    }
+    assembler = load_module("release_assembly_exact_manifest", ASSEMBLE)
     report_paths = {
-        evidence_id: reports / f"{evidence_id}.json" for evidence_id in bindings
+        evidence_id: reports / f"{evidence_id}.json"
+        for evidence_id, _artifact_id, _binding_id in assembler.PAYLOAD_EVIDENCE_BINDINGS
     }
-    for evidence_id, (artifact_id, binding_id) in bindings.items():
+    for (
+        evidence_id,
+        artifact_id,
+        binding_id,
+    ) in assembler.PAYLOAD_EVIDENCE_BINDINGS:
         report_path = report_paths[evidence_id]
         report = json.loads(report_path.read_text(encoding="utf-8"))
         report["contract"] = drifted_manifest["contracts"]
@@ -1125,7 +1293,6 @@ def test_payload_verifier_requires_the_exact_authoritative_manifest(tmp_path):
             json.dumps(report, sort_keys=True) + "\n", encoding="utf-8"
         )
 
-    assembler = load_module("release_assembly_exact_manifest", ASSEMBLE)
     authoritative_digest = hashlib.sha256(
         (ROOT / "compatibility.json").read_bytes()
     ).hexdigest()
@@ -1210,7 +1377,12 @@ def test_package_verifier_rejects_self_reference_and_altered_subject(tmp_path):
     metadata["artifact_digests"]["sigstore-bundle"] = "sha256:" + "a" * 64
     metadata_path.write_text(json.dumps(metadata) + "\n")
     with pytest.raises(package.PackageError, match="Sigstore"):
-        package.verify_release_directory(release, structural_only=True)
+        package.verify_release_directory(
+            release,
+            structural_only=True,
+            manifest_toml_path=release.parent / "compatibility.toml",
+            manifest_json_path=release.parent / "compatibility.json",
+        )
 
     metadata = json.loads(metadata_path.read_text())
     metadata["artifact_digests"].pop("sigstore-bundle")
@@ -1235,7 +1407,12 @@ def test_package_verifier_rejects_self_reference_and_altered_subject(tmp_path):
     )
     metadata_path.write_text(json.dumps(metadata) + "\n")
     with pytest.raises(package.PackageError, match="provenance subject .*mismatch"):
-        package.verify_release_directory(release, structural_only=True)
+        package.verify_release_directory(
+            release,
+            structural_only=True,
+            manifest_toml_path=release.parent / "compatibility.toml",
+            manifest_json_path=release.parent / "compatibility.json",
+        )
 
 
 @pytest.mark.parametrize(
@@ -1262,7 +1439,12 @@ def test_final_package_verifier_deep_checks_redigested_payload(tmp_path, artifac
     metadata_path.write_text(json.dumps(metadata, sort_keys=True) + "\n")
 
     with pytest.raises(package.PackageError, match="failed deep verification"):
-        package.verify_release_directory(release, structural_only=True)
+        package.verify_release_directory(
+            release,
+            structural_only=True,
+            manifest_toml_path=release.parent / "compatibility.toml",
+            manifest_json_path=release.parent / "compatibility.json",
+        )
 
 
 def test_gate_verifier_rejects_sigstore_digest_and_accepts_path_only(
@@ -1271,6 +1453,8 @@ def test_gate_verifier_rejects_sigstore_digest_and_accepts_path_only(
     _payload, _reports, release, _evidence_ids = assembled_release(tmp_path)
     gates = load_module("release_gates_smoke", ROOT / "scripts/gates.py")
     metadata = json.loads((release / "release-manifest.json").read_text())
+    monkeypatch.setattr(gates, "MANIFEST_PATH", release.parent / "compatibility.toml")
+    monkeypatch.setattr(gates, "MIRROR_PATH", release.parent / "compatibility.json")
     value = gates.load_manifest()
     runner = gates.GateRunner(strict=True, offline=True, ci=False)
     assert gates.detached_release_inventory(runner, metadata, value) is not None

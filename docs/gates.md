@@ -166,7 +166,10 @@ Hosted fast/native/release gates install byte-pinned `gitleaks 8.29.1` and
 `cargo-audit 0.22.2`, prime the RustSec advisory database and the locked
 Rust/Python/pnpm dependency stores during online setup, and then run the gate
 offline. The enforced dependency audit uses `--no-fetch`; if a local advisory
-database has not already been primed, the offline gate fails closed. The Python
+database has not already been primed, the offline gate fails closed. Secret
+scanning uses exact historical fingerprints in `.gitleaksignore` only for
+reviewed public test fixtures; the same material at a new commit or location
+remains release-blocking. The Python
 gate invokes a sorted explicit `tests/*.py` inventory in pre-push, both native
 Linux and native Windows CI cells, and final release because these repository
 tests intentionally do not use pytest's default `test_*.py` filename pattern.

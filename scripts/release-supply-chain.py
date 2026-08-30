@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Produce and verify the non-circular release supply chain.
 
-The unsigned aggregation phase copies four payloads and exactly thirteen
-non-supply-chain typed source reports into a canonical inventory, then creates
-and validates SHA256SUMS, SPDX, and SLSA over that closed set. A separate,
+The unsigned aggregation phase copies four Runtime payloads, twelve portable
+Starter subjects, and exactly seventeen non-supply-chain typed source reports
+into a canonical inventory, then creates and validates SHA256SUMS, SPDX, and
+SLSA over that closed 33-subject set. A separate,
 minimal OIDC job signs only that exact inventory. A later no-OIDC phase
-identity-verifies the signature and emits the typed fourteenth producer report
+identity-verifies the signature and emits the typed eighteenth producer report
 before final deterministic assembly. A second minimal OIDC job signs that exact
 manifest, and a final no-OIDC phase verifies both detached signature levels.
 """
@@ -137,6 +138,15 @@ def copy_payloads(
     return paths
 
 
+def runtime_payloads(payload_paths: dict[str, Path]) -> dict[str, Path]:
+    """Select the four compiled/source payloads that own build identities."""
+
+    return {
+        artifact_id: payload_paths[artifact_id]
+        for artifact_id in ASSEMBLER.RUNTIME_PAYLOAD_ARTIFACT_IDS
+    }
+
+
 def copy_source_reports(
     release_dir: Path, sources: dict[str, Path], manifest: dict[str, Any]
 ) -> dict[str, Path]:
@@ -213,7 +223,7 @@ def generate_spdx(
 ) -> dict[str, Any]:
     try:
         identities, source_entries = IDENTITY.release_payload_identities(
-            payload_paths, version
+            runtime_payloads(payload_paths), version
         )
         revision = identities["source-archive"]["source"]["revision"]
         packages, relationships, document_describes = IDENTITY.spdx_graph(
@@ -271,15 +281,16 @@ def generate_provenance(
     payload_paths: dict[str, Path],
 ) -> dict[str, Any]:
     try:
+        compiled_payloads = runtime_payloads(payload_paths)
         identities, source_entries = IDENTITY.release_payload_identities(
-            payload_paths, version
+            compiled_payloads, version
         )
         revision = identities["source-archive"]["source"]["revision"]
         invocation_parameters = IDENTITY.release_invocation_parameters()
         graph, aggregation_result = IDENTITY.provenance_graph(
             version=version,
             revision=revision,
-            subjects=payload_paths,
+            subjects=compiled_payloads,
             release_subjects=subjects,
             identities=identities,
             source_entries=source_entries,
@@ -457,7 +468,7 @@ def validate_prepared_material(
             provenance=ASSEMBLER.json_object(provenance_path, "SLSA provenance"),
             version=version,
             subjects_by_relative=subjects,
-            payloads_by_id=payload_paths,
+            payloads_by_id=runtime_payloads(payload_paths),
             require_github=os.environ.get("GITHUB_ACTIONS") == "true",
         )
     except IDENTITY.IdentityError as error:
@@ -556,7 +567,7 @@ def prepare_unsigned(
             ),
             version=version,
             subjects_by_relative=subjects,
-            payloads_by_id=payload_paths,
+            payloads_by_id=runtime_payloads(payload_paths),
             require_github=os.environ.get("GITHUB_ACTIONS") == "true",
         )
     except IDENTITY.IdentityError as error:
@@ -770,7 +781,7 @@ def verify_final(release_dir: Path, manifest_toml: Path, manifest_json: Path) ->
             ),
             version=version,
             subjects_by_relative=pre_sign_subjects,
-            payloads_by_id=payload_paths,
+            payloads_by_id=runtime_payloads(payload_paths),
             require_github=True,
         )
     except IDENTITY.IdentityError as error:

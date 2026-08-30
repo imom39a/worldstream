@@ -61,6 +61,41 @@ h3 { margin-bottom: 6px; font-size: 0.98rem; }
 .tab.is-active { box-shadow: inset 0 -2px var(--accent); }
 .view-note { display: flex; align-items: center; gap: 9px; margin: 18px 4px; color: var(--muted); font-size: 0.78rem; }
 .view-note strong { color: var(--accent); }
+
+.negotiate-shell { display: grid; gap: 16px; }
+.negotiate-shell .panel { margin-top: 0 !important; }
+.negotiate-hero { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.8fr); gap: 32px; padding: 34px; }
+.negotiate-status-grid, .negotiate-shared-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.negotiate-shared-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 18px; }
+.negotiate-status-grid div, .negotiate-shared-grid div, .negotiate-reference dl div, .negotiate-persona-panel > div { display: grid; gap: 5px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(26, 36, 48, 0.6); }
+.negotiate-status-grid dt, .negotiate-shared-grid dt, .negotiate-reference dt { color: var(--muted); font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.negotiate-status-grid dd, .negotiate-shared-grid dd, .negotiate-reference dd { margin: 0; overflow-wrap: anywhere; color: var(--soft); font-size: 0.8rem; font-weight: 700; }
+.negotiate-recovery, .negotiate-proof-panel { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.negotiate-receipt { border-color: rgba(156, 240, 203, 0.35) !important; }
+.negotiate-receipt h2 { margin: 0 0 8px; }
+.negotiate-recovery p:not(.eyebrow), .negotiate-proof-panel p:not(.eyebrow), .negotiate-outcome p { margin: 8px 0 0; color: var(--muted); font-size: 0.78rem; line-height: 1.55; }
+.negotiate-recovery button, .negotiate-proof-actions button, .negotiate-action button { padding: 9px 12px; border: 1px solid rgba(156, 240, 203, 0.55); border-radius: 8px; color: var(--accent); background: rgba(156, 240, 203, 0.08); cursor: pointer; }
+.negotiate-persona-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.negotiate-reference { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: rgba(26, 36, 48, 0.55); }
+.negotiate-reference > span { display: block; margin-top: 12px; color: var(--muted); font-size: 0.75rem; }
+.negotiate-reference dl { display: grid; gap: 7px; margin: 12px 0 0; }
+.negotiate-reference dl div { padding: 9px; }
+.negotiate-exact-bytes { grid-column: 1 / -1; min-width: 0; padding: 16px; border: 1px solid rgba(244, 201, 121, 0.4); border-radius: 10px; background: rgba(65, 52, 25, 0.2); }
+.negotiate-exact-bytes > span { display: block; margin-top: 12px; color: var(--muted); font-size: .75rem; }
+.negotiate-exact-bytes pre { overflow: auto; max-height: 300px; margin: 12px 0 0; padding: 13px; border-radius: 8px; color: var(--soft); background: #111923; font: .68rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+.negotiate-actions { display: grid; gap: 8px; }
+.negotiate-action { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: rgba(26, 36, 48, 0.7); }
+.negotiate-action > div { display: grid; gap: 5px; }
+.negotiate-action span, .negotiate-boundary-note { color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
+.negotiate-action button:disabled, .negotiate-proof-actions button:disabled { cursor: not-allowed; opacity: 0.45; }
+.negotiate-boundary-note { grid-column: 1 / -1; margin: 15px 0 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.negotiate-proof-actions { display: flex; flex-wrap: wrap; gap: 9px; justify-content: flex-end; }
+
+@media (max-width: 760px) {
+  .negotiate-hero, .negotiate-persona-panel { grid-template-columns: 1fr; }
+  .negotiate-recovery, .negotiate-proof-panel, .negotiate-action { align-items: stretch; flex-direction: column; }
+  .negotiate-shared-grid { grid-template-columns: 1fr; }
+}
 .status-dot, .presence-dot, .state-marker { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-strong); box-shadow: 0 0 0 4px rgba(65, 217, 155, 0.12); }
 
 .panel:not(.hero):not(.view-nav) { margin-top: 16px; padding: 24px; }
@@ -227,6 +262,11 @@ code { color: #b6d8ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospa
 .replay-hash { display: grid; gap: 6px; min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: rgba(26, 36, 48, 0.55); }
 .replay-hash span { color: var(--muted); font-size: 0.68rem; }
 .replay-hash code { overflow-wrap: anywhere; color: var(--soft); font-size: 0.65rem; }
+.negotiate-proof-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; width: 100%; margin: 18px 0 0; }
+.negotiate-proof-summary div { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: rgba(26, 36, 48, 0.55); }
+.negotiate-proof-summary dt { color: var(--muted); font-size: .68rem; }
+.negotiate-proof-summary dd { overflow-wrap: anywhere; margin: 6px 0 0; color: var(--soft); font-size: .72rem; font-weight: 700; }
+.negotiate-proof-error { width: 100%; margin: 16px 0 0; padding: 11px 13px; border: 1px solid rgba(255,141,141,.45); border-radius: 8px; color: #ffb5b5; background: rgba(75,35,35,.2); }
 
 @media (max-width: 900px) {
   .hero, .view-nav { align-items: stretch; flex-direction: column; }
@@ -242,7 +282,7 @@ code { color: #b6d8ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospa
   .app-shell { width: min(100% - 20px, 1180px); padding-top: 10px; }
   .hero { padding: 24px; }
   .phase-card { min-width: 0; }
-  .role-grid, .two-column, .public-footer-grid, .diagnostic-grid, .result-summary-grid, .discovery-metrics, .runtime-summary, .runtime-state-grid, .integrity-state-grid, .frame-lifecycle { grid-template-columns: 1fr; }
+  .role-grid, .two-column, .public-footer-grid, .diagnostic-grid, .result-summary-grid, .discovery-metrics, .runtime-summary, .runtime-state-grid, .integrity-state-grid, .frame-lifecycle, .negotiate-proof-summary { grid-template-columns: 1fr; }
   .plan-grid { grid-template-columns: 1fr; }
   .section-heading, .reveal-gate { align-items: flex-start; flex-direction: column; }
   .section-description { text-align: left; }

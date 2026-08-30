@@ -917,7 +917,25 @@ Session presence, Runner availability, and other operational changes do not cons
 }
 ~~~
 
-The server accepts only a selectable compiled-in semantic digest whose `PackRevisionLockV1`, executor, schemas, codecs, and goldens agree in the embedded registry. Before opening storage locks, it generates Room/Member IDs, Room seed, and logical creation time, constructs initial `CoreRoomState v1`, calls `initialize`, computes all three initial hashes and Head zero, and seals them with the administration identity/hash, creation-authority witness, selected exact revision, Genesis, materializations, timers, initial operational Room Integrity State `healthy` at generation `1`, and `genesis_created` receipt in `PreparedRoomCreationV1`. The Create transaction acquires the Operation Identity guard, resolves/fences that identity, rechecks creation authority and generated Room-ID absence, then atomically installs the Room root, immutable sequence-zero Genesis, initial Core/Activity/Membership/timer materializations, integrity `healthy`/generation `1`, hashes/Head zero, and receipt. It has no basis Head, pre-existing Room Integrity fence, or existing-Room lane. Genesis creates no Transition, Domain Event, Observation Frame, Attention Signal, or Activation. Recovery remains possible after every paired snapshot and current materialization is deleted.
+The server accepts only a selectable semantic digest whose `PackRevisionLockV1`,
+executor, schemas, codecs, and goldens agree in the one validated startup
+registry. That registry may contain embedded revisions and exact approved local
+Activity Pack Bundles; the Room protocol does not distinguish their execution
+path. Before opening storage locks, the server generates Room/Member IDs, Room
+seed, and logical creation time, constructs initial `CoreRoomState v1`, calls
+`initialize`, computes all three initial hashes and Head zero, and seals them
+with the administration identity/hash, creation-authority witness, selected
+exact revision, Genesis, materializations, timers, initial operational Room
+Integrity State `healthy` at generation `1`, and `genesis_created` receipt in
+`PreparedRoomCreationV1`. The Create transaction acquires the Operation
+Identity guard, resolves/fences that identity, rechecks creation authority and
+generated Room-ID absence, then atomically installs the Room root, immutable
+sequence-zero Genesis, initial Core/Activity/Membership/timer materializations,
+integrity `healthy`/generation `1`, hashes/Head zero, and receipt. It has no
+basis Head, pre-existing Room Integrity fence, or existing-Room lane. Genesis
+creates no Transition, Domain Event, Observation Frame, Attention Signal, or
+Activation. Recovery remains possible after every paired snapshot and current
+materialization is deleted.
 
 ### Current projection
 
@@ -1107,11 +1125,16 @@ BLAKE3 hashes canonical JSON bytes for these typed objects. Golden vectors MUST 
 - The server never changes an existing Room's digest or rewrites its Activity State in place.
 - Pack revisions may be selectable-and-runnable or retained-runnable. Every retained Room digest remains runnable; a newer executor never substitutes for it.
 - Unknown required capability yields an explicit failure.
-- Both v0.1 and v0.2 remain pre-stable developer-preview protocols.
+- The first public release remains a pre-stable developer-preview protocol.
 
-The trusted five-operation `ActivityPackV1` semantic seam is frozen. Any portable, dynamically loaded, or untrusted public plugin ABI is a separate post-v0.2 decision.
+The five-operation `ActivityPackV1` semantic seam is frozen. Public portable
+Packs use that same contract through ADR 0014's WASI-free Component profile; no
+new Room-client message or second Action path is introduced. Pack
+inspect/approve/install are local Host Operator operations, not Room protocol
+messages or a network upload surface.
 
-See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md).
+See [ADR 0010](adr/0010-activity-pack-v1-and-executable-replay-retention.md)
+and [ADR 0014](adr/0014-installable-wasi-free-activity-pack-bundles.md).
 
 ## Required conformance scenarios
 

@@ -196,11 +196,12 @@ flowchart TD
 
 | Term | Summary or technical elaboration | Important distinction |
 |---|---|---|
-| **Activity Pack** | Trusted, versioned domain rules and schemas compiled into the server for v0.1/v0.2. It defines configuration, Activity State, roles, actions, deterministic reduction, projections, timers, attention reasons, phases, and outcomes. | It is not a workflow graph, model prompt bundle, arbitrary connector, or public plugin in the frozen releases. |
-| **ActivityPackV1** | The frozen trusted synchronous five-operation seam: descriptor, initialize, reduce, view, and observe. | It is a retained-Room semantic contract, not a dynamically loaded, sandboxed, or portable public plugin ABI. |
+| **Activity Pack** | Versioned domain rules and schemas defining configuration, Activity State, Roles, Actions, deterministic reduction, Projections, timers, Attention, phases, and Outcomes. | It is not a workflow graph, model prompt bundle, or arbitrary connector. |
+| **Activity Pack Bundle** | Immutable deterministic `.wspack` bytes carrying one portable revision's exact Component, schemas, codecs, static material, locks, goldens, and conformance facts. | Its physical bundle digest is distinct from the Room-pinned semantic revision digest. |
+| **ActivityPackV1** | The frozen synchronous five-operation semantic seam: descriptor, initialize, reduce, view, and observe. | Embedded Rust and public WASI-free Components implement the same contract. |
 | **Pack revision descriptor** | Pack identity plus declared schemas, limits, roles, actions, rejection codes, Attention reasons, and Projection versions. | It describes one revision; the semantic digest selects its exact executable rules. |
 | **PackRevisionLock** | Canonical build input binding host/codec versions, descriptor, schema/static-data digests, rule source, and deterministic dependency lock. | Its build-computed digest is semantic identity, not a pack label or machine-binary hash. |
-| **Embedded pack registry** | Release mapping from exact semantic digest to executor, descriptor/schemas, codecs, golden digest, and selectable/runnable status. | It is required compatibility data, not a public plugin registry or marketplace. |
+| **Startup pack registry** | One immutable mapping assembled from embedded revisions and approved local bundles, keyed by exact semantic digest. | It is runtime compatibility data, not a network registry or marketplace. |
 | **Selectable pack revision** | A runnable exact revision permitted for new Room creation. | Selectable implies runnable. |
 | **Retained-runnable pack revision** | An exact revision no longer selectable for new Rooms but still able to load, advance, view, observe, recover, and Replay retained Rooms. | Retaining only a decoder is insufficient. |
 | **Pack identifier** | A stable namespaced logical name such as `worldstream.agent-heist`. | It groups revisions but does not uniquely select executable rules. |
@@ -269,8 +270,9 @@ flowchart TD
 
 | Term | Meaning |
 |---|---|
-| **Agent Heist** | The v0.1 ActivityPackV1 reference: three immutable Genesis seats, six phases, sealed two-of-three plan selection, five-check scoring, scoped reveal, timers, Activation separation, recovery, and Replay. It is a test vehicle, not the product category. |
-| **Investigation Room** | The v0.2 serious-work reference activity proving that the same room semantics support a human Lead, multiple agents, evidence correction, dependency invalidation, activation, verification, and a deterministic structured outcome. |
+| **WorldStream Negotiate** | The first serious public Pack: one pinned A202 bilateral formation session governed by one Room with exact Human approval, signatures, deadlines, privacy, and dual evidence. |
+| **Agent Heist** | A visual demo/conformance Pack for hidden views, timers, Attention, Recovery, and Replay. It is not the product category or first public adoption target. |
+| **Investigation Room** | A deferred serious-work design probe, not a committed release. |
 | **Cold Chain Incident** | The fictional deterministic Investigation fixture. It uses local immutable evidence and no live enterprise systems. |
 | **Evidence version** | An Investigation Pack identity for one immutable source revision. It is not a generic artifact-store column. |
 | **Fact** | A source-linked Investigation assertion derived from exact evidence versions. |
@@ -301,7 +303,7 @@ flowchart TD
 | “Exactly-once delivery/execution.” | “At-least-once delivery with idempotent requests, deduplication, and fenced leases.” | Networks and model processes cannot honestly provide exactly-once execution. |
 | “The room completed.” | “The Activity reached a Terminal Phase and established an Outcome; the Room remains active until archived.” | Activity Phase, Outcome, and core Room Status are separate. |
 | “The snapshot is the room history.” | “Genesis and transitions are canonical; snapshots accelerate recovery.” | Snapshots are replaceable caches. |
-| “Activity Pack plugin.” | “Trusted compiled-in Activity Pack.” | There is no stable public plugin ABI or untrusted pack loading through v0.2. |
+| “Activity Pack plugin.” | “Activity Pack Revision” for semantic rules or “Activity Pack Bundle” for installable bytes. | Public Packs use a precise five-operation Component contract; plugin obscures identity and authority. |
 | “Project,” “Workspace,” or “world containing packs.” | “Independent room pinned to one Activity Pack.” | Cross-room projects and multi-pack rooms are explicitly deferred. |
 | “Worker” without qualification. | Use “runner,” “invocation,” “room actor,” or “participant.” | Worker is overloaded and hides ownership/lifecycle differences. |
 
@@ -311,7 +313,7 @@ flowchart TD
 - The current `agent-streamer` repository directory is a legacy local slug, not a product name. Rename it only after public-brand clearance.
 - Use **WorldStream Server** for the deployable service and **Room Kernel** for its internal correctness core.
 - Use **Activity Pack** for the named abstraction and **pack** after the context is established.
-- Use **Agent Heist**, **Investigation Room**, and **Cold Chain Incident** as proper names.
+- Use **WorldStream Negotiate**, **Agent Heist**, **Investigation Room**, and **Cold Chain Incident** as proper names.
 - Use **WebSocket**, **SQLite**, **BLAKE3**, **JSON**, **HTTP**, and **ULID** with their standard capitalization.
 - Use `room_id`, `member_id`, `principal_id`, `action_id`, `activation_id`, and `claim_id` in protocol/schema contexts.
 - Use `room_seq` for canonical transition order and `frame_seq` for one membership's observation order.

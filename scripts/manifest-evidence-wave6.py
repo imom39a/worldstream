@@ -318,6 +318,14 @@ def _manifest_report() -> dict[str, Any]:
             and row.get("artifact_digest_location") == "release-manifest.json"
         )
         or (
+            row.get("status") == "detached"
+            and row.get("release_gate") is False
+            and row.get("qualification_gate") is True
+            and row.get("artifact_digest") == ""
+            and row.get("artifact_digest_location")
+            == "release-qualification-manifest.json"
+        )
+        or (
             row.get("status") == "resolved"
             and isinstance(row.get("artifact_digest"), str)
             and bool(SHA256_REFERENCE.fullmatch(row["artifact_digest"]))
@@ -716,8 +724,9 @@ def _validate(report: dict[str, Any]) -> list[str]:
         if not value:
             failures.append(f"manifest parity failure: {key}")
     state = report["manifest"]["state"]
-    if state["manifest_kind"] != "release" or state["release_ready"] is not True:
-        failures.append("embedded release contract is not complete")
+    contract_state = (state["manifest_kind"], state["release_ready"])
+    if contract_state not in {("specification", False), ("release", True)}:
+        failures.append("embedded manifest kind/readiness state is incoherent")
     if not state["release_artifact_ids_unique"]:
         failures.append("release artifact inventory contains duplicate ids")
     if not state["evidence_shape_ok"]:
@@ -737,9 +746,9 @@ def _validate(report: dict[str, Any]) -> list[str]:
         "input_inventory_sha256"
     ) != sqlite["manifest_values"].get("bundle_source_inventory_digest"):
         failures.append("SQLite bundled source inventory digest mismatch")
-    if report["migrations"]["sqlite"]["source_count"] != 11:
+    if report["migrations"]["sqlite"]["source_count"] != 12:
         failures.append("SQLite migration source count changed unexpectedly")
-    if report["migrations"]["postgresql"]["source_count"] != 11:
+    if report["migrations"]["postgresql"]["source_count"] != 12:
         failures.append("PostgreSQL migration source count changed unexpectedly")
     for provider in ("sqlite", "postgresql"):
         migration_report = report["migrations"][provider]

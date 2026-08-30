@@ -8,6 +8,9 @@
 /web/studio/node_modules/
 /web/studio/dist/
 /sdk/python/.venv/
+/sdk/typescript-pack/packages/*/node_modules/
+/sdk/typescript-pack/packages/*/dist/
+/sdk/typescript-pack/packages/*/.worldstream/
 /.pnpm-store/
 
 __pycache__/
