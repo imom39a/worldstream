@@ -186,6 +186,10 @@ export function getDemoById(
   return catalog.find((demo) => demo.id === id);
 }
 
+export function getDemoDocumentationLabel(demo: DemoDefinition): string {
+  return demo.availability === "planned" ? "View planned status" : "How it works";
+}
+
 export interface DemoCatalogFacets {
   readonly activityPacks: readonly { readonly id: DemoActivityPack["id"]; readonly label: string }[];
   readonly availabilities: readonly DemoAvailability[];

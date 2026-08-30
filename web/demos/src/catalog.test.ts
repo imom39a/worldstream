@@ -6,6 +6,7 @@ import {
   deriveDemoCatalogFacets,
   filterDemos,
   getDemoById,
+  getDemoDocumentationLabel,
 } from "./catalog";
 
 describe("demo catalog", () => {
@@ -57,6 +58,11 @@ describe("demo catalog", () => {
       thumbnail: { kind: "css-diagram" },
     });
     expect(agentHeist?.buildIdentity?.revisionDigest).toMatch(/^blake3:[0-9a-f]{64}$/);
+  });
+
+  it("describes documentation and planned-status actions accurately", () => {
+    expect(getDemoDocumentationLabel(getDemoById(demos, "agent-heist")!)).toBe("How it works");
+    expect(getDemoDocumentationLabel(getDemoById(demos, "negotiate")!)).toBe("View planned status");
   });
 
   it("derives only populated facet options from the manifest", () => {

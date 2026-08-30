@@ -6,6 +6,7 @@ import {
   demos,
   deriveDemoCatalogFacets,
   filterDemos,
+  getDemoDocumentationLabel,
   type DemoActivityPackFilter,
   type DemoAvailabilityFilter,
   type DemoCapabilityFilter,
@@ -198,7 +199,7 @@ function DemoCard({ demo, onNavigate }: { demo: DemoDefinition; onNavigate: Navi
           ) : (
             <span className="planned-action">Live demo planned</span>
           )}
-          <a href={demo.documentationUrl}>How it works</a>
+          <a href={demo.documentationUrl}>{getDemoDocumentationLabel(demo)}</a>
         </div>
         <small>{demo.availability === "available" ? "Recorded data · no network" : demo.backendRequirement.label}</small>
       </div>
