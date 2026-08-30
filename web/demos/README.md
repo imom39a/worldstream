@@ -2,7 +2,7 @@
 
 This workspace contains the public demo catalog and recorded browser demos. It does not contain a public WorldStream authority.
 
-Follow `docs/demo-site-style.md` for layout, visual, language, and accessibility rules.
+Follow `docs/demo-site-style.md` for layout, color, language, and accessibility rules. That document defines the shared visual system for both public sites.
 
 ## Local development
 

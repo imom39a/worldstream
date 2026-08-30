@@ -1,12 +1,14 @@
-# WorldStream demo site style
+# WorldStream public site style
 
 Status: Maintained
 
-This document governs the WorldStream demo catalog and its demo pages. New demo artifacts must use these rules unless an accepted ADR records a different decision.
+This document defines the canonical visual system for the WorldStream demo site and developer manual. New public site artifacts must use these rules.
+
+An accepted ADR can define an exception. The exception must state its scope.
 
 ## Purpose
 
-The demo site is a technical interface. It shows observable WorldStream behavior. It is not a marketing site.
+The demo site and developer manual are technical interfaces. They show observable behavior and implementation guidance. They are not marketing sites.
 
 The visual reference is [Heroic Labs](https://heroiclabs.com/). Use its general layout discipline and visual proportions. Do not copy its assets, names, illustrations, page text, or page order.
 
@@ -36,11 +38,22 @@ Use this demo-page sequence:
 6. Interactive technical stage.
 7. “What this demo shows” section and data-flow diagram.
 
+Use this developer-manual sequence:
+
+1. Compact purple header with search and related-site navigation.
+2. Persistent lavender navigation for manual sections.
+3. White content surface with one page title.
+4. Factual introduction or procedure.
+5. Bordered guides, capability cards, tables, and code blocks.
+6. Optional “On this page” navigation for long documents.
+
+The manual home can use a two-column guide grid. Reference inventories can use the same filter and card structure as the demo catalog.
+
 Do not add a sales action to the header. Show private source status as plain text.
 
 ## Design tokens
 
-Use CSS custom properties. The current base tokens are:
+Use CSS custom properties. These base tokens are canonical for both public sites:
 
 | Function | Token | Value |
 | --- | --- | --- |
@@ -72,6 +85,16 @@ Purple identifies WorldStream surfaces and controls. Turquoise identifies active
 - Keep the header compact.
 - Include the WorldStream name, direct section links, and source status.
 - Do not include a featured-demo, pricing, sign-up, contact, or sales control.
+
+### Developer manual
+
+- Keep search available on each manual page.
+- Use the turquoise rail to identify the active navigation item.
+- Use purple for primary controls, headings, and code surfaces.
+- Use lavender for navigation, filters, callouts, and grouped content.
+- Use white for primary reading surfaces.
+- Keep code, tables, callouts, and capability status labels visually distinct.
+- Keep the demo-site link in the primary header.
 
 ### Demo cards
 
@@ -174,9 +197,10 @@ Do not use slogans, metaphors, slang, superlatives, or unsupported claims. Avoid
 
 ## Review checklist
 
-Before publication, confirm all items:
+Before publication, confirm all applicable items:
 
-- [ ] Layout follows the catalog or demo-page sequence in this document.
+- [ ] Layout follows the catalog, demo-page, or developer-manual sequence in this document.
+- [ ] Colors use the canonical purple, lavender, turquoise, white, and slate tokens.
 - [ ] Copy uses canonical WorldStream terms.
 - [ ] Copy is an STE-based draft with no marketing claims.
 - [ ] Data mode and backend state are explicit.
