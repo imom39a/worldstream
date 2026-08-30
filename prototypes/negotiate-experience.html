@@ -1,0 +1,1207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WorldStream Negotiate — disposable experience prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17211e;
+      --muted: #66736e;
+      --line: #d8dfdb;
+      --panel: #ffffff;
+      --canvas: #f3f6f3;
+      --accent: #176b52;
+      --accent-soft: #e7f3ed;
+      --warn: #a45b00;
+      --warn-soft: #fff3df;
+      --danger: #9b2c2c;
+      --danger-soft: #fceaea;
+      --blue: #235c91;
+      --blue-soft: #eaf2fa;
+      --shadow: 0 14px 34px rgba(25, 48, 39, .08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    .prototype-ribbon {
+      padding: 8px 18px;
+      color: #fff;
+      background: #25342f;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-align: center;
+      text-transform: uppercase;
+    }
+    header {
+      padding: 28px clamp(18px, 5vw, 72px) 22px;
+      color: #fff;
+      background: linear-gradient(130deg, #123e32 0%, #176b52 62%, #247c62 100%);
+    }
+    header h1 { margin: 0 0 8px; font-size: clamp(29px, 5vw, 48px); letter-spacing: -.035em; }
+    header p { max-width: 880px; margin: 0; color: #d9f2e8; font-size: 16px; }
+    .question {
+      max-width: 1200px;
+      margin: 18px auto 0;
+      padding: 0 18px;
+    }
+    .question .callout {
+      padding: 14px 16px;
+      border: 1px solid #c6ddd3;
+      border-radius: 12px;
+      background: #f7fffb;
+      font-size: 14px;
+    }
+    .question strong { color: var(--accent); }
+
+    .toolbar {
+      position: sticky;
+      z-index: 20;
+      top: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px clamp(18px, 5vw, 72px);
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, .96);
+      backdrop-filter: blur(12px);
+    }
+    .nav, .persona-switcher { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .toolbar-label { margin-right: 4px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .tab-button, .persona-button, .scenario-tab {
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: #33433d;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .tab-button.active, .persona-button.active, .scenario-tab.active {
+      border-color: var(--accent);
+      color: #fff;
+      background: var(--accent);
+    }
+
+    main { max-width: 1200px; margin: 0 auto; padding: 22px 18px 70px; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; }
+    .span-12 { grid-column: span 12; }
+    .span-8 { grid-column: span 8; }
+    .span-7 { grid-column: span 7; }
+    .span-6 { grid-column: span 6; }
+    .span-5 { grid-column: span 5; }
+    .span-4 { grid-column: span 4; }
+    .panel {
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .panel h2, .panel h3 { margin: 0 0 5px; letter-spacing: -.018em; }
+    .panel h2 { font-size: 20px; }
+    .panel h3 { font-size: 16px; }
+    .subtle { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+    .eyebrow { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 8px; }
+    .metric { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 10px; background: #fafcfb; }
+    .metric .label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .metric .value { display: block; overflow-wrap: anywhere; font-size: 14px; font-weight: 750; }
+    .metric code.value { font-size: 11px; }
+
+    .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 750; }
+    .status::before { width: 8px; height: 8px; border-radius: 50%; background: #9aa39f; content: ""; }
+    .status.good::before { background: #1c946a; }
+    .status.warn::before { background: #d27b09; }
+    .status.bad::before { background: #c43c3c; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+    .action {
+      padding: 8px 12px;
+      border: 1px solid #b9c7c1;
+      border-radius: 9px;
+      color: #253a32;
+      background: #fff;
+      font-weight: 700;
+    }
+    .action:hover { border-color: var(--accent); color: var(--accent); }
+    .action.primary { border-color: var(--accent); color: #fff; background: var(--accent); }
+    .action.warning { border-color: #e4ae68; color: #7d4700; background: var(--warn-soft); }
+    .action.danger { border-color: #e0a1a1; color: var(--danger); background: var(--danger-soft); }
+    .action.small { padding: 6px 9px; font-size: 12px; }
+
+    .notice { margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; font-size: 13px; }
+    .notice.good { border: 1px solid #b6ddcc; color: #135d46; background: var(--accent-soft); }
+    .notice.warn { border: 1px solid #ebc994; color: #794600; background: var(--warn-soft); }
+    .notice.bad { border: 1px solid #e1aaaa; color: #862727; background: var(--danger-soft); }
+    .notice.info { border: 1px solid #b8d0e7; color: #1f507e; background: var(--blue-soft); }
+
+    .setup-row, .seat, .agent-card, .history-row, .timeline-row, .privacy-row, .proof-row {
+      display: grid;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid #edf0ee;
+    }
+    .setup-row { grid-template-columns: 1fr auto; }
+    .seat { grid-template-columns: minmax(130px, 1.1fr) minmax(130px, 1fr) minmax(120px, .8fr) auto; }
+    .agent-card { grid-template-columns: 1fr auto; }
+    .history-row { grid-template-columns: 72px 1fr 100px 110px; }
+    .timeline-row { grid-template-columns: 45px 130px 1fr; }
+    .privacy-row { grid-template-columns: minmax(150px, 1fr) 90px minmax(180px, 1.4fr); }
+    .proof-row { grid-template-columns: minmax(140px, 1fr) minmax(190px, 2fr); }
+    .setup-row:last-child, .seat:last-child, .agent-card:last-child, .history-row:last-child,
+    .timeline-row:last-child, .privacy-row:last-child, .proof-row:last-child { border-bottom: 0; }
+    .role { font-weight: 750; }
+    .detail { color: var(--muted); font-size: 12px; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 700; }
+    input, select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #bdc9c4;
+      border-radius: 8px;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    .proposal {
+      padding: 16px;
+      border: 1px solid #a8cdbd;
+      border-left: 5px solid var(--accent);
+      border-radius: 12px;
+      background: #f8fffb;
+    }
+    .proposal-price { margin: 5px 0; font-size: 34px; font-weight: 800; letter-spacing: -.04em; }
+    .diff { color: var(--blue); font-size: 13px; font-weight: 700; }
+    .empty { padding: 28px 12px; color: var(--muted); text-align: center; }
+
+    .approval-sheet { padding: 16px; border: 2px solid #d99b44; border-radius: 12px; background: #fffaf1; }
+    .approval-sheet h3 { color: #704000; }
+    .exact-grid { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 7px 12px; margin: 13px 0; font-size: 12px; }
+    .exact-grid dt { color: var(--muted); font-weight: 700; }
+    .exact-grid dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .privacy-allowed { color: #11704e; font-weight: 750; }
+    .privacy-withheld { color: #a13a3a; font-weight: 750; }
+    .redacted { padding: 8px 10px; border-radius: 7px; color: #7c5555; background: repeating-linear-gradient(135deg, #faeeee, #faeeee 7px, #f6e4e4 7px, #f6e4e4 14px); font-size: 12px; }
+
+    .walkthrough { margin-top: 18px; }
+    .scenario-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+    .steps { display: grid; gap: 7px; }
+    .step {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #fff;
+    }
+    .step.done { color: var(--muted); background: #f5f7f6; }
+    .step.current { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .step-number { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 50%; color: var(--muted); background: #edf1ef; font-size: 12px; font-weight: 800; }
+    .step.done .step-number { color: #fff; background: var(--accent); }
+
+    .replay-controls { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+    input[type="range"] { accent-color: var(--accent); }
+    pre {
+      max-height: 360px;
+      margin: 10px 0 0;
+      padding: 13px;
+      overflow: auto;
+      border-radius: 9px;
+      color: #d9f2e8;
+      background: #17251f;
+      font-size: 11px;
+      white-space: pre-wrap;
+    }
+    .limits { margin-top: 16px; padding: 16px; border: 1px dashed #aab8b2; border-radius: 12px; color: #52615b; background: #f8faf9; font-size: 13px; }
+    .limits ul { margin: 8px 0 0; padding-left: 20px; }
+
+    @media (max-width: 850px) {
+      .span-8, .span-7, .span-6, .span-5, .span-4 { grid-column: span 12; }
+      .seat, .history-row, .timeline-row, .privacy-row, .proof-row { grid-template-columns: 1fr; gap: 3px; }
+      .field-grid { grid-template-columns: 1fr; }
+      .toolbar { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-ribbon">Disposable prototype · simulated state only · not production software</div>
+  <header>
+    <div class="eyebrow" style="color:#aee5d2">WorldStream Negotiate</div>
+    <h1>One deal. Four seats. One inspectable history.</h1>
+    <p>Explore how a self-hosted WorldStream venue could coordinate independent buyer and seller agents, an exact-proposal human approval, a venue signer, restart-safe reconnect, privacy, replay, and evidence—without making the runtime the negotiator.</p>
+  </header>
+  <section class="question">
+    <div class="callout"><strong>Prototype question:</strong> Does the responsibility boundary feel understandable when the whole first run is concrete—from approving one exact Pack bundle to exporting party and venue proof? The state machine below is pure, in-memory, and intentionally throwaway.</div>
+  </section>
+
+  <div class="toolbar">
+    <nav class="nav" aria-label="Prototype views">
+      <span class="toolbar-label">View</span>
+      <button class="tab-button active" data-view="setup">Studio setup</button>
+      <button class="tab-button" data-view="deal">Live deal</button>
+      <button class="tab-button" data-view="proof">Replay & proof</button>
+    </nav>
+    <div class="persona-switcher" aria-label="Persona switcher">
+      <span class="toolbar-label">See as</span>
+      <button class="persona-button active" data-persona="operator">Operator</button>
+      <button class="persona-button" data-persona="buyer">Buyer agent</button>
+      <button class="persona-button" data-persona="seller">Seller agent</button>
+      <button class="persona-button" data-persona="approver">Buyer approver</button>
+      <button class="persona-button" data-persona="venue">Venue signer</button>
+      <button class="persona-button" data-persona="spectator">Spectator</button>
+    </div>
+  </div>
+
+  <main>
+    <section id="global-notice" aria-live="polite"></section>
+    <section id="setup-view" class="view active"></section>
+    <section id="deal-view" class="view"></section>
+    <section id="proof-view" class="view"></section>
+    <section id="walkthrough" class="walkthrough"></section>
+    <section class="limits">
+      <strong>What this prototype does not claim</strong>
+      <ul>
+        <li>No server, durable database, real WebSocket, model invocation, wallet, or credential exchange exists here.</li>
+        <li>Fingerprints and signatures are readable simulations—not cryptographic verification.</li>
+        <li>Restart and reconnect demonstrate the intended state/cursor contract in memory; they do not prove crash recovery.</li>
+        <li>The A202 label is a compatibility design target, not an upstream conformance claim.</li>
+        <li>The UI is a question-answering shell. It is not a generated Pack UI or a production Studio design.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    // Portable logic module: pure state construction, transition, projection, and evidence functions.
+    // It deliberately knows nothing about the DOM. The page below is only a disposable driver.
+    const NegotiationModel = (() => {
+      const PACK = Object.freeze({
+        id: "worldstream.negotiate",
+        revision: "0.1.0",
+        digest: "blake3:2d2401666a0bb889607a2571ed283cf67cbdb4cd59ff824c1c9970d6541bf6f7",
+        profile: "worldstream/component-deterministic/v1",
+        compatibility: "WorldStream A202 v0.1 Operated Single-Session Formation Compatibility Profile"
+      });
+
+      const clone = value => JSON.parse(JSON.stringify(value));
+      const stableText = value => JSON.stringify(value, Object.keys(value).sort());
+      const fingerprint = value => {
+        const text = typeof value === "string" ? value : stableText(value);
+        let a = 2166136261;
+        let b = 2246822519;
+        for (let index = 0; index < text.length; index += 1) {
+          a = Math.imul(a ^ text.charCodeAt(index), 16777619);
+          b = Math.imul(b ^ text.charCodeAt(index), 3266489917);
+        }
+        const block = [a, b, a ^ b, Math.imul(a, 31) ^ b]
+          .map(number => (number >>> 0).toString(16).padStart(8, "0"))
+          .join("");
+        return `sim:${block}${block}`;
+      };
+
+      const initialState = () => ({
+        prototype: true,
+        setup: {
+          runtime: "unchecked",
+          approvedDigest: null,
+          bundle: "not_installed",
+          config: {
+            currency: "USD",
+            item: "Annual imaging archive service",
+            quantity: 12,
+            sessionDeadline: "2026-09-01T16:00:00Z"
+          },
+          seats: [
+            { role: "buyer_agent", principal: "Northstar Purchasing Agent", kind: "Agent", host: "buyer.example/run", status: "configured" },
+            { role: "seller_agent", principal: "CloudPACS Sales Agent", kind: "Agent", host: "seller.example/run", status: "configured" },
+            { role: "buyer_approver", principal: "Maya · Practice owner", kind: "Human", host: "Participant Console", status: "configured" },
+            { role: "venue_signer", principal: "WorldStream Venue Signer", kind: "Agent", host: "operator key service", status: "configured" }
+          ]
+        },
+        room: {
+          id: null,
+          created: false,
+          phase: "setup",
+          roomSeq: 0,
+          transactionSeq: 0,
+          sessionSeq: 0,
+          integrity: "not_checked",
+          connection: "offline",
+          syncGate: true,
+          restartCount: 0,
+          outcome: null,
+          deadline: "2026-09-01T16:00:00Z"
+        },
+        cursors: { buyer: 0, seller: 0, approver: 0, venue: 0, operator: 0, spectator: 0 },
+        connections: { buyer: "offline", seller: "offline", approver: "offline", venue: "offline" },
+        transaction: {
+          a202TransactionHead: "genesis:a202:0000",
+          currentProposal: null,
+          history: [],
+          approval: null,
+          accepted: null,
+          selected: null,
+          signatures: { buyer: null, seller: null },
+          resolverEvidence: null,
+          agreement: null
+        },
+        privateFacts: {
+          buyer: { mandate: "Do not exceed $98,000; prefer net-45.", strategy: "Open at $92,000 and trade payment terms last." },
+          seller: { mandate: "Do not go below $90,000.", strategy: "Hold $96,000 unless term extends to 24 months." },
+          approver: { approvalPolicy: "May approve up to the exact $96,000 / net-45 proposal." },
+          venue: { signerPolicy: "Commit only selected, doubly signed, still-current bytes." }
+        },
+        events: [],
+        attempts: [],
+        evidencePreview: null,
+        replayIndex: 0,
+        notice: { tone: "info", text: "Start in Studio: verify the runtime, approve and install the exact Pack digest, then create the Room." }
+      });
+
+      const summary = state => ({
+        phase: state.room.phase,
+        roomSeq: state.room.roomSeq,
+        transactionSeq: state.room.transactionSeq,
+        sessionSeq: state.room.sessionSeq,
+        proposal: state.transaction.currentProposal ? `${state.transaction.currentProposal.actor} @ ${state.transaction.currentProposal.price}` : null,
+        approval: state.transaction.approval?.status || null,
+        accepted: Boolean(state.transaction.accepted),
+        selected: Boolean(state.transaction.selected),
+        signatures: Object.values(state.transaction.signatures).filter(Boolean).length,
+        outcome: state.room.outcome
+      });
+
+      const accept = (previous, name, detail, options = {}) => {
+        const next = clone(previous);
+        if (options.advance !== false) {
+          next.room.roomSeq += 1;
+          if (options.logical !== false) {
+            next.room.transactionSeq += 1;
+            next.room.sessionSeq += 1;
+          }
+        }
+        const event = {
+          index: next.events.length,
+          roomSeq: next.room.roomSeq,
+          transactionSeq: next.room.transactionSeq,
+          sessionSeq: next.room.sessionSeq,
+          a202Head: next.transaction.a202TransactionHead,
+          name,
+          detail,
+          status: "committed",
+          at: `T+${String(next.events.length).padStart(2, "0")}`,
+          snapshot: null
+        };
+        next.notice = { tone: options.tone || "good", text: detail };
+        next.events.push(event);
+        event.snapshot = summary(next);
+        Object.keys(next.cursors).forEach(key => {
+          if (key === "operator" || key === "spectator" || next.connections[key] === "synced") {
+            next.cursors[key] = next.room.roomSeq;
+          }
+        });
+        next.replayIndex = next.events.length;
+        return next;
+      };
+
+      const reject = (previous, name, reason) => {
+        const next = clone(previous);
+        next.attempts.push({ index: next.attempts.length, name, reason, atRoomSeq: next.room.roomSeq });
+        next.notice = { tone: "bad", text: `Rejected without commit: ${reason}` };
+        return next;
+      };
+
+      const requireRoom = (state, actionName) => state.room.created ? null : reject(state, actionName, "the Room does not exist yet");
+      const requireSynced = (state, actionName) => !state.room.syncGate && state.room.connection === "synced"
+        ? null
+        : reject(state, actionName, "participants are not caught up; the action gate stays closed");
+
+      const reduce = (previous, action) => {
+        const state = clone(previous);
+        switch (action.type) {
+          case "RESET":
+            return initialState();
+          case "VERIFY_RUNTIME": {
+            state.setup.runtime = "ready";
+            state.room.integrity = "verified";
+            state.notice = { tone: "good", text: "Runtime profile checked: zero-import Component policy and exact export surface are ready (simulated)." };
+            return state;
+          }
+          case "APPROVE_DIGEST": {
+            if (state.setup.runtime !== "ready") return reject(state, action.type, "verify the runtime before approving application code");
+            state.setup.approvedDigest = PACK.digest;
+            state.notice = { tone: "good", text: "The Host Operator approved this exact bundle digest; names and signatures alone are not authority." };
+            return state;
+          }
+          case "INSTALL_BUNDLE": {
+            if (state.setup.approvedDigest !== PACK.digest) return reject(state, action.type, "the exact bundle digest is not approved");
+            state.setup.bundle = "installed_retained_selectable";
+            state.notice = { tone: "good", text: "Exact .wspack bytes staged into the local content-addressed store and marked selectable (simulated)." };
+            return state;
+          }
+          case "UPDATE_CONFIG": {
+            if (state.room.created) return reject(state, action.type, "Genesis configuration is immutable after Room creation");
+            state.setup.config = { ...state.setup.config, ...action.config };
+            state.room.deadline = state.setup.config.sessionDeadline;
+            state.notice = { tone: "info", text: "Genesis calibration updated. Private floors and ceilings remain bound to their own parties." };
+            return state;
+          }
+          case "CREATE_ROOM": {
+            if (state.setup.bundle !== "installed_retained_selectable") return reject(state, action.type, "install the approved exact bundle before selecting it for a Room");
+            if (state.room.created) return reject(state, action.type, "this demo already has one Room");
+            state.room.created = true;
+            state.room.id = "room-negotiate-7F3A";
+            state.room.phase = "formation_open";
+            state.room.connection = "waiting_for_participants";
+            state.room.syncGate = true;
+            return accept(state, "room_created", "Room created with immutable Genesis, exact Pack revision, four seats, and one A202 session.");
+          }
+          case "CONNECT_ALL": {
+            const missing = requireRoom(state, action.type);
+            if (missing) return missing;
+            Object.keys(state.connections).forEach(key => { state.connections[key] = "synced"; });
+            Object.keys(state.cursors).forEach(key => { state.cursors[key] = state.room.roomSeq; });
+            state.room.connection = "synced";
+            state.room.syncGate = false;
+            state.notice = { tone: "good", text: "All four participants attached from independent clients and reached the current Room Head." };
+            return state;
+          }
+          case "SUBMIT_PROPOSAL": {
+            const missing = requireRoom(state, action.type) || requireSynced(state, action.type);
+            if (missing) return missing;
+            if (!['formation_open', 'approval_pending'].includes(state.room.phase)) return reject(state, action.type, `a proposal is not legal during ${state.room.phase}`);
+            const prior = state.transaction.currentProposal;
+            const revision = state.transaction.history.length + 1;
+            const body = {
+              revision,
+              actor: action.actor,
+              price: Number(action.price),
+              currency: state.setup.config.currency,
+              quantity: state.setup.config.quantity,
+              item: state.setup.config.item,
+              payment: action.actor === "buyer" ? "net-45" : "net-30"
+            };
+            body.bytes = `a202:proposal:${revision}:${fingerprint(body)}`;
+            body.hash = fingerprint(body.bytes);
+            body.signature = `sim-signature:${action.actor}:${body.hash.slice(-16)}`;
+            body.diff = prior ? `${prior.price} → ${body.price}; ${prior.payment} → ${body.payment}` : `Opening ${body.price}; ${body.payment}`;
+            state.transaction.currentProposal = body;
+            state.transaction.history.push(body);
+            state.transaction.a202TransactionHead = fingerprint(`a202-head:${body.bytes}`);
+            state.transaction.accepted = null;
+            state.transaction.selected = null;
+            state.transaction.signatures = { buyer: null, seller: null };
+            if (state.transaction.approval) {
+              state.transaction.approval.status = "superseded";
+              state.transaction.approval = null;
+            }
+            state.room.phase = "formation_open";
+            const next = accept(state, "proposal_revision_submitted", `${action.actor === "buyer" ? "Buyer" : "Seller"} submitted proposal revision ${revision} for ${body.currency} ${body.price.toLocaleString()}.`);
+            Object.keys(next.cursors).forEach(key => { if (next.connections[key] === "synced") next.cursors[key] = next.room.roomSeq; });
+            return next;
+          }
+          case "REQUEST_APPROVAL": {
+            const missing = requireRoom(state, action.type) || requireSynced(state, action.type);
+            if (missing) return missing;
+            if (!state.transaction.currentProposal) return reject(state, action.type, "there is no exact proposal to approve");
+            const proposal = state.transaction.currentProposal;
+            const expectedRoomHead = fingerprint(`room-head:${state.room.roomSeq + 1}:${proposal.hash}`);
+            state.transaction.approval = {
+              status: "pending",
+              proposalRevision: proposal.revision,
+              proposalHash: proposal.hash,
+              actionHash: fingerprint(`accept:${proposal.hash}:${expectedRoomHead}`),
+              a202Head: state.transaction.a202TransactionHead,
+              worldstreamHead: expectedRoomHead,
+              expiresAt: "2026-09-01T15:30:00Z",
+              approvedBy: null,
+              signature: null
+            };
+            state.room.phase = "approval_pending";
+            return accept(state, "exact_approval_requested", "Buyer requested human approval bound to exact proposal bytes, both heads, the accept action, and expiry.");
+          }
+          case "APPROVE_EXACT": {
+            const missing = requireSynced(state, action.type);
+            if (missing) return missing;
+            const approval = state.transaction.approval;
+            const proposal = state.transaction.currentProposal;
+            if (!approval || approval.status !== "pending") return reject(state, action.type, "there is no pending exact approval");
+            if (!proposal || approval.proposalHash !== proposal.hash || approval.a202Head !== state.transaction.a202TransactionHead) {
+              return reject(state, action.type, "proposal bytes or A202 Head changed after the request");
+            }
+            approval.status = "approved";
+            approval.approvedBy = "Maya · Practice owner";
+            approval.signature = `sim-human-signature:${approval.actionHash.slice(-16)}`;
+            state.room.phase = "formation_open";
+            return accept(state, "exact_approval_recorded", "Human approval recorded for this exact proposal and action only; it is not a reusable spending permission.");
+          }
+          case "REJECT_EXACT": {
+            if (!state.transaction.approval || state.transaction.approval.status !== "pending") return reject(state, action.type, "there is no pending exact approval");
+            state.transaction.approval.status = "rejected";
+            state.room.phase = "formation_open";
+            return accept(state, "exact_approval_rejected", "Human rejected the exact proposal. Negotiation may continue with a new signed revision.");
+          }
+          case "FORCE_RESTART": {
+            const missing = requireRoom(state, action.type);
+            if (missing) return missing;
+            state.room.restartCount += 1;
+            state.room.connection = "offline";
+            state.room.syncGate = true;
+            Object.keys(state.connections).forEach(key => { state.connections[key] = "offline"; });
+            state.notice = { tone: "warn", text: "Runtime stopped. Canonical Room state and exact approval remain; each client keeps its own older cursor." };
+            return state;
+          }
+          case "BEGIN_RECONNECT": {
+            if (state.room.restartCount === 0) return reject(state, action.type, "force a restart first so reconnect behavior is observable");
+            state.room.connection = "catching_up";
+            state.room.syncGate = true;
+            state.connections = { buyer: "catching_up", seller: "catching_up", approver: "catching_up", venue: "catching_up" };
+            state.cursors.buyer = Math.max(0, state.room.roomSeq - 1);
+            state.cursors.seller = Math.max(0, state.room.roomSeq - 2);
+            state.cursors.approver = Math.max(0, state.room.roomSeq - 3);
+            state.cursors.venue = Math.max(0, state.room.roomSeq - 4);
+            state.notice = { tone: "warn", text: "Clients reattached from distinct cursors. Participant Actions remain gated until every required seat catches up." };
+            return state;
+          }
+          case "FINISH_CATCHUP": {
+            if (state.room.connection !== "catching_up") return reject(state, action.type, "no reconnect catch-up is in progress");
+            Object.keys(state.connections).forEach(key => { state.connections[key] = "synced"; });
+            Object.keys(state.cursors).forEach(key => { state.cursors[key] = state.room.roomSeq; });
+            state.room.connection = "synced";
+            state.room.syncGate = false;
+            state.notice = { tone: "good", text: "All required seats reached the authoritative Room Head. Exact approval survived unchanged; the action gate reopened." };
+            return state;
+          }
+          case "ACCEPT_CURRENT": {
+            const missing = requireSynced(state, action.type);
+            if (missing) return missing;
+            const proposal = state.transaction.currentProposal;
+            const approval = state.transaction.approval;
+            if (!proposal) return reject(state, action.type, "there is no current proposal");
+            if (!approval || approval.status !== "approved") return reject(state, action.type, "the current proposal lacks a live exact human approval");
+            if (approval.proposalHash !== proposal.hash || approval.a202Head !== state.transaction.a202TransactionHead) {
+              return reject(state, action.type, "approval is bound to different bytes or a different A202 Head");
+            }
+            state.transaction.accepted = { proposalHash: proposal.hash, by: "buyer", atHead: state.transaction.a202TransactionHead };
+            state.room.phase = "offer_accepted";
+            return accept(state, "current_proposal_accepted", "Buyer accepted the current signed proposal using the exact approved action.");
+          }
+          case "SELECT_ACCEPTED": {
+            const missing = requireSynced(state, action.type);
+            if (missing) return missing;
+            if (!state.transaction.accepted) return reject(state, action.type, "there is no accepted proposal to select");
+            state.transaction.selected = { proposalHash: state.transaction.accepted.proposalHash, by: "venue_signer" };
+            state.room.phase = "agreement_pending";
+            return accept(state, "accepted_proposal_selected", "Venue selected the single accepted proposal for agreement signing; selection is not commitment.");
+          }
+          case "SIGN_AGREEMENT": {
+            const missing = requireSynced(state, action.type);
+            if (missing) return missing;
+            if (!state.transaction.selected) return reject(state, action.type, "select the accepted proposal before signing");
+            if (!['buyer', 'seller'].includes(action.party)) return reject(state, action.type, "only the buyer or seller may sign this bilateral agreement");
+            if (state.transaction.signatures[action.party]) return reject(state, action.type, `${action.party} already signed these bytes`);
+            state.transaction.signatures[action.party] = {
+              proposalHash: state.transaction.selected.proposalHash,
+              signature: `sim-agreement-signature:${action.party}:${state.transaction.selected.proposalHash.slice(-14)}`
+            };
+            return accept(state, "agreement_signature_recorded", `${action.party === "buyer" ? "Buyer" : "Seller"} signed the exact selected agreement bytes.`);
+          }
+          case "COMMIT_AGREEMENT": {
+            const missing = requireSynced(state, action.type);
+            if (missing) return missing;
+            if (!state.transaction.selected || !state.transaction.signatures.buyer || !state.transaction.signatures.seller) {
+              return reject(state, action.type, "selection and both party signatures are required");
+            }
+            if (state.transaction.signatures.buyer.proposalHash !== state.transaction.selected.proposalHash ||
+                state.transaction.signatures.seller.proposalHash !== state.transaction.selected.proposalHash) {
+              return reject(state, action.type, "party signatures do not bind the selected bytes");
+            }
+            state.transaction.agreement = {
+              proposalHash: state.transaction.selected.proposalHash,
+              venueReceipt: fingerprint(`venue-receipt:${state.room.roomSeq + 1}:${state.transaction.selected.proposalHash}`)
+            };
+            state.room.phase = "complete";
+            state.room.outcome = "agreement_committed";
+            return accept(state, "agreement_committed", "Agreement committed after exact selection and two matching signatures. The outcome is now terminal.");
+          }
+          case "MUTATE_PROPOSAL_BYTE": {
+            if (!state.transaction.currentProposal) return reject(state, action.type, "submit a proposal before testing mutation");
+            return reject(state, action.type, "one proposal byte changed; its fingerprint no longer matches the signed A202 message");
+          }
+          case "SUBMIT_STALE_ROOM_HEAD":
+            return reject(state, action.type, `action expected Room Head ${Math.max(0, state.room.roomSeq - 1)}, but authority is ${state.room.roomSeq}`);
+          case "CHANGE_A202_HEAD": {
+            if (!state.transaction.currentProposal) return reject(state, action.type, "submit a proposal before advancing the A202 stream");
+            state.transaction.a202TransactionHead = fingerprint(`external-a202-advance:${state.room.roomSeq}`);
+            if (state.transaction.approval) state.transaction.approval.status = "invalidated_by_head_change";
+            state.notice = { tone: "warn", text: "A202 transaction Head changed outside the approved action. The exact approval is invalid; rebuild and re-sign before accepting." };
+            return state;
+          }
+          case "EXPIRE_APPROVAL": {
+            if (!state.transaction.approval) return reject(state, action.type, "request exact approval before expiring it");
+            state.transaction.approval.status = "expired";
+            state.notice = { tone: "warn", text: "Approval expired. The proposal remains current, but acceptance is no longer authorized." };
+            return state;
+          }
+          case "FORMATION_DEADLINE_ELAPSED": {
+            const missing = requireRoom(state, action.type);
+            if (missing) return missing;
+            state.connections.venue = "offline";
+            state.room.connection = "degraded";
+            state.room.syncGate = true;
+            state.transaction.resolverEvidence = {
+              subject: "session-deadline",
+              observedAt: "2026-09-01T16:00:01Z",
+              source: "operator deadline resolver",
+              bytesDigest: fingerprint("deadline:2026-09-01T16:00:00Z"),
+              validity: "recorded_not_yet_applied"
+            };
+            state.room.phase = "deadline_resolution";
+            return accept(state, "session_deadline_elapsed_recorded", "Deadline evidence was recorded, but the venue signer is unavailable. No one silently declares the final outcome.");
+          }
+          case "VENUE_RECONNECT_RESOLVE": {
+            if (state.room.phase !== "deadline_resolution") return reject(state, action.type, "the Room is not awaiting deadline resolution");
+            state.connections.venue = "synced";
+            state.room.connection = "synced";
+            state.room.syncGate = false;
+            state.transaction.resolverEvidence.validity = "applied";
+            state.room.phase = "expired";
+            state.room.outcome = "formation_expired";
+            return accept(state, "formation_expired", "Venue reconnected, verified the recorded deadline evidence, and committed the terminal expiration outcome.");
+          }
+          case "SET_REPLAY": {
+            state.replayIndex = Math.max(0, Math.min(state.events.length, Number(action.index)));
+            return state;
+          }
+          case "PREVIEW_EVIDENCE": {
+            state.evidencePreview = evidence(state, action.kind);
+            state.notice = { tone: "info", text: `${action.kind === "party" ? "Party/protocol" : "Venue/runtime"} evidence assembled from the same authoritative history (prototype preview).` };
+            return state;
+          }
+          default:
+            return reject(state, action.type || "unknown", "the prototype does not recognize that action");
+        }
+      };
+
+      const project = (state, persona) => {
+        const common = {
+          persona,
+          room: summary(state),
+          connection: state.connections[persona] || state.room.connection,
+          visible: [],
+          withheld: [],
+          private: null
+        };
+        const publicStatus = ["Room phase and authoritative heads", "Pack revision and integrity status", "Outcome and public event names"];
+        if (persona === "buyer") {
+          common.visible = [...publicStatus, "Exact commercial proposal", "Buyer mandate and strategy", "Buyer approval record", "Own signatures"];
+          common.withheld = ["Seller floor and strategy", "Venue signing key material"];
+          common.private = state.privateFacts.buyer;
+        } else if (persona === "seller") {
+          common.visible = [...publicStatus, "Exact commercial proposal", "Seller mandate and strategy", "Agreement signatures"];
+          common.withheld = ["Buyer ceiling and strategy", "Human approver private policy", "Venue signing key material"];
+          common.private = state.privateFacts.seller;
+        } else if (persona === "approver") {
+          common.visible = [...publicStatus, "Exact proposed bytes and diff", "Exact approval binding", "Buyer approval policy"];
+          common.withheld = ["Buyer agent tactics", "Seller floor and strategy", "Venue signing key material"];
+          common.private = state.privateFacts.approver;
+        } else if (persona === "venue") {
+          common.visible = [...publicStatus, "Signed A202 bytes", "Selections and party signatures", "Resolver evidence", "Venue signing policy"];
+          common.withheld = ["Buyer and seller tactics", "Human notes", "Raw private key material"];
+          common.private = state.privateFacts.venue;
+        } else if (persona === "operator") {
+          common.visible = [...publicStatus, "Runtime and Pack health", "Seat connectivity and cursors", "Replay and evidence diagnostics"];
+          common.withheld = ["Private party mandates and tactics", "Opaque client credentials", "Signer private keys"];
+          common.private = { responsibility: "Operate the venue; do not negotiate or exercise Participant Actions." };
+        } else {
+          common.visible = ["Room phase", "Pack identity", "Public outcome", "Redacted event names"];
+          common.withheld = ["Proposal price and terms", "All mandates and tactics", "Approval contents", "Signatures and resolver detail"];
+          common.private = { access: "No participant seat. Commercial fields remain withheld." };
+        }
+        return common;
+      };
+
+      const evidence = (state, kind) => {
+        const shared = {
+          prototype: true,
+          verification: state.room.outcome ? "simulated_verified" : "simulated_incomplete",
+          roomId: state.room.id,
+          pack: PACK,
+          outcome: state.room.outcome,
+          exportedAtLogicalTime: `T+${state.events.length}`
+        };
+        if (kind === "party") {
+          return {
+            kind: "worldstream.party-protocol-evidence.prototype/v1",
+            ...shared,
+            a202: {
+              exactProposalBytes: state.transaction.history.map(item => item.bytes),
+              proposalHashes: state.transaction.history.map(item => item.hash),
+              proposalSignatures: state.transaction.history.map(item => item.signature),
+              approval: state.transaction.approval,
+              selection: state.transaction.selected,
+              agreementSignatures: state.transaction.signatures,
+              logicalHead: state.transaction.a202TransactionHead
+            }
+          };
+        }
+        return {
+          kind: "worldstream.venue-runtime-evidence.prototype/v1",
+          ...shared,
+          venue: {
+            genesis: { config: state.setup.config, seats: state.setup.seats.map(({ role, principal, kind: seatKind }) => ({ role, principal, kind: seatKind })) },
+            heads: { room: state.room.roomSeq, transaction: state.room.transactionSeq, session: state.room.sessionSeq },
+            committedTransitions: state.events.map(({ snapshot, ...event }) => event),
+            rejectedAttempts: state.attempts,
+            restartCount: state.room.restartCount,
+            replayDigest: fingerprint(state.events.map(event => event.name).join("|")),
+            crossIndex: state.events.map(event => ({ roomSeq: event.roomSeq, a202Head: event.a202Head }))
+          }
+        };
+      };
+
+      return Object.freeze({ PACK, initialState, reduce, project, evidence, fingerprint });
+    })();
+
+    const $ = selector => document.querySelector(selector);
+    const $$ = selector => [...document.querySelectorAll(selector)];
+    const escapeHtml = value => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+    const money = value => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
+    const short = value => value ? `${value.slice(0, 18)}…${value.slice(-8)}` : "—";
+    const title = value => String(value).replaceAll("_", " ").replace(/\b\w/g, letter => letter.toUpperCase());
+
+    let state = NegotiationModel.initialState();
+    let activeView = "setup";
+    let persona = "operator";
+    let scenario = "happy";
+    let scenarioStep = 0;
+
+    const scenarios = {
+      happy: {
+        label: "Complete agreement",
+        description: "Follow the intended first success: exact Pack approval, independent participants, a human approving one proposal, restart-safe recovery, bilateral signatures, commitment, replay, and both evidence views.",
+        steps: [
+          ["Verify deterministic runtime", { type: "VERIFY_RUNTIME" }, "setup"],
+          ["Approve exact Pack digest", { type: "APPROVE_DIGEST" }, "setup"],
+          ["Install retained bundle", { type: "INSTALL_BUNDLE" }, "setup"],
+          ["Create one negotiation Room", { type: "CREATE_ROOM" }, "setup"],
+          ["Attach all four seats", { type: "CONNECT_ALL" }, "deal"],
+          ["Buyer proposes $92,000", { type: "SUBMIT_PROPOSAL", actor: "buyer", price: 92000 }, "deal"],
+          ["Seller counters $96,000", { type: "SUBMIT_PROPOSAL", actor: "seller", price: 96000 }, "deal"],
+          ["Request exact human approval", { type: "REQUEST_APPROVAL" }, "deal"],
+          ["Approve these exact bytes", { type: "APPROVE_EXACT" }, "deal", "approver"],
+          ["Force a runtime restart", { type: "FORCE_RESTART" }, "deal", "operator"],
+          ["Reconnect from separate cursors", { type: "BEGIN_RECONNECT" }, "deal"],
+          ["Finish catch-up and reopen gate", { type: "FINISH_CATCHUP" }, "deal"],
+          ["Buyer accepts approved proposal", { type: "ACCEPT_CURRENT" }, "deal", "buyer"],
+          ["Venue selects accepted proposal", { type: "SELECT_ACCEPTED" }, "deal", "venue"],
+          ["Buyer signs selected bytes", { type: "SIGN_AGREEMENT", party: "buyer" }, "deal", "buyer"],
+          ["Seller signs selected bytes", { type: "SIGN_AGREEMENT", party: "seller" }, "deal", "seller"],
+          ["Venue commits agreement", { type: "COMMIT_AGREEMENT" }, "proof", "venue"],
+          ["Preview party/protocol proof", { type: "PREVIEW_EVIDENCE", kind: "party" }, "proof"],
+          ["Preview venue/runtime proof", { type: "PREVIEW_EVIDENCE", kind: "venue" }, "proof"]
+        ]
+      },
+      restart: {
+        label: "Restart boundary",
+        description: "Approve one exact action, crash the runtime, and watch distinct cursors catch up. The approval survives, but Participant Actions remain closed until synchronization completes.",
+        steps: [
+          ["Prepare Room", { type: "DEMO_PREP_APPROVAL" }, "deal"],
+          ["Force runtime restart", { type: "FORCE_RESTART" }, "deal"],
+          ["Reconnect from distinct cursors", { type: "BEGIN_RECONNECT" }, "deal"],
+          ["Try accepting while gated", { type: "ACCEPT_CURRENT" }, "deal", "buyer"],
+          ["Finish catch-up", { type: "FINISH_CATCHUP" }, "deal"],
+          ["Accept after synchronization", { type: "ACCEPT_CURRENT" }, "deal", "buyer"]
+        ]
+      },
+      privacy: {
+        label: "Privacy boundary",
+        description: "Switch among all six personas. The same canonical Room produces different projections; a spectator never receives commercial terms, approval contents, or signatures.",
+        steps: [
+          ["Prepare approved proposal", { type: "DEMO_PREP_APPROVAL" }, "deal"],
+          ["Inspect as buyer", { type: "NOOP_PERSONA" }, "deal", "buyer"],
+          ["Inspect as seller", { type: "NOOP_PERSONA" }, "deal", "seller"],
+          ["Inspect as approver", { type: "NOOP_PERSONA" }, "deal", "approver"],
+          ["Inspect as venue", { type: "NOOP_PERSONA" }, "deal", "venue"],
+          ["Inspect as operator", { type: "NOOP_PERSONA" }, "deal", "operator"],
+          ["Inspect spectator redaction", { type: "NOOP_PERSONA" }, "deal", "spectator"]
+        ]
+      },
+      tamper: {
+        label: "Tamper & stale heads",
+        description: "Exercise three invalid paths. Mutated signed bytes and stale Room Heads fail without commit; a changed A202 Head invalidates the approval instead of silently rebasing it.",
+        steps: [
+          ["Prepare approved proposal", { type: "DEMO_PREP_APPROVAL" }, "deal"],
+          ["Mutate one signed byte", { type: "MUTATE_PROPOSAL_BYTE" }, "deal"],
+          ["Submit stale Room Head", { type: "SUBMIT_STALE_ROOM_HEAD" }, "deal"],
+          ["Advance A202 Head", { type: "CHANGE_A202_HEAD" }, "deal"],
+          ["Try old approved acceptance", { type: "ACCEPT_CURRENT" }, "deal", "buyer"]
+        ]
+      },
+      expiry: {
+        label: "Expiry recovery",
+        description: "See both temporal boundaries: an exact approval can expire without changing the proposal, and formation expiry waits for an unavailable venue signer to reconnect and commit the outcome.",
+        steps: [
+          ["Prepare approved proposal", { type: "DEMO_PREP_APPROVAL" }, "deal"],
+          ["Expire exact approval", { type: "EXPIRE_APPROVAL" }, "deal"],
+          ["Try acceptance after expiry", { type: "ACCEPT_CURRENT" }, "deal", "buyer"],
+          ["Record deadline; venue unavailable", { type: "FORMATION_DEADLINE_ELAPSED" }, "deal", "operator"],
+          ["Venue reconnects and resolves", { type: "VENUE_RECONNECT_RESOLVE" }, "proof", "venue"]
+        ]
+      }
+    };
+
+    const prepApproval = () => {
+      let prepared = NegotiationModel.initialState();
+      [
+        { type: "VERIFY_RUNTIME" }, { type: "APPROVE_DIGEST" }, { type: "INSTALL_BUNDLE" },
+        { type: "CREATE_ROOM" }, { type: "CONNECT_ALL" },
+        { type: "SUBMIT_PROPOSAL", actor: "buyer", price: 92000 },
+        { type: "SUBMIT_PROPOSAL", actor: "seller", price: 96000 },
+        { type: "REQUEST_APPROVAL" }, { type: "APPROVE_EXACT" }
+      ].forEach(action => { prepared = NegotiationModel.reduce(prepared, action); });
+      return prepared;
+    };
+
+    const dispatch = action => {
+      if (action.type === "DEMO_PREP_APPROVAL") state = prepApproval();
+      else if (action.type !== "NOOP_PERSONA") state = NegotiationModel.reduce(state, action);
+      render();
+    };
+
+    const statusClass = value => ["ready", "verified", "synced", "configured", "installed_retained_selectable", "approved", "complete", "agreement_committed"].includes(value)
+      ? "good" : ["offline", "expired", "rejected"].includes(value) ? "bad" : "warn";
+
+    const renderNotice = () => {
+      $("#global-notice").innerHTML = `<div class="notice ${escapeHtml(state.notice.tone)}">${escapeHtml(state.notice.text)}</div>`;
+    };
+
+    const renderSetup = () => {
+      const config = state.setup.config;
+      const digestApproved = state.setup.approvedDigest === NegotiationModel.PACK.digest;
+      $("#setup-view").innerHTML = `
+        <div class="grid">
+          <article class="panel span-7">
+            <div class="eyebrow">Host Operator · preflight</div>
+            <h2>Approve application code by exact bytes</h2>
+            <p class="subtle">Studio guides configuration. The runtime remains the authority for install and Room creation.</p>
+            <div class="setup-row"><div><strong>Runtime execution profile</strong><div class="detail"><code>${escapeHtml(NegotiationModel.PACK.profile)}</code></div></div><span class="status ${statusClass(state.setup.runtime)}">${title(state.setup.runtime)}</span></div>
+            <div class="setup-row"><div><strong>Pack bundle</strong><div class="detail"><code>${escapeHtml(NegotiationModel.PACK.id)}@${escapeHtml(NegotiationModel.PACK.revision)}</code></div></div><span class="status ${statusClass(state.setup.bundle)}">${title(state.setup.bundle)}</span></div>
+            <div class="setup-row"><div><strong>Exact digest</strong><div class="detail truncate" title="${escapeHtml(NegotiationModel.PACK.digest)}"><code>${escapeHtml(NegotiationModel.PACK.digest)}</code></div></div><span class="status ${digestApproved ? "good" : "warn"}">${digestApproved ? "Approved" : "Not approved"}</span></div>
+            <div class="setup-row"><div><strong>Compatibility claim</strong><div class="detail">Pinned target; deliberately not called upstream conformance</div></div><span class="status warn">A202 compatibility</span></div>
+            <div class="actions">
+              <button class="action" data-action="VERIFY_RUNTIME">1 · Verify runtime</button>
+              <button class="action" data-action="APPROVE_DIGEST">2 · Approve exact digest</button>
+              <button class="action primary" data-action="INSTALL_BUNDLE">3 · Install .wspack</button>
+            </div>
+          </article>
+
+          <article class="panel span-5">
+            <div class="eyebrow">Genesis</div>
+            <h2>Calibrate this one formation</h2>
+            <p class="subtle">These values freeze when the Room is created. Private bounds do not become operator-visible production data.</p>
+            <div class="field-grid">
+              <label>Item<input id="config-item" value="${escapeHtml(config.item)}"></label>
+              <label>Currency<select id="config-currency"><option ${config.currency === "USD" ? "selected" : ""}>USD</option><option ${config.currency === "EUR" ? "selected" : ""}>EUR</option></select></label>
+              <label>Quantity / months<input id="config-quantity" type="number" min="1" value="${escapeHtml(config.quantity)}"></label>
+              <label>Session deadline<input id="config-deadline" value="${escapeHtml(config.sessionDeadline)}"></label>
+            </div>
+            <div class="actions"><button class="action" id="apply-config">Apply calibration</button><button class="action primary" data-action="CREATE_ROOM">Create Room</button></div>
+          </article>
+
+          <article class="panel span-12">
+            <div class="eyebrow">Membership</div>
+            <h2>Four explicit seats</h2>
+            <p class="subtle">A participant can be human or agent. Each acts through the same checked runtime contract; Studio is not a hidden participant.</p>
+            ${state.setup.seats.map(seat => `<div class="seat"><span class="role">${escapeHtml(title(seat.role))}</span><span>${escapeHtml(seat.principal)}</span><span class="detail">${escapeHtml(seat.kind)} · ${escapeHtml(seat.host)}</span><span class="status ${statusClass(seat.status)}">${escapeHtml(title(seat.status))}</span></div>`).join("")}
+          </article>
+
+          <article class="panel span-6">
+            <div class="eyebrow">External runner</div>
+            <h3>Buyer agent</h3>
+            <div class="agent-card"><div><strong>Northstar purchasing runner</strong><div class="detail">Models, prompts, tools, private memory, mandate, and signing stay here.</div></div><span class="status ${statusClass(state.connections.buyer)}">${title(state.connections.buyer)}</span></div>
+            <code class="detail">credential-ref: buyer-agent-local</code>
+          </article>
+          <article class="panel span-6">
+            <div class="eyebrow">External runner</div>
+            <h3>Seller agent</h3>
+            <div class="agent-card"><div><strong>CloudPACS sales runner</strong><div class="detail">Strategy and commercial keys are not embedded in the Pack or daemon.</div></div><span class="status ${statusClass(state.connections.seller)}">${title(state.connections.seller)}</span></div>
+            <code class="detail">credential-ref: seller-agent-local</code>
+          </article>
+        </div>`;
+    };
+
+    const renderDeal = () => {
+      const proposal = state.transaction.currentProposal;
+      const approval = state.transaction.approval;
+      const projection = NegotiationModel.project(state, persona);
+      const proposalVisible = persona !== "spectator" && persona !== "operator";
+      $("#deal-view").innerHTML = `
+        <div class="grid">
+          <article class="panel span-12">
+            <div class="eyebrow">Authoritative Room state</div>
+            <div class="metric-grid">
+              <div class="metric"><span class="label">Phase</span><span class="value">${escapeHtml(title(state.room.phase))}</span></div>
+              <div class="metric"><span class="label">Room sequence</span><span class="value">${state.room.roomSeq}</span></div>
+              <div class="metric"><span class="label">A202 transaction / session</span><span class="value">${state.room.transactionSeq} / ${state.room.sessionSeq}</span></div>
+              <div class="metric"><span class="label">Deadline</span><span class="value">${escapeHtml(state.room.deadline)}</span></div>
+              <div class="metric"><span class="label">Integrity</span><span class="status ${statusClass(state.room.integrity)}">${escapeHtml(title(state.room.integrity))}</span></div>
+              <div class="metric"><span class="label">Connection / gate</span><span class="status ${statusClass(state.room.connection)}">${escapeHtml(title(state.room.connection))} · ${state.room.syncGate ? "closed" : "open"}</span></div>
+              <div class="metric"><span class="label">Pack revision</span><code class="value">${escapeHtml(NegotiationModel.PACK.id)}@${escapeHtml(NegotiationModel.PACK.revision)}</code></div>
+              <div class="metric"><span class="label">Outcome</span><span class="value">${escapeHtml(state.room.outcome ? title(state.room.outcome) : "Not terminal")}</span></div>
+            </div>
+          </article>
+
+          <article class="panel span-7">
+            <div class="eyebrow">Current signed proposal</div>
+            <h2>Commercial terms</h2>
+            ${!proposal ? `<div class="empty">No proposal yet. Connect participants, then submit an opening proposal.</div>` : !proposalVisible ? `<div class="redacted">Commercial proposal bytes and terms are withheld from the ${escapeHtml(title(persona))} projection.</div>` : `
+              <div class="proposal">
+                <div class="detail">Revision ${proposal.revision} · signed by ${escapeHtml(title(proposal.actor))}</div>
+                <div class="proposal-price">${money(proposal.price)}</div>
+                <div>${escapeHtml(proposal.quantity)} months · ${escapeHtml(proposal.item)} · ${escapeHtml(proposal.payment)}</div>
+                <div class="diff">Δ ${escapeHtml(proposal.diff)}</div>
+                <div class="detail" style="margin-top:9px"><code>${escapeHtml(short(proposal.hash))}</code> · ${escapeHtml(proposal.signature)}</div>
+              </div>`}
+            <div class="actions">
+              <button class="action" data-action="CONNECT_ALL">Connect all seats</button>
+              <button class="action" data-action="BUYER_PROPOSE">Buyer proposes $92k</button>
+              <button class="action" data-action="SELLER_COUNTER">Seller counters $96k</button>
+              <button class="action primary" data-action="REQUEST_APPROVAL">Request exact approval</button>
+            </div>
+            <h3 style="margin-top:18px">Revision history</h3>
+            ${state.transaction.history.length ? state.transaction.history.map(item => `<div class="history-row"><span>Rev ${item.revision}</span><span>${proposalVisible ? escapeHtml(item.diff) : "Commercial diff withheld"}</span><strong>${proposalVisible ? money(item.price) : "REDACTED"}</strong><code class="detail">${proposalVisible ? escapeHtml(short(item.hash)) : "withheld"}</code></div>`).join("") : `<div class="detail">No revisions committed.</div>`}
+          </article>
+
+          <article class="panel span-5">
+            <div class="eyebrow">Human checkpoint</div>
+            <h2>Exact-proposal approval</h2>
+            ${!approval ? `<div class="empty">No approval request. A human is asked to approve bytes and one action—not a vague negotiation goal.</div>` : persona === "spectator" || persona === "seller" || persona === "operator" ? `<div class="redacted">Approval body is withheld from this projection. Status: ${escapeHtml(title(approval.status))}.</div>` : `
+              <div class="approval-sheet">
+                <h3>${escapeHtml(title(approval.status))}</h3>
+                <div>${proposal ? `${money(proposal.price)} · ${escapeHtml(proposal.payment)} · revision ${proposal.revision}` : "Proposal unavailable"}</div>
+                <dl class="exact-grid">
+                  <dt>Proposal hash</dt><dd>${escapeHtml(approval.proposalHash)}</dd>
+                  <dt>Accept action hash</dt><dd>${escapeHtml(approval.actionHash)}</dd>
+                  <dt>A202 Head</dt><dd>${escapeHtml(approval.a202Head)}</dd>
+                  <dt>WorldStream Head</dt><dd>${escapeHtml(approval.worldstreamHead)}</dd>
+                  <dt>Expires</dt><dd>${escapeHtml(approval.expiresAt)}</dd>
+                  <dt>Human signature</dt><dd>${escapeHtml(approval.signature || "not signed")}</dd>
+                </dl>
+              </div>`}
+            <div class="actions">
+              <button class="action primary" data-action="APPROVE_EXACT">Approve & sign exact action</button>
+              <button class="action danger" data-action="REJECT_EXACT">Reject exact action</button>
+              <button class="action warning" data-action="EXPIRE_APPROVAL">Expire approval</button>
+            </div>
+          </article>
+
+          <article class="panel span-7">
+            <div class="eyebrow">Participant Actions</div>
+            <h2>Formation and agreement controls</h2>
+            <p class="subtle">Every control submits to the same checked runtime. UI clicks never mutate canonical state directly.</p>
+            <div class="actions">
+              <button class="action" data-action="ACCEPT_CURRENT">Buyer accepts current</button>
+              <button class="action" data-action="SELECT_ACCEPTED">Venue selects accepted</button>
+              <button class="action" data-action="SIGN_BUYER">Buyer signs agreement</button>
+              <button class="action" data-action="SIGN_SELLER">Seller signs agreement</button>
+              <button class="action primary" data-action="COMMIT_AGREEMENT">Venue commits agreement</button>
+            </div>
+            <h3 style="margin-top:18px">Restart and reconnect</h3>
+            <div class="actions">
+              <button class="action warning" data-action="FORCE_RESTART">Force runtime restart</button>
+              <button class="action" data-action="BEGIN_RECONNECT">Reconnect distinct cursors</button>
+              <button class="action primary" data-action="FINISH_CATCHUP">Finish catch-up</button>
+            </div>
+            <div class="metric-grid" style="margin-top:12px">
+              ${Object.entries(state.cursors).map(([name, cursor]) => `<div class="metric"><span class="label">${escapeHtml(title(name))} cursor</span><span class="value">${cursor} / ${state.room.roomSeq}</span></div>`).join("")}
+            </div>
+          </article>
+
+          <article class="panel span-5">
+            <div class="eyebrow">Privacy inspector</div>
+            <h2>${escapeHtml(title(persona))} projection</h2>
+            <p class="subtle">Change persona in the top bar. The projection changes; canonical state does not.</p>
+            ${projection.visible.map(item => `<div class="privacy-row"><span>${escapeHtml(item)}</span><span class="privacy-allowed">Visible</span><span class="detail">Delivered to this authorized projection.</span></div>`).join("")}
+            ${projection.withheld.map(item => `<div class="privacy-row"><span>${escapeHtml(item)}</span><span class="privacy-withheld">Withheld</span><span class="detail">Never included in this projection.</span></div>`).join("")}
+            <pre>${escapeHtml(JSON.stringify(projection.private, null, 2))}</pre>
+          </article>
+
+          <article class="panel span-12">
+            <div class="eyebrow">Failure lab</div>
+            <h2>Attempts that must not become commits</h2>
+            <p class="subtle">Use these after preparing an approval. Rejections appear below and leave Room sequence unchanged.</p>
+            <div class="actions">
+              <button class="action danger" data-action="MUTATE_PROPOSAL_BYTE">Mutate one signed byte</button>
+              <button class="action danger" data-action="SUBMIT_STALE_ROOM_HEAD">Submit stale Room Head</button>
+              <button class="action warning" data-action="CHANGE_A202_HEAD">Change A202 Head</button>
+              <button class="action warning" data-action="FORMATION_DEADLINE_ELAPSED">Deadline; venue unavailable</button>
+              <button class="action" data-action="VENUE_RECONNECT_RESOLVE">Venue reconnects & resolves</button>
+            </div>
+            ${state.attempts.length ? state.attempts.slice().reverse().map(item => `<div class="timeline-row"><span>#${item.index + 1}</span><strong>${escapeHtml(title(item.name))}</strong><span>${escapeHtml(item.reason)} <span class="detail">(Room seq stayed ${item.atRoomSeq})</span></span></div>`).join("") : `<div class="detail" style="margin-top:12px">No rejected attempts yet.</div>`}
+          </article>
+        </div>`;
+    };
+
+    const renderProof = () => {
+      const signatureCount = Object.values(state.transaction.signatures).filter(Boolean).length;
+      const replay = state.replayIndex === 0 ? null : state.events[state.replayIndex - 1];
+      $("#proof-view").innerHTML = `
+        <div class="grid">
+          <article class="panel span-5">
+            <div class="eyebrow">Agreement proof</div>
+            <h2>${state.room.outcome ? escapeHtml(title(state.room.outcome)) : "Formation still open"}</h2>
+            <div class="proof-row"><strong>Selected proposal</strong><code>${escapeHtml(short(state.transaction.selected?.proposalHash))}</code></div>
+            <div class="proof-row"><strong>Party signatures</strong><span>${signatureCount} / 2 exact-byte signatures</span></div>
+            <div class="proof-row"><strong>Venue receipt</strong><code>${escapeHtml(short(state.transaction.agreement?.venueReceipt))}</code></div>
+            <div class="proof-row"><strong>Resolver evidence</strong><span>${escapeHtml(state.transaction.resolverEvidence?.validity || "not used")}</span></div>
+            <div class="proof-row"><strong>Runtime restarts</strong><span>${state.room.restartCount}</span></div>
+            <div class="actions"><button class="action primary" data-action="PREVIEW_PARTY">Preview party proof</button><button class="action" data-action="PREVIEW_VENUE">Preview venue proof</button></div>
+          </article>
+
+          <article class="panel span-7">
+            <div class="eyebrow">Deterministic Replay</div>
+            <h2>Move through committed history</h2>
+            <p class="subtle">Rejected attempts are diagnostic records, never canonical transitions. The slider visits committed snapshots only.</p>
+            <div class="replay-controls"><span>Genesis</span><input id="replay-slider" type="range" min="0" max="${state.events.length}" value="${state.replayIndex}"><span>Head ${state.events.length}</span></div>
+            ${replay ? `<div class="notice info" style="margin-top:12px"><strong>At Room seq ${replay.roomSeq}:</strong> ${escapeHtml(replay.detail)}</div><pre>${escapeHtml(JSON.stringify(replay.snapshot, null, 2))}</pre>` : `<div class="empty">Genesis: no committed transitions replayed.</div>`}
+          </article>
+
+          <article class="panel span-6">
+            <div class="eyebrow">Canonical timeline</div>
+            <h2>Committed transitions</h2>
+            ${state.events.length ? state.events.map(event => `<div class="timeline-row"><span>${event.roomSeq}</span><strong>${escapeHtml(title(event.name))}</strong><span>${escapeHtml(event.detail)}</span></div>`).join("") : `<div class="empty">No canonical transitions yet.</div>`}
+          </article>
+
+          <article class="panel span-6">
+            <div class="eyebrow">Dual evidence export</div>
+            <h2>${state.evidencePreview ? escapeHtml(title(state.evidencePreview.kind)) : "Choose an evidence view"}</h2>
+            <p class="subtle">Party proof preserves exact A202 material. Venue proof explains runtime history, heads, restart, rejection, and replay lineage. Neither replaces the other.</p>
+            ${state.evidencePreview ? `<pre>${escapeHtml(JSON.stringify(state.evidencePreview, null, 2))}</pre><div class="actions"><button class="action" id="download-evidence">Download prototype JSON</button></div>` : `<div class="empty">Preview party/protocol or venue/runtime evidence.</div>`}
+          </article>
+        </div>`;
+    };
+
+    const renderWalkthrough = () => {
+      const selected = scenarios[scenario];
+      $("#walkthrough").innerHTML = `
+        <article class="panel">
+          <div class="eyebrow">Guided walkthroughs</div>
+          <h2>Drive the hard cases in a known order</h2>
+          <div class="scenario-tabs">${Object.entries(scenarios).map(([key, item]) => `<button class="scenario-tab ${key === scenario ? "active" : ""}" data-scenario="${key}">${escapeHtml(item.label)}</button>`).join("")}</div>
+          <p class="subtle">${escapeHtml(selected.description)}</p>
+          <div class="actions"><button class="action small" id="restart-scenario">Restart this walkthrough</button><button class="action small danger" data-action="RESET">Reset all state</button></div>
+          <div class="steps" style="margin-top:12px">
+            ${selected.steps.map(([label], index) => `<div class="step ${index < scenarioStep ? "done" : index === scenarioStep ? "current" : ""}"><span class="step-number">${index < scenarioStep ? "✓" : index + 1}</span><span>${escapeHtml(label)}</span><button class="action small ${index === scenarioStep ? "primary" : ""}" data-step="${index}">${index < scenarioStep ? "Run again" : "Run step"}</button></div>`).join("")}
+          </div>
+        </article>`;
+    };
+
+    const render = () => {
+      renderNotice();
+      renderSetup();
+      renderDeal();
+      renderProof();
+      renderWalkthrough();
+      $$(".view").forEach(node => node.classList.toggle("active", node.id === `${activeView}-view`));
+      $$(".tab-button").forEach(node => node.classList.toggle("active", node.dataset.view === activeView));
+      $$(".persona-button").forEach(node => node.classList.toggle("active", node.dataset.persona === persona));
+    };
+
+    document.addEventListener("click", event => {
+      const viewButton = event.target.closest("[data-view]");
+      if (viewButton) { activeView = viewButton.dataset.view; render(); return; }
+      const personaButton = event.target.closest("[data-persona]");
+      if (personaButton) { persona = personaButton.dataset.persona; render(); return; }
+      const scenarioButton = event.target.closest("[data-scenario]");
+      if (scenarioButton) { scenario = scenarioButton.dataset.scenario; scenarioStep = 0; state = NegotiationModel.initialState(); render(); return; }
+      if (event.target.closest("#restart-scenario")) { scenarioStep = 0; state = NegotiationModel.initialState(); render(); return; }
+      if (event.target.closest("#apply-config")) {
+        dispatch({ type: "UPDATE_CONFIG", config: {
+          item: $("#config-item").value,
+          currency: $("#config-currency").value,
+          quantity: Number($("#config-quantity").value),
+          sessionDeadline: $("#config-deadline").value
+        }});
+        return;
+      }
+      if (event.target.closest("#download-evidence") && state.evidencePreview) {
+        const blob = new Blob([JSON.stringify(state.evidencePreview, null, 2)], { type: "application/json" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `${state.evidencePreview.kind.includes("party") ? "party-protocol" : "venue-runtime"}-evidence.prototype.json`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+        return;
+      }
+      const stepButton = event.target.closest("[data-step]");
+      if (stepButton) {
+        const index = Number(stepButton.dataset.step);
+        const [label, action, view, nextPersona] = scenarios[scenario].steps[index];
+        if (nextPersona) persona = nextPersona;
+        if (view) activeView = view;
+        dispatch(action);
+        scenarioStep = Math.max(scenarioStep, index + 1);
+        state.notice = action.type === "NOOP_PERSONA"
+          ? { tone: "info", text: `${label}: projection changed; canonical Room state stayed exactly the same.` }
+          : { ...state.notice, text: `${label}: ${state.notice.text}` };
+        render();
+        return;
+      }
+      const actionButton = event.target.closest("[data-action]");
+      if (!actionButton) return;
+      const actionMap = {
+        VERIFY_RUNTIME: { type: "VERIFY_RUNTIME" }, APPROVE_DIGEST: { type: "APPROVE_DIGEST" },
+        INSTALL_BUNDLE: { type: "INSTALL_BUNDLE" }, CREATE_ROOM: { type: "CREATE_ROOM" },
+        CONNECT_ALL: { type: "CONNECT_ALL" }, BUYER_PROPOSE: { type: "SUBMIT_PROPOSAL", actor: "buyer", price: 92000 },
+        SELLER_COUNTER: { type: "SUBMIT_PROPOSAL", actor: "seller", price: 96000 }, REQUEST_APPROVAL: { type: "REQUEST_APPROVAL" },
+        APPROVE_EXACT: { type: "APPROVE_EXACT" }, REJECT_EXACT: { type: "REJECT_EXACT" }, EXPIRE_APPROVAL: { type: "EXPIRE_APPROVAL" },
+        ACCEPT_CURRENT: { type: "ACCEPT_CURRENT" }, SELECT_ACCEPTED: { type: "SELECT_ACCEPTED" },
+        SIGN_BUYER: { type: "SIGN_AGREEMENT", party: "buyer" }, SIGN_SELLER: { type: "SIGN_AGREEMENT", party: "seller" },
+        COMMIT_AGREEMENT: { type: "COMMIT_AGREEMENT" }, FORCE_RESTART: { type: "FORCE_RESTART" }, BEGIN_RECONNECT: { type: "BEGIN_RECONNECT" },
+        FINISH_CATCHUP: { type: "FINISH_CATCHUP" }, MUTATE_PROPOSAL_BYTE: { type: "MUTATE_PROPOSAL_BYTE" },
+        SUBMIT_STALE_ROOM_HEAD: { type: "SUBMIT_STALE_ROOM_HEAD" }, CHANGE_A202_HEAD: { type: "CHANGE_A202_HEAD" },
+        FORMATION_DEADLINE_ELAPSED: { type: "FORMATION_DEADLINE_ELAPSED" }, VENUE_RECONNECT_RESOLVE: { type: "VENUE_RECONNECT_RESOLVE" },
+        PREVIEW_PARTY: { type: "PREVIEW_EVIDENCE", kind: "party" }, PREVIEW_VENUE: { type: "PREVIEW_EVIDENCE", kind: "venue" }, RESET: { type: "RESET" }
+      };
+      dispatch(actionMap[actionButton.dataset.action]);
+      if (actionButton.dataset.action === "RESET") scenarioStep = 0;
+    });
+
+    document.addEventListener("input", event => {
+      if (event.target.id === "replay-slider") dispatch({ type: "SET_REPLAY", index: event.target.value });
+    });
+
+    render();
+  </script>
+</body>
+</html>
