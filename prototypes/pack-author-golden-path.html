@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — WorldStream Pack Author Golden Path</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16231f;
+      --muted: #61706a;
+      --paper: #f4f2eb;
+      --card: #fffdf8;
+      --line: #d9d8cf;
+      --accent: #0d745d;
+      --accent-soft: #dff3ec;
+      --danger: #a33c35;
+      --danger-soft: #f9e4e1;
+      --warn: #8a6419;
+      --warn-soft: #f7edcf;
+      --code: #15201d;
+      --code-ink: #eaf5f1;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button { font: inherit; }
+    .shell { width: min(1420px, calc(100% - 32px)); margin: 0 auto; padding: 30px 0 80px; }
+    .eyebrow { color: var(--accent); font-weight: 800; letter-spacing: .09em; text-transform: uppercase; font-size: 12px; }
+    h1 { margin: 8px 0 8px; max-width: 980px; font-size: clamp(30px, 5vw, 56px); line-height: 1.03; letter-spacing: -.035em; }
+    h2, h3, p { margin-top: 0; }
+    h2 { font-size: 22px; }
+    h3 { font-size: 16px; }
+    .lede { max-width: 980px; color: var(--muted); font-size: 18px; }
+    .notice { margin: 20px 0 26px; padding: 14px 16px; border: 1px solid #d6c988; background: #fff7d8; border-radius: 12px; }
+    .notice strong { color: #73540d; }
+    .flow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0 24px; }
+    .flow-card { text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 15px; padding: 16px; cursor: pointer; color: var(--ink); }
+    .flow-card:hover { border-color: #9cbeb3; }
+    .flow-card.active { border: 2px solid var(--accent); padding: 15px; box-shadow: 0 8px 26px rgba(13, 116, 93, .09); }
+    .flow-card .tag { display: inline-block; margin-bottom: 8px; padding: 3px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 750; }
+    .flow-card .tradeoff { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+    .main-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 16px; align-items: start; }
+    .stack { display: grid; gap: 16px; }
+    .panel { border: 1px solid var(--line); background: var(--card); border-radius: 16px; padding: 18px; }
+    .panel-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+    .badge { flex: none; padding: 4px 9px; border-radius: 999px; font-weight: 750; font-size: 12px; }
+    .badge.ok { color: var(--accent); background: var(--accent-soft); }
+    .badge.wait { color: var(--warn); background: var(--warn-soft); }
+    .badge.fail { color: var(--danger); background: var(--danger-soft); }
+    .meter { height: 9px; margin: 8px 0 18px; background: #e4e4dc; border-radius: 99px; overflow: hidden; }
+    .meter > span { display: block; height: 100%; background: var(--accent); transition: width .15s ease; }
+    .facts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .fact { padding: 11px; border: 1px solid var(--line); border-radius: 10px; background: #faf9f4; }
+    .fact span { display: block; color: var(--muted); font-size: 12px; }
+    .fact strong { display: block; margin-top: 3px; overflow-wrap: anywhere; }
+    .status-line { margin-top: 14px; padding: 12px; border-radius: 10px; background: #f1f2ec; }
+    .status-line.fail { color: var(--danger); background: var(--danger-soft); }
+    .status-line.ok { color: #075f4c; background: var(--accent-soft); }
+    .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .actions button, .step, .scenario-tab {
+      border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--ink); padding: 9px 10px; cursor: pointer;
+    }
+    .actions button:hover, .step:hover, .scenario-tab:hover { border-color: var(--accent); color: var(--accent); }
+    .actions button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .actions button.danger { color: var(--danger); }
+    .role-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .role-pill { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; }
+    .role-pill.active { color: white; background: var(--ink); border-color: var(--ink); }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    .workspace-tabs { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 10px; }
+    .workspace-tabs button { border: 0; border-radius: 8px; padding: 7px 9px; background: #eeeee7; cursor: pointer; }
+    .workspace-tabs button.active { color: white; background: var(--ink); }
+    .code { min-height: 310px; max-height: 470px; overflow: auto; padding: 15px; border-radius: 12px; color: var(--code-ink); background: var(--code); font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .commands { display: grid; gap: 7px; margin-top: 12px; }
+    .command { padding: 8px 10px; border-left: 3px solid #8aa89f; background: #f0f2ed; font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .scenario-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .scenario-tab.active { background: var(--ink); color: white; border-color: var(--ink); }
+    .steps { display: grid; gap: 8px; margin-top: 14px; }
+    .step { display: flex; align-items: center; gap: 10px; text-align: left; }
+    .step .n { display: grid; flex: none; width: 24px; height: 24px; place-items: center; border-radius: 99px; background: #e9ece6; font-size: 12px; font-weight: 800; }
+    .step.done { color: var(--muted); background: #f1f2ed; text-decoration: line-through; }
+    .step.next { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(13,116,93,.09); }
+    .log { max-height: 240px; overflow: auto; display: grid; gap: 7px; }
+    .log-row { display: grid; grid-template-columns: 76px 1fr; gap: 8px; padding-bottom: 7px; border-bottom: 1px solid #ecebe4; }
+    .log-row time { color: var(--muted); font: 12px ui-monospace, monospace; }
+    .comparison { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .comparison th, .comparison td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .comparison th { color: var(--muted); font-size: 12px; }
+    .verdict { border-left: 4px solid var(--accent); padding-left: 15px; }
+    .footer-note { margin-top: 28px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 900px) {
+      .flow-grid, .main-grid { grid-template-columns: 1fr; }
+      .actions { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">Throwaway prototype · not production behavior</div>
+    <h1>What should first-time Activity Pack authoring feel like?</h1>
+    <p class="lede">This prototype asks which authoring entrance is understandable and proportionate while still ending in the same deterministic, immutable Activity Pack Revision. Try each flow, force a privacy failure, and revise a pack without rewriting an existing Room.</p>
+    <div class="notice"><strong>Fixed constraints:</strong> public first success is non-Rust, under 60 minutes, and machine-verifiable. Pack authorship grants no installation or Room authority. Commands, filenames, and TypeScript are hypotheses for reaction—not frozen APIs.</div>
+
+    <section aria-labelledby="flow-heading">
+      <h2 id="flow-heading">Choose an authoring entrance</h2>
+      <div id="flow-grid" class="flow-grid"></div>
+    </section>
+
+    <div class="main-grid">
+      <div class="stack">
+        <section class="panel" aria-labelledby="state-heading">
+          <div class="panel-head">
+            <div><h2 id="state-heading">Current authoring state</h2><p id="state-summary"></p></div>
+            <span id="state-badge" class="badge wait">Not started</span>
+          </div>
+          <div class="meter"><span id="progress"></span></div>
+          <div id="facts" class="facts"></div>
+          <div id="status-line" class="status-line">Choose Scaffold to begin.</div>
+          <div id="roles" class="role-row"></div>
+        </section>
+
+        <section class="panel" aria-labelledby="actions-heading">
+          <h2 id="actions-heading">Free play</h2>
+          <p>Every action stays clickable. Invalid ordering produces an actionable diagnostic instead of silently doing nothing.</p>
+          <div id="actions" class="actions"></div>
+        </section>
+
+        <section class="panel" aria-labelledby="scenario-heading">
+          <h2 id="scenario-heading">Guided walkthroughs</h2>
+          <div id="scenario-tabs" class="scenario-tabs"></div>
+          <div id="scenario-copy"></div>
+          <div id="steps" class="steps"></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="panel" aria-labelledby="workspace-heading">
+          <div class="panel-head"><div><h2 id="workspace-heading">What the author sees</h2><p id="workspace-note"></p></div><span class="badge wait">Illustrative API</span></div>
+          <div id="workspace-tabs" class="workspace-tabs"></div>
+          <pre id="code" class="code"></pre>
+          <div id="commands" class="commands"></div>
+        </section>
+
+        <section class="panel" aria-labelledby="log-heading">
+          <h2 id="log-heading">Evidence and diagnostics</h2>
+          <div id="log" class="log"></div>
+        </section>
+      </div>
+    </div>
+
+    <section class="panel" style="margin-top:16px" aria-labelledby="compare-heading">
+      <h2 id="compare-heading">What this comparison is trying to expose</h2>
+      <table class="comparison">
+        <thead><tr><th>Entrance</th><th>Author thinks about</th><th>Hidden cost</th><th>Provisional role</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Code-first</strong></td><td>Roles, state, Actions, Projections, Outcomes</td><td>SDK must make five host callbacks and canonical encoding disappear without hiding semantics</td><td>Candidate canonical path</td></tr>
+          <tr><td><strong>Manifest-first</strong></td><td>Descriptor and schemas first, rules second</td><td>Facts can drift between manifest and code; diagnosis crosses files</td><td>Useful only if manifest is mostly generated or statically checked</td></tr>
+          <tr><td><strong>Prompt-assisted</strong></td><td>Domain description, then review of generated source</td><td>Fast start can create false confidence; generated code still needs ownership and conformance</td><td>Optional scaffold into the canonical path, never authority</td></tr>
+        </tbody>
+      </table>
+      <div class="verdict" style="margin-top:18px">
+        <h3>Provisional recommendation to react to</h3>
+        <p><strong>One code-first project contract, with prompt assistance as an optional way to create it.</strong> Generate identity metadata and most schemas from typed source. Keep a small human-readable manifest for package facts and limits, not duplicated domain rules. The CLI owns check/build/evidence; a Host Operator explicitly approves local installation. Static Rust crates remain the separation bridge, not the public golden path.</p>
+      </div>
+    </section>
+
+    <p class="footer-note">This file contains no Pack Host, compiler, sandbox, persistence, or network integration. It is a discussion instrument for the Wayfinder decision “Prototype the Pack Author golden path.”</p>
+  </main>
+
+  <script>
+    // Pure workflow model. It deliberately has no DOM access.
+    const AuthoringModel = (() => {
+      const stages = ["idea", "scaffolded", "edited", "checked", "built", "approved", "running", "evidenced"];
+      const copy = value => JSON.parse(JSON.stringify(value));
+      const stamp = (state, message, kind = "info") => {
+        state.log.unshift({ at: `T+${String(state.tick).padStart(2, "0")}m`, message, kind });
+        state.tick += 2;
+      };
+      const block = (state, message) => {
+        state.last = message;
+        state.lastKind = "fail";
+        stamp(state, message, "fail");
+        return state;
+      };
+      const advance = (state, stage, message) => {
+        state.stage = stage;
+        state.last = message;
+        state.lastKind = "ok";
+        stamp(state, message, "ok");
+        return state;
+      };
+      const fresh = flow => ({
+        flow,
+        stage: "idea",
+        tick: 0,
+        customRules: false,
+        privacyBug: false,
+        conformance: "not run",
+        currentRevision: null,
+        installed: [],
+        rooms: [],
+        retainedVerified: false,
+        operatorApproved: false,
+        last: "Choose Scaffold to begin.",
+        lastKind: "wait",
+        log: [{ at: "T+00m", message: "No Activity Pack project exists yet.", kind: "info" }]
+      });
+      const digest = state => `wsp_${state.flow}_${state.currentRevision || "draft"}_${state.privacyBug ? "unsafe" : "73ad"}`;
+      function reduce(input, action) {
+        const state = copy(input);
+        switch (action.type) {
+          case "reset": return fresh(state.flow);
+          case "scaffold":
+            if (state.stage !== "idea") return block(state, "Project already exists. Revise it instead of scaffolding over it.");
+            state.currentRevision = "0.1.0-draft";
+            return advance(state, "scaffolded", "Created a reviewable local Pack project; no runtime authority was granted.");
+          case "edit":
+            if (!["scaffolded", "edited"].includes(state.stage)) return block(state, "Edit requires a scaffolded draft. Existing immutable revisions are never edited.");
+            state.customRules = true;
+            return advance(state, "edited", "Added Buyer and Seller Roles, scoped Projections, and submit_offer/accept Actions.");
+          case "inject_bug":
+            if (!state.customRules) return block(state, "Add custom rules before introducing the privacy defect.");
+            state.privacyBug = true;
+            state.conformance = "not run";
+            return advance(state, "edited", "Injected a leak: Buyer private ceiling is returned in the Seller Projection.");
+          case "fix_bug":
+            if (!state.privacyBug) return block(state, "There is no known privacy defect to fix.");
+            state.privacyBug = false;
+            state.conformance = "not run";
+            return advance(state, "edited", "Removed the Buyer-only ceiling from the Seller Projection.");
+          case "check":
+            if (state.stage !== "edited") return block(state, "Conformance needs a customized draft. Scaffold and edit first.");
+            if (state.privacyBug) {
+              state.conformance = "failed: projection privacy";
+              return block(state, "WS-PROJECTION-004: Seller Projection exposed Buyer-only field `ceiling`. Fix view() at fixture seller-after-offer.");
+            }
+            state.conformance = "passed 18/18";
+            return advance(state, "checked", "Conformance passed: deterministic output, two scoped Projections, accepted Action, and expected rejection.");
+          case "build":
+            if (state.stage !== "checked" || !state.conformance.startsWith("passed")) return block(state, "Build requires a passing conformance result for the exact draft bytes.");
+            state.currentRevision = state.currentRevision.startsWith("0.2") ? "0.2.0" : "0.1.0";
+            return advance(state, "built", `Built immutable Activity Pack Revision ${digest(state)}. Original component bytes are retained; compiler cache is disposable.`);
+          case "approve":
+            if (state.stage !== "built") return block(state, "Host Operator approval requires a built immutable revision.");
+            state.operatorApproved = true;
+            state.installed.push({ revision: state.currentRevision, digest: digest(state), selectable: true, runnable: true });
+            return advance(state, "approved", "Host Operator approved this exact revision for the local installation. Pack authorship alone did not authorize it.");
+          case "run":
+            if (state.stage !== "approved") return block(state, "Create a Room only after the Host Operator has made the exact revision selectable.");
+            state.rooms.push({ id: `room-${state.rooms.length + 1}`, revision: state.currentRevision, digest: digest(state), head: 1 });
+            return advance(state, "running", "Created a Room, attached Buyer and Seller, accepted submit_offer, and rejected Seller-only accept from Buyer.");
+          case "evidence":
+            if (state.stage !== "running") return block(state, "Evidence requires a live Room transition and expected rejection.");
+            return advance(state, "evidenced", "Produced machine-verifiable first-success evidence for the exact revision and Room.");
+          case "revise":
+            if (!state.installed.length) return block(state, "Build and install an initial revision before demonstrating retention.");
+            state.stage = "edited";
+            state.currentRevision = "0.2.0-draft";
+            state.customRules = true;
+            state.operatorApproved = false;
+            state.conformance = "not run";
+            state.privacyBug = false;
+            return advance(state, "edited", "Started revision 0.2.0 from source. Existing 0.1.0 bytes and Rooms remain unchanged and runnable.");
+          case "verify_retained":
+            if (state.installed.length < 2 || state.rooms.length < 1) return block(state, "Retention proof needs an old Room plus a newer installed revision.");
+            state.retainedVerified = true;
+            state.last = "Replay verified the old Room with 0.1.0 while new Rooms select 0.2.0.";
+            state.lastKind = "ok";
+            stamp(state, state.last, "ok");
+            return state;
+          default: return block(state, `Unknown prototype action: ${action.type}`);
+        }
+      }
+      return { stages, fresh, reduce };
+    })();
+
+    const FLOWS = {
+      code: {
+        name: "Code-first SDK",
+        tag: "Candidate canonical path",
+        summary: "One typed rules file; package metadata and schemas are derived where possible.",
+        tradeoff: "Most explicit and easiest to diagnose; SDK ergonomics carry the burden.",
+        note: "The author edits domain concepts. Component/WIT details and revision hashing stay behind the tool boundary.",
+        files: {
+          "pack.ts": `import { definePack, reject } from "@worldstream/pack";
+
+export default definePack({
+  id: "acme.vendor-negotiation",
+  roles: ["buyer", "seller"],
+  state: t.object({ phase: t.literal("open"), offer: t.optional(t.int()) }),
+  actions: {
+    submit_offer: t.object({ amount: t.int({ min: 1 }) }),
+    accept: t.object({})
+  },
+  reduce(ctx, action) {
+    if (action.type === "accept" && ctx.role !== "seller")
+      return reject("seller_only");
+    // return the next Activity State and Domain Events
+  },
+  view(ctx) {
+    return ctx.role === "buyer"
+      ? { ...ctx.state, ceiling: ctx.config.buyer_ceiling }
+      : ctx.state;
+  }
+});`,
+          "pack.config.ts": `export default {
+  limits: { stateBytes: 65536, outputBytes: 32768 },
+  fixtures: ["fixtures/first-success.ts"]
+};`,
+          "fixtures/first-success.ts": `scenario("two scoped negotiators", room => {
+  room.as("buyer").accepts("submit_offer", { amount: 85 });
+  room.as("buyer").rejects("accept", "seller_only");
+  room.viewsDiffer("buyer", "seller");
+});`
+        },
+        commands: ["worldstream pack new vendor-negotiation --language ts", "worldstream pack check", "worldstream pack build", "worldstream pack request-install dist/*.wspack", "worldstream pack prove-first-success"]
+      },
+      manifest: {
+        name: "Manifest-first + rules",
+        tag: "Explicit package surface",
+        summary: "A readable manifest declares Roles, Actions, schemas, and limits; TypeScript implements behavior.",
+        tradeoff: "Easy to scan, but facts can drift across manifest and source unless tooling proves one source of truth.",
+        note: "This makes the artifact shape visible early, but the author must mentally join two representations of the same domain.",
+        files: {
+          "worldstream.pack.yaml": `id: acme.vendor-negotiation
+version: 0.1.0
+roles: [buyer, seller]
+actions:
+  submit_offer: { schema: schemas/submit-offer.json }
+  accept: { schema: schemas/empty.json }
+projections:
+  buyer: { schema: schemas/buyer-view.json }
+  seller: { schema: schemas/seller-view.json }
+limits:
+  state_bytes: 65536
+  output_bytes: 32768`,
+          "src/rules.ts": `export function reduce(ctx, action) {
+  if (action.type === "accept" && ctx.role !== "seller")
+    return ctx.reject("seller_only");
+  // behavior must agree with the manifest
+}
+
+export function view(ctx) {
+  return ctx.role === "buyer"
+    ? { ...ctx.state, ceiling: ctx.config.buyer_ceiling }
+    : ctx.state;
+}`,
+          "fixtures/first-success.yaml": `roles: [buyer, seller]
+steps:
+  - as: buyer
+    action: { type: submit_offer, amount: 85 }
+    expect: accepted
+  - as: buyer
+    action: { type: accept }
+    expect_rejection: seller_only
+assert: { projections_differ: true }`
+        },
+        commands: ["worldstream pack new vendor-negotiation --layout manifest", "worldstream pack check --explain", "worldstream pack build", "worldstream pack request-install dist/*.wspack", "worldstream pack prove-first-success"]
+      },
+      prompt: {
+        name: "Prompt-assisted scaffold",
+        tag: "Optional accelerator",
+        summary: "Describe the domain; an assistant generates the same code-first project for explicit review.",
+        tradeoff: "Fastest blank-page start, but review burden is highest and prompt output can never be authoritative.",
+        note: "The prompt disappears after scaffolding. The reviewed source, fixtures, component bytes, and conformance evidence become the artifact.",
+        files: {
+          "intent.md": `Create a two-party vendor negotiation.
+
+- Buyer may submit offers up to a private ceiling.
+- Seller sees the offer but never the ceiling.
+- Only Seller may accept.
+- Record the agreed amount as the Outcome.
+- Include one valid and one rejected first-success fixture.`,
+          "generated/pack.ts": `// GENERATED DRAFT — Pack Author must review
+export default definePack({
+  id: "acme.vendor-negotiation",
+  roles: ["buyer", "seller"],
+  actions: { submit_offer, accept },
+  reduce(ctx, action) { /* generated explicit rules */ },
+  view(ctx) { /* generated scoped Projections */ }
+});`,
+          "REVIEW.md": `# Required author decisions
+
+- [ ] Is the Buyer ceiling always private?
+- [ ] May a Seller withdraw an offer?
+- [ ] Which phase is Terminal?
+- [ ] Are timer semantics required?
+- [ ] Do the fixtures cover each Role and rejection?
+
+Generation is incomplete until the author resolves every item.`
+        },
+        commands: ["worldstream pack draft --from intent.md", "worldstream pack review", "worldstream pack check", "worldstream pack build", "worldstream pack request-install dist/*.wspack", "worldstream pack prove-first-success"]
+      }
+    };
+
+    const ACTIONS = [
+      ["scaffold", "Scaffold"], ["edit", "Edit domain"], ["inject_bug", "Inject privacy bug"],
+      ["check", "Run check"], ["fix_bug", "Fix diagnostic"], ["build", "Build revision"],
+      ["approve", "Operator approves"], ["run", "Run Room"], ["evidence", "Prove success"],
+      ["revise", "Start revision"], ["verify_retained", "Verify old Room"], ["reset", "Reset"]
+    ];
+
+    const SCENARIOS = {
+      happy: {
+        name: "First success",
+        copy: "Take a custom two-Role pack from blank project to machine-verifiable Room evidence. Watch where Pack Author responsibility ends and Host Operator authority begins.",
+        steps: ["scaffold", "edit", "check", "build", "approve", "run", "evidence"]
+      },
+      privacy: {
+        name: "Privacy failure",
+        copy: "A Seller Projection accidentally exposes the Buyer-only ceiling. The check must identify the viewer, field, and fixture without requiring Kernel knowledge.",
+        steps: ["scaffold", "edit", "inject_bug", "check", "fix_bug", "check", "build"]
+      },
+      retention: {
+        name: "Immutable revision",
+        copy: "Ship 0.1.0, open a Room, then create 0.2.0. The old Room must continue through the retained exact executor while new Rooms can select the new revision.",
+        steps: ["scaffold", "edit", "check", "build", "approve", "run", "revise", "check", "build", "approve", "verify_retained"]
+      }
+    };
+
+    let flow = "code";
+    let state = AuthoringModel.fresh(flow);
+    let file = Object.keys(FLOWS[flow].files)[0];
+    let scenario = "happy";
+    let scenarioIndex = 0;
+
+    const $ = id => document.getElementById(id);
+    const escape = value => value.replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"})[ch]);
+
+    function chooseFlow(next) {
+      flow = next;
+      state = AuthoringModel.fresh(flow);
+      file = Object.keys(FLOWS[flow].files)[0];
+      scenarioIndex = 0;
+      render();
+    }
+    function dispatch(type, fromScenario = false) {
+      state = AuthoringModel.reduce(state, { type });
+      if (fromScenario) scenarioIndex += 1;
+      render();
+    }
+    function chooseScenario(next) {
+      scenario = next;
+      scenarioIndex = 0;
+      state = AuthoringModel.fresh(flow);
+      render();
+    }
+
+    function renderFlows() {
+      $("flow-grid").innerHTML = Object.entries(FLOWS).map(([id, item]) => `
+        <button class="flow-card ${id === flow ? "active" : ""}" data-flow="${id}">
+          <span class="tag">${item.tag}</span><h3>${item.name}</h3><p>${item.summary}</p><p class="tradeoff">${item.tradeoff}</p>
+        </button>`).join("");
+      document.querySelectorAll("[data-flow]").forEach(el => el.onclick = () => chooseFlow(el.dataset.flow));
+    }
+
+    function renderState() {
+      const stageIndex = AuthoringModel.stages.indexOf(state.stage);
+      const progress = Math.max(0, stageIndex) / (AuthoringModel.stages.length - 1) * 100;
+      $("state-summary").textContent = `${FLOWS[flow].name} · stage ${stageIndex + 1} of ${AuthoringModel.stages.length}`;
+      $("progress").style.width = `${progress}%`;
+      const badge = $("state-badge");
+      badge.textContent = state.stage === "evidenced" ? "First success" : state.lastKind === "fail" ? "Needs attention" : state.stage;
+      badge.className = `badge ${state.stage === "evidenced" ? "ok" : state.lastKind === "fail" ? "fail" : "wait"}`;
+      $("facts").innerHTML = [
+        ["Current draft", state.currentRevision || "none"],
+        ["Conformance", state.conformance],
+        ["Installed revisions", state.installed.length ? state.installed.map(x => x.revision).join(", ") : "none"],
+        ["Rooms", state.rooms.length ? state.rooms.map(x => `${x.id} → ${x.revision}`).join(", ") : "none"],
+        ["Operator approval", state.operatorApproved ? "granted for exact bytes" : "not granted"],
+        ["Retained Replay", state.retainedVerified ? "verified" : "not yet"]
+      ].map(([label, value]) => `<div class="fact"><span>${label}</span><strong>${value}</strong></div>`).join("");
+      const status = $("status-line");
+      status.textContent = state.last;
+      status.className = `status-line ${state.lastKind}`;
+      $("roles").innerHTML = `<span class="role-pill active">Pack Author</span><span class="role-pill ${state.operatorApproved ? "active" : ""}">Host Operator approval</span><span class="role-pill">Participant acts in Room</span>`;
+    }
+
+    function renderActions() {
+      $("actions").innerHTML = ACTIONS.map(([id, label]) => `<button data-action="${id}" class="${id === "scaffold" ? "primary" : id === "inject_bug" ? "danger" : ""}">${label}</button>`).join("");
+      document.querySelectorAll("[data-action]").forEach(el => el.onclick = () => dispatch(el.dataset.action));
+    }
+
+    function renderWorkspace() {
+      const current = FLOWS[flow];
+      $("workspace-note").textContent = current.note;
+      $("workspace-tabs").innerHTML = Object.keys(current.files).map(name => `<button data-file="${name}" class="${name === file ? "active" : ""}">${name}</button>`).join("");
+      document.querySelectorAll("[data-file]").forEach(el => el.onclick = () => { file = el.dataset.file; renderWorkspace(); });
+      $("code").innerHTML = escape(current.files[file]);
+      $("commands").innerHTML = current.commands.map((cmd, index) => `<div class="command">${index + 1}. $ ${cmd}</div>`).join("");
+    }
+
+    function renderScenario() {
+      $("scenario-tabs").innerHTML = Object.entries(SCENARIOS).map(([id, item]) => `<button class="scenario-tab ${id === scenario ? "active" : ""}" data-scenario="${id}">${item.name}</button>`).join("");
+      document.querySelectorAll("[data-scenario]").forEach(el => el.onclick = () => chooseScenario(el.dataset.scenario));
+      const selected = SCENARIOS[scenario];
+      $("scenario-copy").innerHTML = `<p>${selected.copy}</p>`;
+      $("steps").innerHTML = selected.steps.map((action, index) => {
+        const label = ACTIONS.find(item => item[0] === action)[1];
+        const cls = index < scenarioIndex ? "done" : index === scenarioIndex ? "next" : "";
+        return `<button class="step ${cls}" data-step-index="${index}" ${index !== scenarioIndex ? "disabled" : ""}><span class="n">${index + 1}</span><span>${label}</span></button>`;
+      }).join("");
+      const next = document.querySelector(`[data-step-index="${scenarioIndex}"]`);
+      if (next) next.onclick = () => dispatch(selected.steps[scenarioIndex], true);
+    }
+
+    function renderLog() {
+      $("log").innerHTML = state.log.map(row => `<div class="log-row"><time>${row.at}</time><div>${row.kind === "fail" ? "⚠ " : row.kind === "ok" ? "✓ " : ""}${row.message}</div></div>`).join("");
+    }
+
+    function render() {
+      renderFlows(); renderState(); renderActions(); renderWorkspace(); renderScenario(); renderLog();
+    }
+    render();
+  </script>
+</body>
+</html>
