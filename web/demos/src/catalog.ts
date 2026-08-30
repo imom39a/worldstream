@@ -104,7 +104,7 @@ export const demos: readonly DemoDefinition[] = [
     thumbnail: {
       kind: "css-diagram",
       variant: "agent-heist",
-      description: "One Room connected to three scoped views.",
+      description: "Recorded Action-to-Observation flow for Room 017.",
     },
     backendRequirement: {
       required: false,
@@ -136,7 +136,7 @@ export const demos: readonly DemoDefinition[] = [
     thumbnail: {
       kind: "css-diagram",
       variant: "negotiate",
-      description: "One planned Room with proposal, approval, and signing Roles.",
+      description: "Planned proposal-to-signature flow that requires a persistent authority.",
     },
     backendRequirement: {
       required: true,

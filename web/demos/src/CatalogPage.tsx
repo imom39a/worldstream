@@ -137,7 +137,6 @@ export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
           <StatusItem label="Catalog schema" value={demoBuildIdentity.catalogSchema} />
           <StatusItem label="Build revision" value={demoBuildIdentity.sourceRevision} />
           <StatusItem label="Backend" value="Not connected" />
-          <StatusItem label="Source" value="Private repository" />
         </section>
 
         <section className="capabilities" id="capabilities" aria-labelledby="capabilities-title">
@@ -163,19 +162,9 @@ export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
 }
 
 function DemoCard({ demo, onNavigate }: { demo: DemoDefinition; onNavigate: Navigate }) {
-  const agentHeist = demo.thumbnail.variant === "agent-heist";
-
   return (
     <article className={`demo-card demo-card-${demo.id}`}>
-      <div className="demo-visual" role="img" aria-label={demo.thumbnail.description}>
-        <span className="visual-room">Room<br /><b>{agentHeist ? "017" : "019"}</b></span>
-        <span className="visual-node node-a">{agentHeist ? "Nav" : "Buy"}</span>
-        <span className="visual-node node-b">{agentHeist ? "In" : "Sell"}</span>
-        <span className="visual-node node-c">{agentHeist ? "Br" : "OK"}</span>
-        <i className="visual-line line-a" />
-        <i className="visual-line line-b" />
-        <i className="visual-line line-c" />
-      </div>
+      <DemoVisual demo={demo} />
       <div className="demo-card-copy">
         <div className="card-status-row">
           <span>{demo.categoryLabel}</span>
@@ -205,6 +194,35 @@ function DemoCard({ demo, onNavigate }: { demo: DemoDefinition; onNavigate: Navi
       </div>
     </article>
   );
+}
+
+function DemoVisual({ demo }: { demo: DemoDefinition }) {
+  const agentHeist = demo.thumbnail.variant === "agent-heist";
+
+  return (
+    <div className={`demo-visual demo-visual-${demo.thumbnail.variant}`} role="img" aria-label={demo.thumbnail.description}>
+      <div className="visual-diagram" aria-hidden="true">
+        <div className="visual-meta">
+          <span><i />{agentHeist ? "Recorded fixture" : "Planned flow"}</span>
+          <strong>{agentHeist ? "Room 017" : "Authority required"}</strong>
+        </div>
+        <div className="visual-flow">
+          <FlowStage index="01" label="Input" value={agentHeist ? "Action" : "Proposal"} detail={agentHeist ? "nav.enter" : "terms.v1"} />
+          <i className="visual-arrow">→</i>
+          <FlowStage index="02" label={agentHeist ? "Ordered change" : "Decision"} value={agentHeist ? "Transition" : "Approvals"} detail={agentHeist ? "sequence 017" : "0 of 4"} />
+          <i className="visual-arrow">→</i>
+          <FlowStage index="03" label="Output" value={agentHeist ? "Observation" : "Signed result"} detail={agentHeist ? "scoped view" : "not created"} />
+        </div>
+        <div className="visual-legend">
+          {agentHeist ? <><span>Public view</span><span>Operator view</span><span>No network</span></> : <><span>Four Roles</span><span>Persistent authority</span><span>Not running</span></>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FlowStage({ detail, index, label, value }: { detail: string; index: string; label: string; value: string }) {
+  return <div className="visual-stage"><small>{index} · {label}</small><strong>{value}</strong><span>{detail}</span></div>;
 }
 
 function FacetSelect<Value extends string>({
