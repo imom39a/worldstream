@@ -50,14 +50,14 @@ export function AgentHeistDocsPage({ onNavigate }: { onNavigate: Navigate }) {
             <span className="section-label">Recorded evidence</span>
             <h2>Exact fixture identity</h2>
             <dl className="docs-identity">
-              <div><dt>Activity Pack</dt><dd>{agentHeistEvidence.packId}</dd></div>
+              <div><dt>Activity Pack</dt><dd><code>{agentHeistEvidence.packId}</code></dd></div>
               <div><dt>Pack version</dt><dd>{agentHeistEvidence.packVersion}</dd></div>
-              <div><dt>Semantic revision digest</dt><dd>{agentHeistEvidence.revisionDigest}</dd></div>
-              <div><dt>Fixture ID</dt><dd>{agentHeistEvidence.fixtureId}</dd></div>
-              <div><dt>Evidence schema</dt><dd>{agentHeistEvidence.sourceSchema}</dd></div>
-              <div><dt>Transcript schema</dt><dd>{agentHeistEvidence.transcriptSchema}</dd></div>
-              <div><dt>Transcript digest</dt><dd>{agentHeistEvidence.transcriptDigest}</dd></div>
-              <div><dt>Final Room sequence</dt><dd>{agentHeistEvidence.finalRoomSequence}</dd></div>
+              <div><dt>Semantic revision digest</dt><dd><code>{agentHeistEvidence.revisionDigest}</code></dd></div>
+              <div><dt>Fixture ID</dt><dd><code>{agentHeistEvidence.fixtureId}</code></dd></div>
+              <div><dt>Evidence schema</dt><dd><code>{agentHeistEvidence.sourceSchema}</code></dd></div>
+              <div><dt>Transcript schema</dt><dd><code>{agentHeistEvidence.transcriptSchema}</code></dd></div>
+              <div><dt>Transcript digest</dt><dd><code>{agentHeistEvidence.transcriptDigest}</code></dd></div>
+              <div><dt>Final Room sequence</dt><dd><code>{agentHeistEvidence.finalRoomSequence}</code></dd></div>
               <div><dt>Final phase</dt><dd>{agentHeistEvidence.finalPhase}</dd></div>
               <div><dt>Recorded Replay</dt><dd>{agentHeistEvidence.replayVerified ? "verified · read only" : "not verified"}</dd></div>
             </dl>
@@ -67,11 +67,11 @@ export function AgentHeistDocsPage({ onNavigate }: { onNavigate: Navigate }) {
             <span className="section-label">Browser build</span>
             <h2>Build and protocol identity</h2>
             <dl className="docs-identity">
-              <div><dt>Source revision</dt><dd>{demoBuildIdentity.sourceRevision}</dd></div>
+              <div><dt>Source revision</dt><dd><code>{demoBuildIdentity.sourceRevision}</code></dd></div>
               <div><dt>Product version</dt><dd>{demoBuildIdentity.productVersion}</dd></div>
-              <div><dt>Catalog schema</dt><dd>{demoBuildIdentity.catalogSchema}</dd></div>
-              <div><dt>Wire protocol</dt><dd>{demoBuildIdentity.wireProtocol} · not connected</dd></div>
-              <div><dt>WebSocket subprotocol</dt><dd>{demoBuildIdentity.websocketSubprotocol} · not connected</dd></div>
+              <div><dt>Catalog schema</dt><dd><code>{demoBuildIdentity.catalogSchema}</code></dd></div>
+              <div><dt>Wire protocol</dt><dd><code>{demoBuildIdentity.wireProtocol}</code> · not connected</dd></div>
+              <div><dt>WebSocket subprotocol</dt><dd><code>{demoBuildIdentity.websocketSubprotocol}</code> · not connected</dd></div>
               <div><dt>Connection</dt><dd>none</dd></div>
             </dl>
           </article>

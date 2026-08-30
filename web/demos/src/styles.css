@@ -247,7 +247,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .docs-identity div:nth-child(even) { border-left: 1px solid var(--lavender-300); }
 .docs-identity div:nth-last-child(-n+2) { border-bottom: 0; }
 .docs-identity dt { color: var(--slate-600); font-size: 11px; font-weight: 800; }
-.docs-identity dd { min-width: 0; margin: 0; color: var(--slate-950); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.docs-identity dd { min-width: 0; margin: 0; color: var(--slate-950); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.docs-identity code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: inherit; }
 .docs-actions { display: flex; width: min(1180px, calc(100% - 40px)); align-items: center; gap: 10px; margin: 0 auto; padding: 26px 0 84px; }
 .docs-actions button, .docs-actions a { display: inline-flex; min-height: 40px; align-items: center; padding: 10px 14px; border-radius: 7px; font-size: 12px; font-weight: 800; text-decoration: none; }
 .docs-actions button { border: 0; color: var(--white); background: var(--purple-700); cursor: pointer; }
