@@ -27,6 +27,7 @@ and CSS changes.
 | navigation/search/application behavior | `web/manual/src/App.tsx` |
 | visual design | `web/manual/src/styles.css` |
 | social preview | `web/manual/public/og.png` |
+| Vercel deployment settings | `web/manual/vercel.json` |
 | GitHub Pages workflow | `.github/workflows/deploy-developer-manual.yml` |
 | GitLab Pages pipeline | `.gitlab-ci.yml` |
 
@@ -51,10 +52,19 @@ help, and tests. Use the provider's official documentation for external
 integration syntax. Record compatibility gaps directly in the page instead of
 guessing.
 
-## GitHub Pages
+## Vercel
 
-The public developer manual is published at
-[imom39a.github.io/worldstream](https://imom39a.github.io/worldstream/).
+The public developer manual is at
+[worldstream-manual.vercel.app](https://worldstream-manual.vercel.app/).
+The Vercel project builds `web/manual` and serves its `dist` directory.
+Deployment runs from a verified local checkout. Vercel Git integration and a
+Vercel CI job are not configured.
+
+Use `/` for `DOCS_BASE`. Set `DOCS_SITE_URL` to the production URL before the
+production build. This keeps asset paths and social metadata correct.
+
+## GitHub Pages workflow
+
 The checked-in GitHub Actions workflow verifies and builds the manual after a
 relevant change lands on `main`, then deploys the resulting static artifact to
 the `github-pages` environment. `actions/configure-pages` supplies the actual
@@ -82,15 +92,15 @@ is a GitLab project setting, not a value this repository can safely force in
 CI. Test the final URL both while signed in and in a signed-out browser; the
 latter must not reveal the manual. See [GitLab Pages access control](https://docs.gitlab.com/user/project/pages/pages_access_control/).
 
-A Pages-ready pipeline is not proof of deployment. Before calling either host
+A deployment configuration is not proof of publication. Before calling a host
 live, verify all of the following in the target project:
 
 1. the remote points at the intended project;
 2. `main` (or the configured default branch) contains this site;
-3. the verification/build and Pages deployment jobs succeed;
-4. the provider reports the expected Pages URL;
+3. the verification and build commands succeed;
+4. the provider reports the expected production URL;
 5. that URL returns the current commit's manual and social card.
-6. repository and Pages visibility match the intended audience.
+6. repository and site visibility match the intended audience.
 
 ## Documentation release checklist
 
@@ -100,7 +110,7 @@ live, verify all of the following in the target project:
 - inspect the built site at desktop and narrow widths;
 - keep local-v0.1 limitations visible;
 - commit research evidence with the documentation it informed;
-- record the deployed commit and URL when Pages is actually enabled.
+- record the deployed commit and URL when a publication is complete.
 
 Additional GitLab sources: [GitLab Pages](https://docs.gitlab.com/user/project/pages/)
 and [GitLab CI/CD YAML](https://docs.gitlab.com/ci/yaml/).
