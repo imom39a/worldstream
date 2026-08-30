@@ -105,7 +105,7 @@
     <div class="eyebrow">Throwaway prototype · not production behavior</div>
     <h1>What should first-time Activity Pack authoring feel like?</h1>
     <p class="lede">This prototype asks which authoring entrance is understandable and proportionate while still ending in the same deterministic, immutable Activity Pack Revision. Try each flow, force a privacy failure, and revise a pack without rewriting an existing Room.</p>
-    <div class="notice"><strong>Fixed constraints:</strong> public first success is non-Rust, under 60 minutes, and machine-verifiable. Pack authorship grants no installation or Room authority. Commands, filenames, and TypeScript are hypotheses for reaction—not frozen APIs.</div>
+    <div class="notice"><strong>Fixed constraints:</strong> public first success is non-Rust, under 60 minutes, and machine-verifiable. Prompt assistance is a required first-release capability but remains optional for each author. Pack authorship grants no installation or Room authority. Commands, filenames, and TypeScript are hypotheses for reaction—not frozen APIs.</div>
 
     <section aria-labelledby="flow-heading">
       <h2 id="flow-heading">Choose an authoring entrance</h2>
@@ -161,12 +161,12 @@
         <tbody>
           <tr><td><strong>Code-first</strong></td><td>Roles, state, Actions, Projections, Outcomes</td><td>SDK must make five host callbacks and canonical encoding disappear without hiding semantics</td><td>Candidate canonical path</td></tr>
           <tr><td><strong>Manifest-first</strong></td><td>Descriptor and schemas first, rules second</td><td>Facts can drift between manifest and code; diagnosis crosses files</td><td>Useful only if manifest is mostly generated or statically checked</td></tr>
-          <tr><td><strong>Prompt-assisted</strong></td><td>Domain description, then review of generated source</td><td>Fast start can create false confidence; generated code still needs ownership and conformance</td><td>Optional scaffold into the canonical path, never authority</td></tr>
+          <tr><td><strong>Prompt-assisted</strong></td><td>Domain description, focused clarifications, then review of generated source</td><td>Fast start can create false confidence; generated code still needs ownership and conformance</td><td>Required first-release entrance, optional to invoke, never authority</td></tr>
         </tbody>
       </table>
       <div class="verdict" style="margin-top:18px">
         <h3>Provisional recommendation to react to</h3>
-        <p><strong>One code-first project contract, with prompt assistance as an optional way to create it.</strong> Generate identity metadata and most schemas from typed source. Keep a small human-readable manifest for package facts and limits, not duplicated domain rules. The CLI owns check/build/evidence; a Host Operator explicitly approves local installation. Static Rust crates remain the separation bridge, not the public golden path.</p>
+        <p><strong>One code-first project contract, with prompt assistance as a required first-release way to create it and an optional choice for each author.</strong> The assistant asks focused domain questions, emits the same reviewable source and fixtures, states assumptions, and may propose fixes for deterministic diagnostics. Generate identity metadata and most schemas from typed source. Keep a small human-readable manifest for package facts and limits, not duplicated domain rules. The CLI owns check/build/evidence; a Host Operator explicitly approves local installation. Static Rust crates remain the separation bridge, not the public golden path.</p>
       </div>
     </section>
 
@@ -365,10 +365,10 @@ assert: { projections_differ: true }`
       },
       prompt: {
         name: "Prompt-assisted scaffold",
-        tag: "Optional accelerator",
+        tag: "Required release option",
         summary: "Describe the domain; an assistant generates the same code-first project for explicit review.",
-        tradeoff: "Fastest blank-page start, but review burden is highest and prompt output can never be authoritative.",
-        note: "The prompt disappears after scaffolding. The reviewed source, fixtures, component bytes, and conformance evidence become the artifact.",
+        tradeoff: "Required in the first release but optional to invoke; review burden is highest and prompt output can never be authoritative.",
+        note: "A configured external or local model helps scaffold; worldstreamd never hosts it. The prompt disappears after scaffolding. Reviewed source, fixtures, component bytes, and conformance evidence become the artifact.",
         files: {
           "intent.md": `Create a two-party vendor negotiation.
 
