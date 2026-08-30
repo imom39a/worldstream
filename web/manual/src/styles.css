@@ -49,10 +49,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .search-results a small, .search-results p { margin: 0; color: var(--slate-600); font-size: 11px; line-height: 1.4; }
 .search-results a:hover { background: var(--lavender-100); }
 .topbar-links { display: flex; align-items: center; gap: 4px; }
-.source-link, .source-status { display: inline-flex; min-height: 40px; align-items: center; gap: 7px; padding: 9px 10px; border-radius: 8px; color: rgba(255,255,255,.88); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.source-link { display: inline-flex; min-height: 40px; align-items: center; gap: 7px; padding: 9px 10px; border-radius: 8px; color: rgba(255,255,255,.88); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .source-link:hover { background: rgba(255,255,255,.1); }
-.lock-icon { position: relative; display: inline-block; width: 11px; height: 9px; border: 1px solid currentColor; border-radius: 2px; }
-.lock-icon i { position: absolute; right: 2px; bottom: 7px; left: 2px; height: 6px; border: 1px solid currentColor; border-bottom: 0; border-radius: 5px 5px 0 0; }
 .menu-button { display: none; min-height: 40px; color: var(--white); border: 1px solid rgba(255,255,255,.36); border-radius: 7px; background: transparent; padding: 7px 10px; }
 .sidebar { position: sticky; top: 72px; align-self: start; height: calc(100vh - 72px); overflow: auto; padding: 28px 20px; border-right: 1px solid var(--lavender-300); background: var(--lavender-100); }
 .sidebar nav { margin-bottom: 26px; }
@@ -155,7 +153,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .manual-shell { grid-template-columns: 1fr; }
   .topbar { padding: 0 16px; }
   .brand { min-width: 0; }
-  .brand small, .source-status { display: none; }
+  .brand small { display: none; }
   .menu-button { display: block; }
   .sidebar { position: fixed; z-index: 15; top: 72px; left: 0; width: 280px; height: calc(100vh - 72px); transform: translateX(-100%); transition: transform .2s ease; }
   .sidebar.open { transform: translateX(0); }

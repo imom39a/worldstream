@@ -52,11 +52,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .brand-mark b { inset: 8px; border-radius: 3px; }
 .brand-mark em { inset: 12px; border: 0; border-radius: 1px; background: currentColor; }
 .site-header nav { display: flex; align-items: center; gap: 8px; }
-.site-header nav a, .source-status { display: inline-flex; min-height: 40px; align-items: center; gap: 7px; padding: 9px 12px; border-radius: 8px; color: rgba(255,255,255,0.88); font-size: 12px; font-weight: 700; text-decoration: none; }
+.site-header nav a { display: inline-flex; min-height: 40px; align-items: center; gap: 7px; padding: 9px 12px; border-radius: 8px; color: rgba(255,255,255,0.88); font-size: 12px; font-weight: 700; text-decoration: none; }
 .site-header nav a:hover { background: rgba(255,255,255,0.1); }
-.source-status { color: rgba(255,255,255,0.88); }
-.lock-icon { position: relative; display: inline-block; width: 11px; height: 9px; border: 1px solid currentColor; border-radius: 2px; }
-.lock-icon i { position: absolute; right: 2px; bottom: 7px; left: 2px; height: 6px; border: 1px solid currentColor; border-bottom: 0; border-radius: 5px 5px 0 0; }
 
 .catalog-intro { display: grid; width: min(760px, calc(100% - 40px)); justify-items: center; gap: 15px; margin: 0 auto; padding: 76px 0 68px; text-align: center; }
 .eyebrow, .section-label { color: var(--purple-600); font-size: 12px; font-weight: 800; letter-spacing: 0.05em; }
@@ -283,7 +280,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 620px) {
   .site-header { padding-inline: 16px; }
   .site-header nav a { display: none; }
-  .source-status { padding-inline: 0; font-size: 11px; }
   .catalog-intro { padding-block: 60px 52px; }
   .catalog-intro p { font-size: 15px; }
   .catalog { padding: 30px 12px 38px; }
