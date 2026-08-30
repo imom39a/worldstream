@@ -1,0 +1,27 @@
+{
+  "name": "@worldstream/demos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.18.1"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5180",
+    "build": "tsc --noEmit && vite build",
+    "lint": "tsc --noEmit",
+    "test": "vitest run --environment node"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "typescript": "7.0.2",
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
+  }
+}

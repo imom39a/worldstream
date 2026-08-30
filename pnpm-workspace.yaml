@@ -2,6 +2,7 @@ packages:
   - packs/*
   - sdk/typescript-pack/packages/*
   - web/console
+  - web/demos
   - web/manual
   - web/studio
 

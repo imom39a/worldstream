@@ -5,6 +5,9 @@
 /node_modules/
 /web/console/node_modules/
 /web/console/dist/
+/web/demos/node_modules/
+/web/demos/dist/
+/web/demos/.vercel/
 /web/studio/node_modules/
 /web/studio/dist/
 /sdk/python/.venv/
