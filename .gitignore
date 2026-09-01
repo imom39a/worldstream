@@ -3,6 +3,8 @@
 /research/
 /.worldstream/
 /node_modules/
+/clients/*/node_modules/
+/clients/*/dist/
 /web/console/node_modules/
 /web/console/dist/
 /web/demos/node_modules/
@@ -11,6 +13,8 @@
 /web/studio/node_modules/
 /web/studio/dist/
 /sdk/python/.venv/
+/sdk/typescript-client/node_modules/
+/sdk/typescript-client/dist/
 /sdk/typescript-pack/packages/*/node_modules/
 /sdk/typescript-pack/packages/*/dist/
 /sdk/typescript-pack/packages/*/.worldstream/

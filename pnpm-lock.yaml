@@ -12,6 +12,34 @@ importers:
         specifier: 1.62.1
         version: 1.62.1
 
+  clients/agent-heist-web:
+    dependencies:
+      '@worldstream/client':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-client
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: 19.2.4
+        version: 19.2.4(@types/react@19.2.18)
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vite:
+        specifier: 8.2.1
+        version: 8.2.1(@types/node@24.13.3)
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@types/node@24.13.3)(jsdom@29.0.1(@noble/hashes@2.4.0))(vite@8.2.1(@types/node@24.13.3))
+
   packs/negotiate:
     devDependencies:
       '@types/node':
@@ -26,6 +54,15 @@ importers:
       typescript:
         specifier: 5.9.2
         version: 5.9.2
+
+  sdk/typescript-client:
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@types/node@24.13.3)(jsdom@29.0.1(@noble/hashes@2.4.0))(vite@8.2.1(@types/node@24.13.3))
 
   sdk/typescript-pack/packages/pack-cli:
     dependencies:
@@ -64,6 +101,12 @@ importers:
 
   web/console:
     dependencies:
+      '@worldstream/agent-heist-client':
+        specifier: workspace:*
+        version: link:../../clients/agent-heist-web
+      '@worldstream/client':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-client
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -89,6 +132,9 @@ importers:
 
   web/demos:
     dependencies:
+      '@worldstream/agent-heist-client':
+        specifier: workspace:*
+        version: link:../../clients/agent-heist-web
       react:
         specifier: 19.2.8
         version: 19.2.8

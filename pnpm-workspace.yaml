@@ -1,5 +1,7 @@
 packages:
+  - clients/*
   - packs/*
+  - sdk/typescript-client
   - sdk/typescript-pack/packages/*
   - web/console
   - web/demos

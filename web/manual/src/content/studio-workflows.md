@@ -93,12 +93,19 @@ Lobby launch remains blocked until all declared required readiness is satisfied
 and the operator explicitly chooses launch. Studio does not infer launch from
 process health.
 
-## Human Participant handoff
+## Human Activity Client handoff
 
-**Open Participant View** requests a short-lived, one-use handoff for one exact
-provisioned human seat. The new Console window receives only an opaque fragment,
-redeems it from the configured Console origin, and obtains an HTTP-only scoped
-session cookie. Raw Room ID, Membership ID, and bearer are absent from the URL.
+**Open participant client** requests a short-lived, one-use handoff for one
+exact provisioned human seat. Studio opens an independent client on the
+configured Client Host; it does not own or render that participant UI. The new
+window receives only an opaque fragment, redeems it at the configured origin,
+and obtains an HttpOnly scoped session cookie. Raw Room ID, Membership ID, and
+bearer are absent from the URL.
+
+The Supervisor selects the client from the exact pinned Pack ID, version, and
+digest. Exact approved Agent Heist `0.1.0` and `0.2.0` revisions open the
+first-party `/agent-heist/` client. Unsupported exact revisions open the
+Pack-neutral `/inspector/` fallback. There is no name-only or SemVer fallback.
 
 ## Operations
 

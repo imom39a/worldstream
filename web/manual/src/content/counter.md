@@ -46,12 +46,12 @@ Studio browser ── Supervisor ── worldstreamd
       │                 │
       │                 ├── managed Agent Host ── assignment MCP helper
       │                 └── deterministic loopback provider
-      └── Participant Console (protected cookie handoff)
+      └── Client Host → WorldStream Inspector (protected cookie handoff)
 ```
 
 In its normal mode, the command builds the local daemon, Supervisor binaries,
-Studio, and Console, then starts Supervisor (`9410`), daemon (`9420`), Studio
-(`5174`), Participant Console (`5173`), and provider (`19431`). It prints the
+Studio, and Client Host, then starts Supervisor (`9410`), daemon (`9420`),
+Studio (`5174`), Client Host (`5173`), and provider (`19431`). It prints the
 local addresses and keeps the fixture processes running. Leave that terminal
 open. Its state directory is separate from your normal local state, so stopping
 the story only stops its own processes.
@@ -163,20 +163,21 @@ first authoritative Room Head is sequence `0`.
 | ---: | ---: | --- |
 | 0 | 0 | Genesis; the reviewed setup is ready |
 
-### 3. Open the protected human Participant Console
+### 3. Open the protected WorldStream Inspector
 
-On the human seat, choose **Open Participant View ↗**. Studio opens the
-separate Participant Console through a short-lived fragment handoff. The
-fragment is immediately exchanged for a local HttpOnly cookie and removed from
-the browser URL.
+On the human seat, choose **Open participant client ↗**. Counter has no
+dedicated first-party Activity Client, so Studio opens the Pack-neutral
+`/inspector/` surface on the separate Client Host through a short-lived fragment
+handoff. The fragment is immediately exchanged for a local HttpOnly cookie and
+removed from the browser URL.
 
 You do not copy a Room identifier, Membership identifier, or bearer credential.
-The Console shows **Participant session** and **Authorized Room projection**.
+The Inspector shows **Authorized Room session** and **Authorized Room projection**.
 Those are membership-authorized views; they are not a second Room runtime.
 
 ### 4. Submit `private_ack`
 
-In the Console, use the offered **Submit private_ack** Action with the shown
+In the Inspector, use the offered **Submit private_ack** Action with the shown
 JSON payload. The Action is admitted against the exact current Room Head.
 
 The Room moves to sequence `1`. The human's authorized projection changes, and
@@ -194,20 +195,20 @@ Choose **Start managed host** when Studio presents that readiness operation.
 The managed Agent Host consumes the Activation through the assignment MCP
 helper. The deterministic provider selects the currently offered `increment`
 Action. The Agent Host submits that Action through its own bounded Membership
-authority; it does not use the human Console cookie.
+authority; it does not use the human Activity Client cookie.
 
 Studio's Runner status returns to a healthy or idle state after the Invocation.
-The Participant Console performs bounded, one-at-a-time refreshes from its last
+The Inspector performs bounded, one-at-a-time refreshes from its last
 received frame. It does not advance the Membership Cursor itself, and it does
 not issue overlapping request storms while it waits for the managed turn.
 
-Both Studio and the Console then show the same Counter result:
+Both Studio and the Inspector then show the same Counter result:
 
 | Room sequence | Counter value | What happened |
 | ---: | ---: | --- |
 | 2 | 2 | One managed `increment` committed |
 
-If the Console briefly says it is reconnecting, use **Reconnect**. It resumes
+If the Inspector briefly says it is reconnecting, use **Reconnect**. It resumes
 from the retained cookie and last received frame, rather than creating a new
 participant authority or repeating an Action.
 
@@ -221,7 +222,7 @@ managed-seat card reports an Activation state of **Waiting** or **Leased**,
 choose **Stop managed host**. Wait for the same card to report **Attention** or
 **Unavailable**, then choose **Retry managed host**. Studio should return the
 managed host to its bounded work and eventually show an idle/healthy result;
-the Console and operator view converge to sequence `2`, `Counter value: 2`.
+the Inspector and operator view converge to sequence `2`, `Counter value: 2`.
 The retained activation cursor and lease are resumed, so this recovery commits
 one increment, not two.
 
@@ -232,7 +233,7 @@ Room Head is still sequence `2`, `Counter value: 2` remains visible, and the
 managed-seat card has no new waiting or leased work. A completed activation is
 not invoked again and the deterministic provider is not contacted again.
 
-In both cases, the human Console reconnects from its retained session without
+In both cases, the Inspector reconnects from its retained session without
 leaking a credential into its URL or page.
 
 The repeated Action identity returns its original result; a different request
@@ -241,12 +242,12 @@ rejected until the client synchronizes again.
 
 ## Verify read-only Replay
 
-In the Participant Console, choose **Verify Replay at current sequence** under
+In the Inspector, choose **Verify Replay at current sequence** under
 **Authorized Replay**. This asks the local Supervisor to call the daemon's
 existing member-authorized Replay API with the Room address and bearer retained
 server-side. The browser sends only the cookie and `{ "at_room_seq": 2 }`.
 
-The Console displays **Verified Canonical History at sequence 2**, the
+The Inspector displays **Verified Canonical History at sequence 2**, the
 authorized historical projection (`value: 2`), its projection hash, the
 authoritative-state hash, and the lineage hash. They must agree with the
 committed sequence-2 Room Head shown in the live story.
@@ -260,7 +261,7 @@ the assignment MCP helper, the Runner, or the deterministic provider.
 | What you see | What to do |
 | --- | --- |
 | Studio cannot reach the Supervisor | Keep `pnpm counter:studio` running and reload Studio. To resume the retained `counter4-demo` draft or its Task setup, use **Open existing draft counter4-demo** on its retained template usage instead of creating another draft. The fixture owns its local processes. |
-| Participant Console says reconnect | Choose **Reconnect**. Do not reopen the handoff URL or copy its old fragment. |
+| Inspector says reconnect | Choose **Reconnect**. Do not reopen the handoff URL or copy its old fragment. |
 | No managed turn appears | Check the bounded attention and Runner status in Studio. The deterministic provider should be labeled as a local fixture. |
 | Replay is unavailable | The existing human credential may predate Replay scope provisioning. Return to Task setup and create a new reviewed Counter draft; old credentials are intentionally not upgraded. |
 | A value differs from `2` at sequence `2` | Stop the fixture, keep any diagnostic output, and rerun the complete story. Do not delete existing WorldStream data. |

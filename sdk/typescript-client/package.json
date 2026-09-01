@@ -1,0 +1,24 @@
+{
+  "name": "@worldstream/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Internal browser Activity Client primitives for WorldStream",
+  "type": "module",
+  "engines": {
+    "node": "24.18.1"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./browser-handoff": "./src/browserHandoff.ts",
+    "./retained-session": "./src/retainedRoomSession.ts",
+    "./request-queue": "./src/serialRequestQueue.ts"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test": "vitest run --environment node"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

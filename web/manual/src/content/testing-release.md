@@ -13,7 +13,7 @@ live evidence or a successful build as release readiness.
 | component suites | package behavior at tested seams | packaged deployment |
 | `scripts/verify-local.sh` | broad pinned local checkout verification | signed distribution |
 | strict pre-push/CI | declared repository/native matrix | detached release artifacts unless release tier runs |
-| live Agent Heist gate | real daemon/Supervisor/MCP/Console story, restart recovery, Replay parity | provider SLA, public network, every model host |
+| live Agent Heist gate | real daemon/Supervisor/MCP/Activity Client story, restart recovery, Replay parity | provider SLA, public network, every model host |
 | release gate | detached artifacts, checksums, SBOM, provenance, signatures | universal performance/availability SLA |
 | qualification gate | authenticated official/custom Starters and six real outside-adopter receipts bound to one signed release | a replacement for primary release evidence or proof manufactured by repository tests |
 

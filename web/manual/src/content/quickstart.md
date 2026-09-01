@@ -118,8 +118,8 @@ starts only these two processes:
 - the Studio Supervisor on `127.0.0.1:9420`;
 - the Studio portal on `127.0.0.1:5174`.
 
-It does **not** start `worldstreamd`, and it does **not** start the Participant
-Console. `pnpm studio:dev` is an alias for the same launcher without additional
+It does **not** start `worldstreamd`, and it does **not** start the Client Host.
+`pnpm studio:dev` is an alias for the same launcher without additional
 Supervisor arguments. Until the current CLI origin defaults are aligned with
 the Vite ports, use the explicit command above for the complete local flow.
 
@@ -146,23 +146,27 @@ The complete local topology is:
 | `worldstreamd` | `127.0.0.1:9410` | **Start daemon** in Studio, or the foreground command above |
 | Studio Supervisor | `127.0.0.1:9420` | `scripts/studio-dev.sh ...` in terminal 1 |
 | Studio portal | `127.0.0.1:5174` | `scripts/studio-dev.sh ...` in terminal 1 |
-| Participant Console | `127.0.0.1:5173` | optional `pnpm ui:dev` in terminal 2 |
+| Client Host | `127.0.0.1:5173` | optional `pnpm ui:dev` in terminal 2 |
 
-## 6. Optionally start the Participant Console
+## 6. Optionally start the Client Host
 
 Skip this step when you only need Studio Operations, daemon health, Activity
 Pack inspection, Room administration, backups, or agent setup.
 
-For a human Participant handoff, start the separate Console process in terminal
-2:
+For a browser Activity Client handoff, start the separate first-party Client
+Host in terminal 2:
 
 ```sh
 pnpm ui:dev
 ```
 
-Keep it running alongside terminal 1. Do not open the Console with manually
-copied Room credentials. In Studio, provision the human seat and use **Open
-Participant View**; the Supervisor brokers the one-use handoff to port `5173`.
+Keep it running alongside terminal 1. Do not open a client with manually copied
+Room credentials. In Studio, provision the human seat and use **Open
+participant client**; the Supervisor brokers the one-use handoff to port
+`5173`. Exact approved Agent Heist `0.1.0` and `0.2.0` revisions open
+`/agent-heist/`; other exact Pack revisions open the generic `/inspector/`
+fallback. Studio launches that independent client and never renders the
+participant surface itself.
 
 ## 7. Verify the live runtime
 
@@ -199,8 +203,8 @@ complete Studio-driven acceptance gate.
 ## Stop and reset
 
 If Studio started the daemon, stop it from **Operations** first. Use `Ctrl-C` in
-each foreground terminal to stop Studio/Supervisor and the optional Participant
-Console. To reset disposable state, stop the daemon and remove `.worldstream/`,
+each foreground terminal to stop Studio/Supervisor and the optional Client
+Host. To reset disposable state, stop the daemon and remove `.worldstream/`,
 then repeat the secret setup. Never replace only the secret while retaining the
 database.
 

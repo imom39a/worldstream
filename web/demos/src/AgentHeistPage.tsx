@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 
+import {
+  RecordedAgentHeistWorkspace,
+  type AgentHeistWorkspaceRecord,
+} from "@worldstream/agent-heist-client/presentation";
+
 import { demoBuildIdentity } from "./buildIdentity";
 import {
   agentHeistEvidence,
@@ -21,6 +26,13 @@ export function AgentHeistPage({ onNavigate }: { onNavigate: Navigate }) {
   );
   const selectedRecord = visibleRecords.find((record) => record.id === selectedRecordId)
     ?? visibleRecords.at(-1);
+  const workspaceRecords = useMemo(
+    () => visibleRecords.map(toWorkspaceRecord),
+    [visibleRecords],
+  );
+  const selectedWorkspaceRecord = selectedRecord === undefined
+    ? undefined
+    : workspaceRecords.find((record) => record.id === selectedRecord.id);
   const phase = agentHeistRecords[revealedThroughStep]?.phase ?? "briefing";
 
   useEffect(() => {
@@ -79,127 +91,59 @@ export function AgentHeistPage({ onNavigate }: { onNavigate: Navigate }) {
           </ol>
         </section>
 
-        <section className="heist-status" aria-label="Fixture status">
-          <StatusMetric label="Fixture outcome" value={`recorded · ${agentHeistEvidence.finalOutcome}`} tone="green" />
-          <StatusMetric
-            label="Fixture Replay status"
-            value={agentHeistEvidence.replayVerified ? "recorded · verified" : "recorded · not verified"}
-            tone={agentHeistEvidence.replayVerified ? "green" : "amber"}
-          />
-          <StatusMetric label="Fixture phase" value={`recorded · ${phase}`} tone="amber" />
-          <StatusMetric label="Fixture Pack version" value={`recorded · ${agentHeistEvidence.packVersion}`} tone="blue" />
-          <StatusMetric label="Visible fixture records" value={String(visibleRecords.length).padStart(2, "0")} tone="violet" />
-        </section>
-
-        <section className="inspector" id="heist-inspector">
-          <aside className="inspector-controls">
-            <PanelHeading number="01" title="Select Projection" />
-            <div className="lens-switch">
-              {(["public", "navigator", "operator"] as const).map((item) => (
-                <button
-                  aria-pressed={lens === item}
-                  className={lens === item ? "is-active" : ""}
-                  key={item}
-                  type="button"
-                  onClick={() => { setLens(item); setSelectedRecordId(null); }}
-                >
-                  <span>{item === "navigator" ? "Navigator" : capitalize(item)}</span>
-                  <small>{lensDescription(item)}</small>
-                </button>
-              ))}
-            </div>
-
-            <PanelHeading number="02" title="Control playback" />
-            <div className="playback-controls">
-              <button aria-pressed={playing} type="button" onClick={() => setPlaying((current) => !current)}>
-                {playing ? "Pause" : "Run"}
-              </button>
-              <button
-                disabled={revealedThroughStep >= agentHeistRecords.length - 1}
-                type="button"
-                onClick={() => setRevealedThroughStep((current) => Math.min(current + 1, agentHeistRecords.length - 1))}
-              >
-                Step
-              </button>
-              <button type="button" onClick={resetFixture}>Reset</button>
-            </div>
-            <div className="playback-progress">
-              <span
-                aria-label="Fixture playback progress"
-                aria-valuemax={agentHeistRecords.length}
-                aria-valuemin={1}
-                aria-valuenow={revealedThroughStep + 1}
-                role="progressbar"
-              >
-                <i style={{ width: `${((revealedThroughStep + 1) / agentHeistRecords.length) * 100}%` }} />
-              </span>
-              <small>Step {revealedThroughStep + 1} of {agentHeistRecords.length}</small>
-            </div>
-
-            <div className="control-note">
-              <span>Current view</span>
-              <p>{lensBoundary(lens)}</p>
-            </div>
-          </aside>
-
-          <section className="record-panel" aria-labelledby="record-panel-title">
-            <div className="record-panel-heading">
-              <div>
-                <span>Selected retained-story data</span>
-                <h2 id="record-panel-title">Recorded parity inspector</h2>
-              </div>
-              <span className="play-state" aria-live="polite"><i className={playing ? "is-running" : ""} />{playing ? "Running" : "Paused"}</span>
-            </div>
-            <div className="record-columns" aria-hidden="true">
-              <span>Room sequence</span><span>Semantic Time</span><span>Summary type and data</span><span>Open</span>
-            </div>
-            <div className="record-list">
-              {visibleRecords.map((record) => (
-                <button
-                  aria-pressed={selectedRecord?.id === record.id}
-                  className={selectedRecord?.id === record.id ? "is-selected" : ""}
-                  key={record.id}
-                  type="button"
-                  onClick={() => setSelectedRecordId(record.id)}
-                >
-                  <span className="record-sequence">{record.roomSequence?.value ?? "—"}</span>
-                  <span className="record-time">{record.semanticTime?.value ?? "—"}</span>
-                  <span className="record-copy">
-                    <i className={`record-tone tone-${record.tone}`} />
-                    <span><small>{record.kind}</small><strong>{record.title}</strong><em>{record.detail}</em></span>
-                  </span>
-                  <span className="record-open">•••</span>
-                </button>
-              ))}
-            </div>
-            <footer className="record-footer">
-              <span>{visibleRecords.length} visible fixture records</span>
-              <span>Cursor: not simulated</span>
-              <span>Connection: no network</span>
-              <span>Replay: not run here</span>
-            </footer>
-          </section>
-
-          <aside className="record-detail" aria-live="polite">
-            <PanelHeading number="03" title="Record detail" />
-            {selectedRecord !== undefined ? <RecordDetail record={selectedRecord} /> : <p>No record is visible.</p>}
-
-            <PanelHeading number="04" title="Fixture identity" />
-            <dl className="identity-list">
-              <div><dt>Pack</dt><dd>{agentHeistEvidence.packId}</dd></div>
-              <div><dt>Pack version</dt><dd>{agentHeistEvidence.packVersion}</dd></div>
-              <div><dt>Revision digest</dt><dd>{agentHeistEvidence.revisionDigest}</dd></div>
-              <div><dt>Fixture ID</dt><dd>{agentHeistEvidence.fixtureId}</dd></div>
-              <div><dt>Final Room sequence</dt><dd>{agentHeistEvidence.finalRoomSequence}</dd></div>
-              <div><dt>Evidence schema</dt><dd>{agentHeistEvidence.sourceSchema}</dd></div>
-              <div><dt>Transcript digest</dt><dd>{agentHeistEvidence.transcriptDigest}</dd></div>
-              <div><dt>Browser build</dt><dd>{demoBuildIdentity.sourceRevision}</dd></div>
-              <div><dt>Wire protocol</dt><dd>{demoBuildIdentity.wireProtocol} · not connected</dd></div>
-              <div><dt>WebSocket subprotocol</dt><dd>{demoBuildIdentity.websocketSubprotocol} · not connected</dd></div>
-            </dl>
-            <p className="identity-note">The browser reads selected metadata from the retained parity fixture. It does not execute this Activity Pack Revision.</p>
-          </aside>
-        </section>
+        <RecordedAgentHeistWorkspace
+          metrics={[
+            { label: "Fixture outcome", value: `recorded · ${agentHeistEvidence.finalOutcome}`, tone: "green" },
+            {
+              label: "Fixture Replay status",
+              value: agentHeistEvidence.replayVerified ? "recorded · verified" : "recorded · not verified",
+              tone: agentHeistEvidence.replayVerified ? "green" : "amber",
+            },
+            { label: "Fixture phase", value: `recorded · ${phase}`, tone: "amber" },
+            { label: "Fixture Pack version", value: `recorded · ${agentHeistEvidence.packVersion}`, tone: "blue" },
+            { label: "Visible fixture records", value: String(visibleRecords.length).padStart(2, "0"), tone: "violet" },
+          ]}
+          lenses={(["public", "navigator", "operator"] as const).map((item) => ({
+            id: item,
+            label: item === "navigator" ? "Navigator" : capitalize(item),
+            description: lensDescription(item),
+          }))}
+          selectedLens={lens}
+          onSelectLens={(next) => {
+            setLens(next as ProjectionLens);
+            setSelectedRecordId(null);
+          }}
+          playing={playing}
+          canStep={revealedThroughStep < agentHeistRecords.length - 1}
+          onTogglePlayback={() => setPlaying((current) => !current)}
+          onStep={() => setRevealedThroughStep((current) => Math.min(current + 1, agentHeistRecords.length - 1))}
+          onReset={resetFixture}
+          progress={((revealedThroughStep + 1) / agentHeistRecords.length) * 100}
+          progressLabel={`Step ${revealedThroughStep + 1} of ${agentHeistRecords.length}`}
+          boundary={lensBoundary(lens)}
+          records={workspaceRecords}
+          selectedRecord={selectedWorkspaceRecord}
+          onSelectRecord={setSelectedRecordId}
+          footer={[
+            `${visibleRecords.length} visible fixture records`,
+            "Cursor: not simulated",
+            "Connection: no network",
+            "Replay: not run here",
+          ]}
+          identity={[
+            { label: "Pack", value: agentHeistEvidence.packId },
+            { label: "Pack version", value: agentHeistEvidence.packVersion },
+            { label: "Revision digest", value: agentHeistEvidence.revisionDigest },
+            { label: "Fixture ID", value: agentHeistEvidence.fixtureId },
+            { label: "Final Room sequence", value: String(agentHeistEvidence.finalRoomSequence) },
+            { label: "Evidence schema", value: agentHeistEvidence.sourceSchema },
+            { label: "Transcript digest", value: agentHeistEvidence.transcriptDigest },
+            { label: "Browser build", value: demoBuildIdentity.sourceRevision },
+            { label: "Wire protocol", value: `${demoBuildIdentity.wireProtocol} · not connected` },
+            { label: "WebSocket subprotocol", value: `${demoBuildIdentity.websocketSubprotocol} · not connected` },
+          ]}
+          identityNote="The browser reads selected metadata from the retained parity fixture. It does not execute this Activity Pack Revision."
+        />
 
         <section className="what-it-shows" id="what-this-shows" aria-labelledby="shows-title">
           <div className="shows-copy">
@@ -235,23 +179,16 @@ function GuideStep({ complete, number, text }: { complete: boolean; number: stri
   return <li className={complete ? "is-complete" : ""}><span>{complete ? "✓" : number}</span><p>{text}</p></li>;
 }
 
-function StatusMetric({ label, value, tone }: { label: string; value: string; tone: string }) {
-  return <div><span>{label}</span><strong><i className={`metric-${tone}`} />{value}</strong></div>;
-}
-
-function PanelHeading({ number, title }: { number: string; title: string }) {
-  return <div className="panel-heading"><span>{number}</span><strong>{title}</strong></div>;
-}
-
-function RecordDetail({ record }: { record: AgentHeistFixtureRecord }) {
-  return (
-    <div className="record-detail-card">
-      <div><span>Room sequence</span><strong>{record.roomSequence?.value ?? "Not applicable"}</strong></div>
-      <div><span>Record type</span><strong>{record.kind}</strong></div>
-      <div><span>Semantic Time</span><strong>{record.semanticTime?.value ?? "Not applicable"}</strong></div>
-      <p>{record.detail}</p>
-    </div>
-  );
+function toWorkspaceRecord(record: AgentHeistFixtureRecord): AgentHeistWorkspaceRecord {
+  return {
+    id: record.id,
+    sequence: record.roomSequence?.value ?? "—",
+    semanticTime: record.semanticTime?.value ?? "—",
+    kind: record.kind,
+    title: record.title,
+    detail: record.detail,
+    tone: record.tone,
+  };
 }
 
 function lensDescription(lens: ProjectionLens) {

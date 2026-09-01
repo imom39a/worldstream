@@ -1,13 +1,5 @@
-/** Serializes Console transport work so a user click cannot be lost to polling. */
-export class ParticipantConsoleRequestQueue {
-  private tail: Promise<void> = Promise.resolve();
+/** @deprecated New Activity Clients import canonical names from `@worldstream/client`. */
+export { ActivityClientRequestQueue } from "@worldstream/client/request-queue";
 
-  run<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(operation, operation);
-    this.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-}
+/** @deprecated Console-only source compatibility while the Inspector migrates. */
+export { ActivityClientRequestQueue as ParticipantConsoleRequestQueue } from "@worldstream/client/request-queue";

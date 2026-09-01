@@ -267,11 +267,13 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 
 - The server MUST be usable without the web UI.
 - The first-party UI MUST consume only authorized public, participant, or operator projections.
-- Studio MUST guide exact bundle inspection/approval/install/restart readiness, schema-driven Genesis configuration, Membership/handoff creation, opaque Runner credential references, diagnostics, Replay, and evidence export without becoming a Participant or rules engine.
+- Studio MUST guide exact bundle inspection/approval/install/restart readiness, schema-driven Genesis configuration, Membership/handoff creation, opaque Runner credential references, diagnostics, Replay, evidence export, and launch of a compatible Activity Client without becoming a Participant, Pack-specific participant renderer, or rules engine.
 - Studio Pack Operations MUST display config-aware CLI commands and consume only the closed typed receipts. It MUST verify canonical inventory row count/order/digest, require inventory and readiness `storage_profile` agreement, match the post-selection `inventory_digest` to restart readiness, and treat the pathless `deployment_binding` as opaque target identity. Studio MUST NOT itself create, retain, bypass, or claim daemon acceptance of the durable startup-readiness seal.
-- The Participant Console MUST support independent attach/reconnect, authorized Projection/Observation delivery, exact Action Offers, Negotiate approval/signing panels, receipts, Replay, and evidence download.
+- First-party Activity Clients MUST support the attach/reconnect, authorized Projection/Observation delivery, exact Action Offer, receipt, and Replay behavior required by their surface. The WorldStream Inspector MUST remain a Pack-neutral fallback; Pack-specific participant rendering belongs in independently executing Activity Clients.
+- An Activity Pack Bundle MUST contain no executable frontend code or mutable launch URL. Activity Client selection MUST remain outside Genesis, Authoritative Room State, Transitions, canonical hashes, and Replay.
+- A live Activity Client MUST initialize from no Activity data and atomically install authorized Projection Reset/Observation data. It MUST NOT merge live state onto recorded fixture data or expose another Access Mode or Role through client-side view switching.
 - The UI MUST submit the same typed commands as another client and MUST NOT enforce server authorization by itself.
-- Runtime LLM-generated UI, arbitrary pack JavaScript, third-party renderers, and a general View Pack ABI are deferred.
+- Runtime LLM-generated UI, arbitrary Pack JavaScript, third-party client bundles/renderers, a client marketplace, and a general View Pack ABI are deferred.
 
 ### FR-10: Developer experience
 

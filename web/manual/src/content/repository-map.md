@@ -5,13 +5,15 @@ agent-streamer/
 ├── CONTEXT.md                 canonical domain vocabulary
 ├── compatibility.toml/json    release/build compatibility contract and mirror
 ├── config/                    local checked-in non-secret configuration
+├── clients/                   first-party standalone Activity Clients
 ├── crates/                    Rust kernel, adapters, server, Supervisor
 ├── docs/                      normative architecture, protocol, ADRs, runbooks
 ├── examples/                  Counter and Agent Heist fixtures/acceptance
 ├── sdk/python/                public asynchronous participant client
+├── sdk/typescript-client/     internal browser Room client seam
 ├── scripts/                   gates, smoke tests, local launch, release tools
 ├── tests/fixtures/            compatibility/storage/conformance fixtures
-├── web/console/               Participant/reference Console
+├── web/console/               first-party Client Host and compatibility UI
 ├── web/studio/                local operator portal
 ├── web/manual/                this static developer manual
 └── xtask/                     deterministic repository maintenance commands

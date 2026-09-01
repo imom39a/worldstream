@@ -189,10 +189,16 @@ Outcome: users operate the platform without learning Kernel internals.
 
 - **Studio:** bundle digest/compatibility inspection, approval/install/restart
   readiness, schema-driven Genesis setup, Membership/handoff, opaque runner
-  credential references, runner readiness, timers, Replay, and evidence export.
-- **Participant Console:** independent cursors/reconnect, Projections/Frames,
-  exact Action Offers, approval/signing panels, receipts, Replay, and evidence
-  download.
+  credential references, runner readiness, timers, Replay, evidence export,
+  and launch of an exact compatible Activity Client. Studio contains no
+  Pack-specific participant renderer.
+- **Activity Clients:** independently executing Pack-compatible browser,
+  terminal, mobile, SDK, or agent clients. Agent Heist is the first standalone
+  proof; Negotiate follows. Recorded and live Heist modes share presentation
+  modules but never share fixture-backed live state.
+- **WorldStream Inspector:** Pack-neutral fallback for authorized
+  Projections/Frames, exact Action Offers, receipts, connection state, and
+  Replay. It is not the intended domain experience for every Pack.
 - **Application SDK:** sessions, cursor/reset/reconnect, Actions/receipts,
   canonical wrappers, signer hooks, and evidence verification. Activation and
   Participant Action capabilities remain separate.
@@ -221,6 +227,8 @@ evidence subject bind the exact final bytes.
 - network Pack registry, discovery, marketplace, or hot loading;
 - generic host imports/effects or WASI capabilities;
 - generated arbitrary UI or third-party renderer code;
+- third-party Client Surface Bundles, multi-origin client discovery, automatic
+  client installation, embedding, or a client marketplace;
 - Investigation Room and generic application artifact upload;
 - multi-supplier/auction negotiation and post-commit commercial lifecycle;
 - A2CN adapter;
@@ -238,5 +246,5 @@ evidence subject bind the exact final bytes.
 | TypeScript toolchain is large or nondeterministic | Pin owned wrappers, retain exact bytes, compare behavior/goldens, and do not promise byte-reproducible upstream output. |
 | Wasmtime limits are mistaken for hostile tenancy | State the capability/fail-closed claim narrowly; add process/container ceilings and upgrade tests. |
 | Negotiate becomes a second protocol authority | Keep one Room order and one Pack; adapters only submit recorded input and export linked proof. |
-| Studio becomes orchestration or hidden rules | Keep it a typed operator client and Participant Console separate. |
+| Studio becomes orchestration or hidden rules | Keep it a typed operator client and independently executing Activity Clients separate. |
 | Adoption gate is self-certified | Require clean-directory outside-developer observations before making the time-to-first-success claim. |

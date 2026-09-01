@@ -62,7 +62,7 @@ export const defaultSelectors = Object.freeze({
     roomCreated: { text: /Room creation succeeded/ },
     provisionAccess: { role: "button", name: "Provision participant access", exact: true },
     roomActive: { text: "Room active" },
-    openParticipantView: { role: "button", name: "Open Participant View ↗", exact: true },
+    openParticipantView: { role: "button", name: "Open participant client ↗", exact: true },
     enableOperatorView: { role: "button", name: "Enable operator view", exact: true },
     counterValue: { text: /Counter value:\s*2\b/ },
     startManagedHost: { role: "button", name: "Start managed host", exact: true },
@@ -74,7 +74,7 @@ export const defaultSelectors = Object.freeze({
     },
   },
   console: {
-    title: { role: "heading", name: "Participant session", exact: true },
+    title: { role: "heading", name: "Authorized Room session", exact: true },
     projection: { role: "heading", name: "Authorized Room projection", exact: true },
     privateAck: { role: "button", name: "Submit private_ack", exact: true },
     privateAckCommitted: { text: /Current sequence:\s*1\b/ },

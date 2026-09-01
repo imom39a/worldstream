@@ -51,9 +51,14 @@ cargo run @CargoOffline --locked -p xtask -- compat verify
 
 uv run @UvOffline --project sdk/python --python $RequiredPython ruff format --check
 uv run @UvOffline --project sdk/python --python $RequiredPython ruff check
-uv run @UvOffline --project sdk/python --python $RequiredPython pytest
+uv run @UvOffline --project sdk/python --python $RequiredPython pytest --ignore=target
 
 pnpm install @PnpmOffline --frozen-lockfile
+pnpm --dir sdk/typescript-client lint
+pnpm --dir sdk/typescript-client test
+pnpm --dir clients/agent-heist-web lint
+pnpm --dir clients/agent-heist-web test
+pnpm --dir clients/agent-heist-web build
 pnpm --dir web/console lint
 pnpm --dir web/console test
 pnpm --dir web/console build

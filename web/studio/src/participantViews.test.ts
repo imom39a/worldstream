@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { openParticipantView } from "./participantViews";
+import { openParticipantClient } from "./participantViews";
 
-describe("Participant View handoff", () => {
+describe("participant client handoff", () => {
   it("opens only the validated one-use fragment URL without exposing it to the DOM", async () => {
-    const consoleUrl = `http://127.0.0.1:5174/#handoff=wsh1:${"a".repeat(64)}`;
+    const consoleUrl = `http://127.0.0.1:5173/agent-heist/#handoff=wsh1:${"a".repeat(64)}`;
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       version: "participant_handoff.v1", console_url: consoleUrl,
     }), { status: 201 }));
     const opener = { open: vi.fn() };
-    await expect(openParticipantView("setup-alpha", "human-1", fetcher, opener)).resolves.toBe(true);
+    await expect(openParticipantClient("setup-alpha", "human-1", fetcher, opener)).resolves.toBe(true);
     expect(fetcher).toHaveBeenCalledWith("/api/v1/participant-console/handoffs", expect.objectContaining({
       method: "POST", body: JSON.stringify({ draft_id: "setup-alpha", seat_id: "human-1" }),
     }));
@@ -21,7 +21,29 @@ describe("Participant View handoff", () => {
       console_url: `https://example.com/?handoff=wsh1:${"a".repeat(64)}`,
     }), { status: 201 }));
     const opener = { open: vi.fn() };
-    await expect(openParticipantView("setup-alpha", "human-1", fetcher, opener)).resolves.toBe(false);
+    await expect(openParticipantClient("setup-alpha", "human-1", fetcher, opener)).resolves.toBe(false);
+    expect(opener.open).not.toHaveBeenCalled();
+  });
+
+  it("opens the validated Inspector fallback path", async () => {
+    const consoleUrl = `http://127.0.0.1:5173/inspector/#handoff=wsh1:${"b".repeat(64)}`;
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      version: "participant_handoff.v1", console_url: consoleUrl,
+    }), { status: 201 }));
+    const opener = { open: vi.fn() };
+
+    await expect(openParticipantClient("setup-alpha", "human-1", fetcher, opener)).resolves.toBe(true);
+    expect(opener.open).toHaveBeenCalledWith(consoleUrl, "_blank", "noopener,noreferrer");
+  });
+
+  it("fails closed for an unrecognized local client path", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      version: "participant_handoff.v1",
+      console_url: `http://127.0.0.1:5173/not-a-client/#handoff=wsh1:${"a".repeat(64)}`,
+    }), { status: 201 }));
+    const opener = { open: vi.fn() };
+
+    await expect(openParticipantClient("setup-alpha", "human-1", fetcher, opener)).resolves.toBe(false);
     expect(opener.open).not.toHaveBeenCalled();
   });
 });

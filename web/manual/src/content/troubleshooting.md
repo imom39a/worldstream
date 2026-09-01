@@ -90,9 +90,10 @@ browser origin values. Current local application ports require:
 
 ### Participant handoff rejected
 
-Confirm the human seat is provisioned, the handoff is fresh and unused, Console
-is on its exact configured origin, and cookies are accepted. Do not extract the
-fragment and manually construct a participant session.
+Confirm the human seat is provisioned, the handoff is fresh and unused, the
+Client Host is on its exact configured origin, and cookies are accepted. The
+`--participant-console-origin` flag retains its compatibility name. Do not
+extract the fragment and manually construct a participant session.
 
 ### Empty Runner Template catalog
 

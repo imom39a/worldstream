@@ -66,6 +66,14 @@ _Avoid_: Plugin developer, participant, host operator
 A person or organization that combines an Activity Pack with external clients, Runners, protocol bridges, and deployment configuration into a usable application. Integration grants no Host Operator authority or Room Membership by itself.
 _Avoid_: Agent integrator, Pack Author when rule ownership is meant, host operator
 
+**Activity Client**:
+An independently executing browser, terminal, mobile, SDK-based, or agent-owned application that participates through one scoped WorldStream client contract and may present one or more exact Activity Pack Revisions.
+_Avoid_: Activity Pack, Pack executor, Studio plugin, Participant when the application itself is meant
+
+**Client Surface**:
+One human-facing entry point of an Activity Client, such as a participant browser screen, spectator display, or terminal interface.
+_Avoid_: Projection, Pack view, React component imported by Studio
+
 ## Participation
 
 **Principal**:

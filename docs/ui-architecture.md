@@ -2,13 +2,13 @@
 
 ## Status
 
-The frozen releases use a small first-party web console and two first-party reference views. WorldStream remains headless: every capability needed by a participant or runner is available through HTTP/WebSocket and the SDK.
+The frozen releases use independently executing first-party Activity Clients plus a Pack-neutral WorldStream Inspector. Studio operates the host and launches clients; it does not own Pack-specific participant renderers. WorldStream remains headless: every capability needed by a participant or runner is available through HTTP/WebSocket and the SDK.
 
-There is no View Pack ABI, generated dashboard system, pack-supplied JavaScript, or runtime LLM-generated UI in v0.1 or v0.2.
+There is no third-party Client Surface Bundle ABI, View Pack ABI, generated dashboard system, pack-supplied JavaScript, or runtime LLM-generated UI in v0.1 or v0.2.
 
 ## Product principle
 
-> The Activity Pack defines meaning, WorldStream exposes authorized projections and typed actions, and the first-party client renders only the two reference experiences.
+> The Activity Pack defines the shared reality. Activity Clients present it. Studio operates the host and launches clients. The WorldStream Inspector debugs the protocol.
 
 This keeps the project focused. A general dynamic UI framework would become another product before the Room Kernel is validated.
 
@@ -48,7 +48,7 @@ flowchart LR
     E --> MP["Pack participant projection/delta"]
     PP --> WS["Scoped WebSocket frame"]
     MP --> WS
-    WS --> UI["First-party web client"]
+    WS --> UI["Independent Activity Client"]
     UI --> ACT["Typed action"]
     ACT --> V["Server authentication and pack validation"]
     V --> E
@@ -56,7 +56,7 @@ flowchart LR
 
 The web client never subscribes to raw Authoritative Room State. The audit timeline uses already authorized Domain Events and Observation metadata.
 
-## Shared console shell
+## Shared client capabilities
 
 Both reference views reuse:
 
@@ -74,7 +74,7 @@ Both reference views reuse:
 - error, resync, and slow-consumer status;
 - host-operator-only restart/recovery diagnostics.
 
-The shell maps stable protocol data to explicitly authored React components. It is not a generic low-code builder.
+Each specialized client maps stable protocol data to explicitly authored components. Reusable transport/session modules remain Pack-neutral. The Inspector exposes raw authorized data as a diagnostic fallback; neither surface is a generic low-code builder.
 
 ## Agent Heist view
 
@@ -236,6 +236,7 @@ Frozen frontend:
 
 - React and TypeScript;
 - Vite build;
+- separately executing Agent Heist client and Pack-neutral Inspector entry points;
 - native browser WebSocket;
 - first-party CSS/component styling;
 - SVG for Heist map and optional Investigation graph;
@@ -255,6 +256,7 @@ Avoid adding a large state framework until real complexity requires it. A small 
 - The UI cannot request another membership's view by changing a client-side ID.
 - Controls shown beside an Operator Membership view require a separate host-operator capability; the Operator Membership itself remains read-only.
 - Pack data cannot choose component types, CSS, event handlers, or network endpoints in the frozen releases.
+- Studio never imports or executes Pack-specific participant client code in its trusted JavaScript realm.
 
 ## Accessibility and testability
 
@@ -276,11 +278,13 @@ Required UI tests:
 - Heist and Investigation actions produce valid protocol payloads;
 - replay never enables mutating controls.
 
-## External clients
+## Activity Clients
 
-A specialized game, terminal UI, mobile app, or enterprise front end may ignore the first-party console and use the same scoped protocol.
+An Activity Client is a specialized game, terminal UI, mobile app, enterprise front end, SDK process, or agent-owned application using the same scoped protocol. A Pack may have no specialized client, one reference client, or several independently released clients.
 
-External clients receive no special database access. Their actions remain typed and server-validated. This is the extension path for visualization until there is evidence for a reusable View Pack contract.
+Activity Clients receive no special database access. Their actions remain typed and server-validated. Client choice is operational integration state and never changes retained Room lineage. The first-party Client Host may route exact known Pack revision digests to exact first-party paths; unknown or incompatible revisions open the Inspector.
+
+The Agent Heist client has disjoint recorded and live adapters. Recorded mode may switch illustrative lenses. Live mode starts with no Activity data, atomically installs only its Membership-authorized Projection Reset/Observation data, and cannot select another Role or Access Mode in browser state.
 
 ## Deferred presentation work
 
@@ -289,7 +293,8 @@ After both reference releases, an RFC may evaluate:
 - a safe declarative view schema;
 - reusable table, board, graph, timeline, chart, and form primitives;
 - a sandboxed custom-renderer boundary;
-- external-client discovery metadata;
+- a signed/content-addressed Client Surface Bundle and discovery registry;
+- multi-origin or embedded client authorization;
 - authoring-time AI assistance that emits validated declarative configuration.
 
 Runtime LLM generation of executable UI is not a target. It would make permissions, replay, accessibility, tests, and a stable user experience harder precisely where the project needs clarity.
@@ -310,3 +315,6 @@ Runtime LLM generation of executable UI is not a target. It would make permissio
 12. No UI control can mark a Room healthy or rewrite Genesis/Transitions.
 13. Complete Head and all three state hashes are displayed as metadata, never Core or Activity State.
 14. Controls are rendered only from the exact Action Offer bytes carried by the installed Projection/Frame; the UI invents no second legality model.
+15. Studio launches Activity Clients but contains no Pack-specific participant renderer.
+16. Live Activity Clients contain no fixture fallback path; a Projection Reset replaces omitted domain state.
+17. Missing or incompatible specialized clients fail closed to the Pack-neutral Inspector.

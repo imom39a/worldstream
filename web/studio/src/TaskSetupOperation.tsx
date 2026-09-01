@@ -8,7 +8,7 @@ export function TaskSetupOperation({
   onStart,
   onRetry,
   onLaunch,
-  onOpenParticipantView,
+  onOpenParticipantClient,
 }: {
   setup: TaskSetupStatus | null;
   statusAvailable: boolean;
@@ -17,7 +17,7 @@ export function TaskSetupOperation({
   onStart?: () => void;
   onRetry?: () => void;
   onLaunch?: () => void;
-  onOpenParticipantView?: (seatId: string) => void;
+  onOpenParticipantClient?: (seatId: string) => void;
 }) {
   if (!roomCreated && setup === null) return null;
   const retryable = setup?.state === "needs_attention" && setup.attention?.retryable === true;
@@ -46,7 +46,7 @@ export function TaskSetupOperation({
                 {readinessLabel(readinessFor(setup, seat.seat_id)?.reason)}
               </small>
               {seat.principal_kind === "human" && seat.member_authority === "provisioned" ? (
-                <button type="button" onClick={() => onOpenParticipantView?.(seat.seat_id)}>Open Participant View ↗</button>
+                <button type="button" onClick={() => onOpenParticipantClient?.(seat.seat_id)}>Open participant client ↗</button>
               ) : null}
             </li>
           ))}

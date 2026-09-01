@@ -5,7 +5,7 @@ import { createCodexBrowserAdapter } from "./codex_browser_adapter.mjs";
 
 test("Codex adapter claims exactly the popup opened from the selected Studio tab", async () => {
   const studio = { id: 4, playwright: { async domSnapshot() { return "Studio"; } } };
-  const popup = { id: 9, title: "Participant session" };
+  const popup = { id: 9, title: "WorldStream Client Host" };
   let tabs = [studio];
   const browser = {
     user: {
@@ -42,7 +42,7 @@ test("Codex adapter claims exactly the popup opened from the selected Studio tab
 test("Codex adapter polls until one loaded Console popup can be claimed and captured", async () => {
   const studio = { id: 4, playwright: { async domSnapshot() { return "Studio"; } } };
   const blank = { id: 9, title: "" };
-  const ready = { id: 9, title: "Participant session" };
+  const ready = { id: 9, title: "WorldStream Client Host" };
   const listings = [[studio], [studio, blank], [studio, ready]];
   let calls = 0;
   let claims = 0;
@@ -53,7 +53,7 @@ test("Codex adapter polls until one loaded Console popup can be claimed and capt
         async claimTab(id) {
           claims += 1;
           assert.equal(id, 9);
-          return { id, title: "Participant session", playwright: { async domSnapshot() { return "Console"; } } };
+          return { id, title: "WorldStream Client Host", playwright: { async domSnapshot() { return "Console"; } } };
         },
       },
     },

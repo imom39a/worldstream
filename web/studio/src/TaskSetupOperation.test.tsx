@@ -94,13 +94,13 @@ describe("TaskSetupOperation", () => {
         roomCreated
         loading={false}
         onLaunch={vi.fn()}
-        onOpenParticipantView={vi.fn()}
+        onOpenParticipantClient={vi.fn()}
       />,
     );
     expect(html).toContain("Room active");
     expect(html).toContain("Open an available participant handoff to connect.");
     expect(html).toContain("Console session missing");
-    expect(html).toContain("Open Participant View");
+    expect(html).toContain("Open participant client");
     expect(html).not.toContain("Launch Task");
   });
 

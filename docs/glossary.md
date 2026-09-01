@@ -57,6 +57,9 @@ flowchart TD
 | **Shared reality** | Positioning language for one Room's governed situation: its rules, authoritative state, permitted Actions, scoped views, and ordered history. | Use in product narrative. It is not a separate entity; use Room and Authoritative Room State in domain, protocol, and code. |
 | **Activity** | The domain experience occurring in one room under one Activity Pack, such as a Heist or Investigation. | The Activity Pack is the definition; the room is the running instance. |
 | **Reference activity** | A deliberately bounded application used to prove or falsify the runtime thesis. | Agent Heist and Investigation Room are reference activities, not the entire product. |
+| **Activity Client** | An independently executing browser, terminal, mobile, SDK-based, or agent-owned application that uses a scoped WorldStream client contract and may present one or more exact Activity Pack Revisions. | It is not an Activity Pack, Pack executor, Studio plugin, or authority shortcut. |
+| **Client Surface** | One human-facing entry point of an Activity Client, such as a participant browser screen, spectator display, or terminal interface. | It is presentation, not a Projection or a React component imported into Studio. |
+| **WorldStream Inspector** | The first-party Pack-neutral browser workbench for authorized Projection/Observation data, exact Action Offers, receipts, connection state, and Replay. | It is a diagnostic fallback, not a generated domain UI or centrally maintained Pack renderer registry. |
 
 ## Identity and participation
 

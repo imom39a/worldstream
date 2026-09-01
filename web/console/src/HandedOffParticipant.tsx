@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { ParticipantBrowserReplay, ParticipantConsoleStartup, ParticipantHandoffClient } from "./participantHandoff";
+import {
+  ParticipantHandoffError,
+  type ParticipantBrowserReplay,
+  type ParticipantConsoleStartup,
+  type ParticipantHandoffClient,
+} from "./participantHandoff";
 import {
   ParticipantConsoleSession,
   type ParticipantConsoleAction,
@@ -18,6 +23,21 @@ interface ParticipantOfferView {
   schemaDigest: string;
 }
 
+export type InspectorActionReceipt =
+  | {
+    state: "accepted";
+    actionId: string;
+    transitionId: string | null;
+    roomSeq: number | null;
+    duplicate: boolean;
+  }
+  | {
+    state: "rejected";
+    code: string;
+    message: string;
+    retryable: boolean | null;
+  };
+
 export function HandedOffParticipant({
   startup,
   client,
@@ -30,6 +50,7 @@ export function HandedOffParticipant({
   const session = sessionRef.current;
   const [state, setState] = useState<ParticipantConsoleSessionState>(session.state);
   const [replay, setReplay] = useState<ParticipantBrowserReplay | null>(null);
+  const [actionReceipt, setActionReceipt] = useState<InspectorActionReceipt | null>(null);
   const startTask = useRef<Promise<ParticipantConsoleSessionState> | null>(null);
   const requestQueueRef = useRef<ParticipantConsoleRequestQueue | null>(null);
   if (requestQueueRef.current === null) requestQueueRef.current = new ParticipantConsoleRequestQueue();
@@ -69,11 +90,15 @@ export function HandedOffParticipant({
   const submit = async (action: ParticipantConsoleAction) => {
     await requestQueue.run(async () => {
       try {
-        await session.act(action);
+        const receipt = await session.act(action);
+        if (mounted.current) setActionReceipt(readInspectorActionReceipt(receipt, action.actionId));
         const next = await session.refresh();
         if (mounted.current) setState(next);
       } catch (error) {
-        if (mounted.current) setState(session.fail(error));
+        if (mounted.current) {
+          setActionReceipt(readInspectorActionFailure(error));
+          setState(session.fail(error));
+        }
       }
     });
   };
@@ -89,7 +114,9 @@ export function HandedOffParticipant({
   };
   return <ParticipantHandoffView
     state={state}
+    actionOfferCandidates={session.actionOffers}
     replay={replay}
+    actionReceipt={actionReceipt}
     onReconnect={async () => {
       await requestQueue.run(async () => {
         const next = await session.reconnect();
@@ -103,21 +130,25 @@ export function HandedOffParticipant({
 
 export function ParticipantHandoffView({
   state,
+  actionOfferCandidates,
   replay,
+  actionReceipt,
   onReconnect,
   onAct,
   onReplay,
 }: {
   state: ParticipantConsoleSessionState;
+  actionOfferCandidates?: readonly unknown[];
   replay?: ParticipantBrowserReplay | null;
+  actionReceipt?: InspectorActionReceipt | null;
   onReconnect: () => Promise<void>;
   onAct: (action: ParticipantConsoleAction) => Promise<void>;
   onReplay?: () => Promise<void>;
 }) {
   const [payloads, setPayloads] = useState<Record<string, string>>({});
-  const offers = state.state === "live" ? actionOffers(state) : [];
+  const offers = state.state === "live" ? actionOffers(state, actionOfferCandidates) : [];
   const negotiate = state.state === "live"
-    ? readNegotiateRetainedSessionView(state.observation)
+    ? readNegotiateRetainedSessionView(state.deliveryBatch)
     : null;
   if (negotiate !== null) {
     return (
@@ -131,15 +162,18 @@ export function ParticipantHandoffView({
   }
   return (
     <main className="participant-handoff-shell">
-      <p className="eyebrow">Participant View</p>
-      <h1>{state.state === "live" ? "Participant session" : "Participant session"}</h1>
+      <p className="eyebrow">WorldStream Inspector</p>
+      <h1>Authorized Room session</h1>
       {state.message === null ? <p role="status">Your provisioned participant authority is connected.</p> : <p role="status">{state.message}</p>}
+      {actionReceipt === null || actionReceipt === undefined ? null : (
+        <InspectorActionReceiptView receipt={actionReceipt} />
+      )}
       {state.state === "live" ? (
         <>
           <section aria-labelledby="participant-head">
             <h2 id="participant-head">Authorized Room projection</h2>
-            <p>Current sequence: {state.observation.room_head.room_seq} · frame {state.observation.frame_head}</p>
-            {state.observation.delivery.map((delivery, index) => (
+            <p>Current sequence: {state.deliveryBatch.room_head.room_seq} · frame {state.deliveryBatch.frame_head}</p>
+            {state.deliveryBatch.delivery.map((delivery, index) => (
               <article key={`${delivery.kind}-${index}`}>
                 <h3>{delivery.kind === "projection_reset" ? "Projection reset" : "Observation"}</h3>
                 <pre>{JSON.stringify(delivery.body, null, 2)}</pre>
@@ -161,7 +195,7 @@ export function ParticipantHandoffView({
                   }
                   void onAct({
                     actionId: nextActionUlid(),
-                    basedOnRoomSeq: state.observation.room_head.room_seq,
+                    basedOnRoomSeq: state.deliveryBatch.room_head.room_seq,
                     offerId: offer.offerId,
                     schemaDigest: offer.schemaDigest,
                     actionType: offer.actionType,
@@ -203,23 +237,127 @@ export function ParticipantHandoffView({
   );
 }
 
-function actionOffers(state: Extract<ParticipantConsoleSessionState, { state: "live" }>): ParticipantOfferView[] {
-  const candidates = state.observation.delivery.flatMap((delivery) => {
-    const root = delivery.kind === "projection_reset"
-      ? record(delivery.body.projection)
-      : record(delivery.body.observation);
-    const projection = "projection" in root ? record(root.projection) : root;
-    return Array.isArray(projection.action_offers) ? projection.action_offers : [];
-  });
+function actionOffers(
+  state: Extract<ParticipantConsoleSessionState, { state: "live" }>,
+  installedCandidates?: readonly unknown[],
+): ParticipantOfferView[] {
+  let candidates: readonly unknown[] = installedCandidates ?? [];
+  if (installedCandidates === undefined) {
+    for (const delivery of state.deliveryBatch.delivery) {
+      const root = delivery.kind === "projection_reset"
+        ? record(delivery.body.projection)
+        : record(delivery.body.observation);
+      const projection = "projection" in root ? record(root.projection) : root;
+      if (Object.hasOwn(projection, "action_offers")) {
+        candidates = Array.isArray(projection.action_offers) ? projection.action_offers : [];
+      }
+    }
+  }
   return candidates.flatMap((candidate, index) => {
     const offer = record(candidate);
     if (typeof offer.action_type !== "string" || typeof offer.payload_schema_digest !== "string") return [];
     return [{
-      offerId: `${state.observation.room_head.room_seq}:${offer.action_type}:${index}`,
+      offerId: `${state.deliveryBatch.room_head.room_seq}:${offer.action_type}:${index}`,
       actionType: offer.action_type,
       schemaDigest: offer.payload_schema_digest,
     }];
   });
+}
+
+function InspectorActionReceiptView({ receipt }: { receipt: InspectorActionReceipt }) {
+  if (receipt.state === "rejected") {
+    return (
+      <section className="inspector-action-receipt inspector-action-receipt-rejected" role="alert" aria-labelledby="inspector-action-receipt">
+        <p className="eyebrow">Action receipt</p>
+        <h2 id="inspector-action-receipt">Action rejected</h2>
+        <p>{receipt.message}</p>
+        <dl>
+          <div><dt>Code</dt><dd>{receipt.code}</dd></div>
+          <div><dt>Retryable</dt><dd>{receipt.retryable === null ? "Unknown" : receipt.retryable ? "Yes" : "No"}</dd></div>
+        </dl>
+      </section>
+    );
+  }
+  return (
+    <section className="inspector-action-receipt inspector-action-receipt-accepted" role="status" aria-labelledby="inspector-action-receipt">
+      <p className="eyebrow">Action receipt</p>
+      <h2 id="inspector-action-receipt">Action accepted</h2>
+      <p>{receipt.duplicate ? "The duplicate submission resolved to its original receipt." : "The Action was accepted at the authoritative Room Head."}</p>
+      <dl>
+        <div><dt>Action</dt><dd>{receipt.actionId}</dd></div>
+        {receipt.transitionId === null ? null : <div><dt>Transition</dt><dd>{receipt.transitionId}</dd></div>}
+        {receipt.roomSeq === null ? null : <div><dt>Room sequence</dt><dd>{receipt.roomSeq}</dd></div>}
+        <div><dt>Duplicate</dt><dd>{receipt.duplicate ? "Yes" : "No"}</dd></div>
+      </dl>
+    </section>
+  );
+}
+
+export function readInspectorActionReceipt(value: unknown, fallbackActionId: string): InspectorActionReceipt {
+  const envelope = record(value);
+  const receipt = Object.hasOwn(envelope, "receipt") ? record(envelope.receipt) : envelope;
+  if (envelope.state === "rejected") {
+    return {
+      state: "rejected",
+      code: boundedText(receipt.code, 96, "action_rejected"),
+      message: boundedText(receipt.message, 320, "The Action was rejected."),
+      retryable: typeof receipt.retryable === "boolean"
+        ? receipt.retryable
+        : typeof receipt.retryable_with_same_action_id === "boolean"
+          ? receipt.retryable_with_same_action_id
+          : null,
+    };
+  }
+  if (envelope.state !== "accepted") {
+    return {
+      state: "rejected",
+      code: "action_receipt_invalid",
+      message: "The Activity Client did not receive a valid Action receipt.",
+      retryable: null,
+    };
+  }
+  const head = record(receipt.room_head);
+  return {
+    state: "accepted",
+    actionId: boundedIdentifier(receipt.action_id) ?? boundedIdentifier(fallbackActionId) ?? "submitted-action",
+    transitionId: boundedIdentifier(receipt.transition_id),
+    roomSeq: safeSequence(head.room_seq) ?? safeSequence(receipt.room_seq),
+    duplicate: receipt.duplicate === true,
+  };
+}
+
+export function readInspectorActionFailure(error: unknown): InspectorActionReceipt {
+  if (error instanceof ParticipantHandoffError) {
+    return {
+      state: "rejected",
+      code: boundedText(error.code, 96, "action_rejected"),
+      message: boundedText(error.message, 320, "The Action was rejected."),
+      retryable: error.retryable,
+    };
+  }
+  return {
+    state: "rejected",
+    code: "action_submission_failed",
+    message: "The Action could not be submitted. Reconnect before trying again.",
+    retryable: null,
+  };
+}
+
+function boundedIdentifier(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) return null;
+  if (/^(?:wsb1|wst1):/i.test(value)) return null;
+  return /^[A-Za-z0-9:._-]+$/.test(value) ? value : null;
+}
+
+function boundedText(value: unknown, limit: number, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  if (/(?:wsb1:|wst1:|https?:\/\/|\/api\/|(?:room|member|membership)_id)/i.test(normalized)) return fallback;
+  return normalized.length === 0 ? fallback : normalized.slice(0, limit);
+}
+
+function safeSequence(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function record(value: unknown): Record<string, unknown> {

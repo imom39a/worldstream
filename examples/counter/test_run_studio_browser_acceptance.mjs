@@ -13,7 +13,7 @@ import {
 
 test("driver starts request capture before it claims the protected popup without URL recursion", async () => {
   const studio = { id: 4, playwright: { async domSnapshot() { return "Studio"; } } };
-  const popup = { id: 9, title: "Participant session" };
+  const popup = { id: 9, title: "WorldStream Client Host" };
   let tabs = [studio];
   let captures = 0;
   const adapter = createCodexBrowserAdapter({
@@ -21,7 +21,7 @@ test("driver starts request capture before it claims the protected popup without
       user: {
         async openTabs() { return tabs; },
         async claimTab() {
-          return { id: 9, title: "Participant session", playwright: { async domSnapshot() { return "Console"; } } };
+          return { id: 9, title: "WorldStream Client Host", playwright: { async domSnapshot() { return "Console"; } } };
         },
       },
     },

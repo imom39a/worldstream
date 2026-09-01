@@ -40,11 +40,18 @@ uv run --project sdk/python --python 3.14.7 \
 This proves deterministic story/parity fixtures. It is not live service
 evidence.
 
+For the visual version of the recorded story, run `pnpm demos:dev` and open
+`http://127.0.0.1:5180/demos/agent-heist/`. The demo reuses the Activity
+Client's presentation through a recorded adapter, but it has no Room authority
+or network connection. A live Studio handoff instead opens the exact approved
+`0.1.0` or `0.2.0` revision at
+`http://127.0.0.1:5173/agent-heist/`.
+
 ## Complete local MVP gate
 
 The real gate owns disposable state and launches the production daemon,
-Supervisor, Console, browser, WebSocket, and assignment MCP boundaries. Build
-the required artifacts first:
+Supervisor, Agent Heist Activity Client, browser, WebSocket, and assignment MCP
+boundaries. Build the required artifacts first:
 
 ```sh
 cargo build --locked -p worldstream-server --bin worldstreamd

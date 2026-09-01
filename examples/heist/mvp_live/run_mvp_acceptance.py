@@ -260,9 +260,7 @@ def assert_public_evidence_safe(
             and b"activation_context" in private_field.group(0).lower()
         ):
             field = private_field.group(0).split(b'"', 2)[1].decode("ascii").lower()
-            raise AcceptanceFailure(
-                f"credential_or_private_data:{label}:field:{field}"
-            )
+            raise AcceptanceFailure(f"credential_or_private_data:{label}:field:{field}")
         if label != "assignment_mcp_stdio" and any(
             value in body for value in secrets_to_find
         ):
@@ -552,7 +550,9 @@ def _browser_python(environment: Mapping[str, str]) -> pathlib.Path:
         candidate = pathlib.Path(configured)
     else:
         candidate = ROOT / "sdk/python/.venv/bin/python"
-    _require(candidate.is_file() and os.access(candidate, os.X_OK), "browser_python_missing")
+    _require(
+        candidate.is_file() and os.access(candidate, os.X_OK), "browser_python_missing"
+    )
     return candidate
 
 
@@ -560,9 +560,7 @@ def _browser_failure(stderr: bytes) -> AcceptanceFailure:
     matched = re.fullmatch(rb"blocked:([a-z0-9_]{1,80})\s*", stderr)
     if matched is None:
         return AcceptanceFailure("production_console_browser_failed")
-    return AcceptanceFailure(
-        "production_console_" + matched.group(1).decode("ascii")
-    )
+    return AcceptanceFailure("production_console_" + matched.group(1).decode("ascii"))
 
 
 def reconcile_task_setup(
@@ -596,7 +594,11 @@ def reconcile_task_setup(
             continue
         raise AcceptanceFailure("task_setup_terminal_failure")
     state = status.get("state")
-    safe_state = state if isinstance(state, str) and re.fullmatch(r"[a-z_]+", state) else "unknown"
+    safe_state = (
+        state
+        if isinstance(state, str) and re.fullmatch(r"[a-z_]+", state)
+        else "unknown"
+    )
     raise AcceptanceFailure(f"task_setup_reconciliation_timeout:{safe_state}")
 
 
@@ -1004,7 +1006,9 @@ class LiveGate:
         self.public_surfaces.append(
             (
                 "studio_http",
-                json.dumps(retained_handoff_evidence(response), sort_keys=True).encode(),
+                json.dumps(
+                    retained_handoff_evidence(response), sort_keys=True
+                ).encode(),
             )
         )
         url = response.get("console_url")
@@ -1074,7 +1078,7 @@ class LiveGate:
                         surface,
                         "wait",
                         "--text",
-                        "Participant session",
+                        "Authorized participant surface",
                         "--timeout-ms",
                         "30000",
                     ]
@@ -1114,7 +1118,7 @@ class LiveGate:
                         surface,
                         "wait",
                         "--text",
-                        "Authorized Room projection",
+                        "Crew operation board",
                         "--timeout-ms",
                         "30000",
                     ]
@@ -1153,7 +1157,10 @@ class LiveGate:
             safe = json.dumps(
                 {
                     "handoff_fragment_scrubbed": True,
-                    "session_live": b"Authorized Room projection" in body,
+                    "session_live": (
+                        b"Authorized participant surface" in body
+                        and b"Crew operation board" in body
+                    ),
                 },
                 sort_keys=True,
             ).encode()
@@ -1595,8 +1602,7 @@ class LiveGate:
                 second_lease.get("context"), "activation_context_invalid"
             )
             _require(
-                second_lease.get("activation_id")
-                == first_lease.get("activation_id")
+                second_lease.get("activation_id") == first_lease.get("activation_id")
                 and int(second.get("activation_cursor", 0))
                 > int(first.get("activation_cursor", 0))
                 and int(second_context.get("lease_generation", 0))

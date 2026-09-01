@@ -37,11 +37,13 @@ post-MVP convenience, not the kernel's interoperability boundary.
 
 ## 4. Presentation: Studio and product UI
 
-Studio is the local host-operator portal. Participant UI belongs to the Console
-or a product-specific application and receives only Membership-authorized
-responses. Presentation may group or label facts, but must not invent canonical
-state, collapse integrity and freshness into one status, or duplicate Activity
-Pack legality logic.
+Studio is the local host-operator portal and client launcher. Participant UI
+belongs to an independently executing Activity Client—a browser, terminal,
+mobile, SDK-based, or agent-owned application—and receives only
+Membership-authorized responses. An Activity Pack is headless and never ships
+a React component into Studio. Presentation may group or label facts, but must
+not invent canonical state, collapse integrity and freshness into one status,
+or duplicate Activity Pack legality logic.
 
 ## Extension checklist
 

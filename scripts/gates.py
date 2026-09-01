@@ -2696,6 +2696,26 @@ def sdk_and_ui_checks(runner: GateRunner) -> None:
         runner.skip("python-sdk-tools", "uv unavailable")
 
     if shutil.which("pnpm"):
+        runner.command(
+            "activity-client-sdk-lint",
+            ["pnpm", "--dir", "sdk/typescript-client", "lint"],
+        )
+        runner.command(
+            "activity-client-sdk-tests",
+            ["pnpm", "--dir", "sdk/typescript-client", "test"],
+        )
+        runner.command(
+            "agent-heist-client-lint",
+            ["pnpm", "--dir", "clients/agent-heist-web", "lint"],
+        )
+        runner.command(
+            "agent-heist-client-tests",
+            ["pnpm", "--dir", "clients/agent-heist-web", "test"],
+        )
+        runner.command(
+            "agent-heist-client-build",
+            ["pnpm", "--dir", "clients/agent-heist-web", "build"],
+        )
         runner.command("ui-lint", ["pnpm", "--dir", "web/console", "lint"])
         runner.command("ui-tests", ["pnpm", "--dir", "web/console", "test"])
         runner.command("ui-build", ["pnpm", "--dir", "web/console", "build"])

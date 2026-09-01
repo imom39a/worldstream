@@ -1,8 +1,10 @@
 # WorldStream Studio
 
 WorldStream Studio is the local host-operator portal. It is a companion control
-plane, not the Participant Console, and `worldstreamd` remains the only
-authoritative Room runtime.
+plane, not an Activity Client, and `worldstreamd` remains the only authoritative
+Room runtime. Studio may open an exact compatible participant client through a
+scoped handoff; the client executes separately. The WorldStream Inspector is
+the Pack-neutral fallback when no specialized first-party client is compatible.
 
 For the Runtime-plus-Packs release, Studio guides exact bundle inspection,
 digest approval, offline install status, restart readiness, schema-driven
@@ -12,8 +14,9 @@ credential references, timers, Replay, and evidence export.
 Studio never authors Pack source, auto-approves generated code, executes a
 model, holds commercial signing keys, submits Participant Actions, shows
 another participant's private Projection, exposes an arbitrary shell, or
-implements a second rules/state machine. Exact approval/signing and ordinary
-Actions belong in the Participant Console; `worldstreamctl pack` remains the
+implements a second rules/state machine. It also never imports Pack-specific
+participant React modules. Exact approval/signing and ordinary Actions belong
+in independently executing Activity Clients; `worldstreamctl pack` remains the
 complete operator interface.
 
 The Pack Operations card makes that offline interface approachable without

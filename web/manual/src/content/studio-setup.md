@@ -7,15 +7,17 @@ a second Room runtime and cannot mutate canonical state directly.
 ## Processes and ports
 
 ```text
-Studio portal       127.0.0.1:5174 ─┐
-                                    ├─ Studio Supervisor 127.0.0.1:9420
-Participant Console 127.0.0.1:5173 ─┘                │
-                                                     ▼
-                                           worldstreamd 127.0.0.1:9410
+Studio portal 127.0.0.1:5174 ─┐
+                              ├─ Studio Supervisor 127.0.0.1:9420
+Client Host   127.0.0.1:5173 ─┘                │
+                                               ▼
+                                     worldstreamd 127.0.0.1:9410
 ```
 
-The Studio Vite server proxies `/api` to the Supervisor. The Participant Console
-calls the Supervisor's origin-bound handoff/session routes directly.
+The Studio Vite server proxies `/api` to the Supervisor. Activity Clients on
+the Client Host call the Supervisor's origin-bound handoff/session routes
+directly. Studio is the host-operator portal and launcher; it does not render a
+Pack's participant UI.
 
 ## Fresh-checkout setup
 
@@ -35,7 +37,7 @@ For the operator portal only:
 pnpm studio:dev
 ```
 
-For Studio plus human Participant handoff, use two terminals:
+For Studio plus a browser Activity Client handoff, use two terminals:
 
 ```sh
 # terminal 1
@@ -51,6 +53,14 @@ scripts/studio-dev.sh \
 
 The explicit values are required by the current local ports; the Supervisor
 binary's help text currently reports these two defaults in the opposite order.
+`--participant-console-origin` retains its compatibility name while pointing
+at the first-party Client Host.
+
+**Open participant client** launches one of two closed paths on that origin.
+Exact approved Agent Heist `0.1.0` and `0.2.0` identities use
+`/agent-heist/`; unsupported exact Pack identities use the Pack-neutral
+`/inspector/`. A matching Pack name or version with a different digest cannot
+select the Heist client.
 
 ## Supervisor startup options
 

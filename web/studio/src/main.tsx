@@ -83,7 +83,7 @@ import {
 } from "./taskSetup";
 import { loadAgentProfiles, loadModelProviderCredentials, type AgentProfileCatalog, type ModelProviderCredentialCatalog } from "./agentProfiles";
 import { enableRoomOperatorView, loadRoomOperatorView, type RoomOperatorView } from "./roomOperatorView";
-import { openParticipantView } from "./participantViews";
+import { openParticipantClient } from "./participantViews";
 import { loadTaskTemplates, type TaskTemplateCatalog } from "./taskTemplates";
 import "./styles.css";
 
@@ -522,7 +522,7 @@ function LiveStudio() {
       }}
       onTaskTemplateDraftCreated={loadTemplateDraft}
       onTaskTemplateDraftOpened={loadTemplateDraft}
-      onOpenParticipantView={(seatId) => void openParticipantView(activeDraftId, seatId)}
+      onOpenParticipantClient={(seatId) => void openParticipantClient(activeDraftId, seatId)}
       backupProfile={backupProfile}
       backupOperation={backupOperation}
       backupOperationId={backupOperationId}

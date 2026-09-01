@@ -41,11 +41,17 @@ A202 conformance.
 
 ## What the participant sees
 
-The Participant Console has six server-scoped views: buyer agent, seller
-agent, Human buyer approver, venue signer, operator, and spectator. It renders
-only the current authorized Projection and the Pack's exact Action Offers. It
-does not infer permissions from the current phase, display raw Activity State,
-or cache another party's private view.
+The retained Negotiate renderer has six server-scoped views: buyer agent,
+seller agent, Human buyer approver, venue signer, operator, and spectator. It
+renders only the current authorized Projection and the Pack's exact Action
+Offers. It does not infer permissions from the current phase, display raw
+Activity State, or cache another party's private view.
+
+The current Studio launcher sends Negotiate to the Client Host's
+`/inspector/` fallback because there is no standalone registered Negotiate
+Activity Client yet. The Inspector may select this retained compatibility
+renderer only after it receives an authorized Negotiate delivery. Studio does
+not render the view or inspect its participant-private data.
 
 After attach or reconnect, the Console installs a Projection Reset or every
 retained observation, acknowledges the sync barrier, and only then enables an

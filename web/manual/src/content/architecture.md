@@ -7,9 +7,9 @@ typed, authorized operations.
 ## Component map
 
 ```text
-Human Console ─┐
-External Agent ├─ HTTP/WebSocket/MCP ─ Gateway ─ Room supervisor
-Studio ────────┘                              │
+Activity Client ─┐
+External Agent ──┼─ HTTP/WebSocket/MCP ─ Gateway ─ Room supervisor
+Studio ──────────┘                              │
                                               ▼
                                       single Room actor
                                               │

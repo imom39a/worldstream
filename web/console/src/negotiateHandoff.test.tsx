@@ -120,7 +120,7 @@ describe("Negotiate retained HttpOnly Participant session", () => {
           state: "live",
           action: "continue",
           message: null,
-          observation: observation(),
+          deliveryBatch: observation(),
         }}
         onReconnect={vi.fn()}
         onAct={vi.fn()}

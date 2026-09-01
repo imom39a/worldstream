@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ParticipantConsoleRequestQueue } from "./participantRequestQueue";
+import { ActivityClientRequestQueue } from "./index";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -8,9 +8,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-describe("ParticipantConsoleRequestQueue", () => {
+describe("ActivityClientRequestQueue", () => {
   it("runs one Replay click after an active refresh without overlapping transport", async () => {
-    const queue = new ParticipantConsoleRequestQueue();
+    const queue = new ActivityClientRequestQueue();
     const refreshGate = deferred<void>();
     const events: string[] = [];
     let active = 0;
@@ -38,7 +38,7 @@ describe("ParticipantConsoleRequestQueue", () => {
   });
 
   it("continues to the queued user request after a failed refresh", async () => {
-    const queue = new ParticipantConsoleRequestQueue();
+    const queue = new ActivityClientRequestQueue();
     const refresh = queue.run(async () => { throw new Error("refresh failed"); });
     const replay = queue.run(async () => "replayed");
 

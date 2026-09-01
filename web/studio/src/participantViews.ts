@@ -1,4 +1,4 @@
-export async function openParticipantView(
+export async function openParticipantClient(
   draftId: string,
   seatId: string,
   fetcher: typeof fetch = fetch,
@@ -29,6 +29,7 @@ function isResponse(value: unknown): value is { version: "participant_handoff.v1
   try {
     const url = new URL(record.console_url);
     return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) &&
+      ["/agent-heist/", "/inspector/"].includes(url.pathname) && url.search === "" &&
       /^#handoff=wsh1:[0-9a-f]{64}$/.test(url.hash) && url.username === "" && url.password === "";
   } catch {
     return false;

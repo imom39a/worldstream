@@ -58,9 +58,14 @@ cargo run "${cargo_offline[@]}" --locked -p xtask -- compat verify
 
 uv run "${uv_offline[@]}" --project sdk/python --python "$required_python" ruff format --check
 uv run "${uv_offline[@]}" --project sdk/python --python "$required_python" ruff check
-uv run "${uv_offline[@]}" --project sdk/python --python "$required_python" pytest
+uv run "${uv_offline[@]}" --project sdk/python --python "$required_python" pytest --ignore=target
 
 pnpm install "${pnpm_offline[@]}" --frozen-lockfile
+pnpm --dir sdk/typescript-client lint
+pnpm --dir sdk/typescript-client test
+pnpm --dir clients/agent-heist-web lint
+pnpm --dir clients/agent-heist-web test
+pnpm --dir clients/agent-heist-web build
 pnpm --dir web/console lint
 pnpm --dir web/console test
 pnpm --dir web/console build

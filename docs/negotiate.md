@@ -276,10 +276,10 @@ Its deterministic fixture proofs bind exact bytes, signer, and purpose but do
 not replace the pinned A202 schemas, SHA-256 rules, production signature
 algorithms, mandates, or resolver checks.
 
-## Participant Console integration
+## Compatibility Activity Client integration
 
-The production Console selects the Negotiate renderer only when the retained
-Room identifies `worldstream.negotiate`. Its pack-specific bootstrap is a
+The retained Negotiate renderer selects its view only when the authorized Room
+identifies `worldstream.negotiate`. Its pack-specific direct bootstrap is a
 one-shot, bounded `worldstream.negotiate.console.v1` document containing only
 the authorized projection, exact Action Offers, Room sequence, persona, and
 Replay/evidence availability. The browser deletes that bootstrap before React
@@ -319,9 +319,11 @@ external signer to rebuild and re-sign rather than replaying or auto-rebasing
 bytes.
 
 The Studio human-seat handoff retains Room, Membership, and bearer authority in
-an HttpOnly local Supervisor session. Its observation includes only the pinned
-Pack identity needed to select this renderer. For a Negotiate Pack the Console
-renders the same exact approval view and Replay hashes, while the
+an HttpOnly local Supervisor session. The current closed client dispatch sends
+an exact Negotiate revision to the Client Host's `/inspector/` fallback rather
+than a standalone registered Negotiate Activity Client. After the Inspector
+receives an authorized Negotiate observation, its retained compatibility
+renderer presents the same exact approval view and Replay hashes, while the
 `worldstream:negotiate-retained-action-requested` signer event binds request,
 Action, schema, Room sequence, and the opaque retained-session authority mode;
 it never exposes Room ID, Membership ID, bearer, or routing data to the page.

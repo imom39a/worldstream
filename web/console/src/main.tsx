@@ -1,7 +1,16 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
+import { AgentHeistClient } from "@worldstream/agent-heist-client";
+import "@worldstream/agent-heist-client/styles.css";
+import {
+  ActivityClientHandoffClient,
+  resumeRetainedActivityClient,
+  selectActivityClientStartup,
+} from "@worldstream/client";
+
 import { App } from "./App";
+import { clientSurfaceForPath } from "./clientSurface";
 import {
   CLIENT_CONTRACT_IDENTITY,
   CLIENT_CONTRACT_IDENTITY_JSON,
@@ -15,11 +24,6 @@ import {
   consumeNegotiateConsoleBootstrap,
   negotiateBootstrapMatchesLiveSession,
 } from "./negotiate";
-import {
-  ParticipantHandoffClient,
-  resumeRetainedParticipantConsole,
-  selectParticipantConsoleStartup,
-} from "./participantHandoff";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -29,6 +33,7 @@ if (root === null) {
 }
 
 const isStudioPrototype = import.meta.env.DEV && window.location.pathname === "/prototype/studio";
+const clientSurface = clientSurfaceForPath(window.location.pathname);
 
 if (isStudioPrototype) {
   createRoot(root).render(
@@ -44,11 +49,27 @@ if (isStudioPrototype) {
   document.documentElement.dataset.worldstreamClientContractIdentity =
     CLIENT_CONTRACT_IDENTITY_JSON;
 
-  const client = new ParticipantHandoffClient(
+  const client = new ActivityClientHandoffClient(
     import.meta.env.VITE_WORLDSTREAM_SUPERVISOR_URL ?? "http://127.0.0.1:9420",
   );
-  const startup = selectParticipantConsoleStartup(window);
-  void resumeRetainedParticipantConsole(startup, client).then((resolvedStartup) => {
+  const startup = selectActivityClientStartup(window);
+  void resumeRetainedActivityClient(startup, client).then((resolvedStartup) => {
+    if (clientSurface === "agent-heist") {
+      createRoot(root).render(
+        <StrictMode>
+          <AgentHeistClient startup={resolvedStartup} client={client} />
+        </StrictMode>,
+      );
+      return;
+    }
+    if (clientSurface === "inspector") {
+      createRoot(root).render(
+        <StrictMode>
+          <HandedOffParticipant startup={resolvedStartup} client={client} />
+        </StrictMode>,
+      );
+      return;
+    }
     if (resolvedStartup.kind !== "direct") {
       createRoot(root).render(<StrictMode><HandedOffParticipant startup={resolvedStartup} client={client} /></StrictMode>);
       return;

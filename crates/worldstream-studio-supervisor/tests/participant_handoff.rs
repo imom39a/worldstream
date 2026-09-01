@@ -26,7 +26,7 @@ use participant_handoff::{
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use tungstenite::{Message, accept_hdr};
-use worldstream_protocol::SealedCapabilityBearerV1;
+use worldstream_protocol::{PackReference, SealedCapabilityBearerV1};
 
 const STUDIO_ORIGIN: &str = "http://127.0.0.1:5174";
 const CONSOLE_ORIGIN: &str = "http://127.0.0.1:5173";
@@ -34,16 +34,26 @@ const DRAFT_ID: &str = "draft-participant-handoff";
 const ROOM_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const MEMBER_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
 const BEARER: &str = "wsb1:abababababababababababababababababababababababababababababababab";
+const AGENT_HEIST_0_1_DIGEST: &str =
+    "blake3:b05a682f0923001914a800072ee68348e68b979453c93e033cba7916b99a4407";
+const AGENT_HEIST_0_2_DIGEST: &str =
+    "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820";
 
 #[derive(Clone)]
 struct FakeAuthoritySource {
     state: Arc<Mutex<Result<(), ParticipantHandoffAuthorityErrorV1>>>,
+    pack: Arc<Mutex<PackReference>>,
 }
 
 impl FakeAuthoritySource {
     fn usable() -> Self {
+        Self::for_pack(agent_heist_pack("0.2.0", AGENT_HEIST_0_2_DIGEST))
+    }
+
+    fn for_pack(pack: PackReference) -> Self {
         Self {
             state: Arc::new(Mutex::new(Ok(()))),
+            pack: Arc::new(Mutex::new(pack)),
         }
     }
 
@@ -65,10 +75,22 @@ impl ParticipantHandoffAuthoritySourceV1 for FakeAuthoritySource {
         HumanSeatAuthorityV1::new(
             ROOM_ID,
             MEMBER_ID,
+            self.pack
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
             SealedCapabilityBearerV1::parse(BEARER.to_owned())
                 .map_err(|_| ParticipantHandoffAuthorityErrorV1::Unavailable)?,
         )
         .map_err(|_| ParticipantHandoffAuthorityErrorV1::Unavailable)
+    }
+}
+
+fn agent_heist_pack(version: &str, digest: &str) -> PackReference {
+    PackReference {
+        id: "worldstream.agent-heist".to_owned(),
+        version: version.to_owned(),
+        digest: digest.to_owned(),
     }
 }
 
@@ -269,7 +291,7 @@ async fn issues_only_a_short_lived_fragment_handoff_for_an_exact_human_seat() {
     let router = app(source.clone(), FakeGateway::default());
     let (console_url, handoff) = issue_handoff(&router).await;
 
-    assert!(console_url.starts_with("http://127.0.0.1:5173/#handoff=wsh1:"));
+    assert!(console_url.starts_with("http://127.0.0.1:5173/agent-heist/#handoff=wsh1:"));
     assert!(!console_url.contains(DRAFT_ID));
     assert!(!console_url.contains(ROOM_ID));
     assert!(!console_url.contains(MEMBER_ID));
@@ -291,10 +313,51 @@ async fn issues_only_a_short_lived_fragment_handoff_for_an_exact_human_seat() {
         .await
         .unwrap_or_else(|error| panic!("response: {error}"));
     assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = json_response(response).await;
+    assert_eq!(body["code"], "participant_handoff_human_seat_required");
     assert_eq!(
-        json_response(response).await["code"],
-        "participant_handoff_human_seat_required"
+        body["message"],
+        "Open participant client is available only for a human seat."
     );
+}
+
+#[tokio::test]
+async fn selects_agent_heist_client_for_the_other_supported_exact_revision() {
+    let router = app(
+        FakeAuthoritySource::for_pack(agent_heist_pack("0.1.0", AGENT_HEIST_0_1_DIGEST)),
+        FakeGateway::default(),
+    );
+
+    let (console_url, _) = issue_handoff(&router).await;
+
+    assert!(console_url.starts_with("http://127.0.0.1:5173/agent-heist/#handoff=wsh1:"));
+}
+
+#[tokio::test]
+async fn falls_back_to_inspector_without_pack_name_or_version_matching() {
+    let mismatches = [
+        agent_heist_pack("0.2.0", AGENT_HEIST_0_1_DIGEST),
+        agent_heist_pack("9.9.9", AGENT_HEIST_0_2_DIGEST),
+        PackReference {
+            id: "third-party.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: AGENT_HEIST_0_2_DIGEST.to_owned(),
+        },
+        PackReference {
+            id: "worldstream.counter".to_owned(),
+            version: "4.0.0".to_owned(),
+            digest: format!("blake3:{}", "c".repeat(64)),
+        },
+    ];
+
+    for pack in mismatches {
+        let router = app(FakeAuthoritySource::for_pack(pack), FakeGateway::default());
+        let (console_url, _) = issue_handoff(&router).await;
+        assert!(
+            console_url.starts_with("http://127.0.0.1:5173/inspector/#handoff=wsh1:"),
+            "unsupported exact Pack must use Inspector: {console_url}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -737,6 +800,11 @@ fn fixed_daemon_gateway_sanitizes_projection_and_attaches_health_to_exact_member
     let authority = HumanSeatAuthorityV1::new(
         ROOM_ID,
         MEMBER_ID,
+        PackReference {
+            id: "worldstream.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: AGENT_HEIST_0_2_DIGEST.to_owned(),
+        },
         SealedCapabilityBearerV1::parse(BEARER.to_owned())
             .unwrap_or_else(|error| panic!("fixture bearer: {error}")),
     )
@@ -752,7 +820,7 @@ fn fixed_daemon_gateway_sanitizes_projection_and_attaches_health_to_exact_member
     );
     assert_eq!(
         observed.browser_value["delivery"][0]["body"]["projection"]["action_offers"][0]["action_type"],
-        "ready",
+        "inspect_clue",
     );
     assert_eq!(observed.durable_cursor, None);
     let serialized = observed.browser_value.to_string();
@@ -833,6 +901,14 @@ async fn protected_console_keeps_its_browser_frame_head_out_of_the_membership_cu
     )
     .await;
     assert_eq!(accepted.status(), StatusCode::OK);
+    let accepted = json_response(accepted).await;
+    assert_eq!(accepted["state"], "accepted");
+    assert_eq!(
+        accepted["receipt"]["action_id"],
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+    );
+    assert!(accepted["receipt"].get("room_id").is_none());
+    assert!(accepted["receipt"]["room_head"].get("room_id").is_none());
 
     let reconnect = console_request(
         &router,
@@ -849,6 +925,51 @@ async fn protected_console_keeps_its_browser_frame_head_out_of_the_membership_cu
         .unwrap_or_else(|error| panic!("cursor fixture thread: {error:?}"));
 }
 
+#[tokio::test]
+async fn protected_console_returns_a_sanitized_rejected_action_receipt() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("bind rejected receipt fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("rejected receipt fixture address: {error}"));
+    let server = thread::spawn(move || {
+        serve_cursor_enforcing_connection(&listener, Some("action.rejected"));
+    });
+    let router = fixed_gateway_app(address);
+    let (_, handoff) = issue_handoff(&router).await;
+    let redeemed = redeem_handoff(&router, &handoff, None).await;
+    let cookie = redeemed
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+
+    let rejected = console_request(
+        &router,
+        Method::POST,
+        "/api/v1/participant-console/session:act",
+        &cookie,
+        Body::from(
+            r#"{"action_id":"01ARZ3NDEKTSV4RRFFQ69G5FAY","based_on_room_seq":7,"offer_id":"7:inspect_clue:0","schema_digest":"blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","action_type":"inspect_clue","payload":{"clue_id":"route"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::OK);
+    let rejected = json_response(rejected).await;
+    assert_eq!(rejected["state"], "rejected");
+    assert_eq!(rejected["receipt"]["code"], "stale_room_head");
+    assert!(rejected["receipt"].get("room_id").is_none());
+    assert!(rejected["receipt"].get("member_id").is_none());
+
+    server
+        .join()
+        .unwrap_or_else(|error| panic!("rejected receipt fixture thread: {error:?}"));
+}
+
 fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         for (index, standing) in ["enabled", "enabled", "suspended", "departed", "enabled"]
@@ -862,8 +983,8 @@ fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
 
 fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        for accepts_action in [false, false, true, false] {
-            serve_cursor_enforcing_connection(&listener, accepts_action);
+        for action_receipt in [None, None, Some("action.accepted"), None] {
+            serve_cursor_enforcing_connection(&listener, action_receipt);
         }
     })
 }
@@ -930,7 +1051,7 @@ fn serve_daemon_fixture_connection(listener: &TcpListener, index: usize, standin
     }
 }
 
-fn serve_cursor_enforcing_connection(listener: &TcpListener, accepts_action: bool) {
+fn serve_cursor_enforcing_connection(listener: &TcpListener, action_receipt: Option<&str>) {
     let (stream, _) = listener
         .accept()
         .unwrap_or_else(|error| panic!("accept cursor fixture: {error}"));
@@ -952,13 +1073,39 @@ fn serve_cursor_enforcing_connection(listener: &TcpListener, accepts_action: boo
         "room.attached",
         &fixture_attached(MEMBER_ID, "enabled"),
     );
-    if accepts_action {
+    if let Some(action_receipt) = action_receipt {
         let sync_ack = read_fixture_message(&mut socket, "cursor sync ack");
         assert_eq!(sync_ack["type"], "room.sync_ack");
         send_fixture_message(&mut socket, "room.sync_acked", &json!({}));
         let action = read_fixture_message(&mut socket, "cursor action");
         assert_eq!(action["type"], "action.submit");
-        send_fixture_message(&mut socket, "action.accepted", &json!({"state":"accepted"}));
+        let receipt = if action_receipt == "action.accepted" {
+            json!({
+                "room_id": ROOM_ID,
+                "member_id": MEMBER_ID,
+                "action_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+                "transition_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                "admitted_at": "2026-09-01T12:00:00Z",
+                "room_head": fixture_room_head(),
+                "duplicate": false
+            })
+        } else {
+            json!({
+                "room_id": ROOM_ID,
+                "member_id": MEMBER_ID,
+                "action_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+                "admitted_at": "2026-09-01T12:00:00Z",
+                "code": "stale_room_head",
+                "message": "Synchronize and submit a new Action.",
+                "current_room_seq": 8,
+                "action_offers": [],
+                "retryable_with_same_action_id": false,
+                "may_submit_revised_action": true,
+                "duplicate": false,
+                "details": {}
+            })
+        };
+        send_fixture_message(&mut socket, action_receipt, &receipt);
     }
 }
 
@@ -994,7 +1141,7 @@ fn fixture_projection_reset() -> Value {
         "room_health": "healthy", "integrity_generation": 1, "baseline_frame_head": 7,
         "reset_reason": "initial_attach", "projection_schema": "agent-heist.participant.v1",
         "projection": {"core": {}, "activity": {"phase":"Lobby"}, "action_offers": [{
-            "domain":"activity", "action_type":"ready",
+            "domain":"activity", "action_type":"inspect_clue",
             "payload_schema_digest":format!("blake3:{}", "a".repeat(64))
         }]},
         "projection_hash": format!("blake3:{}", "b".repeat(64))

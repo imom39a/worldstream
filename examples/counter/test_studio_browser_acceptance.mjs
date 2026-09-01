@@ -176,7 +176,7 @@ test("private acknowledgement waits for its committed sequence before the next p
         return { async click() { actions.push("private-ack"); } };
       },
     },
-    async domSnapshot() { return "Participant session"; },
+    async domSnapshot() { return "Authorized Room session"; },
     async observedRequestUrls() { return []; },
   };
   await submitPrivateAck(tab, {
@@ -216,7 +216,7 @@ test("whole acceptance flow keeps initial Attention and both restarts in the pub
   });
   const tab = {
     playwright: { locator: control },
-    async domSnapshot() { return "Participant session"; },
+    async domSnapshot() { return "Authorized Room session"; },
     async observedRequestUrls() { return []; },
   };
   const selectors = {
@@ -246,7 +246,7 @@ test("whole acceptance flow keeps initial Attention and both restarts in the pub
   };
   const consoleTab = {
     playwright: { locator: control },
-    async domSnapshot() { return "Participant session"; },
+    async domSnapshot() { return "Authorized Room session"; },
     async observedRequestUrls() { return []; },
   };
   const result = await runStudioBrowserAcceptance({
@@ -271,7 +271,7 @@ test("whole acceptance flow keeps initial Attention and both restarts in the pub
 
 test("protected Console evidence requires captured request URLs", async () => {
   await assert.rejects(
-    assertSafeConsoleSurface({ async domSnapshot() { return "Participant session"; } }),
+    assertSafeConsoleSurface({ async domSnapshot() { return "Authorized Room session"; } }),
     /protected_console_url_evidence_required/,
   );
 });

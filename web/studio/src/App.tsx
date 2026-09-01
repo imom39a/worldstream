@@ -105,7 +105,7 @@ export interface AppProps {
   onTaskTemplateCatalogChanged?: () => void;
   onTaskTemplateDraftCreated?: (draft: RoomDraft) => void;
   onTaskTemplateDraftOpened?: (draft: RoomDraft) => void;
-  onOpenParticipantView?: (seatId: string) => void;
+  onOpenParticipantClient?: (seatId: string) => void;
   backupProfile?: BackupProfileStatus | null;
   backupOperation?: BackupOperationStatus | null;
   backupOperationId?: string | null;
@@ -173,7 +173,7 @@ export function App({
   onTaskTemplateCatalogChanged,
   onTaskTemplateDraftCreated,
   onTaskTemplateDraftOpened,
-  onOpenParticipantView,
+  onOpenParticipantClient,
   backupProfile = null,
   backupOperation = null,
   backupOperationId = null,
@@ -337,7 +337,7 @@ export function App({
           onStart={onStartTaskSetup}
           onRetry={onRetryTaskSetup}
           onLaunch={onLaunchTask}
-          onOpenParticipantView={onOpenParticipantView}
+          onOpenParticipantClient={onOpenParticipantClient}
         />
 
         <ActivityPackCatalogView

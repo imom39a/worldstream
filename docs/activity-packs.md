@@ -555,10 +555,18 @@ host-import/effect surface, or force removal.
 
 ## Presentation boundary
 
-A pack publishes typed projection schemas and semantic labels. It does not ship executable frontend code.
+A pack publishes typed projection schemas and semantic labels. It does not ship executable frontend code or a mutable launch URL.
 
-The first product surface has curated Negotiate setup, exact approval/signing,
-timeline, Replay, and evidence views. Agent Heist retains its demo renderer.
+An optional Activity Client is an independently released protocol peer. One
+client may support several explicitly tested exact Activity Pack Revision
+digests, and one Pack revision may have several clients. Client association is
+deployment/integration state: it does not enter the Activity Pack Bundle,
+Genesis, Authoritative Room State, Transitions, canonical hashes, or Replay.
+
+The first product surfaces include a standalone Agent Heist Activity Client,
+the Pack-neutral WorldStream Inspector, and the existing curated Negotiate
+surface while it is migrated into its own Activity Client. Studio discovers
+and opens a compatible client but does not import its renderer.
 
 The project deliberately does not freeze:
 
@@ -567,6 +575,7 @@ The project deliberately does not freeze:
 - custom widget ABI;
 - pack JavaScript;
 - runtime LLM-generated layout;
+- a third-party Client Surface Bundle/registry contract;
 - a renderer marketplace.
 
 ## Demo/conformance Activity: Agent Heist

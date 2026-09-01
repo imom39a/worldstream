@@ -22,10 +22,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tungstenite::handshake::client::generate_key;
 use tungstenite::{Message, WebSocket, client, http};
+use worldstream_core::{
+    AGENT_HEIST_LOBBY_VERSION, AGENT_HEIST_PACK_ID, AGENT_HEIST_VERSION, agent_heist_digest,
+    agent_heist_lobby_digest,
+};
 use worldstream_protocol::{
-    ClientHello, ClientMode, ObservationDeliver, PROTOCOL_VERSION, ProjectionReset,
-    REQUIRED_CLIENT_CAPABILITIES, ReplayResponse, RoomAttached, RoomHead, SealedCapabilityBearerV1,
-    VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
+    ActionAccepted, ActionRejected, ClientHello, ClientMode, ObservationDeliver, PROTOCOL_VERSION,
+    PackReference, ProjectionReset, REQUIRED_CLIENT_CAPABILITIES, ReplayResponse, RoomAttached,
+    RoomHead, SealedCapabilityBearerV1, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
 };
 use zeroize::Zeroizing;
 
@@ -42,11 +46,14 @@ const MAX_ACTION_TYPE_BYTES: usize = 128;
 const MAX_OFFER_ID_BYTES: usize = 256;
 const MAX_ACTION_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_REPLAY_RESPONSE_BYTES: u64 = 256 * 1024;
+const AGENT_HEIST_CLIENT_PATH: &str = "/agent-heist/";
+const INSPECTOR_CLIENT_PATH: &str = "/inspector/";
 
 /// Exact, non-serializable authority for one provisioned human participant seat.
 pub struct HumanSeatAuthorityV1 {
     room_id: String,
     member_id: String,
+    pack: PackReference,
     bearer: SealedCapabilityBearerV1,
 }
 
@@ -59,6 +66,7 @@ impl HumanSeatAuthorityV1 {
     pub fn new(
         room_id: &str,
         member_id: &str,
+        pack: PackReference,
         bearer: SealedCapabilityBearerV1,
     ) -> Result<Self, ParticipantHandoffAuthorityErrorV1> {
         if !is_ulid(room_id) || !is_ulid(member_id) {
@@ -67,6 +75,7 @@ impl HumanSeatAuthorityV1 {
         Ok(Self {
             room_id: room_id.to_owned(),
             member_id: member_id.to_owned(),
+            pack,
             bearer,
         })
     }
@@ -81,6 +90,12 @@ impl HumanSeatAuthorityV1 {
     #[must_use]
     pub fn member_id(&self) -> &str {
         &self.member_id
+    }
+
+    /// Returns the exact retained Activity Pack binding for client selection.
+    #[must_use]
+    pub const fn pack(&self) -> &PackReference {
+        &self.pack
     }
 
     /// Returns the sealed participant bearer only at the internal daemon adapter.
@@ -389,6 +404,49 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         }
         Err(ParticipantConsoleGatewayErrorV1::Unavailable)
     }
+
+    fn read_action_receipt(
+        socket: &mut WebSocket<TcpStream>,
+        authority: &HumanSeatAuthorityV1,
+        expected_action_id: &str,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        for _ in 0..8 {
+            let value = Self::read_any(socket)?;
+            let message_type = value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let body = value.get("body").cloned().unwrap_or(Value::Null);
+            match message_type {
+                "action.accepted" => {
+                    let receipt: ActionAccepted = serde_json::from_value(body)
+                        .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+                    if receipt.room_id != authority.room_id()
+                        || receipt.member_id != authority.member_id()
+                        || receipt.action_id != expected_action_id
+                        || receipt.room_head.room_id != authority.room_id()
+                    {
+                        return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+                    }
+                    return browser_action_receipt("accepted", receipt);
+                }
+                "action.rejected" => {
+                    let receipt: ActionRejected = serde_json::from_value(body)
+                        .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+                    if receipt.room_id != authority.room_id()
+                        || receipt.member_id != authority.member_id()
+                        || receipt.action_id != expected_action_id
+                    {
+                        return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+                    }
+                    return browser_action_receipt("rejected", receipt);
+                }
+                "error" => return Err(ParticipantConsoleGatewayErrorV1::Rejected),
+                _ => {}
+            }
+        }
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
 }
 
 impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
@@ -452,7 +510,7 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
                 "payload": request.payload,
             }),
         )?;
-        Self::read_type(&mut socket, "action.accepted").map(strip_routing)
+        Self::read_action_receipt(&mut socket, authority, &request.action_id)
     }
 
     fn replay(
@@ -595,6 +653,18 @@ fn browser_replay(replay: ReplayResponse) -> Result<Value, ParticipantConsoleGat
     }))
 }
 
+fn browser_action_receipt(
+    state: &'static str,
+    receipt: impl Serialize,
+) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+    let receipt =
+        serde_json::to_value(receipt).map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+    Ok(serde_json::json!({
+        "state": state,
+        "receipt": strip_routing(receipt),
+    }))
+}
+
 fn strip_routing(mut value: Value) -> Value {
     match &mut value {
         Value::Object(object) => {
@@ -721,10 +791,12 @@ impl ParticipantHandoffBrokerV1 {
         request: IssueHandoffRequestV1,
     ) -> Result<IssueHandoffResponseV1, ParticipantHandoffErrorV1> {
         validate_binding(&request.draft_id, &request.seat_id)?;
-        self.inner
+        let authority = self
+            .inner
             .authority
             .resolve_provisioned_human_seat(&request.draft_id, &request.seat_id)
             .map_err(ParticipantHandoffErrorV1::from_authority)?;
+        let client_path = participant_client_path(authority.pack());
         let mut state = self.lock();
         prune_expired(&mut state);
         if state.handoffs.len().saturating_add(state.sessions.len()) >= self.inner.maximum_retained
@@ -744,7 +816,10 @@ impl ParticipantHandoffBrokerV1 {
         );
         Ok(IssueHandoffResponseV1 {
             version: HANDOFF_VERSION,
-            console_url: format!("{}/#handoff={handoff}", self.inner.console_origin),
+            console_url: format!(
+                "{}{client_path}#handoff={handoff}",
+                self.inner.console_origin
+            ),
         })
     }
 
@@ -1345,14 +1420,14 @@ impl IntoResponse for ParticipantHandoffErrorV1 {
             Self::InvalidRequest => (
                 StatusCode::BAD_REQUEST,
                 "participant_handoff_invalid_request",
-                "The Participant View request is invalid.",
+                "The participant client request is invalid.",
                 "return_to_task_setup",
                 false,
             ),
             Self::OriginForbidden => (
                 StatusCode::FORBIDDEN,
                 "participant_handoff_origin_forbidden",
-                "Participant View is available only from the configured local application.",
+                "Participant client access is available only from the configured local application.",
                 "return_to_task_setup",
                 false,
             ),
@@ -1366,7 +1441,7 @@ impl IntoResponse for ParticipantHandoffErrorV1 {
             Self::HumanSeatRequired => (
                 StatusCode::CONFLICT,
                 "participant_handoff_human_seat_required",
-                "Open Participant View is available only for a human seat.",
+                "Open participant client is available only for a human seat.",
                 "return_to_task_setup",
                 false,
             ),
@@ -1394,28 +1469,28 @@ impl IntoResponse for ParticipantHandoffErrorV1 {
             Self::InvalidHandoff => (
                 StatusCode::UNAUTHORIZED,
                 "participant_handoff_invalid",
-                "This Participant View handoff is missing, expired, or already used.",
+                "This participant client handoff is missing, expired, or already used.",
                 "return_to_task_setup",
                 false,
             ),
             Self::SessionMissing => (
                 StatusCode::UNAUTHORIZED,
                 "participant_session_missing",
-                "This Participant View session is missing or expired.",
+                "This participant client session is missing or expired.",
                 "return_to_task_setup",
                 false,
             ),
             Self::Capacity => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "participant_handoff_capacity",
-                "Participant View handoff capacity is temporarily unavailable.",
+                "Participant client handoff capacity is temporarily unavailable.",
                 "retry",
                 true,
             ),
             Self::Upstream => (
                 StatusCode::BAD_GATEWAY,
                 "participant_session_unavailable",
-                "The Participant View cannot reach the Room service safely.",
+                "The participant client cannot reach the Room service safely.",
                 "reconnect",
                 true,
             ),
@@ -1596,6 +1671,22 @@ fn is_blake3_digest(value: &str) -> bool {
         && value[7..]
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn participant_client_path(pack: &PackReference) -> &'static str {
+    if pack.id != AGENT_HEIST_PACK_ID {
+        return INSPECTOR_CLIENT_PATH;
+    }
+    let expected_digest = match pack.version.as_str() {
+        AGENT_HEIST_VERSION => agent_heist_digest(),
+        AGENT_HEIST_LOBBY_VERSION => agent_heist_lobby_digest(),
+        _ => return INSPECTOR_CLIENT_PATH,
+    };
+    if pack.digest == expected_digest.to_string() {
+        AGENT_HEIST_CLIENT_PATH
+    } else {
+        INSPECTOR_CLIENT_PATH
+    }
 }
 
 fn is_exact_loopback_origin(value: &str) -> bool {
