@@ -5,6 +5,7 @@ import architecture from "./content/architecture.md?raw";
 import domainModel from "./content/domain-model.md?raw";
 import securityModel from "./content/security-model.md?raw";
 import kernel from "./content/kernel.md?raw";
+import activityClients from "./content/activity-clients.md?raw";
 import activityPacks from "./content/activity-packs-overview.md?raw";
 import negotiate from "./content/negotiate.md?raw";
 import counter from "./content/counter.md?raw";
@@ -35,6 +36,7 @@ export const manualPages: readonly ManualPage[] = [
   { route: "/concepts/domain-model", title: "Domain model", summary: "Use WorldStream terminology precisely: Rooms, Participants, Memberships, Tasks, Actions, and Outcomes.", group: "Core concepts", source: domainModel },
   { route: "/concepts/security", title: "Security and authority", summary: "Understand credentials, privacy projections, authority binding, and trust boundaries.", group: "Core concepts", source: securityModel },
   { route: "/concepts/kernel", title: "Room Kernel", summary: "Build on ordered commits, deterministic reduction, scoped views, timers, and replay.", group: "Core concepts", source: kernel },
+  { route: "/concepts/activity-clients", title: "Activity Clients", summary: "Keep Packs headless while independently released clients present authorized participant and spectator experiences.", group: "Core concepts", source: activityClients },
   { route: "/activity-packs/overview", title: "Activity Pack development", summary: "Implement a retained deterministic ruleset against the ActivityPackV1 contract.", group: "Activity Packs", source: activityPacks },
   { route: "/activity-packs/negotiate", title: "WorldStream Negotiate", summary: "Understand the pinned A202 formation Pack, exact approval, privacy, deadlines, and dual evidence.", group: "Activity Packs", source: negotiate },
   { route: "/activity-packs/counter", title: "Counter tutorial", summary: "Follow the smallest complete state, offer, action, observation, and replay example.", group: "Activity Packs", source: counter },

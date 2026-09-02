@@ -16,6 +16,7 @@ use worldstream_studio_supervisor::{
         BackupOperationsV1, BackupStorageProfileV1, HttpDaemonBackupExecutorV1,
         prepare_shared_backup_root,
     },
+    client_bindings::ClientBindingStoreV1,
     lifecycle::ConfiguredDaemonLifecycle,
     managed_agent_host::{ManagedAgentHostOperationsV1, managed_agent_host_router},
     managed_agent_host_seats::managed_agent_host_seat_router,
@@ -23,9 +24,6 @@ use worldstream_studio_supervisor::{
     participant_handoff::{FixedDaemonParticipantConsoleGatewayV1, ParticipantHandoffBrokerV1},
     room_creation::{HttpDaemonRoomCreatorV1, RoomCreationSupervisorV1},
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
-    room_operator_view::{
-        HttpDaemonRoomOperatorProjectionV1, RoomOperatorViewSupervisorV1, room_operator_view_router,
-    },
     rooms::HttpDaemonRoomSource,
     runner_attention::{
         FileRunnerRestartStoreV1, HttpDaemonRunnerAttentionSourceV1, LiveRunnerAttentionSourceV1,
@@ -107,6 +105,10 @@ struct Args {
     /// Exact loopback Participant Console origin placed in one-use URLs.
     #[arg(long, default_value = "http://127.0.0.1:5173")]
     participant_console_origin: String,
+
+    /// Operator-controlled Activity Client release and local binding declarations.
+    #[arg(long, default_value = "config/activity-clients")]
+    activity_clients_dir: PathBuf,
 }
 
 #[tokio::main]
@@ -254,13 +256,19 @@ async fn main() -> Result<()> {
         &args.state_dir.join("task-setups"),
         room_creation.clone(),
         vault.clone(),
-        task_setup_provisioner.clone(),
+        task_setup_provisioner,
     )
     .context("Studio Supervisor protected Task setup store is unavailable")?
     .with_agent_profiles(agent_profiles.clone())
     .with_launch_applicability(CatalogTaskLaunchApplicabilitySourceV1::new(
         activity_packs.clone(),
     ));
+    let client_bindings = ClientBindingStoreV1::open_configured(
+        &args.state_dir.join("client-bindings"),
+        &args.activity_clients_dir.join("releases"),
+        &args.activity_clients_dir.join("local-bindings.json"),
+    )
+    .map_err(|error| anyhow::anyhow!("Activity Client bindings are unavailable: {error}"))?;
     let participant_handoff = ParticipantHandoffBrokerV1::new(
         &args.studio_origin,
         &args.participant_console_origin,
@@ -268,6 +276,7 @@ async fn main() -> Result<()> {
         256,
         task_setup_base.clone(),
         FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, daemon_timeout),
+        client_bindings,
     )
     .map_err(|error| anyhow::anyhow!("Participant Console handoff is unavailable: {error:?}"))?;
     let task_setup = task_setup_base.with_launch_readiness(
@@ -275,14 +284,6 @@ async fn main() -> Result<()> {
         LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
         task_runtime,
     );
-    let room_operator_view = RoomOperatorViewSupervisorV1::open(
-        &args.state_dir.join("room-operator-views"),
-        vault.clone(),
-        room_creation.clone(),
-        task_setup_provisioner,
-        HttpDaemonRoomOperatorProjectionV1::new(args.daemon, daemon_timeout),
-    )
-    .map_err(|error| anyhow::anyhow!("room operator view is unavailable: {error:?}"))?;
     let assignment_launch_source = FileAssignedMembershipSourceV1::open(
         &args.state_dir.join("task-setups"),
         agent_profiles.clone(),
@@ -369,7 +370,6 @@ async fn main() -> Result<()> {
     .merge(assignment_mcp_launch_router(assignment_mcp_launches))
     .merge(managed_agent_host_router(managed_agent_hosts.clone()))
     .merge(managed_agent_host_seat_router(agent_profiles, managed_agent_hosts))
-    .merge(room_operator_view_router(room_operator_view))
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
     axum::serve(listener, router)

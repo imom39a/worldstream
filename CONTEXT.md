@@ -63,16 +63,64 @@ A person or organization responsible for defining and maintaining an Activity Pa
 _Avoid_: Plugin developer, participant, host operator
 
 **Application Integrator**:
-A person or organization that combines an Activity Pack with external clients, Runners, protocol bridges, and deployment configuration into a usable application. Integration grants no Host Operator authority or Room Membership by itself.
+A person or organization that combines Activity Pack Revisions with Activity Client Releases, Runners, protocol bridges, and deployment configuration into an Activity Distribution. Integration grants no Host Operator authority or Room Membership by itself.
 _Avoid_: Agent integrator, Pack Author when rule ownership is meant, host operator
 
+**Activity Distribution**:
+An Application Integrator-owned, versioned integration manifest that proposes separately identified Activity Pack Bundles, Activity Client Releases, optional Runner integrations, documentation, and deployment templates without merging their authority or execution boundaries. A template may name required capabilities and secrets but contains no secret value, approval, Client Deployment, or Client Binding Store state, and importing or publishing it grants no operational approval.
+_Avoid_: Activity Pack, Activity Pack Bundle, plugin package, executable Pack
+
 **Activity Client**:
-An independently executing browser, terminal, mobile, SDK-based, or agent-owned application that participates through one scoped WorldStream client contract and may present one or more exact Activity Pack Revisions.
-_Avoid_: Activity Pack, Pack executor, Studio plugin, Participant when the application itself is meant
+An independently executing browser, terminal, mobile, service, or agent-owned application that participates through one scoped WorldStream client contract and may present one or more exact Activity Pack Revisions. It may be presentation-rich and Pack-aware, but owns no Room authority, legality, or canonical state.
+_Avoid_: Activity Pack, Pack executor, Studio plugin, Client SDK, Participant when the application itself is meant
+
+**Activity Client Release**:
+One immutable, content-addressed published build whose release manifest identifies its runnable payloads, Client Surfaces, and supported client-contract versions. Compatibility claims and linked evidence grant no Host approval.
+_Avoid_: Activity Client source tree, Client Deployment, Client SDK package, mutable release tag
+
+**Client Deployment**:
+One Host Operator-approved operational availability of an Activity Client Release at an exact independently executing launch target, with an explicit Deployment Trust Level.
+_Avoid_: Activity Client Release, Client Binding, Studio plugin, Room session
+
+**Client Deployer**:
+An optional execution-boundary component that retrieves approved Activity Client Releases, starts or publishes them through a deployment adapter, and reports exact deployment identity and readiness. It is not part of the Room Kernel or Studio.
+_Avoid_: Runner, Activity Client, Client Binding Store, Studio plugin, Pack executor
+
+**Deployment Trust Level**:
+The Host's operational classification of a Client Deployment as verified from an exact Activity Client Release digest or externally trusted without proof of its running bytes.
+_Avoid_: Room authority, client compatibility, publisher reputation, Membership permission
+
+**Client SDK**:
+A non-authoritative development library for implementing the generic WorldStream client contract. It is not an Activity Client until an independently executing application uses it.
+_Avoid_: Activity Client, Pack executor, Runner
 
 **Client Surface**:
-One human-facing entry point of an Activity Client, such as a participant browser screen, spectator display, or terminal interface.
+One human-facing entry point exposed by an Activity Client Release, such as a participant browser screen, spectator display, or terminal interface. One Release may expose several Client Surfaces.
 _Avoid_: Projection, Pack view, React component imported by Studio
+
+**Client Binding**:
+One Host Operator-approved operational association from an exact Activity Pack Revision, client-contract version, Access Mode, and applicable participant Role set to one Host-brokered Client Surface of an approved Client Deployment. Directly connecting clients do not require one. It is Host configuration, not Room state or Pack authority.
+_Avoid_: Client implementation, Activity Distribution, Client Deployment, launch token, Pack-owned route
+
+**Client Binding Store**:
+The Host-owned durable operational collection of approved Activity Client Releases, Client Deployments, and Client Bindings available to one WorldStream installation. Its records and approvals do not move with Room backup or transfer.
+_Avoid_: Artifact registry, client marketplace, Pack catalog, Activity Distribution, renderer registry
+
+**Client Selection**:
+The Host's operational resolution of one current Membership and the Client Binding Store to one approved Client Surface for one handoff. It never changes Room or Membership state.
+_Avoid_: Client Binding, Role assignment, Room routing, canonical decision
+
+**Artifact Registry**:
+An external distribution service for publishing and retrieving immutable, content-addressed artifacts. Availability in an Artifact Registry grants no Host approval.
+_Avoid_: Client Binding Store, Pack catalog, client marketplace, Host approval
+
+**Client Catalog**:
+An external discovery service that indexes published Activity Distributions and Activity Client Releases without granting Host approval or executing them.
+_Avoid_: Client Binding Store, Artifact Registry, Studio catalog, marketplace authority
+
+**Client Conformance Evidence**:
+Immutable, content-addressed evidence produced by a client conformance kit for one exact Activity Client Release and its claimed contract and Pack compatibility. Passing conformance never grants Host approval.
+_Avoid_: Client Binding, security audit, Host approval, Pack conformance evidence
 
 ## Participation
 

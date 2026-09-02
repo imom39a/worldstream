@@ -67,8 +67,8 @@ Use `Ctrl-C` to stop the daemon. The local database and bootstrap secret stay
 under the ignored `.worldstream/` directory so the same authority can be used
 on the next start.
 
-For the fixture-mode web console, install the locked JavaScript dependencies
-and start Vite:
+For the first-party browser clients, install the locked JavaScript dependencies
+and start the exact-directory Client Host:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -93,7 +93,8 @@ WorldStream owns:
 - Membership-addressed observations and exact participant Action Offers;
 - durable activation intents for external agent runners;
 - bounded WebSocket delivery and cursor-based reconnect;
-- a small first-party inspector and reference-activity UI.
+- independently executing first-party Activity Clients plus a Pack-neutral
+  Inspector; Studio remains the Host Operator plane and launcher.
 
 Activity Packs own:
 
@@ -136,6 +137,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [Wire protocol](docs/protocol.md) — sessions, actions, observations, cursors, and activations
 - [Observation and Activation](docs/observation-and-activation.md) — frozen attach/reset, delivery, intent, lease, and Invocation Context contracts
 - [Activity Packs](docs/activity-packs.md) — host, bundle, authoring, installation, and retained-execution contract
+- [Activity Clients](docs/activity-clients.md) — independent releases, Host-local deployments and bindings, opaque launch, packaging, and conformance
 - [WorldStream Negotiate](docs/negotiate.md) — exact first public Pack and pinned A202 compatibility profile
 - [Context model](docs/context-and-memory.md) — Authoritative Room State versus Invocation Context
 - [UI architecture](docs/ui-architecture.md) — deliberately small first-party presentation layer
@@ -158,7 +160,9 @@ The implemented frontiers currently provide a pinned, deliberately narrow worksp
 - the public TypeScript Pack SDK/CLI with mandatory first-release prompt assistance and the exact proven WorldStream Negotiate Component Bundle;
 - an independent Negotiate oracle, pinned A202 operated-profile adapter, and offline dual-evidence verifier;
 - bundled-SQLite and PostgreSQL adapters for authenticated Room creation, atomic commit/recovery, durable authority changes, scoped observations, and authorized historical Replay;
-- a locked public Python application SDK and first-party console with Heist reference plus six-persona Negotiate live-session modes;
+- a locked public Python application SDK, generic TypeScript client seam,
+  standalone Agent Heist and Negotiate browser clients, and Pack-neutral
+  Inspector;
 - native Linux and Windows bootstrap checks plus opt-in repository hooks.
 
 Install the exact tools named above. The POSIX verifier also requires Python 3.11+ as `python3`

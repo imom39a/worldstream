@@ -173,7 +173,7 @@ The default local ports are:
 | --- | --- | --- |
 | WorldStream daemon | `http://127.0.0.1:9410` | Authoritative runtime and operator API |
 | Studio Supervisor | `http://127.0.0.1:9420` | Local typed control-plane API |
-| Client Host | `http://127.0.0.1:5173` | First-party Agent Heist client and generic Inspector |
+| Client Host | `http://127.0.0.1:5173` | First-party Agent Heist, Negotiate, and Inspector clients |
 | Studio portal | `http://127.0.0.1:5174` | Operator UI |
 
 ### Studio setup
@@ -271,17 +271,17 @@ Membership ID, and participant bearer are not placed in the URL or copied by
 the operator. Studio is only the operator-side launcher; it neither owns nor
 renders the participant UI.
 
-The Supervisor selects a closed path from the Room's exact Pack identity:
+The Supervisor resolves the current Membership through the Host-local Client
+Binding Store. The checked-in local configuration binds exact Agent Heist
+revisions to `/agent-heist/`, the exact Negotiate revision to `/negotiate/`,
+and otherwise offers the separately configured `/inspector/` fallback.
+Selection uses the exact semantic Pack Revision digest, client contract,
+Access Mode, Role, Deployment trust policy, and readiness; Pack ID and version
+remain diagnostic labels. Studio receives only generic
+candidate metadata and opaque selection identifiers; it contains no Pack path
+table.
 
-- exact first-party Agent Heist `0.1.0` and `0.2.0` revisions open
-  `/agent-heist/`;
-- every other Pack revision, including Counter and the current Studio-opened
-  Negotiate flow, opens the Pack-neutral `/inspector/` fallback.
-
-Selection requires the exact Pack ID, version, and digest. A matching name or
-version with different bytes does not select the Agent Heist client.
-
-Keep both origins as exact loopback origins. If you change either Vite port,
+Keep both origins as exact loopback origins. If you change either UI port,
 pass the corresponding new origin to the Supervisor. Do not expose the
 development servers or Supervisor on a public interface.
 
@@ -319,14 +319,16 @@ or daemon credentials.
 ## Run the first-party Client Host
 
 This is the browser process that serves first-party Activity Clients and the
-generic WorldStream Inspector. It is not the Studio operator portal. Start its
-Vite development server with:
+generic WorldStream Inspector. It is not the Studio operator portal. Build and
+start its exact-directory development host with:
 
 ```sh
 pnpm ui:dev
 ```
 
-The server binds to `http://127.0.0.1:5173`. Its bare root retains the old
+The host binds to `http://127.0.0.1:5173`. It mounts the standalone Heist,
+Negotiate, and Inspector/recorded-gallery build directories without importing
+one into another. Its bare root retains the old
 direct-bootstrap and fixture renderer for compatibility and development only;
 do not treat that surface as a Pack catalog, a Room creator, or the current
 Studio launch flow. The normal live Human path starts in Studio:
@@ -334,41 +336,42 @@ Studio launch flow. The normal live Human path starts in Studio:
 client redeems it into a retained HttpOnly participant session, and the browser
 removes the handoff from the URL.
 
-The current closed dispatch is:
+The checked-in Host-local bindings expose:
 
 | Path | Surface | Selection |
 | --- | --- | --- |
-| `/agent-heist/` | Agent Heist Activity Client | Exact approved `worldstream.agent-heist` `0.1.0` or `0.2.0` identity |
-| `/inspector/` | Pack-neutral WorldStream Inspector | Every unsupported exact Pack identity |
+| `/agent-heist/` | Agent Heist Activity Client | Exact approved `worldstream.agent-heist` `0.1.0` or `0.2.0` binding |
+| `/negotiate/` | Negotiate Activity Client | Exact approved `worldstream.negotiate` `0.1.0` binding |
+| `/inspector/` | Pack-neutral WorldStream Inspector | Configured fallback when no specialized binding is eligible |
 
-The live Agent Heist client starts without Activity data and installs only an
-authorized Projection Reset or Observation. It never overlays live data onto a
-recorded fixture. The Inspector displays the authorized generic Projection and
-Action Offers; it is a fallback client, not a Pack-defined experience. During
-this migration it also retains the existing Negotiate-specific renderer after
-an authorized delivery is recognized. That compatibility renderer is not a
-standalone registered Negotiate Activity Client.
+The live Agent Heist and Negotiate clients start without Activity data and
+install only an authorized Projection Reset or Observation. They never overlay
+live data onto a recorded fixture. The Inspector displays the authorized
+generic Projection and Action Offers; it is a Pack-neutral fallback, not a
+Pack-defined experience.
 
-A direct application integration may instead supply a Room ID, Membership ID,
-scoped bearer, and explicit `window.__WORLDSTREAM_LIVE_SESSION__` bootstrap.
-The dedicated direct Negotiate renderer additionally requires the one-shot
-`window.__WORLDSTREAM_NEGOTIATE_CONSOLE__` authorized projection. The legacy
-root renderer consumes the two bootstraps separately and requires their Room
-and Membership identities to match; neither is a substitute for the other. The
-bare-root fixture and direct-bootstrap paths remain compatibility/development
-surfaces, not Studio-selected Activity Clients and not the model for new
-integrations. See
+A direct application integration may instead use the protocol or an SDK with
+its own scoped Room authority. The bare-root fixture and historical
+direct-bootstrap paths remain compatibility/development surfaces, not
+Studio-selected Activity Clients and not the model for new integrations. See
 `web/console/src/participantHandoff.ts`, `web/console/src/liveSession.ts`,
-`web/console/src/negotiate.ts`, and the protocol documentation before
-integrating either boundary.
+and the protocol documentation before integrating either boundary.
 
 Useful UI commands are:
 
 ```sh
+pnpm activity-clients:verify
 pnpm ui:test
 pnpm ui:lint
 pnpm ui:build
+pnpm heist-client:build
+pnpm negotiate-client:build
 ```
+
+The local Release manifests, Distributions, Deployments, Bindings, and trust
+semantics are documented in [Activity Clients](activity-clients.md). Local
+development Deployments are deliberately `externally_trusted`; the current
+workflow does not claim production attestation of the served bytes.
 
 ## Explore Agent Heist
 
@@ -603,13 +606,11 @@ bootstrap.
   not provision a Room or inject a capability. Use Studio's **Open participant
   client** action for a live session, or open the recorded demo at port `5180`
   for the no-authority story.
-- **Negotiate opens the generic Inspector:** this is the current intended
-  Studio handoff. Negotiate has no registered standalone Activity Client in
-  this milestone. The Inspector may select the retained Negotiate-specific
-  compatibility renderer after it reads an authorized delivery. The separate
-  direct-bootstrap path still requires a one-shot
-  `window.__WORLDSTREAM_NEGOTIATE_CONSOLE__` projection plus a matching
-  ordinary live session.
+- **Negotiate opens the generic Inspector:** the exact Pack identity or current
+  Membership did not match an enabled, ready Negotiate binding. Verify
+  `config/activity-clients/local-bindings.json`, the exact installed Pack
+  digest, Access Mode and Role, and Client Host readiness. The checked-in
+  Negotiate binding normally opens `/negotiate/`.
 - **A Negotiate `pack:*` command cannot find `worldstream-pack`:** run
   `pnpm pack:build` from the repository root after the locked install.
 - **Negotiate proof cannot find `worldstreamctl`:** build the operator CLI with

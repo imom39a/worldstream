@@ -1,4 +1,5 @@
 import type { TaskSetupStatus } from "./taskSetup";
+import type { ActivityClientCandidate } from "./participantViews";
 
 export function TaskSetupOperation({
   setup,
@@ -9,6 +10,8 @@ export function TaskSetupOperation({
   onRetry,
   onLaunch,
   onOpenParticipantClient,
+  activityClientSelection,
+  onSelectActivityClient,
 }: {
   setup: TaskSetupStatus | null;
   statusAvailable: boolean;
@@ -18,6 +21,8 @@ export function TaskSetupOperation({
   onRetry?: () => void;
   onLaunch?: () => void;
   onOpenParticipantClient?: (seatId: string) => void;
+  activityClientSelection?: { seat_id: string; candidates: ActivityClientCandidate[] } | null;
+  onSelectActivityClient?: (seatId: string, candidateId: string) => void;
 }) {
   if (!roomCreated && setup === null) return null;
   const retryable = setup?.state === "needs_attention" && setup.attention?.retryable === true;
@@ -47,6 +52,21 @@ export function TaskSetupOperation({
               </small>
               {seat.principal_kind === "human" && seat.member_authority === "provisioned" ? (
                 <button type="button" onClick={() => onOpenParticipantClient?.(seat.seat_id)}>Open participant client ↗</button>
+              ) : null}
+              {activityClientSelection?.seat_id === seat.seat_id ? (
+                <div role="group" aria-label={`Approved Activity Clients for ${seat.display_name}`}>
+                  <strong>Choose an approved Activity Client</strong>
+                  <small>The Host selected these from the current Pack revision, access mode, and role.</small>
+                  {activityClientSelection.candidates.map((candidate) => (
+                    <button
+                      key={candidate.candidate_id}
+                      type="button"
+                      onClick={() => onSelectActivityClient?.(seat.seat_id, candidate.candidate_id)}
+                    >
+                      {candidate.client_id} · {candidate.surface_id} · {trustLabel(candidate.trust_level)}
+                    </button>
+                  ))}
+                </div>
               ) : null}
             </li>
           ))}
@@ -86,6 +106,10 @@ export function TaskSetupOperation({
       </p>
     </section>
   );
+}
+
+function trustLabel(trust: ActivityClientCandidate["trust_level"]): string {
+  return trust === "verified" ? "Host verified" : "Operator trusted";
 }
 
 function readinessFor(setup: TaskSetupStatus, seatId: string) {

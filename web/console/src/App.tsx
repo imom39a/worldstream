@@ -21,8 +21,6 @@ import {
   StatusPill,
 } from "./components";
 import { assertHeistFixtureParity, resultFixture, type HeistFixture, type ViewId } from "./fixture";
-import { useLiveSession, type LiveReplayClient, type LiveSessionConfig } from "./liveSession";
-import type { WorldStreamTransport } from "./transport";
 
 const navigation: Array<{ id: ViewId; label: string; description: string }> = [
   { id: "public", label: "Public board", description: "Public-safe room projection" },
@@ -34,22 +32,18 @@ const navigation: Array<{ id: ViewId; label: string; description: string }> = [
 interface AppProps {
   fixture?: HeistFixture;
   initialView?: ViewId;
-  liveSession?: LiveSessionConfig;
-  liveTransport?: WorldStreamTransport | null;
-  liveReplayClient?: LiveReplayClient | null;
 }
 
-export function App({ fixture = resultFixture, initialView = "public", liveSession: liveConfig, liveTransport, liveReplayClient }: AppProps) {
+/** Recorded reference gallery; live Activity Clients use their standalone routes. */
+export function App({ fixture = resultFixture, initialView = "public" }: AppProps) {
   assertHeistFixtureParity(fixture);
   const [activeView, setActiveView] = useState<ViewId>(initialView);
-  const live = useLiveSession(fixture, liveConfig, liveTransport, liveReplayClient);
-  const displayedFixture = live?.fixture ?? fixture;
-  const unavailableRecovery = projectionRecovery(displayedFixture);
+  const unavailableRecovery = projectionRecovery(fixture);
 
   return (
     <main className="app-shell">
-      <PhaseHeader fixture={displayedFixture} />
-      <DiscoveryPanel fixture={displayedFixture} />
+      <PhaseHeader fixture={fixture} />
+      <DiscoveryPanel fixture={fixture} />
       <nav className="view-nav panel" aria-label="Agent Heist views">
         <div className="view-nav-intro">
           <span className="eyebrow">Reference surfaces</span>
@@ -76,25 +70,25 @@ export function App({ fixture = resultFixture, initialView = "public", liveSessi
 
       <div className="view-note" role="status">
         <span className="status-dot" aria-hidden="true" />
-        <strong>{live ? `Live session · ${live.status}` : "Fixture mode"}</strong>
-        <span>{live?.error ?? (live ? "Explicit opt-in session · credentials stay outside the URL and DOM" : "Static reference data · no network connection · no provider credentials")}</span>
+        <strong>Recorded fixture mode</strong>
+        <span>Static reference data only. Live participant and spectator sessions open through standalone Activity Client routes.</span>
       </div>
-      <RuntimeStatusPanel runtime={displayedFixture.runtime} />
+      <RuntimeStatusPanel runtime={fixture.runtime} />
 
-      {activeView === "public" ? displayedFixture.runtime.roomHealth === "Quarantined" ? <QuarantinedSurface surface="Public Projection" /> : unavailableRecovery ? <UnavailableSurface surface="Public Projection" recovery={unavailableRecovery} /> : <PublicView fixture={displayedFixture} /> : null}
+      {activeView === "public" ? fixture.runtime.roomHealth === "Quarantined" ? <QuarantinedSurface surface="Public Projection" /> : unavailableRecovery ? <UnavailableSurface surface="Public Projection" recovery={unavailableRecovery} /> : <PublicView fixture={fixture} /> : null}
       {activeView === "participant" ? (
         <div id="participant-view" role="tabpanel" aria-labelledby="participant-tab">
-          {displayedFixture.runtime.roomHealth === "Quarantined" ? <QuarantinedSurface surface="Participant Projection" /> : <ParticipantControls fixture={displayedFixture} live={live} />}
+          {fixture.runtime.roomHealth === "Quarantined" ? <QuarantinedSurface surface="Participant Projection" /> : <ParticipantControls fixture={fixture} />}
         </div>
       ) : null}
       {activeView === "operator" ? (
         <div id="operator-view" role="tabpanel" aria-labelledby="operator-tab">
-          <OperatorDiagnostics diagnostics={displayedFixture.operator} />
+          <OperatorDiagnostics diagnostics={fixture.operator} />
         </div>
       ) : null}
       {activeView === "replay" ? (
         <div id="replay-view" role="tabpanel" aria-labelledby="replay-tab">
-          {unavailableRecovery ? <UnavailableSurface surface="Historical Replay" recovery={unavailableRecovery} /> : <ReplayPanel fixture={displayedFixture} />}
+          {unavailableRecovery ? <UnavailableSurface surface="Historical Replay" recovery={unavailableRecovery} /> : <ReplayPanel fixture={fixture} />}
         </div>
       ) : null}
     </main>

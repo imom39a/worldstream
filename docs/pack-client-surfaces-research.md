@@ -1,12 +1,13 @@
 # Pack-associated clients and participant surfaces
 
-> - **Status:** Non-normative architecture research and proposal
+> - **Status:** Historical research; superseded by accepted ADR 0017 and the implemented Activity Client model
 > - **Current as of:** 2026-09-01
 > - **Repository baseline reviewed:** `dcde956`
 >
-> **Decision authority:** This note does not change the frozen WorldStream
-> requirements, protocol, Activity Pack contract, Studio contract, or release
-> plan. Adoption requires the normal domain-document and ADR process.
+> **Decision authority:** This note records the investigation that led to
+> [ADR 0017](adr/0017-separate-activity-clients-from-packs-and-studio.md). The
+> ADR and [current Activity Client guide](activity-clients.md) govern wherever
+> this proposal's provisional names or roadmap differ from the implementation.
 
 ## Executive recommendation
 

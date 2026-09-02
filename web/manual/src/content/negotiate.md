@@ -41,26 +41,27 @@ A202 conformance.
 
 ## What the participant sees
 
-The retained Negotiate renderer has six server-scoped views: buyer agent,
+The standalone Negotiate Activity Client has six server-scoped views: buyer agent,
 seller agent, Human buyer approver, venue signer, operator, and spectator. It
 renders only the current authorized Projection and the Pack's exact Action
 Offers. It does not infer permissions from the current phase, display raw
 Activity State, or cache another party's private view.
 
-The current Studio launcher sends Negotiate to the Client Host's
-`/inspector/` fallback because there is no standalone registered Negotiate
-Activity Client yet. The Inspector may select this retained compatibility
-renderer only after it receives an authorized Negotiate delivery. Studio does
-not render the view or inspect its participant-private data.
+The Host-local Client Binding Store binds the exact Negotiate revision and
+current participant or spectator Membership to the independently executing
+`/negotiate/` surface. Studio brokers an opaque one-use launch but does not
+render the view, parse its Projection, or inspect participant-private data. If
+no compatible binding is eligible, the Host may offer its separately
+configured Pack-neutral Inspector fallback.
 
-After attach or reconnect, the Console installs a Projection Reset or every
+After attach or reconnect, the client installs a Projection Reset or every
 retained observation, acknowledges the sync barrier, and only then enables an
 Action. It then acknowledges delivered Frames so reconnect starts from the
 durable Membership Cursor. A stale-head rejection closes that gate and requires catch-up. If the
 A202 logical predecessor changed, the outside signer must also rebuild and
 re-sign the protocol object.
 
-When a user chooses an offered action, the Console asks an independently
+When a user chooses an offered action, the Activity Client asks an independently
 controlled application or Runner to prepare the payload. Signing keys,
 strategy, prompts, model context, and private memory never move into
 WorldStream. The returned payload still passes ordinary exact-head,
@@ -92,7 +93,7 @@ pnpm negotiate:acceptance
 ```
 
 It executes the released `.wspack` twice through fresh production Component
-Host processes and runs the independent restart oracle, Console privacy and
+Host processes and runs the independent restart oracle, client privacy and
 reconnect tests, and dual-evidence verifier. The resulting diagnostic is not a
 substitute for the separate live persisted-Room restart release drill.
 

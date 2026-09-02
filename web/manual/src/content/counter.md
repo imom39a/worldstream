@@ -202,7 +202,8 @@ The Inspector performs bounded, one-at-a-time refreshes from its last
 received frame. It does not advance the Membership Cursor itself, and it does
 not issue overlapping request storms while it waits for the managed turn.
 
-Both Studio and the Inspector then show the same Counter result:
+The Inspector shows the authorized Counter result while Studio independently
+shows the same sequence in Pack-neutral Room metadata:
 
 | Room sequence | Counter value | What happened |
 | ---: | ---: | --- |
@@ -222,7 +223,8 @@ managed-seat card reports an Activation state of **Waiting** or **Leased**,
 choose **Stop managed host**. Wait for the same card to report **Attention** or
 **Unavailable**, then choose **Retry managed host**. Studio should return the
 managed host to its bounded work and eventually show an idle/healthy result;
-the Inspector and operator view converge to sequence `2`, `Counter value: 2`.
+the Inspector returns to sequence `2`, `Counter value: 2`, while Studio's
+Pack-neutral Room metadata returns to the same Head.
 The retained activation cursor and lease are resumed, so this recovery commits
 one increment, not two.
 

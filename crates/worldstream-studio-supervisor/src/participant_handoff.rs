@@ -22,19 +22,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tungstenite::handshake::client::generate_key;
 use tungstenite::{Message, WebSocket, client, http};
-use worldstream_core::{
-    AGENT_HEIST_LOBBY_VERSION, AGENT_HEIST_PACK_ID, AGENT_HEIST_VERSION, agent_heist_digest,
-    agent_heist_lobby_digest,
-};
+use worldstream_activity_client::ExactPackReferenceV1;
 use worldstream_protocol::{
-    ActionAccepted, ActionRejected, ClientHello, ClientMode, ObservationDeliver, PROTOCOL_VERSION,
-    PackReference, ProjectionReset, REQUIRED_CLIENT_CAPABILITIES, ReplayResponse, RoomAttached,
-    RoomHead, SealedCapabilityBearerV1, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
+    AccessMode, ActionAccepted, ActionRejected, ClientHello, ClientMode, ObservationDeliver,
+    PROTOCOL_VERSION, PackReference, ProjectionReset, REQUIRED_CLIENT_CAPABILITIES, ReplayResponse,
+    RoomAttached, RoomHead, SealedCapabilityBearerV1, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
 };
 use zeroize::Zeroizing;
 
-const HANDOFF_VERSION: &str = "participant_handoff.v1";
+use crate::client_bindings::{
+    ClientBindingStoreErrorV1, ClientCandidateClassV1, ClientCandidateV1, ClientSelectionRequestV1,
+    ClientSelectionSourceV1, ClientSelectionV1, DeploymentTrustLevelV1,
+};
+
+const HANDOFF_VERSION: &str = "activity_client_handoff.v1";
 const SESSION_VERSION: &str = "participant_console_session.v1";
+const CLIENT_CONTRACT_V1: &str = "worldstream/activity-client-protocol/v1";
 const HANDOFF_HEADER: &str = "x-worldstream-participant-handoff";
 const SESSION_COOKIE: &str = "ws_participant_session";
 const SESSION_COOKIE_PATH: &str = "/api/v1/participant-console";
@@ -46,14 +49,14 @@ const MAX_ACTION_TYPE_BYTES: usize = 128;
 const MAX_OFFER_ID_BYTES: usize = 256;
 const MAX_ACTION_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_REPLAY_RESPONSE_BYTES: u64 = 256 * 1024;
-const AGENT_HEIST_CLIENT_PATH: &str = "/agent-heist/";
-const INSPECTOR_CLIENT_PATH: &str = "/inspector/";
 
 /// Exact, non-serializable authority for one provisioned human participant seat.
 pub struct HumanSeatAuthorityV1 {
     room_id: String,
     member_id: String,
     pack: PackReference,
+    access_mode: AccessMode,
+    role: Option<String>,
     bearer: SealedCapabilityBearerV1,
 }
 
@@ -67,15 +70,28 @@ impl HumanSeatAuthorityV1 {
         room_id: &str,
         member_id: &str,
         pack: PackReference,
+        access_mode: AccessMode,
+        role: Option<String>,
         bearer: SealedCapabilityBearerV1,
     ) -> Result<Self, ParticipantHandoffAuthorityErrorV1> {
-        if !is_ulid(room_id) || !is_ulid(member_id) {
+        if !is_ulid(room_id)
+            || !is_ulid(member_id)
+            || role.as_deref().is_some_and(|role| {
+                role.is_empty()
+                    || role.len() > MAX_SEAT_ID_BYTES
+                    || !role.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            })
+        {
             return Err(ParticipantHandoffAuthorityErrorV1::Unavailable);
         }
         Ok(Self {
             room_id: room_id.to_owned(),
             member_id: member_id.to_owned(),
             pack,
+            access_mode,
+            role,
             bearer,
         })
     }
@@ -98,10 +114,28 @@ impl HumanSeatAuthorityV1 {
         &self.pack
     }
 
+    /// Returns the current Membership access mode used for client selection.
+    #[must_use]
+    pub const fn access_mode(&self) -> AccessMode {
+        self.access_mode
+    }
+
+    /// Returns the current Membership role used for client selection.
+    #[must_use]
+    pub fn role(&self) -> Option<&str> {
+        self.role.as_deref()
+    }
+
     /// Returns the sealed participant bearer only at the internal daemon adapter.
     #[must_use]
     pub const fn bearer(&self) -> &SealedCapabilityBearerV1 {
         &self.bearer
+    }
+
+    fn install_current_membership(&mut self, current: &CurrentMembershipSnapshotV1) {
+        self.pack.clone_from(&current.pack);
+        self.access_mode = current.access_mode;
+        self.role.clone_from(&current.role);
     }
 }
 
@@ -168,8 +202,31 @@ pub struct ParticipantConsoleObservationV1 {
     pub durable_cursor: Option<u64>,
 }
 
+/// Current enabled Membership facts returned by the Room service.
+///
+/// This snapshot carries no capability or routing secret. The broker uses it
+/// to select and continuously revalidate the exact Activity Client binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CurrentMembershipSnapshotV1 {
+    pub pack: PackReference,
+    pub access_mode: AccessMode,
+    pub role: Option<String>,
+}
+
 /// Membership-bound observe/act adapter used after the local session is admitted.
 pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
+    /// Resolves current enabled Membership facts from the Room service.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Rejected` when the Membership is absent, disabled, or no
+    /// longer usable by this human authority.
+    fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        durable_cursor: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1>;
+
     /// Returns browser-safe authorized observation data for this Membership only.
     ///
     /// # Errors
@@ -273,7 +330,11 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             &ClientHello {
                 client_name: "worldstream-participant-console".to_owned(),
                 client_version: env!("CARGO_PKG_VERSION").to_owned(),
-                mode: ClientMode::Participant,
+                mode: match authority.access_mode() {
+                    AccessMode::Participant => ClientMode::Participant,
+                    AccessMode::Spectator => ClientMode::Spectator,
+                    AccessMode::Operator => ClientMode::Operator,
+                },
                 supported_protocols: vec![PROTOCOL_VERSION.to_owned()],
                 capabilities: REQUIRED_CLIENT_CAPABILITIES
                     .iter()
@@ -306,7 +367,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             || attached.member_id != authority.member_id()
             || attached.room_head.room_id != authority.room_id()
             || attached.principal_kind != worldstream_protocol::PrincipalKind::Human
-            || attached.access_mode != worldstream_protocol::AccessMode::Participant
+            || (attached.access_mode == AccessMode::Participant) != attached.role.is_some()
         {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
@@ -450,6 +511,28 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
 }
 
 impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
+    fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        durable_cursor: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        let mut socket = self.connect(authority)?;
+        let attached = Self::attach(&mut socket, authority, durable_cursor)?;
+        if attached.membership_status != "enabled"
+            || !matches!(
+                attached.access_mode,
+                AccessMode::Participant | AccessMode::Spectator
+            )
+        {
+            return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+        }
+        Ok(CurrentMembershipSnapshotV1 {
+            pack: attached.pack,
+            access_mode: attached.access_mode,
+            role: attached.role,
+        })
+    }
+
     fn observe(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -457,7 +540,10 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
     ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
         let mut socket = self.connect(authority)?;
         let attached = Self::attach(&mut socket, authority, durable_cursor)?;
-        if attached.membership_status != "enabled" {
+        if attached.membership_status != "enabled"
+            || attached.access_mode != authority.access_mode()
+            || attached.role.as_deref() != authority.role()
+        {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
         let delivery = Self::read_delivery(&mut socket, authority)?;
@@ -484,7 +570,11 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
     ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
         let mut socket = self.connect(authority)?;
         let attached = Self::attach(&mut socket, authority, durable_cursor)?;
-        if attached.membership_status != "enabled" {
+        if attached.membership_status != "enabled"
+            || attached.access_mode != AccessMode::Participant
+            || attached.access_mode != authority.access_mode()
+            || attached.role.as_deref() != authority.role()
+        {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
         Self::send(
@@ -569,8 +659,13 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
         let mut socket = self.connect(authority)?;
         let attached = Self::attach(&mut socket, authority, durable_cursor)?;
         match attached.membership_status.as_str() {
-            "enabled" => Ok(ParticipantConsoleSessionHealthV1::Usable),
-            "suspended" | "departed" => Ok(ParticipantConsoleSessionHealthV1::Invalid),
+            "enabled"
+                if attached.access_mode == authority.access_mode()
+                    && attached.role.as_deref() == authority.role() =>
+            {
+                Ok(ParticipantConsoleSessionHealthV1::Usable)
+            }
+            "enabled" | "suspended" | "departed" => Ok(ParticipantConsoleSessionHealthV1::Invalid),
             _ => Err(ParticipantConsoleGatewayErrorV1::Rejected),
         }
     }
@@ -711,15 +806,42 @@ struct SeatBindingV1 {
 
 struct HandoffRecordV1 {
     binding: SeatBindingV1,
+    selection: RetainedClientSelectionV1,
     expires_at: Instant,
+}
+
+#[derive(Clone)]
+enum RetainedClientSelectionV1 {
+    Candidate(String),
+    Inspector(String),
+}
+
+fn client_selection_request(current: &CurrentMembershipSnapshotV1) -> ClientSelectionRequestV1 {
+    ClientSelectionRequestV1 {
+        pack: ExactPackReferenceV1 {
+            id: current.pack.id.clone(),
+            version: current.pack.version.clone(),
+            digest: current.pack.digest.clone(),
+        },
+        client_contract: CLIENT_CONTRACT_V1.to_owned(),
+        access_mode: current.access_mode,
+        role: current.role.clone(),
+    }
 }
 
 #[derive(Clone)]
 struct SessionRecordV1 {
     binding: SeatBindingV1,
+    selection: RetainedClientSelectionV1,
     target_fingerprint: [u8; 32],
     durable_cursor: Option<u64>,
     expires_at: Instant,
+}
+
+struct ResolvedParticipantSessionV1 {
+    authority: HumanSeatAuthorityV1,
+    current: CurrentMembershipSnapshotV1,
+    durable_cursor: Option<u64>,
 }
 
 #[derive(Default)]
@@ -736,6 +858,7 @@ struct BrokerInnerV1 {
     readiness_key: [u8; 32],
     authority: Arc<dyn ParticipantHandoffAuthoritySourceV1>,
     gateway: Arc<dyn ParticipantConsoleGatewayV1>,
+    clients: Arc<dyn ClientSelectionSourceV1>,
     state: Mutex<BrokerStateV1>,
 }
 
@@ -758,6 +881,7 @@ impl ParticipantHandoffBrokerV1 {
         maximum_retained: usize,
         authority: impl ParticipantHandoffAuthoritySourceV1,
         gateway: impl ParticipantConsoleGatewayV1,
+        clients: impl ClientSelectionSourceV1,
     ) -> Result<Self, ParticipantHandoffConfigErrorV1> {
         if !is_exact_loopback_origin(studio_origin)
             || !is_exact_loopback_origin(console_origin)
@@ -781,6 +905,7 @@ impl ParticipantHandoffBrokerV1 {
                 readiness_key,
                 authority: Arc::new(authority),
                 gateway: Arc::new(gateway),
+                clients: Arc::new(clients),
                 state: Mutex::new(BrokerStateV1::default()),
             }),
         })
@@ -790,13 +915,48 @@ impl ParticipantHandoffBrokerV1 {
         &self,
         request: IssueHandoffRequestV1,
     ) -> Result<IssueHandoffResponseV1, ParticipantHandoffErrorV1> {
-        validate_binding(&request.draft_id, &request.seat_id)?;
+        validate_binding(&request.draft, &request.seat)?;
+        if request
+            .candidate
+            .as_deref()
+            .is_some_and(|candidate| !is_client_candidate_id(candidate))
+        {
+            return Err(ParticipantHandoffErrorV1::InvalidRequest);
+        }
         let authority = self
             .inner
             .authority
-            .resolve_provisioned_human_seat(&request.draft_id, &request.seat_id)
+            .resolve_provisioned_human_seat(&request.draft, &request.seat)
             .map_err(ParticipantHandoffErrorV1::from_authority)?;
-        let client_path = participant_client_path(authority.pack());
+        let current = self.current_membership(&authority, None)?;
+        let selection = self.select_client(&current, request.candidate.as_deref())?;
+        let (launch_base, retained_selection) = match selection {
+            ClientSelectionV1::SelectionRequired { candidates } => {
+                return Ok(IssueHandoffResponseV1::SelectionRequired {
+                    version: HANDOFF_VERSION,
+                    candidates: candidates
+                        .into_iter()
+                        .map(ClientCandidateSummaryV1::from)
+                        .collect(),
+                });
+            }
+            ClientSelectionV1::InspectorFallback { candidate } => {
+                let launch_base =
+                    selected_launch_base(&self.inner.console_origin, &candidate.launch_url)?;
+                (
+                    launch_base,
+                    RetainedClientSelectionV1::Inspector(candidate.candidate_id),
+                )
+            }
+            ClientSelectionV1::Selected { candidate } => {
+                let launch_base =
+                    selected_launch_base(&self.inner.console_origin, &candidate.launch_url)?;
+                (
+                    launch_base,
+                    RetainedClientSelectionV1::Candidate(candidate.candidate_id),
+                )
+            }
+        };
         let mut state = self.lock();
         prune_expired(&mut state);
         if state.handoffs.len().saturating_add(state.sessions.len()) >= self.inner.maximum_retained
@@ -808,19 +968,46 @@ impl ParticipantHandoffBrokerV1 {
             handoff.clone(),
             HandoffRecordV1 {
                 binding: SeatBindingV1 {
-                    draft_id: request.draft_id,
-                    seat_id: request.seat_id,
+                    draft_id: request.draft,
+                    seat_id: request.seat,
                 },
+                selection: retained_selection,
                 expires_at: Instant::now() + self.inner.handoff_ttl,
             },
         );
-        Ok(IssueHandoffResponseV1 {
+        Ok(IssueHandoffResponseV1::Ready {
             version: HANDOFF_VERSION,
-            console_url: format!(
-                "{}{client_path}#handoff={handoff}",
-                self.inner.console_origin
-            ),
+            client_url: format!("{launch_base}#handoff={handoff}"),
         })
+    }
+
+    fn select_client(
+        &self,
+        current: &CurrentMembershipSnapshotV1,
+        preferred_candidate_id: Option<&str>,
+    ) -> Result<ClientSelectionV1, ParticipantHandoffErrorV1> {
+        self.inner
+            .clients
+            .select_client(&client_selection_request(current), preferred_candidate_id)
+            .map_err(|error| match error {
+                ClientBindingStoreErrorV1::InvalidChoice => {
+                    ParticipantHandoffErrorV1::SelectionInvalid
+                }
+                ClientBindingStoreErrorV1::Invalid | ClientBindingStoreErrorV1::Unavailable => {
+                    ParticipantHandoffErrorV1::ClientUnavailable
+                }
+            })
+    }
+
+    fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        durable_cursor: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantHandoffErrorV1> {
+        self.inner
+            .gateway
+            .current_membership(authority, durable_cursor)
+            .map_err(ParticipantHandoffErrorV1::from_gateway)
     }
 
     fn redeem(
@@ -844,6 +1031,29 @@ impl ParticipantHandoffBrokerV1 {
             .authority
             .resolve_provisioned_human_seat(&record.binding.draft_id, &record.binding.seat_id)
             .map_err(ParticipantHandoffErrorV1::from_authority)?;
+        let current = self.current_membership(&authority, None)?;
+        match &record.selection {
+            RetainedClientSelectionV1::Candidate(candidate_id) => {
+                let ClientSelectionV1::Selected { candidate } =
+                    self.select_client(&current, Some(candidate_id))?
+                else {
+                    return Err(ParticipantHandoffErrorV1::InvalidHandoff);
+                };
+                if candidate.candidate_id != *candidate_id {
+                    return Err(ParticipantHandoffErrorV1::InvalidHandoff);
+                }
+            }
+            RetainedClientSelectionV1::Inspector(candidate_id) => {
+                let ClientSelectionV1::InspectorFallback { candidate } =
+                    self.select_client(&current, None)?
+                else {
+                    return Err(ParticipantHandoffErrorV1::InvalidHandoff);
+                };
+                if candidate.candidate_id != *candidate_id {
+                    return Err(ParticipantHandoffErrorV1::InvalidHandoff);
+                }
+            }
+        }
         let mut state = self.lock();
         prune_expired(&mut state);
         if let Some(retained) = retained_cookie.and_then(parse_session_cookie) {
@@ -858,6 +1068,7 @@ impl ParticipantHandoffBrokerV1 {
             session.clone(),
             SessionRecordV1 {
                 binding: record.binding,
+                selection: record.selection,
                 target_fingerprint: target_fingerprint(
                     &self.inner.readiness_key,
                     authority.room_id(),
@@ -874,9 +1085,12 @@ impl ParticipantHandoffBrokerV1 {
         &self,
         cookie: Option<&str>,
     ) -> Result<ParticipantSessionStatusV1, ParticipantHandoffErrorV1> {
-        let cursor = self.session_cursor(cookie)?;
-        let authority = self.resolve_session(cookie)?;
-        match self.inner.gateway.health(&authority, cursor) {
+        let resolved = self.resolve_session(cookie)?;
+        let result = match self
+            .inner
+            .gateway
+            .health(&resolved.authority, resolved.durable_cursor)
+        {
             Ok(ParticipantConsoleSessionHealthV1::Usable) => {
                 Ok(ParticipantSessionStatusV1::usable())
             }
@@ -897,7 +1111,8 @@ impl ParticipantHandoffBrokerV1 {
             Err(ParticipantConsoleGatewayErrorV1::Unavailable) => {
                 Err(ParticipantHandoffErrorV1::Upstream)
             }
-        }
+        };
+        self.invalidate_cookie_on_terminal_error(cookie, result)
     }
 
     fn observe(
@@ -905,13 +1120,14 @@ impl ParticipantHandoffBrokerV1 {
         cookie: Option<&str>,
         request: ObserveRequestV1,
     ) -> Result<Value, ParticipantHandoffErrorV1> {
-        let cursor = self.session_cursor(cookie)?;
-        let authority = self.resolve_session(cookie)?;
-        let observation = self
-            .inner
-            .gateway
-            .observe(&authority, cursor)
-            .map_err(ParticipantHandoffErrorV1::from_gateway)?;
+        let resolved = self.resolve_session(cookie)?;
+        let observation = self.invalidate_cookie_on_terminal_error(
+            cookie,
+            self.inner
+                .gateway
+                .observe(&resolved.authority, resolved.durable_cursor)
+                .map_err(ParticipantHandoffErrorV1::from_gateway),
+        )?;
         self.update_session_cursor(cookie, observation.durable_cursor)?;
         // A browser frame head records what this page rendered. The protected Console
         // does not issue `observation.ack`, so it cannot become a Membership Cursor.
@@ -925,13 +1141,17 @@ impl ParticipantHandoffBrokerV1 {
         request: &ParticipantActionRequestV1,
     ) -> Result<Value, ParticipantHandoffErrorV1> {
         validate_action(request)?;
-        let cursor = self.session_cursor(cookie)?;
-        let authority = self.resolve_session(cookie)?;
-        let value = self
-            .inner
-            .gateway
-            .act(&authority, cursor, request)
-            .map_err(ParticipantHandoffErrorV1::from_gateway)?;
+        let resolved = self.resolve_session(cookie)?;
+        if resolved.current.access_mode != AccessMode::Participant {
+            return Err(ParticipantHandoffErrorV1::AuthorityInvalid);
+        }
+        let value = self.invalidate_cookie_on_terminal_error(
+            cookie,
+            self.inner
+                .gateway
+                .act(&resolved.authority, resolved.durable_cursor, request)
+                .map_err(ParticipantHandoffErrorV1::from_gateway),
+        )?;
         browser_safe_gateway_value(value)
     }
 
@@ -940,11 +1160,11 @@ impl ParticipantHandoffBrokerV1 {
         cookie: Option<&str>,
         request: ReplayRequestV1,
     ) -> Result<Value, ParticipantHandoffErrorV1> {
-        let authority = self.resolve_session(cookie)?;
+        let resolved = self.resolve_session(cookie)?;
         let value = self
             .inner
             .gateway
-            .replay(&authority, request.at_room_seq)
+            .replay(&resolved.authority, request.at_room_seq)
             .map_err(|error| match error {
                 ParticipantConsoleGatewayErrorV1::Rejected => {
                     ParticipantHandoffErrorV1::ReplayUnavailable
@@ -957,41 +1177,70 @@ impl ParticipantHandoffBrokerV1 {
     fn resolve_session(
         &self,
         cookie: Option<&str>,
-    ) -> Result<HumanSeatAuthorityV1, ParticipantHandoffErrorV1> {
+    ) -> Result<ResolvedParticipantSessionV1, ParticipantHandoffErrorV1> {
         let token = cookie
             .and_then(parse_session_cookie)
             .filter(|value| is_token(value, "wss1:"))
             .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
-        let binding = {
+        let record = {
             let mut state = self.lock();
             prune_expired(&mut state);
             state
                 .sessions
                 .get(token)
-                .map(|record| record.binding.clone())
+                .cloned()
                 .ok_or(ParticipantHandoffErrorV1::SessionMissing)?
         };
-        self.inner
-            .authority
-            .resolve_provisioned_human_seat(&binding.draft_id, &binding.seat_id)
-            .map_err(ParticipantHandoffErrorV1::from_authority)
+        let resolved: Result<ResolvedParticipantSessionV1, ParticipantHandoffErrorV1> = (|| {
+            let mut authority = self
+                .inner
+                .authority
+                .resolve_provisioned_human_seat(&record.binding.draft_id, &record.binding.seat_id)
+                .map_err(ParticipantHandoffErrorV1::from_authority)?;
+            let current = self.current_membership(&authority, record.durable_cursor)?;
+            self.validate_retained_selection(&current, &record.selection)?;
+            authority.install_current_membership(&current);
+            Ok(ResolvedParticipantSessionV1 {
+                authority,
+                current,
+                durable_cursor: record.durable_cursor,
+            })
+        })(
+        );
+        if resolved
+            .as_ref()
+            .is_err_and(|error| error.invalidates_retained_session())
+        {
+            self.invalidate_session(token);
+        }
+        resolved
     }
 
-    fn session_cursor(
+    fn validate_retained_selection(
         &self,
-        cookie: Option<&str>,
-    ) -> Result<Option<u64>, ParticipantHandoffErrorV1> {
-        let token = cookie
-            .and_then(parse_session_cookie)
-            .filter(|value| is_token(value, "wss1:"))
-            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
-        let mut state = self.lock();
-        prune_expired(&mut state);
-        state
-            .sessions
-            .get(token)
-            .map(|record| record.durable_cursor)
-            .ok_or(ParticipantHandoffErrorV1::SessionMissing)
+        current: &CurrentMembershipSnapshotV1,
+        retained: &RetainedClientSelectionV1,
+    ) -> Result<(), ParticipantHandoffErrorV1> {
+        let (class, candidate_id) = match retained {
+            RetainedClientSelectionV1::Candidate(candidate_id) => {
+                (ClientCandidateClassV1::Binding, candidate_id)
+            }
+            RetainedClientSelectionV1::Inspector(candidate_id) => {
+                (ClientCandidateClassV1::InspectorFallback, candidate_id)
+            }
+        };
+        self.inner
+            .clients
+            .resolve_active_client(&client_selection_request(current), class, candidate_id)
+            .map(|_| ())
+            .map_err(|error| match error {
+                ClientBindingStoreErrorV1::InvalidChoice => {
+                    ParticipantHandoffErrorV1::AuthorityInvalid
+                }
+                ClientBindingStoreErrorV1::Invalid | ClientBindingStoreErrorV1::Unavailable => {
+                    ParticipantHandoffErrorV1::ClientUnavailable
+                }
+            })
     }
 
     fn update_session_cursor(
@@ -1013,6 +1262,25 @@ impl ParticipantHandoffBrokerV1 {
         Ok(())
     }
 
+    fn invalidate_cookie_on_terminal_error<T>(
+        &self,
+        cookie: Option<&str>,
+        result: Result<T, ParticipantHandoffErrorV1>,
+    ) -> Result<T, ParticipantHandoffErrorV1> {
+        if result
+            .as_ref()
+            .is_err_and(|error| error.invalidates_retained_session())
+            && let Some(token) = cookie.and_then(parse_session_cookie)
+        {
+            self.invalidate_session(token);
+        }
+        result
+    }
+
+    fn invalidate_session(&self, token: &str) {
+        self.lock().sessions.remove(token);
+    }
+
     fn lock(&self) -> MutexGuard<'_, BrokerStateV1> {
         self.inner
             .state
@@ -1032,14 +1300,21 @@ impl ParticipantConsoleReadinessSourceV1 for ParticipantHandoffBrokerV1 {
             prune_expired(&mut state);
             state
                 .sessions
-                .values()
-                .find(|record| record.target_fingerprint == expected)
-                .map(|record| (record.binding.clone(), record.durable_cursor))
+                .iter()
+                .find(|(_, record)| record.target_fingerprint == expected)
+                .map(|(token, record)| {
+                    (
+                        token.clone(),
+                        record.binding.clone(),
+                        record.selection.clone(),
+                        record.durable_cursor,
+                    )
+                })
         };
-        let Some((binding, cursor)) = retained else {
+        let Some((token, binding, selection, cursor)) = retained else {
             return ParticipantConsoleSessionHealthV1::Missing;
         };
-        let authority = match self
+        let mut authority = match self
             .inner
             .authority
             .resolve_provisioned_human_seat(&binding.draft_id, &binding.seat_id)
@@ -1053,17 +1328,44 @@ impl ParticipantConsoleReadinessSourceV1 for ParticipantHandoffBrokerV1 {
                 | ParticipantHandoffAuthorityErrorV1::NotHuman
                 | ParticipantHandoffAuthorityErrorV1::NotProvisioned
                 | ParticipantHandoffAuthorityErrorV1::AuthorityInvalid,
-            ) => return ParticipantConsoleSessionHealthV1::Invalid,
+            ) => {
+                self.invalidate_session(&token);
+                return ParticipantConsoleSessionHealthV1::Invalid;
+            }
         };
+        let current = match self.inner.gateway.current_membership(&authority, cursor) {
+            Ok(current) => current,
+            Err(
+                ParticipantConsoleGatewayErrorV1::Disconnected
+                | ParticipantConsoleGatewayErrorV1::Unavailable,
+            ) => return ParticipantConsoleSessionHealthV1::Disconnected,
+            Err(ParticipantConsoleGatewayErrorV1::Rejected) => {
+                self.invalidate_session(&token);
+                return ParticipantConsoleSessionHealthV1::Invalid;
+            }
+        };
+        if let Err(error) = self.validate_retained_selection(&current, &selection) {
+            if error.invalidates_retained_session() {
+                self.invalidate_session(&token);
+                return ParticipantConsoleSessionHealthV1::Invalid;
+            }
+            return ParticipantConsoleSessionHealthV1::Disconnected;
+        }
+        authority.install_current_membership(&current);
         match self.inner.gateway.health(&authority, cursor) {
+            Ok(
+                ParticipantConsoleSessionHealthV1::Missing
+                | ParticipantConsoleSessionHealthV1::Invalid,
+            )
+            | Err(ParticipantConsoleGatewayErrorV1::Rejected) => {
+                self.invalidate_session(&token);
+                ParticipantConsoleSessionHealthV1::Invalid
+            }
             Ok(health) => health,
             Err(
                 ParticipantConsoleGatewayErrorV1::Disconnected
                 | ParticipantConsoleGatewayErrorV1::Unavailable,
             ) => ParticipantConsoleSessionHealthV1::Disconnected,
-            Err(ParticipantConsoleGatewayErrorV1::Rejected) => {
-                ParticipantConsoleSessionHealthV1::Invalid
-            }
         }
     }
 }
@@ -1078,15 +1380,49 @@ pub enum ParticipantHandoffConfigErrorV1 {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IssueHandoffRequestV1 {
-    draft_id: String,
-    seat_id: String,
+    #[serde(rename = "draft_id")]
+    draft: String,
+    #[serde(rename = "seat_id")]
+    seat: String,
+    #[serde(rename = "candidate_id")]
+    candidate: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum IssueHandoffResponseV1 {
+    Ready {
+        version: &'static str,
+        client_url: String,
+    },
+    SelectionRequired {
+        version: &'static str,
+        candidates: Vec<ClientCandidateSummaryV1>,
+    },
 }
 
 #[derive(Debug, Serialize)]
 #[serde(deny_unknown_fields)]
-struct IssueHandoffResponseV1 {
-    version: &'static str,
-    console_url: String,
+struct ClientCandidateSummaryV1 {
+    candidate_id: String,
+    deployment_id: String,
+    client_id: String,
+    release_digest: String,
+    surface_id: String,
+    trust_level: DeploymentTrustLevelV1,
+}
+
+impl From<ClientCandidateV1> for ClientCandidateSummaryV1 {
+    fn from(candidate: ClientCandidateV1) -> Self {
+        Self {
+            candidate_id: candidate.candidate_id,
+            deployment_id: candidate.deployment_id,
+            client_id: candidate.client_id,
+            release_digest: candidate.release_digest,
+            surface_id: candidate.surface_id,
+            trust_level: candidate.trust_level,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -1278,7 +1614,11 @@ async fn issue_handoff(
 ) -> Result<(StatusCode, Json<IssueHandoffResponseV1>), ParticipantHandoffErrorV1> {
     require_origin(&headers, &broker.inner.studio_origin)?;
     let response = run_blocking(move || broker.issue(request)).await?;
-    Ok((StatusCode::CREATED, Json(response)))
+    let status = match &response {
+        IssueHandoffResponseV1::Ready { .. } => StatusCode::CREATED,
+        IssueHandoffResponseV1::SelectionRequired { .. } => StatusCode::OK,
+    };
+    Ok((status, Json(response)))
 }
 
 async fn redeem_handoff(
@@ -1386,6 +1726,8 @@ enum ParticipantHandoffErrorV1 {
     SeatNotFound,
     HumanSeatRequired,
     NotProvisioned,
+    SelectionInvalid,
+    ClientUnavailable,
     AuthorityInvalid,
     ReplayUnavailable,
     InvalidHandoff,
@@ -1412,11 +1754,24 @@ impl ParticipantHandoffErrorV1 {
             ParticipantConsoleGatewayErrorV1::Rejected => Self::AuthorityInvalid,
         }
     }
+
+    const fn invalidates_retained_session(self) -> bool {
+        matches!(
+            self,
+            Self::SeatNotFound
+                | Self::HumanSeatRequired
+                | Self::NotProvisioned
+                | Self::SelectionInvalid
+                | Self::AuthorityInvalid
+        )
+    }
 }
 
-impl IntoResponse for ParticipantHandoffErrorV1 {
-    fn into_response(self) -> Response {
-        let (status, code, message, next_action, retryable) = match self {
+impl ParticipantHandoffErrorV1 {
+    const fn response_metadata(
+        self,
+    ) -> (StatusCode, &'static str, &'static str, &'static str, bool) {
+        match self {
             Self::InvalidRequest => (
                 StatusCode::BAD_REQUEST,
                 "participant_handoff_invalid_request",
@@ -1451,6 +1806,20 @@ impl IntoResponse for ParticipantHandoffErrorV1 {
                 "Participant authority must be provisioned before opening this seat.",
                 "return_to_task_setup",
                 false,
+            ),
+            Self::SelectionInvalid => (
+                StatusCode::CONFLICT,
+                "activity_client_selection_invalid",
+                "The selected Activity Client is no longer approved for this Membership.",
+                "return_to_task_setup",
+                false,
+            ),
+            Self::ClientUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "activity_client_selection_unavailable",
+                "The Host could not resolve an approved Activity Client safely.",
+                "retry",
+                true,
             ),
             Self::AuthorityInvalid => (
                 StatusCode::UNAUTHORIZED,
@@ -1494,7 +1863,13 @@ impl IntoResponse for ParticipantHandoffErrorV1 {
                 "reconnect",
                 true,
             ),
-        };
+        }
+    }
+}
+
+impl IntoResponse for ParticipantHandoffErrorV1 {
+    fn into_response(self) -> Response {
+        let (status, code, message, next_action, retryable) = self.response_metadata();
         (
             status,
             Json(ErrorBodyV1 {
@@ -1673,20 +2048,33 @@ fn is_blake3_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn participant_client_path(pack: &PackReference) -> &'static str {
-    if pack.id != AGENT_HEIST_PACK_ID {
-        return INSPECTOR_CLIENT_PATH;
-    }
-    let expected_digest = match pack.version.as_str() {
-        AGENT_HEIST_VERSION => agent_heist_digest(),
-        AGENT_HEIST_LOBBY_VERSION => agent_heist_lobby_digest(),
-        _ => return INSPECTOR_CLIENT_PATH,
+fn selected_launch_base(
+    client_host_origin: &str,
+    launch_url: &str,
+) -> Result<String, ParticipantHandoffErrorV1> {
+    let Some(path) = launch_url.strip_prefix(client_host_origin) else {
+        return Err(ParticipantHandoffErrorV1::ClientUnavailable);
     };
-    if pack.digest == expected_digest.to_string() {
-        AGENT_HEIST_CLIENT_PATH
-    } else {
-        INSPECTOR_CLIENT_PATH
+    if !path.starts_with('/')
+        || !path.ends_with('/')
+        || path.contains(['?', '#', '\\', '\r', '\n'])
+        || path.split('/').any(|segment| segment == "..")
+    {
+        return Err(ParticipantHandoffErrorV1::ClientUnavailable);
     }
+    Ok(launch_url.to_owned())
+}
+
+fn is_client_candidate_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
 }
 
 fn is_exact_loopback_origin(value: &str) -> bool {

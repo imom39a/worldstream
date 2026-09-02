@@ -113,7 +113,7 @@ describe("Negotiate retained HttpOnly Participant session", () => {
     expect(dom).not.toContain("Bearer");
   });
 
-  it("routes the normal retained handoff surface into the Negotiate renderer", () => {
+  it("keeps the generic Inspector independent from the Negotiate renderer", () => {
     const dom = renderToStaticMarkup(
       <ParticipantHandoffView
         state={{
@@ -127,9 +127,10 @@ describe("Negotiate retained HttpOnly Participant session", () => {
         onReplay={vi.fn()}
       />,
     );
-    expect(dom).toContain("WorldStream Negotiate");
-    expect(dom).toContain("Human buyer approver workspace");
-    expect(dom).not.toContain("Action payload (JSON)");
+    expect(dom).toContain("WorldStream Inspector");
+    expect(dom).toContain("Authorized Room projection");
+    expect(dom).toContain("Action payload (JSON)");
+    expect(dom).not.toContain("Human buyer approver workspace");
   });
 
   it("rejects Replay from a different retained Head", () => {

@@ -4,9 +4,9 @@
 agent-streamer/
 ├── CONTEXT.md                 canonical domain vocabulary
 ├── compatibility.toml/json    release/build compatibility contract and mirror
-├── config/                    local checked-in non-secret configuration
+├── config/                    local non-secret runtime and Activity Client configuration
 ├── clients/                   first-party standalone Activity Clients
-├── crates/                    Rust kernel, adapters, server, Supervisor
+├── crates/                    Rust kernel, client contracts, adapters, server, Supervisor
 ├── docs/                      normative architecture, protocol, ADRs, runbooks
 ├── examples/                  Counter and Agent Heist fixtures/acceptance
 ├── sdk/python/                public asynchronous participant client
@@ -25,11 +25,12 @@ agent-streamer/
 | --- | --- | --- |
 | domain vocabulary | `CONTEXT.md` | affected ADRs and all public names |
 | canonical Room behavior | `worldstream-core` | architecture, both adapters, conformance, protocol |
-| wire shape | `worldstream-protocol` | server, SDK, Console, MCP, compatibility |
+| wire shape | `worldstream-protocol` | server, SDK, Activity Clients, MCP, compatibility |
 | SQLite behavior | `worldstream-sqlite` | shared conformance and backup/transfer |
 | PostgreSQL behavior | `worldstream-postgres` | migrations, native restore, shared conformance |
 | daemon/operator API | `worldstream-server` | protocol docs, Studio proxies, SDK |
 | Studio workflow | `web/studio` + Supervisor module | Studio ADR/docs and browser-safe DTO tests |
+| Activity Client contract or binding | `worldstream-activity-client` + Supervisor binding store | ADR 0017, `config/activity-clients`, clients, Studio launcher |
 | Activity Pack | `worldstream-core` registry/pack | compatibility, retained corpus, examples, all views |
 | agent contract | assignment MCP + activation core/protocol | Studio setup, Runner attention, managed host |
 | release contract | compatibility + packaging/gates | generated mirror, workflows, docs |

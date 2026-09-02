@@ -100,8 +100,9 @@ pub struct RoomCreationStatusV1 {
 /// read-only Capability later.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(
+    dead_code,
     clippy::struct_field_names,
-    reason = "canonical Room, Member, and Principal identity names must remain explicit"
+    reason = "retained for generic operator clients; Studio no longer renders Pack projections"
 )]
 pub(crate) struct ReviewedOperatorMembershipBindingV1 {
     pub room_id: String,
@@ -342,6 +343,10 @@ impl RoomCreationSupervisorV1 {
     /// Finds only an explicitly reviewed Genesis Operator Membership by its
     /// committed Room identity. No Host authority is converted into membership
     /// and no late Core mutation is attempted.
+    #[allow(
+        dead_code,
+        reason = "retained for generic operator clients; Studio no longer renders Pack projections"
+    )]
     pub(crate) fn reviewed_operator_membership(
         &self,
         room_id: &str,

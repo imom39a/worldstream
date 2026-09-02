@@ -1,0 +1,40 @@
+{
+  "schema": "worldstream/activity-distribution/v1",
+  "distribution_id": "worldstream.negotiate.0-1-0",
+  "version": "0.1.0",
+  "pack_bundles": [
+    {
+      "pack": {
+        "id": "worldstream.negotiate",
+        "version": "0.1.0",
+        "digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
+      },
+      "bundle_digest": "blake3:9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5"
+    }
+  ],
+  "clients": [
+    {
+      "client_id": "worldstream.negotiate.web",
+      "release_digest": "sha256:f3d900b5ba84ca77c7af53007e8111dc10d0839b3e61f6d754ce10636ebbf3e4"
+    }
+  ],
+  "client_compatibility": [
+    {
+      "client_id": "worldstream.negotiate.web",
+      "release_digest": "sha256:f3d900b5ba84ca77c7af53007e8111dc10d0839b3e61f6d754ce10636ebbf3e4",
+      "surface_id": "negotiate-web",
+      "pack_revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+      "access_mode": "participant",
+      "roles": ["buyer_agent", "seller_agent", "buyer_approver", "venue_signer"]
+    },
+    {
+      "client_id": "worldstream.negotiate.web",
+      "release_digest": "sha256:f3d900b5ba84ca77c7af53007e8111dc10d0839b3e61f6d754ce10636ebbf3e4",
+      "surface_id": "negotiate-web",
+      "pack_revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+      "access_mode": "spectator",
+      "roles": []
+    }
+  ],
+  "integration_artifacts": []
+}

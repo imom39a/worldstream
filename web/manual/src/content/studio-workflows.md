@@ -102,10 +102,15 @@ window receives only an opaque fragment, redeems it at the configured origin,
 and obtains an HttpOnly scoped session cookie. Raw Room ID, Membership ID, and
 bearer are absent from the URL.
 
-The Supervisor selects the client from the exact pinned Pack ID, version, and
-digest. Exact approved Agent Heist `0.1.0` and `0.2.0` revisions open the
-first-party `/agent-heist/` client. Unsupported exact revisions open the
-Pack-neutral `/inspector/` fallback. There is no name-only or SemVer fallback.
+The Supervisor resolves the current Membership through the Host-local Client
+Binding Store before launch and every retained operation. Resolution uses the
+semantic Pack Revision digest, client contract, Access Mode, Role, Deployment
+trust policy, readiness, and Host
+preference. The checked-in bindings launch Agent Heist at `/agent-heist/` and
+Negotiate at `/negotiate/`; when no specialized binding is eligible, the Host
+offers the separately configured Pack-neutral `/inspector/` fallback. Studio
+receives only generic candidate metadata and opaque selection IDs. There is no
+name-only, SemVer, or Pack-specific route fallback.
 
 ## Operations
 

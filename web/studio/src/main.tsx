@@ -82,8 +82,7 @@ import {
   type TaskSetupStatus,
 } from "./taskSetup";
 import { loadAgentProfiles, loadModelProviderCredentials, type AgentProfileCatalog, type ModelProviderCredentialCatalog } from "./agentProfiles";
-import { enableRoomOperatorView, loadRoomOperatorView, type RoomOperatorView } from "./roomOperatorView";
-import { openParticipantClient } from "./participantViews";
+import { openParticipantClient, type ActivityClientCandidate } from "./participantViews";
 import { loadTaskTemplates, type TaskTemplateCatalog } from "./taskTemplates";
 import "./styles.css";
 
@@ -113,8 +112,6 @@ function LiveStudio() {
   );
   const activityPackDetailRequest = useRef(0);
   const [roomInventory, setRoomInventory] = useState<RoomInventoryState>({ status: "loading" });
-  const [operatorView, setOperatorView] = useState<RoomOperatorView | null>(null);
-  const [operatorViewLoading, setOperatorViewLoading] = useState(false);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const roomDetailRequest = useRef(0);
   const [activeDraftId, setActiveDraftId] = useState(NEW_ROOM_DRAFT_ID);
@@ -129,6 +126,10 @@ function LiveStudio() {
   const [taskSetup, setTaskSetup] = useState<TaskSetupStatus | null>(null);
   const [taskSetupStatusAvailable, setTaskSetupStatusAvailable] = useState(false);
   const [taskSetupLoading, setTaskSetupLoading] = useState(false);
+  const [activityClientSelection, setActivityClientSelection] = useState<{
+    seat_id: string;
+    candidates: ActivityClientCandidate[];
+  } | null>(null);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfileCatalog | null>(null);
   const [modelProviderCredentials, setModelProviderCredentials] = useState<ModelProviderCredentialCatalog | null>(null);
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplateCatalog | null>(null);
@@ -158,7 +159,6 @@ function LiveStudio() {
         nextAttentionInbox,
         nextActivityPackCatalog,
         nextRoomInventory,
-        nextOperatorView,
         nextRoomCreation,
         nextTaskSetup,
         nextBackupProfile,
@@ -177,7 +177,6 @@ function LiveStudio() {
         loadAttentionInbox(),
         loadActivityPackCatalog(),
         loadRoomInventory(),
-        selectedRoomId === null ? Promise.resolve(null) : loadRoomOperatorView(selectedRoomId),
         loadRoomCreation(activeDraftId),
         loadTaskSetup(activeDraftId),
         loadBackupProfile(),
@@ -210,11 +209,8 @@ function LiveStudio() {
         const selectedStillVisible = selectedRoomId === null ||
           nextRoomInventory.status !== "available" ||
           nextRoomInventory.page.rooms.some((room) => room.room_id === selectedRoomId);
-        if (selectedStillVisible) {
-          setOperatorView(nextOperatorView);
-        } else {
+        if (!selectedStillVisible) {
           setSelectedRoomId(null);
-          setOperatorView(null);
           setTaskAgentAttention(null);
         }
         setRoomCreation(nextRoomCreation.operation);
@@ -302,14 +298,6 @@ function LiveStudio() {
       });
     }
   };
-
-  const requestOperatorView = async (roomId: string) => {
-    if (operatorViewLoading) return;
-    setOperatorViewLoading(true);
-    try { setOperatorView(await enableRoomOperatorView(roomId)); }
-    finally { setOperatorViewLoading(false); }
-  };
-
 
   const changeAttentionNotificationPreference = async (enabled: boolean) => {
     if (!enabled) {
@@ -442,6 +430,15 @@ function LiveStudio() {
     setTaskSetupLoading(false);
   };
 
+  const launchActivityClient = async (seatId: string, candidateId: string | null = null) => {
+    const result = await openParticipantClient(activeDraftId, seatId, candidateId);
+    if (result.state === "selection_required") {
+      setActivityClientSelection({ seat_id: seatId, candidates: result.candidates });
+      return;
+    }
+    setActivityClientSelection(null);
+  };
+
   const loadTemplateDraft = (draft: RoomDraft) => {
     setActiveDraftId(draft.draft_id);
     setRoomDraft(draft);
@@ -489,9 +486,6 @@ function LiveStudio() {
       onSelectActivityPack={selectActivityPack}
       onClearActivityPackSelection={clearActivityPackSelection}
       onSelectRoom={(roomId) => void inspectRoom(roomId)}
-      operatorView={operatorView}
-      operatorViewLoading={operatorViewLoading}
-      onEnableOperatorView={(roomId) => void requestOperatorView(roomId)}
       roomDraft={roomDraft}
       roomDraftStep={roomDraftStep}
       roomDraftErrors={roomDraftErrors}
@@ -522,7 +516,11 @@ function LiveStudio() {
       }}
       onTaskTemplateDraftCreated={loadTemplateDraft}
       onTaskTemplateDraftOpened={loadTemplateDraft}
-      onOpenParticipantClient={(seatId) => void openParticipantClient(activeDraftId, seatId)}
+      activityClientSelection={activityClientSelection}
+      onOpenParticipantClient={(seatId) => void launchActivityClient(seatId)}
+      onSelectActivityClient={(seatId, candidateId) => {
+        void launchActivityClient(seatId, candidateId);
+      }}
       backupProfile={backupProfile}
       backupOperation={backupOperation}
       backupOperationId={backupOperationId}

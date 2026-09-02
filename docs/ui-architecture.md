@@ -4,7 +4,10 @@
 
 The frozen releases use independently executing first-party Activity Clients plus a Pack-neutral WorldStream Inspector. Studio operates the host and launches clients; it does not own Pack-specific participant renderers. WorldStream remains headless: every capability needed by a participant or runner is available through HTTP/WebSocket and the SDK.
 
-There is no third-party Client Surface Bundle ABI, View Pack ABI, generated dashboard system, pack-supplied JavaScript, or runtime LLM-generated UI in v0.1 or v0.2.
+The release freezes registry-neutral Activity Client Release and Distribution
+contracts, but not automatic third-party deployment, an embedded Client
+Surface ABI, a View Pack ABI, a generated dashboard system, Pack-supplied
+JavaScript, or runtime LLM-generated UI.
 
 ## Product principle
 
@@ -282,7 +285,7 @@ Required UI tests:
 
 An Activity Client is a specialized game, terminal UI, mobile app, enterprise front end, SDK process, or agent-owned application using the same scoped protocol. A Pack may have no specialized client, one reference client, or several independently released clients.
 
-Activity Clients receive no special database access. Their actions remain typed and server-validated. Client choice is operational integration state and never changes retained Room lineage. The first-party Client Host may route exact known Pack revision digests to exact first-party paths; unknown or incompatible revisions open the Inspector.
+Activity Clients receive no special database access. Their actions remain typed and server-validated. Client choice is Host-local operational integration state and never changes retained Room lineage. The Client Binding Store resolves an approved Deployment and Surface from the exact Pack revision, client contract, current Access Mode and Role, trust, readiness, and Host preference. When no specialized binding is eligible, the Host may offer its separately configured Inspector fallback; Studio and the Supervisor contain no Pack-specific route branch.
 
 The Agent Heist client has disjoint recorded and live adapters. Recorded mode may switch illustrative lenses. Live mode starts with no Activity data, atomically installs only its Membership-authorized Projection Reset/Observation data, and cannot select another Role or Access Mode in browser state.
 
@@ -293,7 +296,7 @@ After both reference releases, an RFC may evaluate:
 - a safe declarative view schema;
 - reusable table, board, graph, timeline, chart, and form primitives;
 - a sandboxed custom-renderer boundary;
-- a signed/content-addressed Client Surface Bundle and discovery registry;
+- production OCI publication and a discovery Catalog;
 - multi-origin or embedded client authorization;
 - authoring-time AI assistance that emits validated declarative configuration.
 

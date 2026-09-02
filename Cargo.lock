@@ -3093,6 +3093,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "worldstream-activity-client"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "worldstream-backup"
 version = "0.1.0"
 dependencies = [
@@ -3334,6 +3343,7 @@ dependencies = [
  "tower",
  "tungstenite",
  "winsafe",
+ "worldstream-activity-client",
  "worldstream-core",
  "worldstream-protocol",
  "worldstream-runtime",

@@ -157,6 +157,33 @@ describe("Agent Heist retained live adapter", () => {
     expect(JSON.stringify(second)).not.toContain("route_service");
   });
 
+  it("installs a read-only spectator Reset without participant-private state or Actions", () => {
+    const state = reduceAgentHeistObservation(initialAgentHeistLiveState(), observation({
+      delivery: [{
+        kind: "projection_reset",
+        body: {
+          projection: {
+            core: {
+              access_mode: "spectator",
+              standing: "enabled",
+              role: null,
+              room_status: "active",
+              viewer_class: "public",
+            },
+            activity: activity({ private_clues: [], own_commitment: null, addressed_offers: [] }),
+            action_offers: [],
+          },
+        },
+      }],
+    }));
+
+    expect(state.kind).toBe("ready");
+    if (state.kind !== "ready") throw new Error("expected ready state");
+    expect(state.authorization).toEqual({ accessMode: "spectator", role: null });
+    expect(state.offers).toEqual([]);
+    expect(state.projection.privateClues).toEqual([]);
+  });
+
   it("uses a full Observation replacement while preserving only unchanged offers", () => {
     const first = reduceAgentHeistObservation(initialAgentHeistLiveState(), observation());
     const next = observation({
@@ -245,24 +272,6 @@ describe("Agent Heist retained live adapter", () => {
       digest: AGENT_HEIST_REVISION_0_2,
       version: "0.1.0",
     });
-    const spectator = observation({
-      delivery: [{
-        kind: "projection_reset",
-        body: {
-          projection: {
-            core: {
-              access_mode: "spectator",
-              standing: "enabled",
-              role: null,
-              room_status: "active",
-              viewer_class: "public",
-            },
-            activity: activity({ private_clues: [] }),
-            action_offers: [],
-          },
-        },
-      }],
-    });
     const nestedLegacyCore = observation({
       delivery: [{
         kind: "projection_reset",
@@ -279,7 +288,7 @@ describe("Agent Heist retained live adapter", () => {
       }],
     });
 
-    for (const candidate of [wrongPack, wrongHead, unsupported, mismatchedVersion, spectator, nestedLegacyCore]) {
+    for (const candidate of [wrongPack, wrongHead, unsupported, mismatchedVersion, nestedLegacyCore]) {
       const state = reduceAgentHeistObservation(initialAgentHeistLiveState(), candidate);
       expect(state.kind).toBe("incompatible");
       if (state.kind === "incompatible") expect(state.reason.length).toBeGreaterThan(0);

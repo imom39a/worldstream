@@ -9,8 +9,8 @@ evidence; they do not replace this gate.
 One run starts from an empty disposable SQLite profile and uses the production
 boundaries to create exactly one reviewed Task with exactly two required seats:
 
-- one human `navigator`, opened through a Studio-issued one-use Participant
-  Console handoff;
+- one human `navigator`, opened through a Studio-issued one-use Agent Heist
+  Activity Client handoff;
 - one external-agent `insider`, opened through a Supervisor-issued opaque
   assignment-MCP launch reference.
 
@@ -41,7 +41,7 @@ The release run uses separate real processes and production protocols:
   Participant handoff, explicit launch, and assignment launch over HTTP;
 - `worldstream-assignment-mcp`: MCP JSON-RPC over stdio, with only the opaque
   launch reference and owner-only state directory on its command line;
-- Participant Console: the production build served over loopback and opened by
+- Agent Heist Activity Client: the production build served over loopback and opened by
   the repository's pinned CDP browser adapter using the real fragment-only
   handoff URL. The gate waits for the live authorized projection and proves the
   fragment was scrubbed;
@@ -50,7 +50,7 @@ The release run uses separate real processes and production protocols:
 
 ## Running the gate
 
-Build the three Rust binaries and the production Console first:
+Build the three Rust binaries and the production Client Host first:
 
 ```sh
 cargo build -p worldstream-server --bin worldstreamd
@@ -104,7 +104,7 @@ unavailable. A blocked report is never treated as MVP completion.
 The disposable Host, Membership, Runner, replay, handoff, session, and launch
 material exists only in owner-readable temporary storage or in its authorized
 transport. The retained report contains none of it. Before publishing a
-`completed` report, the gate scans Studio HTTP evidence, Participant Console
+`completed` report, the gate scans Studio HTTP evidence, Agent Heist client
 browser evidence, MCP traffic, and process logs for raw capability/token
 patterns and exact private values. MCP may carry the assigned agent's private
 Activation context, but never a Host, Membership, or Runner bearer. Browser and

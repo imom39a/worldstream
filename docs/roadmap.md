@@ -193,9 +193,11 @@ Outcome: users operate the platform without learning Kernel internals.
   and launch of an exact compatible Activity Client. Studio contains no
   Pack-specific participant renderer.
 - **Activity Clients:** independently executing Pack-compatible browser,
-  terminal, mobile, SDK, or agent clients. Agent Heist is the first standalone
-  proof; Negotiate follows. Recorded and live Heist modes share presentation
-  modules but never share fixture-backed live state.
+  terminal, mobile, SDK, or agent clients. Agent Heist and Negotiate are
+  standalone first-party proofs. Recorded and live Heist modes share
+  presentation modules but never share fixture-backed live state. Exact
+  Releases, Distributions, Host-local Deployments and Bindings, configured
+  Inspector fallback, and conformance evidence are implemented.
 - **WorldStream Inspector:** Pack-neutral fallback for authorized
   Projections/Frames, exact Action Offers, receipts, connection state, and
   Replay. It is not the intended domain experience for every Pack.
@@ -227,8 +229,8 @@ evidence subject bind the exact final bytes.
 - network Pack registry, discovery, marketplace, or hot loading;
 - generic host imports/effects or WASI capabilities;
 - generated arbitrary UI or third-party renderer code;
-- third-party Client Surface Bundles, multi-origin client discovery, automatic
-  client installation, embedding, or a client marketplace;
+- production OCI publication, multi-origin client discovery, automatic Client
+  Deployment, embedding, or a client marketplace;
 - Investigation Room and generic application artifact upload;
 - multi-supplier/auction negotiation and post-commit commercial lifecycle;
 - A2CN adapter;

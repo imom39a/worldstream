@@ -110,6 +110,27 @@ describe("standalone Agent Heist live participant surface", () => {
     expect(markup).toContain("disabled");
   });
 
+  it("renders the authorized spectator surface without participant-private controls", () => {
+    const state = readyState();
+    const markup = renderToStaticMarkup(
+      <AgentHeistClientView
+        state={{
+          ...state,
+          authorization: { accessMode: "spectator", role: null },
+          projection: { ...state.projection, privateClues: [], addressedOffers: [] },
+          offers: [],
+        }}
+        connection="live"
+        onAct={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain("Authorized spectator surface");
+    expect(markup).toContain("Public spectator view");
+    expect(markup).not.toContain("navigator-only-value");
+    expect(markup).not.toContain("Current Actions");
+  });
+
   it("renders the revision 0.2 Lobby without inventing a participant launch Action", () => {
     const state = readyState();
     const markup = renderToStaticMarkup(

@@ -23,25 +23,12 @@ describe("console browser/DOM privacy boundary", () => {
     expect(markup).not.toContain("navigator-private-clue");
   });
 
-  it("keeps a runtime live-session bearer and browser ticket out of rendered DOM", () => {
-    const bearer = "wsb1:dom-never-secret";
-    const markup = renderToStaticMarkup(
-      <App
-        initialView="participant"
-        liveSession={{
-          endpoint: "wss://worldstream.test/v1/stream",
-          clientName: "console",
-          clientVersion: "test",
-          roomId: "01J00000000000000000000001",
-          memberId: "01J00000000000000000000002",
-          bearer,
-        }}
-      />,
-    );
+  it("keeps the recorded gallery explicitly separate from live Activity Clients", () => {
+    const markup = renderToStaticMarkup(<App initialView="participant" />);
 
-    expect(markup).not.toContain(bearer);
-    expect(markup).not.toContain("wst1:");
-    expect(markup).not.toContain("Authorization");
+    expect(markup).toContain("Recorded fixture mode");
+    expect(markup).toContain("standalone Activity Client routes");
+    expect(markup).not.toMatch(/wsb1:|wst1:|Authorization/);
   });
 
   it("fails closed in the browser-visible surface when Room integrity is Quarantined", () => {

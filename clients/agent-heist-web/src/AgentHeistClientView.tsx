@@ -62,10 +62,10 @@ function ReadyParticipant({
     <main className="heist-live-shell">
       <header className="live-client-header">
         <div><span className="eyebrow">WorldStream Activity Client</span><h1>Agent Heist</h1></div>
-        <span className={`live-mode live-mode-${connection}`}><i /> Authorized participant surface</span>
+        <span className={`live-mode live-mode-${connection}`}><i /> Authorized {state.authorization.accessMode} surface</span>
       </header>
       <div className="live-client-notice" role="status">
-        <strong>{capitalize(state.authorization.role)} participant</strong>
+        <strong>{authorizationLabel(state)}</strong>
         <span>{message ?? (connection === "live" ? "This surface contains only the Projection authorized for this Membership." : "Reconnect before acting; installed information is visibly stale.")}</span>
       </div>
       <AgentHeistWorkspace
@@ -78,10 +78,12 @@ function ReadyParticipant({
         footer={<>
           <span>Sequence {state.roomSequence}</span>
           <span>Frame {state.frameHead}</span>
-          <span>Role {capitalize(state.authorization.role)}</span>
+          <span>Role {state.authorization.role === null ? "None" : capitalize(state.authorization.role)}</span>
           <span>Projection only</span>
         </>}
-        right={<PrivateParticipantPanel state={state} connection={connection} onAct={onAct} />}
+        right={state.authorization.accessMode === "participant"
+          ? <PrivateParticipantPanel state={state} connection={connection} onAct={onAct} />
+          : <SpectatorPanel />}
       />
     </main>
   );
@@ -99,8 +101,8 @@ function MembershipPanel({
   return <>
     <PanelHeading number="01" title="Your Membership" />
     <div className="authorized-membership">
-      <span>Access Mode</span><strong>Participant</strong>
-      <span>Role</span><strong>{capitalize(state.authorization.role)}</strong>
+      <span>Access Mode</span><strong>{capitalize(state.authorization.accessMode)}</strong>
+      <span>Role</span><strong>{state.authorization.role === null ? "Not assigned" : capitalize(state.authorization.role)}</strong>
       <span>Standing</span><strong>Enabled</strong>
     </div>
     <PanelHeading number="02" title="Crew presence" />
@@ -173,6 +175,16 @@ function PrivateParticipantPanel({
         onAct={onAct}
       />)}</div>
     )}
+  </>;
+}
+
+function SpectatorPanel() {
+  return <>
+    <PanelHeading number="03" title="Public spectator view" />
+    <div className="control-note">
+      <span>Read-only authorization</span>
+      <p>This surface contains only the public Projection authorized for the spectator Membership. Private clues, commitments, addressed offers, and Actions are unavailable.</p>
+    </div>
   </>;
 }
 
@@ -273,6 +285,11 @@ function connectionLabel(connection: AgentHeistClientConnection): string {
 }
 
 function capitalize(value: string): string { return value.charAt(0).toUpperCase() + value.slice(1); }
+function authorizationLabel(state: AgentHeistReadyState): string {
+  return state.authorization.role === null
+    ? "Spectator view"
+    : `${capitalize(state.authorization.role)} participant`;
+}
 function humanize(value: string): string { return value.replaceAll("_", " "); }
 function shortIdentity(value: string): string { return value.length <= 20 ? value : `${value.slice(0, 11)}…${value.slice(-6)}`; }
 

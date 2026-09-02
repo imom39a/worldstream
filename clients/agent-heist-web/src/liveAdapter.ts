@@ -93,8 +93,8 @@ export interface AgentHeistReadyState {
   readonly roomSequence: number;
   readonly frameHead: number;
   readonly authorization: {
-    readonly accessMode: "participant";
-    readonly role: AgentHeistRole;
+    readonly accessMode: "participant" | "spectator";
+    readonly role: AgentHeistRole | null;
   };
   readonly projection: AgentHeistProjection;
   readonly offers: readonly AgentHeistActionOffer[];
@@ -165,21 +165,24 @@ function installReset(
 ): AgentHeistLiveState {
   const envelope = record(bodyValue.projection);
   const core = record(envelope.core);
-  const role = parseRole(core.role);
+  const accessMode = core.access_mode === "participant" || core.access_mode === "spectator"
+    ? core.access_mode
+    : null;
+  const role = core.role === null ? null : parseRole(core.role);
   if (
-    core.access_mode !== "participant"
+    accessMode === null
     || core.standing !== "enabled"
-    || core.viewer_class !== "participant"
-    || role === null
+    || (accessMode === "participant" && (core.viewer_class !== "participant" || role === null))
+    || (accessMode === "spectator" && (core.viewer_class !== "public" || role !== null))
   ) {
-    return incompatible("The retained authority is not an enabled Agent Heist Participant Membership.");
+    return incompatible("The retained authority is not an enabled Agent Heist participant or spectator Membership.");
   }
   const projection = parseProjection(envelope.activity);
   const offers = parseOffers(envelope.action_offers, observation.room_head.room_seq);
-  if (projection === null || offers === null) {
+  if (projection === null || offers === null || !viewMatchesAuthorization(accessMode, projection, offers)) {
     return incompatible("The authorized Agent Heist Projection does not match this client contract.");
   }
-  return ready(observation, role, projection, offers);
+  return ready(observation, accessMode, role, projection, offers);
 }
 
 function installObservation(
@@ -198,15 +201,22 @@ function installObservation(
   const offers = Object.prototype.hasOwnProperty.call(wire, "action_offers")
     ? parseOffers(wire.action_offers, observation.room_head.room_seq)
     : renumberOffers(current.offers, observation.room_head.room_seq);
-  if (offers === null) {
+  if (offers === null || !viewMatchesAuthorization(current.authorization.accessMode, projection, offers)) {
     return incompatible("The Agent Heist Observation carries invalid Action Offers.");
   }
-  return ready(observation, current.authorization.role, projection, offers);
+  return ready(
+    observation,
+    current.authorization.accessMode,
+    current.authorization.role,
+    projection,
+    offers,
+  );
 }
 
 function ready(
   observation: AuthorizedRoomDeliveryBatch,
-  role: AgentHeistRole,
+  accessMode: "participant" | "spectator",
+  role: AgentHeistRole | null,
   projection: AgentHeistProjection,
   offers: readonly AgentHeistActionOffer[],
 ): AgentHeistReadyState {
@@ -223,7 +233,7 @@ function ready(
     },
     roomSequence: observation.room_head.room_seq,
     frameHead: observation.frame_head,
-    authorization: { accessMode: "participant", role },
+    authorization: { accessMode, role },
     projection,
     offers,
   };
@@ -236,9 +246,23 @@ function withObservationHead(
 ): AgentHeistReadyState {
   return ready(
     observation,
+    current.authorization.accessMode,
     current.authorization.role,
     current.projection,
     renumberOffers(offers, observation.room_head.room_seq),
+  );
+}
+
+function viewMatchesAuthorization(
+  accessMode: "participant" | "spectator",
+  projection: AgentHeistProjection,
+  offers: readonly AgentHeistActionOffer[],
+): boolean {
+  return accessMode === "participant" || (
+    offers.length === 0
+    && projection.privateClues.length === 0
+    && projection.ownCommitment === null
+    && projection.addressedOffers.length === 0
   );
 }
 

@@ -1,0 +1,128 @@
+{
+  "schema": "worldstream/client-binding-bootstrap/v1",
+  "deployment_trust_policy": "allow_externally_trusted",
+  "deployments": [
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-inspector-web",
+      "client_id": "worldstream.inspector.web",
+      "release_digest": "sha256:32285a61dc1f1555cc748927d7c2ec478e035996e644773ca891ad069831954b",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "inspector-web",
+          "launch_url": "http://127.0.0.1:5173/inspector/"
+        }
+      ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-agent-heist-web",
+      "client_id": "worldstream.agent-heist.web",
+      "release_digest": "sha256:2baa5236b4ac8869123f6a03c562c24b3a745236086188bb1fb69c90c5877231",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "heist-web",
+          "launch_url": "http://127.0.0.1:5173/agent-heist/"
+        }
+      ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-negotiate-web",
+      "client_id": "worldstream.negotiate.web",
+      "release_digest": "sha256:f3d900b5ba84ca77c7af53007e8111dc10d0839b3e61f6d754ce10636ebbf3e4",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "negotiate-web",
+          "launch_url": "http://127.0.0.1:5173/negotiate/"
+        }
+      ]
+    }
+  ],
+  "bindings": [
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "agent-heist-0-1-participant-web",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.1.0",
+        "digest": "blake3:b05a682f0923001914a800072ee68348e68b979453c93e033cba7916b99a4407"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": ["navigator", "insider", "broker"],
+      "deployment_id": "first-party-agent-heist-web",
+      "surface_id": "heist-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "agent-heist-0-2-participant-web",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.2.0",
+        "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": ["navigator", "insider", "broker"],
+      "deployment_id": "first-party-agent-heist-web",
+      "surface_id": "heist-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "agent-heist-0-2-spectator-web",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.2.0",
+        "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "first-party-agent-heist-web",
+      "surface_id": "heist-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "negotiate-0-1-participant-web",
+      "pack": {
+        "id": "worldstream.negotiate",
+        "version": "0.1.0",
+        "digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": ["buyer_agent", "seller_agent", "buyer_approver", "venue_signer"],
+      "deployment_id": "first-party-negotiate-web",
+      "surface_id": "negotiate-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "negotiate-0-1-spectator-web",
+      "pack": {
+        "id": "worldstream.negotiate",
+        "version": "0.1.0",
+        "digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "first-party-negotiate-web",
+      "surface_id": "negotiate-web",
+      "preference": "default"
+    }
+  ],
+  "inspector_fallback": {
+    "schema": "worldstream/inspector-fallback/v1",
+    "fallback_id": "first-party-inspector-fallback",
+    "deployment_id": "first-party-inspector-web",
+    "surface_id": "inspector-web"
+  }
+}

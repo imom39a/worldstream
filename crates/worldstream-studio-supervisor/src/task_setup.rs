@@ -2061,6 +2061,8 @@ impl ParticipantHandoffAuthoritySourceV1 for TaskSetupSupervisorV1 {
                 .as_deref()
                 .ok_or(ParticipantHandoffAuthorityErrorV1::NotProvisioned)?,
             operation.pack.clone(),
+            AccessMode::Participant,
+            Some(seat.role.clone()),
             SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
         )
     }

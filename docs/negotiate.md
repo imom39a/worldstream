@@ -276,40 +276,38 @@ Its deterministic fixture proofs bind exact bytes, signer, and purpose but do
 not replace the pinned A202 schemas, SHA-256 rules, production signature
 algorithms, mandates, or resolver checks.
 
-## Compatibility Activity Client integration
+## Standalone Activity Client integration
 
-The retained Negotiate renderer selects its view only when the authorized Room
-identifies `worldstream.negotiate`. Its pack-specific direct bootstrap is a
-one-shot, bounded `worldstream.negotiate.console.v1` document containing only
-the authorized projection, exact Action Offers, Room sequence, persona, and
-Replay/evidence availability. The browser deletes that bootstrap before React
-renders. A separate ordinary WorldStream live-session bootstrap owns the
-short-lived Membership authority and is consumed separately, then required to
-match the Negotiate Room and Membership identities before a live renderer is
-created. A mismatch fails closed without enabling Actions.
+The Negotiate Activity Client selects its view only when the authorized Room
+identifies the qualified `worldstream.negotiate` 0.1.0 Pack Revision. It starts
+through the generic one-use Activity Client handoff and retained HttpOnly
+Supervisor session; there is no Negotiate-specific direct bootstrap or live
+renderer in Studio or the recorded Console gallery. The page starts empty and
+installs only the authorized Projection Reset returned for that retained
+Membership.
 
-The live renderer uses the same protocol attach, Projection Reset or retained
+The live client uses the same protocol attach, Projection Reset or retained
 Frame catch-up, `room.sync_ack`, exact-head Action, receipt, reconnect, and
 Replay boundaries as every Participant client. It disables Actions until the
 sync barrier is acknowledged, rejects cross-Room or cross-Membership traffic,
-and refuses a Room whose pinned Pack ID is not `worldstream.negotiate`.
-After that barrier it acknowledges delivered Frames with `observation.ack`, so
-the durable Membership Cursor—not browser memory—defines reconnect catch-up.
-Projection updates are installed only through the authorized `activity`
-projection and server-supplied Action Offers; Core authority details and raw
-Activity State never enter the renderer.
+and refuses a Room whose pinned Pack ID is not `worldstream.negotiate`. The
+protected browser broker deliberately does not issue `observation.ack`; its
+rendered frame head never becomes the durable shared Membership Cursor.
+Projection updates are installed only from the Pack's authorized
+`projection_replaced` Observation wrapper and server-supplied Action Offers;
+Core authority details and raw Activity State never enter the renderer.
 
 Prepared commercial payloads cross one narrow application-owned signer seam:
 
-1. the Console emits `worldstream:negotiate-action-requested` with a fresh
-   preparation request ID, Action type, payload-schema digest, Room/Member
-   identity, and current Room sequence;
+1. the client emits `worldstream:negotiate-action-requested` with a fresh
+   preparation request ID, Action type, payload-schema digest, and current Room
+   sequence—never a Room ID, Membership ID, bearer, or routing target;
 2. an independently controlled application or Runner prepares and signs the
    exact A202 payload without giving WorldStream its key; and
 3. it returns `worldstream:negotiate-prepared-action` with exactly the request
    ID, Action type, payload-schema digest, preparation Room sequence, and JSON
-   payload; the Console submits only if all four binding fields and the
-   original exact Action Offer remain current.
+   payload; the client submits only if all four binding fields, the original
+   exact Action Offer, and the current Room Head still match.
 
 This event pair is a browser integration boundary, not a second authority.
 The normal transport bounds, server Action admission, Pack signature/head/
@@ -319,32 +317,27 @@ external signer to rebuild and re-sign rather than replaying or auto-rebasing
 bytes.
 
 The Studio human-seat handoff retains Room, Membership, and bearer authority in
-an HttpOnly local Supervisor session. The current closed client dispatch sends
-an exact Negotiate revision to the Client Host's `/inspector/` fallback rather
-than a standalone registered Negotiate Activity Client. After the Inspector
-receives an authorized Negotiate observation, its retained compatibility
-renderer presents the same exact approval view and Replay hashes, while the
-`worldstream:negotiate-retained-action-requested` signer event binds request,
-Action, schema, Room sequence, and the opaque retained-session authority mode;
+an HttpOnly local Supervisor session. The Host-local Client Binding Store maps
+the exact Negotiate revision and current Membership to the independently
+executing `/negotiate/` Activity Client. Studio receives generic candidate
+metadata and an opaque selection identity only. The retained-session signer
+event binds request, Action, schema, Room sequence, and opaque authority mode;
 it never exposes Room ID, Membership ID, bearer, or routing data to the page.
 
-Six DOM/API personas are tested independently: buyer agent, seller agent,
-Human buyer approver, venue signer, operator, and spectator. The operator and
-spectator renderings are invariant under injected private commercial fields,
-and exact acceptance candidate bytes render only for the authorized Human
-approver. Signature proof, bearer, API key, and server error detail never enter
-the DOM.
+The standalone browser surface supports the four participant Roles and the
+public spectator mode. Operator workflows remain Host-control-plane work and
+are not admitted through this client. Pack privacy tests still cover all six
+domain personas independently, including operator and spectator invariance.
+Signature proof, bearer, API key, and raw server routing detail never enter the
+DOM.
 
-Authorized Replay uses the same bearer-owning HTTP client consumed from the
-one-shot live bootstrap. The Console accepts only a verified Replay for its
-exact Room and displayed sequence, and renders hashes and Pack identity rather
-than the returned Projection bytes. Dual evidence crosses a separate
-application-owned event pair: `worldstream:negotiate-evidence-requested`
-carries only Room ID and sequence, while
-`worldstream:negotiate-evidence-ready` returns exact proof-package JSON for
-that head. The Console validates the v1 wrapper, Room/head, Pack revision and
-physical bundle identities, preserves the exact JSON text for download, and
-renders counts only. Cryptographic authority remains the separate
+Authorized Replay uses the same retained Supervisor session. The client
+accepts only a verified Replay for its exact Room and displayed sequence, and
+renders hashes and Pack identity rather
+than the returned Projection bytes. Proof-package production and independent
+cryptographic verification remain separate CLI/application workflows; the
+standalone browser client does not receive proof-package bytes or signer
+secrets. Cryptographic authority remains the separate
 `worldstream-negotiate-verify` offline verifier.
 
 `scripts/negotiate-golden-flow.py` is the packaged local acceptance lane. It
@@ -352,6 +345,6 @@ runs the exact released `.wspack` twice through fresh production Bundle
 Verifier, Component Host, and Core registry processes; checks all nine Actions,
 the after-approval restart checkpoint, Outcome, private views, retained lookup,
 and evidence cross-index; and runs the independent oracle, public TypeScript
-Pack, Console reconnect/privacy, and offline verifier suites. Its receipt sets
+Pack, Activity Client reconnect/privacy, and offline verifier suites. Its receipt sets
 `release_evidence=false` and explicitly does not claim the still-separate live
 persisted-Room process-restart drill.

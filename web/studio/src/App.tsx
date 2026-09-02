@@ -37,12 +37,12 @@ import type {
 } from "./runnerTemplates";
 import type { SecretStatusResponse } from "./secretStatus";
 import type { RoomInventoryState } from "./roomInventory";
-import type { RoomOperatorView } from "./roomOperatorView";
 import type {
   RoomDraft,
   RoomDraftFieldError,
   RoomDraftStep,
 } from "./roomDrafts";
+import type { ActivityClientCandidate } from "./participantViews";
 
 export interface AppProps {
   status: DaemonStatus | null;
@@ -76,9 +76,6 @@ export interface AppProps {
   roomInventory?: RoomInventoryState;
   selectedRoomId?: string | null;
   onSelectRoom?: (roomId: string) => void;
-  operatorView?: RoomOperatorView | null;
-  operatorViewLoading?: boolean;
-  onEnableOperatorView?: (roomId: string) => void;
   roomDraft?: RoomDraft | null;
   roomDraftStep?: RoomDraftStep;
   roomDraftErrors?: RoomDraftFieldError[];
@@ -106,6 +103,8 @@ export interface AppProps {
   onTaskTemplateDraftCreated?: (draft: RoomDraft) => void;
   onTaskTemplateDraftOpened?: (draft: RoomDraft) => void;
   onOpenParticipantClient?: (seatId: string) => void;
+  activityClientSelection?: { seat_id: string; candidates: ActivityClientCandidate[] } | null;
+  onSelectActivityClient?: (seatId: string, candidateId: string) => void;
   backupProfile?: BackupProfileStatus | null;
   backupOperation?: BackupOperationStatus | null;
   backupOperationId?: string | null;
@@ -144,9 +143,6 @@ export function App({
   roomInventory = { status: "loading" },
   selectedRoomId = null,
   onSelectRoom,
-  operatorView = null,
-  operatorViewLoading = false,
-  onEnableOperatorView,
   roomDraft = null,
   roomDraftStep = "activity",
   roomDraftErrors = [],
@@ -174,6 +170,8 @@ export function App({
   onTaskTemplateDraftCreated,
   onTaskTemplateDraftOpened,
   onOpenParticipantClient,
+  activityClientSelection = null,
+  onSelectActivityClient,
   backupProfile = null,
   backupOperation = null,
   backupOperationId = null,
@@ -277,9 +275,6 @@ export function App({
             inventory={roomInventory}
             selectedRoomId={selectedRoomId}
             onSelectRoom={onSelectRoom}
-            operatorView={operatorView}
-            operatorViewLoading={operatorViewLoading}
-            onEnableOperatorView={onEnableOperatorView}
           />
         </div>
 
@@ -338,6 +333,8 @@ export function App({
           onRetry={onRetryTaskSetup}
           onLaunch={onLaunchTask}
           onOpenParticipantClient={onOpenParticipantClient}
+          activityClientSelection={activityClientSelection}
+          onSelectActivityClient={onSelectActivityClient}
         />
 
         <ActivityPackCatalogView

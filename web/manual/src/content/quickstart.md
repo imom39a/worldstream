@@ -160,13 +160,16 @@ Host in terminal 2:
 pnpm ui:dev
 ```
 
+This rebuilds and serves each standalone Activity Client directory at its
+declared path; Studio and Inspector do not bundle Pack-specific clients.
+
 Keep it running alongside terminal 1. Do not open a client with manually copied
 Room credentials. In Studio, provision the human seat and use **Open
 participant client**; the Supervisor brokers the one-use handoff to port
-`5173`. Exact approved Agent Heist `0.1.0` and `0.2.0` revisions open
-`/agent-heist/`; other exact Pack revisions open the generic `/inspector/`
-fallback. Studio launches that independent client and never renders the
-participant surface itself.
+`5173`. Host-local exact bindings open Agent Heist at `/agent-heist/` and
+Negotiate at `/negotiate/`; no eligible specialized binding offers the
+separately configured generic `/inspector/` fallback. Studio launches that
+independent client and never renders the participant surface itself.
 
 ## 7. Verify the live runtime
 

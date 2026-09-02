@@ -273,7 +273,7 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - An Activity Pack Bundle MUST contain no executable frontend code or mutable launch URL. Activity Client selection MUST remain outside Genesis, Authoritative Room State, Transitions, canonical hashes, and Replay.
 - A live Activity Client MUST initialize from no Activity data and atomically install authorized Projection Reset/Observation data. It MUST NOT merge live state onto recorded fixture data or expose another Access Mode or Role through client-side view switching.
 - The UI MUST submit the same typed commands as another client and MUST NOT enforce server authorization by itself.
-- Runtime LLM-generated UI, arbitrary Pack JavaScript, third-party client bundles/renderers, a client marketplace, and a general View Pack ABI are deferred.
+- Runtime LLM-generated UI, arbitrary Pack JavaScript, automatic third-party Client Deployment, a client marketplace, and a general View Pack ABI are deferred. The independent Activity Client Release, Distribution, Deployment, Binding, and conformance contracts are frozen by ADR 0017.
 
 ### FR-10: Developer experience
 

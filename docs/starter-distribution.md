@@ -37,7 +37,7 @@ with the carrier.
 An official v1 Starter contains exactly one subject for each of these roles:
 
 - Runtime Distribution;
-- Participant Console and Studio assets;
+- first-party Activity Client Host and Studio assets;
 - TypeScript Pack SDK and pinned Pack Toolchain;
 - official immutable WorldStream Negotiate bundle and conformance evidence;
 - A202 adapter and independent Negotiate evidence verifier;

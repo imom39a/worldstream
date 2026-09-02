@@ -11,7 +11,7 @@ None of the commands below may promote that state as a verified release.
 The deterministic [Starter Distribution](starter-distribution.md) is a
 self-contained carrier over exact subjects already authenticated by the
 detached release manifest. It keeps Runtime Distribution bytes unchanged,
-adds the Participant Console, Studio, TypeScript Pack authoring surface,
+adds the first-party Activity Client Host, Studio, TypeScript Pack authoring surface,
 official Negotiate material, adapters, fixtures, docs, and legal metadata, and
 still requires target-local exact-digest Pack approval. It is not a registry or
 a second release authority.
@@ -110,7 +110,8 @@ two minimal signing jobs have `id-token: write`.
 The portable subject builder accepts twelve explicitly named paths and never
 discovers a checkout. It copies the official Negotiate `.wspack` byte for byte
 and wraps each other input in deterministic gzip/ustar with a canonical file
-manifest. The release workflow builds the Console, Studio, Pack Toolchain, and
+manifest. The release workflow builds the first-party Activity Client Host,
+Studio, Pack Toolchain, and
 TypeScript SDK first, includes the A202 interoperability and outside-adopter
 kits in their documented subjects, and rejects caches, links, credentials,
 approvals, backups, databases, secrets, extra subjects, and non-canonical

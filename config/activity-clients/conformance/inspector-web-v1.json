@@ -1,0 +1,19 @@
+{
+  "schema": "worldstream/client-conformance-evidence/v1",
+  "subject": {
+    "client_id": "worldstream.inspector.web",
+    "artifact_digest": "sha256:c1efad80dc9ad321d08d03364676af4d457cab531f980126e28a6f0993439da6",
+    "release_claims_digest": "sha256:8c816116366a5260a0e609f98220878adc13f29bef2886f69399c3490a2364f4",
+    "client_contract": "worldstream/activity-client-protocol/v1"
+  },
+  "checks": [
+    "release-and-host-fallback-exact-references",
+    "studio-and-supervisor-pack-independence",
+    "inspector-pack-independence",
+    "opaque-one-use-handoff",
+    "recorded-gallery-cannot-consume-live-state"
+  ],
+  "reproduce": "pnpm activity-clients:verify",
+  "authority": "informative_only",
+  "notice": "Passing this check is not a security audit, deployment proof, Host approval, or Client Binding."
+}

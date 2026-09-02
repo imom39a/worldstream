@@ -105,6 +105,8 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   │   └── SQLite adapter, migrations, backup and integrity operations
     │   ├── worldstream-postgres/
     │   │   └── PostgreSQL 17 migrations, storage port and verification operations
+    │   ├── worldstream-activity-client/
+    │   │   └── immutable Activity Client Release and Distribution contracts
     │   └── worldstream-server/
     │       └── gateway, auth, supervisor, scheduler, binaries
     ├── packs/
@@ -112,9 +114,16 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   └── agent-heist/              demo/conformance Pack
     ├── sdk/
     │   ├── python/                   application/runner SDK
+    │   ├── typescript-client/        generic browser client/session seam
     │   └── typescript-pack/          Pack Author SDK and CLI
+    ├── clients/
+    │   ├── agent-heist-web/          independent Heist Activity Client
+    │   └── negotiate-web/            independent Negotiate Activity Client
     ├── web/
-    │   └── console/
+    │   ├── console/                  first-party Client Host and Inspector
+    │   └── studio/                   Host Operator portal
+    ├── config/
+    │   └── activity-clients/         local Releases, Distributions, Deployments, and Bindings
     ├── examples/
     │   ├── python-rule-runner/
     │   ├── python-llm-runner/

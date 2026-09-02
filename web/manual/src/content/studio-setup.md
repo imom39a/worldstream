@@ -56,11 +56,13 @@ binary's help text currently reports these two defaults in the opposite order.
 `--participant-console-origin` retains its compatibility name while pointing
 at the first-party Client Host.
 
-**Open participant client** launches one of two closed paths on that origin.
-Exact approved Agent Heist `0.1.0` and `0.2.0` identities use
-`/agent-heist/`; unsupported exact Pack identities use the Pack-neutral
-`/inspector/`. A matching Pack name or version with a different digest cannot
-select the Heist client.
+**Open participant client** asks the Host-local Client Binding Store to resolve
+the provisioned current Membership. The checked-in bindings launch exact Agent
+Heist revisions at `/agent-heist/`, exact Negotiate `0.1.0` at `/negotiate/`,
+and otherwise offer the separately configured Pack-neutral `/inspector/`
+fallback. Resolution also checks client contract, Access Mode, Role,
+Deployment trust, and readiness. Studio sees only generic candidate metadata
+and opaque selection IDs; it contains no Pack-specific routes or renderers.
 
 ## Supervisor startup options
 

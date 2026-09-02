@@ -58,7 +58,15 @@ flowchart TD
 | **Activity** | The domain experience occurring in one room under one Activity Pack, such as a Heist or Investigation. | The Activity Pack is the definition; the room is the running instance. |
 | **Reference activity** | A deliberately bounded application used to prove or falsify the runtime thesis. | Agent Heist and Investigation Room are reference activities, not the entire product. |
 | **Activity Client** | An independently executing browser, terminal, mobile, SDK-based, or agent-owned application that uses a scoped WorldStream client contract and may present one or more exact Activity Pack Revisions. | It is not an Activity Pack, Pack executor, Studio plugin, or authority shortcut. |
+| **Activity Client Release** | One immutable, content-addressed client build declaring exact artifacts, Client Surfaces, protocol contract, and informative evidence. | Publication, compatibility claims, and conformance do not create a Deployment or grant Host approval. |
 | **Client Surface** | One human-facing entry point of an Activity Client, such as a participant browser screen, spectator display, or terminal interface. | It is presentation, not a Projection or a React component imported into Studio. |
+| **Activity Distribution** | An integrator-owned manifest referencing separate exact Pack Bundles, Client Releases, and optional Runner integrations. | It proposes a combination but carries no secret, Deployment, Binding, or operational approval. |
+| **Client Deployment** | Host-approved availability of one exact Client Release at exact independently executing launch targets. | It is operational state, not a Release, Room session, or Studio plugin. |
+| **Deployment Trust Level** | Host classification of running client bytes as exactly verified or externally trusted without such proof. | It is not client compatibility, publisher reputation, Membership permission, or Room authority. |
+| **Client Binding** | Host-approved mapping from an exact Pack Revision, client contract, Access Mode, and Role set to an approved Deployment Surface. | Direct clients do not require one; it is not Room or Replay state. |
+| **Client Binding Store** | Host-local operational collection of approved Releases, Deployments, Bindings, disable/revocation state, and configured fallback. | It is not an artifact registry, Pack catalog, renderer registry, Room backup, or Activity Distribution. |
+| **Client Selection** | Resolution of one current Membership and Host-local bindings to one approved Surface for a handoff. | It changes no Membership or Room state and exposes only opaque choices to Studio. |
+| **Client SDK** | Non-authoritative library implementing the generic WorldStream client contract. | A library is not an Activity Client until an independent application uses it. |
 | **WorldStream Inspector** | The first-party Pack-neutral browser workbench for authorized Projection/Observation data, exact Action Offers, receipts, connection state, and Replay. | It is a diagnostic fallback, not a generated domain UI or centrally maintained Pack renderer registry. |
 
 ## Identity and participation

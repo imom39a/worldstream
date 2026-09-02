@@ -1,6 +1,9 @@
 #![allow(clippy::panic)]
 
 #[allow(dead_code)]
+#[path = "../src/client_bindings.rs"]
+mod client_bindings;
+#[allow(dead_code)]
 #[path = "../src/participant_handoff.rs"]
 mod participant_handoff;
 
@@ -17,8 +20,8 @@ use axum::{
 };
 use http_body_util::BodyExt as _;
 use participant_handoff::{
-    FixedDaemonParticipantConsoleGatewayV1, HumanSeatAuthorityV1, ParticipantConsoleGatewayErrorV1,
-    ParticipantConsoleGatewayV1, ParticipantConsoleObservationV1,
+    CurrentMembershipSnapshotV1, FixedDaemonParticipantConsoleGatewayV1, HumanSeatAuthorityV1,
+    ParticipantConsoleGatewayErrorV1, ParticipantConsoleGatewayV1, ParticipantConsoleObservationV1,
     ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1,
     ParticipantHandoffAuthorityErrorV1, ParticipantHandoffAuthoritySourceV1,
     ParticipantHandoffBrokerV1, participant_handoff_router,
@@ -26,7 +29,12 @@ use participant_handoff::{
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use tungstenite::{Message, accept_hdr};
-use worldstream_protocol::{PackReference, SealedCapabilityBearerV1};
+use worldstream_protocol::{AccessMode, PackReference, SealedCapabilityBearerV1};
+
+use client_bindings::{
+    ClientBindingStoreErrorV1, ClientCandidateClassV1, ClientCandidateV1, ClientSelectionRequestV1,
+    ClientSelectionSourceV1, ClientSelectionV1, DeploymentTrustLevelV1,
+};
 
 const STUDIO_ORIGIN: &str = "http://127.0.0.1:5174";
 const CONSOLE_ORIGIN: &str = "http://127.0.0.1:5173";
@@ -79,10 +87,157 @@ impl ParticipantHandoffAuthoritySourceV1 for FakeAuthoritySource {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
+            AccessMode::Participant,
+            Some("navigator".to_owned()),
             SealedCapabilityBearerV1::parse(BEARER.to_owned())
                 .map_err(|_| ParticipantHandoffAuthorityErrorV1::Unavailable)?,
         )
         .map_err(|_| ParticipantHandoffAuthorityErrorV1::Unavailable)
+    }
+}
+
+type RequiredMembership = Option<(AccessMode, Option<String>)>;
+
+#[derive(Clone)]
+struct FakeClientSelectionSource {
+    selection: Arc<Mutex<Result<ClientSelectionV1, ClientBindingStoreErrorV1>>>,
+    requests: Arc<Mutex<Vec<ClientSelectionRequestV1>>>,
+    required_membership: Arc<Mutex<RequiredMembership>>,
+}
+
+impl FakeClientSelectionSource {
+    fn selected(path: &str) -> Self {
+        Self {
+            selection: Arc::new(Mutex::new(Ok(ClientSelectionV1::Selected {
+                candidate: ClientCandidateV1 {
+                    candidate_id: "test-approved-client".to_owned(),
+                    deployment_id: "test-client-host".to_owned(),
+                    client_id: "test.activity-client".to_owned(),
+                    release_digest: format!("sha256:{}", "d".repeat(64)),
+                    surface_id: "test-browser".to_owned(),
+                    trust_level: DeploymentTrustLevelV1::Verified,
+                    launch_url: format!("{CONSOLE_ORIGIN}{path}"),
+                },
+            }))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            required_membership: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn inspector() -> Self {
+        Self {
+            selection: Arc::new(Mutex::new(Ok(ClientSelectionV1::InspectorFallback {
+                candidate: ClientCandidateV1 {
+                    candidate_id: "configured-inspector".to_owned(),
+                    deployment_id: "inspector-host".to_owned(),
+                    client_id: "worldstream.inspector.web".to_owned(),
+                    release_digest: format!("sha256:{}", "c".repeat(64)),
+                    surface_id: "inspector-web".to_owned(),
+                    trust_level: DeploymentTrustLevelV1::Verified,
+                    launch_url: format!("{CONSOLE_ORIGIN}/inspector/"),
+                },
+            }))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            required_membership: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn selection_required() -> Self {
+        let primary = ClientCandidateV1 {
+            candidate_id: "approved-primary".to_owned(),
+            deployment_id: "primary-host".to_owned(),
+            client_id: "test.primary-client".to_owned(),
+            release_digest: format!("sha256:{}", "a".repeat(64)),
+            surface_id: "participant-web".to_owned(),
+            trust_level: DeploymentTrustLevelV1::Verified,
+            launch_url: format!("{CONSOLE_ORIGIN}/primary/"),
+        };
+        let secondary = ClientCandidateV1 {
+            candidate_id: "approved-secondary".to_owned(),
+            deployment_id: "secondary-host".to_owned(),
+            client_id: "test.secondary-client".to_owned(),
+            release_digest: format!("sha256:{}", "b".repeat(64)),
+            surface_id: "participant-web".to_owned(),
+            trust_level: DeploymentTrustLevelV1::ExternallyTrusted,
+            launch_url: format!("{CONSOLE_ORIGIN}/secondary/"),
+        };
+        Self {
+            selection: Arc::new(Mutex::new(Ok(ClientSelectionV1::SelectionRequired {
+                candidates: vec![primary, secondary],
+            }))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            required_membership: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn require_membership(&self, access_mode: AccessMode, role: Option<&str>) {
+        *self
+            .required_membership
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((access_mode, role.map(str::to_owned)));
+    }
+}
+
+impl ClientSelectionSourceV1 for FakeClientSelectionSource {
+    fn select_client(
+        &self,
+        request: &ClientSelectionRequestV1,
+        preferred_candidate_id: Option<&str>,
+    ) -> Result<ClientSelectionV1, ClientBindingStoreErrorV1> {
+        self.requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        if self
+            .required_membership
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|(access_mode, role)| {
+                request.access_mode != *access_mode || request.role != *role
+            })
+        {
+            return Err(ClientBindingStoreErrorV1::InvalidChoice);
+        }
+        let selection = self
+            .selection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()?;
+        if let Some(preferred) = preferred_candidate_id {
+            return match selection {
+                ClientSelectionV1::Selected { candidate }
+                    if candidate.candidate_id == preferred =>
+                {
+                    Ok(ClientSelectionV1::Selected { candidate })
+                }
+                ClientSelectionV1::SelectionRequired { candidates } => candidates
+                    .into_iter()
+                    .find(|candidate| candidate.candidate_id == preferred)
+                    .map(|candidate| ClientSelectionV1::Selected { candidate })
+                    .ok_or(ClientBindingStoreErrorV1::InvalidChoice),
+                _ => Err(ClientBindingStoreErrorV1::InvalidChoice),
+            };
+        }
+        Ok(selection)
+    }
+
+    fn resolve_active_client(
+        &self,
+        request: &ClientSelectionRequestV1,
+        class: ClientCandidateClassV1,
+        candidate_id: &str,
+    ) -> Result<ClientCandidateV1, ClientBindingStoreErrorV1> {
+        let preferred = matches!(class, ClientCandidateClassV1::Binding).then_some(candidate_id);
+        let selection = self.select_client(request, preferred)?;
+        match (class, selection) {
+            (ClientCandidateClassV1::Binding, ClientSelectionV1::Selected { candidate })
+            | (
+                ClientCandidateClassV1::InspectorFallback,
+                ClientSelectionV1::InspectorFallback { candidate },
+            ) if candidate.candidate_id == candidate_id => Ok(candidate),
+            _ => Err(ClientBindingStoreErrorV1::InvalidChoice),
+        }
     }
 }
 
@@ -99,9 +254,33 @@ type GatewayCall = (String, String, Option<u64>, &'static str);
 #[derive(Clone, Default)]
 struct FakeGateway {
     calls: Arc<Mutex<Vec<GatewayCall>>>,
+    current: Arc<Mutex<Option<CurrentMembershipSnapshotV1>>>,
+}
+
+impl FakeGateway {
+    fn set_current(&self, current: CurrentMembershipSnapshotV1) {
+        *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Some(current);
+    }
 }
 
 impl ParticipantConsoleGatewayV1 for FakeGateway {
+    fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        Ok(self
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| CurrentMembershipSnapshotV1 {
+                pack: authority.pack().clone(),
+                access_mode: authority.access_mode(),
+                role: authority.role().map(str::to_owned),
+            }))
+    }
+
     fn observe(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -174,7 +353,64 @@ impl ParticipantConsoleGatewayV1 for FakeGateway {
     }
 }
 
+#[derive(Clone)]
+struct LeakingGateway;
+
+impl ParticipantConsoleGatewayV1 for LeakingGateway {
+    fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        Ok(CurrentMembershipSnapshotV1 {
+            pack: authority.pack().clone(),
+            access_mode: authority.access_mode(),
+            role: authority.role().map(str::to_owned),
+        })
+    }
+
+    fn observe(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
+        Ok(ParticipantConsoleObservationV1 {
+            browser_value: json!({"nested": {"bearer": BEARER, "durable_cursor": 7}}),
+            durable_cursor: None,
+        })
+    }
+
+    fn act(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+        _: &participant_handoff::ParticipantActionRequestV1,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        Ok(json!({"nested": {"member_id": MEMBER_ID}}))
+    }
+
+    fn replay(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: u64,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        Ok(json!({"projection": {"activity": {"prompt": "hidden"}}}))
+    }
+}
+
 fn app(source: FakeAuthoritySource, gateway: FakeGateway) -> axum::Router {
+    app_with_clients(
+        source,
+        gateway,
+        FakeClientSelectionSource::selected("/agent-heist/"),
+    )
+}
+
+fn app_with_clients(
+    source: FakeAuthoritySource,
+    gateway: FakeGateway,
+    clients: FakeClientSelectionSource,
+) -> axum::Router {
     let broker = ParticipantHandoffBrokerV1::new(
         STUDIO_ORIGIN,
         CONSOLE_ORIGIN,
@@ -182,6 +418,7 @@ fn app(source: FakeAuthoritySource, gateway: FakeGateway) -> axum::Router {
         16,
         source,
         gateway,
+        clients,
     )
     .unwrap_or_else(|error| panic!("test broker must be valid: {error:?}"));
     participant_handoff_router(broker)
@@ -195,6 +432,7 @@ fn fixed_gateway_app(address: std::net::SocketAddr) -> axum::Router {
         16,
         FakeAuthoritySource::usable(),
         FixedDaemonParticipantConsoleGatewayV1::new(address, Duration::from_secs(1)),
+        FakeClientSelectionSource::selected("/agent-heist/"),
     )
     .unwrap_or_else(|error| panic!("test broker must be valid: {error:?}"));
     participant_handoff_router(broker)
@@ -228,16 +466,18 @@ async fn issue_handoff(router: &axum::Router) -> (String, String) {
     let body = json_response(response).await;
     assert_eq!(
         body.as_object().map(serde_json::Map::len),
-        Some(2),
+        Some(3),
         "handoff response must stay exact and browser-safe"
     );
-    let console_url = body["console_url"].as_str().unwrap_or_default().to_owned();
-    let handoff = console_url
+    assert_eq!(body["version"], "activity_client_handoff.v1");
+    assert_eq!(body["state"], "ready");
+    let client_url = body["client_url"].as_str().unwrap_or_default().to_owned();
+    let handoff = client_url
         .split("#handoff=")
         .nth(1)
         .unwrap_or_default()
         .to_owned();
-    (console_url, handoff)
+    (client_url, handoff)
 }
 
 async fn redeem_handoff(
@@ -322,6 +562,53 @@ async fn issues_only_a_short_lived_fragment_handoff_for_an_exact_human_seat() {
 }
 
 #[tokio::test]
+async fn returns_only_generic_candidates_until_the_operator_selects_one() {
+    let router = app_with_clients(
+        FakeAuthoritySource::usable(),
+        FakeGateway::default(),
+        FakeClientSelectionSource::selection_required(),
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/participant-console/handoffs")
+                .header(header::ORIGIN, STUDIO_ORIGIN)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"draft_id":"{DRAFT_ID}","seat_id":"navigator"}}"#
+                )))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_response(response).await;
+    assert_eq!(body["state"], "selection_required");
+    assert_eq!(body["candidates"].as_array().map(Vec::len), Some(2));
+    assert!(body.get("client_url").is_none());
+    assert!(!body.to_string().contains("launch_url"));
+
+    let selected = router
+        .oneshot(
+            Request::post("/api/v1/participant-console/handoffs")
+                .header(header::ORIGIN, STUDIO_ORIGIN)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"draft_id":"{DRAFT_ID}","seat_id":"navigator","candidate_id":"approved-secondary"}}"#
+                )))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"));
+    assert_eq!(selected.status(), StatusCode::CREATED);
+    assert!(
+        json_response(selected).await["client_url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("http://127.0.0.1:5173/secondary/#handoff="))
+    );
+}
+
+#[tokio::test]
 async fn selects_agent_heist_client_for_the_other_supported_exact_revision() {
     let router = app(
         FakeAuthoritySource::for_pack(agent_heist_pack("0.1.0", AGENT_HEIST_0_1_DIGEST)),
@@ -351,7 +638,11 @@ async fn falls_back_to_inspector_without_pack_name_or_version_matching() {
     ];
 
     for pack in mismatches {
-        let router = app(FakeAuthoritySource::for_pack(pack), FakeGateway::default());
+        let router = app_with_clients(
+            FakeAuthoritySource::for_pack(pack),
+            FakeGateway::default(),
+            FakeClientSelectionSource::inspector(),
+        );
         let (console_url, _) = issue_handoff(&router).await;
         assert!(
             console_url.starts_with("http://127.0.0.1:5173/inspector/#handoff=wsh1:"),
@@ -404,6 +695,113 @@ async fn redemption_is_origin_bound_one_use_and_rotates_a_scoped_http_only_cooki
     assert_eq!(
         json_response(replay).await["code"],
         "participant_handoff_invalid"
+    );
+}
+
+#[tokio::test]
+async fn selection_uses_live_membership_and_spectator_sessions_are_read_only() {
+    let gateway = FakeGateway::default();
+    gateway.set_current(CurrentMembershipSnapshotV1 {
+        pack: agent_heist_pack("0.2.0", AGENT_HEIST_0_2_DIGEST),
+        access_mode: AccessMode::Spectator,
+        role: None,
+    });
+    let clients = FakeClientSelectionSource::selected("/agent-heist/");
+    let router = app_with_clients(FakeAuthoritySource::usable(), gateway, clients.clone());
+    let (_, handoff) = issue_handoff(&router).await;
+    assert_eq!(
+        clients
+            .requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .first()
+            .map(|request| (request.access_mode, request.role.clone())),
+        Some((AccessMode::Spectator, None)),
+    );
+
+    let redeemed = redeem_handoff(&router, &handoff, None).await;
+    let cookie = redeemed
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let action = console_request(
+        &router,
+        Method::POST,
+        "/api/v1/participant-console/session:act",
+        &cookie,
+        Body::from(
+            r#"{"action_id":"01ARZ3NDEKTSV4RRFFQ69G5FAY","based_on_room_seq":7,"offer_id":"7:host_launch:0","schema_digest":"blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","action_type":"host_launch","payload":{}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(action.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn membership_change_away_and_back_cannot_resurrect_an_active_browser_session() {
+    let clients = FakeClientSelectionSource::selected("/agent-heist/");
+    clients.require_membership(AccessMode::Participant, Some("navigator"));
+    let gateway = FakeGateway::default();
+    let router = app_with_clients(
+        FakeAuthoritySource::usable(),
+        gateway.clone(),
+        clients.clone(),
+    );
+    let (_, handoff) = issue_handoff(&router).await;
+    let redeemed = redeem_handoff(&router, &handoff, None).await;
+    let cookie = redeemed
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+
+    gateway.set_current(CurrentMembershipSnapshotV1 {
+        pack: agent_heist_pack("0.1.0", AGENT_HEIST_0_1_DIGEST),
+        access_mode: AccessMode::Participant,
+        role: Some("insider".to_owned()),
+    });
+    let status = console_request(
+        &router,
+        Method::GET,
+        "/api/v1/participant-console/session",
+        &cookie,
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(status.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_response(status).await["code"],
+        "participant_session_authority_invalid",
+    );
+
+    gateway.set_current(CurrentMembershipSnapshotV1 {
+        pack: agent_heist_pack("0.1.0", AGENT_HEIST_0_1_DIGEST),
+        access_mode: AccessMode::Participant,
+        role: Some("navigator".to_owned()),
+    });
+    let after_restore = console_request(
+        &router,
+        Method::GET,
+        "/api/v1/participant-console/session",
+        &cookie,
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(after_restore.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json_response(after_restore).await["code"],
+        "participant_session_missing",
     );
 }
 
@@ -555,35 +953,6 @@ async fn refresh_observe_and_act_reuse_only_the_bound_membership_authority() {
 
 #[tokio::test]
 async fn rejects_unknown_fields_and_browser_unsafe_gateway_payloads() {
-    #[derive(Clone)]
-    struct LeakingGateway;
-    impl ParticipantConsoleGatewayV1 for LeakingGateway {
-        fn observe(
-            &self,
-            _: &HumanSeatAuthorityV1,
-            _: Option<u64>,
-        ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
-            Ok(ParticipantConsoleObservationV1 {
-                browser_value: json!({"nested": {"bearer": BEARER, "durable_cursor": 7}}),
-                durable_cursor: None,
-            })
-        }
-        fn act(
-            &self,
-            _: &HumanSeatAuthorityV1,
-            _: Option<u64>,
-            _: &participant_handoff::ParticipantActionRequestV1,
-        ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
-            Ok(json!({"nested": {"member_id": MEMBER_ID}}))
-        }
-        fn replay(
-            &self,
-            _: &HumanSeatAuthorityV1,
-            _: u64,
-        ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
-            Ok(json!({"projection": {"activity": {"prompt": "hidden"}}}))
-        }
-    }
     let broker = ParticipantHandoffBrokerV1::new(
         STUDIO_ORIGIN,
         CONSOLE_ORIGIN,
@@ -591,6 +960,7 @@ async fn rejects_unknown_fields_and_browser_unsafe_gateway_payloads() {
         16,
         FakeAuthoritySource::usable(),
         LeakingGateway,
+        FakeClientSelectionSource::selected("/agent-heist/"),
     )
     .unwrap_or_else(|error| panic!("test broker: {error:?}"));
     let router = participant_handoff_router(broker);
@@ -661,6 +1031,7 @@ async fn reports_exact_closed_readiness_without_retaining_room_or_member_ids() {
         16,
         source.clone(),
         gateway,
+        FakeClientSelectionSource::selected("/agent-heist/"),
     )
     .unwrap_or_else(|error| panic!("test broker: {error:?}"));
     let router = participant_handoff_router(broker.clone());
@@ -805,6 +1176,8 @@ fn fixed_daemon_gateway_sanitizes_projection_and_attaches_health_to_exact_member
             version: "0.2.0".to_owned(),
             digest: AGENT_HEIST_0_2_DIGEST.to_owned(),
         },
+        AccessMode::Participant,
+        Some("navigator".to_owned()),
         SealedCapabilityBearerV1::parse(BEARER.to_owned())
             .unwrap_or_else(|error| panic!("fixture bearer: {error}")),
     )
@@ -933,7 +1306,9 @@ async fn protected_console_returns_a_sanitized_rejected_action_receipt() {
         .local_addr()
         .unwrap_or_else(|error| panic!("rejected receipt fixture address: {error}"));
     let server = thread::spawn(move || {
-        serve_cursor_enforcing_connection(&listener, Some("action.rejected"));
+        for action_receipt in [None, None, None, Some("action.rejected")] {
+            serve_cursor_enforcing_connection(&listener, action_receipt);
+        }
     });
     let router = fixed_gateway_app(address);
     let (_, handoff) = issue_handoff(&router).await;
@@ -983,7 +1358,18 @@ fn spawn_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
 
 fn spawn_cursor_enforcing_daemon_fixture(listener: TcpListener) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        for action_receipt in [None, None, Some("action.accepted"), None] {
+        for action_receipt in [
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("action.accepted"),
+            None,
+            None,
+        ] {
             serve_cursor_enforcing_connection(&listener, action_receipt);
         }
     })

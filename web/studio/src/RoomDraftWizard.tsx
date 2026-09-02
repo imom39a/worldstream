@@ -520,7 +520,7 @@ function ReviewStep({
         />
         Include read-only operator view
       </label>
-      <p>Creates one reviewed nonparticipant Operator Membership at Room Genesis so Studio may request the Counter public projection.</p>
+      <p>Creates one reviewed nonparticipant Operator Membership at Room Genesis so Studio may inspect the authorized generic Projection.</p>
       <button type="button" disabled={saving} onClick={() => onSave?.({ ...draft, last_valid_step: "review" })}>
         {saving ? "Saving Review…" : saved ? "Review saved" : "Save Review"}
       </button>

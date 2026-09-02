@@ -23,6 +23,7 @@ winsafe.workspace = true
 worldstream-runtime = { path = "../worldstream-runtime", version = "=0.1.0" }
 worldstream-protocol = { path = "../worldstream-protocol", version = "=0.1.0" }
 worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
+worldstream-activity-client = { path = "../worldstream-activity-client", version = "=0.1.0" }
 zeroize.workspace = true
 
 [dev-dependencies]

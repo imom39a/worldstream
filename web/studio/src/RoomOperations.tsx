@@ -1,21 +1,14 @@
 import type { OperatorRoom, RoomInventoryState } from "./roomInventory";
-import type { RoomOperatorView } from "./roomOperatorView";
 import "./roomOperations.css";
 
 export function RoomOperations({
   inventory,
   selectedRoomId,
   onSelectRoom,
-  operatorView = null,
-  operatorViewLoading = false,
-  onEnableOperatorView,
 }: {
   inventory: RoomInventoryState;
   selectedRoomId?: string | null;
   onSelectRoom?: (roomId: string) => void;
-  operatorView?: RoomOperatorView | null;
-  operatorViewLoading?: boolean;
-  onEnableOperatorView?: (roomId: string) => void;
 }) {
   if (inventory.status === "loading") {
     return <section className="room-operations" aria-busy="true"><p>Loading Rooms…</p></section>;
@@ -56,7 +49,7 @@ export function RoomOperations({
           </button>
         ))}
       </div>
-      {selected ? <RoomDetail room={selected} operatorView={operatorView?.room_id === selected.room_id ? operatorView : null} operatorViewLoading={operatorViewLoading} onEnableOperatorView={onEnableOperatorView} /> : (
+      {selected ? <RoomDetail room={selected} /> : (
         <aside className="room-detail" role="status">
           <h2>Select a Room</h2>
           <p>Select a listed Room to load its current operator detail.</p>
@@ -66,7 +59,7 @@ export function RoomOperations({
   );
 }
 
-export function RoomDetail({ room, operatorView = null, operatorViewLoading = false, onEnableOperatorView }: { room: OperatorRoom; operatorView?: RoomOperatorView | null; operatorViewLoading?: boolean; onEnableOperatorView?: (roomId: string) => void }) {
+export function RoomDetail({ room }: { room: OperatorRoom }) {
   return (
     <article className="room-detail">
       <p className="eyebrow">Room detail</p>
@@ -83,13 +76,7 @@ export function RoomDetail({ room, operatorView = null, operatorViewLoading = fa
         <Fact label="Exact Activity Pack" value={`${room.pack.id} ${room.pack.version}`} />
       </dl>
       <p className="privacy-note">Participant-private seat and Invocation data are not included.</p>
-      <section aria-label="Operator view">
-        <h3>Operator view</h3>
-        {operatorView?.state === "available" ? <p>Counter value: {operatorView.counter.value} · Head sequence: {operatorView.room_head.room_seq}</p> : <>
-          <p>{operatorView?.unavailable_reason?.replaceAll("_", " ") ?? "Operator projection is unavailable."}</p>
-          <button type="button" disabled={operatorViewLoading || onEnableOperatorView === undefined} onClick={() => onEnableOperatorView?.(room.room_id)}>{operatorViewLoading ? "Enabling operator view…" : "Enable operator view"}</button>
-        </>}
-      </section>
+      <p className="privacy-note">Open an approved Activity Client or the generic Inspector for Pack-specific projections and actions.</p>
     </article>
   );
 }

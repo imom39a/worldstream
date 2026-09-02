@@ -1,8 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { AgentHeistClient } from "@worldstream/agent-heist-client";
-import "@worldstream/agent-heist-client/styles.css";
 import {
   ActivityClientHandoffClient,
   resumeRetainedActivityClient,
@@ -15,15 +13,9 @@ import {
   CLIENT_CONTRACT_IDENTITY,
   CLIENT_CONTRACT_IDENTITY_JSON,
 } from "./compatibilityIdentity";
-import { consumeLiveSessionBootstrap } from "./liveSession";
 import { scenarioFromSearch } from "./scenario";
 import { StudioPrototype } from "./StudioPrototype";
 import { HandedOffParticipant } from "./HandedOffParticipant";
-import { NegotiateApp, NegotiateLiveApp } from "./NegotiateApp";
-import {
-  consumeNegotiateConsoleBootstrap,
-  negotiateBootstrapMatchesLiveSession,
-} from "./negotiate";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -54,14 +46,6 @@ if (isStudioPrototype) {
   );
   const startup = selectActivityClientStartup(window);
   void resumeRetainedActivityClient(startup, client).then((resolvedStartup) => {
-    if (clientSurface === "agent-heist") {
-      createRoot(root).render(
-        <StrictMode>
-          <AgentHeistClient startup={resolvedStartup} client={client} />
-        </StrictMode>,
-      );
-      return;
-    }
     if (clientSurface === "inspector") {
       createRoot(root).render(
         <StrictMode>
@@ -74,38 +58,6 @@ if (isStudioPrototype) {
       createRoot(root).render(<StrictMode><HandedOffParticipant startup={resolvedStartup} client={client} /></StrictMode>);
       return;
     }
-    const liveBootstrap = window as Window & { __WORLDSTREAM_LIVE_SESSION__?: unknown };
-    const consumedLiveSession = consumeLiveSessionBootstrap(liveBootstrap);
-    const negotiateBootstrap = consumeNegotiateConsoleBootstrap(
-      window as Window & { __WORLDSTREAM_NEGOTIATE_CONSOLE__?: unknown },
-    );
-    if (negotiateBootstrap !== null) {
-      const mismatchedLiveSession = consumedLiveSession.config !== null
-        && !negotiateBootstrapMatchesLiveSession(
-          negotiateBootstrap,
-          consumedLiveSession.config,
-        );
-      createRoot(root).render(
-        <StrictMode>
-          {mismatchedLiveSession ? (
-            <NegotiateApp
-              session={{ ...negotiateBootstrap, connection: "disconnected", action_offers: [] }}
-              error="The Negotiate view and live Membership authority do not identify the same Room Session."
-            />
-          ) : consumedLiveSession.config === null ? (
-            <NegotiateApp session={negotiateBootstrap} />
-          ) : (
-            <NegotiateLiveApp
-              initial={negotiateBootstrap}
-              config={consumedLiveSession.config}
-              transport={consumedLiveSession.transport}
-              replayClient={consumedLiveSession.replayClient}
-            />
-          )}
-        </StrictMode>,
-      );
-      return;
-    }
     const scenario = scenarioFromSearch(window.location.search);
 
     createRoot(root).render(
@@ -113,9 +65,6 @@ if (isStudioPrototype) {
         <App
           fixture={scenario.fixture}
           initialView={scenario.initialView}
-          liveSession={consumedLiveSession.config ?? undefined}
-          liveTransport={consumedLiveSession.transport}
-          liveReplayClient={consumedLiveSession.replayClient}
         />
       </StrictMode>,
     );

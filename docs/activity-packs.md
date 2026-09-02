@@ -563,10 +563,11 @@ digests, and one Pack revision may have several clients. Client association is
 deployment/integration state: it does not enter the Activity Pack Bundle,
 Genesis, Authoritative Room State, Transitions, canonical hashes, or Replay.
 
-The first product surfaces include a standalone Agent Heist Activity Client,
-the Pack-neutral WorldStream Inspector, and the existing curated Negotiate
-surface while it is migrated into its own Activity Client. Studio discovers
-and opens a compatible client but does not import its renderer.
+The first product surfaces include standalone Agent Heist and Negotiate
+Activity Clients plus the Pack-neutral WorldStream Inspector. The Host resolves
+an exact approved Client Binding from current Membership state; Studio can
+launch that independent client but does not import its renderer. See
+[Activity Clients](activity-clients.md).
 
 The project deliberately does not freeze:
 
@@ -575,7 +576,7 @@ The project deliberately does not freeze:
 - custom widget ABI;
 - pack JavaScript;
 - runtime LLM-generated layout;
-- a third-party Client Surface Bundle/registry contract;
+- automatic third-party Client Deployment or Catalog policy;
 - a renderer marketplace.
 
 ## Demo/conformance Activity: Agent Heist

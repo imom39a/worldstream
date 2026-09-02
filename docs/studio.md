@@ -4,7 +4,8 @@ WorldStream Studio is the local host-operator portal. It is a companion control
 plane, not an Activity Client, and `worldstreamd` remains the only authoritative
 Room runtime. Studio may open an exact compatible participant client through a
 scoped handoff; the client executes separately. The WorldStream Inspector is
-the Pack-neutral fallback when no specialized first-party client is compatible.
+the Pack-neutral configured fallback when no specialized approved Client
+Binding is eligible.
 
 For the Runtime-plus-Packs release, Studio guides exact bundle inspection,
 digest approval, offline install status, restart readiness, schema-driven
