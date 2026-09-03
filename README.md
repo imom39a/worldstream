@@ -94,7 +94,9 @@ WorldStream owns:
 - durable activation intents for external agent runners;
 - bounded WebSocket delivery and cursor-based reconnect;
 - independently executing first-party Activity Clients plus a Pack-neutral
-  Inspector; Studio remains the Host Operator plane and launcher.
+  Inspector; Studio is the transitional Host Operator interface while the
+  [CLI-first replacement](docs/adr/0018-cli-first-operator-surface.md) is built
+  and verified.
 
 Activity Packs own:
 

@@ -70,6 +70,14 @@ _Avoid_: Agent integrator, Pack Author when rule ownership is meant, host operat
 An Application Integrator-owned, versioned integration manifest that proposes separately identified Activity Pack Bundles, Activity Client Releases, optional Runner integrations, documentation, and deployment templates without merging their authority or execution boundaries. A template may name required capabilities and secrets but contains no secret value, approval, Client Deployment, or Client Binding Store state, and importing or publishing it grants no operational approval.
 _Avoid_: Activity Pack, Activity Pack Bundle, plugin package, executable Pack
 
+**Room Setup Specification**:
+A reusable, non-authoritative description of one intended Room's exact Activity Pack Revision, configuration, seats, and execution requirements. It grants no approval and does not define replacement state for an existing Room.
+_Avoid_: Activity Distribution, Room, desired Room state, server configuration, setup operation
+
+**Room Setup Operation**:
+One Host-local attempt to create and provision a Room from a fixed, resolved Room Setup Specification. Its operational progress can continue across retries but is not an Activity Phase or the Room's Canonical History.
+_Avoid_: Room Setup Specification, Room, workflow, canonical Transition
+
 **Activity Client**:
 An independently executing browser, terminal, mobile, service, or agent-owned application that participates through one scoped WorldStream client contract and may present one or more exact Activity Pack Revisions. It may be presentation-rich and Pack-aware, but owns no Room authority, legality, or canonical state.
 _Avoid_: Activity Pack, Pack executor, Studio plugin, Client SDK, Participant when the application itself is meant

@@ -1,3 +1,10 @@
+#[path = "worldstreamctl/contract.rs"]
+mod cli_contract;
+#[path = "worldstreamctl/report.rs"]
+mod cli_report;
+
+use cli_contract::OperatorCommand;
+use cli_report::CommandReport;
 use std::{
     env, fs,
     io::{self, Read, Write},
@@ -93,10 +100,14 @@ enum Command {
         #[command(subcommand)]
         command: SqliteCommand,
     },
+    #[command(flatten)]
+    Operator(OperatorCommand),
 }
 
 #[derive(Debug, Subcommand)]
 enum PackCommand {
+    /// Report installed, next-start, and live selection separately without starting processes.
+    List(cli_contract::CommandOptions),
     /// Fully verify and describe one untrusted local `.wspack` candidate.
     Inspect(PackCandidateArgs),
     /// Prove one bundle through the production verifier, Component Host, and Core registry.
@@ -542,16 +553,45 @@ fn version_document(compatibility: CompatibilitySummary) -> VersionDocument {
     }
 }
 
+fn finish_operator_report(report: CommandReport, json: bool) -> Result<()> {
+    let exit = report.write(json, &mut io::stdout().lock(), &mut io::stderr().lock())?;
+    std::process::exit(exit.code());
+}
+
 fn main() -> Result<()> {
     if let Some(result) = dispatch_hidden_native_postgres_worker() {
         return result;
     }
+    let arguments: Vec<_> = env::args_os().collect();
+    let operator_family = cli_contract::operator_family(&arguments);
+    let json = arguments.iter().any(|value| value == "--json");
+    let parsed = match Cli::try_parse_from(&arguments) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            if error.use_stderr()
+                && let Some(family) = operator_family
+            {
+                return finish_operator_report(CommandReport::invalid_arguments(family), json);
+            }
+            error.exit();
+        }
+    };
     let Cli {
         config: config_args,
         command,
-    } = Cli::parse();
+    } = parsed;
 
     match command {
+        Command::Operator(command) => {
+            let (name, json) = command.invocation();
+            if !command.valid_arguments() {
+                return finish_operator_report(CommandReport::invalid_arguments(name), json);
+            }
+            finish_operator_report(CommandReport::not_implemented(name), json)
+        }
+        Command::Pack {
+            command: PackCommand::List(options),
+        } => finish_operator_report(CommandReport::not_implemented("pack list"), options.json),
         Command::Pack {
             command: PackCommand::Prove(args),
         } => run_pack_prover(&args),
@@ -613,6 +653,7 @@ fn main() -> Result<()> {
 fn run_pack_operator(command: PackCommand, config: &EffectiveConfig) -> Result<()> {
     let data_directory = &config.storage.data_dir;
     match command {
+        PackCommand::List(_) => bail!("operator contract dispatch required"),
         PackCommand::Inspect(args) => write_json(
             &inspect_pack(data_directory, &args.bundle)
                 .context("Activity Pack inspection failed closed")?,
@@ -1442,6 +1483,7 @@ mod tests {
             };
             let actual = match command {
                 PackCommand::Inspect(_) => "inspect",
+                PackCommand::List(_) => "list",
                 PackCommand::Prove(_) => "prove",
                 PackCommand::Approve(_) => "approve",
                 PackCommand::Revoke(_) => "revoke",

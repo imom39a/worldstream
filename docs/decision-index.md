@@ -38,6 +38,7 @@ this authority order:
 | [0015](adr/0015-a202-operated-single-session-formation-profile.md) | Pinned A202 single-session formation compatibility profile for WorldStream Negotiate |
 | [0016](adr/0016-expanded-runtime-pack-release-and-qualification.md) | 33-subject Runtime-plus-Packs release graph and separately signed post-release qualification |
 | [0017](adr/0017-separate-activity-clients-from-packs-and-studio.md) | Headless Activity Packs, independent Activity Clients, Studio launcher, and Pack-neutral Inspector |
+| [0018](adr/0018-cli-first-operator-surface.md) | CLI-first Host Operator direction; retire Studio web only after a complete replacement flow; retain headless capabilities and independent clients |
 
 ## Frozen invariants, evidence, and implementation ownership
 

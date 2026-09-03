@@ -1,638 +1,378 @@
 # Getting started
 
-WorldStream is a multi-language runtime workspace. It does not have one
-command that starts every component. Choose the entry point that matches what
-you want to do:
+This guide is for a person who is new to WorldStream. Start with the command
+line. You do not need Studio to run the server or the automated Agent Heist
+test.
 
-| Goal | Entry point |
+Complete Sections 1, 2, and 3 in order. Then use the optional browser sections
+if you need them.
+
+> **Current state:** The CLI-first direction is accepted. The full replacement
+> for Studio is not built yet. This guide uses commands that exist today.
+> Background server management, manual Room setup, and browser-client launch
+> through the operator CLI are still pending. Studio remains available during
+> the transition. See the [implementation plan](cli-first-implementation-plan.md)
+> for the approved replacement and its implementation and verification gates.
+> The [new CLI reference](cli-reference.md) describes the planned interface.
+> Its commands are not usable while they return `not_implemented`.
+
+## Understand the parts
+
+| Part | Purpose |
 | --- | --- |
-| Run the real service locally | `worldstreamd` with bundled SQLite |
-| Operate the service through Studio | Studio portal plus the local Supervisor |
-| Learn Room behavior without starting services | Agent Heist offline story |
-| Exercise the real human-and-agent boundaries | Agent Heist MVP acceptance |
-| Build and prove a product-shaped official Pack | WorldStream Negotiate |
-| Inspect configuration or storage | `worldstreamctl` |
-| Launch a first-party browser client | Client Host (`pnpm ui:dev`) |
-| Exercise the public client | Python SDK |
-| Check a change | fast gate or full verification script |
+| **Runtime** | The `worldstreamd` process. It stores Room state and applies Activity Pack rules. |
+| **Operator CLI** | The `worldstreamctl` command. It checks configuration and manages installed Pack Bundles. |
+| **Room** | One durable shared situation governed by one Activity Pack. Humans and agents can be members. |
+| **Activity Pack** | The rules for one type of Room. Agent Heist is an Activity Pack. |
+| **Activity Client** | A program that connects to a Room with authorized access. It can use a browser, terminal, SDK, or agent integration. |
+| **Runner** | An external program that starts agent Invocations. WorldStream does not host the model. |
 
-## Prerequisites
+An operator manages the installation. A participant uses an Activity Client.
+These are different jobs. A browser Activity Client does not require an
+administration website.
 
-The checkout pins these versions:
+## 1. Prepare the repository
 
-| Tool | Version | Source of truth |
+These commands are for a macOS or Linux shell. Run them from the repository
+root: the directory that contains `Cargo.toml` and `package.json`.
+
+### Install the tools for your path
+
+The repository pins these versions. Sections 1–3 need Rust, Python, and uv.
+Node.js and pnpm are needed only for the optional browser sections.
+
+| Tool | Version | Used for |
 | --- | --- | --- |
-| Rust | 1.97.1 | `rust-toolchain.toml` |
-| Node.js | 24.18.1 | `.node-version` and `.nvmrc` |
-| pnpm | 11.19.0 | `package.json` |
-| Python | 3.14.7 | `.python-version` |
-| uv | 0.12.5 | `.uv-version` |
+| Rust | 1.97.1 | Build the Runtime and CLI |
+| Python | 3.14.7 | Run the live Heist test |
+| uv | 0.12.5 | Supply Python and its dependencies |
+| Node.js | 24.18.1 | Optional browser development |
+| pnpm | 11.19.0 | Optional browser dependencies and commands |
 
-Install `bash` and `curl` as well. Docker and PostgreSQL client tools are only
-needed for PostgreSQL, OCI, and release-specific checks.
+Install Rust with the [official Rust installer](https://rust-lang.org/tools/install/).
+Install uv with the [official uv instructions](https://docs.astral.sh/uv/getting-started/installation/).
 
-On a new workstation, install `rustup` from the
-[official Rust installer](https://rust-lang.org/install.html), install the exact
-Node 24.18.1 signed build from the
-[Node.js v24 archive](https://nodejs.org/en/download/archive/v24), then install
-the remaining pinned tools:
+Check the tool versions:
 
 ```sh
-rustup toolchain install 1.97.1 --profile minimal \
-  --component rustfmt --component clippy
-corepack enable
-corepack install --global pnpm@11.19.0
-curl -LsSf https://astral.sh/uv/0.12.5/install.sh \
-  -o /tmp/worldstream-uv-install.sh
-less /tmp/worldstream-uv-install.sh
-sh /tmp/worldstream-uv-install.sh
-uv python install 3.14.7
+rustc --version
+uv --version
+uv run --python 3.14.7 python --version
 ```
 
-Inspect downloaded installers before execution. Astral documents the
-[versioned uv installer](https://docs.astral.sh/uv/getting-started/installation/)
-and [managed Python versions](https://docs.astral.sh/uv/guides/install-python/).
-Open a new shell if an installer updated `PATH`, and confirm that every command
-reports the exact version in the table before continuing.
+Use the exact versions in the table. Some release checks reject other
+versions. You do not need Docker, PostgreSQL, or an LLM API key for this guide.
 
-From the repository root, install the locked Python and JavaScript
-dependencies:
+### Install dependencies and build the tools
+
+Run these commands one time after you clone the repository:
 
 ```sh
 uv sync --project sdk/python --locked --python 3.14.7
-pnpm install --frozen-lockfile
-```
-
-Rust dependencies are resolved automatically by the locked Cargo commands
-below. Shell harnesses invoke `python3` directly. If your version-manager shim
-does not expose the pinned interpreter, use the uv-created environment in the
-current shell:
-
-```sh
-export PATH="$PWD/sdk/python/.venv/bin:$PATH"
-```
-
-## Choose the right starter activity
-
-WorldStream is the Room Runtime; Agent Heist and WorldStream Negotiate are
-Activity Packs that exercise it for different purposes. Each Room pins exactly
-one Pack revision for its complete lineage.
-
-| Activity | Use it for | What it proves |
-| --- | --- | --- |
-| Agent Heist | Learning and visual/system conformance | Private views, typed Actions, timers, Attention, external-agent Activation, reconnect, Recovery, and Replay |
-| WorldStream Negotiate | The first serious public Pack and Pack-authoring reference | Four independent Roles, exact Human approval, signed protocol objects, deadlines, privacy, deterministic restart, and an auditable agreement Outcome |
-| Counter | Internal tutorial and focused conformance | The smallest mechanics-only path; it is not the product story |
-
-Start with Agent Heist when you want to understand the runtime visually or
-without external commercial data. Start with Negotiate when you want to inspect
-the portable TypeScript Pack workflow or the first product-shaped application.
-Neither example hosts an LLM: models, prompts, tools, private memory,
-credentials, and strategy stay in application-owned Runners.
-
-## Run the daemon with SQLite
-
-The checked-in `config/development.toml` binds the service to loopback and
-stores local state in `.worldstream/`. That directory is ignored by Git.
-
-Build the daemon and operator CLI:
-
-```sh
 cargo build --locked -p worldstream-server --bins
 ```
 
-Create the local data directory and one random 32-byte bootstrap secret:
+The build creates `target/debug/worldstreamd` and `target/debug/worldstreamctl`.
+The following steps use these local binaries. You do not need to install them
+globally.
+
+## 2. Run and inspect your local server
+
+This section starts or reuses a local installation. It does not create a Room.
+
+### Prepare local state
+
+The supplied `config/development.toml` uses:
+
+- SQLite data in `.worldstream/data`;
+- an authority secret in `.worldstream/authority.secret`;
+- the local address `127.0.0.1:9410`.
+
+If Studio already manages this installation, stop its daemon through Studio
+Operations first. Do not run two daemons against the same local data.
+
+Run this block to prepare a new installation or check that an existing one
+still has its secret:
 
 ```sh
-umask 077
-mkdir -p .worldstream/data
-if [ ! -e .worldstream/authority.secret ]; then
-  head -c 32 /dev/urandom > .worldstream/authority.secret
-fi
-chmod 600 .worldstream/authority.secret
+(
+  set -eu
+  umask 077
+  if [ ! -e .worldstream ]; then
+    mkdir -p .worldstream/data
+    (set -C; head -c 32 /dev/urandom > .worldstream/authority.secret)
+  fi
+  if [ ! -s .worldstream/authority.secret ]; then
+    echo "Stop: existing local state has no authority secret. Restore the original secret." >&2
+    exit 1
+  fi
+)
 ```
 
-The secret file contains raw bytes, not hexadecimal text and not a trailing
-newline. The setup command reuses an existing secret instead of overwriting it.
-Keep the same secret with the same database. WorldStream persists only its hash
-and intentionally rejects a different secret on a later start. This binds
-authority identity; it does not encrypt the SQLite file. Keep the directory
-owner-only and use host-volume encryption when data-at-rest encryption is
-required.
+Continue only if the block succeeds. It creates a secret only for a new
+installation. It does not replace an existing secret. Never create a new
+secret beside an existing database.
 
-Validate the configuration and inspect the local environment:
+### Check configuration
 
 ```sh
 target/debug/worldstreamctl --config config/development.toml config validate
 target/debug/worldstreamctl --config config/development.toml config effective
-target/debug/worldstreamctl --config config/development.toml doctor
 ```
 
-Secret paths and values are redacted from effective configuration output.
-`doctor` is a non-mutating preflight, so its storage field can remain
-`not_initialized`; use the live `/readyz` endpoint after startup to establish
-runtime readiness.
+The first command must succeed. The second shows the effective configuration
+with secret references redacted. Server configuration is separate from the
+Pack-specific configuration used to create a Room.
 
-Start the service in the foreground:
+Environment variables named `WORLDSTREAM__SECTION__KEY` can override the
+configuration file. Check the effective values if the paths or address differ
+from those listed above.
+
+### Start the server
 
 ```sh
-RUST_LOG=info target/debug/worldstreamd --config config/development.toml
+target/debug/worldstreamd --config config/development.toml
 ```
 
-The daemon writes structured JSON logs. Stop it with `Ctrl-C`.
+Keep this terminal open. The server runs in the foreground and writes its logs
+here.
 
-In a second terminal, inspect the live endpoints:
+In a second terminal, from the repository root, check the running server:
 
 ```sh
-curl -fsS http://127.0.0.1:9410/healthz
+target/debug/worldstreamctl --config config/development.toml health
 curl -fsS http://127.0.0.1:9410/readyz
 curl -fsS http://127.0.0.1:9410/version
-target/debug/worldstreamctl --config config/development.toml health
 ```
 
-- `/healthz` proves that the process is serving requests.
-- `/readyz` proves that the selected store, authority, writer, and scheduler
-  are ready.
-- `/version` reports the embedded compatibility and selected engine identity.
+The health command checks that the process responds. The readiness check must
+also succeed before you use the Runtime.
 
-The configuration layer order is defaults, TOML file, environment, then CLI
-flags. Use `--bind`, `--data-dir`, or `--storage-profile` for non-secret local
-overrides. Use a secret file or inherited handle for authority and PostgreSQL
-credentials; do not put credentials in command-line arguments.
+### Stop the server and inspect installed Bundles
 
-## Run WorldStream Studio
+Press `Ctrl-C` in the first terminal. Wait for the server to exit.
 
-WorldStream Studio is the local operator portal. It is served separately from
-the first-party Client Host and talks to a bounded local Supervisor API. The
-Supervisor observes and controls the configured `worldstreamd` process;
-`worldstreamd` remains the only authoritative Room runtime.
-
-The default local ports are:
-
-| Component | Address | Purpose |
-| --- | --- | --- |
-| WorldStream daemon | `http://127.0.0.1:9410` | Authoritative runtime and operator API |
-| Studio Supervisor | `http://127.0.0.1:9420` | Local typed control-plane API |
-| Client Host | `http://127.0.0.1:5173` | First-party Agent Heist, Negotiate, and Inspector clients |
-| Studio portal | `http://127.0.0.1:5174` | Operator UI |
-
-### Studio setup
-
-Studio uses the same `config/development.toml`, `.worldstream/data`, and
-authority secret as `worldstreamd`. On a fresh local Studio start, the launcher
-creates the configured owner-only 32-byte bootstrap source before either
-daemon or Studio state exists. To start `worldstreamd` by itself, use the
-authority-secret setup in [Run the daemon with SQLite](#run-the-daemon-with-sqlite)
-first. Then build the daemon and all Supervisor helper binaries:
+Then inspect the local portable Pack inventory:
 
 ```sh
-cargo build --locked -p worldstream-server --bin worldstreamd
-cargo build --locked -p worldstream-studio-supervisor --bins
+target/debug/worldstreamctl --config config/development.toml pack inventory
 ```
 
-The second command is important on a fresh checkout: managed and external
-agent workflows require `worldstream-assignment-mcp`, and the managed reference
-host additionally uses `worldstream-managed-agent-host`.
+An empty inventory is normal on a fresh checkout. This command lists installed
+portable Bundles, not embedded Packs. Agent Heist is embedded in the local
+Runtime build, so it does not need a separate Bundle installation.
 
-Studio keeps its own owner-only operational state under
-`.worldstream/studio/`. This contains drafts, setup progress, opaque credential
-references, Runner state, attention history, and backup-operation records. It
-is local development state and is ignored by Git. Do not copy it between
-machines or commit it.
+To start this installation again, run the same `worldstreamd` command. Its
+database and authority remain in `.worldstream/`.
 
-On its first start, the Supervisor reads the configured owner-only bootstrap
-authority and imports it behind one kind-bound opaque Host authority reference
-in that state. The raw authority never enters a browser request, URL, process
-argument, or Studio diagnostic. Later starts require the configured bootstrap
-authority and verify that it still matches the retained reference.
+The `worldstreamctl server start`, `stop`, and `logs` backends are not
+implemented yet. Use the foreground process and its terminal output. For exact Bundle
+approval and installation, see [Activity Packs](activity-packs.md).
 
-Runner Templates are optional. If you need supervised Runners, place reviewed
-manifest files in `config/runner-templates/` before starting Studio. The
-manifest format and protected-secret workflow are documented in
-`docs/studio.md`. Studio starts normally with an empty Runner Template catalog.
+## 3. Run a real Agent Heist Room
 
-### Start the operator portal and Supervisor
+Leave the server from Section 2 stopped. The following test starts and stops
+its own server. It uses private temporary SQLite state and an available port,
+not your `.worldstream/` installation.
 
-For daemon operations, Room inventory, drafts, backups, and attention without
-a live Activity Client, run this from the repository root:
+Run the live Agent Heist test:
 
 ```sh
-scripts/studio-dev.sh \
-  --studio-origin http://127.0.0.1:5174 \
-  --participant-console-origin http://127.0.0.1:5173
+uv run --project sdk/python --python 3.14.7 python \
+  examples/heist/wave10_live/run_absent_broker_live.py \
+  --spawn-daemon \
+  --report target/getting-started-heist.json
 ```
 
-This command builds `worldstreamd` and all required Supervisor helpers, starts
-the Supervisor on port `9420`, and starts the Studio Vite server on port
-`5174`. It stops before Vite starts if protected Supervisor startup fails. It
-does not immediately start `worldstreamd`, and it does not start the Client
-Host. Keep the command running in its terminal.
+The command can be quiet while the phase timers run. A normal run takes about
+three minutes.
 
-`pnpm studio:dev` invokes the same `scripts/studio-dev.sh` launcher without
-additional Supervisor arguments. The explicit form above is the canonical
-complete-development command because it makes the Studio and Client Host
-origins explicit. The `--participant-console-origin` option retains its wire
-compatibility name.
+The test uses the public HTTP and WebSocket interfaces and the Python SDK.
+It creates a Room, submits participant Actions, processes agent Activation
+work, and restarts the Runtime. It then completes all six Heist phases, checks
+the result with Replay, and stops its server.
 
-Open <http://127.0.0.1:5174>, select **Operations**, and click **Start daemon**.
-Alternatively, leave a daemon started by the previous section running; Studio
-will discover it through the Supervisor. Do not start a second daemon against
-the same `127.0.0.1:9410` listener.
+The command prints a JSON result. It must contain:
 
-The expected healthy path is:
+```json
+{
+  "live_evidence": true,
+  "status": "completed"
+}
+```
 
-1. Studio loads at `http://127.0.0.1:5174`.
-2. Operations shows the Supervisor as reachable.
-3. Start the daemon if it is stopped.
-4. Daemon health becomes `healthy`, then readiness becomes `ready`.
-5. Build and Operations surfaces can now load the live Activity Pack catalog,
-   Room inventory, drafts, setup state, backups, and attention items.
+The complete result is in `target/getting-started-heist.json`.
 
-Stop the Studio development stack with `Ctrl-C`. The script also stops its
-Supervisor child, but it does not delete `.worldstream/` state.
+This is an automated live test, not a manual activity session. It does not
+open a browser, use Studio, or call a paid model API. A complete operator-CLI
+flow for creating your own Room and attaching participants is not available
+yet. That flow is required before Studio is removed.
 
-### Add the Client Host when needed
+The [Agent Heist MVP completion gate](mvp-agent-heist-acceptance.md) covers
+additional release boundaries. Its current checks still include Studio. This
+guide does not replace those checks or claim release qualification.
 
-The Client Host is not required for Studio Operations, daemon health, Activity
-Pack inspection, Room administration, backups, or agent setup. It is required
-for a complete browser Activity Client handoff.
+## 4. Optional: open the recorded Agent Heist demo
 
-Keep the Studio launcher above running in the first terminal. In a second
-terminal, start the first-party Client Host:
+Use the recorded demo to see the Agent Heist browser interface.
+
+### Prepare the browser tools once
+
+Sections 4–6 share these tools. Skip this preparation if you already have the
+pinned versions and installed dependencies.
+
+Install Node.js from the [Node.js download archive](https://nodejs.org/en/download/archive/v24).
+Then run:
 
 ```sh
-pnpm ui:dev
+corepack enable
+corepack install --global pnpm@11.19.0
+node --version
+pnpm --version
+pnpm install --frozen-lockfile
 ```
 
-Open Studio at <http://127.0.0.1:5174>. When Task setup has provisioned a human
-seat, **Open participant client** creates a short-lived, one-use handoff and
-opens the selected Activity Client at `http://127.0.0.1:5173`. The Room ID,
-Membership ID, and participant bearer are not placed in the URL or copied by
-the operator. Studio is only the operator-side launcher; it neither owns nor
-renders the participant UI.
+Node.js must report `24.18.1`. pnpm must report `11.19.0`.
 
-The Supervisor resolves the current Membership through the Host-local Client
-Binding Store. The checked-in local configuration binds exact Agent Heist
-revisions to `/agent-heist/`, the exact Negotiate revision to `/negotiate/`,
-and otherwise offers the separately configured `/inspector/` fallback.
-Selection uses the exact semantic Pack Revision digest, client contract,
-Access Mode, Role, Deployment trust policy, and readiness; Pack ID and version
-remain diagnostic labels. Studio receives only generic
-candidate metadata and opaque selection identifiers; it contains no Pack path
-table.
-
-Keep both origins as exact loopback origins. If you change either UI port,
-pass the corresponding new origin to the Supervisor. Do not expose the
-development servers or Supervisor on a public interface.
-
-### Run Studio components separately
-
-For debugging, the Supervisor and portal can be started independently:
-
-```sh
-pnpm studio:supervisor
-pnpm --dir web/studio dev
-```
-
-Run those commands in separate terminals. The Studio Vite server proxies
-`/api` requests to `http://127.0.0.1:9420`. Useful Studio-only checks are:
-
-```sh
-pnpm studio:test
-pnpm --dir web/studio lint
-pnpm studio:build
-```
-
-For non-default paths or ports, inspect the Supervisor options with:
-
-```sh
-target/debug/worldstream-studio-supervisor --help
-```
-
-The most commonly changed options are `--bind`, `--daemon`,
-`--daemon-executable`, `--daemon-config`, `--state-dir`,
-`--runner-templates-dir`, `--studio-origin`, and
-`--participant-console-origin`. These are fixed when the Supervisor starts;
-browser requests cannot supply executable paths, commands, environment values,
-or daemon credentials.
-
-## Run the first-party Client Host
-
-This is the browser process that serves first-party Activity Clients and the
-generic WorldStream Inspector. It is not the Studio operator portal. Build and
-start its exact-directory development host with:
-
-```sh
-pnpm ui:dev
-```
-
-The host binds to `http://127.0.0.1:5173`. It mounts the standalone Heist,
-Negotiate, and Inspector/recorded-gallery build directories without importing
-one into another. Its bare root retains the old
-direct-bootstrap and fixture renderer for compatibility and development only;
-do not treat that surface as a Pack catalog, a Room creator, or the current
-Studio launch flow. The normal live Human path starts in Studio:
-**Open participant client** issues a short-lived one-use handoff, the selected
-client redeems it into a retained HttpOnly participant session, and the browser
-removes the handoff from the URL.
-
-The checked-in Host-local bindings expose:
-
-| Path | Surface | Selection |
-| --- | --- | --- |
-| `/agent-heist/` | Agent Heist Activity Client | Exact approved `worldstream.agent-heist` `0.1.0` or `0.2.0` binding |
-| `/negotiate/` | Negotiate Activity Client | Exact approved `worldstream.negotiate` `0.1.0` binding |
-| `/inspector/` | Pack-neutral WorldStream Inspector | Configured fallback when no specialized binding is eligible |
-
-The live Agent Heist and Negotiate clients start without Activity data and
-install only an authorized Projection Reset or Observation. They never overlay
-live data onto a recorded fixture. The Inspector displays the authorized
-generic Projection and Action Offers; it is a Pack-neutral fallback, not a
-Pack-defined experience.
-
-A direct application integration may instead use the protocol or an SDK with
-its own scoped Room authority. The bare-root fixture and historical
-direct-bootstrap paths remain compatibility/development surfaces, not
-Studio-selected Activity Clients and not the model for new integrations. See
-`web/console/src/participantHandoff.ts`, `web/console/src/liveSession.ts`,
-and the protocol documentation before integrating either boundary.
-
-Useful UI commands are:
-
-```sh
-pnpm activity-clients:verify
-pnpm ui:test
-pnpm ui:lint
-pnpm ui:build
-pnpm heist-client:build
-pnpm negotiate-client:build
-```
-
-The local Release manifests, Distributions, Deployments, Bindings, and trust
-semantics are documented in [Activity Clients](activity-clients.md). Local
-development Deployments are deliberately `externally_trusted`; the current
-workflow does not claim production attestation of the served bytes.
-
-## Explore Agent Heist
-
-Agent Heist is the visual demo and conformance Pack, not WorldStream's primary
-product application. It is useful because privacy, absent agents, timers,
-reconnect, and Replay are easy to see in one bounded story.
-
-### Open the recorded visual demo
-
-Start the public demo catalog with:
+### Open the demo
 
 ```sh
 pnpm demos:dev
 ```
 
-Open `http://127.0.0.1:5180/demos/agent-heist/`. This is a recorded,
-no-authority, no-network story. It reuses the Agent Heist presentation exported
-by the Activity Client package, but feeds it through a separate recorded
-adapter. It cannot redeem a handoff, attach to a Room, or submit an Action.
+Keep the command running. Open:
 
-### Run the offline story
+<http://127.0.0.1:5180/demos/agent-heist/>
 
-For a quick offline demo/conformance story that needs no daemon, database,
-browser, model, or network connection, run:
+You must see the Agent Heist board. Use its controls to inspect the recorded
+story.
 
-```sh
-uv run --project sdk/python --python 3.14.7 python examples/heist/run_story.py --self-test
-uv run --project sdk/python --python 3.14.7 python -m unittest discover -s examples/heist -p 'test_*.py'
-```
+This is not the Room from Section 3. It uses recorded safe data. It does not
+start the Runtime, create credentials, or send Actions to a server.
 
-This validates the deterministic retained Agent Heist 0.1.0 fixture and Replay
-corpus. It is intentionally not live service evidence.
+Stop the demo server with `Ctrl-C`.
 
-The selected `service_window` story has matching Navigator and Insider
-commitments. Its immutable enabled Agent Broker Membership submits no
-commitment. The result is therefore a strict two-of-three majority rather than
-a fabricated Broker Invocation.
+## 5. Optional: develop a browser Activity Client
 
-### Run the real-process MVP story
+First complete [browser tool preparation](#prepare-the-browser-tools-once).
+You do not need to run the recorded demo.
 
-The MVP uses the selectable Agent Heist 0.2.0 Lobby revision, not the retained
-0.1.0 offline fixture. Navigator and Insider are required, Broker is optional,
-and Studio submits the host-only `host_launch` external input only after the
-required seats are ready.
-
-The full acceptance starts disposable SQLite state and crosses the production
-daemon, Studio Supervisor, assignment MCP, Agent Heist Activity Client, HTTP,
-WebSocket, and stdio boundaries. It creates one reviewed Room with one Human
-Navigator and one external Agent Insider, explicitly launches it, restarts the
-assignment helper during an Activation lease, reaches a meaningful Outcome,
-and verifies the final committed lineage through Replay.
-
-Run the fast acceptance-report contract independently with:
+The Client Host is a local web server for independent Activity Clients. Start
+it with:
 
 ```sh
-uv run --project sdk/python --python 3.14.7 python -m unittest \
-  examples/heist/mvp_live/test_run_mvp_acceptance.py
+pnpm ui:dev
 ```
 
-The live path additionally requires the repository's exact pinned
-Chrome-for-Testing identity. Its complete setup and direct command are
-documented in
-[`mvp-agent-heist-acceptance.md`](mvp-agent-heist-acceptance.md). A missing
-browser, binary, loopback port, or proof produces a bounded blocked result; it
-is never reported as a completed MVP. Without `--live`, the acceptance runner
-only validates an already completed report; it does not create one.
+| Address | Client |
+| --- | --- |
+| `http://127.0.0.1:5173/agent-heist/` | Agent Heist |
+| `http://127.0.0.1:5173/negotiate/` | Negotiate |
+| `http://127.0.0.1:5173/inspector/` | Pack-neutral Inspector |
 
-## Build and prove WorldStream Negotiate
+Opening a URL does not create a Room or grant access. Without a participant
+session, the client waits for an authorized Projection. This is expected.
 
-`worldstream.negotiate` is the first serious official Pack and the reference
-for the public TypeScript Pack-authoring workflow. Its successful golden path
-uses exactly four Memberships—buyer agent, seller agent, Human buyer approver,
-and venue signer—and commits nine Actions with one mandatory persisted
-checkpoint:
+The current live browser clients use the Supervisor's session broker. A
+normal launch requires provisioned participant access and a one-use handoff.
+The new CLI launch command is not implemented yet. The current Studio form
+also cannot enter the complete Agent Heist configuration, so this is not a
+complete beginner path to a manual Heist session.
 
-`buyer proposal → seller counter → approval request → exact Human approval →
-[persisted restart and reconnect] → buyer acceptance → operated selection →
-buyer signature → seller signature → agreement commitment`.
+These browser clients remain part of WorldStream's ecosystem. Retiring
+Studio does not retire them. Stop the Client Host with `Ctrl-C`.
 
-Build the public Pack SDK/CLI and production operator CLI first, then check,
-test, build, inspect, and prove the Pack through that toolchain:
+## 6. Optional: use Studio during the transition
+
+Skip this section for the CLI path. Studio remains available while its
+replacement is built and verified. It is not required for Sections 2 or 3.
+It uses the same [browser tools](#prepare-the-browser-tools-once).
+
+Studio is the current administration website. Its Supervisor is a separate
+headless service with process, credential, setup, and browser-session
+functions. Removing the website will not mean deleting those functions.
+
+Make sure the foreground server from Section 2 is stopped. Then run:
 
 ```sh
-pnpm pack:build
-cargo build --locked -p worldstream-server --bin worldstreamctl
-pnpm --filter @worldstream/official-negotiate pack:check
-pnpm --filter @worldstream/official-negotiate pack:test
-pnpm --filter @worldstream/official-negotiate pack:build
-pnpm --filter @worldstream/official-negotiate pack:inspect
-WORLDSTREAM_PACK_HOST="$PWD/target/debug/worldstreamctl" \
-  pnpm --filter @worldstream/official-negotiate pack:prove
+pnpm studio:dev
 ```
 
-This authoring sequence writes and proves the mutable
-`worldstream-negotiate-candidate.wspack`. It never overwrites the retained,
-digest-named official release. Review the exact immutable release identity in
-[`packs/negotiate/README.md`](../packs/negotiate/README.md) before treating any
-bundle as an approved release subject.
+This starts the Supervisor at `http://127.0.0.1:9420` and Studio at
+`http://127.0.0.1:5174`. It builds the Runtime but does not start it.
 
-`pack:test` validates the TypeScript Pack against the independently authored,
-machine-readable oracle corpus, including restart behavior, semantic
-rejections, the six-persona visibility matrix, and all 30 ordered privacy
-mutations. Run the independent Rust oracle itself with:
+Open <http://127.0.0.1:5174/>. Select **Operations**, then **Start daemon**.
+Wait until it reports healthy and ready. Use Studio to inspect existing
+operator surfaces. Do not expect the current Room form to create a working
+Heist browser session.
 
-```sh
-cargo test --locked -p worldstream-negotiate-oracle --test conformance
-```
-
-`pack:prove` sends the generated WASI-free Component Bundle through the
-production Bundle Verifier, Component Host, and unchanged Core admission path.
-Run the offline evidence verifier separately:
-
-```sh
-cargo test --locked -p worldstream-negotiate-evidence --test offline
-```
-
-Together these commands prove deterministic Component execution, the
-independent semantic model, and offline proof verification. They do not claim
-a persisted live-Room daemon restart or production A202 conformance. The
-current immutable bundle identity and detailed scope are recorded in
-[`packs/negotiate/README.md`](../packs/negotiate/README.md), while
-[`negotiate.md`](negotiate.md) owns the normative behavior and compatibility
-boundary.
-
-These author commands also do not install a Pack into a Runtime. To make an
-exact reviewed bundle selectable, stop `worldstreamd` and use one configuration
-for the complete offline Host Operator lifecycle: inspect the bytes, approve
-them, install them retained-only, inspect inventory, set the physical bundle
-digest selectable, inspect inventory again, run `pack restart-readiness`, and
-only then restart the daemon. The exact commands and fail-closed storage rules
-are in [`activity-packs.md`](activity-packs.md#offline-operator-lifecycle).
-
-## Use the Python SDK
-
-The SDK is an asynchronous client for an already provisioned Room Membership:
-
-```python
-from worldstream_sdk import Client
-
-client = Client("http://127.0.0.1:9410", bearer)
-room = await client.open_room(room_id, member_id)
-
-for frame in await room.sync():
-    # Process the authorized frame durably before advancing its cursor.
-    await room.ack(frame["frame_seq"])
-```
-
-Run SDK commands through its locked environment:
-
-```sh
-uv run --project sdk/python --python 3.14.7 pytest
-uv run --project sdk/python --python 3.14.7 ruff check
-uv run --project sdk/python --python 3.14.7 ruff format --check
-```
-
-The bootstrap authority is not a participant session by itself. A live SDK or
-browser session also needs a Room, Membership, and appropriately scoped
-capability created through the authority API. The exact HTTP and WebSocket
-messages are documented in `docs/protocol.md`.
-
-## Test the repository
-
-Choose the smallest useful verification tier:
-
-### Fast local gate
-
-```sh
-scripts/gates.sh fast
-```
-
-This checks manifest/source drift, formatting, focused Rust lint and tests,
-lock resolution, goldens, and tracked-file secret patterns. The tier has a
-hard 60-second budget; a cold or slower checkout can time out while compiling,
-so use the component commands below when warming or diagnosing the workspace.
-
-### Real daemon smoke test
-
-```sh
-cargo build --locked -p worldstream-server --bins
-scripts/smoke-operator.sh
-```
-
-The smoke test creates temporary SQLite state and authority material, starts
-the real daemon, probes health/readiness/version, and removes its temporary
-files. On Linux, `scripts/restart-smoke.sh` additionally verifies a bounded
-stop/restart cycle.
-
-### Component suites
-
-```sh
-cargo test --workspace --locked
-uv run --project sdk/python --python 3.14.7 pytest
-pnpm ui:test
-```
-
-### Full checkout verification
-
-```sh
-scripts/verify-local.sh
-```
-
-This is the broad developer check. It enforces the exact tool versions, syncs
-locked dependencies, checks formatting and lint, builds and tests the Rust
-workspace, validates compatibility data, tests the Python SDK and UI, builds
-the UI, and runs the operator smoke test. Expect it to take substantially
-longer than the fast gate.
-
-The stricter pre-push gate is documented in `docs/gates.md`:
-
-```sh
-scripts/gates.sh pre-push --strict
-```
-
-## Reset local development state
-
-Stop the daemon first. If the local database is disposable, remove
-`.worldstream/` and repeat the secret-generation steps. Do not replace only
-the secret while keeping the database; that correctly fails authority
-bootstrap.
+To stop this stack, select **Stop daemon** first. Then press `Ctrl-C` in the
+Studio terminal. See [Studio](studio.md) for the existing interface.
 
 ## Common problems
 
-- **Pinned Python is missing:** let `uv sync --python 3.14.7` install or select
-  it instead of relying on an unrelated system `python3`.
-- **The port is already in use:** pass the same alternative bind to daemon and
-  control commands, for example `--bind 127.0.0.1:9510`.
-- **Studio Host authority startup fails:** restore access to the configured
-  owner-only bootstrap secret and the matching `.worldstream/studio/` state,
-  then restart. The Supervisor will not replace retained authority state.
-- **The bare Client Host shows the old fixture:** the root renderer remains a
-  compatibility/development path. It is not a Studio-launched client and does
-  not provision a Room or inject a capability. Use Studio's **Open participant
-  client** action for a live session, or open the recorded demo at port `5180`
-  for the no-authority story.
-- **Negotiate opens the generic Inspector:** the exact Pack identity or current
-  Membership did not match an enabled, ready Negotiate binding. Verify
-  `config/activity-clients/local-bindings.json`, the exact installed Pack
-  digest, Access Mode and Role, and Client Host readiness. The checked-in
-  Negotiate binding normally opens `/negotiate/`.
-- **A Negotiate `pack:*` command cannot find `worldstream-pack`:** run
-  `pnpm pack:build` from the repository root after the locked install.
-- **Negotiate proof cannot find `worldstreamctl`:** build the operator CLI with
-  `cargo build --locked -p worldstream-server --bin worldstreamctl`, then rerun
-  the proof with
-  `WORLDSTREAM_PACK_HOST="$PWD/target/debug/worldstreamctl"`. Filtered `pnpm`
-  scripts run from the Pack directory, so the host path must be absolute.
-- **Agent Heist live acceptance is blocked:** use the exact browser identity
-  inputs documented in `docs/mvp-agent-heist-acceptance.md`; a fixture browser
-  or an unpinned local Chrome does not satisfy the live gate.
-- **Studio cannot start on a fresh checkout:** build all
-  `worldstream-studio-supervisor` binaries first; the Supervisor requires the
-  fixed assignment MCP helper to exist.
-- **Studio shows the daemon as unavailable:** start it from Studio Operations,
-  or start `worldstreamd` separately with `config/development.toml`. Then check
-  `http://127.0.0.1:9410/healthz` and `/readyz`.
-- **Participant handoff is rejected:** confirm the Client Host is on port
-  `5173`, Studio is on `5174`, and the Supervisor was started with those
-  exact `--participant-console-origin` and `--studio-origin` values.
-- **A Studio or Supervisor port is already in use:** stop the previous
-  development process or choose new loopback ports and update the matching
-  Supervisor origin/bind arguments.
-- **A PostgreSQL or release check is incomplete:** install the optional tools
-  and provide the owner-only inputs described in `docs/gates.md` and
-  `docs/operator-storage.md`.
+### Existing state has no authority secret
+
+Stop. Do not generate a replacement secret or delete the database. Restore
+the original secret from your protected backup. The database is bound to that
+authority. If you cannot restore it, use the recovery documentation before
+you change local state.
+
+### The server cannot start
+
+Read the server terminal. Check that:
+
+- no other process uses port `9410`;
+- commands run from the repository root;
+- `config/development.toml` exists;
+- the authority secret and database belong to the same installation.
+
+If installed Bundles require a new restart-readiness check, follow
+[Activity Packs](activity-packs.md). Do not bypass that check or remove
+retained Bundles to make the server start.
+
+### The live Heist test shows no output
+
+Wait for the phase timers. A normal run takes about three minutes. Inspect
+`target/getting-started-heist.json` after the command ends.
+
+### The browser client waits for a Projection
+
+A direct client URL has no participant access. Use Section 4 for the recorded
+interface or Section 3 for a real automated Room.
+
+### Studio cannot create an Agent Heist Room
+
+The current form does not support all fixed and list-valued configuration
+fields. This is a known product limit, not a local setup error. The CLI-first
+replacement is pending; repeatedly entering values will not fix the form.
+
+### A tool has the wrong version
+
+Use the versions in Section 1. Open a new terminal after a version manager
+changes your `PATH`. Then run the version checks again.
+
+## Keep local state safe
+
+Stop the process with the tool that started it: `Ctrl-C` for a foreground
+daemon, or **Stop daemon** for a Studio-managed daemon. Stop each development
+web server separately.
+
+The `.worldstream/` directory contains the local database, authority data,
+and any Supervisor state. Keep it to continue the same installation.
+Removing Studio's web app must not remove this directory.
+
+Do not delete local state as a routine troubleshooting step. See
+[Operator storage and transfer](operator-storage.md) for backup and recovery.
+
+## Continue with one subject
+
+| Task | Guide |
+| --- | --- |
+| Understand the CLI-first replacement and pending work | [Implementation plan](cli-first-implementation-plan.md) |
+| Approve and install an exact Pack Bundle | [Activity Packs](activity-packs.md) |
+| Build the Negotiate Activity Pack | [Negotiate Pack README](../packs/negotiate/README.md) |
+| Build a client or understand handoffs | [Activity Clients](activity-clients.md) |
+| Use the Python SDK | [Python SDK README](../sdk/python/README.md) |
+| Understand HTTP and WebSocket messages | [Protocol](protocol.md) |
+| Select a test or release gate | [Automated gates](gates.md) |

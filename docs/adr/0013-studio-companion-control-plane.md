@@ -4,6 +4,11 @@ Date: 2026-08-23
 
 Status: Accepted
 
+The permanent Studio web product choice is conditionally superseded by
+[ADR 0018](0018-cli-first-operator-surface.md). Studio remains available until
+the CLI replacement passes its retirement gate. The Supervisor and Runtime
+authority boundaries below remain in force.
+
 ## Context
 
 ADR 0001 deferred broad task-management and general operator UI work until the

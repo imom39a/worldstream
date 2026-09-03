@@ -1,0 +1,214 @@
+{
+  "baseline": "1d8e6dc485c013ee36f350d982115a900ca56107",
+  "fixtures": [
+    {
+      "args": [
+        "config",
+        "validate"
+      ],
+      "stdout": "Strictly parse, layer, and validate configuration\n\nUsage: worldstreamctl config validate [OPTIONS]\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "config",
+        "effective"
+      ],
+      "stdout": "Print effective configuration with every secret reference redacted\n\nUsage: worldstreamctl config effective [OPTIONS]\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "doctor"
+      ],
+      "stdout": "Run bounded local config, manifest, and data-path checks\n\nUsage: worldstreamctl doctor [OPTIONS]\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "health"
+      ],
+      "stdout": "Probe the configured daemon's process-liveness endpoint\n\nUsage: worldstreamctl health [OPTIONS]\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "version"
+      ],
+      "stdout": "Print the embedded compatibility summary\n\nUsage: worldstreamctl version [OPTIONS]\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "inspect"
+      ],
+      "stdout": "Fully verify and describe one untrusted local `.wspack` candidate\n\nUsage: worldstreamctl pack inspect [OPTIONS] --bundle <FILE>\n\nOptions:\n      --bundle <FILE>              Existing local `.wspack` candidate\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "prove"
+      ],
+      "stdout": "Prove one bundle through the production verifier, Component Host, and Core registry\n\nUsage: worldstreamctl pack prove [OPTIONS] <BUNDLE>\n\nArguments:\n  <BUNDLE>  Existing local `.wspack` candidate\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --json                       Emit the frozen machine-readable proof document\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "approve"
+      ],
+      "stdout": "Record explicit target-local approval for the candidate's exact bytes\n\nUsage: worldstreamctl pack approve [OPTIONS] --bundle <FILE> --operator-id <OPERATOR_ID> --decided-at <DECIDED_AT>\n\nOptions:\n      --bundle <FILE>              Existing local `.wspack` candidate\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --operator-id <OPERATOR_ID>  Stable non-secret Host Operator identifier\n      --decided-at <DECIDED_AT>    Explicit RFC 3339 decision time; the CLI never consults an ambient clock\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "revoke"
+      ],
+      "stdout": "Revoke local approval and retain the installed revision for old Rooms\n\nUsage: worldstreamctl pack revoke [OPTIONS] --bundle-digest <BUNDLE_DIGEST> --operator-id <OPERATOR_ID> --decided-at <DECIDED_AT>\n\nOptions:\n      --bundle-digest <BUNDLE_DIGEST>  Exact physical BLAKE3 bundle digest, including the `blake3:` prefix\n      --config <FILE>                  One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>                 Operator listener override\n      --operator-id <OPERATOR_ID>      Stable non-secret Host Operator identifier\n      --decided-at <DECIDED_AT>        Explicit RFC 3339 decision time\n      --storage-profile <PROFILE>      Startup-fixed storage profile override\n      --data-dir <DIRECTORY>           WorldStream-owned runtime directory override\n  -h, --help                           Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "install"
+      ],
+      "stdout": "Install an already-approved candidate as retained-only inventory\n\nUsage: worldstreamctl pack install [OPTIONS] --bundle <FILE> --installed-at <INSTALLED_AT>\n\nOptions:\n      --bundle <FILE>                Existing local `.wspack` candidate\n      --config <FILE>                One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>               Operator listener override\n      --installed-at <INSTALLED_AT>  Explicit RFC 3339 installation time\n      --storage-profile <PROFILE>    Startup-fixed storage profile override\n      --data-dir <DIRECTORY>         WorldStream-owned runtime directory override\n  -h, --help                         Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "inventory"
+      ],
+      "stdout": "List the complete bounded, fully reverified local inventory\n\nUsage: worldstreamctl pack inventory [OPTIONS]\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "set-selectable"
+      ],
+      "stdout": "Change new-Room selectability for the next daemon startup\n\nUsage: worldstreamctl pack set-selectable [OPTIONS] --bundle-digest <BUNDLE_DIGEST> --selectable <SELECTABLE>\n\nOptions:\n      --bundle-digest <BUNDLE_DIGEST>  Exact physical BLAKE3 bundle digest, including the `blake3:` prefix\n      --config <FILE>                  One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>                 Operator listener override\n      --selectable <SELECTABLE>        Whether new Rooms may select this revision after daemon restart [possible values: true, false]\n      --storage-profile <PROFILE>      Startup-fixed storage profile override\n      --data-dir <DIRECTORY>           WorldStream-owned runtime directory override\n  -h, --help                           Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "restart-readiness"
+      ],
+      "stdout": "Rebuild the production startup registry without serving traffic\n\nUsage: worldstreamctl pack restart-readiness [OPTIONS]\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --dsn-file <FILE>            Owner-only direct-admin DSN file required only for `PostgreSQL` Room Replay preflight. `SQLite` uses the configured local database path\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "export"
+      ],
+      "stdout": "Export the exact original archive without local approval state\n\nUsage: worldstreamctl pack export [OPTIONS] --bundle-digest <BUNDLE_DIGEST> --output <FILE>\n\nOptions:\n      --bundle-digest <BUNDLE_DIGEST>  Exact physical BLAKE3 bundle digest, including the `blake3:` prefix\n      --config <FILE>                  One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>                 Operator listener override\n      --output <FILE>                  New owner-only output file; existing paths are refused\n      --storage-profile <PROFILE>      Startup-fixed storage profile override\n      --data-dir <DIRECTORY>           WorldStream-owned runtime directory override\n  -h, --help                           Print help\n"
+    },
+    {
+      "args": [
+        "pack",
+        "remove"
+      ],
+      "stdout": "Remove an exact bundle only after a complete retained-Room proof\n\nUsage: worldstreamctl pack remove [OPTIONS] --bundle-digest <BUNDLE_DIGEST> --operator-id <OPERATOR_ID> --removed-at <REMOVED_AT>\n\nOptions:\n      --bundle-digest <BUNDLE_DIGEST>  Exact physical BLAKE3 bundle digest, including the `blake3:` prefix\n      --config <FILE>                  One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>                 Operator listener override\n      --operator-id <OPERATOR_ID>      Stable non-secret Host Operator identifier\n      --removed-at <REMOVED_AT>        Explicit RFC 3339 removal time\n      --storage-profile <PROFILE>      Startup-fixed storage profile override\n      --data-dir <DIRECTORY>           WorldStream-owned runtime directory override\n      --dsn-file <FILE>                Owner-only direct-admin DSN file, required only for `PostgreSQL` profile\n  -h, --help                           Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "migrate"
+      ],
+      "stdout": "Apply forward-only migrations through a direct admin connection\n\nUsage: worldstreamctl postgres migrate [OPTIONS] --dsn-file <FILE>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --dsn-file <FILE>            Owner-only file containing the direct-admin DSN. The value is never accepted as a command-line argument or printed in diagnostics\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "verify"
+      ],
+      "stdout": "Verify the `PostgreSQL` engine and reviewed migration/schema contract\n\nUsage: worldstreamctl postgres verify [OPTIONS] --dsn-file <FILE>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --dsn-file <FILE>            Owner-only file containing the direct-admin DSN. The value is never accepted as a command-line argument or printed in diagnostics\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "sqlite",
+        "verify"
+      ],
+      "stdout": "Run the native verifier only; this does not assert restore readiness\n\nUsage: worldstreamctl sqlite verify [OPTIONS] --database <FILE>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --database <FILE>            Bundled-SQLite database to verify read-only\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "sqlite",
+        "backup"
+      ],
+      "stdout": "Create a native backup plus a sealed full-verifier companion envelope\n\nUsage: worldstreamctl sqlite backup [OPTIONS] --database <FILE> --output <FILE> --companion <FILE> --envelope <FILE>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --database <FILE>            Source bundled-SQLite database\n      --bind <ADDRESS>             Operator listener override\n      --output <FILE>              New immutable backup destination. Existing paths are refused\n      --companion <FILE>           Canonical owner-only envelope template containing the companion facts that `SQLite` intentionally does not persist\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n      --envelope <FILE>            New owner-only sealed envelope destination. Existing paths are refused\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "sqlite",
+        "restore"
+      ],
+      "stdout": "Restore an exact backup and require its full-verifier envelope\n\nUsage: worldstreamctl sqlite restore [OPTIONS] --backup <FILE> --database <FILE> --envelope <FILE>\n\nOptions:\n      --backup <FILE>              Source native `SQLite` backup\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --database <FILE>            New restored database destination. Existing paths are refused\n      --envelope <FILE>            Exact owner-only sealed envelope published with the native backup\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "snapshots",
+        "rebuild"
+      ],
+      "stdout": "Rebuild disposable snapshots for every healthy Room\n\nUsage: worldstreamctl postgres snapshots rebuild [OPTIONS] --host <HOST> --port <PORT> --database <DATABASE> --username <USERNAME> --tls-mode <TLS_MODE> --passfile <FILE>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --host <HOST>                \n      --bind <ADDRESS>             Operator listener override\n      --port <PORT>                \n      --database <DATABASE>        \n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n      --username <USERNAME>        \n      --tls-mode <TLS_MODE>        \n      --passfile <FILE>            Owner-only libpq passfile. Credential bytes are never accepted in argv\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "native",
+        "directory-identity"
+      ],
+      "stdout": "Observe the exact protected artifact-directory identity for admission\n\nUsage: worldstreamctl postgres native directory-identity [OPTIONS] --path <DIR>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --path <DIR>                 Existing owner-only dump/report/journal directory\n      --bind <ADDRESS>             Operator listener override\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "native",
+        "restore"
+      ],
+      "stdout": "Create, restore, verify, and durably report one native backup point\n\nUsage: worldstreamctl postgres native restore [OPTIONS] --source-host <SOURCE_HOST> --source-port <SOURCE_PORT> --source-database <SOURCE_DATABASE> --source-username <SOURCE_USERNAME> --source-tls-mode <SOURCE_TLS_MODE> --target-host <TARGET_HOST> --target-port <TARGET_PORT> --target-database <TARGET_DATABASE> --target-username <TARGET_USERNAME> --target-tls-mode <TARGET_TLS_MODE> --passfile <FILE> --pg-dump <FILE> --pg-restore <FILE> --psql <FILE> --dump <FILE> --report <FILE> --artifact-directory-storage-id <HEX> --artifact-directory-file-id <HEX>\n\nOptions:\n      --config <FILE>\n          One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --source-host <SOURCE_HOST>\n          \n      --bind <ADDRESS>\n          Operator listener override\n      --source-port <SOURCE_PORT>\n          \n      --source-database <SOURCE_DATABASE>\n          \n      --storage-profile <PROFILE>\n          Startup-fixed storage profile override\n      --data-dir <DIRECTORY>\n          WorldStream-owned runtime directory override\n      --source-username <SOURCE_USERNAME>\n          \n      --source-tls-mode <SOURCE_TLS_MODE>\n          \n      --target-host <TARGET_HOST>\n          \n      --target-port <TARGET_PORT>\n          \n      --target-database <TARGET_DATABASE>\n          \n      --target-username <TARGET_USERNAME>\n          \n      --target-tls-mode <TARGET_TLS_MODE>\n          \n      --passfile <FILE>\n          Owner-only libpq passfile containing source and target credentials\n      --pg-dump <FILE>\n          \n      --pg-restore <FILE>\n          \n      --psql <FILE>\n          \n      --dump <FILE>\n          New provider custom-format dump path\n      --report <FILE>\n          New durable canonical Ready report path\n      --artifact-directory-storage-id <HEX>\n          Fixed-width lowercase hexadecimal filesystem/volume identity\n      --artifact-directory-file-id <HEX>\n          Fixed-width lowercase hexadecimal inode/full file identity\n      --timeout-seconds <TIMEOUT_SECONDS>\n          [default: 1200]\n  -h, --help\n          Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "native",
+        "recover"
+      ],
+      "stdout": "Repair one interrupted restore from its exact durable recovery journal\n\nUsage: worldstreamctl postgres native recover [OPTIONS] --target-host <TARGET_HOST> --target-port <TARGET_PORT> --target-database <TARGET_DATABASE> --target-username <TARGET_USERNAME> --target-tls-mode <TARGET_TLS_MODE> --passfile <FILE> --recovery <FILE> --recovery-storage-id <HEX> --recovery-file-id <HEX> --artifact-directory-storage-id <HEX> --artifact-directory-file-id <HEX>\n\nOptions:\n      --config <FILE>\n          One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --target-host <TARGET_HOST>\n          \n      --bind <ADDRESS>\n          Operator listener override\n      --target-port <TARGET_PORT>\n          \n      --storage-profile <PROFILE>\n          Startup-fixed storage profile override\n      --target-database <TARGET_DATABASE>\n          \n      --data-dir <DIRECTORY>\n          WorldStream-owned runtime directory override\n      --target-username <TARGET_USERNAME>\n          \n      --target-tls-mode <TARGET_TLS_MODE>\n          \n      --passfile <FILE>\n          Fresh owner-only libpq passfile used only for target repair\n      --recovery <FILE>\n          Exact owner-only append-only recovery journal\n      --recovery-storage-id <HEX>\n          Fixed-width lowercase hexadecimal filesystem/volume identity of the journal\n      --recovery-file-id <HEX>\n          Fixed-width lowercase hexadecimal inode/full file identity of the journal\n      --artifact-directory-storage-id <HEX>\n          Fixed-width lowercase hexadecimal filesystem/volume identity\n      --artifact-directory-file-id <HEX>\n          Fixed-width lowercase hexadecimal inode/full file identity\n      --timeout-seconds <TIMEOUT_SECONDS>\n          [default: 1200]\n  -h, --help\n          Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "transfer",
+        "begin"
+      ],
+      "stdout": "Freeze `SQLite` and persist its verified backup, bundle, and checkpoint\n\nUsage: worldstreamctl postgres transfer begin [OPTIONS] --sqlite <FILE> --backup <FILE> --bundle <FILE> --state-dir <DIR> --transfer-id <ID>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --sqlite <FILE>              Authoritative bundled-SQLite database while serving is stopped\n      --backup <FILE>              New native backup path, directly inside the owner-only state directory\n      --bind <ADDRESS>             Operator listener override\n      --bundle <FILE>              New deterministic bundle path, directly inside the state directory\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n      --state-dir <DIR>            Dedicated owner-only transfer state directory\n      --transfer-id <ID>           Stable non-secret identifier embedded in the deterministic bundle\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "transfer",
+        "resume"
+      ],
+      "stdout": "Apply remaining bounded chunks while both backends remain fenced\n\nUsage: worldstreamctl postgres transfer resume [OPTIONS] --sqlite <FILE> --bundle <FILE> --state-dir <DIR> --dsn-file <FILE>\n\nOptions:\n      --config <FILE>                  One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --sqlite <FILE>                  Frozen bundled-SQLite source database\n      --bind <ADDRESS>                 Operator listener override\n      --bundle <FILE>                  Exact deterministic bundle inside the owner-only state directory\n      --state-dir <DIR>                Dedicated owner-only transfer state directory\n      --storage-profile <PROFILE>      Startup-fixed storage profile override\n      --data-dir <DIRECTORY>           WorldStream-owned runtime directory override\n      --dsn-file <FILE>                Owner-only file containing the direct-admin DSN. The value is never accepted as a command-line argument or printed in diagnostics\n      --chunk-records <CHUNK_RECORDS>  Maximum logical records in one durable destination transaction [default: 64]\n  -h, --help                           Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "transfer",
+        "finalize"
+      ],
+      "stdout": "Explicitly verify the target and perform the authority handoff\n\nUsage: worldstreamctl postgres transfer finalize [OPTIONS] --sqlite <FILE> --bundle <FILE> --state-dir <DIR> --dsn-file <FILE>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --sqlite <FILE>              Frozen bundled-SQLite source database\n      --bind <ADDRESS>             Operator listener override\n      --bundle <FILE>              Exact deterministic bundle inside the owner-only state directory\n      --state-dir <DIR>            Dedicated owner-only transfer state directory\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n      --dsn-file <FILE>            Owner-only file containing the direct-admin DSN. The value is never accepted as a command-line argument or printed in diagnostics\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "transfer",
+        "abort"
+      ],
+      "stdout": "Discard the incomplete target before restoring `SQLite` authority\n\nUsage: worldstreamctl postgres transfer abort [OPTIONS] --sqlite <FILE> --bundle <FILE> --state-dir <DIR> --dsn-file <FILE>\n\nOptions:\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --sqlite <FILE>              Frozen bundled-SQLite source database\n      --bind <ADDRESS>             Operator listener override\n      --bundle <FILE>              Exact deterministic bundle inside the owner-only state directory\n      --state-dir <DIR>            Dedicated owner-only transfer state directory\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n      --data-dir <DIRECTORY>       WorldStream-owned runtime directory override\n      --dsn-file <FILE>            Owner-only file containing the direct-admin DSN. The value is never accepted as a command-line argument or printed in diagnostics\n  -h, --help                       Print help\n"
+    },
+    {
+      "args": [
+        "postgres",
+        "transfer",
+        "restore-packs"
+      ],
+      "stdout": "Restore transfer-carried portable Packs as target-local retained-only inventory. A separate local approval and daemon restart are required\n\nUsage: worldstreamctl postgres transfer restore-packs [OPTIONS] --bundle <FILE> --data-dir <DIR>\n\nOptions:\n      --bundle <FILE>              Exact owner-only deterministic transfer bundle\n      --config <FILE>              One explicit versioned TOML file. Overrides `WORLDSTREAM_CONFIG`\n      --bind <ADDRESS>             Operator listener override\n      --data-dir <DIR>             Target `WorldStream` data directory that owns `activity-packs/`\n      --storage-profile <PROFILE>  Startup-fixed storage profile override\n  -h, --help                       Print help\n"
+    }
+  ]
+}

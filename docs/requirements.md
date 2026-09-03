@@ -265,6 +265,16 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 
 ### FR-9: Reference user interface
 
+The accepted [CLI-first transition](adr/0018-cli-first-operator-surface.md)
+makes the operator CLI the target primary administration interface. Studio
+MUST remain available until a new developer can complete a live Heist Room
+flow without it, including participant and agent setup, with generic setup
+also checked against Negotiate. Studio-specific interface obligations below
+apply during the transition; they retire with the verified replacement.
+Independent Activity Client and authority requirements do not retire. The
+current release inventory remains unchanged until its replacement is
+specified and verified.
+
 - The server MUST be usable without the web UI.
 - The first-party UI MUST consume only authorized public, participant, or operator projections.
 - Studio MUST guide exact bundle inspection/approval/install/restart readiness, schema-driven Genesis configuration, Membership/handoff creation, opaque Runner credential references, diagnostics, Replay, evidence export, and launch of a compatible Activity Client without becoming a Participant, Pack-specific participant renderer, or rules engine.
@@ -274,6 +284,51 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 - A live Activity Client MUST initialize from no Activity data and atomically install authorized Projection Reset/Observation data. It MUST NOT merge live state onto recorded fixture data or expose another Access Mode or Role through client-side view switching.
 - The UI MUST submit the same typed commands as another client and MUST NOT enforce server authorization by itself.
 - Runtime LLM-generated UI, arbitrary Pack JavaScript, automatic third-party Client Deployment, a client marketplace, and a general View Pack ABI are deferred. The independent Activity Client Release, Distribution, Deployment, Binding, and conformance contracts are frozen by ADR 0017.
+
+#### CLI-first replacement obligations
+
+These are accepted requirements for the replacement under ADR 0018, not
+claims that the commands already exist.
+
+- The operator CLI MUST extend `worldstreamctl`, preserve existing command,
+  receipt, and wire-format compatibility, and retain existing state locations.
+  New commands MUST provide readable and explicit machine-readable output;
+  noninteractive operation MUST NOT wait for hidden prompts or infer approval.
+- Room setup MUST use one versioned, schema-validated JSON Room Setup
+  Specification. It MUST supply declared fixed/default values, reject
+  conflicting explicit values, and keep secrets and approvals outside that
+  input. A Room Setup Operation MUST retain resolved immutable intent before
+  mutations and resume that intent without silently creating another Room.
+- Managed operations MUST use a bounded headless Supervisor for one local OS
+  owner, with authenticated loopback control and a separate protected control
+  credential. Every privileged operator entry point MUST enforce admission;
+  legacy routes MUST NOT bypass it. Browser and daemon authority remain
+  separate. Authentication hardening intentionally changes admission, not
+  accepted wire payload shapes.
+- Read-only commands MUST NOT start processes. Managed start MUST be
+  explicit. Managed stop MUST stop owned managed Runners before gracefully
+  stopping the Runtime, without killing external processes. Controller-only
+  shutdown MUST NOT request Runtime shutdown. Healthy Runtime survival MUST
+  NOT imply browser-session or model-process continuity. Unproved ownership
+  MUST block unsafe control and duplicate startup.
+- Managed restart MUST record the previously running managed Runner set and
+  restore only those assignments that remain approved, compatible, and
+  eligible. It MUST NOT start external or previously inactive Runners.
+  Failed restoration MUST produce an explicit partial result, not a claim
+  that the entire restart succeeded or model process memory was restored.
+- Launch readiness MUST distinguish authority/provisioning, observed
+  Membership connection evidence, eligible Runner availability, and explicit
+  operator confirmation. It MUST be client-neutral and operational, not
+  canonical Room state or a private Projection. Optional seats need not block
+  launch; confirmation MUST NOT bypass authorization or Pack legality.
+- Setup MUST preserve the exact Pack's start behavior. The Heist 0.2.0
+  beginner flow uses its declared lobby; Negotiate retains start-at-creation
+  semantics. The migration MUST NOT add a generic pause or rewrite retained
+  Pack rules.
+- Studio retirement MUST preserve independent clients and headless state,
+  replace required entry-point tests, and update the closed release inventory
+  with historical verification retained. An insecure legacy-route bypass or
+  broken sole supported flow MUST NOT be published as a transition strategy.
 
 ### FR-10: Developer experience
 

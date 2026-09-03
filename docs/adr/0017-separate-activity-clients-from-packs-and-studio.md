@@ -5,6 +5,12 @@ date: 2026-09-01
 
 # Separate Activity Clients from Packs and Studio
 
+[ADR 0018](0018-cli-first-operator-surface.md) replaces the permanent Studio
+operator-web-product commitment with a gated CLI-first transition. The
+independent Activity Client, Pack, authorization, and binding contracts in
+this decision remain in force. Studio is not removed until its replacement
+is verified.
+
 ## Context
 
 WorldStream already keeps `worldstreamd` authoritative and Activity Pack

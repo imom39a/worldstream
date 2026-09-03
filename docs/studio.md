@@ -1,5 +1,12 @@
 # WorldStream Studio
 
+Studio is a transitional operator interface. The accepted
+[CLI-first direction](adr/0018-cli-first-operator-surface.md) retires the web
+app after its replacement is verified, not the headless Supervisor or
+independent Activity Clients. The commands and behavior below still describe
+the current implementation. For the command-line starting point, use
+[Getting started](getting-started.md).
+
 WorldStream Studio is the local host-operator portal. It is a companion control
 plane, not an Activity Client, and `worldstreamd` remains the only authoritative
 Room runtime. Studio may open an exact compatible participant client through a

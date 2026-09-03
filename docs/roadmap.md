@@ -1,5 +1,19 @@
 # Runtime-plus-Packs Delivery Roadmap
 
+## Accepted operator-interface transition
+
+[ADR 0018](adr/0018-cli-first-operator-surface.md) makes the operator CLI the
+primary direction and freezes new Studio web features. Deliver server,
+configuration, and Pack commands first, then a complete Heist Room setup and
+participation flow without Studio. Check the generic setup with Negotiate
+before retiring the web app. Keep reusable headless services and independent
+Activity Clients. The [implementation plan](cli-first-implementation-plan.md)
+collects the approved Q1–Q18 contract and final command/migration details.
+The [ticket plan](cli-first-ticket-plan.md) orders implementation and verification.
+The [decision record](cli-first-operator-proposal.md)
+retains the source audit. Later Studio milestones below are transitional,
+not a commitment to maintain a second administration product indefinitely.
+
 ## Goal
 
 Ship WorldStream as a self-hosted Room Runtime with one adoptable public

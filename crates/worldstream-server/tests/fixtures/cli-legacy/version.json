@@ -1,0 +1,99 @@
+{
+  "schema": "worldstream/storage-compatibility-manifest/v1",
+  "revision": 1,
+  "kind": "specification",
+  "release_ready": false,
+  "contracts": {
+    "product": "0.1.0",
+    "wire": "0.1",
+    "config": 1,
+    "storage_schema": 1,
+    "core_schema_version": "worldstream.core-room-state.v1",
+    "hash_suite": "blake3-canonical-json-v1"
+  },
+  "rust_toolchain": "1.97.1",
+  "rust_edition": "2024",
+  "sqlite_version": "3.53.4",
+  "postgresql_major": 17,
+  "postgresql_minimum_patch": "17.11",
+  "pack_executors": [
+    {
+      "pack_id": "worldstream.counter",
+      "explanatory_version": "1.0.0",
+      "revision_digest": "blake3:4d4b6089923243bcb9c32a77c892d12364403aeab21c00c254ea166f1e24e343",
+      "selectable_for_new_rooms": false,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    },
+    {
+      "pack_id": "worldstream.counter",
+      "explanatory_version": "2.0.0",
+      "revision_digest": "blake3:1c5f75068220f65f9017a062dbe40203c540108b572284d9446a329914008a92",
+      "selectable_for_new_rooms": false,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    },
+    {
+      "pack_id": "worldstream.counter",
+      "explanatory_version": "3.0.0",
+      "revision_digest": "blake3:7572a62b364fb9c88c02d79c85efba9e5b9cef22211da4a66827f64704970a55",
+      "selectable_for_new_rooms": false,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    },
+    {
+      "pack_id": "worldstream.counter",
+      "explanatory_version": "4.0.0",
+      "revision_digest": "blake3:2a1d2e493cbaffa3803724dfef42d35c167db2237aa9b1e113dfb79679e9c052",
+      "selectable_for_new_rooms": false,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    },
+    {
+      "pack_id": "worldstream.agent-heist",
+      "explanatory_version": "0.0.1",
+      "revision_digest": "blake3:ee454c4d00357c70fcc9eeac5eb9782ef4317563d5eac24b59440c2e90bc595f",
+      "selectable_for_new_rooms": false,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    },
+    {
+      "pack_id": "worldstream.agent-heist",
+      "explanatory_version": "0.1.0",
+      "revision_digest": "blake3:b05a682f0923001914a800072ee68348e68b979453c93e033cba7916b99a4407",
+      "selectable_for_new_rooms": true,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    },
+    {
+      "pack_id": "worldstream.agent-heist",
+      "explanatory_version": "0.2.0",
+      "revision_digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820",
+      "selectable_for_new_rooms": true,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    },
+    {
+      "pack_id": "worldstream.negotiate",
+      "explanatory_version": "0.1.0",
+      "revision_digest": "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+      "selectable_for_new_rooms": true,
+      "runnable_for_retained_rooms": true,
+      "status": "resolved",
+      "required_for_release": true
+    }
+  ],
+  "product_build": {
+    "product": "0.1.0",
+    "binary": "worldstreamctl",
+    "build_version": "0.1.0",
+    "source_revision": "<build-revision>"
+  }
+}
