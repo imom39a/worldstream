@@ -2,7 +2,13 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
-use worldstream_runtime::{CliOverrides, ConfigError, ConfigLoader};
+#[cfg(not(feature = "cli-operator-preview"))]
+use worldstream_runtime::ConfigError;
+use worldstream_runtime::{CliOverrides, ConfigLoader};
+#[cfg(not(feature = "cli-operator-preview"))]
+use worldstream_studio_supervisor::startup_authority::{
+    bootstrap_source_for_local_development, establish_host_authority_reference,
+};
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
@@ -31,9 +37,6 @@ use worldstream_studio_supervisor::{
     },
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretReferenceV1},
-    startup_authority::{
-        bootstrap_source_for_local_development, establish_host_authority_reference,
-    },
     supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_templates_and_model_provider_credentials,
     task_setup::{
         CatalogTaskLaunchApplicabilitySourceV1, FileAssignedMembershipSourceV1,
@@ -41,6 +44,12 @@ use worldstream_studio_supervisor::{
         TaskSetupSupervisorV1,
     },
     task_templates::{InstalledTaskTemplateDependenciesV1, TaskTemplateStoreV1},
+};
+#[cfg(feature = "cli-operator-preview")]
+use worldstream_studio_supervisor::{
+    client_bindings::ClientDeploymentTrustPolicyV1, control_access::ControlAccess,
+    control_admission::protect_operator_routes, local_initialization::validate_initialized,
+    startup_authority::validate_existing_host_authority,
 };
 
 #[derive(Debug, Parser)]
@@ -50,6 +59,11 @@ use worldstream_studio_supervisor::{
     about = "Local bounded Supervisor for WorldStream Studio"
 )]
 struct Args {
+    /// Assert this binary supports operator control; preview always enforces it.
+    #[cfg(feature = "cli-operator-preview")]
+    #[arg(long = "require-operator-control", hide = true)]
+    _require_operator_control: bool,
+
     /// Studio Supervisor API listener.
     #[arg(long, default_value = "127.0.0.1:9420")]
     bind: SocketAddr,
@@ -87,10 +101,12 @@ struct Args {
     host_authority_reference: Option<SecretReferenceV1>,
 
     /// Owner-controlled directory of approved Runner Template manifests.
+    #[cfg(not(feature = "cli-operator-preview"))]
     #[arg(long, default_value = "config/runner-templates")]
     runner_templates_dir: PathBuf,
 
     /// Owner-controlled directory of named protected model-provider credentials.
+    #[cfg(not(feature = "cli-operator-preview"))]
     #[arg(long, default_value = "config/model-provider-credentials")]
     model_provider_credentials_dir: PathBuf,
 
@@ -107,6 +123,7 @@ struct Args {
     participant_console_origin: String,
 
     /// Operator-controlled Activity Client release and local binding declarations.
+    #[cfg(not(feature = "cli-operator-preview"))]
     #[arg(long, default_value = "config/activity-clients")]
     activity_clients_dir: PathBuf,
 }
@@ -115,8 +132,44 @@ struct Args {
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let mut bootstrap_source = None;
-    let daemon_effective =
+
+    // This temporary compile-time branch is removed with the Studio cutover.
+    // There is no runtime flag which disables operator admission in preview.
+    #[cfg(feature = "cli-operator-preview")]
+    let (daemon_effective, control, vault, host_authority_reference) = {
+        if !args.bind.ip().is_loopback() || args.bind.port() == 0 {
+            anyhow::bail!("operator control requires a loopback address and nonzero port");
+        }
+        let loader =
+            ConfigLoader::from_process(Some(args.daemon_config.clone()), CliOverrides::default())
+                .map_err(|_| {
+                anyhow::anyhow!("controlled worldstreamd configuration could not be selected")
+            })?;
+        let effective = validate_initialized(&loader, &args.state_dir)
+            .context("explicit local initialization is required before operator startup")?;
+        let control = ControlAccess::open(&args.state_dir)
+            .context("protected local operator control is unavailable")?;
+        let vault = FileSecretVaultV1::open_existing(&args.state_dir.join("secrets"))
+            .context("retained protected secret backend is unavailable")?;
+        let reference = validate_existing_host_authority(
+            &args.state_dir,
+            effective.authority.bootstrap_secret.as_ref(),
+        )
+        .context("retained Host authority is unavailable")?;
+        if args
+            .host_authority_reference
+            .as_ref()
+            .is_some_and(|supplied| supplied != &reference)
+        {
+            anyhow::bail!("configured Host authority does not match the initialized installation");
+        }
+        (effective, control, vault, reference)
+    };
+
+    #[cfg(not(feature = "cli-operator-preview"))]
+    let (daemon_effective, bootstrap_source) = {
+        let mut bootstrap_source = None;
+        let daemon_effective =
         ConfigLoader::from_process(Some(args.daemon_config.clone()), CliOverrides::default())
             .context("controlled worldstreamd configuration could not be selected")?
             .load_with_bootstrap_preparation(|effective| {
@@ -136,8 +189,10 @@ async fn main() -> Result<()> {
                 Ok(())
             })
             .context("controlled worldstreamd configuration is invalid")?;
-    let bootstrap_source = bootstrap_source
-        .context("Studio Supervisor bootstrap authority preparation did not select a source")?;
+        let bootstrap_source = bootstrap_source
+            .context("Studio Supervisor bootstrap authority preparation did not select a source")?;
+        (daemon_effective, bootstrap_source)
+    };
     let backup_root = prepare_shared_backup_root(
         &args.state_dir,
         &daemon_effective.storage.data_dir,
@@ -148,8 +203,10 @@ async fn main() -> Result<()> {
         )
     })?;
     let daemon_timeout = Duration::from_millis(args.probe_timeout_ms);
+    #[cfg(not(feature = "cli-operator-preview"))]
     let vault = FileSecretVaultV1::open(&args.state_dir.join("secrets"))
         .context("Studio Supervisor protected secret backend is unavailable")?;
+    #[cfg(not(feature = "cli-operator-preview"))]
     let host_authority_reference = establish_host_authority_reference(
         &args.state_dir,
         &vault,
@@ -173,20 +230,33 @@ async fn main() -> Result<()> {
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let runner_registry = RunnerTemplateRegistryV1::open_installed(
+        &args.state_dir.join("runner-templates/installed"),
+    );
+    #[cfg(not(feature = "cli-operator-preview"))]
     let runner_registry = RunnerTemplateRegistryV1::open(
         &args.state_dir.join("runner-templates/installed"),
         &args.runner_templates_dir,
-    )
-    .context("Studio Supervisor Runner Template registry is unavailable")?;
+    );
+    let runner_registry =
+        runner_registry.context("Studio Supervisor Runner Template registry is unavailable")?;
     let agent_profiles =
         AgentProfileStoreV1::open(&args.state_dir.join("agent-profiles"), vault.clone())
             .context("Studio Supervisor Agent Profile store is unavailable")?;
+    #[cfg(feature = "cli-operator-preview")]
+    let model_provider_credentials = ModelProviderCredentialRegistryV1::open_installed(
+        &args.state_dir.join("model-provider-credentials/installed"),
+        vault.clone(),
+    );
+    #[cfg(not(feature = "cli-operator-preview"))]
     let model_provider_credentials = ModelProviderCredentialRegistryV1::open(
         &args.state_dir.join("model-provider-credentials/installed"),
         &args.model_provider_credentials_dir,
         vault.clone(),
-    )
-    .context("Studio Supervisor model-provider credential registry is unavailable")?;
+    );
+    let model_provider_credentials = model_provider_credentials
+        .context("Studio Supervisor model-provider credential registry is unavailable")?;
     let draft_dependencies = InstalledTaskTemplateDependenciesV1::new(
         ExactActivityPackDraftValidatorV1::new(activity_packs.clone()),
         agent_profiles.clone(),
@@ -263,12 +333,21 @@ async fn main() -> Result<()> {
     .with_launch_applicability(CatalogTaskLaunchApplicabilitySourceV1::new(
         activity_packs.clone(),
     ));
+    // IMO-142 supplies persisted, explicitly reviewed selection policy. Until
+    // then preview cannot promote external trust or import configuration files.
+    #[cfg(feature = "cli-operator-preview")]
+    let client_bindings = ClientBindingStoreV1::open_installed(
+        &args.state_dir.join("client-bindings"),
+        ClientDeploymentTrustPolicyV1::VerifiedOnly,
+    );
+    #[cfg(not(feature = "cli-operator-preview"))]
     let client_bindings = ClientBindingStoreV1::open_configured(
         &args.state_dir.join("client-bindings"),
         &args.activity_clients_dir.join("releases"),
         &args.activity_clients_dir.join("local-bindings.json"),
-    )
-    .map_err(|error| anyhow::anyhow!("Activity Client bindings are unavailable: {error}"))?;
+    );
+    let client_bindings = client_bindings
+        .map_err(|error| anyhow::anyhow!("Activity Client bindings are unavailable: {error}"))?;
     let participant_handoff = ParticipantHandoffBrokerV1::new(
         &args.studio_origin,
         &args.participant_console_origin,
@@ -372,6 +451,11 @@ async fn main() -> Result<()> {
     .merge(managed_agent_host_seat_router(agent_profiles, managed_agent_hosts))
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
+
+    // Admission must wrap the complete graph, including all late merges and
+    // assignment-MCP aliases. No operator routes may be merged after this point.
+    #[cfg(feature = "cli-operator-preview")]
+    let router = protect_operator_routes(router, control);
     axum::serve(listener, router)
         .await
         .context("Studio Supervisor server failed")

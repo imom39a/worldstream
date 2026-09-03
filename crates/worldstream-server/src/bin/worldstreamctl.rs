@@ -1,5 +1,8 @@
 #[path = "worldstreamctl/contract.rs"]
 mod cli_contract;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/initialization.rs"]
+mod cli_initialization;
 #[path = "worldstreamctl/reference.rs"]
 mod cli_reference;
 #[path = "worldstreamctl/report.rs"]
@@ -588,6 +591,10 @@ fn main() -> Result<()> {
             let (name, json) = command.invocation();
             if !command.valid_arguments() {
                 return finish_operator_report(&CommandReport::invalid_arguments(name), json);
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(report) = cli_initialization::execute(&command, &config_args) {
+                return finish_operator_report(&report, json);
             }
             finish_operator_report(&CommandReport::not_implemented(name), json)
         }

@@ -1,8 +1,9 @@
 # CLI-first implementation tickets
 
 Status: Q1–Q18 approved; 12 implementation tickets filed in Linear.
-Ticket preparation is complete. Implementation is in progress, starting with
-IMO-135. Studio retirement remains gated on the complete replacement proof.
+Ticket preparation is complete. IMO-135's contract work and IMO-136's protected
+initialization and control admission are complete. Studio retirement remains
+gated on the complete replacement proof.
 
 The [approved implementation plan](cli-first-implementation-plan.md) owns the
 product contract. [ADR 0018](adr/0018-cli-first-operator-surface.md) records the
@@ -12,9 +13,13 @@ and dependency snapshot, not a second issue tracker.
 
 ## Start here
 
-Start with [IMO-135](https://linear.app/imom39a/issue/IMO-135/freeze-additive-cli-commands-outputs-and-compatibility-fixtures).
-It freezes the additive command, input, output, and compatibility contracts.
-It is the first implementation ticket and is now In Progress.
+The completed [IMO-135](https://linear.app/imom39a/issue/IMO-135/freeze-additive-cli-commands-outputs-and-compatibility-fixtures)
+freezes the additive command, input, output, and compatibility contracts.
+The completed
+[IMO-136](https://linear.app/imom39a/issue/IMO-136/initialize-protected-local-state-and-authenticate-all-operator-control)
+adds protected initialization and control admission behind the internal preview
+gate. The current frontier is managed lifecycle (IMO-137), generic JSON setup
+(IMO-139), and explicit prerequisite imports (IMO-142).
 
 Each other ticket has native Linear blocking relations. Start a ticket only
 after all its blockers are complete. Update its readiness label at that point;
@@ -24,7 +29,7 @@ do not treat the ticket's number or this table as permission to skip blockers.
 
 | Ticket | Implementation slice | Blocked by |
 | --- | --- | --- |
-| [IMO-135](https://linear.app/imom39a/issue/IMO-135/freeze-additive-cli-commands-outputs-and-compatibility-fixtures) | Freeze additive CLI commands, outputs, and compatibility fixtures | None — In Progress |
+| [IMO-135](https://linear.app/imom39a/issue/IMO-135/freeze-additive-cli-commands-outputs-and-compatibility-fixtures) | Freeze additive CLI commands, outputs, and compatibility fixtures | None — complete |
 | [IMO-136](https://linear.app/imom39a/issue/IMO-136/initialize-protected-local-state-and-authenticate-all-operator-control) | Initialize protected local state and authenticate all operator control routes | IMO-135 |
 | [IMO-137](https://linear.app/imom39a/issue/IMO-137/implement-recoverable-managed-server-lifecycle-and-bounded-logs) | Implement recoverable managed server lifecycle and bounded logs | IMO-136 |
 | [IMO-138](https://linear.app/imom39a/issue/IMO-138/expose-installed-next-start-and-running-pack-state-through-pack-list) | Expose installed, next-start, and running Pack state through pack list | IMO-137 |
@@ -95,8 +100,8 @@ release, independent-peer qualification, or an outside-adopter trial.
 
 All 12 created issues were read back. Their project, descriptions (allowing
 Linear's Markdown normalization), status, readiness labels, and native blocking
-relations match this plan. The graph has no cycles. Only IMO-135 is unblocked
-in this new tranche.
+relations match this plan. The graph has no cycles. At ticket creation, only
+IMO-135 was unblocked in this new tranche.
 
 This handoff does not claim that any new command exists. The current
 [getting-started guide](getting-started.md) continues to describe executable

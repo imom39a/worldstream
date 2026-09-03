@@ -156,6 +156,29 @@ impl CommandStatus {
     }
 }
 
+/// Explicit non-secret local initialization output, not a configuration dump.
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitializationMode {
+    Preview,
+    Initialized,
+}
+
+/// Explicit non-secret local initialization output, not a configuration dump.
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Debug, Serialize)]
+pub struct InitializationOutput {
+    pub mode: InitializationMode,
+    pub config_path: std::path::PathBuf,
+    pub state_dir: std::path::PathBuf,
+    pub data_dir: std::path::PathBuf,
+    pub config_created: bool,
+    pub control_created: bool,
+    pub services_started: bool,
+    pub next_config_args: [String; 2],
+}
+
 /// A closed result, never a raw request, configuration, or backend error.
 #[derive(Debug, Serialize)]
 pub struct CommandReport {
@@ -169,9 +192,29 @@ pub struct CommandReport {
     setup: Option<SetupProgress>,
     #[serde(flatten)]
     lifecycle: Option<LifecycleProgress>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initialization: Option<InitializationOutput>,
 }
 
 impl CommandReport {
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn initialization(output: InitializationOutput) -> Self {
+        let mut report = Self::new("init", CommandOutcome::Complete);
+        report.message = match &output.mode {
+            InitializationMode::Preview => {
+                "Local initialization preview completed; no services were started."
+            }
+            InitializationMode::Initialized => {
+                "Local initialization completed; no services were started."
+            }
+        };
+        "Use initialization.next_config_args to select this configuration explicitly for subsequent commands."
+            .clone_into(&mut report.next_action);
+        report.initialization = Some(output);
+        report
+    }
     #[must_use]
     pub fn invalid_arguments(command: &'static str) -> Self {
         Self::new(command, CommandOutcome::InvalidArguments)
@@ -272,6 +315,8 @@ impl CommandReport {
             next_action,
             setup,
             lifecycle,
+            #[cfg(feature = "cli-operator-preview")]
+            initialization: None,
         }
     }
 
@@ -299,6 +344,19 @@ impl CommandReport {
                 self.status.label(),
                 self.code
             )?;
+            #[cfg(feature = "cli-operator-preview")]
+            #[allow(
+                clippy::unnecessary_debug_formatting,
+                reason = "Human-readable paths must remain quoted and escaped."
+            )]
+            if let Some(initialization) = &self.initialization {
+                writeln!(stdout, "Config: {:?}", initialization.config_path)?;
+                writeln!(stdout, "State: {:?}", initialization.state_dir)?;
+                writeln!(stdout, "Data: {:?}", initialization.data_dir)?;
+                let arguments = serde_json::to_string(&initialization.next_config_args)
+                    .map_err(|_| io::Error::other("operator result could not be encoded"))?;
+                writeln!(stdout, "Next config arguments: {arguments}")?;
+            }
             if let Some(progress) = &self.setup {
                 writeln!(stdout, "Operation: {}", progress.operation_id.as_str())?;
                 if let Some(room_id) = &progress.room_id {

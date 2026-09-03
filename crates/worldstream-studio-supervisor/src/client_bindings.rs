@@ -282,6 +282,30 @@ impl ClientBindingStoreV1 {
         bootstrap_document: &[u8],
     ) -> Result<Self, ClientBindingStoreErrorV1> {
         let bootstrap = read_bootstrap(bootstrap_document)?;
+        let store = Self::open_layout(root, bootstrap.deployment_trust_policy)?;
+        store.import(release_documents, bootstrap_document)?;
+        Ok(store)
+    }
+
+    /// Opens retained client trust state without importing declarations or approval.
+    /// The caller supplies selection policy; opening never rewrites retained trust,
+    /// disable, or revoke records. A fully empty inventory is valid but cannot launch.
+    ///
+    /// # Errors
+    /// Rejects inconsistent retained inventory or unavailable protected storage.
+    pub fn open_installed(
+        root: &Path,
+        deployment_trust_policy: ClientDeploymentTrustPolicyV1,
+    ) -> Result<Self, ClientBindingStoreErrorV1> {
+        let store = Self::open_layout(root, deployment_trust_policy)?;
+        store.load_inventory()?;
+        Ok(store)
+    }
+
+    fn open_layout(
+        root: &Path,
+        deployment_trust_policy: ClientDeploymentTrustPolicyV1,
+    ) -> Result<Self, ClientBindingStoreErrorV1> {
         let root =
             prepare_data_directory(root).map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
         let paths = StorePathsV1 {
@@ -292,13 +316,11 @@ impl ClientBindingStoreV1 {
             deployment_status: prepare_store_directory(&root, "deployment-status")?,
             binding_status: prepare_store_directory(&root, "binding-status")?,
         };
-        let store = Self {
+        Ok(Self {
             paths: Arc::new(paths),
-            deployment_trust_policy: bootstrap.deployment_trust_policy,
+            deployment_trust_policy,
             mutation: Arc::new(Mutex::new(())),
-        };
-        store.import(release_documents, bootstrap_document)?;
-        Ok(store)
+        })
     }
 
     /// Selects from current immutable identities and current disable/revoke

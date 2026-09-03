@@ -60,6 +60,10 @@ fn managed_server_commands_accept_bounded_explicit_control_options() {
         "logs",
     ] {
         assert_eq!(control(&["server", leaf, "--help"]).status.code(), Some(0));
+        // Preview adapters have separate tests; the supported default remains IMO-135.
+        if cfg!(feature = "cli-operator-preview") && leaf == "rotate-control-credential" {
+            continue;
+        }
         let output = control(&[
             "server",
             leaf,
@@ -108,6 +112,10 @@ fn init_requires_exact_reviewed_import_approval_without_implicit_trust() {
             "--json",
         ],
     ] {
+        // The preview-only base initializer is covered by cli_initialization.rs.
+        if cfg!(feature = "cli-operator-preview") && arguments == ["init", "--json"] {
+            continue;
+        }
         assert_eq!(control(&arguments).status.code(), Some(3), "{arguments:?}");
     }
     for arguments in [

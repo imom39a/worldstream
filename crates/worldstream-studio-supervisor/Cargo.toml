@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Removed, together with unauthenticated legacy startup, at IMO-146 cutover.
+cli-operator-preview = []
+
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
@@ -25,6 +29,9 @@ worldstream-protocol = { path = "../worldstream-protocol", version = "=0.1.0" }
 worldstream-core = { path = "../worldstream-core", version = "=0.1.0" }
 worldstream-activity-client = { path = "../worldstream-activity-client", version = "=0.1.0" }
 zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "=0.4.4"
 
 [dev-dependencies]
 http-body-util.workspace = true

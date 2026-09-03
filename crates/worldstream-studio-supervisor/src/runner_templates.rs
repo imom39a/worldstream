@@ -194,6 +194,17 @@ impl RunnerTemplateRegistryV1 {
             }
         }
 
+        Self::open_installed(&installed_root)
+    }
+
+    /// Opens only retained exact revisions, without importing owner manifests.
+    /// A fresh empty registry does not imply any Runner approval.
+    ///
+    /// # Errors
+    /// Rejects invalid retained records or unavailable protected storage.
+    pub fn open_installed(installed_root: &Path) -> Result<Self, RunnerTemplateErrorV1> {
+        let installed_root = prepare_data_directory(installed_root)
+            .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
         let mut templates = BTreeMap::new();
         let mut instances = BTreeMap::new();
         for record in json_files(&installed_root)? {

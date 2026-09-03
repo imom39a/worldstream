@@ -116,6 +116,21 @@ impl ModelProviderCredentialRegistryV1 {
                 publish_manifest(&target, &manifest)?;
             }
         }
+        Self::open_installed(&installed, vault)
+    }
+
+    /// Opens only retained credential declarations, without importing sources.
+    /// A fresh empty catalog does not create credentials or confer approval.
+    ///
+    /// # Errors
+    /// Rejects malformed retained records or unavailable protected storage.
+    pub fn open_installed(
+        installed_root: &Path,
+        vault: FileSecretVaultV1,
+    ) -> Result<Self, ModelProviderCredentialErrorV1> {
+        let installed = prepare_data_directory(installed_root)
+            .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+        recover_interrupted_publications(&installed)?;
         let mut entries = BTreeMap::new();
         for path in json_files(&installed, true)? {
             let value = read_manifest(&path, true)?;

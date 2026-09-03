@@ -6,13 +6,13 @@ mod manifest;
 
 pub use config::{
     AuthorityConfig, CliOverrides, ConfigError, ConfigLoader, DeploymentLineageV1, EffectiveConfig,
-    RedactedAuthorityConfig, RedactedConfig, SanitizedTomlError, SecretSource,
+    ProspectiveConfig, RedactedAuthorityConfig, RedactedConfig, SanitizedTomlError, SecretSource,
     SecretValidationError, ServerConfig, StorageConfig, StorageEpochV1, StorageProfile,
 };
 pub use filesystem::{
     FilesystemError, create_owner_only_file, create_owner_only_renameable_file,
-    prepare_data_directory, prepare_live_backup_root, validate_owner_only_file,
-    validate_sqlite_data_filesystem,
+    prepare_data_directory, prepare_live_backup_root, validate_data_directory,
+    validate_owner_only_file, validate_sqlite_data_filesystem,
 };
 pub use manifest::{
     CompatibilityContracts, CompatibilityManifest, CompatibilitySummary, ManifestError,

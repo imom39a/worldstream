@@ -73,6 +73,55 @@ pub fn prepare_data_directory(path: &Path) -> Result<PathBuf, FilesystemError> {
     }
 }
 
+/// Validates an existing protected data directory without creating it or
+/// changing permissions. Uses the same platform policy as preparation.
+///
+/// # Errors
+/// Rejects missing, redirected, non-owner, or incorrectly protected paths.
+pub fn validate_data_directory(path: &Path) -> Result<PathBuf, FilesystemError> {
+    if path.as_os_str().is_empty() {
+        return Err(FilesystemError::UnsafePath {
+            path: path.to_path_buf(),
+            reason: "path is empty",
+        });
+    }
+    let absolute = absolute_path(path)?;
+    if absolute.parent().is_none() {
+        return Err(FilesystemError::UnsafePath {
+            path: absolute,
+            reason: "filesystem root cannot be a WorldStream data directory",
+        });
+    }
+    #[cfg(unix)]
+    validate_unix_path_components(&absolute)?;
+    #[cfg(windows)]
+    {
+        validate_windows_local_data_path(path)?;
+        validate_windows_path_components(&absolute)?;
+    }
+    let canonical = fs::canonicalize(&absolute).map_err(|source| FilesystemError::Io {
+        path: absolute,
+        source,
+    })?;
+    let metadata = fs::symlink_metadata(&canonical).map_err(|source| FilesystemError::Io {
+        path: canonical.clone(),
+        source,
+    })?;
+    #[cfg(unix)]
+    validate_unix_directory_metadata(&canonical, &metadata)?;
+    #[cfg(windows)]
+    {
+        validate_windows_resolved_local_data_path(&canonical)?;
+        validate_windows_path_type(&canonical, &metadata, true)?;
+        let owner = windows_current_identity_sid(Some(&canonical))?;
+        validate_windows_owner_only_acl(&canonical, &owner, true)?;
+    }
+    #[cfg(not(any(unix, windows)))]
+    return Err(FilesystemError::UnsupportedPlatform);
+    #[cfg(any(unix, windows))]
+    Ok(canonical)
+}
+
 /// Prepares the one canonical Studio live-backup root associated with a
 /// daemon data directory. Both the daemon and Supervisor must use this exact
 /// helper so the artifact owner and durable operation owner cannot diverge.

@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 build = "build.rs"
 
+[features]
+# Integration-only until the coordinated, verified Studio cutover (IMO-146).
+cli-operator-preview = ["dep:worldstream-studio-supervisor", "worldstream-studio-supervisor/cli-operator-preview"]
+
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
@@ -32,6 +36,7 @@ worldstream-runtime = { path = "../worldstream-runtime", version = "=0.1.0" }
 worldstream-sqlite = { path = "../worldstream-sqlite", version = "=0.1.0" }
 worldstream-postgres = { path = "../worldstream-postgres", version = "=0.1.0" }
 worldstream-transfer = { path = "../worldstream-transfer", version = "=0.1.0" }
+worldstream-studio-supervisor = { path = "../worldstream-studio-supervisor", version = "=0.1.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs"] }

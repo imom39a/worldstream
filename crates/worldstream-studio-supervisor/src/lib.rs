@@ -13,13 +13,18 @@ pub mod assignment_mcp_operations;
 pub mod attention_inbox;
 pub mod backups;
 pub mod client_bindings;
+pub mod control_access;
+pub mod control_admission;
 pub mod initialization_inputs;
 pub mod lifecycle;
+#[cfg(feature = "cli-operator-preview")]
+pub mod local_initialization;
 pub mod managed_activation_status;
 pub mod managed_agent_host;
 pub mod managed_agent_host_seats;
 pub mod model_provider_credentials;
 pub mod participant_handoff;
+mod protected_publication;
 pub mod room_creation;
 pub mod room_drafts;
 pub mod rooms;

@@ -7,6 +7,13 @@ their implementation tickets land, valid invocations return `not_implemented`
 with exit status 3, without reading configuration or starting services.
 Help listing a command does not mean its backend is available.
 
+During implementation, the internal `cli-operator-preview` Cargo feature
+enables completed replacement slices together. It is not a second supported
+installation mode. The default build keeps the current Studio path until the
+CLI-only acceptance and cutover gates pass. The cutover must remove this
+temporary feature boundary and the unauthenticated startup branch; disabling
+default features must not restore an authentication bypass.
+
 ## Compatibility and output
 
 The existing `config`, `doctor`, `health`, `version`, `pack` operations,
@@ -87,11 +94,61 @@ processes, installs no boot service, and does not replace existing configuration
 bootstrap authority, or retained Room data. Existing installations missing the
 new control credential require this explicit initialization/migration step.
 
+The controller credential belongs to the local operating-system owner. It is
+not a Runtime Host, Membership, Runner, or model-provider credential. The CLI
+loads it from protected local state for a control request; it does not accept
+it as an argument or print it. The controller listens only on a literal
+loopback address with a nonzero port. Loopback reachability, cookies, and a
+Studio Origin header are not operator authentication.
+
+Control rotation changes only this controller credential. Existing controller
+instances read the current protected record for each authenticated request,
+so old access stops working without a controller restart. Concurrent rotation
+may fail as unavailable; inspect the installation before retrying. A failed
+durability check does not establish that the old credential remains current.
+Neither initialization nor rotation resets or relocates existing Room data.
+
+Initialization and rotation use protected local locks. If another mutation is
+in progress, the command fails without waiting for a hidden timeout. Retry
+after that mutation finishes. Repeated initialization keeps the same control
+credential and generation. It republishes those exact bytes under the lock
+to complete file publication after a possible earlier interruption.
+
+For the current shared-backup layout, the controller state directory must be
+`studio` beside the Runtime data directory. The defaults are
+`.worldstream/studio` and `.worldstream/data`. A different Runtime data
+directory name is allowed under the same parent. Initialization rejects a
+different layout; it does not move retained files. Configuration and secret
+source paths must not conflict with each other or with Runtime storage,
+controller records, or the protected vault.
+
+On macOS and Windows, initialization conservatively compares path roles
+without ASCII case distinctions and requires not-yet-existing path components
+to be ASCII. Windows also rejects new components ending in a dot or space.
+Existing Unicode ancestors and retained paths remain supported; these checks
+do not rewrite filesystem paths or claim native Windows qualification.
+
+The new publication helper uses file synchronization and atomic path
+publication on POSIX, and Windows write-through move/replace operations.
+The Windows helper and Runtime protection code have passed cross-target
+typechecking. This is not native Windows crash, ACL, or release qualification.
+
+Browser participant routes keep their own one-use handoff, Membership session,
+Origin, and revocation checks. They never receive the controller credential.
+The authenticated operator boundary covers the complete composed controller
+router, including legacy route aliases, not only new CLI-specific routes.
+
 Initialization uses explicit `--config FILE`, otherwise `WORLDSTREAM_CONFIG`.
 If neither is supplied, it proposes/creates `.worldstream/worldstream.toml`
 and reports the exact `--config` argument to use next. Existing config files
 are preserved byte-for-byte. This does not add implicit file discovery to the
 legacy configuration loader; subsequent commands must select the new config.
+
+Use protected file sources for bootstrap authority and the PostgreSQL DSN
+when you initialize a managed installation. `init` rejects inherited handles,
+including handles named in an existing config. A later CLI invocation cannot
+rely on the same inherited handle. Foreground Runtime configuration options
+are unchanged.
 
 An explicit prerequisite import is part of initialization, not Room setup:
 

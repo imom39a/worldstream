@@ -173,6 +173,16 @@ impl FileSecretVaultV1 {
         Ok(Self { root })
     }
 
+    /// Opens a retained vault without creating or repairing any filesystem state.
+    ///
+    /// # Errors
+    /// Rejects missing or unsafe retained vault directories.
+    pub fn open_existing(root: &Path) -> Result<Self, SecretVaultErrorV1> {
+        let root = worldstream_runtime::validate_data_directory(root)
+            .map_err(|_| SecretVaultErrorV1::Unavailable)?;
+        Ok(Self { root })
+    }
+
     /// Creates one immutable kind-bound secret and returns only its opaque
     /// reference.
     ///

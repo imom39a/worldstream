@@ -14,10 +14,33 @@ use worldstream_runtime::{
 };
 use zeroize::Zeroizing;
 
+use crate::protected_publication::{PublicationMode, publish};
 use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
 
 const BINDING_FILE: &str = "host-authority-reference.json";
 const BINDING_SCHEMA: &str = "worldstream/studio-host-authority-binding/v1";
+
+/// Validates retained bootstrap, vault, and binding agreement without repair.
+///
+/// # Errors
+/// Missing, malformed, or mismatched authority requires explicit restoration.
+pub fn validate_existing_host_authority(
+    state_dir: &Path,
+    bootstrap_source: Option<&SecretSource>,
+) -> Result<SecretReferenceV1, HostAuthorityStartupErrorV1> {
+    let binding = read_binding(&state_dir.join(BINDING_FILE))?
+        .ok_or(HostAuthorityStartupErrorV1::BindingUnavailable)?;
+    let vault = FileSecretVaultV1::open_existing(&state_dir.join("secrets"))
+        .map_err(|_| HostAuthorityStartupErrorV1::RetainedAuthorityUnavailable)?;
+    let bootstrap = Zeroizing::new(
+        bootstrap_source
+            .ok_or(HostAuthorityStartupErrorV1::BootstrapUnavailable)?
+            .read_exact_256()
+            .map_err(|_| HostAuthorityStartupErrorV1::BootstrapUnavailable)?,
+    );
+    verify_matches_bootstrap(&vault, &binding.reference, &bootstrap)?;
+    Ok(binding.reference)
+}
 
 /// Returns a usable configured bootstrap source, generating one owner-only
 /// local source only before daemon and Studio state exist.
@@ -137,24 +160,14 @@ fn publish_fresh_bootstrap_source(
     let temporary = temporary_bootstrap_path(path)?;
     let mut file = create_owner_only_file(&temporary)
         .map_err(|_| HostAuthorityStartupErrorV1::BootstrapUnavailable)?;
-    let written = file.write_all(secret).and_then(|()| file.sync_all());
-    drop(file);
-    if written.is_err() {
+    if file.write_all(secret).is_err() {
+        drop(file);
         let _ = fs::remove_file(&temporary);
         return Err(HostAuthorityStartupErrorV1::BootstrapUnavailable);
     }
-
-    let parent = path
-        .parent()
-        .ok_or(HostAuthorityStartupErrorV1::BootstrapUnavailable)?;
-    match fs::hard_link(&temporary, path) {
+    match publish(file, &temporary, path, PublicationMode::CreateNew) {
         Ok(()) => {
-            let publication = sync_directory(parent);
             let _ = fs::remove_file(&temporary);
-            let cleanup = sync_directory(parent);
-            publication
-                .and(cleanup)
-                .map_err(|_| HostAuthorityStartupErrorV1::BootstrapUnavailable)?;
             Ok(source.clone())
         }
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
@@ -235,13 +248,7 @@ fn persist_binding(
         .map_err(|_| HostAuthorityStartupErrorV1::BindingUnavailable)?;
     let result = file
         .write_all(&encoded)
-        .and_then(|()| file.sync_all())
-        .and_then(|()| replace_binding(&temporary, path))
-        .and_then(|()| {
-            path.parent()
-                .ok_or_else(|| std::io::Error::other("binding has no parent"))
-                .and_then(sync_directory)
-        })
+        .and_then(|()| publish(file, &temporary, path, PublicationMode::Replace))
         .map_err(|_| HostAuthorityStartupErrorV1::BindingUnavailable);
     if result.is_err() {
         let _ = fs::remove_file(temporary);
@@ -277,50 +284,6 @@ fn hex(bytes: &[u8]) -> String {
         encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     encoded
-}
-
-#[cfg(unix)]
-fn replace_binding(source: &Path, target: &Path) -> std::io::Result<()> {
-    fs::rename(source, target)
-}
-
-#[cfg(windows)]
-fn replace_binding(source: &Path, target: &Path) -> std::io::Result<()> {
-    let source = source.to_str().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "source path is not Unicode",
-        )
-    })?;
-    let target = target.to_str().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "target path is not Unicode",
-        )
-    })?;
-    winsafe::MoveFileEx(
-        source,
-        Some(target),
-        winsafe::co::MOVEFILE::REPLACE_EXISTING,
-    )
-    .map_err(|error| std::io::Error::other(error.to_string()))
-}
-
-#[cfg(unix)]
-fn sync_directory(path: &Path) -> std::io::Result<()> {
-    fs::File::open(path)?.sync_all()
-}
-
-#[cfg(windows)]
-fn sync_directory(path: &Path) -> std::io::Result<()> {
-    use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt as _};
-
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?
-        .sync_all()
 }
 
 #[derive(Deserialize, Serialize)]

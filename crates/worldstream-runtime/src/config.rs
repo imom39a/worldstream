@@ -449,6 +449,19 @@ impl EffectiveConfig {
     }
 
     fn validate_without_bootstrap_secret(&self) -> Result<(), ConfigError> {
+        self.validate_with_dsn_check(|source| {
+            validate_secret(source, "storage.postgresql.dsn_handle")
+        })
+    }
+
+    fn validate_structure(&self) -> Result<(), ConfigError> {
+        self.validate_with_dsn_check(|_| Ok(()))
+    }
+
+    fn validate_with_dsn_check(
+        &self,
+        check_dsn: impl FnOnce(&SecretSource) -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
         if self.config_version != CONFIG_VERSION {
             return Err(ConfigError::UnsupportedConfigVersion(self.config_version));
         }
@@ -484,9 +497,7 @@ impl EffectiveConfig {
                     "postgres-primary requires exactly one DSN secret file or inherited handle",
                 ));
             }
-            (StorageProfile::PostgresPrimary, Some(source)) => {
-                validate_secret(source, "storage.postgresql.dsn_handle")?;
-            }
+            (StorageProfile::PostgresPrimary, Some(source)) => check_dsn(source)?,
             (StorageProfile::SqliteBundled, None) => {}
         }
 
@@ -587,6 +598,112 @@ pub struct ConfigLoader {
     environment: BTreeMap<String, String>,
 }
 
+/// Structurally checked planning configuration, not authorized for startup.
+/// Secret files and inherited handles have not been opened or validated.
+#[derive(Clone, Debug)]
+pub struct ProspectiveConfig(EffectiveConfig);
+
+impl ProspectiveConfig {
+    /// Serializes a new durable installation configuration, not a diagnostic view.
+    /// File references are retained but secret bytes are never opened or copied.
+    /// Inherited sources cannot be persisted for a later process.
+    ///
+    /// # Errors
+    /// Rejects inherited sources, unsafe base paths, or serialization failures.
+    pub fn installation_toml(&self, working_directory: &Path) -> Result<String, ConfigError> {
+        if !working_directory.is_absolute() {
+            return Err(ConfigError::InitializationPersistence);
+        }
+        let absolute = |path: &Path| {
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                working_directory.join(path)
+            }
+        };
+        let file_reference = |source: &SecretSource| match source {
+            SecretSource::File(path) => Ok(absolute(path)),
+            SecretSource::InheritedHandle(_) => Err(ConfigError::InitializationPersistence),
+        };
+        let effective = &self.0;
+        let bootstrap = effective
+            .authority
+            .bootstrap_secret
+            .as_ref()
+            .map(file_reference)
+            .transpose()?;
+        let dsn = effective
+            .storage
+            .postgresql_dsn
+            .as_ref()
+            .map(file_reference)
+            .transpose()?;
+        let file = FileConfig {
+            config_version: effective.config_version,
+            server: Some(FileServerConfig {
+                bind: Some(effective.server.bind),
+            }),
+            storage: Some(FileStorageConfig {
+                profile: Some(effective.storage.profile),
+                data_dir: Some(absolute(&effective.storage.data_dir)),
+                deployment_lineage: effective
+                    .storage
+                    .deployment_lineage
+                    .as_ref()
+                    .map(|lineage| lineage.as_str().to_owned()),
+                storage_epoch: effective.storage.storage_epoch.map(StorageEpochV1::get),
+                postgresql: dsn.map(|path| FilePostgresqlConfig {
+                    dsn_file: Some(path),
+                    dsn_handle: None,
+                }),
+            }),
+            authority: bootstrap.map(|path| FileAuthorityConfig {
+                bootstrap: Some(FileBootstrapConfig {
+                    secret_file: Some(path),
+                    secret_handle: None,
+                }),
+            }),
+            telemetry: effective.telemetry.otlp_endpoint.as_ref().map(|endpoint| {
+                FileTelemetryConfig {
+                    otlp: Some(FileOtlpConfig {
+                        endpoint: endpoint.0.clone(),
+                    }),
+                }
+            }),
+        };
+        toml::to_string(&file).map_err(|_| ConfigError::InitializationPersistence)
+    }
+    /// Planned non-secret runtime directory.
+    #[must_use]
+    pub fn data_directory(&self) -> &Path {
+        &self.0.storage.data_dir
+    }
+
+    /// Planned storage profile.
+    #[must_use]
+    pub const fn storage_profile(&self) -> StorageProfile {
+        self.0.storage.profile
+    }
+
+    /// Unvalidated bootstrap reference; never its secret material.
+    #[must_use]
+    pub const fn bootstrap_source(&self) -> Option<&SecretSource> {
+        self.0.authority.bootstrap_secret.as_ref()
+    }
+
+    /// Unvalidated `PostgreSQL` DSN reference, never its secret material.
+    #[must_use]
+    pub const fn postgresql_dsn_source(&self) -> Option<&SecretSource> {
+        self.0.storage.postgresql_dsn.as_ref()
+    }
+
+    /// Safe configuration inspection without opening secret sources.
+    #[must_use]
+    pub fn redacted(&self) -> RedactedConfig {
+        self.0.redacted()
+    }
+}
+
 impl fmt::Debug for ConfigLoader {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -684,6 +801,39 @@ impl ConfigLoader {
         Ok(effective)
     }
 
+    /// Plans all configuration layers without opening any secret source.
+    ///
+    /// # Errors
+    /// Returns file, syntax, precedence, or structural configuration errors.
+    pub fn preview(&self) -> Result<ProspectiveConfig, ConfigError> {
+        let effective = self.load_before_secret_validation()?;
+        effective.validate_structure()?;
+        Ok(ProspectiveConfig(effective))
+    }
+
+    /// Plans configuration relative to an explicitly captured working directory.
+    /// Selected config, data, bootstrap, and DSN file paths use the same base.
+    /// No secret source is opened. Legacy `preview` and `load` are unchanged.
+    ///
+    /// # Errors
+    /// Rejects a non-absolute base or invalid configuration structure.
+    pub fn preview_at(&self, working_directory: &Path) -> Result<ProspectiveConfig, ConfigError> {
+        let effective = self.load_before_secret_validation_at(Some(working_directory))?;
+        effective.validate_structure()?;
+        Ok(ProspectiveConfig(effective))
+    }
+
+    /// Fully validates configuration using an explicit working-directory base.
+    /// Unlike planning, this opens and validates configured secret sources.
+    ///
+    /// # Errors
+    /// Rejects an invalid base, configuration, or unavailable secret source.
+    pub fn load_at(&self, working_directory: &Path) -> Result<EffectiveConfig, ConfigError> {
+        let effective = self.load_before_secret_validation_at(Some(working_directory))?;
+        effective.validate()?;
+        Ok(effective)
+    }
+
     /// Loads all configuration layers, prepares a configured bootstrap source,
     /// and then performs complete final validation.
     ///
@@ -708,12 +858,40 @@ impl ConfigLoader {
     }
 
     fn load_before_secret_validation(&self) -> Result<EffectiveConfig, ConfigError> {
+        self.load_before_secret_validation_at(None)
+    }
+
+    fn load_before_secret_validation_at(
+        &self,
+        working_directory: Option<&Path>,
+    ) -> Result<EffectiveConfig, ConfigError> {
+        if working_directory.is_some_and(|base| !base.is_absolute()) {
+            return Err(ConfigError::InvalidWorkingDirectory);
+        }
         let mut effective = EffectiveConfig::default();
         if let Some(path) = self.selected_config_path()? {
-            apply_file(&mut effective, path)?;
+            let resolved = working_directory.map(|base| base.join(path));
+            apply_file(&mut effective, resolved.as_deref().unwrap_or(path))?;
         }
         apply_environment(&mut effective, &self.environment)?;
         apply_cli(&mut effective, &self.cli_overrides);
+        if let Some(base) = working_directory {
+            // Keep empty paths empty so normal validation still rejects them.
+            let resolve = |path: &mut PathBuf| {
+                if !path.as_os_str().is_empty() && path.is_relative() {
+                    *path = base.join(&*path);
+                }
+            };
+            resolve(&mut effective.storage.data_dir);
+            for source in [
+                &mut effective.storage.postgresql_dsn,
+                &mut effective.authority.bootstrap_secret,
+            ] {
+                if let Some(SecretSource::File(path)) = source {
+                    resolve(path);
+                }
+            }
+        }
         Ok(effective)
     }
 
@@ -733,7 +911,7 @@ impl ConfigLoader {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
     config_version: u32,
@@ -747,27 +925,27 @@ struct FileConfig {
     telemetry: Option<FileTelemetryConfig>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileTelemetryConfig {
     #[serde(default)]
     otlp: Option<FileOtlpConfig>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileOtlpConfig {
     endpoint: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileAuthorityConfig {
     #[serde(default)]
     bootstrap: Option<FileBootstrapConfig>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileBootstrapConfig {
     #[serde(default)]
@@ -776,14 +954,14 @@ struct FileBootstrapConfig {
     secret_handle: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileServerConfig {
     #[serde(default)]
     bind: Option<SocketAddr>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FileStorageConfig {
     #[serde(default)]
@@ -798,7 +976,7 @@ struct FileStorageConfig {
     postgresql: Option<FilePostgresqlConfig>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FilePostgresqlConfig {
     #[serde(default)]
@@ -1200,6 +1378,12 @@ fn relevant_environment_key(key: &OsString) -> bool {
 /// Strict configuration errors. Values never include secret bytes.
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    /// Explicit initialization bases cannot depend on the process CWD.
+    #[error("captured working directory must be absolute")]
+    InvalidWorkingDirectory,
+    /// New durable config cannot preserve an inherited descriptor across processes.
+    #[error("new installation configuration requires durable file secret references")]
+    InitializationPersistence,
     /// Selected config file could not be read.
     #[error("cannot read config file {path}: {source}")]
     ReadConfig {
