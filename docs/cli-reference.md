@@ -65,10 +65,10 @@ initialization preview, successful mutation, or live status observation.
 | `status` | Closed `code` values | Exit |
 | --- | --- | --- |
 | `complete` | `complete` | 0 |
-| `rejected` | `operation_rejected`, `managed_runner_restart_unsupported` | 1 |
+| `rejected` | `operation_rejected`, `managed_runner_restart_unsupported`, `start_acknowledgement_required` | 1 |
 | `failed` | `operation_failed` | 1 |
 | `invalid_arguments` | `invalid_arguments` | 2 |
-| `unavailable` | `not_implemented`, `controller_unavailable`, `stale_evidence` | 3 |
+| `unavailable` | `not_implemented`, `controller_unavailable`, `pack_inventory_unavailable`, `stale_evidence` | 3 |
 | `partial` | `setup_incomplete`, `lifecycle_incomplete` | 4 |
 
 Retained partial setup reports may additionally contain `operation_id`,
@@ -215,17 +215,66 @@ empty successful list. Existing `pack inventory`, approval, install, selection,
 export, and removal commands remain unchanged; `pack list` is not a second
 package-management implementation.
 
+The preview command reports three independent sections:
+
+- `installed`: bounded local inventory metadata, explicitly unverified. It does
+  not open or verify Bundle objects while the Runtime is running.
+- `next_start`: retained selectable Bundle digests, not a readiness verdict.
+  Use the existing offline `pack restart-readiness` command before startup.
+- `running`: exact embedded revisions and portable Bundle identities captured
+  by the current Runtime at startup, read through authenticated control.
+
+Human output prints copyable `ID@VERSION` selectors only from running facts.
+JSON retains the exact semantic Revision and physical Bundle digests separately.
+`pending_changes` compares installed identity/selectability with that frozen
+running inventory; it is `null` when either source is unavailable. It is not a
+configuration or deployment-readiness check. A malformed running response is
+labelled `stale`; an unreachable Runtime is `unavailable`. Available sections
+remain visible when another section fails, with `pack_inventory_unavailable`
+and exit 3. An empty installed inventory is not an error by itself.
+
 Room Setup Specifications are versioned JSON; server configuration stays TOML.
 Schema details belong to the Room Setup Specification implementation. Input
 resolves to one exact immutable Pack reference before mutation. It never
 describes desired replacement state for an existing Room.
 
 Room Setup Operation references are printed by creation/status commands.
+Creation saves the resolved configuration and participant identities before
+calling the Runtime. `room setup resume OPERATION` uses only those saved
+records, never the source file. A complete setup means that provisioning is
+complete; it does not mean that clients are connected or the Activity has
+launched. `room list` and `room inspect ROOM` read separate Host diagnostics,
+not participant-private content.
+
+A lost reply returns exit 4 and the operation reference, even when the CLI
+cannot confirm a Room ID. Check `room setup status OPERATION` with the same
+installation options before deciding what to do next. Status without an
+operation lists unfinished attempts. Do not repeat `room create` as a retry:
+that starts a new attempt with new identities.
+
+New CLI creation records retain whether setup preparation has started. If the
+provisioning record is later missing, status reports `restore_setup_record`
+and the original Room ID. Resume does not create replacement credentials.
+Restore the original record when one is available; this preview does not
+provide automatic repair of lost intent. Existing legacy creation records
+with an intact setup remain resumable. A legacy creation without a setup has
+no preparation marker, so the CLI cannot distinguish an unprepared attempt
+from a lost setup. Finish a genuinely unprepared legacy attempt through its
+original workflow before using CLI resume, or restore its original setup.
+
+An active-at-Genesis Pack requires `--acknowledge-start`. Without it, creation
+returns `start_acknowledgement_required` before creating a Room. Once accepted,
+activity and deadlines begin at creation; partial provisioning does not pause
+time. Heist 0.2.0 instead enters its declared Lobby.
+
 Use those references and the specification's stable seat labels for subsequent
 commands; do not inspect internal databases to discover identifiers.
-Room/operation references, seat labels, and client binding identifiers are
+Room/operation references and client binding identifiers are
 1–128 ASCII bytes, beginning with a letter or digit and followed only by
-letters, digits, `.`, `_`, `:`, or `-`. Local input/output paths use the same
+letters, digits, `.`, `_`, `:`, or `-`. Setup seat labels have a narrower bound:
+1–64 lowercase ASCII letters, digits, or hyphens, starting with a letter or digit.
+Pack Role names are separate and are not changed to match seat labels.
+Local input/output paths use the same
 nonempty UTF-8, 4096-byte, no-control-character bound as import paths.
 
 | Command | Input |
@@ -243,7 +292,7 @@ nonempty UTF-8, 4096-byte, no-control-character bound as import paths.
 | `client open` | `--operation OPERATION --seat LABEL`, optional `--binding BINDING` |
 | `client export-credentials` | `--operation OPERATION --seat LABEL --output FILE` |
 
-Get the exact installed `ID@VERSION` selector from `pack list`; example
+Get the exact running `ID@VERSION` selector from `pack list`; example
 generation resolves it to one complete exact Pack reference. Multiple matches
 or unavailable metadata fail closed, never choose the first entry. Stored
 semantic digests—not these diagnostic labels—remain Room authority.

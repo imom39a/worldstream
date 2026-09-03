@@ -1,18 +1,18 @@
 //! Pure resolution of declared Activity Pack configuration values.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
 /// Closed resolution failure; supplied configuration values are never displayed.
-#[derive(Debug, Error, Serialize)]
+#[derive(Debug, Deserialize, Error, Serialize)]
 #[error("configuration does not satisfy the declared schema")]
 pub struct ConfigurationResolutionError {
     pub path: String,
     pub code: ConfigurationResolutionCode,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigurationResolutionCode {
     Invalid,

@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use worldstream_protocol::{
     BearerWireV1, OperatorActivityPhase, OperatorDataFreshness, OperatorRoomIntegrity,
     OperatorRoomInventoryPage, OperatorRoomSummary, PackReference, RoomHead,
@@ -27,7 +27,7 @@ const MAX_STUDIO_ROOM_PAGE_SIZE: usize = 50;
 const MAX_DAEMON_RESPONSE_BYTES: u64 = 256 * 1024;
 
 /// Setup progress remains independent from integrity and Activity Phase.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RoomSetupProgressV1 {
     /// Durable Genesis, complete Head, and exact pack lock are present.
@@ -46,17 +46,17 @@ pub enum RoomSetupProgressV1 {
 }
 
 /// Participant readiness needs an authorized operator Membership projection.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ParticipantReadinessV1 {
     /// Authorized aggregate readiness with no participant-private detail.
     Available { ready: u32, total: u32 },
     /// Host diagnostics cannot inspect participant-private readiness.
-    Unavailable { reason: &'static str },
+    Unavailable { reason: String },
 }
 
 /// Studio-safe Room row/detail with no Membership, seat, or Invocation data.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StudioRoomSummaryV1 {
     pub room_id: String,
     pub room_head: RoomHead,
@@ -78,7 +78,7 @@ impl From<OperatorRoomSummary> for StudioRoomSummaryV1 {
                 reason: "supervisor_setup_state_required".to_owned(),
             },
             participant_readiness: ParticipantReadinessV1::Unavailable {
-                reason: "operator_membership_required",
+                reason: "operator_membership_required".to_owned(),
             },
             integrity: room.integrity,
             activity_phase: room.activity_phase,
@@ -88,9 +88,9 @@ impl From<OperatorRoomSummary> for StudioRoomSummaryV1 {
 }
 
 /// Bounded, stable-keyset page returned to Studio.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StudioRoomInventoryPageV1 {
-    pub schema: &'static str,
+    pub schema: String,
     pub rooms: Vec<StudioRoomSummaryV1>,
     pub next_after_room_id: Option<String>,
 }
@@ -295,7 +295,7 @@ async fn room_inventory(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
         .map_err(status_for_error)?;
     Ok(Json(StudioRoomInventoryPageV1 {
-        schema: INVENTORY_SCHEMA_V1,
+        schema: INVENTORY_SCHEMA_V1.to_owned(),
         rooms: page.rooms.into_iter().map(Into::into).collect(),
         next_after_room_id: page.next_after_room_id,
     }))

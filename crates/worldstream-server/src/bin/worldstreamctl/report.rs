@@ -124,6 +124,14 @@ struct SetupProgress {
     stage: SetupStage,
 }
 
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Debug, Serialize)]
+struct SetupReceipt {
+    operation_id: PublicReference,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    room_id: Option<PublicReference>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CommandStatus {
@@ -219,9 +227,149 @@ pub struct CommandReport {
     #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     setup_issue: Option<worldstream_studio_supervisor::room_setup_spec::RoomSetupError>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packs: Option<crate::cli_pack_list::PackListSummary>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(flatten)]
+    setup_receipt: Option<SetupReceipt>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    room_operation:
+        Option<worldstream_studio_supervisor::room_setup_operations::RoomSetupOperationStatusV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    room_operations:
+        Option<worldstream_studio_supervisor::room_setup_operations::RoomSetupOperationListV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rooms: Option<worldstream_studio_supervisor::rooms::StudioRoomInventoryPageV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    room: Option<worldstream_studio_supervisor::rooms::StudioRoomSummaryV1>,
 }
 
 impl CommandReport {
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn room_operation(
+        command: &'static str,
+        result: crate::cli_room_operations::RoomOperationExecution,
+    ) -> Self {
+        use crate::cli_room_operations::RoomOperationExecution;
+        use worldstream_studio_supervisor::task_setup::TaskSetupStageV1;
+        match result {
+            RoomOperationExecution::Complete(status) => {
+                let Ok(operation_id) = PublicReference::parse(&status.operation) else {
+                    return Self::new(command, CommandOutcome::StaleEvidence);
+                };
+                let room_id = status
+                    .room_id
+                    .as_deref()
+                    .and_then(|room| PublicReference::parse(room).ok());
+                let mut report = Self::new(command, CommandOutcome::Complete);
+                report.message =
+                    "Room setup is complete. Activity readiness is checked separately.";
+                report.next_action = room_id.as_ref().map_or_else(
+                    || "Inspect Room setup status before connecting participants.".to_owned(),
+                    |room| format!("Inspect 'worldstreamctl room inspect {}' using the same installation options.", room.as_str()),
+                );
+                report.setup_receipt = Some(SetupReceipt {
+                    operation_id,
+                    room_id,
+                });
+                report.room_operation = Some(status);
+                report
+            }
+            RoomOperationExecution::Partial { operation, status } => {
+                let Ok(operation_id) = PublicReference::parse(&operation) else {
+                    return Self::new(command, CommandOutcome::StaleEvidence);
+                };
+                let room_id = status
+                    .as_ref()
+                    .and_then(|status| status.room_id.as_deref())
+                    .and_then(|room| PublicReference::parse(room).ok());
+                let stage = match status
+                    .as_ref()
+                    .and_then(|status| status.active_stage.as_ref())
+                {
+                    Some(TaskSetupStageV1::RunnerCapability { .. }) => SetupStage::RunnerCapability,
+                    Some(TaskSetupStageV1::MemberCapability { .. }) => SetupStage::MemberCapability,
+                    None if room_id.is_some() => SetupStage::MemberCapability,
+                    None => SetupStage::RoomCreation,
+                };
+                let mut report = Self::new(
+                    command,
+                    CommandOutcome::PartialSetup {
+                        operation_id,
+                        room_id,
+                        stage,
+                    },
+                );
+                if status.is_none() {
+                    report.message = "The request did not confirm complete setup. Check retained progress with the operation reference.";
+                }
+                if status
+                    .as_ref()
+                    .is_some_and(|status| status.next_action == "restore_setup_record")
+                {
+                    "Provisioning intent is unavailable. Restore the original setup record if available; this command will not generate replacement credentials. See the retained-state guidance in the CLI reference.".clone_into(&mut report.next_action);
+                }
+                report.room_operation = status;
+                report
+            }
+            RoomOperationExecution::Listed(list) => {
+                let mut report = Self::new(command, CommandOutcome::Complete);
+                report.room_operations = Some(list);
+                report
+            }
+            RoomOperationExecution::Rooms(rooms) => {
+                let mut report = Self::new(command, CommandOutcome::Complete);
+                report.rooms = Some(rooms);
+                report
+            }
+            RoomOperationExecution::Room(room) => {
+                let mut report = Self::new(command, CommandOutcome::Complete);
+                report.room = Some(*room);
+                report
+            }
+            RoomOperationExecution::Rejected(issue) => {
+                let mut report = Self::new(command, CommandOutcome::Rejected);
+                report.setup_issue = Some(issue);
+                report
+            }
+            RoomOperationExecution::AcknowledgementRequired => {
+                let mut report = Self::new(command, CommandOutcome::Rejected);
+                report.code = "start_acknowledgement_required";
+                report.message = "This Pack starts its activity and deadlines when the Room is created. No Room was created.";
+                "Review the setup, then repeat 'worldstreamctl room create' with --acknowledge-start to start now. Incomplete provisioning does not pause deadlines.".clone_into(&mut report.next_action);
+                report
+            }
+            RoomOperationExecution::Unavailable => {
+                Self::new(command, CommandOutcome::ControllerUnavailable)
+            }
+        }
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn pack_list(summary: crate::cli_pack_list::PackListSummary) -> Self {
+        let mut report = Self::new(
+            "pack list",
+            if summary.complete() {
+                CommandOutcome::Complete
+            } else {
+                CommandOutcome::ControllerUnavailable
+            },
+        );
+        if !summary.complete() {
+            report.code = "pack_inventory_unavailable";
+            report.message = "Pack inventory could not be read completely.";
+            "Check the selected configuration and Controller availability, then repeat this read-only command."
+                .clone_into(&mut report.next_action);
+        }
+        report.packs = Some(summary);
+        report
+    }
+
     #[cfg(feature = "cli-operator-preview")]
     pub fn bound_runner_restart_unsupported() -> Self {
         let mut report = Self::new("server restart", CommandOutcome::Rejected);
@@ -477,6 +625,18 @@ impl CommandReport {
             room_setup: None,
             #[cfg(feature = "cli-operator-preview")]
             setup_issue: None,
+            #[cfg(feature = "cli-operator-preview")]
+            packs: None,
+            #[cfg(feature = "cli-operator-preview")]
+            setup_receipt: None,
+            #[cfg(feature = "cli-operator-preview")]
+            room_operation: None,
+            #[cfg(feature = "cli-operator-preview")]
+            room_operations: None,
+            #[cfg(feature = "cli-operator-preview")]
+            rooms: None,
+            #[cfg(feature = "cli-operator-preview")]
+            room: None,
         }
     }
 
@@ -559,6 +719,12 @@ impl CommandReport {
                 writeln!(stdout, "{document}")?;
             }
             #[cfg(feature = "cli-operator-preview")]
+            if let Some(packs) = &self.packs {
+                packs.write_human(stdout)?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            self.write_room_details(stdout)?;
+            #[cfg(feature = "cli-operator-preview")]
             if let Some(issue) = &self.setup_issue {
                 let document = serde_json::to_string(issue)
                     .map_err(|_| io::Error::other("setup diagnostic could not be encoded"))?;
@@ -579,6 +745,54 @@ impl CommandReport {
             writeln!(stderr, "{} {}", self.message, self.next_action)?;
         }
         Ok(self.status.exit())
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    fn write_room_details(&self, stdout: &mut impl Write) -> io::Result<()> {
+        if let Some(receipt) = &self.setup_receipt {
+            writeln!(stdout, "Operation: {}", receipt.operation_id.as_str())?;
+            if let Some(room) = &receipt.room_id {
+                writeln!(stdout, "Room: {}", room.as_str())?;
+            }
+        }
+        if let Some(operations) = &self.room_operations {
+            writeln!(
+                stdout,
+                "Unfinished Room setup operations: {}",
+                operations.operations.len()
+            )?;
+            for operation in &operations.operations {
+                writeln!(
+                    stdout,
+                    "  {}  room={}  next={}",
+                    operation.operation,
+                    operation.room_id.as_deref().unwrap_or("not created"),
+                    operation.next_action
+                )?;
+            }
+        }
+        if let Some(rooms) = &self.rooms {
+            writeln!(stdout, "Rooms: {}", rooms.rooms.len())?;
+            for room in &rooms.rooms {
+                writeln!(
+                    stdout,
+                    "  {}  {}@{}",
+                    room.room_id, room.pack.id, room.pack.version
+                )?;
+            }
+            if rooms.next_after_room_id.is_some() {
+                writeln!(
+                    stdout,
+                    "This is a bounded inventory page; additional Rooms exist."
+                )?;
+            }
+        }
+        if let Some(room) = &self.room {
+            let document = serde_json::to_string_pretty(room)
+                .map_err(|_| io::Error::other("Room diagnostics could not be encoded"))?;
+            writeln!(stdout, "{document}")?;
+        }
+        Ok(())
     }
 }
 

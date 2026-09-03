@@ -310,7 +310,7 @@ impl VerifiedConnection {
         self.receive_bounded(MAX_BODY, Some(maximum_response_bytes))
     }
 
-    /// Sends only managed Runtime status/stop using domain-separated generation
+    /// Sends only managed Runtime status, Pack facts or stop using generation
     /// authority. The private generation key and derived header are never exposed.
     ///
     /// # Errors
@@ -324,7 +324,8 @@ impl VerifiedConnection {
         if self.identity.role != ProcessRole::Runtime
             || !matches!(
                 (method, path),
-                ("GET", "/api/v1/control/status") | ("POST", "/api/v1/control/stop")
+                ("GET", "/api/v1/control/status" | "/api/v1/control/packs")
+                    | ("POST", "/api/v1/control/stop")
             )
         {
             return Err(ControlTransportError::Rejected);

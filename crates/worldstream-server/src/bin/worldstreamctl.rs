@@ -3,10 +3,16 @@ mod cli_contract;
 #[cfg(feature = "cli-operator-preview")]
 #[path = "worldstreamctl/initialization.rs"]
 mod cli_initialization;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/pack_list.rs"]
+mod cli_pack_list;
 #[path = "worldstreamctl/reference.rs"]
 mod cli_reference;
 #[path = "worldstreamctl/report.rs"]
 mod cli_report;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/room_operations.rs"]
+mod cli_room_operations;
 #[cfg(feature = "cli-operator-preview")]
 #[path = "worldstreamctl/room_setup.rs"]
 mod cli_room_setup;
@@ -616,11 +622,23 @@ fn main() -> Result<()> {
             {
                 return finish_operator_report(&CommandReport::room_setup(name, result), json);
             }
+            #[cfg(feature = "cli-operator-preview")]
+            if let OperatorCommand::Room { command: room } = &command
+                && let Some(result) = cli_room_operations::execute(room)
+            {
+                return finish_operator_report(&CommandReport::room_operation(name, result), json);
+            }
             finish_operator_report(&CommandReport::not_implemented(name), json)
         }
         Command::Pack {
             command: PackCommand::List(options),
-        } => finish_operator_report(&CommandReport::not_implemented("pack list"), options.json),
+        } => {
+            #[cfg(feature = "cli-operator-preview")]
+            let report = CommandReport::pack_list(cli_pack_list::execute(&options, &config_args));
+            #[cfg(not(feature = "cli-operator-preview"))]
+            let report = CommandReport::not_implemented("pack list");
+            finish_operator_report(&report, options.json)
+        }
         Command::Pack {
             command: PackCommand::Prove(args),
         } => run_pack_prover(&args),

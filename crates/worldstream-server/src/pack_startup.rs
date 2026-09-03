@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, sync::Arc};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use worldstream_component_host::{ComponentHostErrorV1, ComponentPackHostV1};
 use worldstream_core::{
@@ -33,9 +33,24 @@ pub struct StartupPackRegistryV1 {
     base_distribution_identity: DeploymentIdentityV1,
     inventory_digest: String,
     diagnostics: StartupPackRegistryDiagnosticsV1,
+    facts: StartupPackFactsV1,
+}
+
+/// Frozen identities admitted at startup, never reconstructed from later disk state.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartupPackFactsV1 {
+    pub schema: String,
+    pub inventory_digest: String,
+    pub embedded_revisions: Vec<worldstream_protocol::PackReference>,
+    pub installed: Vec<crate::operator_packs::PackInventoryEntryV1>,
 }
 
 impl StartupPackRegistryV1 {
+    #[must_use]
+    pub const fn facts(&self) -> &StartupPackFactsV1 {
+        &self.facts
+    }
     #[must_use]
     pub fn registry(&self) -> &Arc<PackRegistryV1> {
         &self.registry
@@ -97,6 +112,29 @@ pub fn assemble_startup_pack_registry(
     let inventory_counts = inventory.counts();
     let inventory_digest = startup_pack_inventory_digest(&inventory)?;
     let embedded = builtin_worldstream_registry()?;
+    let facts = StartupPackFactsV1 {
+        schema: "worldstream/startup-pack-facts/v1".into(),
+        inventory_digest: inventory_digest.clone(),
+        embedded_revisions: embedded
+            .catalog_revisions()
+            .map(|entry| worldstream_protocol::PackReference {
+                id: entry.descriptor.pack_id,
+                version: entry.descriptor.explanatory_version,
+                digest: entry.revision_digest.to_string(),
+            })
+            .collect(),
+        installed: inventory
+            .entries()
+            .iter()
+            .map(|entry| crate::operator_packs::PackInventoryEntryV1 {
+                pack_id: entry.bundle().descriptor().pack_id.clone(),
+                explanatory_version: entry.bundle().descriptor().explanatory_version.clone(),
+                bundle_digest: entry.installed().bundle_digest.to_string(),
+                revision_digest: entry.installed().revision_digest.to_string(),
+                install_state: entry.installed().install_state,
+            })
+            .collect(),
+    };
     let embedded_revisions = embedded.len();
     let base_distribution_identity = distribution_identity(&embedded)?;
     let host = ComponentPackHostV1::new()?;
@@ -135,6 +173,7 @@ pub fn assemble_startup_pack_registry(
             total_revisions,
             installed_bundle_limit: MAX_INSTALLED_BUNDLE_COUNT,
         },
+        facts,
     })
 }
 

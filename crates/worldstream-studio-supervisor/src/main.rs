@@ -52,11 +52,13 @@ use worldstream_studio_supervisor::{
     local_initialization::validate_initialized,
     managed_controller::{
         ControllerLifecycle, managed_controller_router, managed_lifecycle_router,
+        managed_pack_facts_router,
     },
     managed_http::AcceptedLocalSocket,
     managed_lifecycle::ManagedLifecycle,
     process_ownership::{ProcessLease, ProcessOwnership, ProcessRole, ProcessTermination},
     process_runtime::{ManagedRuntimeSpec, ProcessRuntimeControl},
+    room_setup_operations::{RoomSetupOperationsV1, room_setup_operations_router},
     startup_authority::validate_existing_host_authority,
 };
 
@@ -413,7 +415,7 @@ async fn run(
         )
     })?;
     let runners = RunnerSupervisorV1::open(
-        runner_registry,
+        runner_registry.clone(),
         &args.state_dir.join("runner-templates/runtime"),
         vault.clone(),
         Duration::from_millis(args.graceful_stop_timeout_ms),
@@ -606,6 +608,14 @@ async fn run(
         FileAttentionHistoryV1::open(&args.state_dir.join("attention-inbox"))
             .map_err(|error| anyhow::anyhow!("attention inbox is unavailable: {error:?}"))?,
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let room_operations = RoomSetupOperationsV1::new(
+        room_creation.clone(),
+        task_setup.clone(),
+        activity_packs.clone(),
+        agent_profiles.clone(),
+        runner_registry,
+    );
     let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_templates_and_model_provider_credentials(
         source,
         lifecycle,
@@ -627,6 +637,8 @@ async fn run(
     .merge(managed_agent_host_seat_router(agent_profiles, managed_agent_hosts))
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
+    #[cfg(feature = "cli-operator-preview")]
+    let router = router.merge(room_setup_operations_router(room_operations));
 
     // Admission must wrap the complete graph, including all late merges and
     // assignment-MCP aliases. No operator routes may be merged after this point.
@@ -638,6 +650,10 @@ async fn run(
         let (shutdown, mut requested) = tokio::sync::watch::channel(false);
         let lifecycle = managed_lifecycle.context("managed lifecycle is unavailable")?;
         let router = router.merge(managed_lifecycle_router(lifecycle));
+        let router = router.merge(managed_pack_facts_router(
+            managed_transport_ownership.context("managed transport ownership is unavailable")?,
+            daemon_timeout,
+        ));
         let router = managed_controller_router(router, control, proof.clone(), shutdown);
         return axum::serve(
             listener,

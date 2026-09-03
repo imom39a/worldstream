@@ -13,7 +13,7 @@
   },
   "seats": [
     {
-      "label": "buyer_agent",
+      "label": "buyer-agent",
       "role": "buyer_agent",
       "required": true,
       "display_name": "buyer agent",
@@ -26,7 +26,7 @@
       }
     },
     {
-      "label": "seller_agent",
+      "label": "seller-agent",
       "role": "seller_agent",
       "required": true,
       "display_name": "seller agent",
@@ -39,7 +39,7 @@
       }
     },
     {
-      "label": "buyer_approver",
+      "label": "buyer-approver",
       "role": "buyer_approver",
       "required": true,
       "display_name": "buyer approver",
@@ -49,7 +49,7 @@
       }
     },
     {
-      "label": "venue_signer",
+      "label": "venue-signer",
       "role": "venue_signer",
       "required": true,
       "display_name": "venue signer",

@@ -157,6 +157,8 @@ async fn run(
     );
     let pack_startup = assemble_startup_pack_registry(&data_dir)
         .context("startup Activity Pack registry assembly failed closed")?;
+    #[cfg(feature = "cli-operator-preview")]
+    let startup_pack_facts = pack_startup.facts().clone();
     let registry = Arc::clone(pack_startup.registry());
     let pack_diagnostics = pack_startup.diagnostics();
     let state = match profile {
@@ -397,6 +399,7 @@ async fn run(
             state,
             proof.clone(),
             shutdown,
+            startup_pack_facts,
         );
         return axum::serve(
             listener,

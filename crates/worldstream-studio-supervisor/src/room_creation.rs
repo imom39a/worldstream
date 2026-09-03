@@ -76,6 +76,10 @@ pub struct RoomCreationOperationV1 {
     pub response: Option<CreateRoomResponse>,
     pub response_hash: Option<String>,
     pub attention: Option<RoomCreationAttentionV1>,
+    /// CLI preparation guard. None is the retained pre-CLI shape; it cannot
+    /// authorize recreating a missing provisioning operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_preparation_started: Option<bool>,
 }
 
 /// Browser-safe durable status. Exact intent and daemon receipt remain inside
@@ -375,6 +379,43 @@ impl RoomCreationSupervisorV1 {
         }
         operation = self.reconcile_unlocked(operation)?;
         Ok(operation)
+    }
+
+    /// Retains a freshly resolved CLI review without reading an editable draft
+    /// or calling the daemon. Existing operation identities are never replaced.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn prepare_reviewed(&self, draft: &RoomDraftV1) -> Result<(), RoomCreationErrorV1> {
+        crate::room_drafts::validate_draft(draft).map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
+        let _guard = self.lock();
+        match self.load_unlocked(&draft.draft_id) {
+            Ok(_) => return Err(RoomCreationErrorV1::InvalidDraft),
+            Err(RoomCreationErrorV1::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        let mut operation = prepare_operation(draft)?;
+        operation.setup_preparation_started = Some(false);
+        self.persist_new(&operation)
+    }
+
+    /// Claims the single CLI setup preparation before it can allocate authority.
+    /// A retained legacy record or an already claimed preparation cannot authorize
+    /// replacement intent when the setup file is missing.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn begin_setup_preparation(
+        &self,
+        draft_id: &str,
+    ) -> Result<bool, RoomCreationErrorV1> {
+        let _guard = self.lock();
+        let mut operation = self.load_unlocked(draft_id)?;
+        if operation.state != RoomCreationStateV1::Succeeded {
+            return Err(RoomCreationErrorV1::InvalidDraft);
+        }
+        if operation.setup_preparation_started != Some(false) {
+            return Ok(false);
+        }
+        operation.setup_preparation_started = Some(true);
+        self.persist(&operation)?;
+        Ok(true)
     }
 
     /// Reissues the identical persisted request for one nonterminal operation.
@@ -799,6 +840,7 @@ fn prepare_operation(draft: &RoomDraftV1) -> Result<RoomCreationOperationV1, Roo
         response: None,
         response_hash: None,
         attention: None,
+        setup_preparation_started: None,
     })
 }
 
@@ -821,6 +863,8 @@ fn validate_operation(
         || operation.intent_hash.len() != 71
         || !request_matches_review(&operation.request, &operation.review)
         || !operation_state_is_consistent(operation)
+        || (operation.setup_preparation_started == Some(true)
+            && operation.state != RoomCreationStateV1::Succeeded)
     {
         return Err(RoomCreationErrorV1::Unavailable);
     }
@@ -932,7 +976,7 @@ fn random_identity(prefix: &str) -> Result<String, RoomCreationErrorV1> {
     Ok(format!("{prefix}-{}", lower_hex(&bytes)))
 }
 
-fn next_ulid() -> Result<String, RoomCreationErrorV1> {
+pub(crate) fn next_ulid() -> Result<String, RoomCreationErrorV1> {
     const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| RoomCreationErrorV1::Unavailable)?;

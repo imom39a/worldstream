@@ -14,26 +14,31 @@ use worldstream_studio_supervisor::{
     verified_control::ProofService,
 };
 
-use crate::{OperatorState, ReadinessProbeResult, RuntimeReadiness, operator_router};
+use crate::{
+    OperatorState, ReadinessProbeResult, RuntimeReadiness, StartupPackFactsV1, operator_router,
+};
 
 #[derive(Clone)]
 struct RuntimeControlState {
     proof: ProofService,
     readiness: RuntimeReadiness,
     shutdown: watch::Sender<bool>,
+    pack_facts: StartupPackFactsV1,
 }
 
-/// Adds generation-scoped status/stop without granting Host or Room authority.
+/// Adds generation-scoped status, Pack facts and stop without granting Room authority.
 /// Serve with `AcceptedLocalSocket` connection information from the real listener.
 pub fn managed_runtime_router(
     state: OperatorState,
     proof: ProofService,
     shutdown: watch::Sender<bool>,
+    pack_facts: StartupPackFactsV1,
 ) -> Router {
     let control = RuntimeControlState {
         proof: proof.clone(),
         readiness: state.readiness,
         shutdown,
+        pack_facts,
     };
     preserve_peer_information(
         operator_router(state)
@@ -41,6 +46,7 @@ pub fn managed_runtime_router(
             .merge(
                 Router::new()
                     .route("/api/v1/control/status", get(status))
+                    .route("/api/v1/control/packs", get(packs))
                     .route("/api/v1/control/stop", post(stop))
                     .with_state(control),
             ),
@@ -55,6 +61,21 @@ fn admitted(
     socket.peer.ip().is_loopback()
         && socket.local.is_some()
         && control.proof.authenticate_runtime(headers)
+}
+
+async fn packs(
+    State(control): State<RuntimeControlState>,
+    ConnectInfo(socket): ConnectInfo<AcceptedLocalSocket>,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    if method != Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    if !admitted(&control, socket, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(control.pack_facts).into_response()
 }
 
 #[derive(Serialize)]

@@ -3,10 +3,12 @@
 use axum::{
     Json, Router,
     extract::{Request, State},
-    http::StatusCode,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::watch;
 
 use crate::{
@@ -21,7 +23,8 @@ use crate::{
         LifecycleAction, LifecycleError, LifecycleLogEntry, LifecycleStage, LifecycleStatus,
         ManagedLifecycle, RuntimeObservation,
     },
-    verified_control::ProofService,
+    process_ownership::{ProcessOwnership, ProcessRole},
+    verified_control::{ProofService, VerifiedConnection},
 };
 
 /// Keeps every retained lifecycle alias on the same ownership-safe implementation.
@@ -144,6 +147,30 @@ pub fn managed_lifecycle_router(control: ManagedLifecycle) -> Router {
         .route("/api/v1/control/server/stop", post(server_stop))
         .route("/api/v1/control/server/restart", post(server_restart))
         .with_state(control)
+}
+
+/// Relays bounded frozen metadata from the proved Runtime without Host credentials.
+/// The complete Controller router must still enforce operator admission.
+pub fn managed_pack_facts_router(ownership: ProcessOwnership, timeout: Duration) -> Router {
+    Router::new()
+        .route("/api/v1/control/packs", get(pack_facts))
+        .with_state((ownership, timeout))
+}
+
+async fn pack_facts(
+    State((ownership, timeout)): State<(ProcessOwnership, Duration)>,
+) -> Result<Response, StatusCode> {
+    tokio::task::spawn_blocking(move || {
+        let response = VerifiedConnection::connect(&ownership, ProcessRole::Runtime, timeout)
+            .and_then(|connection| connection.request_runtime("GET", "/api/v1/control/packs", b""))
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        if response.status != 200 {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        Ok(([(header::CONTENT_TYPE, "application/json")], response.body).into_response())
+    })
+    .await
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
 }
 
 async fn server_logs(

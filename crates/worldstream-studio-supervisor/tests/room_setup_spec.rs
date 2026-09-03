@@ -104,6 +104,7 @@ fn setup_rejects_ambiguous_principals_and_incompatible_seat_assignment_intent()
         ("/seats/0/principal/kind", json!("agent")),
         ("/seats/0/role", json!("unlisted_role")),
         ("/seats/1/label", json!("navigator")),
+        ("/seats/1/label", json!("Insider_Agent")),
     ] {
         let mut input = setup_input(&catalog);
         let (parent, key) = invalid.0.rsplit_once('/').ok_or("fixture pointer")?;

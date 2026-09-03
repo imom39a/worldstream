@@ -73,7 +73,7 @@ pub struct PackMutationReceiptV1 {
 }
 
 /// One deterministic inventory row after complete original-byte verification.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, Serialize)]
 pub struct PackInventoryEntryV1 {
     pub pack_id: String,
     pub explanatory_version: String,

@@ -77,8 +77,9 @@ use rate_limit::{
 
 pub use args::CommonConfigArgs;
 pub use pack_startup::{
-    StartupPackRegistryDiagnosticsV1, StartupPackRegistryErrorV1, StartupPackRegistryV1,
-    assemble_startup_pack_registry, pack_deployment_binding, verify_startup_pack_readiness_seal,
+    StartupPackFactsV1, StartupPackRegistryDiagnosticsV1, StartupPackRegistryErrorV1,
+    StartupPackRegistryV1, assemble_startup_pack_registry, pack_deployment_binding,
+    verify_startup_pack_readiness_seal,
 };
 pub use postgres_backend::{PostgresGatewayBackend, read_postgres_dsn};
 pub use sqlite_backend::SqliteGatewayBackend;

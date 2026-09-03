@@ -193,6 +193,52 @@ pub struct PackBundleStoreV1 {
 }
 
 impl PackBundleStoreV1 {
+    /// Reads bounded retained installation intent without opening objects,
+    /// checking approvals, or creating a storage tree. These are unverified
+    /// metadata, never startup admission or proof of a running registry.
+    ///
+    /// # Errors
+    /// Rejects malformed, duplicate, noncanonical or unreadable inventory.
+    pub fn read_inventory_metadata(
+        root: &Path,
+    ) -> Result<Vec<InstalledPackBundleV1>, PackBundleErrorV1> {
+        let inventory = root.join("inventory");
+        match fs::symlink_metadata(root) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+            Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
+                return Err(PackBundleErrorV1::InventoryNotCanonical);
+            }
+            Ok(_) => {}
+        }
+        let metadata = fs::symlink_metadata(&inventory)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(PackBundleErrorV1::InventoryNotCanonical);
+        }
+        let mut rows = Vec::new();
+        let mut revisions = BTreeSet::new();
+        for entry in fs::read_dir(inventory)? {
+            if rows.len() == MAX_INSTALLED_BUNDLE_COUNT {
+                return Err(PackBundleErrorV1::LimitExceeded);
+            }
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                return Err(PackBundleErrorV1::InventoryNotCanonical);
+            }
+            let row: InstalledPackBundleV1 = read_canonical(&entry.path())?;
+            if row.inventory_record_id != INVENTORY_RECORD_ID
+                || entry.file_name()
+                    != std::ffi::OsStr::new(&format!("{}.json", row.bundle_digest.path_component()))
+                || !revisions.insert(row.revision_digest.clone())
+            {
+                return Err(PackBundleErrorV1::InventoryNotCanonical);
+            }
+            rows.push(row);
+        }
+        rows.sort_by(|left, right| left.bundle_digest.cmp(&right.bundle_digest));
+        Ok(rows)
+    }
+
     /// Opens or creates the closed Activity Pack storage tree. The containing
     /// runtime data directory must already have passed the runtime filesystem
     /// and ownership checks.

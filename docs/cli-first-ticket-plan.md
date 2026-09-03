@@ -3,8 +3,10 @@
 Status: Q1–Q18 approved; 12 implementation tickets filed in Linear.
 Ticket preparation is complete. IMO-135's contract work, IMO-136's protected
 initialization and control admission, IMO-137's MVP managed lifecycle,
-IMO-139's reviewed setup generation and validation, and IMO-142's explicit
-prerequisite imports are complete. Studio retirement remains
+IMO-138's installed/running Pack display, IMO-139's reviewed setup generation
+and validation, IMO-140's immutable creation/provisioning operations, and
+IMO-142's explicit prerequisite imports are complete.
+Studio retirement remains
 gated on the complete replacement proof. Production hardening is deferred to
 IMO-147 under the user-approved MVP delivery update.
 
@@ -24,8 +26,9 @@ adds protected initialization and control admission behind the internal preview
 gate. The completed
 [IMO-142](https://linear.app/imom39a/issue/IMO-142/prepare-approved-agent-and-client-prerequisites-without-studio)
 adds exact reviewed local prerequisite imports through the same preview gate.
-The current frontier is Pack inventory display (IMO-138) and immutable Room
-creation and provisioning operations (IMO-140).
+Pack inventory display (IMO-138) and immutable Room creation/provisioning
+operations (IMO-140) are also complete. The current frontier is client-neutral
+launch readiness (IMO-141) and scoped client/Runner connection commands (IMO-143).
 
 Each other ticket has native Linear blocking relations. Start a ticket only
 after all its blockers are complete. Update its readiness label at that point;
@@ -109,6 +112,6 @@ Linear's Markdown normalization), status, readiness labels, and native blocking
 relations match this plan. The graph has no cycles. At ticket creation, only
 IMO-135 was unblocked in this new tranche.
 
-This handoff does not claim that any new command exists. The current
-[getting-started guide](getting-started.md) continues to describe executable
-current behavior and labels the replacement as pending implementation.
+The original ticket handoff did not claim implementation. Completed preview
+slices are listed above. The [getting-started guide](getting-started.md)
+keeps the existing supported flow until the CLI-only replacement is verified.

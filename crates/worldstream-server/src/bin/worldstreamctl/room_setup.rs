@@ -13,11 +13,11 @@ use worldstream_protocol::{
     ActivityPackCatalogResponse, ActivityPackCatalogRevisionResponse, PackReference,
 };
 use worldstream_studio_supervisor::{
-    agent_profiles::{
-        AgentHostContractV1, AgentProfileRevisionViewV1, AgentProfileSecretAvailabilityV1,
-    },
+    agent_profiles::AgentProfileRevisionViewV1,
     operator_connection::OperatorConnection,
-    room_drafts::AgentAssignmentModeV1,
+    room_setup_operations::{
+        RoomSetupDependencyError, runner_supports_pack, validate_profile_assignment,
+    },
     room_setup_spec::{
         RoomSetupError, RoomSetupIssueCode, RoomSetupSpecificationV1, SetupAssignmentV1,
         generate_setup_example, parse_setup_specification, resolve_setup_specification,
@@ -281,36 +281,13 @@ fn check_profile_view(
             code,
         })
     };
-    let Some(expected) = &assignment.agent_profile else {
-        return Err(rejected(RoomSetupIssueCode::Required));
-    };
-    if expected.profile_id != view.profile_id || expected.revision != view.revision {
-        return Err(rejected(RoomSetupIssueCode::DependencyIncompatible));
-    }
-    if view
-        .secret_settings
-        .iter()
-        .any(|setting| setting.availability == AgentProfileSecretAvailabilityV1::Unavailable)
-    {
-        return Err(RoomSetupExecution::Unavailable);
-    }
-    if view
-        .secret_settings
-        .iter()
-        .any(|setting| setting.availability != AgentProfileSecretAvailabilityV1::Configured)
-    {
-        return Err(rejected(RoomSetupIssueCode::DependencyMissing));
-    }
-    match (&assignment.mode, &view.host_contract) {
-        (_, AgentHostContractV1::GenericMcp) => Ok(()),
-        (
-            AgentAssignmentModeV1::Managed,
-            AgentHostContractV1::ManagedReference {
-                runner_template, ..
-            },
-        ) if assignment.runner_template.as_ref() == Some(runner_template) => Ok(()),
-        _ => Err(rejected(RoomSetupIssueCode::DependencyIncompatible)),
-    }
+    validate_profile_assignment(assignment, view).map_err(|error| match error {
+        RoomSetupDependencyError::Missing => rejected(RoomSetupIssueCode::DependencyMissing),
+        RoomSetupDependencyError::Incompatible => {
+            rejected(RoomSetupIssueCode::DependencyIncompatible)
+        }
+        RoomSetupDependencyError::Unavailable => RoomSetupExecution::Unavailable,
+    })
 }
 
 fn check_runners(
@@ -369,10 +346,7 @@ fn check_runners(
         if matches.next().is_some() {
             return Err(RoomSetupExecution::Unavailable);
         }
-        if !template.compatibility.iter().any(|rule| {
-            rule.activity_pack_id == specification.pack.id
-                && rule.exact_revisions.contains(&specification.pack.version)
-        }) {
+        if !runner_supports_pack(&template.compatibility, &specification.pack) {
             return Err(RoomSetupExecution::Rejected(
                 RoomSetupError::Specification {
                     path: format!("/seats/{index}/assignment/runner_template"),
@@ -399,7 +373,7 @@ fn profile_component(value: &str, revision: bool) -> bool {
         })
 }
 
-fn read_input(path: &std::path::Path) -> Result<Vec<u8>, RoomSetupError> {
+pub(super) fn read_input(path: &std::path::Path) -> Result<Vec<u8>, RoomSetupError> {
     let invalid = || RoomSetupError::Specification {
         path: String::new(),
         code: RoomSetupIssueCode::InvalidSpecification,

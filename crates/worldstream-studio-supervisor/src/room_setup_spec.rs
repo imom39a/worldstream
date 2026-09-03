@@ -58,7 +58,7 @@ pub struct RoomSetupSpecificationV1 {
     pub operator_view: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoomSetupIssueCode {
     InvalidSpecification,
@@ -73,7 +73,7 @@ pub enum RoomSetupIssueCode {
 }
 
 /// Closed field diagnostics never include supplied values or parser messages.
-#[derive(Debug, Error, Serialize)]
+#[derive(Debug, Deserialize, Error, Serialize)]
 #[serde(untagged)]
 pub enum RoomSetupError {
     #[error("Room setup does not satisfy the public specification")]
@@ -184,7 +184,7 @@ fn validate_seats(
             path: format!("/seats/{index}"),
             code: RoomSetupIssueCode::SeatIntent,
         };
-        if !public_reference(&seat.label)
+        if !seat_label(&seat.label)
             || !public_reference(&seat.role)
             || seat.display_name.is_empty()
             || seat.display_name.len() > 128
@@ -248,6 +248,18 @@ fn validate_seats(
         }
     }
     Ok(())
+}
+
+fn seat_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
 }
 
 fn public_reference(value: &str) -> bool {

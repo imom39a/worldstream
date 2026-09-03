@@ -14,6 +14,10 @@ file does not claim that the complete create/connect/launch flow is released.
   2100-01-01 00:00:00 UTC. Review and change this absolute deadline before a
   real negotiation; it is not a duration or an automatically expanded value.
 
+Seat labels use lowercase letters, digits, and hyphens, start with a letter or
+digit, and have at most 64 characters. They identify a seat in setup commands.
+A seat label is not its Pack Role: for example, `buyer-agent` fills `buyer_agent`.
+
 Principal references are specification-local labels for new per-attempt
 identities, not existing Principal lookups. Creation must retain the resolved
 identities for retry. These external assignments need separately delivered
@@ -83,3 +87,45 @@ or missing choices return an explicit error without creating output. Interactive
 prompts are deferred: `--interactive` is not supported by this preview. A local
 write failure can leave an incomplete output file; inspect it before retrying
 with a new output path.
+
+## Create and resume a retained setup
+
+After reviewing and validating the generated input, create one attempt:
+
+```sh
+worldstreamctl room create --file heist-setup.json
+worldstreamctl room setup status
+worldstreamctl room list
+```
+
+Creation prints its `OPERATION` reference and, when known, its `ROOM` identity.
+Substitute those printed values in these commands (and retain the same
+installation options):
+
+```sh
+worldstreamctl room setup status OPERATION
+worldstreamctl room setup resume OPERATION
+worldstreamctl room inspect ROOM
+```
+
+Status without an operation lists unfinished attempts. Room listing and inspection
+are separate read-only Room diagnostics, not setup progress. An uncertain or
+partial create result is not a rollback: inspect and resume its printed operation
+instead of running `create` again. Resume accepts only the retained operation;
+editing or replacing the original JSON file does not change that attempt.
+If status says `restore_setup_record`, do not keep retrying or create replacement
+credentials. The original provisioning intent is missing. See the
+[retained-state guidance](../../docs/cli-reference.md#room-setup-and-participation).
+
+Agent Heist 0.2.0 creates a Room in its existing Lobby. Completing setup does not
+launch the Activity or prove participant connection/readiness. Negotiate 0.1.0
+starts its Activity at Genesis instead: review its absolute `formation_deadline`
+before explicitly acknowledging creation:
+
+```sh
+worldstreamctl room create --file negotiate-setup.json --acknowledge-start
+```
+
+Incomplete provisioning does not pause Negotiate's Activity or deadlines. These
+commands cover creation and retained setup only; they do not claim that client
+connection or Runner attachment is available in this preview.

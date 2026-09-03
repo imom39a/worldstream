@@ -140,7 +140,7 @@ async fn validate_with_catalog(
     );
     let requests = Arc::new(AtomicUsize::new(0));
     let count = requests.clone();
-    let routes = Router::new()
+    let endpoints = Router::new()
         .route(
             &path,
             get(move || {
@@ -151,7 +151,7 @@ async fn validate_with_catalog(
         )
         .merge(dependency_routes(requests.clone()));
     let (shutdown, _requested) = tokio::sync::watch::channel(false);
-    let router = managed_controller_router(routes, control, proof, shutdown);
+    let router = managed_controller_router(endpoints, control, proof, shutdown);
     fs::write(directory.path().join("setup.json"), input)?;
     let server = tokio::spawn(async move {
         axum::serve(

@@ -248,31 +248,31 @@ fn room_runner_client_and_pack_leaves_freeze_public_selectors() {
         let mut json_arguments = arguments.clone();
         json_arguments.push("--json");
         let output = control(&json_arguments);
-        let missing_setup_file = cfg!(feature = "cli-operator-preview")
-            && arguments.get(..2) == Some(&["room", "validate"]);
+        let (exit, code) = empty_installation_outcome(&arguments);
         assert_eq!(
             output.status.code(),
-            Some(if missing_setup_file { 1 } else { 3 }),
+            Some(exit),
             "{arguments:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         let report: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|error| unreachable!("JSON stdout: {error}"));
-        assert_eq!(
-            report["code"],
-            if missing_setup_file {
-                "operation_rejected"
-            } else if cfg!(feature = "cli-operator-preview")
-                && arguments.get(..2) == Some(&["room", "example"])
-            {
-                "controller_unavailable"
-            } else {
-                "not_implemented"
-            }
-        );
+        assert_eq!(report["code"], code);
         let mut help_arguments = arguments;
         help_arguments.push("--help");
         assert_eq!(control(&help_arguments).status.code(), Some(0));
+    }
+}
+
+fn empty_installation_outcome(arguments: &[&str]) -> (i32, &'static str) {
+    if !cfg!(feature = "cli-operator-preview") {
+        return (3, "not_implemented");
+    }
+    match arguments.get(..2) {
+        Some(["room", "validate" | "create"]) => (1, "operation_rejected"),
+        Some(["room", "example" | "list" | "inspect" | "setup"]) => (3, "controller_unavailable"),
+        Some(["pack", "list"]) => (3, "pack_inventory_unavailable"),
+        _ => (3, "not_implemented"),
     }
 }
 

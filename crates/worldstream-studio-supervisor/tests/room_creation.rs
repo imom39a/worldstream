@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(feature = "cli-operator-preview")]
+use worldstream_studio_supervisor::{managed_daemon_transport, process_ownership};
+
 mod activity_packs {
     pub use worldstream_studio_supervisor::activity_packs::*;
 }
