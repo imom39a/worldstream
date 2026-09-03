@@ -1,6 +1,7 @@
 //! Additive operator CLI contract. No process or storage engines live here.
 //! Kept with the CLI binary; these argument types are not Runtime interfaces.
 
+use super::cli_reference::PublicReference;
 use clap::{ArgGroup, Args, Subcommand};
 use std::{ffi::OsString, io::IsTerminal, net::SocketAddr, path::PathBuf};
 
@@ -9,43 +10,33 @@ use std::{ffi::OsString, io::IsTerminal, net::SocketAddr, path::PathBuf};
 #[must_use]
 pub fn operator_family(arguments: &[OsString]) -> Option<&'static str> {
     let mut values = arguments.iter().skip(1);
+    match next_command_token(&mut values)? {
+        "init" => Some("init"),
+        "server" => Some("server"),
+        "room" => Some("room"),
+        "runner" => Some("runner"),
+        "client" => Some("client"),
+        "pack" => (next_command_token(&mut values)? == "list").then_some("pack list"),
+        _ => None,
+    }
+}
+
+fn next_command_token<'a>(values: &mut impl Iterator<Item = &'a OsString>) -> Option<&'a str> {
+    const GLOBAL_VALUE_OPTIONS: [&str; 4] =
+        ["--config", "--bind", "--storage-profile", "--data-dir"];
     while let Some(value) = values.next() {
         let value = value.to_str()?;
-        if ["--config", "--bind", "--storage-profile", "--data-dir"].contains(&value) {
+        if GLOBAL_VALUE_OPTIONS.contains(&value) {
             values.next()?;
             continue;
         }
-        if ["--config=", "--bind=", "--storage-profile=", "--data-dir="]
-            .iter()
-            .any(|prefix| value.starts_with(prefix))
+        if value
+            .split_once('=')
+            .is_some_and(|(name, _)| GLOBAL_VALUE_OPTIONS.contains(&name))
         {
             continue;
         }
-        return match value {
-            "init" => Some("init"),
-            "server" => Some("server"),
-            "room" => Some("room"),
-            "runner" => Some("runner"),
-            "client" => Some("client"),
-            "pack" => {
-                while let Some(leaf) = values.next() {
-                    let leaf = leaf.to_str()?;
-                    if ["--config", "--bind", "--storage-profile", "--data-dir"].contains(&leaf) {
-                        values.next()?;
-                        continue;
-                    }
-                    if ["--config=", "--bind=", "--storage-profile=", "--data-dir="]
-                        .iter()
-                        .any(|prefix| leaf.starts_with(prefix))
-                    {
-                        continue;
-                    }
-                    return (leaf == "list").then_some("pack list");
-                }
-                None
-            }
-            _ => None,
-        };
+        return Some(value);
     }
     None
 }
@@ -359,16 +350,7 @@ impl OperatorCommand {
 }
 
 fn reference(value: &str) -> Result<String, &'static str> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value.as_bytes()[0].is_ascii_alphanumeric()
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
-    {
-        return Err("expected a bounded public identifier");
-    }
-    Ok(value.to_owned())
+    PublicReference::parse(value).map(PublicReference::into_string)
 }
 
 fn pack_selector(value: &str) -> Result<String, &'static str> {

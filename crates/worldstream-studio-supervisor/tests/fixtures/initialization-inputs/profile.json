@@ -1,0 +1,16 @@
+{
+  "schema": "worldstream/studio-agent-profile-publish/v2",
+  "profile_id": "counter-managed",
+  "revision": "v1",
+  "display_name": "Managed Counter profile",
+  "non_secret_configuration": {},
+  "host_contract": {
+    "kind": "managed_reference",
+    "host_contract_revision": "v1",
+    "runner_template": {"template_id": "counter-managed-reference", "revision": "v1"},
+    "provider": "open_ai_compatible",
+    "provider_address": "127.0.0.1:9502",
+    "model_id": "counter-deterministic"
+  },
+  "managed_provider_credential_id": "local-openai"
+}

@@ -1,0 +1,7 @@
+{
+  "schema": "worldstream/model-provider-credential-import/v1",
+  "credential_id": "local-openai",
+  "display_name": "Local provider",
+  "provider": "open_ai_compatible",
+  "secret_file": "secrets/provider-token"
+}

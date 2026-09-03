@@ -1,0 +1,13 @@
+{
+  "schema": "worldstream/runner-template/v1",
+  "template_id": "counter-managed-reference",
+  "revision": "v1",
+  "display_name": "Managed Counter reference",
+  "executable": {"path": "bin/managed-reference", "blake3": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "compatibility": [{"activity_pack_id": "worldstream.counter", "exact_revisions": ["4.0.0"]}],
+  "capacity": {"maximum_concurrent_invocations": 1},
+  "health": {"path": "/healthz", "timeout_ms": 500, "stale_after_ms": 5000},
+  "non_secret_environment": {},
+  "secret_environment": [],
+  "instances": [{"instance_id": "counter-reference-1", "health_address": "127.0.0.1:9501"}]
+}

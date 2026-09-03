@@ -61,13 +61,22 @@ initialization preview, successful mutation, or live status observation.
 | `failed` | `operation_failed` | 1 |
 | `invalid_arguments` | `invalid_arguments` | 2 |
 | `unavailable` | `not_implemented`, `controller_unavailable`, `stale_evidence` | 3 |
-| `partial` | `setup_incomplete` | 4 |
+| `partial` | `setup_incomplete`, `lifecycle_incomplete` | 4 |
 
 Retained partial setup reports may additionally contain `operation_id`,
 `room_id`, and `stage`; absent fields are omitted. References use the bounded
 public identifier grammar below. Setup stages are `room_creation`,
 `member_capability`, and `runner_capability`. Resume the reported operation
 using the same installation options; do not supply a replacement setup file.
+
+Partial managed shutdown/restart reports use `lifecycle_incomplete` and a
+`stage` of `managed_runner_stop`, `runtime_stop`, `runtime_restart`, or
+`managed_runner_restore`. They contain no Room or setup-operation reference
+and offer no Room setup resume command. Inspect `server status` and
+`runner list` with the same installation options before taking further action;
+the report makes no rollback claim. Restoration concerns only the previously
+running owned managed Runners after current approval and eligibility checks.
+
 The formatter supports these outcomes for later adapters; current accepted
 CLI invocations still return only `not_implemented` (or input rejection).
 
@@ -110,6 +119,11 @@ Directory scanning, glob expansion by the CLI, executable shell input, and
 implicit import of nearby declarations are not supported. Shell-expanded
 inputs still count toward the same limit. Preview is nonmutating; approval
 authorizes only the reviewed bytes and exact declared identities/targets.
+
+The exact versioned JSON fields, per-file bounds, referenced-file rules, and
+provider secret-file boundary are specified in
+[Initialization input contracts](cli-initialization-inputs.md). A file selected
+by one flag cannot be interpreted as another declaration kind.
 
 | Command | Required input / behavior |
 | --- | --- |

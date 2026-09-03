@@ -1,6 +1,7 @@
 //! Stable, secret-free output for the additive operator commands.
 //! Legacy command receipts deliberately do not pass through this formatter.
 
+use crate::cli_reference::PublicReference;
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -49,41 +50,42 @@ pub enum CommandOutcome {
         room_id: Option<PublicReference>,
         stage: SetupStage,
     },
+    PartialLifecycle {
+        stage: LifecycleStage,
+    },
 }
 
-/// A public operational identifier, never a secret, path, or request payload.
-#[derive(Clone, Debug, Serialize)]
-#[serde(transparent)]
-pub struct PublicReference(String);
+/// Incomplete managed-process work, separate from Room setup progress.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "IMO-135 freezes managed lifecycle partial results before process integration"
+    )
+)]
+pub enum LifecycleStage {
+    ManagedRunnerStop,
+    RuntimeStop,
+    RuntimeRestart,
+    ManagedRunnerRestore,
+}
 
-impl PublicReference {
-    /// Validate the same bounded reference grammar accepted by the operator CLI.
-    ///
-    /// Callers supply only references from typed operational results, not raw errors.
-    ///
-    /// # Errors
-    /// Returns a fixed diagnostic without retaining or displaying rejected input.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "partial backend results consume this frozen output boundary in subsequent tickets"
-        )
-    )]
-    pub fn parse(value: &str) -> Result<Self, &'static str> {
-        if value.len() > 128
-            || !value
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphanumeric)
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
-        {
-            return Err("expected a bounded public identifier");
+impl LifecycleStage {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ManagedRunnerStop => "managed_runner_stop",
+            Self::RuntimeStop => "runtime_stop",
+            Self::RuntimeRestart => "runtime_restart",
+            Self::ManagedRunnerRestore => "managed_runner_restore",
         }
-        Ok(Self(value.to_owned()))
     }
+}
+
+#[derive(Debug, Serialize)]
+struct LifecycleProgress {
+    stage: LifecycleStage,
 }
 
 /// Operational setup progress; not an Activity Phase or canonical Room value.
@@ -165,6 +167,8 @@ pub struct CommandReport {
     next_action: String,
     #[serde(flatten)]
     setup: Option<SetupProgress>,
+    #[serde(flatten)]
+    lifecycle: Option<LifecycleProgress>,
 }
 
 impl CommandReport {
@@ -181,6 +185,7 @@ impl CommandReport {
     #[must_use]
     pub fn new(command: &'static str, outcome: CommandOutcome) -> Self {
         let mut setup = None;
+        let mut lifecycle = None;
         let (status, code, message, next_action) = match outcome {
             CommandOutcome::Complete => (
                 CommandStatus::Complete,
@@ -241,12 +246,21 @@ impl CommandReport {
                     "",
                 )
             }
+            CommandOutcome::PartialLifecycle { stage } => {
+                lifecycle = Some(LifecycleProgress { stage });
+                (
+                    CommandStatus::Partial,
+                    "lifecycle_incomplete",
+                    "Managed lifecycle work is incomplete.",
+                    "Inspect 'worldstreamctl server status' and 'worldstreamctl runner list' using the same installation options before taking further action.",
+                )
+            }
         };
         let next_action = setup.as_ref().map_or_else(
             || next_action.to_owned(),
             |progress| format!(
                 "Inspect 'worldstreamctl room setup status {operation}', then resume that intent with 'worldstreamctl room setup resume {operation}' using the same installation options.",
-                operation = progress.operation_id.0,
+                operation = progress.operation_id.as_str(),
             ),
         );
         Self {
@@ -257,6 +271,7 @@ impl CommandReport {
             message,
             next_action,
             setup,
+            lifecycle,
         }
     }
 
@@ -285,10 +300,13 @@ impl CommandReport {
                 self.code
             )?;
             if let Some(progress) = &self.setup {
-                writeln!(stdout, "Operation: {}", progress.operation_id.0)?;
+                writeln!(stdout, "Operation: {}", progress.operation_id.as_str())?;
                 if let Some(room_id) = &progress.room_id {
-                    writeln!(stdout, "Room: {}", room_id.0)?;
+                    writeln!(stdout, "Room: {}", room_id.as_str())?;
                 }
+                writeln!(stdout, "Stage: {}", progress.stage.label())?;
+            }
+            if let Some(progress) = &self.lifecycle {
                 writeln!(stdout, "Stage: {}", progress.stage.label())?;
             }
         }
@@ -301,7 +319,7 @@ impl CommandReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandOutcome, CommandReport, PublicReference, SetupStage};
+    use super::{CommandOutcome, CommandReport, LifecycleStage, PublicReference, SetupStage};
 
     #[test]
     fn unavailable_json_is_one_literal_document_with_separate_diagnostics() -> std::io::Result<()> {
@@ -515,6 +533,51 @@ mod tests {
             assert!(document.get("room_id").is_none());
             assert_eq!(document["operation_id"], "operation.1_local:retry");
             assert_eq!(document["stage"], expected_stage);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn partial_lifecycle_has_its_own_literal_result_without_room_setup_guidance()
+    -> std::io::Result<()> {
+        let report = CommandReport::new(
+            "server restart",
+            CommandOutcome::PartialLifecycle {
+                stage: LifecycleStage::ManagedRunnerRestore,
+            },
+        );
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(report.write(true, &mut stdout, &mut stderr)?.code(), 4);
+        assert_eq!(stdout, br#"{"schema":"worldstream/operator-command/v1","command":"server restart","status":"partial","code":"lifecycle_incomplete","message":"Managed lifecycle work is incomplete.","next_action":"Inspect 'worldstreamctl server status' and 'worldstreamctl runner list' using the same installation options before taking further action.","stage":"managed_runner_restore"}
+"#);
+        assert_eq!(stderr, b"Managed lifecycle work is incomplete. Inspect 'worldstreamctl server status' and 'worldstreamctl runner list' using the same installation options before taking further action.\n");
+
+        for (stage, expected_stdout) in [
+            (
+                LifecycleStage::ManagedRunnerStop,
+                "server restart: partial (lifecycle_incomplete)\nStage: managed_runner_stop\n",
+            ),
+            (
+                LifecycleStage::RuntimeStop,
+                "server restart: partial (lifecycle_incomplete)\nStage: runtime_stop\n",
+            ),
+            (
+                LifecycleStage::RuntimeRestart,
+                "server restart: partial (lifecycle_incomplete)\nStage: runtime_restart\n",
+            ),
+            (
+                LifecycleStage::ManagedRunnerRestore,
+                "server restart: partial (lifecycle_incomplete)\nStage: managed_runner_restore\n",
+            ),
+        ] {
+            let report =
+                CommandReport::new("server restart", CommandOutcome::PartialLifecycle { stage });
+            stdout.clear();
+            stderr.clear();
+            assert_eq!(report.write(false, &mut stdout, &mut stderr)?.code(), 4);
+            assert_eq!(stdout, expected_stdout.as_bytes());
+            assert_eq!(stderr, b"Managed lifecycle work is incomplete. Inspect 'worldstreamctl server status' and 'worldstreamctl runner list' using the same installation options before taking further action.\n");
         }
         Ok(())
     }

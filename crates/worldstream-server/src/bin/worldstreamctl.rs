@@ -1,5 +1,7 @@
 #[path = "worldstreamctl/contract.rs"]
 mod cli_contract;
+#[path = "worldstreamctl/reference.rs"]
+mod cli_reference;
 #[path = "worldstreamctl/report.rs"]
 mod cli_report;
 

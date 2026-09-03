@@ -13,6 +13,7 @@ pub mod assignment_mcp_operations;
 pub mod attention_inbox;
 pub mod backups;
 pub mod client_bindings;
+pub mod initialization_inputs;
 pub mod lifecycle;
 pub mod managed_activation_status;
 pub mod managed_agent_host;

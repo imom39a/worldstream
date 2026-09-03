@@ -240,7 +240,7 @@ fn room_runner_client_and_pack_leaves_freeze_public_selectors() {
 }
 
 #[test]
-fn operator_argument_rejections_are_bounded_and_do_not_echo_input() {
+fn operator_argument_errors_do_not_echo_input() {
     let canary = "DO_NOT_ECHO_PROVIDER_SECRET";
     for arguments in [
         vec!["server", "status", "--unknown", canary, "--json"],
@@ -271,6 +271,10 @@ fn operator_argument_rejections_are_bounded_and_do_not_echo_input() {
             .unwrap_or_else(|error| unreachable!("JSON stdout: {error}"));
         assert_eq!(report["code"], "invalid_arguments");
     }
+}
+
+#[test]
+fn server_arguments_require_bounded_loopback_control() {
     for arguments in [
         vec!["server", "status", "--controller", "192.0.2.1:9420"],
         vec!["server", "status", "--controller", "localhost:9420"],
@@ -279,6 +283,14 @@ fn operator_argument_rejections_are_bounded_and_do_not_echo_input() {
         vec!["server", "status", "--timeout-seconds", "301"],
         vec!["server", "logs", "--tail", "0"],
         vec!["server", "logs", "--tail", "1001"],
+    ] {
+        assert_eq!(control(&arguments).status.code(), Some(2), "{arguments:?}");
+    }
+}
+
+#[test]
+fn setup_arguments_require_exact_pack_and_explicit_participant_inputs() {
+    for arguments in [
         vec![
             "room",
             "example",
@@ -351,13 +363,35 @@ fn operator_argument_rejections_are_bounded_and_do_not_echo_input() {
     ] {
         assert_eq!(control(&arguments).status.code(), Some(2), "{arguments:?}");
     }
+}
+
+#[test]
+fn legacy_option_values_are_not_mistaken_for_operator_commands() {
     // A legacy value which resembles a new family is not an operator command.
     for arguments in [
         vec!["--config", "room", "health", "--bad"],
+        vec!["--config=room", "health", "--bad"],
+        vec!["pack", "--config=room", "export", "--bad"],
         vec!["pack", "export", "--output", "server", "--bad"],
     ] {
         let output = control(&arguments);
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("Usage:"));
+    }
+}
+
+#[test]
+fn operator_errors_skip_global_option_values_at_both_command_levels() {
+    for arguments in [
+        vec!["--config", "room", "server", "status", "--bad", "--json"],
+        vec!["--config=room", "server", "status", "--bad", "--json"],
+        vec!["pack", "--config", "server", "list", "--bad", "--json"],
+        vec!["pack", "--config=server", "list", "--bad", "--json"],
+    ] {
+        let output = control(&arguments);
+        assert_eq!(output.status.code(), Some(2));
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| unreachable!("JSON stdout: {error}"));
+        assert_eq!(report["code"], "invalid_arguments");
     }
 }

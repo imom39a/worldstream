@@ -1,0 +1,5 @@
+{
+  "schema": "worldstream/client-declaration-import/v1",
+  "release_files": ["releases/inspector-web.json", "releases/agent-heist-web.json"],
+  "bindings_file": "local-bindings.json"
+}
