@@ -3,10 +3,12 @@ use std::process::{Command, Output, Stdio};
 fn control(arguments: &[&str]) -> Output {
     let directory =
         tempfile::tempdir().unwrap_or_else(|error| unreachable!("isolated CLI directory: {error}"));
+    let protected = worldstream_runtime::prepare_data_directory(&directory.path().join("working"))
+        .unwrap_or_else(|error| unreachable!("protected CLI directory: {error}"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_worldstreamctl"));
     command
         .args(arguments)
-        .current_dir(directory.path())
+        .current_dir(&protected)
         .stdin(Stdio::null());
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("WORLDSTREAM") {
@@ -17,7 +19,7 @@ fn control(arguments: &[&str]) -> Output {
         .output()
         .unwrap_or_else(|error| unreachable!("operator CLI process: {error}"));
     assert_eq!(
-        std::fs::read_dir(directory.path())
+        std::fs::read_dir(&protected)
             .unwrap_or_else(|error| unreachable!("isolated directory: {error}"))
             .count(),
         0,
@@ -86,6 +88,41 @@ fn managed_server_commands_accept_bounded_explicit_control_options() {
             "{leaf}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+#[test]
+fn server_start_accepts_an_explicit_local_participant_origin() {
+    let output = control(&[
+        "server",
+        "start",
+        "--participant-console-origin",
+        "http://127.0.0.1:15173",
+        "--state-dir",
+        "missing-installation",
+        "--controller",
+        "127.0.0.1:19420",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(3));
+    for origin in [
+        "http://example.com:15173",
+        "http://127.0.0.1:15173/path",
+        "http://127.0.0.1:15173/",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:80",
+        "http://127.0.0.1:015173",
+    ] {
+        let output = control(&[
+            "server",
+            "start",
+            "--participant-console-origin",
+            origin,
+            "--json",
+        ]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(origin));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(origin));
     }
 }
 
@@ -270,7 +307,10 @@ fn empty_installation_outcome(arguments: &[&str]) -> (i32, &'static str) {
     }
     match arguments.get(..2) {
         Some(["room", "validate" | "create"]) => (1, "operation_rejected"),
-        Some(["room", "example" | "list" | "inspect" | "setup"]) => (3, "controller_unavailable"),
+        Some(
+            ["room", "example" | "list" | "inspect" | "setup" | "launch"]
+            | ["runner" | "client", _],
+        ) => (3, "controller_unavailable"),
         Some(["pack", "list"]) => (3, "pack_inventory_unavailable"),
         _ => (3, "not_implemented"),
     }

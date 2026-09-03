@@ -19,6 +19,15 @@ use worldstream_protocol::{
 use worldstream_studio_supervisor::{
     activity_packs::{ActivityPackProxyErrorV1, DaemonActivityPackSource},
     agent_profiles::AgentProfileStoreV1,
+    client_bindings::ClientBindingStoreV1,
+    control_access::ControlAccess,
+    control_admission::protect_operator_routes,
+    participant_handoff::{
+        CurrentMembershipSnapshotV1, HumanSeatAuthorityV1, ParticipantActionRequestV1,
+        ParticipantConsoleGatewayErrorV1, ParticipantConsoleGatewayV1,
+        ParticipantConsoleObservationV1, ParticipantHandoffBrokerV1,
+        operator_client_handoff_router, participant_handoff_router,
+    },
     room_creation::{DaemonRoomCreatorV1, RoomCreationAttemptErrorV1, RoomCreationSupervisorV1},
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
     room_setup_operations::{
@@ -26,6 +35,7 @@ use worldstream_studio_supervisor::{
         room_setup_operations_router,
     },
     runner_templates::RunnerTemplateRegistryV1,
+    scoped_connections::{MembershipCredentialsV1, RunnerCredentialsV1, scoped_credentials_router},
     secrets::FileSecretVaultV1,
     task_setup::{
         CatalogTaskLaunchApplicabilitySourceV1, DaemonTaskSetupProvisionerV1,
@@ -197,6 +207,7 @@ async fn reviewed_heist_setup_creates_provisions_and_exposes_one_public_operatio
 struct DaemonLedger {
     creations: Vec<CreateRoomRequest>,
     members: BTreeMap<String, MemberCapabilityProvisionResponseV1>,
+    member_requests: Vec<Value>,
     runners: BTreeMap<String, RunnerCapabilityProvisionResponseV1>,
     runner_requests: Vec<Value>,
     lose_runner_reply: bool,
@@ -225,6 +236,9 @@ impl DaemonTaskSetupProvisionerV1 for RetainedDaemon {
         request: &MemberCapabilityProvisionRequestV1,
     ) -> Result<MemberCapabilityProvisionResponseV1, TaskSetupAttemptErrorV1> {
         let mut ledger = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        ledger
+            .member_requests
+            .push(serde_json::to_value(request).map_err(|_| TaskSetupAttemptErrorV1::Rejected)?);
         if let Some(receipt) = ledger.members.get(&request.capability.capability_id) {
             return Ok(receipt.clone());
         }
@@ -293,6 +307,77 @@ fn heist_request() -> TestResult<RoomSetupCreateRequestV1> {
         ))?,
         acknowledge_start: false,
     })
+}
+
+#[tokio::test]
+async fn external_room_runner_is_inspectable_but_never_managed() -> TestResult {
+    use worldstream_studio_supervisor::{
+        runner_templates::RunnerSupervisorV1,
+        scoped_runners::{
+            RoomRunnerControlV1, RoomRunnerExecutionV1, RoomRunnerStatusV1, room_runner_router,
+        },
+    };
+    let temp = tempfile::tempdir()?;
+    let daemon = RetainedDaemon::default();
+    let (operations, _, setup) = open_retained_operations(temp.path(), &daemon)?;
+    assert!(
+        operations
+            .create("external-runner", &heist_request()?)?
+            .complete
+    );
+    let vault = FileSecretVaultV1::open(&temp.path().join("vault"))?;
+    let profiles = AgentProfileStoreV1::open(&temp.path().join("profiles"), vault.clone())?;
+    let installed = temp.path().join("templates");
+    let runners = RunnerSupervisorV1::open(
+        RunnerTemplateRegistryV1::open_installed(&installed)?,
+        &temp.path().join("runner-runtime"),
+        vault,
+        std::time::Duration::from_secs(1),
+    )?;
+    let router = room_runner_router(RoomRunnerControlV1::new(
+        setup,
+        profiles,
+        runners.clone(),
+        installed,
+    ));
+    let endpoint = "/api/v1/room-setup-operations/external-runner/seats/insider/runner";
+    let response = router
+        .clone()
+        .oneshot(Request::builder().uri(endpoint).body(Body::empty())?)
+        .await?;
+    assert_eq!(response.status(), 200);
+    let status: RoomRunnerStatusV1 =
+        serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(status.room_id, ROOM);
+    assert!(status.runner_id.is_some());
+    assert!(matches!(
+        status.execution,
+        RoomRunnerExecutionV1::External {}
+    ));
+    for action in ["start", "stop"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("{endpoint}/{action}"))
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), 409);
+    }
+    assert!(runners.statuses().instances.is_empty());
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/room-runners?operation=external-runner")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), 200);
+    let value: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(value["runners"].as_array().map(Vec::len), Some(1));
+    Ok(())
 }
 
 #[test]
@@ -411,5 +496,472 @@ fn missing_claimed_setup_requires_restoration_without_replacing_authority() -> T
         restored_setup.status("cli-missing-setup")?.operation_id,
         original_setup.operation_id
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_seat_exports_deliver_separate_membership_and_runner_authority() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let daemon = RetainedDaemon::default();
+    let (operations, _, setup) = open_retained_operations(temp.path(), &daemon)?;
+    assert!(operations.create("cli-export", &heist_request()?)?.complete);
+    let router = scoped_credentials_router(setup, "127.0.0.1:9300".parse()?);
+    let membership_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(
+                    "/api/v1/room-setup-operations/cli-export/seats/insider/membership-credentials",
+                )
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(membership_response.status(), 200);
+    assert_eq!(
+        membership_response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let membership: MembershipCredentialsV1 =
+        serde_json::from_slice(&membership_response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(membership.schema, "worldstream/membership-credentials/v1");
+    assert_eq!(membership.runtime_url, "ws://127.0.0.1:9300/v1/stream");
+    assert_eq!(membership.room_id, ROOM);
+    assert_eq!(membership.member_id, "01ARZ3NDEKTSV4RRFFQ69G5FAZ");
+    assert_eq!(membership.role, "insider");
+    assert_eq!(
+        membership.scopes,
+        vec!["room:attach", "room:act", "room:observe_member"]
+    );
+    let runner_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/room-setup-operations/cli-export/seats/insider/runner-credentials")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(runner_response.status(), 200);
+    let runner: RunnerCredentialsV1 =
+        serde_json::from_slice(&runner_response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(runner.schema, "worldstream/runner-credentials/v1");
+    assert_eq!(runner.runtime_url, "ws://127.0.0.1:9300/v1/runner/stream");
+    assert_eq!(runner.owner_principal_id, membership.principal_id);
+    assert_eq!(runner.permitted_memberships.len(), 1);
+    assert_eq!(
+        runner.permitted_memberships[0].member_id,
+        membership.member_id
+    );
+    assert_eq!(
+        runner.scopes,
+        vec![
+            "activation:offer_receive",
+            "activation:claim",
+            "activation:complete"
+        ]
+    );
+    let authorities_are_distinct = runner.bearer.as_str() != membership.bearer.as_str();
+    assert!(
+        authorities_are_distinct,
+        "authority kinds must remain separate"
+    );
+    {
+        let ledger = daemon.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let runner_matches_provisioned = ledger.runner_requests[0]["capability"]["bearer"].as_str()
+            == Some(runner.bearer.as_str());
+        assert!(
+            runner_matches_provisioned,
+            "export must match provisioned Runner authority"
+        );
+        let member_wire = ledger
+            .member_requests
+            .iter()
+            .find(|request| request["member_id"] == membership.member_id)
+            .ok_or("fixture member request")?;
+        let member_matches_provisioned =
+            member_wire["capability"]["bearer"].as_str() == Some(membership.bearer.as_str());
+        assert!(
+            member_matches_provisioned,
+            "export must match provisioned Membership authority"
+        );
+    }
+    let human_runner = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/room-setup-operations/cli-export/seats/navigator/runner-credentials")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(human_runner.status(), 409);
+    Ok(())
+}
+
+struct MembershipGateway;
+
+async fn browser_request(
+    router: &axum::Router,
+    method: &str,
+    path: &str,
+    origin: &str,
+    cookie: Option<&str>,
+    payload: Value,
+) -> TestResult<axum::response::Response> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("origin", origin)
+        .header("content-type", "application/json");
+    if let Some(cookie) = cookie {
+        request = request.header("cookie", cookie);
+    }
+    Ok(router
+        .clone()
+        .oneshot(request.body(Body::from(serde_json::to_vec(&payload)?))?)
+        .await?)
+}
+
+async fn browser_observation_nonce(router: &axum::Router, cookie: &str) -> TestResult<String> {
+    let response = browser_request(
+        router,
+        "POST",
+        "/api/v1/participant-console/session:observe",
+        "http://127.0.0.1:5173",
+        Some(cookie),
+        json!({"after_frame_seq":null}),
+    )
+    .await?;
+    assert_eq!(response.status(), 200);
+    assert!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("X-WorldStream-Delivery-Acknowledgement"))
+    );
+    Ok(response
+        .headers()
+        .get("x-worldstream-delivery-acknowledgement")
+        .ok_or("delivery acknowledgement missing")?
+        .to_str()?
+        .to_owned())
+}
+
+struct BrowserReceiptFixture {
+    _temp: tempfile::TempDir,
+    readiness: worldstream_studio_supervisor::participant_handoff::BrowserDeliveryReadinessV1,
+    router: axum::Router,
+    cookie: String,
+}
+
+async fn browser_receipt_fixture() -> TestResult<BrowserReceiptFixture> {
+    let temp = tempfile::tempdir()?;
+    let (operations, _, setup) = open_retained_operations(temp.path(), &RetainedDaemon::default())?;
+    assert!(
+        operations
+            .create("browser-receipt", &heist_request()?)?
+            .complete
+    );
+    let configuration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let clients = ClientBindingStoreV1::open_configured(
+        &temp.path().join("clients"),
+        &configuration.join("releases"),
+        &configuration.join("local-bindings.json"),
+    )?;
+    let broker = ParticipantHandoffBrokerV1::new(
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5173",
+        std::time::Duration::from_secs(30),
+        16,
+        setup,
+        MembershipGateway,
+        clients,
+    )
+    .map_err(|_| "broker fixture")?;
+    let readiness = broker.browser_readiness();
+    let control = ControlAccess::initialize(&temp.path().join("control"))?;
+    let authorization = control.authorization_header()?;
+    let router = protect_operator_routes(
+        operator_client_handoff_router(broker.clone()).merge(participant_handoff_router(broker)),
+        control,
+    );
+    let issued = router
+        .clone()
+        .oneshot(
+            Request::post(
+                "/api/v1/room-setup-operations/browser-receipt/seats/navigator/client-handoff",
+            )
+            .header("authorization", authorization)
+            .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(issued.status(), 201);
+    let transfer: Value = serde_json::from_slice(&issued.into_body().collect().await?.to_bytes())?;
+    let token = transfer["client_url"]
+        .as_str()
+        .and_then(|url| url.split_once("#handoff="))
+        .map(|(_, token)| token)
+        .ok_or("handoff missing")?;
+    let redeemed = router
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/participant-console/handoffs:redeem")
+                .header("origin", "http://127.0.0.1:5173")
+                .header("x-worldstream-participant-handoff", token)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(redeemed.status(), 200);
+    let cookie = redeemed
+        .headers()
+        .get("set-cookie")
+        .ok_or("cookie missing")?
+        .to_str()?
+        .split(';')
+        .next()
+        .ok_or("cookie invalid")?
+        .to_owned();
+    Ok(BrowserReceiptFixture {
+        _temp: temp,
+        readiness,
+        router,
+        cookie,
+    })
+}
+
+#[tokio::test]
+async fn browser_readiness_requires_acknowledgement_of_delivered_frame() -> TestResult {
+    use worldstream_studio_supervisor::participant_handoff::{
+        ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1,
+    };
+    let BrowserReceiptFixture {
+        _temp,
+        readiness,
+        router,
+        cookie,
+    } = browser_receipt_fixture().await?;
+    let member = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+    assert_ne!(
+        readiness.session_health(ROOM, member),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    let acknowledgement = browser_observation_nonce(&router, &cookie).await?;
+    assert_ne!(
+        readiness.session_health(ROOM, member),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    let path = "/api/v1/participant-console/session:acknowledge";
+    let origin = "http://127.0.0.1:5173";
+    for (request_origin, request_cookie, frame_head, expected) in [
+        (origin, None, 7, 401),
+        ("http://untrusted.invalid", Some(cookie.as_str()), 7, 403),
+        (origin, Some(cookie.as_str()), 8, 400),
+    ] {
+        let response = browser_request(
+            &router,
+            "POST",
+            path,
+            request_origin,
+            request_cookie,
+            json!({"acknowledgement":acknowledgement,"frame_head":frame_head}),
+        )
+        .await?;
+        assert_eq!(response.status(), expected);
+        assert_ne!(
+            readiness.session_health(ROOM, member),
+            ParticipantConsoleSessionHealthV1::Usable
+        );
+    }
+    // An incorrect frame consumes the pending nonce; only a fresh delivery can succeed.
+    let acknowledgement = browser_observation_nonce(&router, &cookie).await?;
+    let payload = json!({"acknowledgement":acknowledgement,"frame_head":7});
+    for expected in [200, 400] {
+        let response = browser_request(
+            &router,
+            "POST",
+            path,
+            origin,
+            Some(&cookie),
+            payload.clone(),
+        )
+        .await?;
+        assert_eq!(response.status(), expected);
+    }
+    assert_eq!(
+        readiness.session_health(ROOM, member),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(5100)).await;
+    assert_ne!(
+        readiness.session_health(ROOM, member),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    let resumed = browser_request(
+        &router,
+        "GET",
+        "/api/v1/participant-console/session",
+        origin,
+        Some(&cookie),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(resumed.status(), 200);
+    assert_ne!(
+        readiness.session_health(ROOM, member),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    let acknowledgement = browser_observation_nonce(&router, &cookie).await?;
+    assert_ne!(
+        readiness.session_health(ROOM, member),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    let acknowledged = browser_request(
+        &router,
+        "POST",
+        path,
+        origin,
+        Some(&cookie),
+        json!({"acknowledgement":acknowledgement,"frame_head":7}),
+    )
+    .await?;
+    assert_eq!(acknowledged.status(), 200);
+    assert_eq!(
+        readiness.session_health(ROOM, member),
+        ParticipantConsoleSessionHealthV1::Usable
+    );
+    Ok(())
+}
+
+impl ParticipantConsoleGatewayV1 for MembershipGateway {
+    fn current_membership(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        Ok(CurrentMembershipSnapshotV1 {
+            pack: authority.pack().clone(),
+            access_mode: authority.access_mode(),
+            role: authority.role().map(str::to_owned),
+        })
+    }
+    fn observe(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+    ) -> Result<ParticipantConsoleObservationV1, ParticipantConsoleGatewayErrorV1> {
+        Ok(ParticipantConsoleObservationV1 {
+            browser_value: json!({"projection":{"phase":"Lobby"},"frame_head":7}),
+            durable_cursor: None,
+        })
+    }
+    fn act(
+        &self,
+        _: &HumanSeatAuthorityV1,
+        _: Option<u64>,
+        _: &ParticipantActionRequestV1,
+    ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+}
+
+#[tokio::test]
+async fn operator_handoff_requires_control_not_studio_origin_and_keeps_one_use_redemption()
+-> TestResult {
+    let temp = tempfile::tempdir()?;
+    let (operations, _, setup) = open_retained_operations(temp.path(), &RetainedDaemon::default())?;
+    assert!(
+        operations
+            .create("cli-client-open", &heist_request()?)?
+            .complete
+    );
+    let configuration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/activity-clients");
+    let clients = ClientBindingStoreV1::open_configured(
+        &temp.path().join("clients"),
+        &configuration.join("releases"),
+        &configuration.join("local-bindings.json"),
+    )?;
+    let broker = ParticipantHandoffBrokerV1::new(
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5173",
+        std::time::Duration::from_secs(30),
+        16,
+        setup,
+        MembershipGateway,
+        clients,
+    )
+    .map_err(|_| "fixture handoff configuration")?;
+    let control = ControlAccess::initialize(&temp.path().join("controller"))?;
+    let authorization = control.authorization_header()?;
+    let router = protect_operator_routes(
+        operator_client_handoff_router(broker.clone()).merge(participant_handoff_router(broker)),
+        control,
+    );
+    let path = "/api/v1/room-setup-operations/cli-client-open/seats/navigator/client-handoff";
+    let unauthorized = router
+        .clone()
+        .oneshot(
+            Request::post(path)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))?,
+        )
+        .await?;
+    assert_eq!(unauthorized.status(), 401);
+    // No Origin header is forged. The installation credential is sufficient
+    // only for issuance; it is never part of the resulting browser transfer.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::post(path)
+                .header("authorization", authorization)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))?,
+        )
+        .await?;
+    assert_eq!(response.status(), 201);
+    let transfer: Value =
+        serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(transfer["state"], "ready");
+    let launch = transfer["client_url"]
+        .as_str()
+        .ok_or("missing handoff transfer")?;
+    assert!(launch.starts_with("http://127.0.0.1:5173/agent-heist/#handoff=wsh1:"));
+    assert!(!launch.contains("wsb1:"));
+    let (_, token) = launch
+        .split_once("#handoff=")
+        .ok_or("missing one-use handoff")?;
+    let redeem = "/api/v1/participant-console/handoffs:redeem";
+    let forbidden = router
+        .clone()
+        .oneshot(
+            Request::post(redeem)
+                .header("origin", "http://untrusted.invalid")
+                .header("x-worldstream-participant-handoff", token)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(forbidden.status(), 403);
+    let redeemed = router
+        .clone()
+        .oneshot(
+            Request::post(redeem)
+                .header("origin", "http://127.0.0.1:5173")
+                .header("x-worldstream-participant-handoff", token)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(redeemed.status(), 200);
+    let reused = router
+        .oneshot(
+            Request::post(redeem)
+                .header("origin", "http://127.0.0.1:5173")
+                .header("x-worldstream-participant-handoff", token)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(reused.status(), 401);
     Ok(())
 }

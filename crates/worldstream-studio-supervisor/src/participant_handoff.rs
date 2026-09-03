@@ -13,7 +13,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{Request, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -28,6 +28,7 @@ use worldstream_protocol::{
     PROTOCOL_VERSION, PackReference, ProjectionReset, REQUIRED_CLIENT_CAPABILITIES, ReplayResponse,
     RoomAttached, RoomHead, SealedCapabilityBearerV1, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
 };
+use worldstream_runtime::is_exact_loopback_origin;
 use zeroize::Zeroizing;
 
 use crate::client_bindings::{
@@ -836,6 +837,10 @@ struct SessionRecordV1 {
     target_fingerprint: [u8; 32],
     durable_cursor: Option<u64>,
     expires_at: Instant,
+    #[cfg(feature = "cli-operator-preview")]
+    pending_delivery: Option<(String, u64, Instant)>,
+    #[cfg(feature = "cli-operator-preview")]
+    acknowledged_at: Option<Instant>,
 }
 
 struct ResolvedParticipantSessionV1 {
@@ -914,7 +919,7 @@ impl ParticipantHandoffBrokerV1 {
     fn issue(
         &self,
         request: IssueHandoffRequestV1,
-    ) -> Result<IssueHandoffResponseV1, ParticipantHandoffErrorV1> {
+    ) -> Result<ClientHandoffResponseV1, ParticipantHandoffErrorV1> {
         validate_binding(&request.draft, &request.seat)?;
         if request
             .candidate
@@ -932,8 +937,8 @@ impl ParticipantHandoffBrokerV1 {
         let selection = self.select_client(&current, request.candidate.as_deref())?;
         let (launch_base, retained_selection) = match selection {
             ClientSelectionV1::SelectionRequired { candidates } => {
-                return Ok(IssueHandoffResponseV1::SelectionRequired {
-                    version: HANDOFF_VERSION,
+                return Ok(ClientHandoffResponseV1::SelectionRequired {
+                    version: HANDOFF_VERSION.to_owned(),
                     candidates: candidates
                         .into_iter()
                         .map(ClientCandidateSummaryV1::from)
@@ -975,8 +980,8 @@ impl ParticipantHandoffBrokerV1 {
                 expires_at: Instant::now() + self.inner.handoff_ttl,
             },
         );
-        Ok(IssueHandoffResponseV1::Ready {
-            version: HANDOFF_VERSION,
+        Ok(ClientHandoffResponseV1::Ready {
+            version: HANDOFF_VERSION.to_owned(),
             client_url: format!("{launch_base}#handoff={handoff}"),
         })
     }
@@ -1076,6 +1081,10 @@ impl ParticipantHandoffBrokerV1 {
                 ),
                 durable_cursor: None,
                 expires_at: Instant::now() + Duration::from_secs(SESSION_MAX_AGE_SECONDS),
+                #[cfg(feature = "cli-operator-preview")]
+                pending_delivery: None,
+                #[cfg(feature = "cli-operator-preview")]
+                acknowledged_at: None,
             },
         );
         Ok((ParticipantSessionStatusV1::usable(), session))
@@ -1289,6 +1298,134 @@ impl ParticipantHandoffBrokerV1 {
     }
 }
 
+/// Short-lived evidence of actual browser receipt, separate from legacy health
+/// probes and from the canonical Membership Cursor.
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Clone)]
+pub struct BrowserDeliveryReadinessV1(ParticipantHandoffBrokerV1);
+
+#[cfg(feature = "cli-operator-preview")]
+const BROWSER_RECEIPT_LEASE: Duration = Duration::from_secs(5);
+
+#[cfg(feature = "cli-operator-preview")]
+impl ParticipantHandoffBrokerV1 {
+    #[must_use]
+    pub fn browser_readiness(&self) -> BrowserDeliveryReadinessV1 {
+        BrowserDeliveryReadinessV1(self.clone())
+    }
+
+    fn delivery_receipt(
+        &self,
+        cookie: Option<&str>,
+        frame_head: u64,
+    ) -> Result<String, ParticipantHandoffErrorV1> {
+        let token = cookie
+            .and_then(parse_session_cookie)
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
+        let acknowledgement = random_token("wsa1:")?;
+        let mut state = self.lock();
+        prune_expired(&mut state);
+        let record = state
+            .sessions
+            .get_mut(token)
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
+        record.pending_delivery = Some((
+            acknowledgement.clone(),
+            frame_head,
+            Instant::now() + BROWSER_RECEIPT_LEASE,
+        ));
+        Ok(acknowledgement)
+    }
+
+    fn acknowledge_delivery(
+        &self,
+        cookie: Option<&str>,
+        request: &DeliveryAcknowledgementV1,
+    ) -> Result<ParticipantSessionStatusV1, ParticipantHandoffErrorV1> {
+        if !is_token(&request.acknowledgement, "wsa1:") {
+            return Err(ParticipantHandoffErrorV1::InvalidRequest);
+        }
+        // Revalidate current authority and exact active Client selection. An old
+        // response can never revive an invalidated or replaced session.
+        self.resolve_session(cookie)?;
+        let token = cookie
+            .and_then(parse_session_cookie)
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
+        let mut state = self.lock();
+        prune_expired(&mut state);
+        let record = state
+            .sessions
+            .get_mut(token)
+            .ok_or(ParticipantHandoffErrorV1::SessionMissing)?;
+        let (nonce, frame_head, expires_at) = record
+            .pending_delivery
+            .take()
+            .ok_or(ParticipantHandoffErrorV1::InvalidRequest)?;
+        if nonce != request.acknowledgement
+            || frame_head != request.frame_head
+            || Instant::now() >= expires_at
+        {
+            return Err(ParticipantHandoffErrorV1::InvalidRequest);
+        }
+        record.acknowledged_at = Some(Instant::now());
+        Ok(ParticipantSessionStatusV1::usable())
+    }
+}
+
+#[cfg(feature = "cli-operator-preview")]
+impl ParticipantConsoleReadinessSourceV1 for BrowserDeliveryReadinessV1 {
+    fn session_health(&self, room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
+        if !is_ulid(room_id) || !is_ulid(member_id) {
+            return ParticipantConsoleSessionHealthV1::Invalid;
+        }
+        let expected = target_fingerprint(&self.0.inner.readiness_key, room_id, member_id);
+        let mut tokens = {
+            let mut state = self.0.lock();
+            prune_expired(&mut state);
+            state
+                .sessions
+                .iter()
+                .filter(|(_, record)| {
+                    record.target_fingerprint == expected
+                        && record
+                            .acknowledged_at
+                            .is_some_and(|ack| ack.elapsed() < BROWSER_RECEIPT_LEASE)
+                })
+                .map(|(token, _)| token.clone())
+                .collect::<Vec<_>>()
+        };
+        tokens.sort();
+        let mut result = ParticipantConsoleSessionHealthV1::Missing;
+        for token in tokens {
+            let cookie = Zeroizing::new(format!("{SESSION_COOKIE}={token}"));
+            match self.0.resolve_session(Some(cookie.as_str())) {
+                Ok(resolved)
+                    if resolved.authority.room_id() == room_id
+                        && resolved.authority.member_id() == member_id =>
+                {
+                    let state = self.0.lock();
+                    if state.sessions.get(&token).is_some_and(|record| {
+                        record.expires_at > Instant::now()
+                            && record
+                                .acknowledged_at
+                                .is_some_and(|ack| ack.elapsed() < BROWSER_RECEIPT_LEASE)
+                    }) {
+                        return ParticipantConsoleSessionHealthV1::Usable;
+                    }
+                }
+                Ok(_) => {
+                    self.0.invalidate_session(&token);
+                }
+                Err(error) if !error.invalidates_retained_session() => {
+                    result = ParticipantConsoleSessionHealthV1::Disconnected;
+                }
+                Err(_) => {}
+            }
+        }
+        result
+    }
+}
+
 impl ParticipantConsoleReadinessSourceV1 for ParticipantHandoffBrokerV1 {
     fn session_health(&self, room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
         if !is_ulid(room_id) || !is_ulid(member_id) {
@@ -1388,28 +1525,40 @@ struct IssueHandoffRequestV1 {
     candidate: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+/// Explicit one-use browser transfer. Ready contains a secret URL, so it must
+/// never be included in ordinary operator reports or process arguments.
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-enum IssueHandoffResponseV1 {
+pub enum ClientHandoffResponseV1 {
     Ready {
-        version: &'static str,
+        version: String,
         client_url: String,
     },
     SelectionRequired {
-        version: &'static str,
+        version: String,
         candidates: Vec<ClientCandidateSummaryV1>,
     },
 }
 
-#[derive(Debug, Serialize)]
+/// Safe selection metadata contains no handoff token, URL or authority.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ClientCandidateSummaryV1 {
-    candidate_id: String,
-    deployment_id: String,
-    client_id: String,
-    release_digest: String,
-    surface_id: String,
-    trust_level: DeploymentTrustLevelV1,
+pub struct ClientCandidateSummaryV1 {
+    pub candidate_id: String,
+    pub deployment_id: String,
+    pub client_id: String,
+    pub release_digest: String,
+    pub surface_id: String,
+    pub trust_level: DeploymentTrustLevelV1,
+}
+
+/// Optional exact candidate selection; absence uses the existing approved
+/// selection rules and may return an actionable candidate list.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorClientHandoffRequestV1 {
+    #[serde(default)]
+    pub binding: Option<String>,
 }
 
 impl From<ClientCandidateV1> for ClientCandidateSummaryV1 {
@@ -1477,7 +1626,7 @@ impl ParticipantSessionStatusV1 {
 
 /// Builds the isolated local handoff and Participant Console session routes.
 pub fn participant_handoff_router(broker: ParticipantHandoffBrokerV1) -> Router {
-    Router::new()
+    let router = Router::new()
         .route(
             "/api/v1/participant-console/handoffs",
             post(issue_handoff).options(cors_preflight),
@@ -1501,9 +1650,66 @@ pub fn participant_handoff_router(broker: ParticipantHandoffBrokerV1) -> Router 
         .route(
             "/api/v1/participant-console/session:replay",
             post(replay).options(cors_preflight),
-        )
+        );
+    #[cfg(feature = "cli-operator-preview")]
+    let router = router.route(
+        "/api/v1/participant-console/session:acknowledge",
+        post(acknowledge_delivery).options(cors_preflight),
+    );
+    router
         .layer(from_fn_with_state(broker.clone(), local_cors))
         .with_state(broker)
+}
+
+/// Merged only inside installation-control admission. This is deliberately not
+/// a browser CORS route and never substitutes a forged Studio Origin.
+#[cfg(feature = "cli-operator-preview")]
+pub fn operator_client_handoff_router(broker: ParticipantHandoffBrokerV1) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/room-setup-operations/{operation}/seats/{seat}/client-handoff",
+            post(issue_operator_handoff),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(8 * 1024))
+        .with_state(broker)
+}
+
+#[cfg(feature = "cli-operator-preview")]
+async fn issue_operator_handoff(
+    State(broker): State<ParticipantHandoffBrokerV1>,
+    axum::extract::Path((operation, seat)): axum::extract::Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let request = if body.is_empty() {
+        Ok(OperatorClientHandoffRequestV1 { binding: None })
+    } else {
+        serde_json::from_slice(&body).map_err(|_| ParticipantHandoffErrorV1::InvalidRequest)
+    };
+    let result = match request {
+        Ok(request) => {
+            run_blocking(move || {
+                broker.issue(IssueHandoffRequestV1 {
+                    draft: operation,
+                    seat,
+                    candidate: request.binding,
+                })
+            })
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    let mut response = match result {
+        Ok(response) => {
+            let status = match &response {
+                ClientHandoffResponseV1::Ready { .. } => StatusCode::CREATED,
+                ClientHandoffResponseV1::SelectionRequired { .. } => StatusCode::OK,
+            };
+            (status, Json(response)).into_response()
+        }
+        Err(error) => error.into_response(),
+    };
+    apply_no_store(response.headers_mut());
+    response
 }
 
 async fn cors_preflight() -> StatusCode {
@@ -1579,6 +1785,11 @@ fn valid_preflight(request: &Request) -> bool {
 }
 
 fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
+    #[cfg(feature = "cli-operator-preview")]
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("X-WorldStream-Delivery-Acknowledgement"),
+    );
     if let Ok(origin) = HeaderValue::from_str(origin) {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
     }
@@ -1611,12 +1822,12 @@ async fn issue_handoff(
     State(broker): State<ParticipantHandoffBrokerV1>,
     headers: HeaderMap,
     Json(request): Json<IssueHandoffRequestV1>,
-) -> Result<(StatusCode, Json<IssueHandoffResponseV1>), ParticipantHandoffErrorV1> {
+) -> Result<(StatusCode, Json<ClientHandoffResponseV1>), ParticipantHandoffErrorV1> {
     require_origin(&headers, &broker.inner.studio_origin)?;
     let response = run_blocking(move || broker.issue(request)).await?;
     let status = match &response {
-        IssueHandoffResponseV1::Ready { .. } => StatusCode::CREATED,
-        IssueHandoffResponseV1::SelectionRequired { .. } => StatusCode::OK,
+        ClientHandoffResponseV1::Ready { .. } => StatusCode::CREATED,
+        ClientHandoffResponseV1::SelectionRequired { .. } => StatusCode::OK,
     };
     Ok((status, Json(response)))
 }
@@ -1670,15 +1881,63 @@ async fn observe(
     State(broker): State<ParticipantHandoffBrokerV1>,
     headers: HeaderMap,
     Json(request): Json<ObserveRequestV1>,
-) -> Result<Json<Value>, ParticipantHandoffErrorV1> {
+) -> Result<Response, ParticipantHandoffErrorV1> {
     require_origin(&headers, &broker.inner.console_origin)?;
     let cookie = headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
         .map(|value| Zeroizing::new(value.to_owned()));
-    run_blocking(move || broker.observe(cookie.as_ref().map(|value| value.as_str()), request))
-        .await
-        .map(Json)
+    run_blocking(move || {
+        let cookie = cookie.as_ref().map(|value| value.as_str());
+        let value = broker.observe(cookie, request)?;
+        #[cfg(feature = "cli-operator-preview")]
+        let acknowledgement = broker.delivery_receipt(
+            cookie,
+            value
+                .get("frame_head")
+                .and_then(Value::as_u64)
+                .ok_or(ParticipantHandoffErrorV1::Upstream)?,
+        )?;
+        let response = Json(value).into_response();
+        #[cfg(feature = "cli-operator-preview")]
+        let response = {
+            let mut response = response;
+            response.headers_mut().insert(
+                "x-worldstream-delivery-acknowledgement",
+                HeaderValue::from_str(&acknowledgement)
+                    .map_err(|_| ParticipantHandoffErrorV1::Upstream)?,
+            );
+            response
+        };
+        Ok(response)
+    })
+    .await
+}
+
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryAcknowledgementV1 {
+    acknowledgement: String,
+    frame_head: u64,
+}
+
+#[cfg(feature = "cli-operator-preview")]
+async fn acknowledge_delivery(
+    State(broker): State<ParticipantHandoffBrokerV1>,
+    headers: HeaderMap,
+    Json(request): Json<DeliveryAcknowledgementV1>,
+) -> Result<Json<ParticipantSessionStatusV1>, ParticipantHandoffErrorV1> {
+    require_origin(&headers, &broker.inner.console_origin)?;
+    let cookie = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| Zeroizing::new(value.to_owned()));
+    run_blocking(move || {
+        broker.acknowledge_delivery(cookie.as_ref().map(|value| value.as_str()), &request)
+    })
+    .await
+    .map(Json)
 }
 
 async fn act(
@@ -1995,15 +2254,20 @@ fn parse_session_cookie(cookie: &str) -> Option<&str> {
     })
 }
 
+fn random_token(prefix: &str) -> Result<String, ParticipantHandoffErrorV1> {
+    let mut bytes = [0_u8; TOKEN_BYTES];
+    getrandom::fill(&mut bytes).map_err(|_| ParticipantHandoffErrorV1::Upstream)?;
+    let token = format!("{prefix}{}", encode_hex(&bytes));
+    bytes.fill(0);
+    Ok(token)
+}
+
 fn unique_token<T>(
     prefix: &str,
     retained: &HashMap<String, T>,
 ) -> Result<String, ParticipantHandoffErrorV1> {
     for _ in 0..4 {
-        let mut bytes = [0_u8; TOKEN_BYTES];
-        getrandom::fill(&mut bytes).map_err(|_| ParticipantHandoffErrorV1::Upstream)?;
-        let token = format!("{prefix}{}", encode_hex(&bytes));
-        bytes.fill(0);
+        let token = random_token(prefix)?;
         if !retained.contains_key(&token) {
             return Ok(token);
         }
@@ -2075,20 +2339,6 @@ fn is_client_candidate_id(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
-}
-
-fn is_exact_loopback_origin(value: &str) -> bool {
-    let Ok(uri) = value.parse::<Uri>() else {
-        return false;
-    };
-    uri.scheme_str() == Some("http")
-        && uri.path() == "/"
-        && uri.query().is_none()
-        && uri.authority().is_some()
-        && matches!(
-            uri.host(),
-            Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
-        )
 }
 
 fn target_fingerprint(key: &[u8; 32], room_id: &str, member_id: &str) -> [u8; 32] {

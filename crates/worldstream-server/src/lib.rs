@@ -1206,14 +1206,15 @@ pub trait GatewayBackend: Send + Sync + 'static {
         Err(BackendError::StorageUnavailable)
     }
 
-    /// One scheduler tick. Implementations may reclaim expired durable
-    /// leases, but must not manufacture Activity or Heist transitions.
+    /// One bounded scheduler tick: maintain leases and, where supported, commit
+    /// due timers through existing authority and Core paths. Returns Rooms
+    /// requiring post-commit live publication.
     ///
     /// # Errors
     ///
     /// Returns a closed backend error when durable lease maintenance cannot be
     /// completed safely.
-    fn scheduler_tick(&self) -> Result<(), BackendError> {
+    fn scheduler_tick(&self) -> Result<Vec<String>, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
 
@@ -1486,24 +1487,42 @@ pub struct OperatorState {
     rate_limiter: GatewayRateLimiter,
 }
 
-/// Owns the process scheduler loop. The loop only performs durable lease
-/// maintenance; Activity/Heist transitions remain Core commit concerns.
+/// Owns the process scheduler loop and publication of its committed timers.
+/// Activity transitions remain authorized Core commit concerns.
 struct SchedulerRuntimeOwner {
     stop: Arc<AtomicBool>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl SchedulerRuntimeOwner {
-    fn start(backend: Arc<dyn GatewayBackend>) -> Result<Arc<Self>, BackendError> {
-        backend.scheduler_tick()?;
+    fn start(
+        backend: Arc<dyn GatewayBackend>,
+        live_streams: LiveStreamRegistry,
+    ) -> Result<Arc<Self>, BackendError> {
+        let initial_rooms = backend.scheduler_tick()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| BackendError::StorageUnavailable)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("worldstream-activation-scheduler".to_owned())
             .spawn(move || {
+                runtime.block_on(async {
+                    for room in initial_rooms {
+                        publish_live_frames(Arc::clone(&backend), &live_streams, &room).await;
+                    }
+                });
                 while !thread_stop.load(Ordering::Acquire) {
-                    if let Err(error) = backend.scheduler_tick() {
-                        tracing::warn!(?error, "activation scheduler tick failed");
+                    match backend.scheduler_tick() {
+                        Ok(rooms) => runtime.block_on(async {
+                            for room in rooms {
+                                publish_live_frames(Arc::clone(&backend), &live_streams, &room)
+                                    .await;
+                            }
+                        }),
+                        Err(error) => tracing::warn!(?error, "Runtime scheduler tick failed"),
                     }
                     std::thread::sleep(Duration::from_millis(250));
                 }
@@ -1763,7 +1782,8 @@ impl OperatorState {
     /// Returns the backend failure from the startup tick; readiness remains
     /// fail-closed in that case.
     pub fn with_scheduler(mut self) -> Result<Self, BackendError> {
-        let runtime = SchedulerRuntimeOwner::start(Arc::clone(&self.backend))?;
+        let runtime =
+            SchedulerRuntimeOwner::start(Arc::clone(&self.backend), self.live_streams.clone())?;
         self.scheduler_runtime = Some(runtime);
         self.readiness = self.readiness.with_scheduler_running();
         Ok(self)
@@ -1828,6 +1848,10 @@ pub fn operator_router(state: OperatorState) -> Router {
         )
         .route("/v1/operator/rooms", get(operator_room_inventory))
         .route("/v1/operator/rooms/{room_id}", get(operator_room_detail))
+        .route(
+            "/v1/operator/rooms/{room_id}/members/{member_id}/presence",
+            get(operator_member_presence),
+        )
         .route(
             "/v1/operator/rooms/{room_id}/members/{member_id}/activation-status",
             get(operator_activation_status),
@@ -2460,6 +2484,66 @@ async fn operator_room_detail(
     let backend = Arc::clone(&state.backend);
     backend_call(backend, move |backend| {
         backend.operator_room_detail(&session, &room_id)
+    })
+    .await
+    .map(Json)
+    .map_err(ResponseError::from)
+}
+
+/// Ephemeral gateway evidence, never Room state or participant content.
+#[derive(Serialize)]
+struct MembershipPresence {
+    version: &'static str,
+    synchronized: bool,
+}
+
+async fn operator_member_presence(
+    State(state): State<OperatorState>,
+    Path((room_id, member_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ResponseResult<MembershipPresence> {
+    let session = Arc::new(authenticated_session(&headers)?);
+    let targets = [AdmissionTarget {
+        room_id: &room_id,
+        member_id: Some(&member_id),
+    }];
+    admit_authenticated_http(
+        &state,
+        &session,
+        &targets,
+        Some(OPERATOR_ROOM_DETAIL),
+        traceparent_correlation(&headers),
+    )
+    .await?;
+    member_id
+        .parse::<UlidString>()
+        .map_err(|_| ResponseError::from(BackendError::Rejected))?;
+    let registry = state.live_streams.clone();
+    let backend = Arc::clone(&state.backend);
+    backend_call(backend, move |backend| {
+        backend.operator_room_detail(&session, &room_id)?;
+        let synchronized = registry
+            .snapshots_for_room(&room_id)
+            .into_iter()
+            .filter(|candidate| candidate.member_id == member_id && !candidate.sender.is_closed())
+            .any(|candidate| {
+                let authorized = backend
+                    .live_observation_suffix(
+                        &candidate.session,
+                        &room_id,
+                        &member_id,
+                        candidate.last_delivered_frame_seq,
+                    )
+                    .is_ok();
+                if !authorized {
+                    registry.close(&candidate.session_id, ErrorCode::Unauthenticated);
+                }
+                authorized && registry.is_registered(&candidate.session_id)
+            });
+        Ok(MembershipPresence {
+            version: "membership_presence.v1",
+            synchronized,
+        })
     })
     .await
     .map(Json)
@@ -4099,6 +4183,12 @@ enum LivePush {
 }
 
 impl LiveStreamRegistry {
+    fn is_registered(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(session_id)
+    }
     fn register(
         &self,
         session: Arc<GatewaySession>,
@@ -4609,6 +4699,9 @@ async fn dispatch_message(
             }
         }
         "room.attach" => {
+            // A fresh attach must acknowledge its own synchronization; it cannot
+            // inherit the previous stream's readiness evidence.
+            live_streams.unregister(session.session_id().as_str());
             let request = decode_body::<RoomAttach>(body).map_err(|_| ())?;
             let reply = match backend_call(Arc::clone(&backend), {
                 let session = Arc::clone(session);

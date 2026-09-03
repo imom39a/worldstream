@@ -48,12 +48,18 @@ pub mod retained_server_inspection;
 pub mod room_creation;
 pub mod room_drafts;
 #[cfg(feature = "cli-operator-preview")]
+pub mod room_launch;
+#[cfg(feature = "cli-operator-preview")]
 pub mod room_setup_operations;
 #[cfg(feature = "cli-operator-preview")]
 pub mod room_setup_spec;
 pub mod rooms;
 pub mod runner_attention;
 pub mod runner_templates;
+#[cfg(feature = "cli-operator-preview")]
+pub mod scoped_connections;
+#[cfg(feature = "cli-operator-preview")]
+pub mod scoped_runners;
 
 pub mod secrets;
 pub mod startup_authority;

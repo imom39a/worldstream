@@ -28,13 +28,13 @@ use worldstream_core::{
     InitialMembershipProposalV1, InputId, MemberReadOperationV1, MembershipStandingV1,
     MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1,
     PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
-    ParticipantActionRequestV1, PreparedRoomCreationV1, PrincipalKindV1, ReceiptSemanticInputV1,
-    ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1, RoomCommitResolutionV1,
-    RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1, RoomId, RoomMembershipKeyV1,
-    RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId, RunnerMembershipSetV1,
-    SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1, SessionV1, SourceId,
-    StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId, TransitionId,
-    authorize_participant_action_operation, authorize_room_creation_operation,
+    ParticipantActionRequestV1, PreparedRoomCreationV1, PresentedCapabilityV1, PrincipalKindV1,
+    ReceiptSemanticInputV1, ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1,
+    RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1,
+    RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId,
+    RunnerMembershipSetV1, SemanticResultV1, SessionErrorV1, SessionFrameV1, SessionSyncTokenV1,
+    SessionV1, SourceId, StoredSemanticResultV1, TimerFiredRequestV1, TimerGenerationV1, TimerId,
+    TransitionId, authorize_participant_action_operation, authorize_room_creation_operation,
     commit_room_creation, external_input_request_hash,
 };
 use worldstream_protocol::{
@@ -92,6 +92,8 @@ pub struct SqliteGatewayBackend {
     host_clock: Arc<dyn HostClockV1>,
     admission_lanes: RoomAdmissionLanesV1,
     live_backup_root: Option<PathBuf>,
+    timer_authority: Option<PresentedCapabilityV1>,
+    last_timer_room: Mutex<Option<RoomId>>,
 }
 
 struct CatchingUpRoom {
@@ -119,6 +121,11 @@ impl fmt::Debug for SqliteGatewayBackend {
             .field("bindings", &self.bindings)
             .field("supervisor", &self.supervisor)
             .field("recoveries", &"[OPAQUE]")
+            .field(
+                "timer_authority",
+                &self.timer_authority.as_ref().map(|_| "[OPAQUE]"),
+            )
+            .field("last_timer_room", &"[OPAQUE]")
             .field("host_clock", &"[OPAQUE]")
             .field("admission_lanes", &self.admission_lanes)
             .field(
@@ -168,6 +175,25 @@ impl SqliteGatewayBackend {
         Ok(self)
     }
 
+    /// Enables automatic timers using existing protected installation authority.
+    /// Every firing rechecks current authority through the ordinary Core grant.
+    ///
+    /// # Errors
+    /// Returns a closed backend error if the supplied authority cannot authenticate.
+    pub fn with_timer_authority(
+        mut self,
+        bearer: CapabilityBearerV1,
+    ) -> Result<Self, BackendError> {
+        self.ensure_source_authoritative()?;
+        self.timer_authority = Some(
+            self.store
+                .authenticate_bearer(bearer)
+                .map_err(|error| map_gateway_error(&error))?
+                .into_presented(),
+        );
+        Ok(self)
+    }
+
     fn with_runtime(
         store: SqliteRoomStore,
         registry: Arc<PackRegistryV1>,
@@ -183,6 +209,8 @@ impl SqliteGatewayBackend {
             host_clock,
             admission_lanes,
             live_backup_root: None,
+            timer_authority: None,
+            last_timer_room: Mutex::new(None),
         }
     }
 
@@ -430,6 +458,80 @@ impl SqliteGatewayBackend {
             recoveries.remove(room_id.as_str());
         }
         Ok(response)
+    }
+
+    fn commit_due_timer(
+        &self,
+        room_id: &RoomId,
+        authority: AuthorizedTimerFiredV1,
+        request: &TimerFiredRequestV1,
+        operation: Option<SqliteRoomSupervisorOperationV1>,
+    ) -> Result<TimerFireResponse, BackendError> {
+        let Some(operation) = operation else {
+            return self.commit_catching_up_timer(room_id, authority, request);
+        };
+        let _admission = self
+            .admission_lanes
+            .reserve_host_stimulus(room_id)
+            .map_err(|error| map_admission_lane_error(&error))?;
+        let transition_id = next_core_id::<TransitionId>()?;
+        let resolution = self
+            .store
+            .commit_authorized_timer_fired(&self.registry, authority, request, transition_id)
+            .map_err(|error| map_timer_commit_error(&error))?;
+        operation.publish().map_err(Self::map_supervisor_error)?;
+        timer_response_from_resolution(request, &resolution)
+    }
+
+    fn scheduled_timer_slice(
+        &self,
+        room_id: &RoomId,
+        remaining: &mut usize,
+        changed: &mut bool,
+    ) -> Result<(), BackendError> {
+        let Some(presented) = &self.timer_authority else {
+            return Ok(());
+        };
+        let cutoff = self
+            .host_clock
+            .sample()
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        for _ in 0..8 {
+            if *remaining == 0 {
+                break;
+            }
+            let lifecycle = self.verified_room_lifecycle(room_id)?;
+            let request = if lifecycle == SqliteRoomRuntimeStateV1::CatchingUp {
+                self.recoveries
+                    .lock()
+                    .map_err(|_| BackendError::StorageUnavailable)?
+                    .get_mut(room_id.as_str())
+                    .ok_or(BackendError::Busy)?
+                    .recovery
+                    .next_due_timer(&self.store)
+                    .map_err(|_| BackendError::StorageUnavailable)?
+            } else {
+                self.store
+                    .next_due_timer(room_id, &cutoff)
+                    .map_err(|_| BackendError::StorageUnavailable)?
+            };
+            let Some(request) = request else {
+                break;
+            };
+            let operation = if lifecycle == SqliteRoomRuntimeStateV1::Active {
+                Some(self.acquire_room_operation(room_id)?)
+            } else {
+                None
+            };
+            let authority = self
+                .authority()
+                .authorize_timer_fired(presented, &request, Self::checked_at()?)
+                .map_err(map_authority_error)?;
+            *remaining -= 1;
+            self.commit_due_timer(room_id, authority, &request, operation)?;
+            *changed = true;
+        }
+        Ok(())
     }
 
     fn acquire_room_operation(
@@ -2499,21 +2601,7 @@ impl GatewayBackend for SqliteGatewayBackend {
         {
             return Err(BackendError::Busy);
         }
-        if lifecycle == SqliteRoomRuntimeStateV1::CatchingUp {
-            return self.commit_catching_up_timer(&room_id, authority, timer_request);
-        }
-        let operation = operation.ok_or(BackendError::Busy)?;
-        let _admission = self
-            .admission_lanes
-            .reserve_host_stimulus(&room_id)
-            .map_err(|error| map_admission_lane_error(&error))?;
-        let transition_id = next_core_id::<TransitionId>()?;
-        let resolution = self
-            .store
-            .commit_authorized_timer_fired(&self.registry, authority, timer_request, transition_id)
-            .map_err(|error| map_timer_commit_error(&error))?;
-        operation.publish().map_err(Self::map_supervisor_error)?;
-        timer_response_from_resolution(timer_request, &resolution)
+        self.commit_due_timer(&room_id, authority, timer_request, operation)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2998,20 +3086,50 @@ impl GatewayBackend for SqliteGatewayBackend {
         )
     }
 
-    fn scheduler_tick(&self) -> Result<(), BackendError> {
+    fn scheduler_tick(&self) -> Result<Vec<String>, BackendError> {
         self.ensure_source_authoritative()?;
-        for room_id in self.store.room_ids().map_err(map_activation_error)? {
-            if self.verified_room_lifecycle(&room_id)? == SqliteRoomRuntimeStateV1::CatchingUp {
-                // Readiness covers the scheduler process, not ordinary Room
-                // admission. An overdue Room remains gated until the exact
-                // HostOperator Timer request drains its fixed-cutoff recovery.
-                continue;
+        let mut rooms = self.store.room_ids().map_err(map_activation_error)?;
+        if self.timer_authority.is_none() {
+            for room_id in rooms {
+                if self.verified_room_lifecycle(&room_id)? == SqliteRoomRuntimeStateV1::CatchingUp {
+                    continue;
+                }
+                self.store
+                    .reclaim_activation_leases(room_id, None)
+                    .map_err(map_activation_error)?;
             }
-            self.store
-                .reclaim_activation_leases(room_id, None)
-                .map_err(map_activation_error)?;
+            return Ok(Vec::new());
         }
-        Ok(())
+        let mut last_timer_room = self
+            .last_timer_room
+            .lock()
+            .map_err(|_| BackendError::StorageUnavailable)?;
+        if let Some(previous) = last_timer_room.as_ref() {
+            let offset = rooms.partition_point(|room| room.as_str() <= previous.as_str());
+            rooms.rotate_left(offset);
+        }
+        let mut committed_rooms = Vec::new();
+        let mut remaining = 64;
+        for room_id in rooms {
+            let mut changed = false;
+            if remaining > 0 {
+                *last_timer_room = Some(room_id.clone());
+                if let Err(error) =
+                    self.scheduled_timer_slice(&room_id, &mut remaining, &mut changed)
+                {
+                    tracing::warn!(?error, "scheduled Room timer slice deferred");
+                }
+            }
+            if changed {
+                committed_rooms.push(room_id.to_string());
+            }
+            if let Ok(SqliteRoomRuntimeStateV1::Active) = self.verified_room_lifecycle(&room_id)
+                && let Err(error) = self.store.reclaim_activation_leases(room_id, None)
+            {
+                tracing::warn!(?error, "Room Activation maintenance deferred");
+            }
+        }
+        Ok(committed_rooms)
     }
 }
 
@@ -3654,6 +3772,186 @@ mod tests {
                 .into_bytes(),
         );
         GatewaySession::new_with_wire(id, bearer, wire)
+    }
+
+    struct SchedulerClock(Mutex<HostClockSampleV1>);
+
+    impl HostClockV1 for SchedulerClock {
+        fn sample(&self) -> Result<HostClockSampleV1, HostClockErrorV1> {
+            self.0
+                .lock()
+                .map(|value| value.clone())
+                .map_err(|_| HostClockErrorV1::Unavailable)
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduler_advances_due_room_once_without_operator_timer_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file = NamedTempFile::new()?;
+        let store = SqliteRoomStore::open(file.path())?;
+        let bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
+        AuthorityV1::new(Arc::new(store.clone())).bootstrap(
+            AuthorityBootstrapV1::new(
+                "01ARZ3NDEKTSV4RRFFQ69G5FC4".parse()?,
+                "01ARZ3NDEKTSV4RRFFQ69G5FC2".parse()?,
+                PrincipalKindV1::Human,
+                "01ARZ3NDEKTSV4RRFFQ69G5FC3".parse()?,
+                bearer.token_hash(),
+                None,
+            )?,
+            "2026-08-15T12:00:00Z".parse()?,
+        )?;
+        let now = OffsetDateTime::now_utc();
+        let clock = Arc::new(SchedulerClock(Mutex::new(HostClockSampleV1::new(
+            now.format(&Rfc3339)?,
+        )?)));
+        let backend = SqliteGatewayBackend::with_host_clock(
+            store,
+            Arc::new(builtin_agent_heist_registry()?),
+            clock.clone(),
+        )
+        .with_timer_authority(bearer)?;
+        let host = session(0xa9, "01ARZ3NDEKTSV4RRFFQ69G5FBE");
+        let members = [
+            ("01ARZ3NDEKTSV4RRFFQ69G5FC2", "navigator"),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FD3", "insider"),
+            ("01ARZ3NDEKTSV4RRFFQ69G5FD4", "broker"),
+        ]
+        .into_iter()
+        .map(|(principal, role)| CreateMember {
+            principal_id: principal.to_owned(),
+            principal_kind: PrincipalKind::Human,
+            role: Some(role.to_owned()),
+            access_mode: AccessMode::Participant,
+        })
+        .collect();
+        let room = backend.create_room(&host, CreateRoomRequest {
+            pack: PackReference { id: "worldstream.agent-heist".to_owned(), version: "0.2.0".to_owned(), digest: agent_heist_lobby_digest().to_string() },
+            configuration: json!({
+                "pack_id":"worldstream.agent-heist","pack_schema":1,
+                "roles":["navigator","insider","broker"],
+                "briefing_duration_seconds":30,"negotiation_duration_seconds":90,
+                "commitment_duration_seconds":30,"commitment_reminder_seconds_before_deadline":10,
+                "result_duration_seconds":20,"maximum_plans":12,"maximum_open_offers_per_role":4
+            }),
+            members, idempotency_key: "automatic-timer-room".to_owned(),
+        })?;
+        backend.launch_lobby(
+            &host,
+            &room.room_id,
+            LobbyLaunchRequest {
+                input_id: "01ARZ3NDEKTSV4RRFFQ69G5FD6".to_owned(),
+                based_on_room_seq: 0,
+            },
+        )?;
+        backend.scheduler_tick()?;
+        assert_eq!(
+            backend
+                .operator_room_detail(&host, &room.room_id)?
+                .room_head
+                .room_seq,
+            1
+        );
+        *clock.0.lock().map_err(|_| "clock unavailable")? =
+            HostClockSampleV1::new((now + time::Duration::seconds(60)).format(&Rfc3339)?)?;
+        backend.scheduler_tick()?;
+        assert_eq!(
+            backend
+                .operator_room_detail(&host, &room.room_id)?
+                .room_head
+                .room_seq,
+            2
+        );
+        backend.scheduler_tick()?;
+        assert_eq!(
+            backend
+                .operator_room_detail(&host, &room.room_id)?
+                .room_head
+                .room_seq,
+            2
+        );
+        assert_scheduler_publication(backend, &host, &room, &clock, now).await?;
+        Ok(())
+    }
+
+    async fn assert_scheduler_publication(
+        backend: SqliteGatewayBackend,
+        host: &GatewaySession,
+        room: &CreateRoomResponse,
+        clock: &SchedulerClock,
+        now: OffsetDateTime,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Same acknowledged-registration/publication seam as lib.rs's
+        // live_publication_does_not_duplicate_after_registered_catch_up.
+        let issued = backend.issue_member_capability(
+            host,
+            crate::MemberCapabilityIssueRequest {
+                room_id: room.room_id.clone(),
+                member_id: room.member_ids[0].clone(),
+                principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC2".to_owned(),
+                scopes: vec![
+                    CapabilityScopeV1::RoomAttach,
+                    CapabilityScopeV1::RoomObserveMember,
+                ],
+                idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FE0".to_owned(),
+                expires_at: None,
+            },
+        )?;
+        let wire = BearerWireV1::parse(&issued.bearer)?;
+        let bearer =
+            CapabilityBearerV1::from_bytes(BearerWireV1::parse(&issued.bearer)?.into_bytes());
+        let member = Arc::new(GatewaySession::new_with_wire(
+            "01ARZ3NDEKTSV4RRFFQ69G5FE1".parse()?,
+            bearer,
+            wire,
+        ));
+        let attached = backend.attach(
+            &member,
+            RoomAttach {
+                room_id: room.room_id.clone(),
+                member_id: room.member_ids[0].clone(),
+                after_frame_seq: None,
+            },
+        )?;
+        backend.sync_ack(
+            &member,
+            RoomSyncAck {
+                room_id: room.room_id.clone(),
+                member_id: room.member_ids[0].clone(),
+                through_frame_head: attached.attached.frame_head,
+                sync_token: attached.attached.sync_token,
+            },
+        )?;
+        let registry = crate::LiveStreamRegistry::default();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(crate::LIVE_PUSH_CAPACITY);
+        let (close_sender, _close_receiver) = tokio::sync::watch::channel(None);
+        registry.register(
+            member,
+            room.room_id.clone(),
+            room.member_ids[0].clone(),
+            attached.attached.frame_head,
+            sender,
+            close_sender,
+        )?;
+        let scheduler = crate::SchedulerRuntimeOwner::start(Arc::new(backend), registry)?;
+        *clock.0.lock().map_err(|_| "clock unavailable")? =
+            HostClockSampleV1::new((now + time::Duration::seconds(125)).format(&Rfc3339)?)?;
+        let pushed =
+            tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv()).await?;
+        let Some(crate::LivePush::Frame(frame)) = pushed else {
+            return Err("timer frame missing".into());
+        };
+        assert_eq!(frame.frame.cause_room_seq, 3);
+        assert_eq!(frame.frame.member_id, room.member_ids[0]);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(350), receiver.recv(),)
+                .await
+                .is_err(),
+            "scheduler must not republish the committed timer frame"
+        );
+        drop(scheduler);
+        Ok(())
     }
 
     fn sealed_member_request(

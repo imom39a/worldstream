@@ -1,6 +1,7 @@
 # CLI-first implementation tickets
 
-Status: Q1–Q18 approved; 12 implementation tickets filed in Linear.
+Status: Q1–Q18 approved; 12 original implementation tickets filed in Linear.
+Two MVP integration gaps are tracked as IMO-148 and IMO-149.
 Ticket preparation is complete. IMO-135's contract work, IMO-136's protected
 initialization and control admission, IMO-137's MVP managed lifecycle,
 IMO-138's installed/running Pack display, IMO-139's reviewed setup generation
@@ -28,7 +29,9 @@ gate. The completed
 adds exact reviewed local prerequisite imports through the same preview gate.
 Pack inventory display (IMO-138) and immutable Room creation/provisioning
 operations (IMO-140) are also complete. The current frontier is client-neutral
-launch readiness (IMO-141) and scoped client/Runner connection commands (IMO-143).
+launch readiness (IMO-141), scoped client/Runner connection commands (IMO-143),
+the automatic SQLite timer gap (IMO-148), and configurable local client origin
+(IMO-149).
 
 Each other ticket has native Linear blocking relations. Start a ticket only
 after all its blockers are complete. Update its readiness label at that point;
@@ -47,7 +50,9 @@ do not treat the ticket's number or this table as permission to skip blockers.
 | [IMO-141](https://linear.app/imom39a/issue/IMO-141/make-launch-readiness-client-neutral-and-preserve-declared-pack-start) | Make launch readiness client-neutral and preserve declared Pack start behavior | IMO-140 |
 | [IMO-142](https://linear.app/imom39a/issue/IMO-142/prepare-approved-agent-and-client-prerequisites-without-studio) | Prepare approved agent and client prerequisites without Studio | IMO-136 |
 | [IMO-143](https://linear.app/imom39a/issue/IMO-143/connect-scoped-clients-and-runners-through-the-cli) | Connect scoped clients and Runners through the CLI | IMO-137, IMO-140, IMO-142 |
-| [IMO-144](https://linear.app/imom39a/issue/IMO-144/prove-complete-cli-only-heist-direct-sdk-and-negotiate-flows) | Prove complete CLI-only Heist, direct SDK, and Negotiate flows | IMO-138, IMO-141, IMO-143 |
+| [IMO-148](https://linear.app/imom39a/issue/IMO-148/wire-automatic-due-timers-into-the-runtime-scheduler-for-the-cli-mvp) | Wire existing semantic timer work into the Runtime scheduler | IMO-45, IMO-137 |
+| [IMO-149](https://linear.app/imom39a/issue/IMO-149/configure-the-managed-participant-client-origin-for-separate-local) | Configure the managed participant client origin | IMO-137, IMO-142 |
+| [IMO-144](https://linear.app/imom39a/issue/IMO-144/prove-complete-cli-only-heist-direct-sdk-and-negotiate-flows) | Prove complete CLI-only Heist, direct SDK, and Negotiate flows | IMO-138, IMO-141, IMO-143, IMO-148, IMO-149 |
 | [IMO-145](https://linear.app/imom39a/issue/IMO-145/prepare-versioned-cli-first-packaging-and-verify-the-getting-started) | Prepare versioned CLI-first packaging and verify the getting-started guide | IMO-144 |
 | [IMO-146](https://linear.app/imom39a/issue/IMO-146/retire-studio-through-the-verified-authenticated-cli-cutover) | Retire Studio through the verified authenticated CLI cutover | IMO-145 |
 
@@ -75,6 +80,15 @@ the final cutover activates it and removes the frontend.
   installation trust into Room setup.
 - IMO-143 owns scoped credential files, approved Runner controls, and secure
   one-use browser launch.
+- IMO-148 closes a functional gap found while preparing the CLI acceptance:
+  the existing scheduler reclaims Activation leases but does not automatically
+  fire due timers. The old Heist harness fires them with Host authority. Reuse
+  the existing timer, authorization, and recovery paths in the scheduler so a
+  normal scoped participant session can finish. This is an MVP prerequisite,
+  not the deferred production-hardening work.
+- IMO-149 exposes the existing exact local client-origin setting through managed
+  CLI startup. A separate local installation must not require stopping another
+  installation or silently changing its browser-client configuration.
 - IMO-144 proves CLI-only Heist, a direct SDK participant, Negotiate, and the
   existing managed reference integration against its declared compatible Pack.
   The current managed fixture supports Counter v4; do not assume Heist

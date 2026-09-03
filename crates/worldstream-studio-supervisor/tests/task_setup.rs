@@ -54,6 +54,68 @@ use worldstream_studio_supervisor::{
 const DIGEST: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 
+#[cfg(feature = "cli-operator-preview")]
+#[tokio::test]
+async fn public_room_launch_reuses_the_retained_input_after_a_lost_reply()
+-> Result<(), Box<dyn std::error::Error>> {
+    use worldstream_studio_supervisor::room_launch::room_launch_router;
+
+    let directory = tempdir()?;
+    let provisions = Arc::new(Mutex::new(ProvisionLedger::default()));
+    let launches = Arc::new(Mutex::new(LaunchLedger {
+        lose_first_response: true,
+        ..LaunchLedger::default()
+    }));
+    let runner = Arc::new(Mutex::new(RunnerMode::Ready));
+    let make = || {
+        open_launch_ready_setup(
+            directory.path(),
+            DurableProvisioner(Arc::clone(&provisions)),
+            ConsoleHealth(Arc::new(Mutex::new(ParticipantConsoleSessionHealthV1::Usable))),
+            RunnerHealth(Arc::clone(&runner)),
+            Launcher(Arc::clone(&launches)),
+        )
+    };
+    let setup = make();
+    setup.start("setup-alpha")?;
+    let app = room_launch_router(open_creation(directory.path()), setup);
+    let (code, assessment) = public_launch_request(&app, "GET").await?;
+    assert_eq!(code, 200);
+    assert_eq!(assessment["operation"], "setup-alpha");
+    assert_eq!(assessment["readiness"]["ready_to_launch"], true);
+    let (code, pending) = public_launch_request(&app, "POST").await?;
+    assert_eq!(code, 202);
+    assert_eq!(pending["launch"]["state"], "needs_attention");
+    drop(app);
+
+    *runner.lock().unwrap_or_else(PoisonError::into_inner) = RunnerMode::Full;
+    let restarted = room_launch_router(open_creation(directory.path()), make());
+    let (code, committed) = public_launch_request(&restarted, "POST").await?;
+    assert_eq!(code, 200);
+    assert_eq!(committed["room_id"], ROOM);
+    assert_eq!(committed["launch"]["state"], "launched");
+    assert_eq!(committed["readiness"]["ready_to_launch"], false);
+    let ledger = launches.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(ledger.calls.len(), 2);
+    assert_eq!(ledger.calls[0], ledger.calls[1]);
+    Ok(())
+}
+
+#[cfg(feature = "cli-operator-preview")]
+async fn public_launch_request(
+    app: &axum::Router,
+    method: &str,
+) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+    let response = app.clone().oneshot(
+        Request::builder().method(method)
+            .uri(format!("/api/v1/rooms/{ROOM}/launch"))
+            .body(Body::empty())?,
+    ).await?;
+    let status = response.status();
+    let body = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    Ok((status, body))
+}
+
 #[derive(Clone, Copy)]
 struct ValidDraft;
 
@@ -1185,6 +1247,11 @@ fn readiness_reports_exact_console_and_runner_reasons_and_optional_unfilled_is_n
         let status = supervisor
             .status("setup-alpha")
             .unwrap_or_else(|error| unreachable!("status: {error:?}"));
+        #[cfg(feature = "cli-operator-preview")]
+        let reason = match reason {
+            TaskSeatReadinessReasonV1::ConsoleMissing | TaskSeatReadinessReasonV1::ConsoleStale => TaskSeatReadinessReasonV1::ParticipantUnsynchronized,
+            _ => TaskSeatReadinessReasonV1::ParticipantUnavailable,
+        };
         assert_eq!(status.readiness.seats[0].reason, reason);
         assert!(!status.readiness.ready_to_launch);
     }
@@ -1219,7 +1286,7 @@ fn readiness_reports_exact_console_and_runner_reasons_and_optional_unfilled_is_n
 }
 
 #[test]
-fn filled_optional_seat_is_blocking_when_its_live_readiness_is_false() {
+fn filled_optional_seat_obeys_the_delivery_phase_launch_policy() {
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
     let mut draft = reviewed_draft();
     draft.seats[2].principal_id = Some("01ARZ3NDEKTSV4RRFFQ69G5FB0".to_owned());
@@ -1250,15 +1317,21 @@ fn filled_optional_seat_is_blocking_when_its_live_readiness_is_false() {
         .unwrap_or_else(|error| unreachable!("start setup: {error:?}"));
     assert_eq!(status.state, TaskSetupStateV1::Ready);
     assert!(!status.readiness.seats[2].required);
-    assert_eq!(
-        status.readiness.seats[2].reason,
-        TaskSeatReadinessReasonV1::ConsoleDisconnected
-    );
+    #[cfg(feature = "cli-operator-preview")]
+    {
+        assert_eq!(status.readiness.seats[2].reason, TaskSeatReadinessReasonV1::ParticipantUnavailable);
+        assert!(status.readiness.ready_to_launch);
+        assert!(supervisor.launch("setup-alpha").is_ok());
+    }
+    #[cfg(not(feature = "cli-operator-preview"))]
+    {
+    assert_eq!(status.readiness.seats[2].reason, TaskSeatReadinessReasonV1::ConsoleDisconnected);
     assert!(!status.readiness.ready_to_launch);
     assert_eq!(
         supervisor.launch("setup-alpha"),
         Err(worldstream_studio_supervisor::task_setup::TaskSetupErrorV1::NotReady)
     );
+    }
 }
 
 #[test]

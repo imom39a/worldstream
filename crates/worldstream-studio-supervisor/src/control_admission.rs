@@ -92,6 +92,7 @@ fn is_membership_browser_request(method: &str, path: &str) -> bool {
                 "POST" | "OPTIONS",
                 "/api/v1/participant-console/handoffs:redeem"
                     | "/api/v1/participant-console/session:observe"
+                    | "/api/v1/participant-console/session:acknowledge"
                     | "/api/v1/participant-console/session:act"
                     | "/api/v1/participant-console/session:replay"
             )

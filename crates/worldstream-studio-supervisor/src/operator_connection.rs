@@ -39,6 +39,7 @@ pub struct OperatorConnection {
     state: PathBuf,
     endpoint: SocketAddr,
     timeout: Duration,
+    participant_console_origin: Option<String>,
 }
 
 /// Fixed shipped executables; not an arbitrary command launcher.
@@ -58,7 +59,11 @@ struct ConfigurationSelection {
     original: PathBuf,
     working_directory: PathBuf,
     policy_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    participant_console_origin: Option<String>,
 }
+
+const DEFAULT_PARTICIPANT_CONSOLE_ORIGIN: &str = "http://127.0.0.1:5173";
 
 impl OperatorConnection {
     /// Opens existing protected installation state without starting processes.
@@ -82,7 +87,24 @@ impl OperatorConnection {
             state,
             endpoint,
             timeout,
+            participant_console_origin: None,
         })
+    }
+
+    /// Selects an explicit participant browser origin for Controller startup.
+    /// Omission reuses the retained selection, or the default on first startup.
+    ///
+    /// # Errors
+    /// Rejects origins outside the existing exact local HTTP origin contract.
+    pub fn with_participant_console_origin(
+        mut self,
+        origin: Option<&str>,
+    ) -> Result<Self, OperatorConnectionError> {
+        if origin.is_some_and(|value| !worldstream_runtime::is_managed_participant_origin(value)) {
+            return Err(OperatorConnectionError::Invalid);
+        }
+        self.participant_console_origin = origin.map(str::to_owned);
+        Ok(self)
     }
 
     /// Sends one request on the exact socket whose generation was proved.
@@ -185,6 +207,10 @@ impl OperatorConnection {
                 .policy_digest
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
+            || selection
+                .participant_console_origin
+                .as_deref()
+                .is_some_and(|origin| !worldstream_runtime::is_managed_participant_origin(origin))
         {
             return Err(OperatorConnectionError::Invalid);
         }
@@ -223,6 +249,25 @@ impl OperatorConnection {
             .and_then(|config| config.installation_toml(working_directory))
             .map_err(|_| OperatorConnectionError::Invalid)?;
         let config = self.state.join("managed-runtime.toml");
+        let retained_selection = self.read_selection()?;
+        let retained_origin = retained_selection.as_ref().map(|selection| {
+            selection
+                .participant_console_origin
+                .as_deref()
+                .unwrap_or(DEFAULT_PARTICIPANT_CONSOLE_ORIGIN)
+        });
+        if self
+            .participant_console_origin
+            .as_deref()
+            .is_some_and(|requested| retained_origin.is_some_and(|retained| requested != retained))
+        {
+            return Err(OperatorConnectionError::Invalid);
+        }
+        let origin = self
+            .participant_console_origin
+            .as_deref()
+            .or(retained_origin)
+            .unwrap_or(DEFAULT_PARTICIPANT_CONSOLE_ORIGIN);
         let selection = ConfigurationSelection {
             schema: "worldstream/controller-configuration/v1".into(),
             state: self.state.clone(),
@@ -230,8 +275,11 @@ impl OperatorConnection {
             working_directory: fs::canonicalize(working_directory)
                 .map_err(|_| OperatorConnectionError::Invalid)?,
             policy_digest: blake3::hash(normalized.as_bytes()).to_hex().to_string(),
+            participant_console_origin: retained_selection.as_ref().map_or_else(
+                || Some(origin.to_owned()),
+                |selection| selection.participant_console_origin.clone(),
+            ),
         };
-        let retained_selection = self.read_selection()?;
         if retained_selection
             .as_ref()
             .is_some_and(|retained| retained != &selection)
@@ -350,6 +398,8 @@ impl OperatorConnection {
         command
             .arg("--bind")
             .arg(self.endpoint.to_string())
+            .arg("--participant-console-origin")
+            .arg(origin)
             .arg("--daemon")
             .arg(effective.server.bind.to_string())
             .arg("--daemon-executable")

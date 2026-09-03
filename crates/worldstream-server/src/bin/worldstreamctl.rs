@@ -1,3 +1,6 @@
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/client_handoff.rs"]
+mod cli_client_handoff;
 #[path = "worldstreamctl/contract.rs"]
 mod cli_contract;
 #[cfg(feature = "cli-operator-preview")]
@@ -6,16 +9,25 @@ mod cli_initialization;
 #[cfg(feature = "cli-operator-preview")]
 #[path = "worldstreamctl/pack_list.rs"]
 mod cli_pack_list;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/participant_connections.rs"]
+mod cli_participant_connections;
 #[path = "worldstreamctl/reference.rs"]
 mod cli_reference;
 #[path = "worldstreamctl/report.rs"]
 mod cli_report;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/room_launch.rs"]
+mod cli_room_launch;
 #[cfg(feature = "cli-operator-preview")]
 #[path = "worldstreamctl/room_operations.rs"]
 mod cli_room_operations;
 #[cfg(feature = "cli-operator-preview")]
 #[path = "worldstreamctl/room_setup.rs"]
 mod cli_room_setup;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/runner_adapters.rs"]
+mod cli_runner_adapters;
 #[cfg(feature = "cli-operator-preview")]
 #[path = "worldstreamctl/server.rs"]
 mod cli_server;
@@ -615,6 +627,36 @@ fn main() -> Result<()> {
             #[cfg(feature = "cli-operator-preview")]
             if let Some(report) = cli_server::execute(&command, &config_args) {
                 return finish_operator_report(&report, json);
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(result) = cli_participant_connections::execute(&command) {
+                return finish_operator_report(&CommandReport::participant(name, result), json);
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let OperatorCommand::Runner { command: runner } = &command
+                && let Some(result) = cli_runner_adapters::execute(runner)
+            {
+                return finish_operator_report(&CommandReport::runner(name, result), json);
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let OperatorCommand::Client {
+                command: cli_contract::ClientCommand::Open(arguments),
+            } = &command
+            {
+                return finish_operator_report(
+                    &CommandReport::client_open(cli_client_handoff::execute(arguments)),
+                    json,
+                );
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let OperatorCommand::Room {
+                command: cli_contract::RoomCommand::Launch(arguments),
+            } = &command
+            {
+                return finish_operator_report(
+                    &CommandReport::room_launch(cli_room_launch::execute(arguments)),
+                    json,
+                );
             }
             #[cfg(feature = "cli-operator-preview")]
             if let OperatorCommand::Room { command: room } = &command

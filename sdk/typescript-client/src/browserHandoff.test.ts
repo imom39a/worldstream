@@ -34,6 +34,42 @@ function browser(hash: string): BrowserNavigationTarget & { replaced: string[] }
 }
 
 describe("Activity Client opaque handoff", () => {
+  it("acknowledges a validated browser delivery before returning it", async () => {
+    const batch = {
+      pack: { id: "worldstream.counter", version: "0.1.0", digest: `blake3:${"2".repeat(64)}` },
+      room_head: {
+        room_seq: 7,
+        genesis_or_transition_hash: `blake3:${"1".repeat(64)}`,
+        core_schema_version: "core.v1",
+        pack_digest: `blake3:${"2".repeat(64)}`,
+        core_state_hash: `blake3:${"3".repeat(64)}`,
+        activity_state_hash: `blake3:${"4".repeat(64)}`,
+        authoritative_state_hash: `blake3:${"5".repeat(64)}`,
+      },
+      frame_head: 8,
+      delivery: [{ kind: "projection_reset", body: { projection: { action_offers: [] } } }],
+    };
+    const acknowledgement = `wsa1:${"12".repeat(32)}`;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("session:observe")) {
+        return new Response(JSON.stringify(batch), {
+          status: 200,
+          headers: { "X-WorldStream-Delivery-Acknowledgement": acknowledgement },
+        });
+      }
+      expect(input).toBe("http://127.0.0.1:9420/api/v1/participant-console/session:acknowledge");
+      expect(init).toMatchObject({ method: "POST", credentials: "include", cache: "no-store" });
+      expect(JSON.parse(String(init?.body))).toEqual({ acknowledgement, frame_head: 8 });
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      return new Response(JSON.stringify({
+        version: "participant_console_session.v1", state: "usable", next_action: "continue",
+      }), { status: 200 });
+    });
+    const client = new ActivityClientHandoffClient("http://127.0.0.1:9420", fetch);
+    await expect(client.observe(null)).resolves.toEqual(batch);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("uses Activity Client names without changing the frozen handoff wire contract", async () => {
     const target = browser(`#handoff=${HANDOFF}`);
     const startup = selectActivityClientStartup(target);
@@ -158,13 +194,19 @@ describe("Activity Client opaque handoff", () => {
       frame_head: 8,
       delivery: [{ kind: "projection_reset", body: { projection: { action_offers: [] } } }],
     };
-    const accepted = new ActivityClientHandoffClient("http://127.0.0.1:9420", vi.fn().mockResolvedValue(new Response(JSON.stringify(safe), { status: 200 })));
+    const legacyFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(safe), { status: 200 }));
+    const accepted = new ActivityClientHandoffClient("http://127.0.0.1:9420", legacyFetch);
     await expect(accepted.observe(null)).resolves.toEqual(safe);
+    expect(legacyFetch).toHaveBeenCalledTimes(1);
 
     const leaking = structuredClone(safe) as typeof safe & { room_head: typeof safe.room_head & { room_id: string } };
     leaking.room_head.room_id = ROOM_ID;
-    const rejected = new ActivityClientHandoffClient("http://127.0.0.1:9420", vi.fn().mockResolvedValue(new Response(JSON.stringify(leaking), { status: 200 })));
+    const invalidFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(leaking), {
+      status: 200, headers: { "X-WorldStream-Delivery-Acknowledgement": `wsa1:${"34".repeat(32)}` },
+    }));
+    const rejected = new ActivityClientHandoffClient("http://127.0.0.1:9420", invalidFetch);
     await expect(rejected.observe(null)).rejects.toMatchObject({ code: "participant_session_invalid_response" });
+    expect(invalidFetch).toHaveBeenCalledTimes(1);
   });
 
   it("requests authorized Replay through the cookie-only Supervisor route", async () => {

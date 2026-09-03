@@ -250,6 +250,10 @@ struct TaskSetupOperationV1 {
 #[serde(rename_all = "snake_case")]
 pub enum TaskSeatReadinessReasonV1 {
     Ready,
+    #[cfg(feature = "cli-operator-preview")]
+    ParticipantUnsynchronized,
+    #[cfg(feature = "cli-operator-preview")]
+    ParticipantUnavailable,
     OptionalUnfilled,
     SetupIncomplete,
     ConsoleMissing,
@@ -698,6 +702,73 @@ impl HttpDaemonTaskRuntimeV1 {
     }
 }
 
+#[cfg(feature = "cli-operator-preview")]
+impl ParticipantConsoleReadinessSourceV1 for HttpDaemonTaskRuntimeV1 {
+    fn session_health(&self, room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Presence {
+            version: String,
+            synchronized: bool,
+        }
+        if room_id.parse::<UlidString>().is_err() || member_id.parse::<UlidString>().is_err() {
+            return ParticipantConsoleSessionHealthV1::Invalid;
+        }
+        let path = format!("/v1/operator/rooms/{room_id}/members/{member_id}/presence");
+        match self.request::<Presence>("GET", &path, None::<&serde_json::Value>) {
+            Ok((200, Some(presence))) if presence.version == "membership_presence.v1" => {
+                if presence.synchronized {
+                    ParticipantConsoleSessionHealthV1::Usable
+                } else {
+                    ParticipantConsoleSessionHealthV1::Missing
+                }
+            }
+            _ => ParticipantConsoleSessionHealthV1::Disconnected,
+        }
+    }
+}
+
+/// Accepts either an acknowledged direct stream or a fresh browser delivery receipt.
+/// Neither source may infer presence from provisioning or a retained cookie.
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Clone)]
+pub struct ClientNeutralReadinessSourceV1 {
+    direct: Arc<dyn ParticipantConsoleReadinessSourceV1>,
+    browser: Arc<dyn ParticipantConsoleReadinessSourceV1>,
+}
+
+#[cfg(feature = "cli-operator-preview")]
+impl ClientNeutralReadinessSourceV1 {
+    #[must_use]
+    pub fn new(
+        direct: impl ParticipantConsoleReadinessSourceV1 + 'static,
+        browser: impl ParticipantConsoleReadinessSourceV1 + 'static,
+    ) -> Self {
+        Self {
+            direct: Arc::new(direct),
+            browser: Arc::new(browser),
+        }
+    }
+}
+
+#[cfg(feature = "cli-operator-preview")]
+impl ParticipantConsoleReadinessSourceV1 for ClientNeutralReadinessSourceV1 {
+    fn session_health(&self, room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
+        let direct = self.direct.session_health(room_id, member_id);
+        if direct == ParticipantConsoleSessionHealthV1::Usable {
+            return direct;
+        }
+        let browser = self.browser.session_health(room_id, member_id);
+        if browser == ParticipantConsoleSessionHealthV1::Usable
+            || direct == ParticipantConsoleSessionHealthV1::Missing
+        {
+            browser
+        } else {
+            direct
+        }
+    }
+}
+
 impl DaemonTaskLaunchSourceV1 for HttpDaemonTaskRuntimeV1 {
     fn launch(
         &self,
@@ -843,6 +914,11 @@ impl TaskRunnerReadinessSourceV1 for LiveTaskRunnerReadinessSourceV1 {
     ) -> Result<(), TaskSetupAttemptErrorV1> {
         match self.managed_reason(assignment, pack) {
             TaskSeatReadinessReasonV1::Ready => {}
+            #[cfg(feature = "cli-operator-preview")]
+            TaskSeatReadinessReasonV1::ParticipantUnsynchronized
+            | TaskSeatReadinessReasonV1::ParticipantUnavailable => {
+                return Err(TaskSetupAttemptErrorV1::Rejected);
+            }
             TaskSeatReadinessReasonV1::RunnerStale
             | TaskSeatReadinessReasonV1::RunnerDisconnected
             | TaskSeatReadinessReasonV1::RunnerOverCapacity => {
@@ -1414,8 +1490,10 @@ impl TaskSetupSupervisorV1 {
                 }
             })
             .collect::<Vec<_>>();
-        let ready_to_launch =
-            operation.state == TaskSetupStateV1::Ready && seats.iter().all(|seat| seat.ready);
+        let ready_to_launch = operation.state == TaskSetupStateV1::Ready
+            && seats.iter().all(|seat| {
+                seat.ready || (cfg!(feature = "cli-operator-preview") && !seat.required)
+            });
         TaskReadinessV1 {
             ready_to_launch,
             seats,
@@ -1439,22 +1517,44 @@ impl TaskSetupSupervisorV1 {
         }
         match seat.principal_kind {
             Some(PrincipalKind::Human) => {
-                let Some(console) = &self.console else {
-                    return TaskSeatReadinessReasonV1::ConsoleMissing;
-                };
-                match console.session_health(&operation.room_id, member_id) {
-                    ParticipantConsoleSessionHealthV1::Usable => TaskSeatReadinessReasonV1::Ready,
-                    ParticipantConsoleSessionHealthV1::Missing => {
-                        TaskSeatReadinessReasonV1::ConsoleMissing
+                #[cfg(feature = "cli-operator-preview")]
+                {
+                    match self
+                        .console
+                        .as_ref()
+                        .map(|source| source.session_health(&operation.room_id, member_id))
+                    {
+                        Some(ParticipantConsoleSessionHealthV1::Usable) => {
+                            TaskSeatReadinessReasonV1::Ready
+                        }
+                        Some(
+                            ParticipantConsoleSessionHealthV1::Missing
+                            | ParticipantConsoleSessionHealthV1::Stale,
+                        ) => TaskSeatReadinessReasonV1::ParticipantUnsynchronized,
+                        _ => TaskSeatReadinessReasonV1::ParticipantUnavailable,
                     }
-                    ParticipantConsoleSessionHealthV1::Stale => {
-                        TaskSeatReadinessReasonV1::ConsoleStale
-                    }
-                    ParticipantConsoleSessionHealthV1::Invalid => {
-                        TaskSeatReadinessReasonV1::ConsoleInvalid
-                    }
-                    ParticipantConsoleSessionHealthV1::Disconnected => {
-                        TaskSeatReadinessReasonV1::ConsoleDisconnected
+                }
+                #[cfg(not(feature = "cli-operator-preview"))]
+                {
+                    let Some(console) = &self.console else {
+                        return TaskSeatReadinessReasonV1::ConsoleMissing;
+                    };
+                    match console.session_health(&operation.room_id, member_id) {
+                        ParticipantConsoleSessionHealthV1::Usable => {
+                            TaskSeatReadinessReasonV1::Ready
+                        }
+                        ParticipantConsoleSessionHealthV1::Missing => {
+                            TaskSeatReadinessReasonV1::ConsoleMissing
+                        }
+                        ParticipantConsoleSessionHealthV1::Stale => {
+                            TaskSeatReadinessReasonV1::ConsoleStale
+                        }
+                        ParticipantConsoleSessionHealthV1::Invalid => {
+                            TaskSeatReadinessReasonV1::ConsoleInvalid
+                        }
+                        ParticipantConsoleSessionHealthV1::Disconnected => {
+                            TaskSeatReadinessReasonV1::ConsoleDisconnected
+                        }
                     }
                 }
             }
@@ -1474,7 +1574,10 @@ impl TaskSetupSupervisorV1 {
         let Some(runner) = &seat.runner else {
             return TaskSeatReadinessReasonV1::RunnerAssignmentMissing;
         };
-        if seat.agent_profile.is_none() {
+        if seat.agent_profile.is_none()
+            && (!cfg!(feature = "cli-operator-preview")
+                || seat.agent_assignment != Some(AgentAssignmentModeV1::External))
+        {
             return TaskSeatReadinessReasonV1::RunnerAssignmentMissing;
         }
         if seat.agent_assignment == Some(AgentAssignmentModeV1::Managed) {
@@ -2277,6 +2380,142 @@ impl AssignedMembershipSourceV1 for TaskSetupSupervisorV1 {
             &assignment.membership.member_id,
             SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
         )
+    }
+}
+
+// Explicit operator exports share the existing validated operation snapshot and
+// exact-kind vault resolver. They do not create or substitute any authority.
+#[cfg(feature = "cli-operator-preview")]
+impl TaskSetupSupervisorV1 {
+    pub(crate) fn scoped_runner_snapshot(
+        &self,
+        draft_id: &str,
+        seat_id: &str,
+    ) -> Result<(TaskSetupStatusV1, String), TaskSetupErrorV1> {
+        let _guard = self.lock();
+        let operation = self.load_unlocked(draft_id)?;
+        let seat = operation
+            .seats
+            .iter()
+            .find(|seat| seat.seat_id == seat_id)
+            .filter(|seat| seat.principal_kind == Some(PrincipalKind::Agent))
+            .ok_or(TaskSetupErrorV1::NotFound)?;
+        let runner_id = seat
+            .runner
+            .as_ref()
+            .ok_or(TaskSetupErrorV1::NotReady)?
+            .runner_id
+            .clone();
+        Ok((self.status_for(operation), runner_id))
+    }
+
+    pub(crate) fn export_membership_credentials(
+        &self,
+        draft_id: &str,
+        seat_id: &str,
+        daemon: SocketAddr,
+    ) -> Result<crate::scoped_connections::MembershipCredentialsV1, TaskSetupErrorV1> {
+        let _guard = self.lock();
+        let operation = self.load_unlocked(draft_id)?;
+        if operation.state != TaskSetupStateV1::Ready {
+            return Err(TaskSetupErrorV1::NotReady);
+        }
+        let seat = operation
+            .seats
+            .iter()
+            .find(|seat| seat.seat_id == seat_id)
+            .ok_or(TaskSetupErrorV1::NotFound)?;
+        let capability = seat
+            .member_capability
+            .as_ref()
+            .filter(|capability| capability.provisioned)
+            .ok_or(TaskSetupErrorV1::NotReady)?;
+        let secret = self
+            .vault
+            .resolve(
+                SecretKindV1::MembershipAuthority,
+                &capability.secret_reference,
+            )
+            .map_err(|_| TaskSetupErrorV1::Unavailable)?;
+        let bytes: [u8; 32] = secret
+            .as_bytes()
+            .try_into()
+            .map_err(|_| TaskSetupErrorV1::Unavailable)?;
+        Ok(crate::scoped_connections::MembershipCredentialsV1 {
+            schema: "worldstream/membership-credentials/v1".to_owned(),
+            operation: draft_id.to_owned(),
+            seat: seat_id.to_owned(),
+            runtime_url: format!("ws://{daemon}/v1/stream"),
+            room_id: operation.room_id.clone(),
+            member_id: seat.member_id.clone().ok_or(TaskSetupErrorV1::NotReady)?,
+            principal_id: seat
+                .principal_id
+                .clone()
+                .ok_or(TaskSetupErrorV1::NotReady)?,
+            pack: operation.pack.clone(),
+            role: seat.role.clone(),
+            scopes: member_scopes(seat),
+            bearer: SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
+        })
+    }
+
+    pub(crate) fn export_runner_credentials(
+        &self,
+        draft_id: &str,
+        seat_id: &str,
+        daemon: SocketAddr,
+    ) -> Result<crate::scoped_connections::RunnerCredentialsV1, TaskSetupErrorV1> {
+        let _guard = self.lock();
+        let operation = self.load_unlocked(draft_id)?;
+        if operation.state != TaskSetupStateV1::Ready {
+            return Err(TaskSetupErrorV1::NotReady);
+        }
+        let seat = operation
+            .seats
+            .iter()
+            .find(|seat| seat.seat_id == seat_id)
+            .ok_or(TaskSetupErrorV1::NotFound)?;
+        if seat.principal_kind != Some(PrincipalKind::Agent) {
+            return Err(TaskSetupErrorV1::NotReady);
+        }
+        let runner = seat
+            .runner
+            .as_ref()
+            .filter(|runner| runner.capability.provisioned)
+            .ok_or(TaskSetupErrorV1::NotReady)?;
+        let secret = self
+            .vault
+            .resolve(
+                SecretKindV1::RunnerAuthority,
+                &runner.capability.secret_reference,
+            )
+            .map_err(|_| TaskSetupErrorV1::Unavailable)?;
+        let bytes: [u8; 32] = secret
+            .as_bytes()
+            .try_into()
+            .map_err(|_| TaskSetupErrorV1::Unavailable)?;
+        Ok(crate::scoped_connections::RunnerCredentialsV1 {
+            schema: "worldstream/runner-credentials/v1".to_owned(),
+            operation: draft_id.to_owned(),
+            seat: seat_id.to_owned(),
+            runtime_url: format!("ws://{daemon}/v1/runner/stream"),
+            runner_id: runner.runner_id.clone(),
+            owner_principal_id: seat
+                .principal_id
+                .clone()
+                .ok_or(TaskSetupErrorV1::NotReady)?,
+            pack: operation.pack.clone(),
+            permitted_memberships: vec![RunnerMembershipProvisionTargetV1 {
+                room_id: operation.room_id.clone(),
+                member_id: seat.member_id.clone().ok_or(TaskSetupErrorV1::NotReady)?,
+            }],
+            scopes: vec![
+                "activation:offer_receive".to_owned(),
+                "activation:claim".to_owned(),
+                "activation:complete".to_owned(),
+            ],
+            bearer: SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
+        })
     }
 }
 

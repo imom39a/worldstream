@@ -8,6 +8,7 @@ use super::{
 use std::time::Duration;
 use worldstream_studio_supervisor::{
     operator_connection::OperatorConnection,
+    room_launch::RoomLaunchAssessmentV1,
     room_setup_operations::{
         RoomSetupCreateRequestV1, RoomSetupOperationListV1, RoomSetupOperationStatusV1,
     },
@@ -20,7 +21,7 @@ pub enum RoomOperationExecution {
     Complete(RoomSetupOperationStatusV1),
     Listed(RoomSetupOperationListV1),
     Rooms(StudioRoomInventoryPageV1),
-    Room(Box<StudioRoomSummaryV1>),
+    Room(Box<RoomInspection>),
     Partial {
         operation: String,
         status: Option<RoomSetupOperationStatusV1>,
@@ -28,6 +29,13 @@ pub enum RoomOperationExecution {
     Rejected(RoomSetupError),
     AcknowledgementRequired,
     Unavailable,
+}
+
+#[derive(Debug)]
+pub struct RoomInspection {
+    pub room: StudioRoomSummaryV1,
+    pub assessment: Option<RoomLaunchAssessmentV1>,
+    pub assessment_unavailable: bool,
 }
 
 pub fn execute(command: &RoomCommand) -> Option<RoomOperationExecution> {
@@ -243,7 +251,12 @@ fn read_rooms(options: &CommandOptions, room: Option<&String>) -> RoomOperationE
         if &detail.room_id != expected {
             return RoomOperationExecution::Unavailable;
         }
-        RoomOperationExecution::Room(Box::new(detail))
+        let assessment = super::cli_room_launch::read_assessment(&connection, expected);
+        RoomOperationExecution::Room(Box::new(RoomInspection {
+            room: detail,
+            assessment_unavailable: assessment.is_err(),
+            assessment: assessment.ok().flatten(),
+        }))
     } else {
         let Ok(page) = serde_json::from_slice::<StudioRoomInventoryPageV1>(&response.body) else {
             return RoomOperationExecution::Unavailable;

@@ -8,6 +8,7 @@ pub use config::{
     AuthorityConfig, CliOverrides, ConfigError, ConfigLoader, DeploymentLineageV1, EffectiveConfig,
     ProspectiveConfig, RedactedAuthorityConfig, RedactedConfig, SanitizedTomlError, SecretSource,
     SecretValidationError, ServerConfig, StorageConfig, StorageEpochV1, StorageProfile,
+    is_exact_loopback_origin, is_managed_participant_origin,
 };
 pub use filesystem::{
     FilesystemError, create_owner_only_file, create_owner_only_renameable_file,

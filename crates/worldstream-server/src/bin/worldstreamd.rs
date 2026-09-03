@@ -216,14 +216,16 @@ async fn run(
                 pack_startup.base_distribution_identity().clone(),
             )
             .context("SQLite base Runtime Distribution identity initialization failed")?;
-            let _bootstrap_receipt =
-                bootstrap_authority(&store, config.authority.bootstrap_secret.as_ref())
+            let timer_bearer =
+                bootstrap_timer_authority(&store, config.authority.bootstrap_secret.as_ref())
                     .context("SQLite authority bootstrap failed closed")?;
             let (sqlite_version, sqlite_source_id) = store.engine_identity();
             let backup_root = worldstream_runtime::prepare_live_backup_root(&data_dir)
                 .context("shared SQLite live-backup root initialization failed")?;
             let backend = Arc::new(
                 SqliteGatewayBackend::new(store, Arc::clone(&registry))
+                    .with_timer_authority(timer_bearer)
+                    .context("automatic timer authority initialization failed")?
                     .with_live_backup_root(&backup_root)
                     .context("SQLite live-backup root initialization failed")?,
             );
@@ -258,7 +260,7 @@ async fn run(
                 pack_inventory_limit = pack_diagnostics.installed_bundle_limit,
                 pack_registry_refresh = "restart_required",
                 readiness = "ready",
-                "WorldStream SQLite operator shell started; runtime, host authority bootstrap, and Activation scheduler are running"
+                "WorldStream SQLite operator shell started; runtime, host authority bootstrap, Activation maintenance and automatic timers are running"
             );
             state
         }
@@ -367,6 +369,9 @@ async fn run(
                 pack_registry_refresh = "restart_required",
                 readiness = "ready",
                 "WorldStream PostgreSQL operator shell started; durable authority and Activation scheduler are running"
+            );
+            tracing::warn!(
+                "PostgreSQL automatic timers are not implemented; unattended timed Activity Packs require SQLite in this MVP. Activation maintenance and manual timers remain available."
             );
             state
         }
@@ -559,6 +564,23 @@ fn build_telemetry_exporter(endpoint: Option<&str>) -> Arc<dyn telemetry::Teleme
             }
         }
     }
+}
+
+fn bootstrap_timer_authority(
+    store: &SqliteRoomStore,
+    source: Option<&SecretSource>,
+) -> Result<CapabilityBearerV1> {
+    let source = source.context("SQLite daemon requires protected authority bootstrap material")?;
+    let secret = zeroize::Zeroizing::new(
+        source
+            .read_exact_256()
+            .context("authority bootstrap secret material is unavailable or invalid")?,
+    );
+    let checked_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)?
+        .parse::<AuthorityCheckedAt>()?;
+    bootstrap_authority_at(store, *secret, checked_at)?;
+    Ok(CapabilityBearerV1::from_bytes(*secret))
 }
 
 fn bootstrap_authority<S>(
@@ -844,6 +866,32 @@ mod tests {
             .unwrap_or_else(|| unreachable!("short bootstrap material must fail"));
         assert!(error.to_string().contains("unavailable or invalid"));
         assert!(!error.to_string().contains("A9"));
+    }
+
+    #[test]
+    fn sqlite_bootstrap_and_timer_authority_share_one_inherited_read() -> anyhow::Result<()> {
+        use std::os::fd::AsRawFd as _;
+
+        let directory = tempdir()?;
+        let secret_path = directory.path().join("authority.secret");
+        fs::write(&secret_path, [0xa9; 32])?;
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600))?;
+        let secret = fs::File::open(secret_path)?;
+        let source = SecretSource::InheritedHandle(u64::try_from(secret.as_raw_fd())?);
+        let store =
+            worldstream_sqlite::SqliteRoomStore::open(directory.path().join("room.sqlite3"))?;
+        let bearer = super::bootstrap_timer_authority(&store, Some(&source))?;
+        let backend = worldstream_server::SqliteGatewayBackend::new(
+            store,
+            std::sync::Arc::new(worldstream_core::builtin_counter_registry()?),
+        )
+        .with_timer_authority(bearer)?;
+        assert!(worldstream_server::GatewayBackend::scheduler_tick(&backend)?.is_empty());
+        assert!(
+            source.read_exact_256().is_err(),
+            "startup must consume the inherited source only once"
+        );
+        Ok(())
     }
 }
 

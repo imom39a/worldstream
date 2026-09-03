@@ -176,7 +176,7 @@ export class ActivityClientHandoffClient {
   }
 
   async observe(afterFrameSeq: number | null): Promise<AuthorizedRoomDeliveryBatch> {
-    const value = await this.jsonRequest("/api/v1/participant-console/session:observe", {
+    const { value, headers } = await this.jsonResponse("/api/v1/participant-console/session:observe", {
       method: "POST",
       credentials: "include",
       cache: "no-store",
@@ -190,6 +190,32 @@ export class ActivityClientHandoffClient {
         "return_to_task_setup",
         false,
       );
+    }
+    const acknowledgement = headers.get("X-WorldStream-Delivery-Acknowledgement");
+    if (acknowledgement !== null) {
+      if (!/^wsa1:[0-9a-f]{64}$/.test(acknowledgement)) {
+        throw new ActivityClientHandoffError(
+          "participant_session_invalid_response",
+          "Activity Client received an invalid delivery acknowledgement.",
+          "return_to_task_setup",
+          false,
+        );
+      }
+      const status = await this.statusRequest("/api/v1/participant-console/session:acknowledge", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ acknowledgement, frame_head: value.frame_head }),
+      });
+      if (status.state !== "usable") {
+        throw new ActivityClientHandoffError(
+          "participant_session_unavailable",
+          "Activity Client delivery acknowledgement was not accepted.",
+          "reconnect",
+          true,
+        );
+      }
     }
     return value;
   }
@@ -258,6 +284,10 @@ export class ActivityClientHandoffClient {
   }
 
   private async jsonRequest(path: string, init: RequestInit): Promise<unknown> {
+    return (await this.jsonResponse(path, init)).value;
+  }
+
+  private async jsonResponse(path: string, init: RequestInit): Promise<{ value: unknown; headers: Headers }> {
     let response: Response;
     try {
       response = await this.fetch(`${this.endpoint}${path}`, init);
@@ -289,7 +319,7 @@ export class ActivityClientHandoffClient {
         false,
       );
     }
-    return value;
+    return { value, headers: response.headers };
   }
 }
 

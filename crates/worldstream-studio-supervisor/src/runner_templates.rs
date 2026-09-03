@@ -1188,6 +1188,26 @@ impl RunnerSupervisorV1 {
         })
     }
 
+    /// Checks the retained exact binding without resolving authority or changing a process.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn task_runner_binding_matches(&self, instance_id: &str, runner_id: &str) -> bool {
+        self.lock().get(instance_id).is_some_and(|runtime| {
+            runtime.task_runner_id.as_deref() == Some(runner_id)
+                && runtime.task_runner_authority.is_some()
+        })
+    }
+
+    /// A fresh approval must still describe the exact cached launch definition.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn approved_template_matches(
+        &self,
+        instance_id: &str,
+        approved: &RunnerTemplateManifestV1,
+    ) -> bool {
+        self.registry.template_for_instance(instance_id)
+            .is_some_and(|(manifest, _)| manifest == approved)
+    }
+
     /// Resolves one exact approved reference-host launch target without
     /// requiring it to be running or binding Runner authority into its process.
     #[must_use]

@@ -247,9 +247,244 @@ pub struct CommandReport {
     #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     room: Option<worldstream_studio_supervisor::rooms::StudioRoomSummaryV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_export: Option<crate::cli_participant_connections::ExportSummary>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launch_assessment: Option<worldstream_studio_supervisor::room_launch::RoomLaunchAssessmentV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(rename = "room_id", skip_serializing_if = "Option::is_none")]
+    launch_target: Option<PublicReference>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_open: Option<crate::cli_client_handoff::OpenedClient>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_candidates:
+        Option<Vec<worldstream_studio_supervisor::participant_handoff::ClientCandidateSummaryV1>>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runner: Option<worldstream_studio_supervisor::scoped_runners::RoomRunnerStatusV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runners: Option<worldstream_studio_supervisor::scoped_runners::RoomRunnerListV1>,
 }
 
 impl CommandReport {
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn runner(
+        command: &'static str,
+        result: crate::cli_runner_adapters::RunnerExecution,
+    ) -> Self {
+        use crate::cli_runner_adapters::RunnerExecution;
+        use worldstream_studio_supervisor::scoped_runners::RoomRunnerExecutionV1;
+        let mut report = Self::new(command, CommandOutcome::Complete);
+        match result {
+            RunnerExecution::Observed(status) => {
+                if matches!(status.execution, RoomRunnerExecutionV1::Unavailable {}) {
+                    report = Self::new(command, CommandOutcome::ControllerUnavailable);
+                }
+                report.runner = Some(status);
+            }
+            RunnerExecution::Listed(list) => {
+                if list
+                    .runners
+                    .iter()
+                    .any(|status| matches!(status.execution, RoomRunnerExecutionV1::Unavailable {}))
+                {
+                    report = Self::new(command, CommandOutcome::ControllerUnavailable);
+                }
+                report.runners = Some(list);
+            }
+            RunnerExecution::Partial {
+                operation,
+                seat,
+                status,
+            } => {
+                let (Ok(operation), Ok(seat)) = (
+                    PublicReference::parse(&operation),
+                    PublicReference::parse(&seat),
+                ) else {
+                    return Self::new(command, CommandOutcome::StaleEvidence);
+                };
+                report.status = CommandStatus::Partial;
+                report.code = "runner_operation_incomplete";
+                report.message = "The Runner operation is not confirmed complete; process state may have changed.";
+                report.next_action = format!(
+                    "Inspect 'worldstreamctl runner inspect --operation {} --seat {}' using the same installation options before retrying.",
+                    operation.as_str(),
+                    seat.as_str()
+                );
+                report.runner = status;
+            }
+            RunnerExecution::Failed(status) => {
+                report = Self::new(command, CommandOutcome::Failed);
+                report.code = "runner_operation_failed";
+                report.message = "The managed Runner needs attention.";
+                "Inspect the retained Runner status and correct the reported prerequisite before retrying. A failed stop does not prove the process stopped.".clone_into(&mut report.next_action);
+                report.runner = Some(status);
+            }
+            RunnerExecution::Rejected => {
+                report = Self::new(command, CommandOutcome::Rejected);
+                report.code = "runner_not_managed_or_not_ready";
+                report.message = "The requested Runner operation is not available for this seat.";
+                "Inspect the exact operation and seat. External Runners cannot be started or stopped here; managed Runners require approved compatible prerequisites.".clone_into(&mut report.next_action);
+            }
+            RunnerExecution::Unavailable => {
+                return Self::new(command, CommandOutcome::ControllerUnavailable);
+            }
+        }
+        report
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn client_open(result: crate::cli_client_handoff::ClientOpenExecution) -> Self {
+        use crate::cli_client_handoff::ClientOpenExecution;
+        match result {
+            ClientOpenExecution::Opened(client) => {
+                let mut report = Self::new("client open", CommandOutcome::Complete);
+                report.message = "The system was asked to open the Activity Client.";
+                "Check the browser window, then inspect Room readiness. Opening a window does not prove that the client is connected.".clone_into(&mut report.next_action);
+                report.client_open = Some(client);
+                report
+            }
+            ClientOpenExecution::SelectionRequired(candidates) => {
+                let mut report = Self::new("client open", CommandOutcome::Rejected);
+                report.code = "client_selection_required";
+                report.message = "Choose one of the exact approved Activity Client bindings.";
+                "Repeat client open with --binding CANDIDATE using a candidate_id below. No browser was opened.".clone_into(&mut report.next_action);
+                report.client_candidates = Some(candidates);
+                report
+            }
+            ClientOpenExecution::Rejected => {
+                let mut report = Self::new("client open", CommandOutcome::Rejected);
+                report.code = "client_handoff_unavailable";
+                report.message = "An approved client handoff is not available for this seat.";
+                "Check completed Room setup, the human seat label, and the exact approved client declaration. Import missing prerequisites explicitly.".clone_into(&mut report.next_action);
+                report
+            }
+            ClientOpenExecution::Failed => {
+                let mut report = Self::new("client open", CommandOutcome::Failed);
+                report.code = "client_open_failed";
+                report.message = "The Activity Client could not be opened.";
+                "Check the installation directory and the system's default browser, then repeat client open. An unused protected handoff file can remain; its token expires.".clone_into(&mut report.next_action);
+                report
+            }
+            ClientOpenExecution::Unavailable => {
+                Self::new("client open", CommandOutcome::ControllerUnavailable)
+            }
+        }
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn room_launch(result: crate::cli_room_launch::RoomLaunchExecution) -> Self {
+        use crate::cli_room_launch::RoomLaunchExecution;
+        use worldstream_studio_supervisor::task_setup::TaskLaunchApplicabilityV1;
+        let mut report = Self::new("room launch", CommandOutcome::Complete);
+        match result {
+            RoomLaunchExecution::Complete(assessment) => {
+                report.message = "The Room launch is committed.";
+                "Continue in the Activity Client or agent integration."
+                    .clone_into(&mut report.next_action);
+                report.launch_assessment = Some(assessment);
+            }
+            RoomLaunchExecution::Partial { room, assessment } => {
+                report.status = CommandStatus::Partial;
+                report.code = "room_launch_unconfirmed";
+                report.message = "The launch is not confirmed. It may already be committed.";
+                report.next_action = format!(
+                    "Inspect 'worldstreamctl room inspect {room}', then repeat 'worldstreamctl room launch {room}' using the same installation options. The original launch intent is reused."
+                );
+                report.launch_target = PublicReference::parse(&room).ok();
+                report.launch_assessment = assessment;
+            }
+            RoomLaunchExecution::Rejected(assessment) => {
+                report.status = CommandStatus::Rejected;
+                let active_at_genesis = assessment.as_ref().is_some_and(|value| {
+                    value.applicability == TaskLaunchApplicabilityV1::ActiveAtGenesis
+                });
+                if active_at_genesis {
+                    report.code = "room_launch_inapplicable";
+                    report.message =
+                        "This Pack starts at Room creation and has no separate launch step.";
+                    "Connect the required participants. Creating another Room is not needed."
+                        .clone_into(&mut report.next_action);
+                } else {
+                    report.code = "room_launch_not_ready";
+                    report.message = "The Room is not ready for a launch.";
+                    "Inspect Room setup and the required-seat readiness below. Connect each required participant and a compatible Runner, then repeat room launch.".clone_into(&mut report.next_action);
+                }
+                report.launch_assessment = assessment;
+            }
+            RoomLaunchExecution::Unavailable => {
+                return Self::new("room launch", CommandOutcome::ControllerUnavailable);
+            }
+        }
+        report
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn participant(
+        command: &'static str,
+        result: crate::cli_participant_connections::ParticipantExecution,
+    ) -> Self {
+        use crate::cli_participant_connections::{ExportIssue, ParticipantExecution};
+        match result {
+            ParticipantExecution::Exported(summary) => {
+                let mut report = Self::new(command, CommandOutcome::Complete);
+                report.message = "Scoped credentials were saved to the requested protected file.";
+                "Give this file only to the intended client or Runner. Membership and Runner files serve different purposes.".clone_into(&mut report.next_action);
+                report.credential_export = Some(summary);
+                report
+            }
+            ParticipantExecution::Rejected(issue) | ParticipantExecution::Failed(issue) => {
+                let mut report = Self::new(
+                    command,
+                    if matches!(issue, ExportIssue::WriteIncomplete) {
+                        CommandOutcome::Failed
+                    } else {
+                        CommandOutcome::Rejected
+                    },
+                );
+                let (code, message, guidance) = match issue {
+                    ExportIssue::InvalidSelection => (
+                        "credential_selection_invalid",
+                        "The operation or seat reference is invalid.",
+                        "Use the operation from Room creation and the seat label from the reviewed setup file.",
+                    ),
+                    ExportIssue::OutputExists => (
+                        "credential_output_exists",
+                        "The output file already exists. It was not changed.",
+                        "Use a different output filename. Existing credential files are never overwritten.",
+                    ),
+                    ExportIssue::UnsafeDestination => (
+                        "credential_destination_unsafe",
+                        "The output destination is not owner-protected.",
+                        "Use an existing owner-only directory (0700 on macOS/Linux) and a new filename. Do not use a symbolic link.",
+                    ),
+                    ExportIssue::CredentialUnavailable => (
+                        "scoped_credentials_unavailable",
+                        "The selected seat has no available provisioned authority of this kind.",
+                        "Inspect Room setup status. Complete provisioning and select a participant for client credentials, or an agent seat for Runner credentials.",
+                    ),
+                    ExportIssue::WriteIncomplete => (
+                        "credential_write_incomplete",
+                        "Credential export did not complete. A protected partial file may remain at the requested path.",
+                        "Inspect the output file and available disk space before using a new output filename.",
+                    ),
+                };
+                report.code = code;
+                report.message = message;
+                guidance.clone_into(&mut report.next_action);
+                report
+            }
+            ParticipantExecution::Unavailable => {
+                Self::new(command, CommandOutcome::ControllerUnavailable)
+            }
+        }
+    }
+
     #[cfg(feature = "cli-operator-preview")]
     pub fn room_operation(
         command: &'static str,
@@ -327,11 +562,7 @@ impl CommandReport {
                 report.rooms = Some(rooms);
                 report
             }
-            RoomOperationExecution::Room(room) => {
-                let mut report = Self::new(command, CommandOutcome::Complete);
-                report.room = Some(*room);
-                report
-            }
+            RoomOperationExecution::Room(inspection) => Self::room_inspection(command, *inspection),
             RoomOperationExecution::Rejected(issue) => {
                 let mut report = Self::new(command, CommandOutcome::Rejected);
                 report.setup_issue = Some(issue);
@@ -348,6 +579,29 @@ impl CommandReport {
                 Self::new(command, CommandOutcome::ControllerUnavailable)
             }
         }
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    fn room_inspection(
+        command: &'static str,
+        inspection: crate::cli_room_operations::RoomInspection,
+    ) -> Self {
+        let mut report = Self::new(
+            command,
+            if inspection.assessment_unavailable {
+                CommandOutcome::ControllerUnavailable
+            } else {
+                CommandOutcome::Complete
+            },
+        );
+        if inspection.assessment_unavailable {
+            report.code = "room_readiness_unavailable";
+            report.message =
+                "Room metadata is available, but launch readiness could not be checked.";
+        }
+        report.room = Some(inspection.room);
+        report.launch_assessment = inspection.assessment;
+        report
     }
 
     #[cfg(feature = "cli-operator-preview")]
@@ -637,6 +891,20 @@ impl CommandReport {
             rooms: None,
             #[cfg(feature = "cli-operator-preview")]
             room: None,
+            #[cfg(feature = "cli-operator-preview")]
+            credential_export: None,
+            #[cfg(feature = "cli-operator-preview")]
+            launch_assessment: None,
+            #[cfg(feature = "cli-operator-preview")]
+            launch_target: None,
+            #[cfg(feature = "cli-operator-preview")]
+            client_open: None,
+            #[cfg(feature = "cli-operator-preview")]
+            client_candidates: None,
+            #[cfg(feature = "cli-operator-preview")]
+            runner: None,
+            #[cfg(feature = "cli-operator-preview")]
+            runners: None,
         }
     }
 
@@ -665,31 +933,7 @@ impl CommandReport {
                 self.code
             )?;
             #[cfg(feature = "cli-operator-preview")]
-            #[allow(
-                clippy::unnecessary_debug_formatting,
-                reason = "Human-readable paths must remain quoted and escaped."
-            )]
-            if let Some(initialization) = &self.initialization {
-                writeln!(stdout, "Config: {:?}", initialization.config_path)?;
-                writeln!(stdout, "State: {:?}", initialization.state_dir)?;
-                writeln!(stdout, "Data: {:?}", initialization.data_dir)?;
-                let arguments = serde_json::to_string(&initialization.next_config_args)
-                    .map_err(|_| io::Error::other("operator result could not be encoded"))?;
-                writeln!(stdout, "Next config arguments: {arguments}")?;
-            }
-            #[cfg(feature = "cli-operator-preview")]
-            if let Some(review) = &self.import_review {
-                let document = serde_json::to_string_pretty(review)
-                    .map_err(|_| io::Error::other("operator review could not be encoded"))?;
-                writeln!(stdout, "{document}")?;
-                writeln!(stdout, "{}", self.next_action)?;
-            }
-            #[cfg(feature = "cli-operator-preview")]
-            if let Some(applied) = &self.import_apply {
-                let document = serde_json::to_string_pretty(applied)
-                    .map_err(|_| io::Error::other("operator result could not be encoded"))?;
-                writeln!(stdout, "{document}")?;
-            }
+            self.write_initialization_details(stdout)?;
             #[cfg(feature = "cli-operator-preview")]
             if let Some(server) = &self.server {
                 let document = serde_json::to_string_pretty(server)
@@ -725,6 +969,19 @@ impl CommandReport {
             #[cfg(feature = "cli-operator-preview")]
             self.write_room_details(stdout)?;
             #[cfg(feature = "cli-operator-preview")]
+            self.write_client_details(stdout)?;
+            #[cfg(feature = "cli-operator-preview")]
+            self.write_runner_details(stdout)?;
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(export) = &self.credential_export {
+                writeln!(stdout, "Credentials: {}", export.output_file.display())?;
+                writeln!(
+                    stdout,
+                    "Operation: {}  Seat: {}",
+                    export.operation, export.seat
+                )?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
             if let Some(issue) = &self.setup_issue {
                 let document = serde_json::to_string(issue)
                     .map_err(|_| io::Error::other("setup diagnostic could not be encoded"))?;
@@ -748,7 +1005,38 @@ impl CommandReport {
     }
 
     #[cfg(feature = "cli-operator-preview")]
+    fn write_initialization_details(&self, stdout: &mut impl Write) -> io::Result<()> {
+        #[allow(
+            clippy::unnecessary_debug_formatting,
+            reason = "Human-readable paths must remain quoted and escaped."
+        )]
+        if let Some(initialization) = &self.initialization {
+            writeln!(stdout, "Config: {:?}", initialization.config_path)?;
+            writeln!(stdout, "State: {:?}", initialization.state_dir)?;
+            writeln!(stdout, "Data: {:?}", initialization.data_dir)?;
+            let arguments = serde_json::to_string(&initialization.next_config_args)
+                .map_err(|_| io::Error::other("operator result could not be encoded"))?;
+            writeln!(stdout, "Next config arguments: {arguments}")?;
+        }
+        if let Some(review) = &self.import_review {
+            let document = serde_json::to_string_pretty(review)
+                .map_err(|_| io::Error::other("operator review could not be encoded"))?;
+            writeln!(stdout, "{document}")?;
+            writeln!(stdout, "{}", self.next_action)?;
+        }
+        if let Some(applied) = &self.import_apply {
+            let document = serde_json::to_string_pretty(applied)
+                .map_err(|_| io::Error::other("operator result could not be encoded"))?;
+            writeln!(stdout, "{document}")?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
     fn write_room_details(&self, stdout: &mut impl Write) -> io::Result<()> {
+        if let Some(room) = &self.launch_target {
+            writeln!(stdout, "Room: {}", room.as_str())?;
+        }
         if let Some(receipt) = &self.setup_receipt {
             writeln!(stdout, "Operation: {}", receipt.operation_id.as_str())?;
             if let Some(room) = &receipt.room_id {
@@ -791,6 +1079,62 @@ impl CommandReport {
             let document = serde_json::to_string_pretty(room)
                 .map_err(|_| io::Error::other("Room diagnostics could not be encoded"))?;
             writeln!(stdout, "{document}")?;
+        }
+        if let Some(assessment) = self.launch_assessment.as_ref().or_else(|| {
+            self.room_operation
+                .as_ref()
+                .and_then(|operation| operation.assessment.as_ref())
+        }) {
+            let document = serde_json::to_string_pretty(assessment)
+                .map_err(|_| io::Error::other("launch assessment could not be encoded"))?;
+            writeln!(
+                stdout,
+                "Launch assessment (live operational evidence):\n{document}"
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    fn write_client_details(&self, stdout: &mut impl Write) -> io::Result<()> {
+        if let Some(client) = &self.client_open {
+            writeln!(
+                stdout,
+                "Operation: {}  Seat: {}",
+                client.operation, client.seat
+            )?;
+            writeln!(
+                stdout,
+                "Protected browser handoff file: {}",
+                client.redirect_file.display()
+            )?;
+        }
+        if let Some(candidates) = &self.client_candidates {
+            for candidate in candidates {
+                writeln!(
+                    stdout,
+                    "  {}  {}  {}",
+                    candidate.candidate_id, candidate.client_id, candidate.surface_id
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    fn write_runner_details(&self, stdout: &mut impl Write) -> io::Result<()> {
+        if let Some(runner) = &self.runner {
+            let document = serde_json::to_string_pretty(runner)
+                .map_err(|_| io::Error::other("Runner status could not be encoded"))?;
+            writeln!(stdout, "{document}")?;
+        }
+        if let Some(runners) = &self.runners {
+            writeln!(stdout, "Runners: {}", runners.runners.len())?;
+            for runner in &runners.runners {
+                let document = serde_json::to_string(runner)
+                    .map_err(|_| io::Error::other("Runner status could not be encoded"))?;
+                writeln!(stdout, "{document}")?;
+            }
         }
         Ok(())
     }

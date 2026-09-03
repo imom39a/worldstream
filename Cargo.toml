@@ -40,6 +40,7 @@ directories = "=6.0.0"
 filedescriptor = "=0.8.3"
 fs-id = "=0.2.0"
 getrandom = "=0.4.3"
+http = "=1.5.0"
 http-body-util = "=0.1.5"
 rustix = { version = "=1.1.4", features = ["process"] }
 # This exact source revision carries the official SQLite 3.53.4 amalgamation.

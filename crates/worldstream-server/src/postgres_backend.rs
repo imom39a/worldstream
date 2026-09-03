@@ -2174,10 +2174,10 @@ impl GatewayBackend for PostgresGatewayBackend {
         )
     }
 
-    fn scheduler_tick(&self) -> Result<(), BackendError> {
+    fn scheduler_tick(&self) -> Result<Vec<String>, BackendError> {
         self.store
             .reclaim_expired_activation_leases()
-            .map(|_| ())
+            .map(|_| Vec::new())
             .map_err(|_| BackendError::StorageUnavailable)
     }
 }

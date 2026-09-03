@@ -3271,6 +3271,7 @@ dependencies = [
  "directories",
  "filedescriptor",
  "fs-id",
+ "http",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -3309,6 +3310,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "tungstenite",
  "webpki-roots",
  "windows-sys 0.61.2",
  "worldstream-backup",
@@ -3322,6 +3324,7 @@ dependencies = [
  "worldstream-studio-supervisor",
  "worldstream-transfer",
  "worldstream-windows-handle",
+ "zeroize",
 ]
 
 [[package]]

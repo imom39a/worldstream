@@ -29,9 +29,9 @@ pub fn execute(command: &OperatorCommand, config: &CommonConfigArgs) -> Option<C
             "GET",
             "/api/v1/control/server/status",
         ),
-        ServerCommand::Start(options) => (
+        ServerCommand::Start(args) => (
             "server start",
-            options,
+            &args.options,
             "POST",
             "/api/v1/control/server/start",
         ),
@@ -61,6 +61,15 @@ pub fn execute(command: &OperatorCommand, config: &CommonConfigArgs) -> Option<C
         Duration::from_secs(options.timeout_seconds.into()),
     ) else {
         return Some(unavailable());
+    };
+    let connection = if let ServerCommand::Start(args) = command {
+        match connection.with_participant_console_origin(args.participant_console_origin.as_deref())
+        {
+            Ok(connection) => connection,
+            Err(_) => return Some(unavailable()),
+        }
+    } else {
+        connection
     };
     if matches!(command, ServerCommand::Start(_)) {
         let prepared = (|| {

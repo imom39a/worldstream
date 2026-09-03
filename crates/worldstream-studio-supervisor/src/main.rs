@@ -60,6 +60,7 @@ use worldstream_studio_supervisor::{
     process_runtime::{ManagedRuntimeSpec, ProcessRuntimeControl},
     room_setup_operations::{RoomSetupOperationsV1, room_setup_operations_router},
     startup_authority::validate_existing_host_authority,
+    task_setup::ClientNeutralReadinessSourceV1,
 };
 
 #[derive(Debug, Parser)]
@@ -498,6 +499,16 @@ async fn run(
         client_bindings,
     )
     .map_err(|error| anyhow::anyhow!("Participant Console handoff is unavailable: {error:?}"))?;
+    #[cfg(feature = "cli-operator-preview")]
+    let task_setup = task_setup_base.with_launch_readiness(
+        ClientNeutralReadinessSourceV1::new(
+            task_runtime.clone(),
+            participant_handoff.browser_readiness(),
+        ),
+        LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
+        task_runtime,
+    );
+    #[cfg(not(feature = "cli-operator-preview"))]
     let task_setup = task_setup_base.with_launch_readiness(
         participant_handoff.clone(),
         LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
@@ -616,6 +627,32 @@ async fn run(
         agent_profiles.clone(),
         runner_registry,
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let room_launch = worldstream_studio_supervisor::room_launch::room_launch_router(
+        room_creation.clone(),
+        task_setup.clone(),
+    );
+    #[cfg(feature = "cli-operator-preview")]
+    let scoped_credentials =
+        worldstream_studio_supervisor::scoped_connections::scoped_credentials_router(
+            task_setup.clone(),
+            args.daemon,
+        );
+    #[cfg(feature = "cli-operator-preview")]
+    let client_handoff =
+        worldstream_studio_supervisor::participant_handoff::operator_client_handoff_router(
+            participant_handoff.clone(),
+        );
+    #[cfg(feature = "cli-operator-preview")]
+    let room_runners = worldstream_studio_supervisor::scoped_runners::room_runner_router(
+        worldstream_studio_supervisor::scoped_runners::RoomRunnerControlV1::new(
+            task_setup.clone(),
+            agent_profiles.clone(),
+            runners.clone(),
+            args.state_dir.join("runner-templates/installed"),
+        )
+        .with_managed_hosts(managed_agent_hosts.clone()),
+    );
     let router = supervisor_router_with_lifecycle_secrets_runners_activity_packs_rooms_drafts_backups_creation_setup_templates_and_model_provider_credentials(
         source,
         lifecycle,
@@ -638,7 +675,12 @@ async fn run(
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
     #[cfg(feature = "cli-operator-preview")]
-    let router = router.merge(room_setup_operations_router(room_operations));
+    let router = router
+        .merge(room_setup_operations_router(room_operations))
+        .merge(room_launch)
+        .merge(scoped_credentials)
+        .merge(client_handoff)
+        .merge(room_runners);
 
     // Admission must wrap the complete graph, including all late merges and
     // assignment-MCP aliases. No operator routes may be merged after this point.

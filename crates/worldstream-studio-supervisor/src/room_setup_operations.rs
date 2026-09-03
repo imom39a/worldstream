@@ -30,6 +30,7 @@ use crate::{
         AgentAssignmentModeV1, RoomDraftSeatReadinessV1, RoomDraftSeatV1, RoomDraftStepV1,
         RoomDraftV1,
     },
+    room_launch::RoomLaunchAssessmentV1,
     room_setup_spec::{
         RoomSetupError, RoomSetupIssueCode, RoomSetupSpecificationV1, SetupAssignmentV1,
         parse_setup_specification, resolve_setup_specification,
@@ -68,6 +69,8 @@ pub struct RoomSetupOperationStatusV1 {
     pub stage: RoomSetupOperationStageV1,
     pub active_stage: Option<TaskSetupStageV1>,
     pub next_action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assessment: Option<RoomLaunchAssessmentV1>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -272,6 +275,7 @@ impl RoomSetupOperationsV1 {
             stage: RoomSetupOperationStageV1::Creation,
             active_stage: None,
             next_action: "resume".to_owned(),
+            assessment: None,
         };
         if creation
             .attention
@@ -285,6 +289,7 @@ impl RoomSetupOperationsV1 {
         status.stage = RoomSetupOperationStageV1::Provisioning;
         match self.setup.status(operation) {
             Ok(setup) => {
+                status.assessment = Some((&setup).into());
                 status.complete = setup.state == TaskSetupStateV1::Ready;
                 status.stage = if status.complete {
                     RoomSetupOperationStageV1::Complete

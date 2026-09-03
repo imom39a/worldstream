@@ -256,7 +256,7 @@ pub enum ServerCommand {
     /// Report controller, ownership, liveness, and readiness without starting processes.
     Status(CommandOptions),
     /// Explicitly start or reuse the controller and its configured Runtime.
-    Start(CommandOptions),
+    Start(ServerStartArgs),
     /// Stop owned managed Runners, then the Runtime; leave the controller running.
     Stop(CommandOptions),
     /// Restart the Runtime and restore only previously running eligible managed Runners.
@@ -267,6 +267,24 @@ pub enum ServerCommand {
     RotateControlCredential(CommandOptions),
     /// Read bounded secret-safe logs without starting processes.
     Logs(LogArgs),
+}
+
+/// Controller startup settings retained for this local installation.
+#[derive(Debug, Args)]
+pub struct ServerStartArgs {
+    #[command(flatten)]
+    pub options: CommandOptions,
+    /// Exact local browser origin; omission reuses retained selection or port 5173.
+    #[arg(long, value_parser = participant_console_origin)]
+    pub participant_console_origin: Option<String>,
+}
+
+fn participant_console_origin(value: &str) -> Result<String, &'static str> {
+    if worldstream_runtime::is_managed_participant_origin(value) {
+        Ok(value.to_owned())
+    } else {
+        Err("participant origin must be an exact local HTTP origin")
+    }
 }
 
 /// Bounded log selection; following is not part of this command contract.
@@ -336,7 +354,7 @@ impl OperatorCommand {
             },
             Self::Server { command } => match command {
                 ServerCommand::Status(options) => ("server status", options.json),
-                ServerCommand::Start(options) => ("server start", options.json),
+                ServerCommand::Start(args) => ("server start", args.options.json),
                 ServerCommand::Stop(options) => ("server stop", options.json),
                 ServerCommand::Restart(options) => ("server restart", options.json),
                 ServerCommand::ControllerStop(options) => ("server controller-stop", options.json),

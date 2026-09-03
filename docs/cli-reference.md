@@ -71,6 +71,24 @@ initialization preview, successful mutation, or live status observation.
 | `unavailable` | `not_implemented`, `controller_unavailable`, `pack_inventory_unavailable`, `stale_evidence` | 3 |
 | `partial` | `setup_incomplete`, `lifecycle_incomplete` | 4 |
 
+Launch uses `room_launch_not_ready` and `room_launch_inapplicable` (exit 1),
+`room_readiness_unavailable` (exit 3), and `room_launch_unconfirmed` (exit 4).
+Credential exports use `credential_selection_invalid`, `credential_output_exists`,
+`credential_destination_unsafe`, and `scoped_credentials_unavailable` for rejected
+requests. `credential_write_incomplete` means the write failed. These all use
+exit 1 and do not print the credential document.
+
+Client launch uses `client_selection_required`, `client_handoff_unavailable`,
+and `client_open_failed` (exit 1). Selection output lists safe candidates; use
+`--binding` to make a choice. Success means the system was asked to open the
+client. It does not mean the participant has connected or synchronized.
+
+Runner control uses `runner_not_managed_or_not_ready` and
+`runner_operation_failed` (exit 1), or `runner_operation_incomplete` (exit 4)
+when a process change cannot be confirmed. Inspect the same operation and seat
+before retrying. External Runners can be inspected but not started or stopped
+by these commands. Typed Runner status contains no credential values.
+
 Retained partial setup reports may additionally contain `operation_id`,
 `room_id`, and `stage`; absent fields are omitted. References use the bounded
 public identifier grammar below. Setup stages are `room_creation`,
@@ -199,6 +217,24 @@ accepts `--tail N` (1–1000, default 100); live following is not part of this
 contract. Partial shutdown or restart-restoration failure exits 4. A controller
 that cannot prove ownership must refuse unsafe control, not kill by stale PID.
 
+`server start` also accepts `--participant-console-origin ORIGIN` for a separate
+local Client Host, for example:
+
+```sh
+worldstreamctl --config .worldstream/worldstream.toml server start \
+  --controller 127.0.0.1:19420 \
+  --participant-console-origin http://127.0.0.1:15173
+```
+
+The exact local HTTP origin is retained with the Controller configuration.
+Omission reuses it; fresh installations and older records default to
+`http://127.0.0.1:5173`. A conflicting explicit origin is rejected before
+starting or reusing a Controller. Origins have no trailing slash or path;
+`http://127.0.0.1:5174` remains reserved for the legacy Studio origin until
+retirement. This setting neither starts a Client Host nor changes approved
+Deployment URLs. Review/import matching launch URLs separately, and configure
+the client build's `VITE_WORLDSTREAM_SUPERVISOR_URL` for a nondefault Controller.
+
 MVP limit: `server restart` rejects before stopping anything when a running
 Runner Template instance is bound to a task. Its result code is
 `managed_runner_restart_unsupported`. Use `server stop`, `server start`, and
@@ -311,6 +347,52 @@ export these separately. Exports require a protected file destination and
 never silently overwrite it. `client open` launches only an approved compatible
 client through a one-use handoff, not a fabricated Studio Origin header.
 
+### Connect participants, then launch
+
+For Heist 0.2.0, complete setup first. Then connect the required participants.
+Use `room inspect ROOM` or `room setup status OPERATION` to read the launch
+assessment. It is live operational evidence, not stored Activity state.
+
+- A direct SDK or terminal client must connect to its Membership and acknowledge
+  synchronization. Its connection must remain open.
+- A browser client must receive and acknowledge an authorized delivery. Its
+  regular updates renew a five-second presence window. Closing the browser stops
+  renewal; the last receipt expires within five seconds. A cookie, an opened
+  window, a handoff, or a server health check alone does not count as presence.
+- An external agent needs its exact Runner assignment and a connected, fresh
+  Runner with compatible Pack support and free capacity. It does not need a
+  permanent model process or a local Agent Profile.
+- Only required seats block launch. An optional seat can be disconnected.
+
+Run `room launch ROOM` when the required seats are ready. The command submits
+the Pack's declared Lobby launch. If the reply is lost, inspect the same Room
+and repeat `room launch ROOM`. The server retries the original retained launch
+input. Do not create a replacement Room.
+
+Negotiate starts at Room creation. `room launch` returns
+`room_launch_inapplicable` for it. This is not a failed negotiation and does not
+mean that a second Room is needed.
+
+### Export a scoped credential file
+
+Create an owner-only output directory first. On macOS and Linux, its permissions
+must be `0700`. Choose a new filename for each export. The CLI does not change
+the permissions of an existing directory or overwrite an existing file.
+
+| File | Use | WebSocket endpoint in `runtime_url` |
+| --- | --- | --- |
+| `client export-credentials` output | Connect and act as the selected Membership | `/v1/stream` |
+| `runner export-credentials` output | Receive, claim, and complete agent Activations | `/v1/runner/stream` |
+
+An external agent usually needs both files. They contain different credentials;
+one cannot replace the other. Pass their paths to the intended integration.
+Do not put their contents in shell arguments, chat, logs, or version control.
+The CLI report shows only the output path and public selection metadata.
+
+If a write fails, the command reports failure. A protected partial output file
+can remain if cleanup also fails. Check the requested path before trying a new
+filename. This is not permission to use the incomplete file.
+
 Read-only commands never start the controller, Runtime, or Runners. Mutations
 with missing input do not prompt implicitly or infer artifact approval.
 Pack lobby launch is explicit; active-at-Genesis Packs start their activity
@@ -319,3 +401,10 @@ and deadlines at creation. No CLI command pauses domain time.
 See [the implementation plan](cli-first-implementation-plan.md) for the
 verified retirement gate. Current runnable steps remain in
 [Getting started](getting-started.md).
+
+For this MVP, unattended timed Activity Packs require SQLite: its Runtime
+scheduler automatically commits due timers using protected installation
+authority. PostgreSQL retains Activation lease maintenance and the existing
+Host-authorized manual timer API, but does not yet drive timers automatically;
+startup emits an explicit warning. `scheduler_running` continues to describe
+lease-maintenance readiness, not PostgreSQL automatic-timer support.

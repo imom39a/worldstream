@@ -24,6 +24,43 @@ const MAX_TELEMETRY_ENDPOINT_BYTES: usize = 256;
 const MAX_DEPLOYMENT_LINEAGE_BYTES: usize = 128;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
+/// Whether a browser origin is an exact local HTTP origin admitted by the
+/// participant handoff contract (without a path or query).
+#[must_use]
+pub fn is_exact_loopback_origin(value: &str) -> bool {
+    let Ok(uri) = value.parse::<http::Uri>() else {
+        return false;
+    };
+    uri.scheme_str() == Some("http")
+        && uri.path() == "/"
+        && uri.query().is_none()
+        && uri.authority().is_some()
+        && matches!(
+            uri.host(),
+            Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
+        )
+}
+
+/// Whether a managed participant origin can be passed unchanged to the browser
+/// and the current Controller, whose legacy Studio origin remains reserved.
+#[must_use]
+pub fn is_managed_participant_origin(value: &str) -> bool {
+    if !is_exact_loopback_origin(value) || value == "http://127.0.0.1:5174" {
+        return false;
+    }
+    let Ok(uri) = value.parse::<http::Uri>() else {
+        return false;
+    };
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    let canonical = match uri.port_u16() {
+        Some(port) if port != 80 => format!("http://{host}:{port}"),
+        _ => format!("http://{host}"),
+    };
+    value == canonical
+}
+
 /// Startup storage profile. Selection is fixed until process termination.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum StorageProfile {
