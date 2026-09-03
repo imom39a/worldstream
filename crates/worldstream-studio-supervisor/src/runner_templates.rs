@@ -161,6 +161,135 @@ pub struct RunnerTemplateRegistryV1 {
 }
 
 impl RunnerTemplateRegistryV1 {
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn review_installed(
+        root: &Path,
+        template_id: &str,
+        revision: &str,
+    ) -> Result<RunnerTemplateManifestV1, RunnerTemplateErrorV1> {
+        if !valid_id(template_id) || !valid_revision(revision) {
+            return Err(RunnerTemplateErrorV1::InvalidManifest);
+        }
+        worldstream_runtime::validate_data_directory(root)
+            .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+        let path = root.join(format!("{template_id}--{revision}.json"));
+        worldstream_runtime::validate_owner_only_file(&path)
+            .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+        let manifest = read_manifest(&path, false)?;
+        if manifest.template_id != template_id || manifest.revision != revision {
+            return Err(RunnerTemplateErrorV1::InvalidManifest);
+        }
+        validate_manifest(&manifest, true)?;
+        Ok(manifest)
+    }
+    /// Validates selected exact imports and global instance uniqueness without writes.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn check_imports(
+        root: &Path,
+        selected: &[RunnerTemplateManifestV1],
+    ) -> Result<Vec<bool>, RunnerTemplateErrorV1> {
+        let mut manifests = BTreeMap::new();
+        match fs::symlink_metadata(root) {
+            Ok(_) => {
+                worldstream_runtime::validate_data_directory(root)
+                    .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+                for path in json_files(root)? {
+                    worldstream_runtime::validate_owner_only_file(&path)
+                        .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+                    let manifest = read_manifest(&path, false)?;
+                    let key = (manifest.template_id.clone(), manifest.revision.clone());
+                    if manifests.insert(key, manifest).is_some() {
+                        return Err(RunnerTemplateErrorV1::InvalidManifest);
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(RunnerTemplateErrorV1::RegistryUnavailable),
+        }
+        let mut reused = Vec::new();
+        for manifest in selected {
+            validate_manifest(manifest, true)?;
+            let key = (manifest.template_id.clone(), manifest.revision.clone());
+            match manifests.get(&key) {
+                Some(existing) if existing == manifest => reused.push(true),
+                Some(_) => return Err(RunnerTemplateErrorV1::ImmutableRevisionConflict),
+                None => {
+                    manifests.insert(key, manifest.clone());
+                    reused.push(false);
+                }
+            }
+        }
+        let mut filenames = BTreeSet::new();
+        let mut instances = BTreeSet::new();
+        for manifest in manifests.values() {
+            let filename = format!("{}--{}.json", manifest.template_id, manifest.revision);
+            // Retain the installed format while rejecting identities that would
+            // publish to the same file, including ASCII case aliases on the
+            // supported case-insensitive desktop filesystems.
+            #[cfg(any(target_os = "macos", windows))]
+            let filename = filename.to_ascii_lowercase();
+            if !filenames.insert(filename) {
+                return Err(RunnerTemplateErrorV1::ImmutableRevisionConflict);
+            }
+            for instance in &manifest.instances {
+                if !instances.insert(&instance.instance_id) {
+                    return Err(RunnerTemplateErrorV1::InvalidManifest);
+                }
+            }
+        }
+        Ok(reused)
+    }
+
+    /// Publishes only one explicitly reviewed manifest, never a source directory.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn import_exact(
+        root: &Path,
+        manifest: &RunnerTemplateManifestV1,
+    ) -> Result<bool, RunnerTemplateErrorV1> {
+        if Self::check_imports(root, std::slice::from_ref(manifest))? == [true] {
+            return Ok(true);
+        }
+        let root =
+            prepare_data_directory(root).map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+        let target = root.join(format!(
+            "{}--{}.json",
+            manifest.template_id, manifest.revision
+        ));
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+        let temporary = root.join(format!(
+            ".runner-import-{}.tmp",
+            blake3::hash(&nonce).to_hex()
+        ));
+        let result = (|| {
+            let bytes = serde_json::to_vec_pretty(manifest)
+                .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+            let mut file = worldstream_runtime::create_owner_only_renameable_file(&temporary)
+                .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+            file.write_all(&bytes)
+                .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+            match crate::protected_publication::publish(
+                file,
+                &temporary,
+                &target,
+                crate::protected_publication::PublicationMode::CreateNew,
+            ) {
+                Ok(()) => Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    worldstream_runtime::validate_owner_only_file(&target)
+                        .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+                    if read_manifest(&target, false)? == *manifest {
+                        Ok(true)
+                    } else {
+                        Err(RunnerTemplateErrorV1::ImmutableRevisionConflict)
+                    }
+                }
+                Err(_) => Err(RunnerTemplateErrorV1::RegistryUnavailable),
+            }
+        })();
+        let _ = fs::remove_file(temporary);
+        result
+    }
     /// Opens installed records and installs new owner-provided manifest files.
     ///
     /// # Errors
@@ -398,12 +527,19 @@ fn executable_digest(path: &Path) -> Result<String, RunnerTemplateErrorV1> {
     let mut hasher = blake3::Hasher::new();
     let mut file = fs::File::open(path).map_err(|_| RunnerTemplateErrorV1::InvalidManifest)?;
     let mut buffer = [0_u8; 8192];
+    let mut total = 0_u64;
     loop {
         let count = file
             .read(&mut buffer)
             .map_err(|_| RunnerTemplateErrorV1::InvalidManifest)?;
         if count == 0 {
             break;
+        }
+        total = total
+            .checked_add(u64::try_from(count).map_err(|_| RunnerTemplateErrorV1::InvalidManifest)?)
+            .ok_or(RunnerTemplateErrorV1::InvalidManifest)?;
+        if total > MAX_EXECUTABLE_BYTES {
+            return Err(RunnerTemplateErrorV1::InvalidManifest);
         }
         hasher.update(&buffer[..count]);
     }

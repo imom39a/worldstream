@@ -2,10 +2,10 @@
 
 This document defines the files accepted by the approved `init` import flags.
 It complements the [operator CLI reference](cli-reference.md). IMO-135 adds
-the bounded declaration parsers and fixtures. **Import preview, approval,
-secret loading, and installation are not available until IMO-142.** Parsing
-one of these files does not approve it, read its referenced files, or start a
-process.
+the bounded declaration parsers; IMO-142 adds the import workflow behind
+`cli-operator-preview`. The default build remains unavailable until the
+coordinated CLI cutover. Parsing a declaration alone does not approve it,
+read its referenced files, or start a process.
 
 These are local prerequisite declarations, not Room Setup Specifications.
 An external-only Room needs no managed provider credential. Do not put secret
@@ -134,7 +134,8 @@ The `studio` segment is a retained schema identifier, not a dependency on
 the Studio web application. It must not be renamed as part of this import.
 
 For a managed reference host, supply the named credential and an exact
-installed Runner Template revision:
+Runner Template revision. Both dependencies may already be installed or be
+included in the same explicitly approved import batch:
 
 ```json
 {
@@ -157,8 +158,10 @@ installed Runner Template revision:
 
 The examples show declaration shape, not a verified runnable host contract.
 Use the host contract revision supported by the selected implementation.
-The importer must resolve and validate exact Runner/profile compatibility and
-named provider references before publication. Generic profiles require the
+The importer resolves the exact Runner Template and named provider references
+before publication. Compatibility with the Room's exact Pack is checked when
+setting up the Room or starting its Runner, not inferred from this import.
+Generic profiles require the
 managed credential reference to be absent or `null`. Managed profiles require
 it to be present. `secret_settings` and inline tokens are not accepted here.
 
@@ -173,7 +176,7 @@ Select an explicit bounded set of existing descriptors:
 ```json
 {
   "schema": "worldstream/client-declaration-import/v1",
-  "release_files": ["./releases/agent-heist.json"],
+  "release_files": ["./releases/agent-heist-web.json", "./releases/negotiate-web.json", "./releases/inspector-web.json"],
   "bindings_file": "./local-bindings.json"
 }
 ```
@@ -189,9 +192,12 @@ or replace the existing release, deployment, binding, or fallback contracts:
 
 Deployment entries use `worldstream/client-deployment/v1`; binding entries use
 `worldstream/client-binding/v1`; the required inspector fallback uses
-`worldstream/inspector-fallback/v1`. Use the tracked
+`worldstream/inspector-fallback/v1`. The tracked
+[CLI import wrapper](../config/activity-clients/cli-import.json) explicitly selects the
 [first-party declarations](../config/activity-clients/local-bindings.json)
-and their explicit release files as examples. The typed Activity Client
+and their release files. These local development launch URLs require a separately
+running Client Host; importing the wrapper does not verify one is listening.
+The typed Activity Client
 validators remain authoritative for all nested fields and bounds.
 
 Preview resolves release/deployment/binding cross-references and shows the
@@ -200,26 +206,113 @@ An externally trusted deployment is not byte-verified evidence. Re-import
 must preserve disabled or revoked bindings. It must not select arbitrary
 nearby files or upgrade an immutable release behind a binding.
 
+The explicitly reviewed deployment policy is retained separately from the
+existing binding records. An identical policy is reused; a conflicting policy
+is rejected. Policy changes are not supported by `init`. Existing installations
+without this policy record retain the conservative `verified_only` startup
+default until an explicit approved import establishes the record. Starting the
+controller never imports declarations or resets binding status.
+
 Importing a client declaration does not start or deploy its Client Host.
 `client open` can use an already approved compatible deployment; it cannot
 approve or install a missing one.
 
+### Hosting the declared clients separately
+
+For the repository's current local-development declarations, start the
+independent Client Host in another terminal:
+
+```sh
+pnpm ui:dev
+```
+
+This existing workflow builds and serves the retained client directories at
+`http://127.0.0.1:5173`; it does not start the Runtime or controller. The
+aggregate build still includes Studio artifacts until the coordinated retirement,
+so this command is not evidence of a Studio-free release. See
+[Activity Client local development](activity-clients.md#local-development)
+for the existing hosting and artifact-identity workflow.
+
+If an approved launch URL is unavailable, start or restore that separate Client
+Host and check the declared surface before retrying launch. Do not reset
+installation authority or re-import declarations merely because a host is
+offline. A different launch target requires a new exact review and appropriate
+new immutable identities; it cannot silently replace an existing Deployment.
+Local examples remain `externally_trusted`, not attestation of running bytes.
+Import may succeed while the Client Host is offline: it prepares approved
+metadata, not runtime health or browser sessions.
+
 ## Review and application boundary
+
+Initialize the protected installation first. Import preview requires its
+existing Host identity; it does not invent or persist one during review:
+
+```sh
+worldstreamctl init --json
+worldstreamctl init --agent-profile ./config/initialization/external-agent.json --preview --json
+worldstreamctl init --agent-profile ./config/initialization/external-agent.json --approve-imports 'blake3:<exact digest from import_review.digest>' --json
+```
+
+The approval argument above is a placeholder: copy the complete digest from
+your own preview. Use the same explicit `--config`, `--state-dir`, and import
+file selections for preview and apply when using a non-default installation.
+There is no blanket `--yes` approval. A generic external Profile needs no
+provider declaration. Neither base initialization nor import starts services.
+
+Import prerequisites before starting the controller. Runner Template and named
+provider registries are startup snapshots; import does not hot-reload an
+already-running controller. After later imports, explicitly reload that
+controller using the same installation's configuration and state options:
+
+```sh
+worldstreamctl server controller-stop
+worldstreamctl server start
+```
+
+This stops only the controller, then starts it with the refreshed catalogs and
+reuses a healthy retained Runtime. `server restart` is different: it restarts
+the Runtime and is not a controller-catalog reload command. The importer never
+issues these lifecycle commands on the operator's behalf.
 
 The importer must parse and validate the complete bounded non-secret input
 set before it returns an approval digest. Review binds the exact declaration
 bytes, resolved canonical declaration paths, selected installation, verified
 executable target and BLAKE3 digest, and declared client identities and launch
 targets. Different inputs or targets require a new preview and approval.
-Input order must not grant different authority. The versioned review receipt
-and its canonical digest encoding are part of IMO-142, not a claim that the
-parser has performed this review.
+Input order must not grant different authority. Preview returns the typed
+`worldstream/initialization-import-review/v1` receipt. Its digest is `blake3:`
+followed by 64 lowercase hexadecimal characters. The versioned internal binding
+is serialized with fixed struct-field ordering and sorted canonical document
+paths and named identities, then hashed with BLAKE3's derive-key context
+`worldstream/initialization-import-review/v1`. It also binds retained Host
+identity and the exact selected configuration plus effective non-secret choices.
+The bare declaration parser does not perform this review.
 
 Apply must recheck the reviewed inputs before mutation. It must enforce
 protected-path rules, existing semantic validators, reference resolution,
 immutable identities, and existing trust/revocation state. A successful parse
 alone authorizes none of these actions. Provider secret bytes never appear in
 the approval digest, JSON reports, ordinary output, or diagnostics.
+
+Apply returns `worldstream/initialization-import-apply/v1`, identifying created
+and reused prerequisites without exposing private vault references. A failed
+publication can leave a subset installed: do not interpret failure as rollback,
+delete retained authority, or supply unrelated replacement files. Inspect the
+installation and retry the exact reviewed inputs. Import never rotates an
+existing named provider credential or changes an immutable Profile revision.
+
+A client retry may complete a reviewed identity whose status was already
+published, preserving that status exactly. It does not recreate a missing
+status beside an existing identity: doing so could silently undo a previous
+disable or revocation. That inconsistent state fails closed and requires
+investigation or restoration of trustworthy retained state, not a new blanket
+approval. This is bounded import recovery, not general installation repair.
+
+The import and catalog-selection tests do not prove a live model invocation,
+live Heist or Negotiate run, browser handoff, or production deployment. Those
+require their separate end-to-end qualification; this work does not close the
+existing IMO-81 live-proof debt. Counter-compatible examples must not be
+presented as Heist-compatible managed execution.
 
 See the executable declaration fixtures in
 [Supervisor tests](../crates/worldstream-studio-supervisor/tests/initialization_inputs.rs).

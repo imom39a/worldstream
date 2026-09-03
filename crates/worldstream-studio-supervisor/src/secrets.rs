@@ -210,6 +210,65 @@ impl FileSecretVaultV1 {
         Ok(reference)
     }
 
+    /// Publishes one pending provider import's chosen reference without rotation.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn publish_imported_provider(
+        &self,
+        reference: &SecretReferenceV1,
+        secret: &[u8],
+    ) -> Result<(), SecretVaultErrorV1> {
+        if secret.is_empty() || u64::try_from(secret.len()).unwrap_or(u64::MAX) > MAX_SECRET_BYTES {
+            return Err(SecretVaultErrorV1::InvalidMaterial);
+        }
+        let path = self.secret_path(SecretKindV1::ModelProvider, reference);
+        let matches_existing = || -> Result<(), SecretVaultErrorV1> {
+            let existing = self.resolve(SecretKindV1::ModelProvider, reference)?;
+            if existing.as_bytes().len() == secret.len()
+                && existing
+                    .as_bytes()
+                    .iter()
+                    .zip(secret)
+                    .fold(0_u8, |diff, (left, right)| diff | (left ^ right))
+                    == 0
+            {
+                Ok(())
+            } else {
+                Err(SecretVaultErrorV1::InvalidMaterial)
+            }
+        };
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return matches_existing(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(SecretVaultErrorV1::Unavailable),
+        }
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| SecretVaultErrorV1::Unavailable)?;
+        let temporary = self.root.join(format!(
+            ".provider-import-{}.tmp",
+            blake3::hash(&nonce).to_hex()
+        ));
+        let result = (|| {
+            let mut file = worldstream_runtime::create_owner_only_renameable_file(&temporary)
+                .map_err(|_| SecretVaultErrorV1::Unavailable)?;
+            file.write_all(secret)
+                .map_err(|_| SecretVaultErrorV1::Unavailable)?;
+            match crate::protected_publication::publish(
+                file,
+                &temporary,
+                &path,
+                crate::protected_publication::PublicationMode::CreateNew,
+            ) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    matches_existing()
+                }
+                Err(_) => Err(SecretVaultErrorV1::Unavailable),
+            }
+        })();
+        let _ = fs::remove_file(temporary);
+        result
+    }
+
     /// Resolves one secret only through its original authority kind.
     ///
     /// # Errors
@@ -253,6 +312,24 @@ impl FileSecretVaultV1 {
             reference: reference.clone(),
             availability,
         }
+    }
+
+    /// Checks protected retained-file metadata without opening secret material.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn reference_metadata(
+        &self,
+        kind: SecretKindV1,
+        reference: &SecretReferenceV1,
+    ) -> Result<u64, SecretVaultErrorV1> {
+        let path = self.secret_path(kind, reference);
+        validate_owner_only_file(&path).map_err(|_| SecretVaultErrorV1::Unavailable)?;
+        let length = fs::metadata(path)
+            .map_err(|_| SecretVaultErrorV1::Unavailable)?
+            .len();
+        if length == 0 || length > MAX_SECRET_BYTES {
+            return Err(SecretVaultErrorV1::InvalidMaterial);
+        }
+        Ok(length)
     }
 
     /// Summarizes configuration without returning retained references or

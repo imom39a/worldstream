@@ -4,6 +4,8 @@
 use crate::cli_reference::PublicReference;
 use serde::Serialize;
 use std::io::{self, Write};
+#[cfg(feature = "cli-operator-preview")]
+use worldstream_studio_supervisor::initialization_imports::{ImportApplyV1, ImportReviewV1};
 
 /// Process statuses shared by new operator commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,9 +197,67 @@ pub struct CommandReport {
     #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     initialization: Option<InitializationOutput>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    import_review: Option<ImportReviewV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    import_apply: Option<ImportApplyV1>,
 }
 
 impl CommandReport {
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn initialization_import_requires_initialization() -> Self {
+        let mut report = Self::new("init", CommandOutcome::Rejected);
+        report.code = "initialization_required";
+        report.message = "Initialize the protected installation before reviewing imports.";
+        "Run worldstreamctl init with the selected configuration and state directory, then repeat import preview."
+            .clone_into(&mut report.next_action);
+        report
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn initialization_import_requires_approval() -> Self {
+        let mut report = Self::new("init", CommandOutcome::Rejected);
+        report.code = "import_approval_required";
+        report.message = "Exact reviewed import approval is required.";
+        "Repeat import preview and supply its exact digest with --approve-imports and the same declaration files."
+            .clone_into(&mut report.next_action);
+        report
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn initialization_import_review(review: ImportReviewV1) -> Self {
+        let mut report = Self::new("init", CommandOutcome::Complete);
+        report.message = "Local import review completed; no services were started.";
+        "Review the exact declarations and targets, then repeat the import arguments with --approve-imports and import_review.digest."
+            .clone_into(&mut report.next_action);
+        report.import_review = Some(review);
+        report
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn initialization_import_apply(applied: ImportApplyV1) -> Self {
+        let mut report = Self::new("init", CommandOutcome::Complete);
+        report.message = "Reviewed local imports completed; no services were started.";
+        report.import_apply = Some(applied);
+        report
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn initialization_import_incomplete() -> Self {
+        let mut report = Self::new("init", CommandOutcome::Failed);
+        report.message = "Import publication may be incomplete.";
+        "Inspect the installation, then retry the exact reviewed declaration files and approval digest; do not assume rollback."
+            .clone_into(&mut report.next_action);
+        report
+    }
+
     #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization(output: InitializationOutput) -> Self {
@@ -317,6 +377,10 @@ impl CommandReport {
             lifecycle,
             #[cfg(feature = "cli-operator-preview")]
             initialization: None,
+            #[cfg(feature = "cli-operator-preview")]
+            import_review: None,
+            #[cfg(feature = "cli-operator-preview")]
+            import_apply: None,
         }
     }
 
@@ -356,6 +420,19 @@ impl CommandReport {
                 let arguments = serde_json::to_string(&initialization.next_config_args)
                     .map_err(|_| io::Error::other("operator result could not be encoded"))?;
                 writeln!(stdout, "Next config arguments: {arguments}")?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(review) = &self.import_review {
+                let document = serde_json::to_string_pretty(review)
+                    .map_err(|_| io::Error::other("operator review could not be encoded"))?;
+                writeln!(stdout, "{document}")?;
+                writeln!(stdout, "{}", self.next_action)?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(applied) = &self.import_apply {
+                let document = serde_json::to_string_pretty(applied)
+                    .map_err(|_| io::Error::other("operator result could not be encoded"))?;
+                writeln!(stdout, "{document}")?;
             }
             if let Some(progress) = &self.setup {
                 writeln!(stdout, "Operation: {}", progress.operation_id.as_str())?;

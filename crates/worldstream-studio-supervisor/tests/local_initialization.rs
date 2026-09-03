@@ -13,10 +13,37 @@ use std::{
 use worldstream_runtime::{CliOverrides, ConfigLoader};
 use worldstream_studio_supervisor::{
     control_access::ControlAccess,
-    local_initialization::{InitializationRequest, initialize_local, validate_initialized},
+    local_initialization::{
+        InitializationRequest, initialize_local, validate_initialized, validate_initialized_at,
+    },
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[test]
+fn initialized_validation_resolves_all_relative_paths_against_captured_working_directory()
+-> TestResult {
+    let directory = tempfile::tempdir()?;
+    let initialized = initialize_local(&request(directory.path()))?;
+    fs::write(
+        &initialized.config_path,
+        "config_version = 1\n[storage]\nprofile = 'sqlite-bundled'\ndata_dir = '.worldstream/data'\n[authority.bootstrap]\nsecret_file = '.worldstream/authority.secret'\n",
+    )?;
+    let loader = ConfigLoader::with_environment(
+        Some(PathBuf::from(".worldstream/worldstream.toml")),
+        CliOverrides::default(),
+        Vec::new(),
+    );
+    let before = files(directory.path())?;
+    let effective =
+        validate_initialized_at(&loader, Path::new(".worldstream/studio"), directory.path())?;
+    assert_eq!(
+        fs::canonicalize(effective.storage.data_dir)?,
+        fs::canonicalize(directory.path().join(".worldstream/data"))?
+    );
+    assert!(files(directory.path())? == before);
+    Ok(())
+}
 
 fn request(root: &Path) -> InitializationRequest {
     InitializationRequest {

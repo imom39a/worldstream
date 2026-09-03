@@ -116,7 +116,18 @@ fn init_requires_exact_reviewed_import_approval_without_implicit_trust() {
         if cfg!(feature = "cli-operator-preview") && arguments == ["init", "--json"] {
             continue;
         }
-        assert_eq!(control(&arguments).status.code(), Some(3), "{arguments:?}");
+        let expected = if cfg!(feature = "cli-operator-preview") {
+            1
+        } else {
+            3
+        };
+        let output = control(&arguments);
+        assert_eq!(output.status.code(), Some(expected), "{arguments:?}");
+        if cfg!(feature = "cli-operator-preview") {
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|error| unreachable!("JSON stdout: {error}"));
+            assert_eq!(report["code"], "initialization_required");
+        }
     }
     for arguments in [
         vec!["init", "--runner-template", "runner.json"],

@@ -8,11 +8,14 @@ use std::env;
 use worldstream_runtime::CliOverrides;
 use worldstream_server::CommonConfigArgs;
 use worldstream_studio_supervisor::control_access::{ControlAccess, ControlAccessError};
+use worldstream_studio_supervisor::initialization_imports::{
+    ImportError, InitializationImportRequest, apply_imports, preview_imports,
+};
 use worldstream_studio_supervisor::local_initialization::{
     InitializationRequest, initialize_local,
 };
 
-/// Base initialization is local-only; prerequisite imports remain unavailable.
+/// Local-only initialization and explicitly reviewed prerequisite imports.
 pub fn execute(command: &OperatorCommand, config: &CommonConfigArgs) -> Option<CommandReport> {
     if let OperatorCommand::Server {
         command: ServerCommand::RotateControlCredential(options),
@@ -24,7 +27,7 @@ pub fn execute(command: &OperatorCommand, config: &CommonConfigArgs) -> Option<C
         return None;
     };
     if has_imports(args) {
-        return None;
+        return Some(import_prerequisites(args, config));
     }
     Some(initialize(args, config).unwrap_or_else(|()| {
         CommandReport::new(
@@ -55,30 +58,7 @@ fn has_imports(args: &InitArgs) -> bool {
 }
 
 fn initialize(args: &InitArgs, config: &CommonConfigArgs) -> Result<CommandReport, ()> {
-    let mut environment = Vec::new();
-    for (key, value) in env::vars_os() {
-        if key
-            .to_str()
-            .is_some_and(|key| key == "WORLDSTREAM_CONFIG" || key.starts_with("WORLDSTREAM__"))
-        {
-            environment.push((
-                key.into_string().map_err(|_| ())?,
-                value.into_string().map_err(|_| ())?,
-            ));
-        }
-    }
-    let request = InitializationRequest {
-        config: config.config.clone(),
-        overrides: CliOverrides {
-            bind: config.bind,
-            storage_profile: config.storage_profile,
-            data_dir: config.data_dir.clone(),
-        },
-        state_dir: args.options.state_dir.clone(),
-        working_directory: env::current_dir().map_err(|_| ())?,
-        environment,
-        preview: args.preview,
-    };
+    let request = initialization_request(args, config)?;
     let receipt = initialize_local(&request).map_err(|_| ())?;
     let expected_mode = if args.preview {
         "preview"
@@ -106,4 +86,69 @@ fn initialize(args: &InitArgs, config: &CommonConfigArgs) -> Result<CommandRepor
         services_started: false,
         next_config_args: ["--config".to_owned(), config_argument],
     }))
+}
+
+fn import_prerequisites(args: &InitArgs, config: &CommonConfigArgs) -> CommandReport {
+    let Ok(installation) = initialization_request(args, config) else {
+        return CommandReport::new("init", CommandOutcome::Rejected);
+    };
+    let request = InitializationImportRequest {
+        installation,
+        runner_templates: args.runner_template.clone(),
+        provider_declarations: args.provider_declaration.clone(),
+        agent_profiles: args.agent_profile.clone(),
+        client_declarations: args.client_declaration.clone(),
+        approval: args.approve_imports.clone(),
+    };
+    if args.preview {
+        return match preview_imports(&request) {
+            Ok(review) => CommandReport::initialization_import_review(review),
+            Err(error) => import_failure(&error),
+        };
+    }
+    match apply_imports(&request) {
+        Ok(receipt) => CommandReport::initialization_import_apply(receipt),
+        Err(error) => import_failure(&error),
+    }
+}
+
+fn import_failure(error: &ImportError) -> CommandReport {
+    match error {
+        ImportError::InitializationRequired => {
+            CommandReport::initialization_import_requires_initialization()
+        }
+        ImportError::ApprovalRequired => CommandReport::initialization_import_requires_approval(),
+        ImportError::PublicationUncertain => CommandReport::initialization_import_incomplete(),
+        ImportError::Invalid => CommandReport::new("init", CommandOutcome::Rejected),
+    }
+}
+
+fn initialization_request(
+    args: &InitArgs,
+    config: &CommonConfigArgs,
+) -> Result<InitializationRequest, ()> {
+    let mut environment = Vec::new();
+    for (key, value) in env::vars_os() {
+        if key
+            .to_str()
+            .is_some_and(|key| key == "WORLDSTREAM_CONFIG" || key.starts_with("WORLDSTREAM__"))
+        {
+            environment.push((
+                key.into_string().map_err(|_| ())?,
+                value.into_string().map_err(|_| ())?,
+            ));
+        }
+    }
+    Ok(InitializationRequest {
+        config: config.config.clone(),
+        overrides: CliOverrides {
+            bind: config.bind,
+            storage_profile: config.storage_profile,
+            data_dir: config.data_dir.clone(),
+        },
+        state_dir: args.options.state_dir.clone(),
+        working_directory: env::current_dir().map_err(|_| ())?,
+        environment,
+        preview: args.preview,
+    })
 }

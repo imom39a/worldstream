@@ -15,6 +15,8 @@ pub mod backups;
 pub mod client_bindings;
 pub mod control_access;
 pub mod control_admission;
+#[cfg(feature = "cli-operator-preview")]
+pub mod initialization_imports;
 pub mod initialization_inputs;
 pub mod lifecycle;
 #[cfg(feature = "cli-operator-preview")]

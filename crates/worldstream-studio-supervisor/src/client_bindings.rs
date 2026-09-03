@@ -118,6 +118,25 @@ struct ClientBindingBootstrapV1 {
     inspector_fallback: InspectorFallbackV1,
 }
 
+/// Exact non-secret client identities and targets approved by initialization.
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Clone, Debug, Serialize)]
+pub struct ClientImportReviewV1 {
+    pub deployment_trust_policy: ClientDeploymentTrustPolicyV1,
+    pub releases: Vec<ActivityClientReleaseV1>,
+    pub deployments: Vec<ClientDeploymentV1>,
+    pub bindings: Vec<ClientBindingV1>,
+    pub inspector_fallback: InspectorFallbackV1,
+}
+
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedClientPolicyV1 {
+    schema: String,
+    deployment_trust_policy: ClientDeploymentTrustPolicyV1,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ClientDeploymentStatusV1 {
@@ -245,6 +264,251 @@ pub struct ClientBindingStoreV1 {
 }
 
 impl ClientBindingStoreV1 {
+    /// Reads explicitly retained policy without creating state. Unreviewed
+    /// installations retain the conservative verified-only default.
+    ///
+    /// # Errors
+    /// Rejects malformed or unprotected retained policy.
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn installed_policy(
+        root: &Path,
+    ) -> Result<ClientDeploymentTrustPolicyV1, ClientBindingStoreErrorV1> {
+        Ok(read_reviewed_policy(root)?.unwrap_or(ClientDeploymentTrustPolicyV1::VerifiedOnly))
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn read_import(
+        release_documents: &[Vec<u8>],
+        bootstrap_document: &[u8],
+    ) -> Result<ClientImportReviewV1, ClientBindingStoreErrorV1> {
+        let bootstrap = read_bootstrap(bootstrap_document)?;
+        if bootstrap.schema != BOOTSTRAP_SCHEMA_V1 {
+            return Err(ClientBindingStoreErrorV1::Invalid);
+        }
+        let releases = release_documents
+            .iter()
+            .map(|bytes| {
+                read_activity_client_release(bytes).map_err(|_| ClientBindingStoreErrorV1::Invalid)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ClientImportReviewV1 {
+            deployment_trust_policy: bootstrap.deployment_trust_policy,
+            releases,
+            deployments: bootstrap.deployments,
+            bindings: bootstrap.bindings,
+            inspector_fallback: bootstrap.inspector_fallback,
+        })
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep retained-state validation and ordered aggregate identity merge visible before publication"
+    )]
+    pub(crate) fn check_imports(
+        root: &Path,
+        imports: &[ClientImportReviewV1],
+    ) -> Result<Vec<bool>, ClientBindingStoreErrorV1> {
+        let mut inventory = match fs::symlink_metadata(root) {
+            Ok(_) => {
+                worldstream_runtime::validate_data_directory(root)
+                    .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+                let paths = StorePathsV1 {
+                    releases: root.join("releases"),
+                    deployments: root.join("deployments"),
+                    bindings: root.join("bindings"),
+                    inspector_fallback: root.join("inspector-fallback"),
+                    deployment_status: root.join("deployment-status"),
+                    binding_status: root.join("binding-status"),
+                };
+                let directories = [
+                    &paths.releases,
+                    &paths.deployments,
+                    &paths.bindings,
+                    &paths.inspector_fallback,
+                    &paths.deployment_status,
+                    &paths.binding_status,
+                ];
+                let mut incomplete_layout = false;
+                for path in directories {
+                    match fs::symlink_metadata(path) {
+                        Ok(_) => {
+                            worldstream_runtime::validate_data_directory(path)
+                                .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            incomplete_layout = true;
+                        }
+                        Err(_) => return Err(ClientBindingStoreErrorV1::Unavailable),
+                    }
+                }
+                if incomplete_layout {
+                    validate_empty_import_layout(root, &directories)?;
+                    ClientBindingInventoryV1::default()
+                } else {
+                    Self {
+                        paths: Arc::new(paths),
+                        deployment_trust_policy: ClientDeploymentTrustPolicyV1::VerifiedOnly,
+                        mutation: Arc::new(Mutex::new(())),
+                    }
+                    .read_inventory()?
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ClientBindingInventoryV1::default()
+            }
+            Err(_) => return Err(ClientBindingStoreErrorV1::Unavailable),
+        };
+        validate_retained_import_inventory(&inventory)?;
+        let mut policy = read_reviewed_policy(root)?;
+        let mut reused = Vec::with_capacity(imports.len());
+        for import in imports {
+            if policy.is_some_and(|policy| policy != import.deployment_trust_policy) {
+                return Err(ClientBindingStoreErrorV1::Invalid);
+            }
+            let mut exact = policy.is_some();
+            policy = Some(import.deployment_trust_policy);
+            for release in &import.releases {
+                exact &= inventory
+                    .releases
+                    .contains_key(&(release.client_id.clone(), release.release_digest.clone()));
+                insert_exact_release(&mut inventory.releases, release)?;
+            }
+            for deployment in &import.deployments {
+                if let Some(current) = inventory.deployments.get(&deployment.deployment_id) {
+                    if current != deployment {
+                        return Err(ClientBindingStoreErrorV1::Invalid);
+                    }
+                } else {
+                    exact = false;
+                }
+                inventory
+                    .deployments
+                    .insert(deployment.deployment_id.clone(), deployment.clone());
+                inventory
+                    .deployment_status
+                    .entry(deployment.deployment_id.clone())
+                    .or_insert(ClientDeploymentStatusV1::Ready);
+            }
+            for binding in &import.bindings {
+                if let Some(current) = inventory.bindings.get(&binding.binding_id) {
+                    if current != binding {
+                        return Err(ClientBindingStoreErrorV1::Invalid);
+                    }
+                } else {
+                    exact = false;
+                }
+                inventory
+                    .bindings
+                    .insert(binding.binding_id.clone(), binding.clone());
+                inventory
+                    .binding_status
+                    .entry(binding.binding_id.clone())
+                    .or_insert(ClientBindingStatusV1::Approved);
+            }
+            if let Some(current) = &inventory.inspector_fallback {
+                if current != &import.inspector_fallback {
+                    return Err(ClientBindingStoreErrorV1::Invalid);
+                }
+            } else {
+                exact = false;
+            }
+            inventory.inspector_fallback = Some(import.inspector_fallback.clone());
+            reused.push(exact);
+        }
+        for import in imports {
+            validate_bootstrap(
+                &ClientBindingBootstrapV1 {
+                    schema: BOOTSTRAP_SCHEMA_V1.to_owned(),
+                    deployment_trust_policy: import.deployment_trust_policy,
+                    deployments: import.deployments.clone(),
+                    bindings: import.bindings.clone(),
+                    inspector_fallback: import.inspector_fallback.clone(),
+                },
+                &inventory.releases,
+            )?;
+        }
+        validate_inventory(&inventory)?;
+        Ok(reused)
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn import_reviewed(
+        root: &Path,
+        imports: &[ClientImportReviewV1],
+    ) -> Result<Vec<bool>, ClientBindingStoreErrorV1> {
+        let reused = Self::check_imports(root, imports)?;
+        let Some(first) = imports.first() else {
+            return Ok(reused);
+        };
+        let store = Self::open_layout(root, first.deployment_trust_policy)?;
+        for import in imports {
+            for release in &import.releases {
+                publish_import_record(
+                    &store.paths.releases,
+                    &release_record_id(release),
+                    release,
+                    ImportRecordPolicy::RequireExact,
+                )?;
+            }
+            for deployment in &import.deployments {
+                // A crash can leave an orphan status, never an identity whose
+                // missing status would need to be guessed or reset on retry.
+                publish_import_record(
+                    &store.paths.deployment_status,
+                    &deployment.deployment_id,
+                    &ClientDeploymentStatusRecordV1 {
+                        schema: DEPLOYMENT_STATUS_SCHEMA_V1.to_owned(),
+                        deployment_id: deployment.deployment_id.clone(),
+                        status: ClientDeploymentStatusV1::Ready,
+                    },
+                    ImportRecordPolicy::PreserveStatus,
+                )?;
+                publish_import_record(
+                    &store.paths.deployments,
+                    &deployment.deployment_id,
+                    deployment,
+                    ImportRecordPolicy::RequireExact,
+                )?;
+            }
+            for binding in &import.bindings {
+                publish_import_record(
+                    &store.paths.binding_status,
+                    &binding.binding_id,
+                    &ClientBindingStatusRecordV1 {
+                        schema: BINDING_STATUS_SCHEMA_V1.to_owned(),
+                        binding_id: binding.binding_id.clone(),
+                        status: ClientBindingStatusV1::Approved,
+                    },
+                    ImportRecordPolicy::PreserveStatus,
+                )?;
+                publish_import_record(
+                    &store.paths.bindings,
+                    &binding.binding_id,
+                    binding,
+                    ImportRecordPolicy::RequireExact,
+                )?;
+            }
+            publish_import_record(
+                &store.paths.inspector_fallback,
+                &import.inspector_fallback.fallback_id,
+                &import.inspector_fallback,
+                ImportRecordPolicy::RequireExact,
+            )?;
+        }
+        publish_import_record(
+            root,
+            "reviewed-policy",
+            &ReviewedClientPolicyV1 {
+                schema: "worldstream/client-deployment-policy/v1".to_owned(),
+                deployment_trust_policy: first.deployment_trust_policy,
+            },
+            ImportRecordPolicy::RequireExact,
+        )?;
+        store.load_inventory()?;
+        Ok(reused)
+    }
+
     /// Opens Host-local state from an operator-controlled release directory
     /// and one reviewed deployment/binding bootstrap document.
     ///
@@ -622,6 +886,14 @@ impl ClientBindingStoreV1 {
     }
 
     fn load_inventory(&self) -> Result<ClientBindingInventoryV1, ClientBindingStoreErrorV1> {
+        let inventory = self.read_inventory()?;
+        validate_inventory(&inventory)?;
+        Ok(inventory)
+    }
+
+    // Parsing remains strict; only import preflight may inspect an incomplete
+    // snapshot. Functional selection always uses load_inventory's full checks.
+    fn read_inventory(&self) -> Result<ClientBindingInventoryV1, ClientBindingStoreErrorV1> {
         let releases = load_releases(&self.paths.releases)?;
         let deployments =
             load_keyed_records::<ClientDeploymentV1>(&self.paths.deployments, |record| {
@@ -634,11 +906,10 @@ impl ClientBindingStoreV1 {
             load_keyed_records::<InspectorFallbackV1>(&self.paths.inspector_fallback, |record| {
                 &record.fallback_id
             })?;
-        let inspector_fallback = if fallback_records.len() == 1 {
-            fallback_records.pop_first().map(|(_, record)| record)
-        } else {
-            None
-        };
+        if fallback_records.len() > 1 {
+            return Err(ClientBindingStoreErrorV1::Unavailable);
+        }
+        let inspector_fallback = fallback_records.pop_first().map(|(_, record)| record);
         let deployment_status_records = load_keyed_records::<ClientDeploymentStatusRecordV1>(
             &self.paths.deployment_status,
             |record| &record.deployment_id,
@@ -662,16 +933,14 @@ impl ClientBindingStoreV1 {
             .into_iter()
             .map(|(id, record)| (id, record.status))
             .collect();
-        let inventory = ClientBindingInventoryV1 {
+        Ok(ClientBindingInventoryV1 {
             releases,
             deployments,
             bindings,
             inspector_fallback,
             deployment_status,
             binding_status,
-        };
-        validate_inventory(&inventory)?;
-        Ok(inventory)
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, ()> {
@@ -698,6 +967,7 @@ impl ClientSelectionSourceV1 for ClientBindingStoreV1 {
     }
 }
 
+#[derive(Default)]
 struct ClientBindingInventoryV1 {
     releases: BTreeMap<(String, String), ActivityClientReleaseV1>,
     deployments: BTreeMap<String, ClientDeploymentV1>,
@@ -705,6 +975,143 @@ struct ClientBindingInventoryV1 {
     inspector_fallback: Option<InspectorFallbackV1>,
     deployment_status: BTreeMap<String, ClientDeploymentStatusV1>,
     binding_status: BTreeMap<String, ClientBindingStatusV1>,
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn validate_empty_import_layout(
+    root: &Path,
+    directories: &[&PathBuf],
+) -> Result<(), ClientBindingStoreErrorV1> {
+    // Layout creation precedes every record publication. Missing directories
+    // are recoverable only when all retained entries are known empty children:
+    // no identity, status, policy, staging record, or unknown state is guessed.
+    for entry in fs::read_dir(root).map_err(|_| ClientBindingStoreErrorV1::Unavailable)? {
+        let entry = entry.map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+        let path = entry.path();
+        if !directories
+            .iter()
+            .any(|directory| directory.as_path() == path.as_path())
+            || fs::read_dir(path)
+                .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?
+                .next()
+                .is_some()
+        {
+            return Err(ClientBindingStoreErrorV1::Unavailable);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn validate_retained_import_inventory(
+    inventory: &ClientBindingInventoryV1,
+) -> Result<(), ClientBindingStoreErrorV1> {
+    // Orphan statuses can be completed only by explicitly reviewed identities;
+    // the merged inventory is fully checked before anything is published.
+    // Existing identities, however, must retain both their parents and status.
+    for deployment in inventory.deployments.values() {
+        validate_deployment(deployment, &inventory.releases)
+            .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+        if !inventory
+            .deployment_status
+            .contains_key(&deployment.deployment_id)
+        {
+            return Err(ClientBindingStoreErrorV1::Unavailable);
+        }
+    }
+    for binding in inventory.bindings.values() {
+        validate_binding(binding, &inventory.deployments, &inventory.releases)
+            .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+        if !inventory.binding_status.contains_key(&binding.binding_id) {
+            return Err(ClientBindingStoreErrorV1::Unavailable);
+        }
+    }
+    if let Some(fallback) = &inventory.inspector_fallback {
+        validate_inspector_fallback(fallback, &inventory.deployments, &inventory.releases)
+            .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn read_reviewed_policy(
+    root: &Path,
+) -> Result<Option<ClientDeploymentTrustPolicyV1>, ClientBindingStoreErrorV1> {
+    let path = root.join("reviewed-policy.json");
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            worldstream_runtime::validate_data_directory(root)
+                .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+            let record: ReviewedClientPolicyV1 = read_import_record(&path)?;
+            if record.schema != "worldstream/client-deployment-policy/v1" {
+                return Err(ClientBindingStoreErrorV1::Unavailable);
+            }
+            Ok(Some(record.deployment_trust_policy))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(ClientBindingStoreErrorV1::Unavailable),
+    }
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn read_import_record<T: DeserializeOwned>(path: &Path) -> Result<T, ClientBindingStoreErrorV1> {
+    use std::io::Read as _;
+    validate_owner_only_file(path).map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?
+        .take(MAX_RECORD_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+    if bytes.len() > MAX_RECORD_BYTES {
+        return Err(ClientBindingStoreErrorV1::Unavailable);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| ClientBindingStoreErrorV1::Unavailable)
+}
+
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Clone, Copy)]
+enum ImportRecordPolicy {
+    PreserveStatus,
+    RequireExact,
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn publish_import_record<T: Serialize + DeserializeOwned + Eq>(
+    directory: &Path,
+    id: &str,
+    value: &T,
+    policy: ImportRecordPolicy,
+) -> Result<(), ClientBindingStoreErrorV1> {
+    use crate::protected_publication::{PublicationMode, publish};
+    if !is_identifier(id) {
+        return Err(ClientBindingStoreErrorV1::Invalid);
+    }
+    let target = directory.join(format!("{id}.json"));
+    if target.exists() {
+        let existing: T = read_import_record(&target)?;
+        return (matches!(policy, ImportRecordPolicy::PreserveStatus) || existing == *value)
+            .then_some(())
+            .ok_or(ClientBindingStoreErrorV1::Invalid);
+    }
+    let bytes = serialize_record(value)?;
+    let temporary = directory.join(format!(".client-import-{}.tmp", random_suffix()?));
+    let mut file = worldstream_runtime::create_owner_only_renameable_file(&temporary)
+        .map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
+    let result = file
+        .write_all(&bytes)
+        .and_then(|()| publish(file, &temporary, &target, PublicationMode::CreateNew));
+    let _ = fs::remove_file(&temporary);
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing: T = read_import_record(&target)?;
+            (matches!(policy, ImportRecordPolicy::PreserveStatus) || existing == *value)
+                .then_some(())
+                .ok_or(ClientBindingStoreErrorV1::Invalid)
+        }
+        Err(_) => Err(ClientBindingStoreErrorV1::Unavailable),
+    }
 }
 
 fn prepare_store_directory(root: &Path, name: &str) -> Result<PathBuf, ClientBindingStoreErrorV1> {

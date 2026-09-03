@@ -63,6 +63,101 @@ struct Plan {
     lock_root: PathBuf,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct ImportInstallation {
+    pub config_path: PathBuf,
+    pub state_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub host_identity: String,
+    pub configuration_digest: String,
+}
+
+/// Read-only import prerequisite check. No control, bootstrap, DSN or vault
+/// secret is opened; actual authority validation belongs to approved apply.
+pub(crate) fn import_installation(
+    request: &InitializationRequest,
+) -> Result<ImportInstallation, InitializationError> {
+    use std::io::Read as _;
+    let plan = plan(request)?;
+    if plan.new_config.is_some() {
+        return Err(InitializationError);
+    }
+    let config_path =
+        fs::canonicalize(&plan.receipt.config_path).map_err(|_| InitializationError)?;
+    let state_dir =
+        validate_data_directory(&plan.receipt.state_dir).map_err(|_| InitializationError)?;
+    let data_dir =
+        validate_data_directory(&plan.receipt.data_dir).map_err(|_| InitializationError)?;
+    let control = state_dir.join("control-access.v1");
+    validate_owner_only_file(&control).map_err(|_| InitializationError)?;
+    if fs::metadata(control)
+        .map_err(|_| InitializationError)?
+        .len()
+        != 48
+    {
+        return Err(InitializationError);
+    }
+    let Some(SecretSource::File(bootstrap)) = plan.prospective.bootstrap_source() else {
+        return Err(InitializationError);
+    };
+    validate_owner_only_file(bootstrap).map_err(|_| InitializationError)?;
+    if fs::metadata(bootstrap)
+        .map_err(|_| InitializationError)?
+        .len()
+        != 32
+    {
+        return Err(InitializationError);
+    }
+    let host_identity = crate::startup_authority::retained_host_identity(&state_dir)
+        .map_err(|_| InitializationError)?;
+    let mut digest = blake3::Hasher::new_derive_key("worldstream/initialization-configuration/v1");
+    let mut file = fs::File::open(&config_path).map_err(|_| InitializationError)?;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| InitializationError)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    let effective = plan
+        .prospective
+        .installation_toml(&request.working_directory)
+        .map_err(|_| InitializationError)?;
+    digest.update(&[0]);
+    digest.update(effective.as_bytes());
+    Ok(ImportInstallation {
+        config_path,
+        state_dir: fs::canonicalize(state_dir).map_err(|_| InitializationError)?,
+        data_dir: fs::canonicalize(data_dir).map_err(|_| InitializationError)?,
+        host_identity,
+        configuration_digest: digest.finalize().to_hex().to_string(),
+    })
+}
+
+pub(crate) fn lock_import_installation(
+    request: &InitializationRequest,
+) -> Result<fs::File, InitializationError> {
+    installation_lock(&plan(request)?.lock_root)
+}
+
+pub(crate) fn validate_import_authority(
+    request: &InitializationRequest,
+) -> Result<(), InitializationError> {
+    let plan = plan(request)?;
+    ControlAccess::open(&plan.receipt.state_dir).map_err(|_| InitializationError)?;
+    let effective = plan
+        .loader
+        .load_at(&request.working_directory)
+        .map_err(|_| InitializationError)?;
+    validate_existing_host_authority(
+        &plan.receipt.state_dir,
+        effective.authority.bootstrap_secret.as_ref(),
+    )
+    .map_err(|_| InitializationError)?;
+    Ok(())
+}
+
 /// Plans or explicitly initializes local operator state without starting services.
 ///
 /// # Errors
@@ -144,6 +239,34 @@ pub fn validate_initialized(
 ) -> Result<EffectiveConfig, InitializationError> {
     ControlAccess::open(state_dir).map_err(|_| InitializationError)?;
     let effective = loader.load().map_err(|_| InitializationError)?;
+    validate_initialized_configuration(state_dir, effective)
+}
+
+/// Checks retained initialization using one explicit working directory for the
+/// selected configuration and all relative local references. Never repairs state.
+///
+/// # Errors
+/// Fails closed on invalid paths, configuration, or retained authority.
+pub fn validate_initialized_at(
+    loader: &ConfigLoader,
+    state_dir: &Path,
+    working_directory: &Path,
+) -> Result<EffectiveConfig, InitializationError> {
+    if !working_directory.is_absolute() {
+        return Err(InitializationError);
+    }
+    let state_dir = safe_absolute(working_directory, state_dir)?;
+    ControlAccess::open(&state_dir).map_err(|_| InitializationError)?;
+    let effective = loader
+        .load_at(working_directory)
+        .map_err(|_| InitializationError)?;
+    validate_initialized_configuration(&state_dir, effective)
+}
+
+fn validate_initialized_configuration(
+    state_dir: &Path,
+    effective: EffectiveConfig,
+) -> Result<EffectiveConfig, InitializationError> {
     validate_data_directory(&effective.storage.data_dir).map_err(|_| InitializationError)?;
     validate_backup_layout(state_dir, &effective.storage.data_dir)?;
     validate_existing_host_authority(state_dir, effective.authority.bootstrap_secret.as_ref())

@@ -20,6 +20,43 @@ use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
 const BINDING_FILE: &str = "host-authority-reference.json";
 const BINDING_SCHEMA: &str = "worldstream/studio-host-authority-binding/v1";
 
+/// Binds review to retained Host identity without resolving any secret bytes.
+#[cfg(feature = "cli-operator-preview")]
+pub(crate) fn retained_host_identity(
+    state_dir: &Path,
+) -> Result<String, HostAuthorityStartupErrorV1> {
+    use std::io::Read as _;
+    let path = state_dir.join(BINDING_FILE);
+    validate_owner_only_file(&path).map_err(|_| HostAuthorityStartupErrorV1::BindingUnavailable)?;
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(|_| HostAuthorityStartupErrorV1::BindingUnavailable)?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| HostAuthorityStartupErrorV1::BindingUnavailable)?;
+    if bytes.is_empty() || bytes.len() > 4096 {
+        return Err(HostAuthorityStartupErrorV1::BindingInvalid);
+    }
+    let binding: HostAuthorityBindingV1 =
+        serde_json::from_slice(&bytes).map_err(|_| HostAuthorityStartupErrorV1::BindingInvalid)?;
+    if binding.schema != BINDING_SCHEMA {
+        return Err(HostAuthorityStartupErrorV1::BindingInvalid);
+    }
+    let vault = FileSecretVaultV1::open_existing(&state_dir.join("secrets"))
+        .map_err(|_| HostAuthorityStartupErrorV1::RetainedAuthorityUnavailable)?;
+    if vault
+        .reference_metadata(SecretKindV1::HostAuthority, &binding.reference)
+        .map_err(|_| HostAuthorityStartupErrorV1::RetainedAuthorityUnavailable)?
+        != 32
+    {
+        return Err(HostAuthorityStartupErrorV1::RetainedAuthorityUnavailable);
+    }
+    let mut identity =
+        blake3::Hasher::new_derive_key("worldstream/initialization-host-identity/v1");
+    identity.update(binding.reference.as_str().as_bytes());
+    Ok(identity.finalize().to_hex().to_string())
+}
+
 /// Validates retained bootstrap, vault, and binding agreement without repair.
 ///
 /// # Errors

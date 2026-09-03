@@ -47,8 +47,8 @@ use worldstream_studio_supervisor::{
 };
 #[cfg(feature = "cli-operator-preview")]
 use worldstream_studio_supervisor::{
-    client_bindings::ClientDeploymentTrustPolicyV1, control_access::ControlAccess,
-    control_admission::protect_operator_routes, local_initialization::validate_initialized,
+    control_access::ControlAccess, control_admission::protect_operator_routes,
+    local_initialization::validate_initialized,
     startup_authority::validate_existing_host_authority,
 };
 
@@ -333,12 +333,17 @@ async fn main() -> Result<()> {
     .with_launch_applicability(CatalogTaskLaunchApplicabilitySourceV1::new(
         activity_packs.clone(),
     ));
-    // IMO-142 supplies persisted, explicitly reviewed selection policy. Until
-    // then preview cannot promote external trust or import configuration files.
+    // Startup uses retained reviewed policy only; it never imports declarations
+    // or promotes deployment trust from a working-directory configuration file.
+    #[cfg(feature = "cli-operator-preview")]
+    let client_policy = ClientBindingStoreV1::installed_policy(
+        &args.state_dir.join("client-bindings"),
+    )
+    .map_err(|_| anyhow::anyhow!("reviewed Activity Client selection policy is unavailable"))?;
     #[cfg(feature = "cli-operator-preview")]
     let client_bindings = ClientBindingStoreV1::open_installed(
         &args.state_dir.join("client-bindings"),
-        ClientDeploymentTrustPolicyV1::VerifiedOnly,
+        client_policy,
     );
     #[cfg(not(feature = "cli-operator-preview"))]
     let client_bindings = ClientBindingStoreV1::open_configured(

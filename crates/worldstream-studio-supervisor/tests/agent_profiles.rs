@@ -1,5 +1,18 @@
 #![allow(dead_code)]
 
+#[cfg(feature = "cli-operator-preview")]
+#[path = "../src/initialization_inputs.rs"]
+mod initialization_inputs;
+
+#[cfg(feature = "cli-operator-preview")]
+#[path = "../src/protected_publication.rs"]
+mod protected_publication;
+
+#[cfg(feature = "cli-operator-preview")]
+mod runner_templates {
+    pub use worldstream_studio_supervisor::runner_templates::RunnerTemplateManifestV1;
+}
+
 #[path = "../src/secrets.rs"]
 mod secrets;
 

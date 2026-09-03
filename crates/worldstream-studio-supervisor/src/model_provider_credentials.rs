@@ -45,6 +45,18 @@ struct SecretV1 {
     reference: SecretReferenceV1,
 }
 
+/// Immutable retained dependency binding; serialized only into the private
+/// approval preimage, never an operator receipt. Contains no secret bytes.
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Clone, Eq, PartialEq, Serialize)]
+pub(crate) struct RetainedProviderDependencyV1 {
+    pub(crate) credential_id: String,
+    pub(crate) display_name: String,
+    pub(crate) provider: ManagedReferenceProviderV1,
+    pub(crate) kind: SecretKindV1,
+    pub(crate) reference: SecretReferenceV1,
+}
+
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProviderCredentialViewV1 {
@@ -84,6 +96,176 @@ pub struct ModelProviderCredentialRegistryV1 {
     vault: FileSecretVaultV1,
 }
 impl ModelProviderCredentialRegistryV1 {
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn resolve_import_reference(
+        root: &Path,
+        credential_id: &str,
+        provider: ManagedReferenceProviderV1,
+        vault: &FileSecretVaultV1,
+    ) -> Result<SecretReferenceV1, ModelProviderCredentialErrorV1> {
+        Ok(Self::review_import_dependency(root, credential_id, provider, vault)?.reference)
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn review_import_dependency(
+        root: &Path,
+        credential_id: &str,
+        provider: ManagedReferenceProviderV1,
+        vault: &FileSecretVaultV1,
+    ) -> Result<RetainedProviderDependencyV1, ModelProviderCredentialErrorV1> {
+        if !valid_id(credential_id) {
+            return Err(ModelProviderCredentialErrorV1::Invalid);
+        }
+        check_import_directory(root)?;
+        let manifest = read_manifest(&root.join(format!("{credential_id}.json")), true)?;
+        if manifest.credential_id != credential_id || manifest.provider != provider {
+            return Err(ModelProviderCredentialErrorV1::Invalid);
+        }
+        vault
+            .reference_metadata(SecretKindV1::ModelProvider, &manifest.secret.reference)
+            .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+        Ok(RetainedProviderDependencyV1 {
+            credential_id: manifest.credential_id,
+            display_name: manifest.display_name,
+            provider: manifest.provider,
+            kind: manifest.secret.kind,
+            reference: manifest.secret.reference,
+        })
+    }
+    /// Resolves retained declaration metadata without reading provider bytes.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn check_import(
+        root: &Path,
+        declaration: &crate::initialization_inputs::ProviderCredentialImportV1,
+        vault: &FileSecretVaultV1,
+    ) -> Result<Option<SecretReferenceV1>, ModelProviderCredentialErrorV1> {
+        check_import_directory(root)?;
+        let target = root.join(format!("{}.json", declaration.credential_id));
+        match fs::symlink_metadata(&target) {
+            Ok(_) => {
+                let existing = read_manifest(&target, true)?;
+                if existing.credential_id != declaration.credential_id
+                    || existing.display_name != declaration.display_name
+                    || existing.provider != declaration.provider
+                {
+                    return Err(ModelProviderCredentialErrorV1::Immutable);
+                }
+                vault
+                    .reference_metadata(SecretKindV1::ModelProvider, &existing.secret.reference)
+                    .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+                Ok(Some(existing.secret.reference))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let pending_root = root
+                    .parent()
+                    .ok_or(ModelProviderCredentialErrorV1::Invalid)?
+                    .join("imports");
+                check_import_directory(&pending_root)?;
+                if let Some(pending) =
+                    read_pending(&pending_root.join(format!("{}.json", declaration.credential_id)))?
+                    && pending.declaration != *declaration
+                {
+                    return Err(ModelProviderCredentialErrorV1::Immutable);
+                }
+                Ok(None)
+            }
+            Err(_) => Err(ModelProviderCredentialErrorV1::Unavailable),
+        }
+    }
+
+    /// Checks the complete resulting named catalog before any publication.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn check_import_capacity(
+        root: &Path,
+        declarations: &[crate::initialization_inputs::ProviderCredentialImportV1],
+    ) -> Result<(), ModelProviderCredentialErrorV1> {
+        let pending_root = root
+            .parent()
+            .ok_or(ModelProviderCredentialErrorV1::Invalid)?
+            .join("imports");
+        let mut identities = BTreeSet::new();
+        for directory in [root, pending_root.as_path()] {
+            check_import_directory(directory)?;
+            for path in json_files(directory, true)? {
+                let identity = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| valid_id(value))
+                    .ok_or(ModelProviderCredentialErrorV1::Invalid)?;
+                identities.insert(identity.to_owned());
+            }
+        }
+        for declaration in declarations {
+            identities.insert(declaration.credential_id.clone());
+        }
+        if identities.len() > MAX_ROWS {
+            return Err(ModelProviderCredentialErrorV1::Invalid);
+        }
+        Ok(())
+    }
+
+    /// Publishes a stable named provider using one retained pending vault reference.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn import_exact(
+        root: &Path,
+        declaration: &crate::initialization_inputs::ProviderCredentialImportV1,
+        secret: &[u8],
+        vault: &FileSecretVaultV1,
+    ) -> Result<bool, ModelProviderCredentialErrorV1> {
+        Self::check_import_capacity(root, std::slice::from_ref(declaration))?;
+        if let Some(reference) = Self::check_import(root, declaration, vault)? {
+            vault
+                .publish_imported_provider(&reference, secret)
+                .map_err(|_| ModelProviderCredentialErrorV1::Immutable)?;
+            return Ok(true);
+        }
+        let pending_root = root
+            .parent()
+            .ok_or(ModelProviderCredentialErrorV1::Invalid)?
+            .join("imports");
+        let pending_root = prepare_data_directory(&pending_root)
+            .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+        let pending_path = pending_root.join(format!("{}.json", declaration.credential_id));
+        let pending = if let Some(pending) = read_pending(&pending_path)? {
+            pending
+        } else {
+            let mut random = [0_u8; 32];
+            getrandom::fill(&mut random)
+                .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+            let reference = SecretReferenceV1::parse(blake3::hash(&random).to_hex().to_string())
+                .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+            let pending = PendingProviderImportV1 {
+                schema: "worldstream/provider-credential-import-pending/v1".to_owned(),
+                declaration: declaration.clone(),
+                secret: SecretV1 {
+                    kind: SecretKindV1::ModelProvider,
+                    reference,
+                },
+            };
+            publish_import_record(&pending_path, &pending)?;
+            read_pending(&pending_path)?.ok_or(ModelProviderCredentialErrorV1::Unavailable)?
+        };
+        if pending.declaration != *declaration {
+            return Err(ModelProviderCredentialErrorV1::Immutable);
+        }
+        vault
+            .publish_imported_provider(&pending.secret.reference, secret)
+            .map_err(|_| ModelProviderCredentialErrorV1::Immutable)?;
+        let manifest = ManifestV1 {
+            schema: SCHEMA.to_owned(),
+            credential_id: declaration.credential_id.clone(),
+            display_name: declaration.display_name.clone(),
+            provider: declaration.provider,
+            secret: pending.secret,
+        };
+        let root = prepare_data_directory(root)
+            .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+        publish_import_record(
+            &root.join(format!("{}.json", declaration.credential_id)),
+            &manifest,
+        )?;
+        Ok(false)
+    }
     /// Opens the immutable installed credential catalog.
     ///
     /// # Errors
@@ -197,6 +379,124 @@ impl ModelProviderCredentialRegistryV1 {
             SecretAvailabilityV1::Unavailable => Err(ModelProviderCredentialErrorV1::Unavailable),
         }
     }
+}
+
+#[cfg(feature = "cli-operator-preview")]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PendingProviderImportV1 {
+    schema: String,
+    declaration: crate::initialization_inputs::ProviderCredentialImportV1,
+    secret: SecretV1,
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn check_import_directory(root: &Path) -> Result<(), ModelProviderCredentialErrorV1> {
+    match fs::symlink_metadata(root) {
+        Ok(_) => {
+            worldstream_runtime::validate_data_directory(root)
+                .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+            if fs::read_dir(root)
+                .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?
+                .take(MAX_ROWS + 1)
+                .count()
+                > MAX_ROWS
+            {
+                return Err(ModelProviderCredentialErrorV1::Unavailable);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(ModelProviderCredentialErrorV1::Unavailable),
+    }
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn read_pending(
+    path: &Path,
+) -> Result<Option<PendingProviderImportV1>, ModelProviderCredentialErrorV1> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Ok(_) => {}
+        Err(_) => return Err(ModelProviderCredentialErrorV1::Unavailable),
+    }
+    validate_owner_only_file(path).map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?
+        .take(MAX_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+    if bytes.len()
+        > usize::try_from(MAX_RECORD_BYTES).map_err(|_| ModelProviderCredentialErrorV1::Invalid)?
+    {
+        return Err(ModelProviderCredentialErrorV1::Invalid);
+    }
+    let value: PendingProviderImportV1 =
+        serde_json::from_slice(&bytes).map_err(|_| ModelProviderCredentialErrorV1::Invalid)?;
+    if value.schema != "worldstream/provider-credential-import-pending/v1"
+        || value.secret.kind != SecretKindV1::ModelProvider
+    {
+        return Err(ModelProviderCredentialErrorV1::Invalid);
+    }
+    Ok(Some(value))
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn publish_import_record<T: Serialize + serde::de::DeserializeOwned + Eq>(
+    target: &Path,
+    record: &T,
+) -> Result<(), ModelProviderCredentialErrorV1> {
+    let parent = target
+        .parent()
+        .ok_or(ModelProviderCredentialErrorV1::Invalid)?;
+    let temporary = parent.join(format!(
+        ".credential.{}.{}.tmp",
+        std::process::id(),
+        TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let bytes = serde_json::to_vec_pretty(record)
+            .map_err(|_| ModelProviderCredentialErrorV1::Invalid)?;
+        if bytes.len()
+            > usize::try_from(MAX_RECORD_BYTES)
+                .map_err(|_| ModelProviderCredentialErrorV1::Invalid)?
+        {
+            return Err(ModelProviderCredentialErrorV1::Invalid);
+        }
+        let mut file = worldstream_runtime::create_owner_only_renameable_file(&temporary)
+            .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+        file.write_all(&bytes)
+            .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+        match crate::protected_publication::publish(
+            file,
+            &temporary,
+            target,
+            crate::protected_publication::PublicationMode::CreateNew,
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                validate_owner_only_file(target)
+                    .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+                let mut existing = Vec::new();
+                fs::File::open(target)
+                    .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?
+                    .take(MAX_RECORD_BYTES + 1)
+                    .read_to_end(&mut existing)
+                    .map_err(|_| ModelProviderCredentialErrorV1::Unavailable)?;
+                let existing: T = serde_json::from_slice(&existing)
+                    .map_err(|_| ModelProviderCredentialErrorV1::Invalid)?;
+                if existing == *record {
+                    Ok(())
+                } else {
+                    Err(ModelProviderCredentialErrorV1::Immutable)
+                }
+            }
+            Err(_) => Err(ModelProviderCredentialErrorV1::Unavailable),
+        }
+    })();
+    let _ = fs::remove_file(temporary);
+    result
 }
 pub fn model_provider_credential_router(registry: ModelProviderCredentialRegistryV1) -> Router {
     Router::new()

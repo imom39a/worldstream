@@ -201,6 +201,85 @@ pub struct AgentProfileStoreV1 {
 }
 
 impl AgentProfileStoreV1 {
+    /// Checks one exact incoming revision without opening or creating a store.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn check_import(
+        root: &Path,
+        revision: &AgentProfileRevisionV1,
+    ) -> Result<bool, AgentProfileErrorV1> {
+        validate_revision(revision)?;
+        match Self::read_import_revision(root, &revision.profile_id, &revision.revision)? {
+            Some(existing) if existing == *revision => Ok(true),
+            Some(_) => Err(AgentProfileErrorV1::ImmutableRevisionConflict),
+            None => Ok(false),
+        }
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    fn read_import_revision(
+        root: &Path,
+        profile_id: &str,
+        revision: &str,
+    ) -> Result<Option<AgentProfileRevisionV1>, AgentProfileErrorV1> {
+        let revisions = root.join("revisions");
+        let directory = revisions.join(encode_component(profile_id));
+        for parent in [root, revisions.as_path(), directory.as_path()] {
+            match fs::symlink_metadata(parent) {
+                Ok(_) => {
+                    worldstream_runtime::validate_data_directory(parent)
+                        .map_err(|_| AgentProfileErrorV1::Unavailable)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(AgentProfileErrorV1::Unavailable),
+            }
+        }
+        let target = directory.join(format!("{}.json", encode_component(revision)));
+        match fs::symlink_metadata(&target) {
+            Ok(_) => {
+                let existing = read_record::<AgentProfileRevisionV1>(&target)?;
+                validate_revision(&existing)?;
+                Ok(Some(existing))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(AgentProfileErrorV1::Unavailable),
+        }
+    }
+
+    /// Checks metadata and retained identity without inventing fresh secret refs.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn check_named_import(
+        root: &Path,
+        input: &crate::initialization_inputs::AgentProfilePublishInputV2,
+        reference: Option<&SecretReferenceV1>,
+    ) -> Result<bool, AgentProfileErrorV1> {
+        validate_profile_metadata(&named_import_descriptor(input))?;
+        if Self::read_import_revision(root, &input.profile_id, &input.revision)?.is_none() {
+            return Ok(false);
+        }
+        let expected = Self::resolve_named_import(input, reference.cloned())?;
+        Self::check_import(root, &expected)
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn resolve_named_import(
+        input: &crate::initialization_inputs::AgentProfilePublishInputV2,
+        reference: Option<SecretReferenceV1>,
+    ) -> Result<AgentProfileRevisionV1, AgentProfileErrorV1> {
+        let mut revision = named_import_descriptor(input);
+        revision.secret_settings = match (&input.host_contract, reference) {
+            (AgentHostContractV1::GenericMcp, None) => Vec::new(),
+            (AgentHostContractV1::ManagedReference { .. }, Some(reference)) => {
+                vec![AgentProfileSecretSettingV1 {
+                    key: "MODEL_PROVIDER_TOKEN".to_owned(),
+                    kind: SecretKindV1::ModelProvider,
+                    reference,
+                }]
+            }
+            _ => return Err(AgentProfileErrorV1::InvalidProfile),
+        };
+        validate_revision(&revision)?;
+        Ok(revision)
+    }
     /// Opens or creates one protected store and validates every retained record.
     ///
     /// # Errors
@@ -712,13 +791,27 @@ impl IntoResponse for AgentProfileErrorV1 {
     }
 }
 
-fn validate_revision(revision: &AgentProfileRevisionV1) -> Result<(), AgentProfileErrorV1> {
+#[cfg(feature = "cli-operator-preview")]
+fn named_import_descriptor(
+    input: &crate::initialization_inputs::AgentProfilePublishInputV2,
+) -> AgentProfileRevisionV1 {
+    AgentProfileRevisionV1 {
+        schema: PROFILE_SCHEMA_V1.to_owned(),
+        profile_id: input.profile_id.clone(),
+        revision: input.revision.clone(),
+        display_name: input.display_name.clone(),
+        non_secret_configuration: input.non_secret_configuration.clone(),
+        host_contract: input.host_contract.clone(),
+        secret_settings: Vec::new(),
+    }
+}
+
+fn validate_profile_metadata(revision: &AgentProfileRevisionV1) -> Result<(), AgentProfileErrorV1> {
     if revision.schema != PROFILE_SCHEMA_V1
         || !valid_id(&revision.profile_id)
         || !valid_revision(&revision.revision)
         || !bounded(&revision.display_name, MAX_TEXT_BYTES)
         || revision.non_secret_configuration.len() > 64
-        || revision.secret_settings.len() > 64
     {
         return Err(AgentProfileErrorV1::InvalidProfile);
     }
@@ -729,15 +822,6 @@ fn validate_revision(revision: &AgentProfileRevisionV1) -> Result<(), AgentProfi
             || !bounded(value, MAX_SETTING_BYTES)
             || credential_shaped_value(value)
             || !keys.insert(key.as_str())
-        {
-            return Err(AgentProfileErrorV1::InvalidProfile);
-        }
-    }
-    for setting in &revision.secret_settings {
-        if setting.kind != SecretKindV1::ModelProvider
-            || !valid_setting_key(&setting.key)
-            || !sensitive_key(&setting.key)
-            || !keys.insert(setting.key.as_str())
         {
             return Err(AgentProfileErrorV1::InvalidProfile);
         }
@@ -753,10 +837,38 @@ fn validate_revision(revision: &AgentProfileRevisionV1) -> Result<(), AgentProfi
             || !valid_id(&runner_template.template_id)
             || !valid_revision(&runner_template.revision)
             || !provider_address.ip().is_loopback()
-            || !bounded(model_id, MAX_TEXT_BYTES)
-            || revision.secret_settings.len() != 1
-            || revision.secret_settings[0].kind != SecretKindV1::ModelProvider
-            || revision.secret_settings[0].key != "MODEL_PROVIDER_TOKEN")
+            || !bounded(model_id, MAX_TEXT_BYTES))
+    {
+        return Err(AgentProfileErrorV1::InvalidProfile);
+    }
+    Ok(())
+}
+
+fn validate_revision(revision: &AgentProfileRevisionV1) -> Result<(), AgentProfileErrorV1> {
+    validate_profile_metadata(revision)?;
+    if revision.secret_settings.len() > 64 {
+        return Err(AgentProfileErrorV1::InvalidProfile);
+    }
+    let mut keys: BTreeSet<_> = revision
+        .non_secret_configuration
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for setting in &revision.secret_settings {
+        if setting.kind != SecretKindV1::ModelProvider
+            || !valid_setting_key(&setting.key)
+            || !sensitive_key(&setting.key)
+            || !keys.insert(setting.key.as_str())
+        {
+            return Err(AgentProfileErrorV1::InvalidProfile);
+        }
+    }
+    if matches!(
+        revision.host_contract,
+        AgentHostContractV1::ManagedReference { .. }
+    ) && (revision.secret_settings.len() != 1
+        || revision.secret_settings[0].kind != SecretKindV1::ModelProvider
+        || revision.secret_settings[0].key != "MODEL_PROVIDER_TOKEN")
     {
         return Err(AgentProfileErrorV1::InvalidProfile);
     }

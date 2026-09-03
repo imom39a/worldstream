@@ -1,0 +1,8 @@
+{
+  "schema": "worldstream/studio-agent-profile-publish/v2",
+  "profile_id": "external-agent",
+  "revision": "1",
+  "display_name": "External agent",
+  "non_secret_configuration": {},
+  "host_contract": {"kind": "generic_mcp"}
+}
