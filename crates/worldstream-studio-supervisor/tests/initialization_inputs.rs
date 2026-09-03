@@ -97,7 +97,7 @@ fn nested_runner_unknown_fields_and_vault_references_are_rejected() -> TestResul
 
 #[test]
 fn paths_and_client_expansion_are_bounded_and_never_opened() -> TestResult {
-    for path in ["".to_owned(), "a\nb".to_owned(), "x".repeat(4097)] {
+    for path in [String::new(), "a\nb".to_owned(), "x".repeat(4097)] {
         let mut value: serde_json::Value = serde_json::from_slice(PROVIDER)?;
         value["secret_file"] = serde_json::json!(path);
         assert!(parse_provider_declaration(&serde_json::to_vec(&value)?).is_err());
