@@ -1,5 +1,4 @@
 //! Operator CLI receipts retain the public setup reference across invocations.
-#![cfg(feature = "cli-operator-preview")]
 
 use axum::{
     Json, Router,
@@ -213,7 +212,7 @@ async fn create_receipt_can_be_inspected_and_resumed_without_reading_replacement
         assert_eq!(output.status.code(), Some(0));
         fs::write(
             root.join("negotiate.json"),
-            include_bytes!("../../../examples/room-setup/negotiate-0.1.0.json"),
+            include_bytes!("../../../examples/room-setup/negotiate-0.2.0.json"),
         )
         .map_err(|error| error.to_string())?;
         let output = cli(

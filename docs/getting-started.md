@@ -1,378 +1,636 @@
 # Getting started
 
-This guide is for a person who is new to WorldStream. Start with the command
-line. You do not need Studio to run the server or the automated Agent Heist
-test.
+This guide starts one local WorldStream installation from the command line.
+It is for a person who has not used WorldStream before.
 
-Complete Sections 1, 2, and 3 in order. Then use the optional browser sections
-if you need them.
+At the end of the guide, you will have done these tasks:
 
-> **Current state:** The CLI-first direction is accepted. The full replacement
-> for Studio is not built yet. This guide uses commands that exist today.
-> Background server management, manual Room setup, and browser-client launch
-> through the operator CLI are still pending. Studio remains available during
-> the transition. See the [implementation plan](cli-first-implementation-plan.md)
-> for the approved replacement and its implementation and verification gates.
-> The [new CLI reference](cli-reference.md) describes the planned interface.
-> Its commands are not usable while they return `not_implemented`.
+1. Initialize a protected local installation.
+2. Approve and install the Negotiate Activity Pack.
+3. Start the WorldStream Runtime.
+4. Submit a proposal to a live Negotiate Room.
+5. Open the Agent Heist browser client with authorized Room access.
+6. Complete a different Agent Heist Room with the Python SDK.
 
-## Understand the parts
+You do not need the Studio web application. The operator CLI starts a small
+local Controller as an implementation service. The Controller manages the
+Runtime and issues scoped participant connections. It does not provide a web
+administration interface.
 
-| Part | Purpose |
+This is an MVP development flow. It is not a production deployment or a
+release-qualification result. You do not need Docker, PostgreSQL, or an LLM
+API key.
+
+## Know the main parts
+
+| Part | Meaning |
 | --- | --- |
 | **Runtime** | The `worldstreamd` process. It stores Room state and applies Activity Pack rules. |
-| **Operator CLI** | The `worldstreamctl` command. It checks configuration and manages installed Pack Bundles. |
-| **Room** | One durable shared situation governed by one Activity Pack. Humans and agents can be members. |
-| **Activity Pack** | The rules for one type of Room. Agent Heist is an Activity Pack. |
-| **Activity Client** | A program that connects to a Room with authorized access. It can use a browser, terminal, SDK, or agent integration. |
-| **Runner** | An external program that starts agent Invocations. WorldStream does not host the model. |
+| **Operator CLI** | The `worldstreamctl` command. It manages one local installation. |
+| **Controller** | A local headless service that starts the Runtime and prepares scoped connections. |
+| **Activity Pack** | The rules for one type of Room. Negotiate and Agent Heist are Activity Packs. |
+| **Room** | One durable instance of an Activity Pack. Humans and agents can participate in it. |
+| **Activity Client** | A browser, terminal program, SDK program, or agent integration that connects to a Room. |
+| **Runner** | An external program that receives agent work. WorldStream does not host the model. |
 
-An operator manages the installation. A participant uses an Activity Client.
-These are different jobs. A browser Activity Client does not require an
-administration website.
+The current Controller binary is named `worldstream-studio-supervisor` for
+compatibility. The name does not make the Studio web application part of this
+flow.
 
 ## 1. Prepare the repository
 
-These commands are for a macOS or Linux shell. Run them from the repository
-root: the directory that contains `Cargo.toml` and `package.json`.
+Run all commands from the repository root. This is the directory that contains
+`Cargo.toml` and `package.json`.
 
-### Install the tools for your path
+### Install the required tools
 
-The repository pins these versions. Sections 1–3 need Rust, Python, and uv.
-Node.js and pnpm are needed only for the optional browser sections.
+The repository pins these development versions:
 
-| Tool | Version | Used for |
+| Tool | Version | Use |
 | --- | --- | --- |
-| Rust | 1.97.1 | Build the Runtime and CLI |
-| Python | 3.14.7 | Run the live Heist test |
-| uv | 0.12.5 | Supply Python and its dependencies |
-| Node.js | 24.18.1 | Optional browser development |
-| pnpm | 11.19.0 | Optional browser dependencies and commands |
+| Rust | 1.97.1 | Build the Runtime, CLI, and Controller |
+| Python | 3.14.7 | Run the SDK examples |
+| uv | 0.12.5 | Install Python and Python dependencies |
+| Node.js | 24.18.1 | Build and serve the browser Activity Clients |
+| pnpm | 11.19.0 | Install and build browser dependencies |
 
 Install Rust with the [official Rust installer](https://rust-lang.org/tools/install/).
 Install uv with the [official uv instructions](https://docs.astral.sh/uv/getting-started/installation/).
+Install Node.js from the [Node.js download archive](https://nodejs.org/en/download/archive/v24).
 
-Check the tool versions:
+Enable the pinned pnpm version:
+
+```sh
+corepack enable
+corepack install --global pnpm@11.19.0
+```
+
+Check the versions:
 
 ```sh
 rustc --version
 uv --version
 uv run --python 3.14.7 python --version
-```
-
-Use the exact versions in the table. Some release checks reject other
-versions. You do not need Docker, PostgreSQL, or an LLM API key for this guide.
-
-### Install dependencies and build the tools
-
-Run these commands one time after you clone the repository:
-
-```sh
-uv sync --project sdk/python --locked --python 3.14.7
-cargo build --locked -p worldstream-server --bins
-```
-
-The build creates `target/debug/worldstreamd` and `target/debug/worldstreamctl`.
-The following steps use these local binaries. You do not need to install them
-globally.
-
-## 2. Run and inspect your local server
-
-This section starts or reuses a local installation. It does not create a Room.
-
-### Prepare local state
-
-The supplied `config/development.toml` uses:
-
-- SQLite data in `.worldstream/data`;
-- an authority secret in `.worldstream/authority.secret`;
-- the local address `127.0.0.1:9410`.
-
-If Studio already manages this installation, stop its daemon through Studio
-Operations first. Do not run two daemons against the same local data.
-
-Run this block to prepare a new installation or check that an existing one
-still has its secret:
-
-```sh
-(
-  set -eu
-  umask 077
-  if [ ! -e .worldstream ]; then
-    mkdir -p .worldstream/data
-    (set -C; head -c 32 /dev/urandom > .worldstream/authority.secret)
-  fi
-  if [ ! -s .worldstream/authority.secret ]; then
-    echo "Stop: existing local state has no authority secret. Restore the original secret." >&2
-    exit 1
-  fi
-)
-```
-
-Continue only if the block succeeds. It creates a secret only for a new
-installation. It does not replace an existing secret. Never create a new
-secret beside an existing database.
-
-### Check configuration
-
-```sh
-target/debug/worldstreamctl --config config/development.toml config validate
-target/debug/worldstreamctl --config config/development.toml config effective
-```
-
-The first command must succeed. The second shows the effective configuration
-with secret references redacted. Server configuration is separate from the
-Pack-specific configuration used to create a Room.
-
-Environment variables named `WORLDSTREAM__SECTION__KEY` can override the
-configuration file. Check the effective values if the paths or address differ
-from those listed above.
-
-### Start the server
-
-```sh
-target/debug/worldstreamd --config config/development.toml
-```
-
-Keep this terminal open. The server runs in the foreground and writes its logs
-here.
-
-In a second terminal, from the repository root, check the running server:
-
-```sh
-target/debug/worldstreamctl --config config/development.toml health
-curl -fsS http://127.0.0.1:9410/readyz
-curl -fsS http://127.0.0.1:9410/version
-```
-
-The health command checks that the process responds. The readiness check must
-also succeed before you use the Runtime.
-
-### Stop the server and inspect installed Bundles
-
-Press `Ctrl-C` in the first terminal. Wait for the server to exit.
-
-Then inspect the local portable Pack inventory:
-
-```sh
-target/debug/worldstreamctl --config config/development.toml pack inventory
-```
-
-An empty inventory is normal on a fresh checkout. This command lists installed
-portable Bundles, not embedded Packs. Agent Heist is embedded in the local
-Runtime build, so it does not need a separate Bundle installation.
-
-To start this installation again, run the same `worldstreamd` command. Its
-database and authority remain in `.worldstream/`.
-
-The `worldstreamctl server start`, `stop`, and `logs` backends are not
-implemented yet. Use the foreground process and its terminal output. For exact Bundle
-approval and installation, see [Activity Packs](activity-packs.md).
-
-## 3. Run a real Agent Heist Room
-
-Leave the server from Section 2 stopped. The following test starts and stops
-its own server. It uses private temporary SQLite state and an available port,
-not your `.worldstream/` installation.
-
-Run the live Agent Heist test:
-
-```sh
-uv run --project sdk/python --python 3.14.7 python \
-  examples/heist/wave10_live/run_absent_broker_live.py \
-  --spawn-daemon \
-  --report target/getting-started-heist.json
-```
-
-The command can be quiet while the phase timers run. A normal run takes about
-three minutes.
-
-The test uses the public HTTP and WebSocket interfaces and the Python SDK.
-It creates a Room, submits participant Actions, processes agent Activation
-work, and restarts the Runtime. It then completes all six Heist phases, checks
-the result with Replay, and stops its server.
-
-The command prints a JSON result. It must contain:
-
-```json
-{
-  "live_evidence": true,
-  "status": "completed"
-}
-```
-
-The complete result is in `target/getting-started-heist.json`.
-
-This is an automated live test, not a manual activity session. It does not
-open a browser, use Studio, or call a paid model API. A complete operator-CLI
-flow for creating your own Room and attaching participants is not available
-yet. That flow is required before Studio is removed.
-
-The [Agent Heist MVP completion gate](mvp-agent-heist-acceptance.md) covers
-additional release boundaries. Its current checks still include Studio. This
-guide does not replace those checks or claim release qualification.
-
-## 4. Optional: open the recorded Agent Heist demo
-
-Use the recorded demo to see the Agent Heist browser interface.
-
-### Prepare the browser tools once
-
-Sections 4–6 share these tools. Skip this preparation if you already have the
-pinned versions and installed dependencies.
-
-Install Node.js from the [Node.js download archive](https://nodejs.org/en/download/archive/v24).
-Then run:
-
-```sh
-corepack enable
-corepack install --global pnpm@11.19.0
 node --version
 pnpm --version
-pnpm install --frozen-lockfile
 ```
 
-Node.js must report `24.18.1`. pnpm must report `11.19.0`.
+Use the exact versions in the table. Some evidence checks reject other
+versions.
 
-### Open the demo
+### Build the local programs
+
+Run these commands:
 
 ```sh
-pnpm demos:dev
+cargo build --locked -p worldstream-server --bins
+cargo build --locked -p worldstream-studio-supervisor --bins
+uv sync --project sdk/python --locked --python 3.14.7
+pnpm install --frozen-lockfile
+pnpm activity-clients:build
 ```
 
-Keep the command running. Open:
+The build creates these local programs:
 
-<http://127.0.0.1:5180/demos/agent-heist/>
+- `target/debug/worldstreamctl`
+- `target/debug/worldstreamd`
+- `target/debug/worldstream-studio-supervisor`
+- `target/debug/worldstream-assignment-mcp`
 
-You must see the Agent Heist board. Use its controls to inspect the recorded
-story.
+The CLI-first operator commands are part of the default build.
 
-This is not the Room from Section 3. It uses recorded safe data. It does not
-start the Runtime, create credentials, or send Actions to a server.
+### Set paths for this guide
 
-Stop the demo server with `Ctrl-C`.
+Use Terminal 1 for operator commands. Run this block in Terminal 1:
 
-## 5. Optional: develop a browser Activity Client
+```sh
+export CTL="$PWD/target/debug/worldstreamctl"
+export CONFIG="$PWD/config/development.toml"
+export BUNDLE="$PWD/packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
+export BUNDLE_DIGEST="blake3:83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8"
 
-First complete [browser tool preparation](#prepare-the-browser-tools-once).
-You do not need to run the recorded demo.
+mkdir -p target
+export RUN_DIR="$(mktemp -d "$PWD/target/worldstream-getting-started.XXXXXX")"
+chmod 700 "$RUN_DIR"
+printf 'Work files: %s\n' "$RUN_DIR"
+```
 
-The Client Host is a local web server for independent Activity Clients. Start
-it with:
+`RUN_DIR` is a new owner-only directory. Room setup files and credentials go
+in this directory. Copy the printed absolute path when a later step tells you
+to use another terminal.
+
+## 2. Initialize the installation
+
+The development configuration uses these local values:
+
+- Runtime address: `127.0.0.1:9410`
+- Controller address: `127.0.0.1:9420`
+- Runtime data: `.worldstream/data`
+- Controller data: `.worldstream/studio`
+- Browser Client Host: `http://127.0.0.1:5173`
+
+The `.worldstream/studio` path is a retained compatibility name. It contains
+Controller state, not the Studio web application.
+
+Initialize the protected state:
+
+```sh
+"$CTL" --config "$CONFIG" init --json
+```
+
+This command creates the installation authority when it is absent. It reuses
+valid existing authority. It does not start a process.
+
+Now preview the checked-in Activity Client declarations:
+
+```sh
+"$CTL" --config "$CONFIG" init \
+  --client-declaration "$PWD/config/activity-clients/cli-import.json" \
+  --preview \
+  --json
+```
+
+Find `import_review.digest` in the JSON output. Copy the complete value. It
+starts with `blake3:`. Set it in Terminal 1. Do not use the placeholder below:
+
+```sh
+export IMPORT_DIGEST='blake3:paste-the-complete-preview-digest-here'
+```
+
+Apply the exact reviewed import:
+
+```sh
+"$CTL" --config "$CONFIG" init \
+  --client-declaration "$PWD/config/activity-clients/cli-import.json" \
+  --approve-imports "$IMPORT_DIGEST" \
+  --json
+```
+
+The digest binds the exact local declarations to this installation. A changed
+declaration needs a new preview and a new approval. The import does not start
+the Client Host, Controller, or Runtime.
+
+## 3. Install the Negotiate Activity Pack
+
+The Agent Heist Pack is embedded in the Runtime. The Negotiate Pack is a
+portable `.wspack` file. You must install it before you start the Runtime.
+
+All Pack inventory changes are offline operations. If this is a new
+installation, skip the next block.
+
+If this installation is already running, stop the Runtime and confirm its
+state:
+
+```sh
+"$CTL" --config "$CONFIG" server stop --json
+"$CTL" --config "$CONFIG" server status --json
+```
+
+Continue only if `server status` reports that the Runtime is stopped. If stop
+is partial or fails, leave the Controller running and inspect `server logs`.
+Do not continue with Pack commands.
+
+After you confirm that the Runtime is stopped, stop the Controller:
+
+```sh
+"$CTL" --config "$CONFIG" server controller-stop --json
+```
+
+Inspect the untrusted Bundle bytes:
+
+```sh
+"$CTL" --config "$CONFIG" pack inspect --bundle "$BUNDLE"
+```
+
+Run the production Pack verifier, Component Host, and Core admission path:
+
+```sh
+"$CTL" --config "$CONFIG" pack prove "$BUNDLE" --json
+```
+
+The proof can take approximately 30 seconds on the first run. Continue only
+after it succeeds.
+
+Record a local approval, and then install the same exact bytes:
+
+```sh
+export APPROVED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+"$CTL" --config "$CONFIG" pack approve \
+  --bundle "$BUNDLE" \
+  --operator-id local-developer \
+  --decided-at "$APPROVED_AT"
+
+export INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+"$CTL" --config "$CONFIG" pack install \
+  --bundle "$BUNDLE" \
+  --installed-at "$INSTALLED_AT"
+```
+
+Installation first retains the Pack without selecting it for new Rooms. Make
+the exact Bundle selectable at the next Runtime start:
+
+```sh
+"$CTL" --config "$CONFIG" pack inventory
+"$CTL" --config "$CONFIG" pack set-selectable \
+  --bundle-digest "$BUNDLE_DIGEST" \
+  --selectable true
+"$CTL" --config "$CONFIG" pack inventory
+```
+
+Run the restart-readiness check while the Runtime is still stopped:
+
+```sh
+"$CTL" --config "$CONFIG" pack restart-readiness
+```
+
+This command admits the installed Pack through the startup path. It also
+replays retained healthy Rooms with their exact Pack revision. It writes a
+readiness seal for this exact inventory and local data target.
+
+Do not change Pack inventory while the Runtime is running.
+
+## 4. Start and inspect the local installation
+
+Start the Controller and Runtime:
+
+```sh
+"$CTL" --config "$CONFIG" server start \
+  --participant-console-origin http://127.0.0.1:5173 \
+  --json
+```
+
+The command starts managed background processes. You do not have to keep this
+terminal open for the processes.
+
+Check the installation:
+
+```sh
+"$CTL" --config "$CONFIG" server status --json
+"$CTL" --config "$CONFIG" health
+"$CTL" --config "$CONFIG" pack list
+"$CTL" --config "$CONFIG" server logs --tail 50
+```
+
+`server status` must report a live and ready Runtime. `pack list` must show
+both of these exact selectors:
+
+- `worldstream.agent-heist@0.2.0`
+- `worldstream.negotiate@0.2.0`
+
+Read-only commands do not start a stopped Controller or Runtime.
+
+## Understand the identifiers and credential files
+
+The next sections use four values. Learn them once here:
+
+| Value | Meaning |
+| --- | --- |
+| `operation_id` | The durable identity of one Room setup attempt. Use it to resume setup or select a seat. |
+| `room_id` | The durable identity of the created Room. Use it to inspect or launch that Room. |
+| `seat` | A stable label in the Room setup file, such as `navigator` or `buyer-agent`. A seat label is not a Room ID or a Pack Role name. |
+| credential file | An owner-only file with authority for one Membership or Runner. Treat it as a secret. |
+
+`room create --json` prints `operation_id` and `room_id`. Copy those values to
+the shell variables shown in each section. Do not copy example placeholders.
+
+If creation reports a partial or uncertain result, do not run `room create`
+again. Inspect and resume the same operation:
+
+```sh
+"$CTL" --config "$CONFIG" room setup status OPERATION_ID
+"$CTL" --config "$CONFIG" room setup resume OPERATION_ID
+```
+
+Each credential export needs a new filename in the owner-only `RUN_DIR`.
+WorldStream never prints the credential and never overwrites an existing file.
+Do not commit a credential file or paste its contents into logs or chat.
+
+## 5. Submit a proposal to a Negotiate Room
+
+Generate a setup file from the exact installed Pack revision:
+
+```sh
+"$CTL" --config "$CONFIG" room example \
+  --pack worldstream.negotiate@0.2.0 \
+  --output "$RUN_DIR/negotiate-room.json"
+
+"$CTL" --config "$CONFIG" room validate \
+  --file "$RUN_DIR/negotiate-room.json"
+```
+
+Open and review the generated JSON file before creation. The supplied example
+uses a `formation_deadline` of `4102444800`, which is 2100-01-01 00:00:00 UTC.
+This far-future value is only for the local example.
+
+Negotiate starts at Room creation. The setup does not use a lobby. Create it
+with the required start acknowledgement:
+
+```sh
+"$CTL" --config "$CONFIG" room create \
+  --file "$RUN_DIR/negotiate-room.json" \
+  --acknowledge-start \
+  --json
+```
+
+Copy `operation_id` and `room_id` from the result:
+
+```sh
+export NEGOTIATE_OPERATION='paste-the-negotiate-operation-id'
+export NEGOTIATE_ROOM='paste-the-negotiate-room-id'
+```
+
+Export the Buyer Agent Membership credential:
+
+```sh
+"$CTL" --config "$CONFIG" client export-credentials \
+  --operation "$NEGOTIATE_OPERATION" \
+  --seat buyer-agent \
+  --output "$RUN_DIR/negotiate-buyer.json" \
+  --json
+```
+
+Use the Python SDK example to connect, synchronize, and submit the reviewed
+first proposal:
+
+```sh
+"$PWD/sdk/python/.venv/bin/python" -m examples.cli_activity.negotiate \
+  --membership-file "$RUN_DIR/negotiate-buyer.json"
+```
+
+The result must have `"status":"accepted"`. Inspect the Room after the
+proposal:
+
+```sh
+"$CTL" --config "$CONFIG" room inspect "$NEGOTIATE_ROOM" --json
+```
+
+Do not run `room launch` for Negotiate. Its Activity already started at Room
+creation.
+
+## 6. Open an authorized Agent Heist browser client
+
+This section creates a new Heist Room for the browser. Do not reuse it for the
+direct SDK run in Section 7.
+
+### Start the independent Client Host
+
+Open Terminal 2 at the repository root. Run:
 
 ```sh
 pnpm ui:dev
 ```
 
-| Address | Client |
-| --- | --- |
-| `http://127.0.0.1:5173/agent-heist/` | Agent Heist |
-| `http://127.0.0.1:5173/negotiate/` | Negotiate |
-| `http://127.0.0.1:5173/inspector/` | Pack-neutral Inspector |
+Keep Terminal 2 open. This command serves the Activity Clients at
+`http://127.0.0.1:5173`. It does not start or administer WorldStream.
 
-Opening a URL does not create a Room or grant access. Without a participant
-session, the client waits for an authorized Projection. This is expected.
+Do not open `/agent-heist/` directly. A direct URL has no participant
+authority. The CLI gives the browser a one-use authorized handoff later in
+this section.
 
-The current live browser clients use the Supervisor's session broker. A
-normal launch requires provisioned participant access and a one-use handoff.
-The new CLI launch command is not implemented yet. The current Studio form
-also cannot enter the complete Agent Heist configuration, so this is not a
-complete beginner path to a manual Heist session.
+### Create the browser Room
 
-These browser clients remain part of WorldStream's ecosystem. Retiring
-Studio does not retire them. Stop the Client Host with `Ctrl-C`.
-
-## 6. Optional: use Studio during the transition
-
-Skip this section for the CLI path. Studio remains available while its
-replacement is built and verified. It is not required for Sections 2 or 3.
-It uses the same [browser tools](#prepare-the-browser-tools-once).
-
-Studio is the current administration website. Its Supervisor is a separate
-headless service with process, credential, setup, and browser-session
-functions. Removing the website will not mean deleting those functions.
-
-Make sure the foreground server from Section 2 is stopped. Then run:
+Return to Terminal 1. Generate, validate, and create a Heist Room:
 
 ```sh
-pnpm studio:dev
+"$CTL" --config "$CONFIG" room example \
+  --pack worldstream.agent-heist@0.2.0 \
+  --output "$RUN_DIR/heist-browser-room.json"
+
+"$CTL" --config "$CONFIG" room validate \
+  --file "$RUN_DIR/heist-browser-room.json"
+
+"$CTL" --config "$CONFIG" room create \
+  --file "$RUN_DIR/heist-browser-room.json" \
+  --json
 ```
 
-This starts the Supervisor at `http://127.0.0.1:9420` and Studio at
-`http://127.0.0.1:5174`. It builds the Runtime but does not start it.
+Copy the two result values:
 
-Open <http://127.0.0.1:5174/>. Select **Operations**, then **Start daemon**.
-Wait until it reports healthy and ready. Use Studio to inspect existing
-operator surfaces. Do not expect the current Room form to create a working
-Heist browser session.
+```sh
+export HEIST_BROWSER_OPERATION='paste-the-browser-heist-operation-id'
+export HEIST_BROWSER_ROOM='paste-the-browser-heist-room-id'
+```
 
-To stop this stack, select **Stop daemon** first. Then press `Ctrl-C` in the
-Studio terminal. See [Studio](studio.md) for the existing interface.
+Open the approved Agent Heist Activity Client for the human `navigator` seat:
+
+```sh
+"$CTL" --config "$CONFIG" client open \
+  --operation "$HEIST_BROWSER_OPERATION" \
+  --seat navigator \
+  --json
+```
+
+The CLI asks your system browser to open a protected local handoff file. The
+file redirects to the approved client. The one-use handoff gives the browser
+only the selected Membership authority.
+
+Keep the browser page open. Inspect the Room:
+
+```sh
+"$CTL" --config "$CONFIG" room inspect "$HEIST_BROWSER_ROOM" --json
+```
+
+This browser-only example stays in the Lobby. The required external `insider`
+agent is not connected. An open browser window alone proves no participant
+readiness. The live evidence in `room inspect` can confirm the Navigator
+connection. Section 7 uses a separate Room and connects both required seats.
+
+## 7. Complete a separate Agent Heist Room with the Python SDK
+
+Generate, validate, and create another Heist Room in Terminal 1:
+
+```sh
+"$CTL" --config "$CONFIG" room example \
+  --pack worldstream.agent-heist@0.2.0 \
+  --output "$RUN_DIR/heist-sdk-room.json"
+
+"$CTL" --config "$CONFIG" room validate \
+  --file "$RUN_DIR/heist-sdk-room.json"
+
+"$CTL" --config "$CONFIG" room create \
+  --file "$RUN_DIR/heist-sdk-room.json" \
+  --json
+```
+
+Copy the two new result values:
+
+```sh
+export HEIST_SDK_OPERATION='paste-the-sdk-heist-operation-id'
+export HEIST_SDK_ROOM='paste-the-sdk-heist-room-id'
+```
+
+Export one Membership credential for each required seat. Also export the
+separate Runner credential for the external Insider:
+
+```sh
+"$CTL" --config "$CONFIG" client export-credentials \
+  --operation "$HEIST_SDK_OPERATION" \
+  --seat navigator \
+  --output "$RUN_DIR/heist-navigator.json" \
+  --json
+
+"$CTL" --config "$CONFIG" client export-credentials \
+  --operation "$HEIST_SDK_OPERATION" \
+  --seat insider \
+  --output "$RUN_DIR/heist-insider.json" \
+  --json
+
+"$CTL" --config "$CONFIG" runner export-credentials \
+  --operation "$HEIST_SDK_OPERATION" \
+  --seat insider \
+  --output "$RUN_DIR/heist-insider-runner.json" \
+  --json
+```
+
+The Insider needs both files. Its Membership credential submits Room Actions.
+Its Runner credential receives, claims, and completes agent Activations. The
+credentials are not interchangeable.
+
+Open Terminal 3 at the repository root. Set `RUN_DIR` to the absolute work
+directory that Terminal 1 printed in Section 1:
+
+```sh
+export RUN_DIR='/paste-the-absolute-work-directory'
+```
+
+Start the deterministic Heist integration in Terminal 3:
+
+```sh
+"$PWD/sdk/python/.venv/bin/python" -m examples.cli_activity.heist \
+  --navigator-membership-file "$RUN_DIR/heist-navigator.json" \
+  --membership-file "$RUN_DIR/heist-insider.json" \
+  --runner-file "$RUN_DIR/heist-insider-runner.json" \
+  --timeout-seconds 600
+```
+
+Keep this command running. It connects the Navigator Membership, Insider
+Membership, and Insider Runner. The Room stays in the Lobby until the operator
+launches it.
+
+Return to Terminal 1. Inspect the Room:
+
+```sh
+"$CTL" --config "$CONFIG" room inspect "$HEIST_SDK_ROOM" --json
+```
+
+If a required seat is not ready, wait a few seconds and run the inspect command
+again. Keep the Python command running. When both required seats are ready,
+launch the Room:
+
+```sh
+"$CTL" --config "$CONFIG" room launch "$HEIST_SDK_ROOM" --json
+```
+
+The Python example now performs the deterministic Navigator and Insider work.
+It handles agent Activations and the timed Heist phases. It can be quiet while
+it waits for timers. The final JSON in Terminal 3 must have
+`"status":"complete"`.
+
+Inspect the completed Room:
+
+```sh
+"$CTL" --config "$CONFIG" room inspect "$HEIST_SDK_ROOM" --json
+"$CTL" --config "$CONFIG" server logs --tail 100
+```
+
+The example uses public HTTP and WebSocket interfaces. It does not call a paid
+model API. Replace this deterministic program with your own agent integration
+when you develop an Activity Client or Runner.
+
+## 8. Stop the local installation
+
+First, stop the Client Host with `Ctrl-C` in Terminal 2. Close the Heist
+browser tab.
+
+Then stop managed Runners and the Runtime from Terminal 1:
+
+```sh
+"$CTL" --config "$CONFIG" server stop --json
+"$CTL" --config "$CONFIG" server status --json
+```
+
+Continue only if `server status` reports that the Runtime is stopped. If stop
+is partial or fails, leave the Controller running and inspect `server logs`.
+
+The Controller stays available after a successful Runtime stop. Stop it
+explicitly when you are finished:
+
+```sh
+"$CTL" --config "$CONFIG" server controller-stop --json
+```
+
+Keep `.worldstream/` if you want to use the same installation again. It
+contains the database, authority, Pack inventory, and Controller state. Do not
+delete this directory as a normal troubleshooting step.
 
 ## Common problems
 
-### Existing state has no authority secret
+### A command says that the Controller is unavailable
 
-Stop. Do not generate a replacement secret or delete the database. Restore
-the original secret from your protected backup. The database is bound to that
-authority. If you cannot restore it, use the recovery documentation before
-you change local state.
+Run:
 
-### The server cannot start
+```sh
+"$CTL" --config "$CONFIG" server status --json
+```
 
-Read the server terminal. Check that:
+If you have not started the installation, run Section 4. If a managed process
+failed, use `server logs` before you retry. Do not delete `.worldstream/`.
 
-- no other process uses port `9410`;
-- commands run from the repository root;
-- `config/development.toml` exists;
-- the authority secret and database belong to the same installation.
+### A Pack command says that the Runtime is active
 
-If installed Bundles require a new restart-readiness check, follow
-[Activity Packs](activity-packs.md). Do not bypass that check or remove
-retained Bundles to make the server start.
+Pack approval, installation, selection, and restart-readiness are offline
+operations. Stop the Runtime and Controller as shown in Section 3. Complete
+the full Pack lifecycle before you start the Runtime again.
 
-### The live Heist test shows no output
+### `room create` returns a partial result
 
-Wait for the phase timers. A normal run takes about three minutes. Inspect
-`target/getting-started-heist.json` after the command ends.
+Use its `operation_id`. Run `room setup status` and `room setup resume` for
+that same operation. Do not create a replacement Room. A lost reply is not a
+rollback.
 
-### The browser client waits for a Projection
+### An output file already exists
 
-A direct client URL has no participant access. Use Section 4 for the recorded
-interface or Section 3 for a real automated Room.
+The CLI does not overwrite setup files or credential files. Use a new filename
+or create a new `RUN_DIR`. Do not modify an exported credential file.
 
-### Studio cannot create an Agent Heist Room
+### The browser client waits for an authorized Projection
 
-The current form does not support all fixed and list-valued configuration
-fields. This is a known product limit, not a local setup error. The CLI-first
-replacement is pending; repeatedly entering values will not fix the form.
+Confirm these conditions:
 
-### A tool has the wrong version
+- Terminal 2 still runs `pnpm ui:dev`.
+- You used `client open` for this exact operation and seat.
+- You did not open the client URL directly.
+- `server status` reports a ready Runtime.
 
-Use the versions in Section 1. Open a new terminal after a version manager
-changes your `PATH`. Then run the version checks again.
+Close a stale tab and run `client open` again to get a new one-use handoff.
 
-## Keep local state safe
+### Agent Heist is not ready to launch
 
-Stop the process with the tool that started it: `Ctrl-C` for a foreground
-daemon, or **Stop daemon** for a Studio-managed daemon. Stop each development
-web server separately.
+Keep the direct Python example running. Run `room inspect` again after a few
+seconds. The required Navigator Membership, Insider Membership, and Insider
+Runner must all be connected and fresh. The optional Broker does not block
+launch.
 
-The `.worldstream/` directory contains the local database, authority data,
-and any Supervisor state. Keep it to continue the same installation.
-Removing Studio's web app must not remove this directory.
+### The direct Heist example has no output
 
-Do not delete local state as a routine troubleshooting step. See
-[Operator storage and transfer](operator-storage.md) for backup and recovery.
+The example can be quiet while it waits for the operator launch or for phase
+timers. Inspect the same Room from Terminal 1. The command in this guide uses a
+ten-minute timeout.
+
+### An existing installation has authority or database errors
+
+Stop. Do not generate a replacement authority beside an existing database.
+Do not delete the database. Restore the original protected state or follow the
+[operator storage and transfer guide](operator-storage.md).
 
 ## Continue with one subject
 
 | Task | Guide |
 | --- | --- |
-| Understand the CLI-first replacement and pending work | [Implementation plan](cli-first-implementation-plan.md) |
-| Approve and install an exact Pack Bundle | [Activity Packs](activity-packs.md) |
-| Build the Negotiate Activity Pack | [Negotiate Pack README](../packs/negotiate/README.md) |
-| Build a client or understand handoffs | [Activity Clients](activity-clients.md) |
+| Learn all operator commands | [Operator CLI reference](cli-reference.md) |
+| Understand Pack approval and retained execution | [Activity Packs](activity-packs.md) |
+| Build or host an independent browser client | [Activity Clients](activity-clients.md) |
+| Understand Negotiate rules and contracts | [Negotiate](negotiate.md) |
 | Use the Python SDK | [Python SDK README](../sdk/python/README.md) |
 | Understand HTTP and WebSocket messages | [Protocol](protocol.md) |
-| Select a test or release gate | [Automated gates](gates.md) |
+| Select an automated or release gate | [Automated gates](gates.md) |

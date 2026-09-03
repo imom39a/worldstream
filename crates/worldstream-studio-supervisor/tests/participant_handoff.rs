@@ -1,6 +1,5 @@
 #![allow(clippy::panic)]
 
-#[cfg(feature = "cli-operator-preview")]
 #[allow(dead_code)]
 #[path = "../src/protected_publication.rs"]
 mod protected_publication;

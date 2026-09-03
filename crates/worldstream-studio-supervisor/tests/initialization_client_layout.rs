@@ -1,5 +1,4 @@
 //! Recovery of interrupted creation of an otherwise empty client catalog layout.
-#![cfg(feature = "cli-operator-preview")]
 
 use std::path::PathBuf;
 use worldstream_runtime::{CliOverrides, prepare_data_directory};

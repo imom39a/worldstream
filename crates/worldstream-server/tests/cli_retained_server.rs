@@ -1,5 +1,4 @@
 //! An unavailable Controller must not hide safe retained Runtime diagnostics.
-#![cfg(feature = "cli-operator-preview")]
 
 use std::{
     fs,

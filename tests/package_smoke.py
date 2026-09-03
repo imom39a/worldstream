@@ -254,6 +254,10 @@ def wrapper_workspace(
         REPOSITORY_ROOT / "scripts/release_build_identity.py",
         workspace / "scripts/release_build_identity.py",
     )
+    shutil.copy2(
+        REPOSITORY_ROOT / "scripts/release_inventory.py",
+        workspace / "scripts/release_inventory.py",
+    )
     for script in ("package-release.sh", "package-oci.sh", "verify-release.sh"):
         shutil.copy2(
             Path(__file__).resolve().parents[1] / "scripts" / script,

@@ -1,9 +1,8 @@
 //! Installed intent and the exact frozen running Pack registry stay distinct.
-#![cfg(feature = "cli-operator-preview")]
 
 use serde_json::Value;
 use std::{
-    env,
+    env, fs,
     path::Path,
     process::{Command, Output, Stdio},
 };
@@ -139,7 +138,7 @@ fn approved_installed_selected_pack_lists_exact_frozen_running_identity()
                 "--controller",
                 &installation.controller,
                 "--timeout-seconds",
-                "180",
+                "300",
                 "--json"
             ]
         )?
@@ -154,7 +153,7 @@ fn approved_installed_selected_pack_lists_exact_frozen_running_identity()
             "--controller",
             &installation.controller,
             "--timeout-seconds",
-            "180",
+            "300",
             "--json",
         ],
     )?;
@@ -177,6 +176,10 @@ fn approved_installed_selected_pack_lists_exact_frozen_running_identity()
     );
     assert_eq!(packs["running"]["availability"], "available");
     assert_eq!(
+        packs["next_start"]["selectable_bundle_digests"],
+        serde_json::json!([BUNDLE_DIGEST])
+    );
+    assert_eq!(
         packs["running"]["facts"]["installed"][0]["bundle_digest"],
         BUNDLE_DIGEST
     );
@@ -190,5 +193,75 @@ fn approved_installed_selected_pack_lists_exact_frozen_running_identity()
             .ok_or("missing embedded facts")?
             .is_empty()
     );
+    assert!(
+        packs["running"]["facts"]["embedded_revisions"]
+            .as_array()
+            .ok_or("missing embedded facts")?
+            .iter()
+            .all(|entry| entry["digest"]
+                != "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589")
+    );
+    assert_eq!(packs["pending_changes"], false);
+
+    let human = cli(
+        root,
+        &[
+            "pack",
+            "list",
+            "--controller",
+            &installation.controller,
+            "--timeout-seconds",
+            "300",
+        ],
+    )?;
+    assert!(human.status.success());
+    assert!(String::from_utf8(human.stdout)?.contains("next-start=selectable"));
+
+    fs::write(
+        root.join(".worldstream/data/activity-packs/restart-readiness-v1.json"),
+        b"not-json",
+    )?;
+    let malformed_readiness = cli(
+        root,
+        &[
+            "pack",
+            "list",
+            "--controller",
+            &installation.controller,
+            "--timeout-seconds",
+            "300",
+            "--json",
+        ],
+    )?;
+    assert!(malformed_readiness.status.success());
+    let malformed_readiness: Value = serde_json::from_slice(&malformed_readiness.stdout)?;
+    assert_eq!(
+        malformed_readiness["packs"]["installed"]["availability"],
+        "available"
+    );
+    assert_eq!(malformed_readiness["packs"]["pending_changes"], true);
+
+    fs::remove_file(
+        root.join(".worldstream/data/activity-packs/inventory")
+            .join(format!(
+                "{}.json",
+                BUNDLE_DIGEST.trim_start_matches("blake3:")
+            )),
+    )?;
+    let changed = cli(
+        root,
+        &[
+            "pack",
+            "list",
+            "--controller",
+            &installation.controller,
+            "--timeout-seconds",
+            "300",
+            "--json",
+        ],
+    )?;
+    assert!(changed.status.success());
+    let changed: Value = serde_json::from_slice(&changed.stdout)?;
+    assert_eq!(changed["packs"]["pending_changes"], true);
     Ok(())
 }

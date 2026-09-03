@@ -1,5 +1,4 @@
 //! Ambiguous approved client selection is explicit and never opens a browser.
-#![cfg(feature = "cli-operator-preview")]
 
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};

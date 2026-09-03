@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Real-component MVP acceptance gate for one Studio-created Agent Heist Task.
+"""Retained IMO-78 Controller-level Agent Heist regression harness.
 
-The live mode owns disposable state, launches the release binaries as separate
-processes, and crosses only their production HTTP, browser, WebSocket, and MCP
-stdio boundaries.  The default mode validates a retained report so CI can run
-the contract cheaply; ``--live`` is the release gate and fails closed when a
-required built artifact or pinned browser adapter is unavailable.
+This internal harness predates the supported CLI-first operator flow and calls
+lower-level Controller HTTP operations directly. It is not onboarding or proof
+that the current CLI cutover passed. Frozen ``studio`` report, schema, flag, and
+state-path names below are compatibility identifiers, not a web frontend.
+
+The live mode owns disposable state, launches separate binaries, and crosses
+their HTTP, browser, WebSocket, and MCP stdio boundaries. The default mode
+validates a retained historical report so CI can run that contract cheaply.
+``--live`` remains useful lower-level regression evidence, but it does not
+qualify the current CLI-first release.
 """
 
 from __future__ import annotations
@@ -640,10 +645,11 @@ class LiveGate:
         )
 
         daemon_port = _free_port()
-        # The production Console intentionally pins this local Supervisor origin.
+        # The retained browser-handoff route requires a separate request origin.
+        # The current CLI uses the authenticated operator handoff route instead.
         supervisor_port = 9420
         console_port = _free_port()
-        studio_origin = "http://127.0.0.1:5173"
+        legacy_handoff_origin = "http://127.0.0.1:5173"
         console_origin = f"http://127.0.0.1:{console_port}"
         self.console_origin = console_origin
         authority = secrets.token_bytes(32)
@@ -675,7 +681,7 @@ class LiveGate:
         daemon_url = f"http://127.0.0.1:{daemon_port}"
         _wait_http(daemon_url + "/readyz", daemon_process)
 
-        # Runtime's canonical backup contract requires sibling data/Studio roots.
+        # The backup contract retains a sibling Controller state root named `studio`.
         supervisor_state = self.root / "studio"
         (self.root / "runner-templates").mkdir(mode=0o700)
         vault = supervisor_state / "secrets"
@@ -701,7 +707,7 @@ class LiveGate:
                 "--runner-templates-dir",
                 str(self.root / "runner-templates"),
                 "--studio-origin",
-                studio_origin,
+                legacy_handoff_origin,
                 "--participant-console-origin",
                 console_origin,
             ],
@@ -755,9 +761,11 @@ class LiveGate:
         )
         self.processes.append(console_process)
         _wait_http(console_origin + "/", console_process)
-        handoff_url = self._issue_handoff(supervisor_http, studio_origin)
+        handoff_url = self._issue_handoff(supervisor_http, legacy_handoff_origin)
         self._exercise_real_console_page(handoff_url)
-        self._open_automation_console_session(supervisor_http, studio_origin)
+        self._open_automation_console_session(
+            supervisor_http, legacy_handoff_origin
+        )
 
         assignments = self._get(supervisor_http, "/api/v1/agent-profile-assignments")
         assignment_rows = assignments.get("assignments")
@@ -994,12 +1002,12 @@ class LiveGate:
             "draft_not_reviewed",
         )
 
-    def _issue_handoff(self, client: JsonHttp, studio_origin: str) -> str:
+    def _issue_handoff(self, client: JsonHttp, handoff_origin: str) -> str:
         _, response, _ = client.request(
             "POST",
             "/api/v1/participant-console/handoffs",
             {"draft_id": DRAFT_ID, "seat_id": "navigator-1"},
-            headers={"origin": studio_origin},
+            headers={"origin": handoff_origin},
             expected=(200, 201),
         )
         response = _record(response, "studio_response_invalid")
@@ -1169,9 +1177,9 @@ class LiveGate:
             browser(["close-surface", "--surface", surface])
 
     def _open_automation_console_session(
-        self, supervisor: JsonHttp, studio_origin: str
+        self, supervisor: JsonHttp, handoff_origin: str
     ) -> None:
-        handoff_url = self._issue_handoff(supervisor, studio_origin)
+        handoff_url = self._issue_handoff(supervisor, handoff_origin)
         handoff = urllib.parse.urlsplit(handoff_url).fragment.removeprefix("handoff=")
         client = JsonHttp("http://127.0.0.1:9420")
         _, status, _ = client.request(

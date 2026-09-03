@@ -278,11 +278,11 @@ algorithms, mandates, or resolver checks.
 
 ## Standalone Activity Client integration
 
-The Negotiate Activity Client selects its view only when the authorized Room
-identifies the qualified `worldstream.negotiate` 0.1.0 Pack Revision. It starts
-through the generic one-use Activity Client handoff and retained HttpOnly
+The retained `/negotiate/` client supports the exact 0.1.0 Pack Revision. The
+current `/negotiate-v2/` client supports the exact 0.2.0 Pack Revision. Each
+starts through the generic one-use Activity Client handoff and retained HttpOnly
 Supervisor session; there is no Negotiate-specific direct bootstrap or live
-renderer in Studio or the recorded Console gallery. The page starts empty and
+renderer in the Controller or the recorded Console gallery. The page starts empty and
 installs only the authorized Projection Reset returned for that retained
 Membership.
 
@@ -298,16 +298,21 @@ Projection updates are installed only from the Pack's authorized
 Core authority details and raw Activity State never enter the renderer.
 
 Prepared commercial payloads cross one narrow application-owned signer seam:
+the event contract below belongs to the current `/negotiate-v2/` Release. The
+retained single-revision `/negotiate/` Release predates the Pack field and
+admits only the exact 0.1.0 revision.
 
 1. the client emits `worldstream:negotiate-action-requested` with a fresh
-   preparation request ID, Action type, payload-schema digest, and current Room
-   sequence—never a Room ID, Membership ID, bearer, or routing target;
+   preparation request ID, Action type, payload-schema digest, current Room
+   sequence, and exact Pack `{id, version, digest}`—never a Room ID, Membership
+   ID, bearer, or routing target;
 2. an independently controlled application or Runner prepares and signs the
    exact A202 payload without giving WorldStream its key; and
 3. it returns `worldstream:negotiate-prepared-action` with exactly the request
-   ID, Action type, payload-schema digest, preparation Room sequence, and JSON
-   payload; the client submits only if all four binding fields, the original
-   exact Action Offer, and the current Room Head still match.
+   ID, Action type, payload-schema digest, preparation Room sequence, exact Pack
+   identity, and JSON payload; the client submits only if every binding field,
+   the original exact Action Offer, Pack Revision, and current Room Head still
+   match.
 
 This event pair is a browser integration boundary, not a second authority.
 The normal transport bounds, server Action admission, Pack signature/head/
@@ -316,13 +321,14 @@ closes the submit gate; a changed A202 logical head additionally requires the
 external signer to rebuild and re-sign rather than replaying or auto-rebasing
 bytes.
 
-The Studio human-seat handoff retains Room, Membership, and bearer authority in
-an HttpOnly local Supervisor session. The Host-local Client Binding Store maps
+The CLI-opened human-seat handoff retains Room, Membership, and bearer authority in
+an HttpOnly local Controller session. The Host-local Client Binding Store maps
 the exact Negotiate revision and current Membership to the independently
-executing `/negotiate/` Activity Client. Studio receives generic candidate
-metadata and an opaque selection identity only. The retained-session signer
-event binds request, Action, schema, Room sequence, and opaque authority mode;
-it never exposes Room ID, Membership ID, bearer, or routing data to the page.
+executing version-specific Negotiate Activity Client. The CLI receives generic
+candidate metadata and an opaque selection identity only. The current
+retained-session signer event binds request, Action, schema, Room sequence, and
+exact Pack identity; it never exposes Room ID, Membership ID, bearer, or routing
+data to the page.
 
 The standalone browser surface supports the four participant Roles and the
 public spectator mode. Operator workflows remain Host-control-plane work and

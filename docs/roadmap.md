@@ -2,17 +2,15 @@
 
 ## Accepted operator-interface transition
 
-[ADR 0018](adr/0018-cli-first-operator-surface.md) makes the operator CLI the
-primary direction and freezes new Studio web features. Deliver server,
-configuration, and Pack commands first, then a complete Heist Room setup and
-participation flow without Studio. Check the generic setup with Negotiate
-before retiring the web app. Keep reusable headless services and independent
-Activity Clients. The [implementation plan](cli-first-implementation-plan.md)
-collects the approved Q1–Q18 contract and final command/migration details.
+[ADR 0018](adr/0018-cli-first-operator-surface.md) makes the authenticated
+operator CLI the primary administration surface. The verified MVP cutover is
+complete and the Studio web application is retired. Reusable headless services
+and independent Activity Clients remain. The
+[implementation plan](cli-first-implementation-plan.md) records the approved
+Q1–Q18 contract and cutover details.
 The [ticket plan](cli-first-ticket-plan.md) orders implementation and verification.
-The [decision record](cli-first-operator-proposal.md)
-retains the source audit. Later Studio milestones below are transitional,
-not a commitment to maintain a second administration product indefinitely.
+The [decision record](cli-first-operator-proposal.md) retains the historical
+source audit.
 
 ## Goal
 
@@ -201,11 +199,11 @@ verification.
 
 Outcome: users operate the platform without learning Kernel internals.
 
-- **Studio:** bundle digest/compatibility inspection, approval/install/restart
-  readiness, schema-driven Genesis setup, Membership/handoff, opaque runner
-  credential references, runner readiness, timers, Replay, evidence export,
-  and launch of an exact compatible Activity Client. Studio contains no
-  Pack-specific participant renderer.
+- **Operator CLI and Controller:** bundle digest/compatibility inspection,
+  approval/install/restart readiness, schema-driven Genesis setup,
+  Membership/handoff, scoped Runner credentials, readiness, diagnostics,
+  Replay, evidence export, and launch of an exact compatible Activity Client.
+  They contain no Pack-specific participant renderer.
 - **Activity Clients:** independently executing Pack-compatible browser,
   terminal, mobile, SDK, or agent clients. Agent Heist and Negotiate are
   standalone first-party proofs. Recorded and live Heist modes share
@@ -221,7 +219,7 @@ Outcome: users operate the platform without learning Kernel internals.
 - **Runners:** own every model, prompt, tool, private memory, strategy,
   credential, invocation, and private signature.
 
-Studio never becomes Pack source, a participant, a commercial signer, an
+The CLI and Controller never become Pack source, a participant, a commercial signer, an
 arbitrary shell, a private-Projection bypass, or a second rules engine.
 
 ## Phase 7 — Release qualification
@@ -262,5 +260,5 @@ evidence subject bind the exact final bytes.
 | TypeScript toolchain is large or nondeterministic | Pin owned wrappers, retain exact bytes, compare behavior/goldens, and do not promise byte-reproducible upstream output. |
 | Wasmtime limits are mistaken for hostile tenancy | State the capability/fail-closed claim narrowly; add process/container ceilings and upgrade tests. |
 | Negotiate becomes a second protocol authority | Keep one Room order and one Pack; adapters only submit recorded input and export linked proof. |
-| Studio becomes orchestration or hidden rules | Keep it a typed operator client and independently executing Activity Clients separate. |
+| Operator tooling becomes orchestration or hidden rules | Keep the CLI/Controller bounded and independently executing Activity Clients separate. |
 | Adoption gate is self-certified | Require clean-directory outside-developer observations before making the time-to-first-success claim. |

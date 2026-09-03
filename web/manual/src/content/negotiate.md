@@ -48,11 +48,12 @@ Offers. It does not infer permissions from the current phase, display raw
 Activity State, or cache another party's private view.
 
 The Host-local Client Binding Store binds the exact Negotiate revision and
-current participant or spectator Membership to the independently executing
-`/negotiate/` surface. Studio brokers an opaque one-use launch but does not
-render the view, parse its Projection, or inspect participant-private data. If
-no compatible binding is eligible, the Host may offer its separately
-configured Pack-neutral Inspector fallback.
+current participant or spectator Membership to an independently executing
+surface. Retained 0.1 Rooms use `/negotiate/`; current 0.2 Rooms use
+`/negotiate-v2/`. The headless Controller brokers an opaque one-use launch but does not render
+the view, parse its Projection, or inspect participant-private data. If no
+compatible binding is eligible, the Host may offer its separately configured
+Pack-neutral Inspector fallback.
 
 After attach or reconnect, the client installs a Projection Reset or every
 retained observation, acknowledges the sync barrier, and only then enables an
@@ -73,7 +74,7 @@ digest, and exact Room sequence. If the Room or A202 head changes while an
 external signer is working, the response is discarded; it is never silently
 rebased onto the new head.
 
-For a Studio-opened human seat, the local Supervisor keeps Room, Membership,
+For a CLI-opened human seat, the local Controller keeps Room, Membership,
 and bearer authority in an HttpOnly session. The authorized observation carries
 the pinned Pack identity needed to choose the Negotiate renderer, but no routing
 identity or credential. External preparation uses a distinct retained-session

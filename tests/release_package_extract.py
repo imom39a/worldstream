@@ -10,6 +10,7 @@ import pathlib
 import stat
 import sys
 import tarfile
+import tomllib
 
 import pytest
 
@@ -384,7 +385,15 @@ def test_symlinked_output_ancestor_is_rejected(fixture):
 def canonical_fixture(tmp_path: pathlib.Path):
     module = load_module()
     helpers = load_package_smoke()
-    manifest, manifest_toml, manifest_json = helpers.PACKAGE.read_manifest()
+    _manifest, checked_toml, _checked_json = helpers.PACKAGE.read_manifest()
+    manifest_toml = checked_toml.replace(
+        b'manifest_kind = "specification"', b'manifest_kind = "release"'
+    ).replace(b"release_ready = false", b"release_ready = true")
+    assert manifest_toml != checked_toml
+    manifest = tomllib.loads(manifest_toml.decode("utf-8"))
+    manifest_json = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
     version = manifest["contracts"]["product"]
     inputs = helpers.fixture_inputs(tmp_path / "inputs")
     client_module = tmp_path / "inputs/sdk/src/worldstream_sdk/client.py"
@@ -413,11 +422,15 @@ def canonical_fixture(tmp_path: pathlib.Path):
     )
     output = tmp_path / "extracted" / "worldstreamd"
     output.parent.mkdir()
+    manifest_toml_path = tmp_path / "compatibility.toml"
+    manifest_json_path = tmp_path / "compatibility.json"
+    manifest_toml_path.write_bytes(manifest_toml)
+    manifest_json_path.write_bytes(manifest_json)
     return {
         "module": module,
         "helpers": helpers,
-        "manifest_toml": ROOT / "compatibility.toml",
-        "manifest_json": ROOT / "compatibility.json",
+        "manifest_toml": manifest_toml_path,
+        "manifest_json": manifest_json_path,
         "archive": archive,
         "archive_root": archive_root,
         "report": report,

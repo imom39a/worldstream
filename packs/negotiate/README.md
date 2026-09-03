@@ -38,9 +38,26 @@ Component Host execute its retained Core golden transcript. The final exact
 bytes are retained under `releases/<explanatory-version>/` with their physical
 BLAKE3 digest in the filename; a digest-named file is immutable.
 
-## Official 0.1.0 identity
+## Official portable releases
 
-The retained release is
+Negotiate is an official Pack, but it is not embedded in `worldstreamd`.
+Operators approve, install, and select its exact portable Bundle before they
+start the Runtime. This keeps the immutable base Runtime Distribution separate
+from the operator-owned Pack inventory.
+
+The current selectable 0.2.0 release is
+[`worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack`](releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack).
+Its physical bundle digest is
+`blake3:83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8`;
+its semantic revision is
+`blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c`;
+and its exact Component digest is
+`blake3:9b1632d43012d4a4b046467b27c05e3c4b7f8abf8bc0ef2ca0c3bb762de957ed`.
+The complete production proof is
+[`evidence/production-proof-0.2.0.json`](evidence/production-proof-0.2.0.json).
+
+The 0.1.0 release is retained for existing Room lineage and must not be
+selected for new Rooms:
 [`worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack`](releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack).
 The project contract continues to target the mutable `candidate.wspack`
 authoring output; normal build/prove commands never overwrite this retained
@@ -52,7 +69,7 @@ its semantic revision is
 and its exact Component digest is
 `blake3:17ab497995271c36b4ddc753eb85519cd9210a1c0c26e97b29c35ce5c95d8aff`.
 
-The public two-phase proof retained Core transcript
+The retained 0.1.0 public two-phase proof has Core transcript
 `blake3:5ca09a58fdb40dc35116130e42e6ce6f5f99a39d52c36a4c148c23386a29bcb2`
 without changing the Component, descriptor, revision lock, or semantic
 revision. The complete machine-readable cross-language and production proof is

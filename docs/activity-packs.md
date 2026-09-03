@@ -451,6 +451,16 @@ bundle authority. The local CAS/inventory is the separate startup authority;
 backup and transfer carry referenced original bundles in a separately verified
 section with target-local approval.
 
+Official portable Bundles are still local inventory. “Official” does not make
+a Pack embedded or append it to `DeploymentIdentityV1`. Agent Heist is
+embedded in the current base Runtime Distribution. Negotiate is installed from
+its exact official `.wspack` through the offline lifecycle below.
+
+Portable admission is serialized and bounded. Inside one admission, Wasmtime
+may compile independent Component functions in parallel. This changes only
+cold-start latency: the Host still verifies the same bytes, uses the same
+deterministic settings, and admits one exact Component before the next Bundle.
+
 ## Offline operator lifecycle
 
 Stop `worldstreamd` before changing Pack inventory. Every command resolves the
@@ -487,9 +497,14 @@ worldstreamctl --config <WORLDSTREAM_CONFIG> pack restart-readiness
 `restart-readiness` rereads every installed original archive and rebuilds the
 same immutable registry through production Component admission, then executes
 every healthy Room's exact Genesis-to-Head Replay with every retained
-executor. For SQLite it reads the configured `worldstream.sqlite3`; an absent
-database is a verified empty deployment. For PostgreSQL, pass the same
-owner-only direct-admin credential boundary used by offline maintenance:
+executor. Stop the Runtime before you run it. For SQLite, the command opens the
+configured `worldstream.sqlite3` through the normal production startup path.
+This offline preflight can apply a supported database migration before it
+captures a verified standalone snapshot for Replay. It then securely scrubs
+the snapshot to bounded zero-byte markers; it does not delete their private
+directories by pathname. An absent database is a verified empty deployment.
+For PostgreSQL, pass the same owner-only direct-admin credential boundary used
+by offline maintenance:
 
 ~~~bash
 worldstreamctl --config <WORLDSTREAM_CONFIG> \
@@ -565,8 +580,9 @@ Genesis, Authoritative Room State, Transitions, canonical hashes, or Replay.
 
 The first product surfaces include standalone Agent Heist and Negotiate
 Activity Clients plus the Pack-neutral WorldStream Inspector. The Host resolves
-an exact approved Client Binding from current Membership state; Studio can
-launch that independent client but does not import its renderer. See
+an exact approved Client Binding from current Membership state;
+`worldstreamctl client open` launches that independent client through the
+headless Controller without importing its renderer. See
 [Activity Clients](activity-clients.md).
 
 The project deliberately does not freeze:

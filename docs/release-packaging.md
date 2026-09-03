@@ -11,7 +11,7 @@ None of the commands below may promote that state as a verified release.
 The deterministic [Starter Distribution](starter-distribution.md) is a
 self-contained carrier over exact subjects already authenticated by the
 detached release manifest. It keeps Runtime Distribution bytes unchanged,
-adds the first-party Activity Client Host, Studio, TypeScript Pack authoring surface,
+adds the first-party independent Activity Client Host, TypeScript Pack authoring surface,
 official Negotiate material, adapters, fixtures, docs, and legal metadata, and
 still requires target-local exact-digest Pack approval. It is not a registry or
 a second release authority.
@@ -45,15 +45,17 @@ fails before packaging.
 The embedded compatibility manifest is a contract and platform inventory, not
 the final byte inventory. Its release-artifact rows may be `status =
 "detached"` with an empty `digest`, which is required when the row describes
-the archive or another object that contains the manifest itself. The external
-`release-manifest.json` (schema
-`worldstream/release-artifact-manifest/v2`) owns the exact SHA-256 digest of
-each finished archive, OCI image, checksum file, SPDX SBOM, and SLSA provenance
-document. The Sigstore bundle is declared separately as path-only verification
-material: its bytes authenticate the manifest through Cosign and cannot be
-hashed inside the manifest they help verify. The signed provenance and
-checksum verification remain mandatory; detaching an embedded digest never
-relaxes finished-byte verification.
+the archive or another object that contains the manifest itself. The active
+external `release-manifest.json` uses schema
+`worldstream/release-artifact-manifest/v3` and the explicit CLI-first inventory
+discriminator. It owns the exact SHA-256 digest of each finished archive, OCI
+image, checksum file, SPDX SBOM, and SLSA provenance document. The historical
+Studio-inclusive profile retains schema `worldstream/release-artifact-manifest/v2`
+without a discriminator. The Sigstore bundle is declared separately as
+path-only verification material: its bytes authenticate the manifest through
+Cosign and cannot be hashed inside the manifest they help verify. The signed
+provenance and checksum verification remain mandatory; detaching an embedded
+digest never relaxes finished-byte verification.
 
 The official Negotiate `.wspack` is a separately versioned release subject,
 not one of the self-containing native/OCI artifacts. Its exact physical BLAKE3,
@@ -73,9 +75,9 @@ checkout copy of the binary or proof as a substitute.
 Supply-chain evidence is intentionally produced in two levels. First,
 `release-supply-chain.py` validates exactly seventeen typed source reports (all
 primary release evidence except `checksums-signature-sbom-provenance`), copies
-those source bytes into a closed subject inventory with four Runtime/source
-payloads and twelve portable Starter subjects, and generates/verifies
-`SHA256SUMS`, SPDX, and SLSA over that exact 33-subject set. SPDX
+those source bytes into the active closed subject inventory with four
+Runtime/source payloads and eleven portable Starter subjects, and
+generates/verifies `SHA256SUMS`, SPDX, and SLSA over that exact 32-subject set. SPDX
 contains the locked Cargo, uv, and pnpm component graph and its source/build
 relationships. Corepack installs pnpm only through the exact
 `packageManager` value, which binds pnpm 11.19.0 to its SHA-512 registry
@@ -107,17 +109,17 @@ both signature levels and every digest, and uploads the finished release. All
 five jobs are restricted to a manual release from `refs/heads/main`; only the
 two minimal signing jobs have `id-token: write`.
 
-The portable subject builder accepts twelve explicitly named paths and never
-discovers a checkout. It copies the official Negotiate `.wspack` byte for byte
-and wraps each other input in deterministic gzip/ustar with a canonical file
-manifest. The release workflow builds the first-party Activity Client Host,
-Studio, Pack Toolchain, and
-TypeScript SDK first, includes the A202 interoperability and outside-adopter
-kits in their documented subjects, and rejects caches, links, credentials,
-approvals, backups, databases, secrets, extra subjects, and non-canonical
-archives. Those twelve artifacts are verified again during unsigned
-aggregation, final assembly, package verification, and every compatibility
-gate tier.
+The active portable subject builder accepts eleven explicitly named paths and
+never discovers a checkout. It copies the official Negotiate `.wspack` byte for
+byte and wraps each other input in deterministic gzip/ustar with a canonical
+file manifest. The release workflow builds the first-party Activity Client
+Host, Pack Toolchain, and TypeScript SDK first, includes the A202
+interoperability and outside-adopter kits in their documented subjects, and
+rejects caches, links, credentials, approvals, backups, databases, secrets,
+extra subjects, and non-canonical archives. Those eleven artifacts are
+verified again during unsigned aggregation, final assembly, package
+verification, and every compatibility gate tier. Omitting the inventory
+selector retains the historical twelve-subject builder contract.
 
 The four Runtime-plus-Packs rows are produced by
 `release-evidence-produce-runtime-packs.py`. Bundle/Component/Core conformance
@@ -277,13 +279,15 @@ scripts/package.py capture-build-environment \
   --output reports/native-linux-build-environment.json
 SOURCE_DATE_EPOCH=0 scripts/package-release.sh \
   --target linux-x86_64 \
+  --release-inventory worldstream/release-inventory/cli-first-v1 \
   --binary-dir target/x86_64-unknown-linux-musl/release \
   --ui-dir web/console/dist \
   --examples-dir examples \
   --licenses-dir licenses \
   --build-environment reports/native-linux-build-environment.json \
   --output dist
-scripts/verify-release.sh dist/worldstream-<version>-linux-x86_64.tar.gz
+scripts/verify-release.sh dist/worldstream-<version>-linux-x86_64.tar.gz \
+  --release-inventory worldstream/release-inventory/cli-first-v1
 ```
 
 For machine-readable handoff, the wrapper can persist the exact identity of
@@ -293,9 +297,11 @@ the archive it verified:
 scripts/package.py capture-build-environment --target source \
   --output reports/source-build-environment.json
 scripts/package-release.sh --target source --source-dir . \
+  --release-inventory worldstream/release-inventory/cli-first-v1 \
   --build-environment reports/source-build-environment.json --output dist \
   --report dist/worldstream-<version>-source.report.json
 scripts/verify-release.sh dist/worldstream-<version>-source.tar.gz \
+  --release-inventory worldstream/release-inventory/cli-first-v1 \
   --report dist/worldstream-<version>-source.report.json
 ```
 
@@ -328,8 +334,10 @@ claim a native binary or runtime release:
 scripts/package.py capture-build-environment --target source \
   --output reports/source-build-environment.json
 scripts/package-release.sh --target source --source-dir . \
+  --release-inventory worldstream/release-inventory/cli-first-v1 \
   --build-environment reports/source-build-environment.json --output dist
-scripts/verify-release.sh dist/worldstream-<version>-source.tar.gz
+scripts/verify-release.sh dist/worldstream-<version>-source.tar.gz \
+  --release-inventory worldstream/release-inventory/cli-first-v1
 ```
 
 The native Linux and Windows archives contain:
@@ -337,6 +345,9 @@ The native Linux and Windows archives contain:
 ```text
 bin/worldstreamd[.exe]
 bin/worldstreamctl[.exe]
+bin/worldstream-studio-supervisor[.exe]  # retained headless compatibility name
+bin/worldstream-assignment-mcp[.exe]
+bin/worldstream-managed-agent-host[.exe]
 ui/                        # built console, including hashed assets
 sdk/python/                # locked Python SDK source distribution inputs
 examples/heist/            # deterministic reference clients
@@ -370,7 +381,8 @@ is bound into the detached subject inventory and its checksums, SBOM,
 provenance, and keyless signature all verify. A planning-only dry-run is:
 
 ```sh
-scripts/package-release.sh --target linux-x86_64 --dry-run
+scripts/package-release.sh --target linux-x86_64 \
+  --release-inventory worldstream/release-inventory/cli-first-v1 --dry-run
 ```
 
 Dry-run output is planning information, not release evidence and never changes
@@ -474,7 +486,8 @@ When a release evidence directory exists, the same verifier accepts the
 directory instead of an archive:
 
 ```sh
-scripts/verify-release.sh dist
+scripts/verify-release.sh dist \
+  --release-inventory worldstream/release-inventory/cli-first-v1
 ```
 
 It requires `release-manifest.json`, `SHA256SUMS`, both detached Sigstore
@@ -496,7 +509,9 @@ For a document-only review, `--structural-only` stops before cryptographic
 verification and returns exit status `11` to mark the result incomplete:
 
 ```sh
-scripts/verify-release.sh dist --structural-only
+scripts/verify-release.sh dist \
+  --release-inventory worldstream/release-inventory/cli-first-v1 \
+  --structural-only
 ```
 
 The evidence verifier requires HTTP-independent release documents plus
@@ -527,3 +542,38 @@ catch-up/reset, typed actions, privacy, replay hashes, and the locked/final
 reveal transition. The complete run must finish in under ten minutes. It
 deletes temporary runtime/browser state, creates no macOS binary archive, and
 makes no signing or notarization claim.
+
+## Active CLI-first inventory
+
+Omitting the selector preserves verification of the implicit historical
+`worldstream/release-inventory/runtime-packs-studio-v1` profile. Its v2
+detached manifest, v1 pre-sign inventory, v2 aggregation byproduct, v4 build
+type, 16 payloads, and 33 pre-sign subjects are unchanged compatibility input.
+
+The supported release workflow explicitly activates the
+`worldstream/release-inventory/cli-first-v1` profile.
+The successor removes only the `worldstream-studio` portable subject. It keeps
+`worldstream-participant-console` as the standalone Activity Client Host and
+client payload, all four Runtime/source payloads, and all 17 pre-sign evidence
+sources. Its closed graph has 15 payloads and 32 pre-sign subjects.
+The workflow binds that graph as 32 checksum entries in an exact 36-file
+unsigned layout. After it adds the verified inventory signature, normalized
+evidence, and detached v3 manifest, the final-manifest signing input contains
+exactly 56 files. The detached manifest signature is the 57th and final file.
+
+The successor is selected explicitly with `--release-inventory` on the
+packaging, Starter-subject, assembly, and supply-chain commands. It uses
+[`release-artifact-manifest/v3`](schemas/release-artifact-manifest-v3.schema.json),
+[`release-subject-inventory/v2`](schemas/release-subject-inventory-v2.schema.json),
+[`release-aggregation/v3`](schemas/release-aggregation-v3.schema.json), and
+[build type v5](build-types/pre-sign-subject-aggregation-v5.md). Each new
+signed graph layer repeats the profile identity. Verifiers reject a missing
+discriminator, a v1/v2 substitution, Studio added to the successor, or common
+bytes covered only by an old inventory signature.
+
+CLI-first Linux and Windows archives contain `worldstreamd`,
+`worldstreamctl`, the retained headless `worldstream-studio-supervisor`,
+`worldstream-assignment-mcp`, and `worldstream-managed-agent-host`. The old
+archive contract still requires only its historical two binaries. It remains
+verifier input for compatibility; it is not the current release profile and
+cannot qualify the CLI-first artifact set.

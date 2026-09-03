@@ -31,7 +31,7 @@ scripts/gates.sh fast
 cargo test --workspace --locked
 uv run --project sdk/python --python 3.14.7 pytest
 pnpm ui:test
-pnpm studio:test
+pnpm activity-clients:verify
 pnpm docs:test
 ```
 

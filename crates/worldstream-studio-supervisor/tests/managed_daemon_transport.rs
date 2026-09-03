@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use std::{
     io::{BufRead as _, BufReader, Read as _, Write as _},
     net::{TcpListener, TcpStream},

@@ -29,6 +29,22 @@ older duplicate result. A stale rejection never rebases the Action: call
 Action ID with a changed canonical body fails locally with
 `idempotency_conflict`.
 
+A Runner can advertise legacy Pack IDs and exact immutable Pack revisions. Use
+the exact form when launch readiness is pinned to one revision:
+
+```python
+pack = {
+    "id": "worldstream.agent-heist",
+    "version": "0.2.0",
+    "digest": "blake3:...",
+}
+runner = await client.open_runner(runner_id, 1, [pack["id"]], [pack])
+```
+
+An omitted fourth argument preserves the legacy Runner handshake. An exact
+revision list is bounded, rejects duplicates, and is sent only on the Runner
+control stream.
+
 This is a protocol/client surface, not live deployment evidence. The checked-in
 offline Agent Heist story under `examples/heist/` remains dependency-free and
 explicitly does not claim daemon, database, browser, model, or power-loss

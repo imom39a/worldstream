@@ -62,7 +62,7 @@ export function App() {
           {query.trim() !== "" && (
             <div className="search-results" role="listbox">
               {matches.map((item) => <a key={item.route} href={`#${item.route}`} onClick={() => setQuery("")}><strong>{item.title}</strong><small>{item.summary}</small></a>)}
-              {matches.length === 0 && <p>No matching page. Try “Studio”, “backup”, or “MCP”.</p>}
+              {matches.length === 0 && <p>No matching page. Try “CLI”, “backup”, or “MCP”.</p>}
             </div>
           )}
         </div>

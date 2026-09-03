@@ -1,119 +1,62 @@
-# Agent Heist MVP completion gate
+# Agent Heist CLI-first acceptance
 
-The WorldStream MVP is complete only when the live IMO-78 gate finishes with a
-`completed` report. Unit, fixture, or in-process adapter tests are supporting
-evidence; they do not replace this gate.
+Agent Heist is the visual and protocol conformance activity for the current
+CLI-first MVP. The supported acceptance path starts with `worldstreamctl`. It
+does not use the retired Studio web application.
 
-## Required story
+Follow Sections 1–7 of [Getting started](getting-started.md). A complete run
+must prove both of these independent paths against fresh local state:
 
-One run starts from an empty disposable SQLite profile and uses the production
-boundaries to create exactly one reviewed Task with exactly two required seats:
+1. `worldstreamctl client open` creates a one-use handoff for the approved
+   standalone Agent Heist Activity Client. The browser receives only the
+   selected Membership authority and installs an authorized Projection Reset.
+2. Explicitly exported Membership and Runner credential files let the Python
+   SDK example connect both required seats, receive agent work, submit only
+   exact Action Offers, pass the automatic timed phases, and reach a non-empty
+   Outcome.
 
-- one human `navigator`, opened through a Studio-issued one-use Agent Heist
-  Activity Client handoff;
-- one external-agent `insider`, opened through a Supervisor-issued opaque
-  assignment-MCP launch reference.
+The operator must use `worldstreamctl room inspect` as the source of readiness
+and final Room evidence. A browser page load, a running process, or fixture
+output is not proof that a Membership is synchronized or that a Room is
+complete. The proof must preserve separate Host, Membership, and Runner
+authority and must not publish credential values.
 
-The Task remains in the Lobby until both live readiness signals are observed
-and the operator explicitly launches it. The human and external agent then use
-only currently offered Agent Heist Actions. The helper is stopped while an
-Activation lease is outstanding and restarted with the same opaque launch
-reference. It must resume the exact lease, complete it once, and return the
-same retained receipt for the identical retry. The story must reach the
-committed `complete` phase with a non-empty Outcome.
+For the cutover gate, repeat the same flow after a retained-state restart and
+confirm that canonical Replay reaches the exact committed lineage. Also run
+the Negotiate public-participant check from the same guide. These checks prove
+the supported CLI path; they do not claim a signed or externally qualified
+release.
 
-The gate obtains authoritative Room inventory before and after the story. The
-delta must be exactly one Room. It obtains Replay at the final committed Room
-sequence and requires equality of the live and replayed Activity projection,
-Outcome, final Transition lineage hash, Activity-state hash, and
-authoritative-state hash. The Transition hash proves Replay reached the
-identical committed lineage rather than only an equivalent-looking projection.
-Stable Action and Activation completion retries must not add a second
-transition.
+## Focused source checks
 
-## Boundaries exercised
-
-The release run uses separate real processes and production protocols:
-
-- `worldstreamd`: HTTP and WebSocket APIs over a disposable durable SQLite
-  data directory;
-- `worldstream-studio-supervisor`: reviewed draft, Room creation, Task setup,
-  Participant handoff, explicit launch, and assignment launch over HTTP;
-- `worldstream-assignment-mcp`: MCP JSON-RPC over stdio, with only the opaque
-  launch reference and owner-only state directory on its command line;
-- Agent Heist Activity Client: the production build served over loopback and opened by
-  the repository's pinned CDP browser adapter using the real fragment-only
-  handoff URL. The gate waits for the live authorized projection and proves the
-  fragment was scrubbed;
-- Studio: the same strict browser-facing HTTP DTOs used by the production
-  client. No daemon capability is supplied to a browser-facing request.
-
-## Running the gate
-
-Build the three Rust binaries and the production Client Host first:
+The deterministic SDK helpers have focused tests:
 
 ```sh
-cargo build -p worldstream-server --bin worldstreamd
-cargo build -p worldstream-studio-supervisor \
-  --bin worldstream-studio-supervisor --bin worldstream-assignment-mcp
-npm --prefix web/console run build
+uv run --project sdk/python --python 3.14.7 pytest -q \
+  tests/test_cli_activity_credentials.py \
+  tests/test_cli_heist_activity.py \
+  tests/test_cli_negotiate_activity.py
 ```
 
-Install the locked Python environment used by the pinned CDP adapter, then
-configure its exact browser identity variables. The source quickstart accepts
-the complete pin as explicit arguments and verifies the frozen version, binary
-and archive identities before running the same adapter:
+The standalone browser clients use the shared conformance lane:
 
 ```sh
-uv sync --project sdk/python --locked --python 3.14.7
-scripts/macos-source-quickstart.sh \
-  --browser /absolute/path/to/chrome-headless-shell \
-  --browser-version 152.0.7977.54 \
-  --browser-sha256 4e0c165ef2f0d7265fb1e6b3df2d03d1d6581fb72cdfcebeac19c09760571df6 \
-  --browser-size-bytes 167333040 \
-  --browser-archive-url https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.54/mac-arm64/chrome-headless-shell-mac-arm64.zip \
-  --browser-archive-sha256 ef5d61434f13d9d2d9bdc7c9ab4bff92225979e196458cf846640862b25f127d \
-  --browser-archive-size-bytes 98034515
+pnpm activity-clients:check
+pnpm activity-clients:build
+node scripts/verify-activity-clients.mjs
 ```
 
-The x86_64 pin is closed separately in that script. With the seven
-`WORLDSTREAM_BROWSER_*` variables exported, run:
+These focused checks support the live run. They do not replace it.
 
-```sh
-uv run --project sdk/python --python 3.14.7 python \
-  examples/heist/mvp_live/run_mvp_acceptance.py \
-  --live --report target/agent-heist-mvp-acceptance.json
-```
+## Retained internal harness
 
-CI can run the fast report-contract gate independently:
+`examples/heist/mvp_live/run_mvp_acceptance.py` is retained as an internal
+Controller, assignment-MCP, browser, recovery, and Replay regression harness
+from the earlier IMO-78 delivery. It calls lower-level Controller HTTP
+operations directly and therefore is not the supported operator workflow or
+evidence that the CLI-first guide passed.
 
-```sh
-uv run --project sdk/python --python 3.14.7 python -m unittest \
-  examples/heist/mvp_live/test_run_mvp_acceptance.py
-uv run --project sdk/python --python 3.14.7 python \
-  examples/heist/mvp_live/run_mvp_acceptance.py \
-  --report target/agent-heist-mvp-acceptance.json
-```
-
-The live command exits `2` with one bounded `blocked:<reason>` when a build,
-pinned browser, loopback port, production component, or authoritative proof is
-unavailable. A blocked report is never treated as MVP completion.
-
-## Credential and private-data rule
-
-The disposable Host, Membership, Runner, replay, handoff, session, and launch
-material exists only in owner-readable temporary storage or in its authorized
-transport. The retained report contains none of it. Before publishing a
-`completed` report, the gate scans Studio HTTP evidence, Agent Heist client
-browser evidence, MCP traffic, and process logs for raw capability/token
-patterns and exact private values. MCP may carry the assigned agent's private
-Activation context, but never a Host, Membership, or Runner bearer. Browser and
-operator evidence may carry neither.
-
-## Explicit non-goals
-
-This is a single-machine MVP completion gate, not a throughput, multi-Room,
-PostgreSQL failover, managed-model-provider, public-network, or multi-browser
-test. Those profiles retain their own conformance and operational gates. The
-test does not inspect or modify SQLite directly, fabricate an Action Offer,
-Activation, timer payload, Room transition, Replay digest, or credential.
+The harness and its frozen report fixtures contain `studio` names. Those are
+retained compatibility identifiers for old schemas, report fields, command
+flags, and state paths. They do not refer to a running Studio frontend. Do not
+copy that harness as an onboarding example.

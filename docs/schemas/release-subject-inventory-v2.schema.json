@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/imom39a/worldstream/blob/main/docs/schemas/release-subject-inventory-v2.schema.json",
+  "title": "WorldStream CLI-first pre-sign subject inventory v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "release_inventory", "phase", "product", "subjects"],
+  "properties": {
+    "schema": {"const": "worldstream/release-subject-inventory/v2"},
+    "release_inventory": {"const": "worldstream/release-inventory/cli-first-v1"},
+    "phase": {"const": "pre-sign"},
+    "product": {"type": "string"},
+    "subjects": {
+      "type": "array",
+      "minItems": 32,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id", "path", "sha256", "size_bytes"],
+        "properties": {
+          "kind": {"enum": ["payload", "source-report"]},
+          "id": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

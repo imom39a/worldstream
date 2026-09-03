@@ -94,9 +94,8 @@ WorldStream owns:
 - durable activation intents for external agent runners;
 - bounded WebSocket delivery and cursor-based reconnect;
 - independently executing first-party Activity Clients plus a Pack-neutral
-  Inspector; Studio is the transitional Host Operator interface while the
-  [CLI-first replacement](docs/adr/0018-cli-first-operator-surface.md) is built
-  and verified.
+  Inspector; and the authenticated `worldstreamctl` Host Operator interface,
+  backed by a headless local Controller.
 
 Activity Packs own:
 
@@ -204,4 +203,4 @@ signed distribution exists.
 
 ## Status
 
-The repository contains the pinned workspace and operator shell, canonical Core/lineage and operational-authority implementation, exact retained Counter and Agent Heist executors, the bundled-SQLite gateway, PostgreSQL storage/runtime adapters, a public Python application SDK, and first-party UI foundations. The checked-in compatibility pair is intentionally `manifest_kind = "specification"` and `release_ready = false`. The exact official Negotiate Component, semantic revision, schema/codec/golden identities, and digest-named bundle now exist and pass the production Bundle → Component Host → Core proof. The expanded release tooling closes four Runtime payloads, twelve portable Starter subjects, and seventeen pre-sign evidence reports into one 33-subject inventory, but genuine Negotiate policy/A202 and released-artifact SQLite/PostgreSQL restart reports, final artifacts, signatures, and outside-adopter qualification remain unavailable. Those gaps fail closed; a separately signed post-release qualification manifest prevents Starter/adopter evidence from creating a recursive primary signature.
+The repository contains the pinned workspace and operator shell, canonical Core/lineage and operational-authority implementation, exact retained Counter and Agent Heist executors, the bundled-SQLite gateway, PostgreSQL storage/runtime adapters, a public Python application SDK, and first-party UI foundations. The checked-in compatibility pair is intentionally `manifest_kind = "specification"` and `release_ready = false`. The exact official Negotiate Component, semantic revision, schema/codec/golden identities, and digest-named bundle now exist and pass the production Bundle → Component Host → Core proof. The active CLI-first release tooling closes four Runtime payloads, eleven portable Starter subjects, and seventeen pre-sign evidence reports into one 32-subject inventory, but genuine Negotiate policy/A202 and released-artifact SQLite/PostgreSQL restart reports, final artifacts, signatures, and outside-adopter qualification remain unavailable. Those gaps fail closed; a separately signed post-release qualification manifest prevents Starter/adopter evidence from creating a recursive primary signature.

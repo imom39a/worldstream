@@ -593,6 +593,26 @@ fn readiness_seal_is_validated_and_inventory_mutation_clears_it() {
 }
 
 #[test]
+fn read_only_readiness_lookup_never_creates_pack_store_paths() {
+    let temporary = must(tempdir());
+    let root = temporary.path().join("metadata-only-activity-packs");
+
+    assert_eq!(must(PackBundleStoreV1::read_startup_readiness(&root)), None);
+    assert!(!root.exists());
+
+    must(std::fs::create_dir(&root));
+    must(std::fs::create_dir(root.join("inventory")));
+    let before = must(std::fs::read_dir(&root))
+        .map(|entry| must(entry).file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(must(PackBundleStoreV1::read_startup_readiness(&root)), None);
+    let after = must(std::fs::read_dir(&root))
+        .map(|entry| must(entry).file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(after, before);
+}
+
+#[test]
 fn approval_is_bound_to_one_physical_digest_and_corruption_is_detected() {
     let temporary = must(tempdir());
     let first_path = temporary.path().join("first.wspack");

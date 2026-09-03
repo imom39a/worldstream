@@ -215,7 +215,9 @@ export function ParticipantHandoffView({
       {state.action === "reconnect" ? (
         <button type="button" onClick={() => void onReconnect()}>Reconnect</button>
       ) : null}
-      {state.action === "return_to_task_setup" ? <p>Return to Studio Task setup.</p> : null}
+      {state.action === "return_to_task_setup" ? (
+        <p>Ask the Host Operator to run worldstreamctl client open again for this Room setup operation.</p>
+      ) : null}
     </main>
   );
 }

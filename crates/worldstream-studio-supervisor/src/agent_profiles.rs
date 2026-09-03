@@ -202,7 +202,6 @@ pub struct AgentProfileStoreV1 {
 
 impl AgentProfileStoreV1 {
     /// Checks one exact incoming revision without opening or creating a store.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn check_import(
         root: &Path,
         revision: &AgentProfileRevisionV1,
@@ -215,7 +214,6 @@ impl AgentProfileStoreV1 {
         }
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     fn read_import_revision(
         root: &Path,
         profile_id: &str,
@@ -246,7 +244,6 @@ impl AgentProfileStoreV1 {
     }
 
     /// Checks metadata and retained identity without inventing fresh secret refs.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn check_named_import(
         root: &Path,
         input: &crate::initialization_inputs::AgentProfilePublishInputV2,
@@ -260,7 +257,6 @@ impl AgentProfileStoreV1 {
         Self::check_import(root, &expected)
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn resolve_named_import(
         input: &crate::initialization_inputs::AgentProfilePublishInputV2,
         reference: Option<SecretReferenceV1>,
@@ -791,7 +787,6 @@ impl IntoResponse for AgentProfileErrorV1 {
     }
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn named_import_descriptor(
     input: &crate::initialization_inputs::AgentProfilePublishInputV2,
 ) -> AgentProfileRevisionV1 {

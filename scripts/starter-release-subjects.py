@@ -26,6 +26,15 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+INVENTORY_PATH = Path(__file__).with_name("release_inventory.py")
+INVENTORY_SPEC = importlib.util.spec_from_file_location(
+    "worldstream_starter_subject_release_inventory", INVENTORY_PATH
+)
+if INVENTORY_SPEC is None or INVENTORY_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot load {INVENTORY_PATH}")
+INVENTORY = importlib.util.module_from_spec(INVENTORY_SPEC)
+sys.modules[INVENTORY_SPEC.name] = INVENTORY
+INVENTORY_SPEC.loader.exec_module(INVENTORY)
 SCHEMA = "worldstream/starter-release-subject/v1"
 MAX_FILES = 20_000
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
@@ -33,20 +42,8 @@ MAX_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
-SUBJECT_IDS = (
-    "worldstream-a202-adapter",
-    "worldstream-deterministic-agents",
-    "worldstream-documentation",
-    "worldstream-examples",
-    "worldstream-licenses",
-    "worldstream-negotiate-bundle",
-    "worldstream-negotiate-evidence-verifier",
-    "worldstream-pack-toolchain",
-    "worldstream-participant-console",
-    "worldstream-release-metadata",
-    "worldstream-studio",
-    "worldstream-typescript-pack-sdk",
-)
+# Public historical aliases are deliberately retained for old importers/tests.
+SUBJECT_IDS = INVENTORY.LEGACY.portable_subject_artifact_ids
 SUBJECT_SET = frozenset(SUBJECT_IDS)
 FORBIDDEN_PARTS = frozenset(
     {
@@ -164,10 +161,17 @@ def sha256_reference(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
-def output_names(version: str) -> dict[str, str]:
+def inventory_contract(release_inventory: str | None = None):
+    try:
+        return INVENTORY.resolve(release_inventory)
+    except ValueError as error:
+        raise SubjectError(str(error)) from error
+
+
+def output_names(version: str, release_inventory: str | None = None) -> dict[str, str]:
     if VERSION.fullmatch(version) is None:
         fail("release version is invalid")
-    return {
+    names = {
         "worldstream-a202-adapter": f"worldstream-{version}-a202-adapter.tar.gz",
         "worldstream-deterministic-agents": f"worldstream-{version}-deterministic-agents.tar.gz",
         "worldstream-documentation": f"worldstream-{version}-documentation.tar.gz",
@@ -181,16 +185,26 @@ def output_names(version: str) -> dict[str, str]:
         "worldstream-studio": f"worldstream-{version}-studio.tar.gz",
         "worldstream-typescript-pack-sdk": f"worldstream-{version}-typescript-pack-sdk.tar.gz",
     }
+    profile = inventory_contract(release_inventory)
+    return {
+        subject_id: names[subject_id]
+        for subject_id in profile.portable_subject_artifact_ids
+    }
 
 
-def parse_subjects(values: list[str]) -> dict[str, Path]:
+def parse_subjects(
+    values: list[str], release_inventory: str | None = None
+) -> dict[str, Path]:
+    expected = frozenset(
+        inventory_contract(release_inventory).portable_subject_artifact_ids
+    )
     parsed: dict[str, Path] = {}
     identities: dict[Path, str] = {}
     for value in values:
         if "=" not in value:
             fail(f"subject must use ID=PATH syntax: {value!r}")
         subject_id, raw_path = value.split("=", 1)
-        if subject_id not in SUBJECT_SET:
+        if subject_id not in expected:
             fail(f"unknown Starter subject id: {subject_id}")
         if subject_id in parsed:
             fail(f"duplicate Starter subject id: {subject_id}")
@@ -207,10 +221,10 @@ def parse_subjects(values: list[str]) -> dict[str, Path]:
             )
         identities[resolved] = subject_id
         parsed[subject_id] = path
-    if set(parsed) != SUBJECT_SET:
+    if set(parsed) != expected:
         fail(
             "Starter subject input inventory is not closed: "
-            f"missing={sorted(SUBJECT_SET - set(parsed))}; extra={sorted(set(parsed) - SUBJECT_SET)}"
+            f"missing={sorted(expected - set(parsed))}; extra={sorted(set(parsed) - expected)}"
         )
     return parsed
 
@@ -418,9 +432,13 @@ def verify_wrapped(content: bytes, subject_id: str, version: str) -> dict[str, A
 
 
 def verify_payload_dir(
-    payload_dir: Path, version: str, compatibility_path: Path
+    payload_dir: Path,
+    version: str,
+    compatibility_path: Path,
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
-    names = output_names(version)
+    profile = inventory_contract(release_inventory)
+    names = output_names(version, profile.identity)
     entries = {
         candidate.name: candidate
         for candidate in payload_dir.iterdir()
@@ -470,23 +488,28 @@ def verify_payload_dir(
                 "files": len(manifest["files"]),
                 "sha256": sha256_reference(content),
             }
-    return {
+    report = {
         "schema": "worldstream/starter-release-subject-verification/v1",
         "status": "passed",
         "version": version,
         "subjects": identities,
     }
+    if profile.serialized_discriminator:
+        report["release_inventory"] = profile.identity
+    return report
 
 
 def build(args: argparse.Namespace) -> None:
-    subjects = parse_subjects(args.subject)
-    names = output_names(args.version)
+    release_inventory = getattr(args, "release_inventory", None)
+    profile = inventory_contract(release_inventory)
+    subjects = parse_subjects(args.subject, profile.identity)
+    names = output_names(args.version, profile.identity)
     if args.output_dir.exists() and args.output_dir.is_symlink():
         fail("output directory must not be a symlink")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if any(args.output_dir.iterdir()):
         fail("output directory must be empty")
-    for subject_id in SUBJECT_IDS:
+    for subject_id in profile.portable_subject_artifact_ids:
         source = subjects[subject_id]
         if subject_id == "worldstream-negotiate-bundle":
             content = read_stable(source, subject_id)
@@ -498,7 +521,12 @@ def build(args: argparse.Namespace) -> None:
                 )
             )
         atomic_write(args.output_dir / names[subject_id], content)
-    verify_payload_dir(args.output_dir, args.version, args.compatibility_json)
+    verify_payload_dir(
+        args.output_dir,
+        args.version,
+        args.compatibility_json,
+        profile.identity,
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -509,12 +537,22 @@ def parser() -> argparse.ArgumentParser:
     build_command.add_argument("--output-dir", type=Path, required=True)
     build_command.add_argument("--subject", action="append", default=[])
     build_command.add_argument(
+        "--release-inventory",
+        choices=tuple(INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves the historical profile",
+    )
+    build_command.add_argument(
         "--compatibility-json", type=Path, default=ROOT / "compatibility.json"
     )
     verify_command = subcommands.add_parser("verify")
     verify_command.add_argument("--version", required=True)
     verify_command.add_argument("--payload-dir", type=Path, required=True)
     verify_command.add_argument("--compatibility-json", type=Path, required=True)
+    verify_command.add_argument(
+        "--release-inventory",
+        choices=tuple(INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves the historical profile",
+    )
     return command
 
 
@@ -523,10 +561,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "build":
             build(args)
-            print(f"built and verified {len(SUBJECT_IDS)} detached Starter subjects")
+            profile = inventory_contract(args.release_inventory)
+            print(
+                "built and verified "
+                f"{len(profile.portable_subject_artifact_ids)} detached Starter subjects"
+            )
         else:
             report = verify_payload_dir(
-                args.payload_dir, args.version, args.compatibility_json
+                args.payload_dir,
+                args.version,
+                args.compatibility_json,
+                args.release_inventory,
             )
             sys.stdout.buffer.write(canonical_json(report))
     except (SubjectError, OSError, ValueError, TypeError) as error:

@@ -83,8 +83,13 @@ def adopter_summary(release_sha256: str) -> dict:
     }
 
 
-def structural_layout(root: Path, monkeypatch) -> Path:
-    release = canonical({"schema": QUALIFICATION.RELEASE_SCHEMA, "product": "0.1.0"})
+def structural_layout(
+    root: Path, monkeypatch, profile=QUALIFICATION.INVENTORY.LEGACY
+) -> Path:
+    release_value = {"schema": profile.manifest_schema, "product": "0.1.0"}
+    if profile.serialized_discriminator:
+        release_value["release_inventory"] = profile.identity
+    release = canonical(release_value)
     release_sha = QUALIFICATION.sha256(release)
     (root / "release").mkdir(parents=True)
     (root / "release/release-manifest.json").write_bytes(release)
@@ -167,15 +172,37 @@ def structural_layout(root: Path, monkeypatch) -> Path:
     return path
 
 
+@pytest.mark.parametrize(
+    "profile", [QUALIFICATION.INVENTORY.LEGACY, QUALIFICATION.INVENTORY.CLI_FIRST]
+)
 def test_structural_manifest_binds_release_starters_adopters_and_evidence(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, profile
 ) -> None:
-    structural_layout(tmp_path, monkeypatch)
+    structural_layout(tmp_path, monkeypatch, profile)
 
     value = QUALIFICATION.validate_layout(tmp_path, require_signature=False)
 
     assert value["schema"] == QUALIFICATION.SCHEMA
     assert set(value["evidence"]) == set(QUALIFICATION.QUALIFICATION_IDS)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"schema": QUALIFICATION.INVENTORY.CLI_FIRST.manifest_schema},
+        {
+            "schema": QUALIFICATION.INVENTORY.CLI_FIRST.manifest_schema,
+            "release_inventory": QUALIFICATION.INVENTORY.LEGACY.identity,
+        },
+        {
+            "schema": QUALIFICATION.INVENTORY.LEGACY.manifest_schema,
+            "release_inventory": QUALIFICATION.INVENTORY.LEGACY.identity,
+        },
+    ],
+)
+def test_rejects_cross_wired_release_identity(value: dict) -> None:
+    with pytest.raises(QUALIFICATION.QualificationError, match="identity"):
+        QUALIFICATION.validate_release_identity(value, "release manifest")
 
 
 def test_rejects_resigned_narrative_evidence_and_extra_files(

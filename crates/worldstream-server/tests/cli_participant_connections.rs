@@ -1,5 +1,4 @@
 //! Explicit exports keep Membership and Runner authority in separate protected files.
-#![cfg(feature = "cli-operator-preview")]
 
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};

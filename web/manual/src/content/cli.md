@@ -55,7 +55,7 @@ actual data directory, profile, and provider metadata. With
 line. Install, revoke, set-selectable, retained restore, and remove clear the
 prior seal.
 
-## Studio and agent binaries
+## Controller and agent binaries
 
 ```sh
 target/debug/worldstream-studio-supervisor --help
@@ -63,7 +63,7 @@ target/debug/worldstream-assignment-mcp --help
 target/debug/worldstream-managed-agent-host --help
 ```
 
-- The Supervisor fixes daemon executable/config, state, Runner manifest
+- The headless Controller fixes daemon executable/config, state, Runner manifest
   directory, browser origins, storage profile, and timeouts at startup.
 - The MCP helper accepts only `--launch-reference` and `--state-dir`.
 - The managed host accepts stdio transport, `openai-compatible` provider,
@@ -73,9 +73,7 @@ target/debug/worldstream-managed-agent-host --help
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm studio:dev` | Build the daemon binary; start the Supervisor + Studio portal, but not the daemon process or Client Host |
-| `pnpm studio:supervisor` | Supervisor only |
-| `pnpm ui:dev` | First-party Client Host (`/agent-heist/` and `/inspector/`) |
+| `pnpm ui:dev` | First-party Client Host (`/agent-heist/`, `/negotiate/`, `/negotiate-v2/`, and `/inspector/`) |
 | `pnpm docs:dev` | this developer manual locally |
 | `pnpm docs:build` | deterministic static manual build |
 | `scripts/gates.sh fast` | bounded fast developer gate |
@@ -95,5 +93,5 @@ Do not hand-edit a generated compatibility mirror without running the matching
 generator/verifier and reviewing the semantic source.
 
 Source: [`worldstreamctl` command source](https://github.com/imom39a/worldstream/blob/main/crates/worldstream-server/src/bin/worldstreamctl.rs),
-[Supervisor CLI](https://github.com/imom39a/worldstream/blob/main/crates/worldstream-studio-supervisor/src/main.rs),
+[Controller compatibility binary](https://github.com/imom39a/worldstream/blob/main/crates/worldstream-studio-supervisor/src/main.rs),
 and [`xtask`](https://github.com/imom39a/worldstream/blob/main/xtask/src/main.rs).

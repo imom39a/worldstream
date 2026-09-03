@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 
 $WorkspaceDir = Split-Path -Parent $PSScriptRoot
 $ReportPath = $null
+$ReleaseInventory = $null
 $VerifyArgs = [System.Collections.Generic.List[string]]::new()
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     if ($args[$Index] -eq '--report') {
@@ -10,6 +11,11 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
         $ReportPath = $args[++$Index]
     } elseif ($args[$Index] -like '--report=*') {
         $ReportPath = $args[$Index].Substring(9)
+    } elseif ($args[$Index] -eq '--release-inventory') {
+        if ($Index + 1 -ge $args.Count) { throw 'missing value for --release-inventory' }
+        $ReleaseInventory = $args[++$Index]
+    } elseif ($args[$Index] -like '--release-inventory=*') {
+        $ReleaseInventory = $args[$Index].Substring(20)
     } else { $VerifyArgs.Add($args[$Index]) }
 }
 $Artifact = $VerifyArgs | Where-Object { -not $_.StartsWith('-') } | Select-Object -First 1
@@ -36,7 +42,11 @@ $IsOciContext = (
     (Test-Path -LiteralPath (Join-Path $Artifact 'oci-metadata.json') -PathType Leaf)
 )
 if ($IsOciContext) {
-    $ContextArgs = @('verify') + [string[]]$VerifyArgs + @('--report', $ReportPath)
+    $ContextArgs = @('verify') + [string[]]$VerifyArgs
+    if ($null -ne $ReleaseInventory) {
+        $ContextArgs += @('--release-inventory', $ReleaseInventory)
+    }
+    $ContextArgs += @('--report', $ReportPath)
     Invoke-PackagePython -PackageArgs $ContextArgs
     if ($PackageExitCode -ne 0) {
         throw "OCI context verification failed with exit code $PackageExitCode"
@@ -45,6 +55,9 @@ if ($IsOciContext) {
 }
 
 $VerificationArgs = @('verify') + [string[]]$VerifyArgs
+if ($null -ne $ReleaseInventory) {
+    $VerificationArgs += @('--release-inventory', $ReleaseInventory)
+}
 Invoke-PackagePython -PackageArgs $VerificationArgs
 if ($PackageExitCode -eq 11 -and $VerifyArgs.Contains('--structural-only')) { exit 11 }
 if ($PackageExitCode -ne 0) {
@@ -55,6 +68,9 @@ if ($null -eq $Artifact -or (Test-Path -LiteralPath $Artifact -PathType Containe
     throw '--report requires an archive artifact path'
 }
 $ReportArgs = @('report', $Artifact, '--check', $ReportPath)
+if ($null -ne $ReleaseInventory) {
+    $ReportArgs += @('--release-inventory', $ReleaseInventory)
+}
 Invoke-PackagePython -PackageArgs $ReportArgs
 if ($PackageExitCode -ne 0) {
     throw "package report verification failed with exit code $PackageExitCode"

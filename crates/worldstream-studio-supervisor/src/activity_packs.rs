@@ -71,7 +71,6 @@ pub struct HttpDaemonActivityPackSource {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
-    #[cfg(feature = "cli-operator-preview")]
     managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
@@ -89,14 +88,12 @@ impl HttpDaemonActivityPackSource {
             timeout,
             vault,
             host_authority,
-            #[cfg(feature = "cli-operator-preview")]
             managed: None,
         }
     }
 
     /// Uses retained managed Runtime ownership and same-socket proof before
     /// resolving Host authority. The explicit foreground constructor is unchanged.
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn new_managed(
         address: SocketAddr,
@@ -123,7 +120,6 @@ impl HttpDaemonActivityPackSource {
             .host_authority
             .as_ref()
             .ok_or(ActivityPackProxyErrorV1::AuthorityUnavailable)?;
-        #[cfg(feature = "cli-operator-preview")]
         if let Some(transport) = &self.managed {
             let mut authority_unavailable = false;
             let response = transport

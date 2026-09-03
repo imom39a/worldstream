@@ -54,7 +54,6 @@ use worldstream_studio_supervisor::{
 const DIGEST: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 
-#[cfg(feature = "cli-operator-preview")]
 #[tokio::test]
 async fn public_room_launch_reuses_the_retained_input_after_a_lost_reply()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -71,7 +70,9 @@ async fn public_room_launch_reuses_the_retained_input_after_a_lost_reply()
         open_launch_ready_setup(
             directory.path(),
             DurableProvisioner(Arc::clone(&provisions)),
-            ConsoleHealth(Arc::new(Mutex::new(ParticipantConsoleSessionHealthV1::Usable))),
+            ConsoleHealth(Arc::new(Mutex::new(
+                ParticipantConsoleSessionHealthV1::Usable,
+            ))),
             RunnerHealth(Arc::clone(&runner)),
             Launcher(Arc::clone(&launches)),
         )
@@ -101,16 +102,19 @@ async fn public_room_launch_reuses_the_retained_input_after_a_lost_reply()
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 async fn public_launch_request(
     app: &axum::Router,
     method: &str,
 ) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
-    let response = app.clone().oneshot(
-        Request::builder().method(method)
-            .uri(format!("/api/v1/rooms/{ROOM}/launch"))
-            .body(Body::empty())?,
-    ).await?;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(format!("/api/v1/rooms/{ROOM}/launch"))
+                .body(Body::empty())?,
+        )
+        .await?;
     let status = response.status();
     let body = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
     Ok((status, body))
@@ -666,6 +670,48 @@ fn unavailable_retained_secret_is_visible_only_as_safe_retryable_attention() {
     ] {
         assert!(!browser.contains(forbidden), "browser leaked {forbidden}");
     }
+}
+
+#[test]
+fn external_agent_without_a_profile_provisions_when_the_profile_store_exists() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
+        .unwrap_or_else(|error| unreachable!("vault: {error:?}"));
+    let profiles =
+        AgentProfileStoreV1::open(&directory.path().join("agent-profiles"), vault.clone())
+            .unwrap_or_else(|error| unreachable!("profile store: {error:?}"));
+    let mut draft = reviewed_draft();
+    let analyst = draft
+        .seats
+        .iter_mut()
+        .find(|seat| seat.seat_id == "analyst-1")
+        .unwrap_or_else(|| unreachable!("analyst seat"));
+    analyst.agent_profile = None;
+    let ledger = Arc::new(Mutex::new(ProvisionLedger::default()));
+    let supervisor = TaskSetupSupervisorV1::open(
+        &directory.path().join("setups"),
+        open_creation_for(directory.path(), &draft, room_response()),
+        vault,
+        DurableProvisioner(Arc::clone(&ledger)),
+    )
+    .unwrap_or_else(|error| unreachable!("setup supervisor: {error:?}"))
+    .with_agent_profiles(profiles.clone())
+    .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch));
+
+    let ready = supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("start setup: {error:?}"));
+    assert_eq!(ready.state, TaskSetupStateV1::Ready);
+    assert_eq!(ready.completed_stages, 3);
+    assert!(
+        profiles
+            .assignments()
+            .unwrap_or_else(|error| unreachable!("assignments: {error:?}"))
+            .assignments
+            .is_empty()
+    );
+    let ledger = ledger.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(ledger.runner_receipts.len(), 1);
 }
 
 #[test]
@@ -1247,9 +1293,10 @@ fn readiness_reports_exact_console_and_runner_reasons_and_optional_unfilled_is_n
         let status = supervisor
             .status("setup-alpha")
             .unwrap_or_else(|error| unreachable!("status: {error:?}"));
-        #[cfg(feature = "cli-operator-preview")]
         let reason = match reason {
-            TaskSeatReadinessReasonV1::ConsoleMissing | TaskSeatReadinessReasonV1::ConsoleStale => TaskSeatReadinessReasonV1::ParticipantUnsynchronized,
+            TaskSeatReadinessReasonV1::ConsoleMissing | TaskSeatReadinessReasonV1::ConsoleStale => {
+                TaskSeatReadinessReasonV1::ParticipantUnsynchronized
+            }
             _ => TaskSeatReadinessReasonV1::ParticipantUnavailable,
         };
         assert_eq!(status.readiness.seats[0].reason, reason);
@@ -1317,21 +1364,12 @@ fn filled_optional_seat_obeys_the_delivery_phase_launch_policy() {
         .unwrap_or_else(|error| unreachable!("start setup: {error:?}"));
     assert_eq!(status.state, TaskSetupStateV1::Ready);
     assert!(!status.readiness.seats[2].required);
-    #[cfg(feature = "cli-operator-preview")]
-    {
-        assert_eq!(status.readiness.seats[2].reason, TaskSeatReadinessReasonV1::ParticipantUnavailable);
-        assert!(status.readiness.ready_to_launch);
-        assert!(supervisor.launch("setup-alpha").is_ok());
-    }
-    #[cfg(not(feature = "cli-operator-preview"))]
-    {
-    assert_eq!(status.readiness.seats[2].reason, TaskSeatReadinessReasonV1::ConsoleDisconnected);
-    assert!(!status.readiness.ready_to_launch);
     assert_eq!(
-        supervisor.launch("setup-alpha"),
-        Err(worldstream_studio_supervisor::task_setup::TaskSetupErrorV1::NotReady)
+        status.readiness.seats[2].reason,
+        TaskSeatReadinessReasonV1::ParticipantUnavailable
     );
-    }
+    assert!(status.readiness.ready_to_launch);
+    assert!(supervisor.launch("setup-alpha").is_ok());
 }
 
 #[test]

@@ -47,7 +47,6 @@ struct SecretV1 {
 
 /// Immutable retained dependency binding; serialized only into the private
 /// approval preimage, never an operator receipt. Contains no secret bytes.
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Clone, Eq, PartialEq, Serialize)]
 pub(crate) struct RetainedProviderDependencyV1 {
     pub(crate) credential_id: String,
@@ -96,7 +95,6 @@ pub struct ModelProviderCredentialRegistryV1 {
     vault: FileSecretVaultV1,
 }
 impl ModelProviderCredentialRegistryV1 {
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn resolve_import_reference(
         root: &Path,
         credential_id: &str,
@@ -106,7 +104,6 @@ impl ModelProviderCredentialRegistryV1 {
         Ok(Self::review_import_dependency(root, credential_id, provider, vault)?.reference)
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn review_import_dependency(
         root: &Path,
         credential_id: &str,
@@ -133,7 +130,6 @@ impl ModelProviderCredentialRegistryV1 {
         })
     }
     /// Resolves retained declaration metadata without reading provider bytes.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn check_import(
         root: &Path,
         declaration: &crate::initialization_inputs::ProviderCredentialImportV1,
@@ -174,7 +170,6 @@ impl ModelProviderCredentialRegistryV1 {
     }
 
     /// Checks the complete resulting named catalog before any publication.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn check_import_capacity(
         root: &Path,
         declarations: &[crate::initialization_inputs::ProviderCredentialImportV1],
@@ -205,7 +200,6 @@ impl ModelProviderCredentialRegistryV1 {
     }
 
     /// Publishes a stable named provider using one retained pending vault reference.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn import_exact(
         root: &Path,
         declaration: &crate::initialization_inputs::ProviderCredentialImportV1,
@@ -381,7 +375,6 @@ impl ModelProviderCredentialRegistryV1 {
     }
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PendingProviderImportV1 {
@@ -390,7 +383,6 @@ struct PendingProviderImportV1 {
     secret: SecretV1,
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn check_import_directory(root: &Path) -> Result<(), ModelProviderCredentialErrorV1> {
     match fs::symlink_metadata(root) {
         Ok(_) => {
@@ -411,7 +403,6 @@ fn check_import_directory(root: &Path) -> Result<(), ModelProviderCredentialErro
     }
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn read_pending(
     path: &Path,
 ) -> Result<Option<PendingProviderImportV1>, ModelProviderCredentialErrorV1> {
@@ -442,7 +433,6 @@ fn read_pending(
     Ok(Some(value))
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn publish_import_record<T: Serialize + serde::de::DeserializeOwned + Eq>(
     target: &Path,
     record: &T,

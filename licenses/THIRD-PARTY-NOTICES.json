@@ -197,6 +197,18 @@
         "version": "1.1.2"
       },
       {
+        "checksum": "3ef1bb8d1b645fe38d51dfc331d720fb5fc2c94b440c76cc79c80ff265ca33e3",
+        "declared_license": "MIT",
+        "name": "atomicwrites",
+        "notice_ids": [
+          "sha256:89a0f9662c20fc93a9c6d25aee58c7d6073f1538e92b8fa668a3aed60b0beda3",
+          "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "sha256:c501d56a7b696d2550c3388ca8273b2a4074a12d5cd85fe9369fe9365982f626"
+        ],
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "version": "0.4.4"
+      },
+      {
         "checksum": "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90",
         "declared_license": "MIT",
         "name": "axum",
@@ -1681,6 +1693,22 @@
         "version": "0.12.1"
       },
       {
+        "checksum": "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab",
+        "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+        "name": "linux-raw-sys",
+        "notice_ids": [
+          "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "sha256:0fe34a84a21811b9d46d46a05f0ae9701f51cb491971f2fa7c66002f92f6b523",
+          "sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "sha256:a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "sha256:a6c48161a09acc75a0e25503bab66a731eb5fba5392ed4bb4743e4ba5085327a",
+          "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "sha256:e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e"
+        ],
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "version": "0.4.15"
+      },
+      {
         "checksum": "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965",
         "declared_license": "MIT OR Apache-2.0",
         "name": "lock_api",
@@ -2538,6 +2566,22 @@
         ],
         "source": "registry+https://github.com/rust-lang/crates.io-index",
         "version": "2.1.3"
+      },
+      {
+        "checksum": "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154",
+        "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+        "name": "rustix",
+        "notice_ids": [
+          "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "sha256:0faa6031b55341fc671734ff4f052dc06f3684935eccb03ddd90530d8b31b5cb",
+          "sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "sha256:a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "sha256:a6c48161a09acc75a0e25503bab66a731eb5fba5392ed4bb4743e4ba5085327a",
+          "sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+          "sha256:e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e"
+        ],
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "version": "0.38.44"
       },
       {
         "checksum": "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190",
@@ -8186,9 +8230,9 @@
     }
   },
   "inputs": {
-    "Cargo.lock": "sha256:63d4ba667342766c9502084f3b497b8142ca119c1c19f90a063d9372b34e2e33",
+    "Cargo.lock": "sha256:ce05aa10c21389babad95250e9fae49814e67c298398b11632c268cda04c76fc",
     "packaging/oci/base-image.txt": "sha256:f0ff1d331b9f7f31911f1ddc1899d2a236bc3302f9d84b80f297e8e96aa63bcf",
-    "pnpm-lock.yaml": "sha256:26dfd94b1a43549a7298422d4a41096f50908a4e2d67a2675c836e63d597c89e",
+    "pnpm-lock.yaml": "sha256:2b1b5256b64b9855dede1927ee0751ad3a93afcb9c5e7885f41b2ab52e28094d",
     "spdx_license_list_revision": "c4a7237ec8f4654e867546f9f409749300f1bf4c"
   },
   "license_kinds": {
@@ -8237,8 +8281,8 @@
   },
   "notices": {
     "path": "licenses/THIRD-PARTY-NOTICES.txt",
-    "sha256": "sha256:9c24360554b6cfdd0daa1c59dc2ee33e7a2e86210e0470cc1f37f778922d0d9a",
-    "size_bytes": 1243330
+    "sha256": "sha256:911b5f594e70fbea844fab8b4d2696545a19c2149473c9a02ee438836b9f522a",
+    "size_bytes": 1245620
   },
   "schema": "worldstream/third-party-notices/v1"
 }

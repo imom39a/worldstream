@@ -35,24 +35,18 @@ fn initialization_preview_is_nonmutating_and_honors_the_delivery_boundary()
     let output = control(directory.path(), &["init", "--preview", "--json"])?;
     let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(fs::read_dir(directory.path())?.count(), 0);
-    if cfg!(feature = "cli-operator-preview") {
-        assert_eq!(output.status.code(), Some(0));
-        assert_eq!(report["status"], "complete");
-        assert_eq!(report["initialization"]["mode"], "preview");
-        assert!(
-            report["initialization"]["config_path"]
-                .as_str()
-                .is_some_and(|path| Path::new(path)
-                    .ends_with(Path::new(".worldstream").join("worldstream.toml")))
-        );
-    } else {
-        assert_eq!(output.status.code(), Some(3));
-        assert_eq!(report["code"], "not_implemented");
-    }
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(report["status"], "complete");
+    assert_eq!(report["initialization"]["mode"], "preview");
+    assert!(
+        report["initialization"]["config_path"]
+            .as_str()
+            .is_some_and(|path| Path::new(path)
+                .ends_with(Path::new(".worldstream").join("worldstream.toml")))
+    );
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[test]
 fn fresh_initialization_returns_a_reusable_config_and_repeat_preserves_it()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -93,7 +87,6 @@ fn fresh_initialization_returns_a_reusable_config_and_repeat_preserves_it()
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[test]
 fn explicit_control_rotation_uses_only_local_access_and_never_prints_credentials()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -134,7 +127,6 @@ fn explicit_control_rotation_uses_only_local_access_and_never_prints_credentials
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[test]
 fn preview_config_selection_preserves_explicit_over_environment_precedence()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -165,7 +157,6 @@ fn preview_config_selection_preserves_explicit_over_environment_precedence()
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[test]
 fn rejected_initialization_never_echoes_configuration_values()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -188,7 +179,6 @@ fn rejected_initialization_never_echoes_configuration_values()
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[test]
 fn rotation_does_not_initialize_missing_control_state() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

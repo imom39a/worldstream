@@ -3,7 +3,7 @@
 
 The installer copies one reviewed host executable to a digest-addressed,
 owner-only location and publishes only immutable owner manifests. It does not
-create a Studio Agent Profile or place a provider credential in a command line,
+create an Agent Profile or place a provider credential in a command line,
 environment variable, manifest, or diagnostic.
 """
 

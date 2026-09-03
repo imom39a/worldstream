@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Run IMO-88's real managed Counter proof with disposable local fixtures.
+"""Run IMO-88's retained Controller-level Counter regression harness.
 
-The local OpenAI-compatible provider is a deterministic development fixture,
-not a recommendation for a production model-provider integration.  This is an
-API-level Studio proof; the separate v2 ``run_live_acceptance.py`` is unchanged.
+This internal harness predates the CLI-first cutover and calls lower-level
+Controller HTTP operations directly. It is not an onboarding path or evidence
+that the supported CLI flow passed. Retained ``studio`` schema, state-path,
+report, and variable names are compatibility identifiers, not a web frontend.
+The local OpenAI-compatible provider remains a deterministic development
+fixture, not a production model-provider recommendation.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 REPOSITORY = Path(__file__).resolve().parents[2]
+INTERNAL_HANDOFF_REQUEST_ORIGIN = "http://127.0.0.1:5184"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(REPOSITORY / "sdk/python/src"))
 from install_managed_counter_fixture import (
@@ -317,7 +321,7 @@ def request(
             error_body = payload.get("error", {}) if isinstance(payload, dict) else {}
             code = error_body.get("code") if isinstance(error_body, dict) else None
             if code is None and isinstance(payload, dict):
-                # Studio's local adapters use a flat closed error envelope.
+                # The retained Controller adapters use a flat closed error envelope.
                 code = payload.get("code")
             if code == "room_draft_validation_failed" and isinstance(error_body, dict):
                 fields = error_body.get("field_errors")
@@ -450,15 +454,15 @@ def _assert_public(value: Any) -> None:
 
 
 def private_ack(base: str, canary_dir: Path) -> tuple[Path, Path]:
-    """Use the protected human-seat handoff, never a second capability mint."""
-    studio_origin, console_origin = "http://127.0.0.1:5174", "http://127.0.0.1:5173"
+    """Exercise the retained browser handoff without minting another capability."""
+    console_origin = "http://127.0.0.1:5173"
     try:
         issued = request(
             base,
             "/api/v1/participant-console/handoffs",
             method="POST",
             body={"draft_id": "managed-counter", "seat_id": "human-counter"},
-            extra_headers={"Origin": studio_origin},
+            extra_headers={"Origin": INTERNAL_HANDOFF_REQUEST_ORIGIN},
         )
     except AcceptanceFailure as error:
         raise AcceptanceFailure(f"human_handoff_issue_{error.code}") from error
@@ -874,6 +878,9 @@ def run_acceptance(args: argparse.Namespace) -> dict[str, Any]:
                 str(config),
                 "--state-dir",
                 str(root / "studio"),
+                # Retained compatibility flag for the internal browser-origin route.
+                "--studio-origin",
+                INTERNAL_HANDOFF_REQUEST_ORIGIN,
                 "--runner-templates-dir",
                 str(root / "runner-templates"),
                 "--model-provider-credentials-dir",

@@ -13,59 +13,43 @@ pub mod assignment_mcp_operations;
 pub mod attention_inbox;
 pub mod backups;
 pub mod client_bindings;
-#[cfg(feature = "cli-operator-preview")]
 pub mod configuration_resolution;
+mod configuration_safety;
 pub mod control_access;
 pub mod control_admission;
-#[cfg(feature = "cli-operator-preview")]
 pub mod initialization_imports;
 pub mod initialization_inputs;
 pub mod lifecycle;
-#[cfg(feature = "cli-operator-preview")]
 pub mod local_initialization;
 pub mod managed_activation_status;
 pub mod managed_agent_host;
 pub mod managed_agent_host_seats;
-#[cfg(feature = "cli-operator-preview")]
 pub mod managed_controller;
-#[cfg(feature = "cli-operator-preview")]
 pub mod managed_daemon_transport;
-#[cfg(feature = "cli-operator-preview")]
 pub mod managed_http;
-#[cfg(feature = "cli-operator-preview")]
 pub mod managed_lifecycle;
 pub mod model_provider_credentials;
-#[cfg(feature = "cli-operator-preview")]
 pub mod operator_connection;
 pub mod participant_handoff;
-#[cfg(feature = "cli-operator-preview")]
 pub mod process_ownership;
-#[cfg(feature = "cli-operator-preview")]
 pub mod process_runtime;
 mod protected_publication;
-#[cfg(feature = "cli-operator-preview")]
 pub mod retained_server_inspection;
 pub mod room_creation;
 pub mod room_drafts;
-#[cfg(feature = "cli-operator-preview")]
 pub mod room_launch;
-#[cfg(feature = "cli-operator-preview")]
 pub mod room_setup_operations;
-#[cfg(feature = "cli-operator-preview")]
 pub mod room_setup_spec;
 pub mod rooms;
 pub mod runner_attention;
 pub mod runner_templates;
-#[cfg(feature = "cli-operator-preview")]
 pub mod scoped_connections;
-#[cfg(feature = "cli-operator-preview")]
 pub mod scoped_runners;
 
 pub mod secrets;
 pub mod startup_authority;
 pub mod task_setup;
 pub mod task_templates;
-#[cfg(feature = "cli-operator-preview")]
 pub mod verified_control;
 
 use std::{

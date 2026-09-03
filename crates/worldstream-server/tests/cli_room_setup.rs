@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use std::{
     env, fs,
     process::{Command, Output, Stdio},

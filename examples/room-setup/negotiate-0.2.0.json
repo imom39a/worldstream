@@ -1,0 +1,66 @@
+{
+  "schema": "worldstream/room-setup/v1",
+  "pack": {
+    "id": "worldstream.negotiate",
+    "version": "0.2.0",
+    "digest": "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c"
+  },
+  "configuration": {
+    "a202_revision": "fa85aa8b49bfe7b3f7ded487c98500a600e92e41",
+    "formation_deadline": 4102444800,
+    "session_id": "ses_northstar_delta_worldstream_01",
+    "transaction_id": "txn_calibration_worldstream_01"
+  },
+  "seats": [
+    {
+      "label": "buyer-agent",
+      "role": "buyer_agent",
+      "required": true,
+      "display_name": "buyer agent",
+      "principal": {
+        "reference": "buyer_agent",
+        "kind": "agent"
+      },
+      "assignment": {
+        "mode": "external"
+      }
+    },
+    {
+      "label": "seller-agent",
+      "role": "seller_agent",
+      "required": true,
+      "display_name": "seller agent",
+      "principal": {
+        "reference": "seller_agent",
+        "kind": "agent"
+      },
+      "assignment": {
+        "mode": "external"
+      }
+    },
+    {
+      "label": "buyer-approver",
+      "role": "buyer_approver",
+      "required": true,
+      "display_name": "buyer approver",
+      "principal": {
+        "reference": "buyer_approver",
+        "kind": "human"
+      }
+    },
+    {
+      "label": "venue-signer",
+      "role": "venue_signer",
+      "required": true,
+      "display_name": "venue signer",
+      "principal": {
+        "reference": "venue_signer",
+        "kind": "agent"
+      },
+      "assignment": {
+        "mode": "external"
+      }
+    }
+  ],
+  "operator_view": false
+}

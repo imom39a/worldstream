@@ -1,5 +1,5 @@
 //! A timed-out owned Runner must not become a stopped record after reopen.
-#![cfg(all(feature = "cli-operator-preview", unix))]
+#![cfg(unix)]
 
 use std::{
     fs,

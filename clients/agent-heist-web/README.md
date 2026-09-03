@@ -6,7 +6,7 @@ from authorized WorldStream delivery into that UI. It exports
 `RecordedAgentHeistWorkspace` for the recorded demos site.
 
 The Vite entry point on `127.0.0.1:5175` is an isolated component-development
-surface. It is **not** a Supervisor handoff origin in the frozen single-origin
+surface. It is **not** a Controller handoff origin in the frozen single-origin
 milestone, so it cannot redeem a production participant handoff. Live handoffs
 must mount `AgentHeistClient` at `http://127.0.0.1:5173/agent-heist/` inside the
 first-party Client Host; that origin also owns `/inspector/`.

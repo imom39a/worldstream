@@ -19,6 +19,7 @@ permissions:
 env:
   WORLDSTREAM_BUILD_REVISION: ${{ github.sha }}
   WORLDSTREAM_BASE_IMAGE: alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+  WORLDSTREAM_RELEASE_INVENTORY: worldstream/release-inventory/cli-first-v1
 
 jobs:
   release-clock:
@@ -172,6 +173,7 @@ jobs:
             --output reports/native-linux-build-environment.json
           SOURCE_DATE_EPOCH=0 scripts/package-release.sh \
             --target linux-x86_64 \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --binary-dir target/x86_64-unknown-linux-musl/release \
             --ui-dir web/console/dist \
             --sdk-dir sdk/python \
@@ -181,7 +183,8 @@ jobs:
             --output dist/linux \
             --report reports/native-linux-package.json
           scripts/verify-release.sh \
-            dist/linux/worldstream-$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')-linux-x86_64.tar.gz
+            dist/linux/worldstream-$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')-linux-x86_64.tar.gz \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY"
       - name: Build Windows release archive
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}
         shell: pwsh
@@ -206,8 +209,8 @@ jobs:
           $env:WORLDSTREAM_RELEASE_PYTHON = (uv python find 3.14.7).Trim()
           & $env:WORLDSTREAM_RELEASE_PYTHON -I scripts/package.py capture-build-environment --target windows-x64 --output reports/native-windows-build-environment.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & scripts/package-release.ps1 --target windows-x64 --binary-dir target/x86_64-pc-windows-msvc/release --ui-dir web/console/dist --sdk-dir sdk/python --examples-dir examples --licenses-dir licenses --build-environment reports/native-windows-build-environment.json --output dist/windows --report $report
-          & scripts/verify-release.ps1 $archive
+          & scripts/package-release.ps1 --target windows-x64 --release-inventory $env:WORLDSTREAM_RELEASE_INVENTORY --binary-dir target/x86_64-pc-windows-msvc/release --ui-dir web/console/dist --sdk-dir sdk/python --examples-dir examples --licenses-dir licenses --build-environment reports/native-windows-build-environment.json --output dist/windows --report $report
+          & scripts/verify-release.ps1 $archive --release-inventory $env:WORLDSTREAM_RELEASE_INVENTORY
       - name: Configure pinned docker-container Buildx for OCI export
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -363,6 +366,7 @@ jobs:
           uv run --python 3.14.7 --no-project python scripts/native-package-smoke.py \
             --package-archive "dist/linux/worldstream-${version}-linux-x86_64.tar.gz" \
             --package-report reports/native-linux-package.json \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --admin-dsn-file "$WORLDSTREAM_POSTGRES_DSN_FILE" \
             --control-output "$packaged_control" \
             --report reports/native-linux-package-runtime.json
@@ -376,6 +380,7 @@ jobs:
           uv run --python 3.14.7 --no-project python scripts/native-package-smoke.py `
             --package-archive "dist/windows/worldstream-$version-windows-x64.zip" `
             --package-report reports/native-windows-package.json `
+            --release-inventory $env:WORLDSTREAM_RELEASE_INVENTORY `
             --admin-dsn-file $env:WORLDSTREAM_POSTGRES_DSN_FILE `
             --control-output $packagedControl `
             --report reports/native-windows-package-runtime.json
@@ -399,6 +404,7 @@ jobs:
           archive="dist/linux/worldstream-${version}-linux-x86_64.tar.gz"
           "$release_python" -I scripts/release-platform-diagnostic.py native \
             --source native-linux \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --package-report reports/native-linux-package.json \
             --gate-report reports/native-linux-x86_64.json \
             --runtime-report reports/native-linux-package-runtime.json \
@@ -439,6 +445,7 @@ jobs:
           $releasePython = (uv python find 3.14.7).Trim()
           & $releasePython -I scripts/release-platform-diagnostic.py native `
             --source native-windows `
+            --release-inventory $env:WORLDSTREAM_RELEASE_INVENTORY `
             --package-report reports/native-windows-package.json `
             --gate-report reports/native-windows-x64.json `
             --runtime-report reports/native-windows-package-runtime.json `
@@ -820,6 +827,7 @@ jobs:
             scripts/postgres-packaged-acceptance.py \
             --package-archive "${archives[0]}" \
             --package-report "${reports[0]}" \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --browser "$WORLDSTREAM_PINNED_BROWSER" \
             --browser-version "$WORLDSTREAM_PINNED_BROWSER_VERSION" \
             --browser-sha256 "$WORLDSTREAM_PINNED_BROWSER_SHA256" \
@@ -878,13 +886,15 @@ jobs:
           archives=(package-input/worldstream-*-linux-x86_64.tar.gz)
           reports=(package-input/native-linux-package.json)
           [[ "${#archives[@]}" -eq 1 && "${#reports[@]}" -eq 1 ]]
-          scripts/verify-release.sh "${archives[0]}"
+          scripts/verify-release.sh "${archives[0]}" \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY"
           mkdir -p reports package-extracted
           daemon=package-extracted/worldstreamd
           uv run --python 3.14.7 --project sdk/python --locked python \
             scripts/release-package-extract.py \
             --archive "${archives[0]}" \
             --package-report "${reports[0]}" \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --output "$daemon" \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json \
@@ -1020,6 +1030,7 @@ jobs:
             scripts/release-package-extract.py \
             --archive "${archives[0]}" \
             --package-report "${reports[0]}" \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --output "$daemon" \
             --sdk-output "$sdk_root" \
             --manifest-toml compatibility.toml \
@@ -1144,7 +1155,6 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm pack:build
           pnpm ui:build
-          pnpm studio:build
       - name: Install pinned gate Python
         run: |
           uv python install 3.14.7
@@ -1166,13 +1176,15 @@ jobs:
             --output "$source_environment"
           SOURCE_DATE_EPOCH=0 scripts/package-release.sh \
             --target source \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --source-dir . \
             --build-environment "$source_environment" \
             --output "$source_payload" \
             --report "$source_report"
           version=$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
           scripts/verify-release.sh \
-            "$source_payload/worldstream-${version}-source.tar.gz"
+            "$source_payload/worldstream-${version}-source.tar.gz" \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY"
       - name: Download native and OCI release artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -1222,7 +1234,7 @@ jobs:
           source_archive="$RUNNER_TEMP/worldstream-clean-source-payload/worldstream-${version}-source.tar.gz"
           test -f "$source_archive" && test ! -L "$source_archive"
           cp --no-clobber "$source_archive" release-inputs/payload/
-      - name: Build and bind the twelve deterministic portable release subjects
+      - name: Build and bind the eleven deterministic portable release subjects
         run: |
           set -euo pipefail
           version=$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
@@ -1235,6 +1247,7 @@ jobs:
           cp --recursive --no-clobber qualification/outside-adopter-v1 release-inputs/portable/documentation/outside-adopter-kit
           "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/starter-release-subjects.py build \
             --version "$version" \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --output-dir release-inputs/starter-subjects \
             --compatibility-json compatibility.json \
             --subject worldstream-a202-adapter=release-inputs/portable/a202 \
@@ -1247,7 +1260,6 @@ jobs:
             --subject worldstream-pack-toolchain=sdk/typescript-pack/packages/pack-cli/dist \
             --subject worldstream-participant-console=web/console/dist \
             --subject worldstream-release-metadata=release-inputs/release-metadata \
-            --subject worldstream-studio=web/studio/dist \
             --subject worldstream-typescript-pack-sdk=sdk/typescript-pack/packages/pack-sdk/dist
           cp --no-clobber release-inputs/starter-subjects/* release-inputs/payload/
       - name: Collect platform gate reports
@@ -1347,6 +1359,7 @@ jobs:
           test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
           "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py \
             --prepare-unsigned \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --release-dir dist \
             --payload-dir release-inputs/payload \
             --manifest-toml compatibility.toml \
@@ -1376,9 +1389,9 @@ jobs:
           test -f "$inventory" && test ! -L "$inventory"
           test ! -e dist/supply-chain/subject-inventory.bundle.json
           test ! -e dist/sigstore.bundle.json
-          test "$(find dist -type f | wc -l)" -eq 37
+          test "$(find dist -type f | wc -l)" -eq 36
           test "$(find dist/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
-          test "$(wc -l < dist/SHA256SUMS)" -eq 33
+          test "$(wc -l < dist/SHA256SUMS)" -eq 32
           (cd dist && sha256sum --strict --check SHA256SUMS)
           version=$("$WORLDSTREAM_RELEASE_PYTHON" -I -c 'import tomllib; print(tomllib.load(open("compatibility.toml", "rb"))["contracts"]["product"])')
           printf 'inventory_sha256=%s\n' "$(sha256sum "$inventory" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
@@ -1435,9 +1448,9 @@ jobs:
           test ! -e signing-input/supply-chain/subject-inventory.bundle.json
           test ! -e signing-input/sigstore.bundle.json
           test "$(find signing-input -type l | wc -l)" -eq 0
-          test "$(find signing-input -type f | wc -l)" -eq 37
+          test "$(find signing-input -type f | wc -l)" -eq 36
           test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
-          test "$(wc -l < signing-input/SHA256SUMS)" -eq 33
+          test "$(wc -l < signing-input/SHA256SUMS)" -eq 32
           test "$(sha256sum "$inventory" | cut -d ' ' -f 1)" = "$EXPECTED_INVENTORY_SHA256"
           test "$(stat -c %s "$inventory")" = "$EXPECTED_INVENTORY_SIZE_BYTES"
           test "$(cd signing-input && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "$EXPECTED_LAYOUT_SHA256"
@@ -1529,6 +1542,7 @@ jobs:
           set -euo pipefail
           "$WORLDSTREAM_RELEASE_PYTHON" -I scripts/release-supply-chain.py \
             --finalize-signed \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --release-dir dist \
             --producer-output release-inputs/pre-sign/supply-chain-producer.json \
             --source-output release-inputs/source-reports/checksums-signature-sbom-provenance.json \
@@ -1575,19 +1589,20 @@ jobs:
           cp --no-clobber "dist/worldstream-${version}-pack-toolchain.tar.gz" final-inputs/payload/
           cp --no-clobber "dist/worldstream-${version}-participant-console.tar.gz" final-inputs/payload/
           cp --no-clobber "dist/worldstream-${version}-release-metadata.tar.gz" final-inputs/payload/
-          cp --no-clobber "dist/worldstream-${version}-studio.tar.gz" final-inputs/payload/
           cp --no-clobber "dist/worldstream-${version}-typescript-pack-sdk.tar.gz" final-inputs/payload/
           scripts/release-evidence-assemble.sh \
             --release-dir dist \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --payload-dir final-inputs/payload \
             --reports-dir release-inputs/reports \
             --manifest-toml compatibility.toml \
             --manifest-json compatibility.json \
             --check-inputs
-      - name: Assemble detached v2 release manifest
+      - name: Assemble detached v3 release manifest
         run: |
           scripts/release-evidence-assemble.sh \
             --release-dir dist \
+            --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" \
             --payload-dir final-inputs/payload \
             --reports-dir release-inputs/reports \
             --manifest-toml compatibility.toml \
@@ -1604,7 +1619,7 @@ jobs:
           test -f dist/supply-chain/subject-inventory.bundle.json
           test ! -e dist/sigstore.bundle.json
           test "$(find dist -type l | wc -l)" -eq 0
-          test "$(find dist -type f | wc -l)" -eq 57
+          test "$(find dist -type f | wc -l)" -eq 56
           test "$(find dist/evidence -maxdepth 1 -type f | wc -l)" -eq 18
           test "$(find dist/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
           (cd dist && sha256sum --strict --check SHA256SUMS)
@@ -1665,7 +1680,7 @@ jobs:
           test -f "$inventory_bundle" && test ! -L "$inventory_bundle"
           test ! -e signing-input/sigstore.bundle.json
           test "$(find signing-input -type l | wc -l)" -eq 0
-          test "$(find signing-input -type f | wc -l)" -eq 57
+          test "$(find signing-input -type f | wc -l)" -eq 56
           test "$(find signing-input/evidence -maxdepth 1 -type f | wc -l)" -eq 18
           test "$(find signing-input/supply-chain/subjects -maxdepth 1 -type f | wc -l)" -eq 17
           test "$(sha256sum "$inventory" | cut -d ' ' -f 1)" = "$EXPECTED_INVENTORY_SHA256"
@@ -1768,11 +1783,11 @@ jobs:
           test ! -e dist/sigstore.bundle.json
           cp --no-clobber "$bundle" dist/sigstore.bundle.json
           test "$(find dist -type l | wc -l)" -eq 0
-          test "$(find dist -type f | wc -l)" -eq 58
+          test "$(find dist -type f | wc -l)" -eq 57
       - name: Verify both detached release signatures and all subjects
-        run: scripts/verify-release.sh dist
+        run: scripts/verify-release.sh dist --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY"
       - name: Run final release gate without OIDC
-        run: uv run --python 3.14.7 --no-project python scripts/gates.py release --ci --strict --report reports/release-gate.json --handoff reports/release-evidence-handoff.json --offline
+        run: uv run --python 3.14.7 --no-project python scripts/gates.py release --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY" --ci --strict --report reports/release-gate.json --handoff reports/release-evidence-handoff.json --offline
       - name: Upload immutable verified release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

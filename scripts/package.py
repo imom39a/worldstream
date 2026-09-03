@@ -47,6 +47,15 @@ def load_release_build_identity():
 BUILD_IDENTITY = load_release_build_identity()
 
 ROOT = Path(__file__).resolve().parents[1]
+INVENTORY_PATH = Path(__file__).with_name("release_inventory.py")
+INVENTORY_SPEC = importlib.util.spec_from_file_location(
+    "worldstream_package_release_inventory", INVENTORY_PATH
+)
+if INVENTORY_SPEC is None or INVENTORY_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot load {INVENTORY_PATH}")
+INVENTORY = importlib.util.module_from_spec(INVENTORY_SPEC)
+sys.modules[INVENTORY_SPEC.name] = INVENTORY
+INVENTORY_SPEC.loader.exec_module(INVENTORY)
 DEFAULT_UI = ROOT / "web/console/dist"
 DEFAULT_UI_VERSION = ROOT / "web/console/package.json"
 DEFAULT_SDK = ROOT / "sdk/python"
@@ -251,6 +260,33 @@ TARGETS = {
         source=True,
     ),
 }
+
+
+def inventory_contract(release_inventory: str | None = None):
+    try:
+        return INVENTORY.resolve(release_inventory)
+    except ValueError as error:
+        raise PackageError(str(error)) from error
+
+
+def target_for_inventory(
+    target: Target, release_inventory: str | None = None
+) -> Target:
+    """Return the native payload contract for one release inventory."""
+
+    profile = inventory_contract(release_inventory)
+    if target.source or target.oci or profile is INVENTORY.LEGACY:
+        return target
+    suffix = ".exe" if target.name == "windows-x64" else ""
+    return Target(
+        target.name,
+        target.archive_suffix,
+        tuple(name + suffix for name in profile.native_binaries),
+        target.expected_system,
+        target.expected_machine,
+        oci=target.oci,
+        source=target.source,
+    )
 
 
 def fail(message: str) -> None:
@@ -1574,6 +1610,7 @@ def collect_package_files(
     observed_build_environment: dict | None = None,
     require_hosted_environment: bool = False,
     require_clean_checkout: bool = True,
+    release_inventory: str | None = None,
 ) -> list[tuple[str, bytes]]:
     files = [
         ("manifest/compatibility.toml", manifest_toml),
@@ -1645,6 +1682,7 @@ def collect_package_files(
         manifest_sha256=sha256_bytes(manifest_json),
         base_image=base_image,
         observed_build_environment=observed_build_environment,
+        release_inventory=release_inventory,
     )
     files.append(
         (BUILD_IDENTITY.BUILD_METADATA_PATH, BUILD_IDENTITY.canonical_json(build))
@@ -1776,7 +1814,8 @@ def write_archive_atomically(
 
 
 def package(args: argparse.Namespace) -> int:
-    target = TARGETS[args.target]
+    release_inventory = getattr(args, "release_inventory", None)
+    target = target_for_inventory(TARGETS[args.target], release_inventory)
     source_dir = getattr(args, "source_dir", None)
     binary_dir = Path(args.binary_dir)
     ui_dir = Path(args.ui_dir)
@@ -1852,6 +1891,7 @@ def package(args: argparse.Namespace) -> int:
         source_revision=getattr(args, "source_revision", None),
         observed_build_environment=observed_build_environment,
         require_hosted_environment=require_hosted_environment,
+        release_inventory=release_inventory,
     )
     archive_name = f"worldstream-{version}-{target.name}{target.archive_suffix}"
     output = Path(args.output)
@@ -2218,11 +2258,26 @@ def validate_packaged_artifact_paths(
             )
 
 
-def validate_manifest_identity(
-    metadata: dict, manifest: dict, manifest_json: bytes
-) -> None:
-    if metadata.get("schema") != DETACHED_RELEASE_MANIFEST_SCHEMA:
-        fail("release manifest schema identity is invalid")
+def validate_manifest_identity(metadata: dict, manifest: dict, manifest_json: bytes):
+    try:
+        profile = INVENTORY.identity_from_manifest(metadata)
+    except ValueError as error:
+        fail(str(error))
+    fields = {
+        "schema",
+        "product",
+        "source_version",
+        "manifest",
+        "artifacts",
+        "artifact_digests",
+        "evidence",
+        "evidence_digests",
+        "verification_material",
+    }
+    if profile.serialized_discriminator:
+        fields.add("release_inventory")
+    if set(metadata) != fields:
+        fail("release manifest has unknown or missing fields")
     if metadata.get("product") != manifest["release_candidate"]:
         fail("release manifest product differs from compatibility manifest")
     if metadata.get("source_version") != manifest["release_candidate"]:
@@ -2236,6 +2291,7 @@ def validate_manifest_identity(
         fail("release manifest mirror manifest identity is invalid")
     if identity.get("sha256") != sha256_bytes(manifest_json):
         fail("release manifest compatibility JSON digest does not match manifest bytes")
+    return profile
 
 
 def validate_sigstore_shape(value: dict) -> None:
@@ -2859,6 +2915,7 @@ def verify_release_directory(
     structural_only: bool,
     manifest_toml_path: Path = MANIFEST_TOML,
     manifest_json_path: Path = MANIFEST_JSON,
+    release_inventory: str | None = None,
 ) -> int:
     """Verify the release bundle without ever treating shape as a signature."""
 
@@ -2874,19 +2931,26 @@ def verify_release_directory(
         manifest, _, manifest_json = read_manifest(
             manifest_toml_path, manifest_json_path
         )
-    validate_manifest_identity(metadata, manifest, manifest_json)
+    profile = validate_manifest_identity(metadata, manifest, manifest_json)
+    if (
+        release_inventory is not None
+        and inventory_contract(release_inventory) is not profile
+    ):
+        fail(
+            "release manifest inventory differs from the explicitly selected "
+            "release inventory"
+        )
     validate_release_manifest(manifest, dry_run=False)
     artifacts = metadata.get("artifacts")
     if not isinstance(artifacts, dict) or not artifacts:
         fail("release manifest artifacts must be a non-empty id-to-path object")
-    declared = set(RELEASE_ARTIFACT_IDS)
+    declared = set(profile.release_artifact_ids)
     if set(artifacts) != declared:
         fail("release manifest artifact IDs do not match compatibility manifest")
     artifact_digests = metadata.get("artifact_digests")
-    if (
-        not isinstance(artifact_digests, dict)
-        or set(artifact_digests) != DETACHED_DIGEST_ARTIFACT_IDS
-    ):
+    if not isinstance(artifact_digests, dict) or set(artifact_digests) != set(
+        profile.release_artifact_ids
+    ) - {"sigstore-bundle"}:
         fail(
             "release manifest artifact_digests must cover every signed subject "
             "and must exclude the Sigstore verification bundle"
@@ -3000,7 +3064,7 @@ def verify_release_directory(
     }
     payload_subject_paths = {
         artifact_id: release_dir / artifact_path_by_id[artifact_id]
-        for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+        for artifact_id in profile.payload_artifact_ids
     }
     try:
         verifier.validate_normalized_evidence_reports(
@@ -3017,6 +3081,7 @@ def verify_release_directory(
             manifest["release_candidate"],
             manifest["contracts"],
             sha256_bytes(manifest_json),
+            profile.identity,
         )
     except verifier.AssemblyError as error:
         fail(f"release evidence verification failed: {error}")
@@ -3039,8 +3104,8 @@ def verify_release_directory(
         fail("checksums artifact must be named SHA256SUMS")
     checksums = parse_checksums(bounded_regular_bytes(checksums_path, "SHA256SUMS"))
     checksum_artifact_paths = {artifacts["checksums"]}
-    # Checksums cover all sixteen distributable subjects and every signed
-    # non-supply-chain source report. The supply-chain report is emitted
+    # Checksums cover every payload in the selected release profile and every
+    # signed non-supply-chain source report. The supply-chain report is emitted
     # after these sidecars exist and is deliberately excluded.
     pre_sign_subject_paths = {
         f"supply-chain/subjects/{evidence_id}.json"
@@ -3048,8 +3113,7 @@ def verify_release_directory(
         if evidence_id != "checksums-signature-sbom-provenance"
     }
     required_checksum_paths = {
-        artifact_path_by_id[artifact_id]
-        for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+        artifact_path_by_id[artifact_id] for artifact_id in profile.payload_artifact_ids
     } | pre_sign_subject_paths
     if set(checksums) != required_checksum_paths:
         missing = sorted(required_checksum_paths - set(checksums))
@@ -3098,6 +3162,7 @@ def verify_release_directory(
             )
         )
         for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+        if artifact_id in profile.payload_artifact_ids
     }
     expected_subjects.update(
         {
@@ -3138,6 +3203,7 @@ def verify_release_directory(
                 for artifact_id in BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS
             },
             require_github=True,
+            release_inventory=profile.identity,
         )
     except BUILD_IDENTITY.IdentityError as error:
         fail(f"release source/component/build identity graph rejected: {error}")
@@ -3367,7 +3433,7 @@ def runtime_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def _verify_archive(path: Path) -> None:
+def _verify_archive(path: Path, release_inventory: str | None = None) -> None:
     if path.is_symlink() or not path.is_file():
         fail(f"archive is missing: {path}")
     entries = archive_entries(path)
@@ -3403,7 +3469,8 @@ def _verify_archive(path: Path) -> None:
         "source",
     }:
         fail("archive metadata has an unsupported target profile")
-    target_profile = TARGETS[target]
+    profile = inventory_contract(release_inventory)
+    target_profile = target_for_inventory(TARGETS[target], profile.identity)
     validate_archive_layout(names, root, target_profile)
     expected_root = f"worldstream-{version}-{target}"
     if root != expected_root:
@@ -3419,10 +3486,8 @@ def _verify_archive(path: Path) -> None:
             f"{root}/source/compatibility.json",
         ]
     else:
-        binary_suffix = ".exe" if target == "windows-x64" else ""
         required_prefixes = [
-            f"{root}/bin/worldstreamd{binary_suffix}",
-            f"{root}/bin/worldstreamctl{binary_suffix}",
+            *(f"{root}/bin/{binary}" for binary in target_profile.binary_names),
             f"{root}/ui/index.html",
             f"{root}/sdk/python/pyproject.toml",
             f"{root}/sdk/python/uv.lock",
@@ -3549,6 +3614,7 @@ def _verify_archive(path: Path) -> None:
             target=target,
             manifest_sha256=sha256_bytes(entries[manifest_path]),
             source_date_epoch=source_date_epoch,
+            release_inventory=profile.identity,
         )
         if target == "source":
             source_entries = {
@@ -3567,6 +3633,7 @@ def _verify_archive(path: Path) -> None:
                 revision=revision_content.decode("ascii").strip(),
                 source_date_epoch=source_date_epoch,
                 manifest_sha256=sha256_bytes(entries[manifest_path]),
+                release_inventory=profile.identity,
             )
         else:
             source_entries = BUILD_IDENTITY.source_entries_from_root(ROOT)
@@ -3612,11 +3679,11 @@ def _verify_archive(path: Path) -> None:
     )
 
 
-def verify_archive(path: Path) -> None:
+def verify_archive(path: Path, release_inventory: str | None = None) -> None:
     """Fail closed with one stable package error for malformed container bytes."""
 
     try:
-        _verify_archive(path)
+        _verify_archive(path, release_inventory)
     except PackageError:
         raise
     except (EOFError, OSError, tarfile.TarError, zipfile.BadZipFile) as error:
@@ -3666,7 +3733,7 @@ def archive_report(path: Path) -> dict:
 
 def write_archive_report(args: argparse.Namespace) -> int:
     path = Path(args.artifact)
-    verify_archive(path)
+    verify_archive(path, getattr(args, "release_inventory", None))
     report = archive_report(path)
     if args.check:
         if Path(args.check).is_symlink() or not Path(args.check).is_file():
@@ -3863,6 +3930,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--build-environment",
         help="canonical observation emitted by capture-build-environment",
     )
+    package_parser.add_argument(
+        "--release-inventory",
+        choices=tuple(INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves the historical profile",
+    )
     package_parser.add_argument("--dry-run", action="store_true")
     package_parser.set_defaults(function=package)
 
@@ -3872,6 +3944,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--structural-only",
         action="store_true",
         help="verify release documents without claiming cryptographic signature verification",
+    )
+    verify_parser.add_argument(
+        "--release-inventory",
+        choices=tuple(INVENTORY.BY_ID),
+        help="required when verifying a successor native archive directly",
     )
     verify_parser.add_argument(
         "--report",
@@ -3894,6 +3971,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("artifact")
     report_parser.add_argument("--report")
     report_parser.add_argument("--check")
+    report_parser.add_argument("--release-inventory", choices=tuple(INVENTORY.BY_ID))
     report_parser.set_defaults(function=write_archive_report)
 
     def verify_path(args: argparse.Namespace) -> int:
@@ -3918,12 +3996,13 @@ def build_parser() -> argparse.ArgumentParser:
                 structural_only=args.structural_only,
                 manifest_toml_path=args.manifest_toml,
                 manifest_json_path=args.manifest_json,
+                release_inventory=args.release_inventory,
             )
         if args.structural_only:
             fail("--structural-only is only valid for a release evidence directory")
         if args.report:
             fail("--report is only supported when verifying an OCI context")
-        verify_archive(path)
+        verify_archive(path, args.release_inventory)
         return 0
 
     verify_parser.set_defaults(function=verify_path)

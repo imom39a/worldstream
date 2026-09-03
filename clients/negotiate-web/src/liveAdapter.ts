@@ -11,6 +11,18 @@ import {
 export const NEGOTIATE_PACK_ID = "worldstream.negotiate" as const;
 export const NEGOTIATE_REVISION_0_1 =
   "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589" as const;
+export const NEGOTIATE_REVISION_0_2 =
+  "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c" as const;
+
+export type NegotiatePackVersion = "0.1.0" | "0.2.0";
+export type NegotiateRevision =
+  | typeof NEGOTIATE_REVISION_0_1
+  | typeof NEGOTIATE_REVISION_0_2;
+
+const SUPPORTED_REVISIONS = new Map<string, NegotiatePackVersion>([
+  [NEGOTIATE_REVISION_0_1, "0.1.0"],
+  [NEGOTIATE_REVISION_0_2, "0.2.0"],
+]);
 
 const DIGEST = /^(?:blake3|sha256):[0-9a-f]{64}$/;
 const MAX_ROLE_BYTES = 128;
@@ -32,8 +44,8 @@ export interface NegotiateReadyState {
   readonly kind: "ready";
   readonly pack: {
     readonly id: typeof NEGOTIATE_PACK_ID;
-    readonly version: "0.1.0";
-    readonly digest: typeof NEGOTIATE_REVISION_0_1;
+    readonly version: NegotiatePackVersion;
+    readonly digest: NegotiateRevision;
   };
   readonly roomSequence: number;
   readonly frameHead: number;
@@ -90,14 +102,11 @@ function validateIdentity(batch: AuthorizedRoomDeliveryBatch): string | null {
   if (batch.pack.id !== NEGOTIATE_PACK_ID) {
     return "This Activity Client only supports WorldStream Negotiate Rooms.";
   }
-  if (
-    batch.pack.digest !== NEGOTIATE_REVISION_0_1
-    || batch.room_head.pack_digest !== NEGOTIATE_REVISION_0_1
-    || !DIGEST.test(batch.pack.digest)
-  ) {
+  const expectedVersion = SUPPORTED_REVISIONS.get(batch.pack.digest);
+  if (expectedVersion === undefined || batch.room_head.pack_digest !== batch.pack.digest) {
     return "This client does not support the pinned Activity Pack Revision.";
   }
-  return batch.pack.version === "0.1.0"
+  return batch.pack.version === expectedVersion
     ? null
     : "The Pack version does not match its exact revision digest.";
 }
@@ -184,7 +193,11 @@ function ready(
   }));
   return {
     kind: "ready",
-    pack: { id: NEGOTIATE_PACK_ID, version: "0.1.0", digest: NEGOTIATE_REVISION_0_1 },
+    pack: {
+      id: NEGOTIATE_PACK_ID,
+      version: batch.pack.version as NegotiatePackVersion,
+      digest: batch.pack.digest as NegotiateRevision,
+    },
     roomSequence: batch.room_head.room_seq,
     frameHead: batch.frame_head,
     roomHead: batch.room_head,

@@ -41,13 +41,8 @@ fn server_status_fails_closed_with_machine_readable_unavailable_output() {
     assert_eq!(report["schema"], "worldstream/operator-command/v1");
     assert_eq!(report["command"], "server status");
     assert_eq!(report["status"], "unavailable");
-    if cfg!(feature = "cli-operator-preview") {
-        assert_eq!(report["code"], "controller_unavailable");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("controller"));
-    } else {
-        assert_eq!(report["code"], "not_implemented");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("not implemented"));
-    }
+    assert_eq!(report["code"], "controller_unavailable");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("controller"));
     assert_eq!(
         control(&["--config", "missing.toml", "server", "status", "--json"])
             .status
@@ -67,8 +62,8 @@ fn managed_server_commands_accept_bounded_explicit_control_options() {
         "logs",
     ] {
         assert_eq!(control(&["server", leaf, "--help"]).status.code(), Some(0));
-        // Preview adapters have separate tests; the supported default remains IMO-135.
-        if cfg!(feature = "cli-operator-preview") && leaf == "rotate-control-credential" {
+        // Rotation is local-only and does not accept Controller transport options.
+        if leaf == "rotate-control-credential" {
             continue;
         }
         let output = control(&[
@@ -154,22 +149,15 @@ fn init_requires_exact_reviewed_import_approval_without_implicit_trust() {
             "--json",
         ],
     ] {
-        // The preview-only base initializer is covered by cli_initialization.rs.
-        if cfg!(feature = "cli-operator-preview") && arguments == ["init", "--json"] {
+        // The base initializer is covered by cli_initialization.rs.
+        if arguments == ["init", "--json"] {
             continue;
         }
-        let expected = if cfg!(feature = "cli-operator-preview") {
-            1
-        } else {
-            3
-        };
         let output = control(&arguments);
-        assert_eq!(output.status.code(), Some(expected), "{arguments:?}");
-        if cfg!(feature = "cli-operator-preview") {
-            let report: serde_json::Value = serde_json::from_slice(&output.stdout)
-                .unwrap_or_else(|error| unreachable!("JSON stdout: {error}"));
-            assert_eq!(report["code"], "initialization_required");
-        }
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| unreachable!("JSON stdout: {error}"));
+        assert_eq!(report["code"], "initialization_required");
     }
     for arguments in [
         vec!["init", "--runner-template", "runner.json"],
@@ -302,9 +290,6 @@ fn room_runner_client_and_pack_leaves_freeze_public_selectors() {
 }
 
 fn empty_installation_outcome(arguments: &[&str]) -> (i32, &'static str) {
-    if !cfg!(feature = "cli-operator-preview") {
-        return (3, "not_implemented");
-    }
     match arguments.get(..2) {
         Some(["room", "validate" | "create"]) => (1, "operation_rejected"),
         Some(

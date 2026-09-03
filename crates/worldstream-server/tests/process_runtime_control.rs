@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use std::{net::TcpListener, time::Duration};
 
 use worldstream_runtime::CliOverrides;

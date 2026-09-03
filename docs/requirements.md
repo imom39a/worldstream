@@ -265,30 +265,24 @@ WorldStream v0.1 and v0.2 MUST NOT host an LLM loop, store provider credentials,
 
 ### FR-9: Reference user interface
 
-The accepted [CLI-first transition](adr/0018-cli-first-operator-surface.md)
-makes the operator CLI the target primary administration interface. Studio
-MUST remain available until a new developer can complete a live Heist Room
-flow without it, including participant and agent setup, with generic setup
-also checked against Negotiate. Studio-specific interface obligations below
-apply during the transition; they retire with the verified replacement.
-Independent Activity Client and authority requirements do not retire. The
-current release inventory remains unchanged until its replacement is
-specified and verified.
+The accepted [CLI-first transition](adr/0018-cli-first-operator-surface.md) is
+complete. The authenticated operator CLI is the primary administration
+interface. The Studio web application is retired. Independent Activity Client,
+Controller, authority, and historical verification requirements remain.
 
 - The server MUST be usable without the web UI.
 - The first-party UI MUST consume only authorized public, participant, or operator projections.
-- Studio MUST guide exact bundle inspection/approval/install/restart readiness, schema-driven Genesis configuration, Membership/handoff creation, opaque Runner credential references, diagnostics, Replay, evidence export, and launch of a compatible Activity Client without becoming a Participant, Pack-specific participant renderer, or rules engine.
-- Studio Pack Operations MUST display config-aware CLI commands and consume only the closed typed receipts. It MUST verify canonical inventory row count/order/digest, require inventory and readiness `storage_profile` agreement, match the post-selection `inventory_digest` to restart readiness, and treat the pathless `deployment_binding` as opaque target identity. Studio MUST NOT itself create, retain, bypass, or claim daemon acceptance of the durable startup-readiness seal.
+- The authenticated CLI and headless Controller MUST support exact bundle inspection/approval/install/restart readiness, schema-driven Genesis configuration, Membership/handoff creation, scoped Runner credentials, diagnostics, Replay, evidence export, and compatible Activity Client launch without becoming a Participant, Pack-specific renderer, or rules engine.
+- Pack operations MUST consume the closed typed receipts, verify canonical inventory identity, preserve offline mutation safeguards, and treat the pathless `deployment_binding` as opaque target identity. The CLI and Controller MUST NOT bypass or falsely claim Runtime acceptance of the durable startup-readiness seal.
 - First-party Activity Clients MUST support the attach/reconnect, authorized Projection/Observation delivery, exact Action Offer, receipt, and Replay behavior required by their surface. The WorldStream Inspector MUST remain a Pack-neutral fallback; Pack-specific participant rendering belongs in independently executing Activity Clients.
 - An Activity Pack Bundle MUST contain no executable frontend code or mutable launch URL. Activity Client selection MUST remain outside Genesis, Authoritative Room State, Transitions, canonical hashes, and Replay.
 - A live Activity Client MUST initialize from no Activity data and atomically install authorized Projection Reset/Observation data. It MUST NOT merge live state onto recorded fixture data or expose another Access Mode or Role through client-side view switching.
 - The UI MUST submit the same typed commands as another client and MUST NOT enforce server authorization by itself.
 - Runtime LLM-generated UI, arbitrary Pack JavaScript, automatic third-party Client Deployment, a client marketplace, and a general View Pack ABI are deferred. The independent Activity Client Release, Distribution, Deployment, Binding, and conformance contracts are frozen by ADR 0017.
 
-#### CLI-first replacement obligations
+#### CLI-first operator obligations
 
-These are accepted requirements for the replacement under ADR 0018, not
-claims that the commands already exist.
+These requirements are implemented for the MVP cutover under ADR 0018.
 
 - The operator CLI MUST extend `worldstreamctl`, preserve existing command,
   receipt, and wire-format compatibility, and retain existing state locations.

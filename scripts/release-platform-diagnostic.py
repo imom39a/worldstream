@@ -817,7 +817,10 @@ def independently_verify_oci_archive(
 
 
 def independently_verify_native_archive(
-    artifact: Path, source_id: str, version: str
+    artifact: Path,
+    source_id: str,
+    version: str,
+    release_inventory: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     package = load_script("release_platform_native_package_verifier", PACKAGE_SCRIPT)
     target = {
@@ -825,7 +828,10 @@ def independently_verify_native_archive(
         "native-windows": "windows-x64",
     }[source_id]
     try:
-        package.verify_archive(artifact)
+        if release_inventory is None:
+            package.verify_archive(artifact)
+        else:
+            package.verify_archive(artifact, release_inventory)
         report = package.archive_report(artifact)
         entries = package.archive_entries(artifact)
     except package.PackageError as error:
@@ -2048,9 +2054,24 @@ def emit_native(args: argparse.Namespace) -> None:
         }
 
         retained_artifact.verify()
-        verified_package_report, archive_binaries = independently_verify_native_archive(
-            args.artifact, source_id, contract["release_candidate"]
-        )
+        release_inventory = getattr(args, "release_inventory", None)
+        if release_inventory is None:
+            verified_package_report, archive_binaries = (
+                independently_verify_native_archive(
+                    args.artifact,
+                    source_id,
+                    contract["release_candidate"],
+                )
+            )
+        else:
+            verified_package_report, archive_binaries = (
+                independently_verify_native_archive(
+                    args.artifact,
+                    source_id,
+                    contract["release_candidate"],
+                    release_inventory,
+                )
+            )
         retained_artifact.verify()
         verify_archive_report(
             package_report,
@@ -3158,6 +3179,14 @@ def parser() -> argparse.ArgumentParser:
     native.add_argument("--native-fixture-report", type=Path, required=True)
     native.add_argument("--native-binding-parent", type=Path, required=True)
     native.add_argument("--artifact", type=Path, required=True)
+    native.add_argument(
+        "--release-inventory",
+        choices=(
+            "worldstream/release-inventory/runtime-packs-studio-v1",
+            "worldstream/release-inventory/cli-first-v1",
+        ),
+        help="closed release inventory; omission preserves historical verification",
+    )
     native.add_argument("--output-dir", type=Path, required=True)
     native.set_defaults(function=emit_native)
     oci = subcommands.add_parser("oci")

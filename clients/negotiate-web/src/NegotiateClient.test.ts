@@ -14,7 +14,11 @@ import {
   submitPreparedAgainstLatest,
   type PendingPreparation,
 } from "./NegotiateClient";
-import { NEGOTIATE_REVISION_0_1, type NegotiateReadyState } from "./liveAdapter";
+import {
+  NEGOTIATE_REVISION_0_1,
+  NEGOTIATE_REVISION_0_2,
+  type NegotiateReadyState,
+} from "./liveAdapter";
 
 const digest = (character: string) => `blake3:${character.repeat(64)}`;
 
@@ -27,23 +31,27 @@ const pending: PendingPreparation = {
     schemaDigest: digest("a"),
   },
   basedOnRoomSequence: 12,
+  pack: {
+    id: "worldstream.negotiate",
+    version: "0.1.0",
+    digest: NEGOTIATE_REVISION_0_1,
+  },
 };
 
-function ready(roomSequence = 12): NegotiateReadyState {
+function ready(
+  roomSequence = 12,
+  pack: NegotiateReadyState["pack"] = pending.pack,
+): NegotiateReadyState {
   return {
     kind: "ready",
-    pack: {
-      id: "worldstream.negotiate",
-      version: "0.1.0",
-      digest: NEGOTIATE_REVISION_0_1,
-    },
+    pack,
     roomSequence,
     frameHead: 14,
     roomHead: {
       room_seq: roomSequence,
       genesis_or_transition_hash: digest("1"),
       core_schema_version: "worldstream.core-room-state.v1",
-      pack_digest: NEGOTIATE_REVISION_0_1,
+      pack_digest: pack.digest,
       core_state_hash: digest("2"),
       activity_state_hash: digest("3"),
       authoritative_state_hash: digest("4"),
@@ -69,6 +77,7 @@ describe("Negotiate prepared Action boundary", () => {
       action_type: "submit_proposal",
       payload_schema_digest: digest("a"),
       based_on_room_seq: 12,
+      pack: pending.pack,
       payload: { proposal_id: "proposal-1" },
     };
 
@@ -79,6 +88,31 @@ describe("Negotiate prepared Action boundary", () => {
       ...pending,
       binding: { ...pending.binding, schemaDigest: digest("b") },
     }, ready())).toBe(false);
+  });
+
+  it("binds signer preparation to the exact 0.1 or 0.2 Pack Revision", () => {
+    const pack0_2 = {
+      id: "worldstream.negotiate",
+      version: "0.2.0",
+      digest: NEGOTIATE_REVISION_0_2,
+    } as const;
+    const pending0_2 = { ...pending, pack: pack0_2 };
+    const prepared0_1 = {
+      request_id: pending.requestId,
+      action_type: pending.binding.actionType,
+      payload_schema_digest: pending.binding.schemaDigest,
+      based_on_room_seq: pending.basedOnRoomSequence,
+      pack: pending.pack,
+      payload: { proposal_id: "proposal-1" },
+    };
+    const prepared0_2 = { ...prepared0_1, pack: pack0_2 };
+
+    expect(preparedActionMatches(pending, prepared0_1)).toBe(true);
+    expect(preparedActionMatches(pending0_2, prepared0_2)).toBe(true);
+    expect(preparedActionMatches(pending, prepared0_2)).toBe(false);
+    expect(preparedActionMatches(pending0_2, prepared0_1)).toBe(false);
+    expect(preparationMatchesCurrentState(pending0_2, ready(12, pack0_2))).toBe(true);
+    expect(preparationMatchesCurrentState(pending0_2, ready())).toBe(false);
   });
 
   it("reads authoritative Action details from the broker receipt envelope", () => {

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { activityClientBuildDigest, activityClientReleaseClaimsDigest, activityClientReleaseDigest } from "./activity-client-identities.mjs";
+import { activityClientMounts } from "./serve-activity-clients.mjs";
 
 const workspace = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const configuration = resolve(workspace, "config/activity-clients");
@@ -11,6 +13,16 @@ const buildRoots = new Map([
   ["worldstream.agent-heist.web", "clients/agent-heist-web/dist"],
   ["worldstream.negotiate.web", "clients/negotiate-web/dist"],
   ["worldstream.inspector.web", "web/console/dist"],
+]);
+const currentReleaseFiles = new Map([
+  ["worldstream.agent-heist.web", "agent-heist-web.json"],
+  ["worldstream.negotiate.web", "negotiate-web-v2.json"],
+  ["worldstream.inspector.web", "inspector-web.json"],
+]);
+const currentEvidenceFiles = new Map([
+  ["worldstream.agent-heist.web", "agent-heist-web-v1.json"],
+  ["worldstream.negotiate.web", "negotiate-web-v2.json"],
+  ["worldstream.inspector.web", "inspector-web-v1.json"],
 ]);
 const expectedChecks = new Map([
   ["worldstream.agent-heist.web", [
@@ -35,18 +47,31 @@ const expectedChecks = new Map([
     "prepared-action-queue-and-replay-validation-boundaries",
   ]],
 ]);
+const hostMounts = new Map(activityClientMounts.map((mount) => [mount.prefix, mount.root]));
 const ignoredDirectories = new Set([".git", ".vite", "coverage", "dist", "node_modules"]);
 
-const releases = await readJsonDirectory(resolve(configuration, "releases"));
+const releaseDocuments = await readNamedJsonDirectory(resolve(configuration, "releases"));
+const releases = releaseDocuments.map(({ value }) => value);
 const distributions = await readJsonDirectory(resolve(configuration, "distributions"));
 const bootstrap = await readJson(resolve(configuration, "local-bindings.json"));
-const evidenceDocuments = await readJsonDirectory(resolve(configuration, "conformance"));
-const qualifiedNegotiate = await readJson(resolve(workspace, "packs/negotiate/evidence/conformance-v1.json"));
-const evidenceByClient = new Map();
+const evidenceDocuments = await readNamedJsonDirectory(resolve(configuration, "conformance"));
+const qualifiedNegotiate0_1 = await readJson(resolve(workspace, "packs/negotiate/evidence/conformance-v1.json"));
+const provedNegotiate0_2 = await readJson(resolve(workspace, "packs/negotiate/evidence/production-proof-0.2.0.json"));
+const negotiatePackProofs = new Map([
+  [qualifiedNegotiate0_1.bundle.revision_digest, {
+    version: qualifiedNegotiate0_1.version,
+    proof: qualifiedNegotiate0_1.production_proof.complete,
+  }],
+  [provedNegotiate0_2.revision_digest, { version: "0.2.0", proof: provedNegotiate0_2 }],
+]);
+const evidenceByDigest = new Map();
 const releaseIndex = new Map();
+const declaredReleaseIndex = new Map();
 const expectedIdentities = {};
 
-for (const evidence of evidenceDocuments) {
+for (const { proof } of negotiatePackProofs.values()) validateNegotiatePackProof(proof);
+
+for (const { name, value: evidence } of evidenceDocuments) {
   exactKeys(evidence, ["schema", "subject", "checks", "reproduce", "authority", "notice"]);
   check(evidence.schema === "worldstream/client-conformance-evidence/v1", "unknown Client Conformance Evidence schema");
   exactKeys(evidence.subject, ["client_id", "artifact_digest", "release_claims_digest", "client_contract"]);
@@ -60,11 +85,12 @@ for (const evidence of evidenceDocuments) {
   );
   check(evidence.reproduce === "pnpm activity-clients:verify", `${evidence.subject.client_id} conformance is not reproducible through the canonical lane`);
   check(evidence.authority === "informative_only", `${evidence.subject.client_id} conformance overstates its authority`);
-  check(!evidenceByClient.has(evidence.subject.client_id), `duplicate conformance subject ${evidence.subject.client_id}`);
-  evidenceByClient.set(evidence.subject.client_id, evidence);
+  const evidenceDigest = digest(Buffer.from(JSON.stringify(evidence, null, 2) + "\n"));
+  check(!evidenceByDigest.has(evidenceDigest), `duplicate conformance evidence ${evidenceDigest}`);
+  evidenceByDigest.set(evidenceDigest, { name, evidence });
 }
 
-for (const release of releases) {
+for (const { name, value: release } of releaseDocuments) {
   exactKeys(release, ["schema", "client_id", "release_digest", "client_contract", "artifacts", "surfaces", "conformance"]);
   check(release.schema === "worldstream/activity-client-release/v1", "unknown Activity Client Release schema");
   check(release.client_contract === contract, `unsupported client contract for ${release.client_id}`);
@@ -75,14 +101,17 @@ for (const release of releases) {
   const artifact = release.artifacts[0];
   exactKeys(artifact, ["artifact_id", "media_type", "digest"]);
   check(artifact.media_type === "application/vnd.worldstream.activity-client.web.v1+directory", `${release.client_id} must identify a runnable browser build`);
-  const artifactDigest = await buildTreeDigest(resolve(workspace, buildRoots.get(release.client_id)));
-  if (!printIdentities) check(artifact.digest === artifactDigest, `${release.client_id} runnable artifact digest is stale: expected ${artifactDigest}`);
+  const current = currentReleaseFiles.get(release.client_id) === name;
+  const artifactDigest = current
+    ? await activityClientBuildDigest(resolve(workspace, buildRoots.get(release.client_id)))
+    : artifact.digest;
+  if (current && !printIdentities) check(artifact.digest === artifactDigest, `${release.client_id} runnable artifact digest is stale: expected ${artifactDigest}`);
   const normalizedRelease = structuredClone(release);
   normalizedRelease.artifacts[0].digest = artifactDigest;
   for (const surface of release.surfaces) {
     exactKeys(surface, ["surface_id", "kind", "artifact_digest", "entrypoint", "capabilities"]);
     check(surface.kind === "browser", `${release.client_id}/${surface.surface_id} is not a browser surface`);
-    if (!printIdentities) check(surface.artifact_digest === artifactDigest, `${release.client_id}/${surface.surface_id} does not reference its exact artifact`);
+    if (!printIdentities || !current) check(surface.artifact_digest === artifactDigest, `${release.client_id}/${surface.surface_id} does not reference its exact artifact`);
     check(/^\/[a-z0-9._/-]+\/$/.test(surface.entrypoint), `${release.client_id}/${surface.surface_id} has an invalid artifact entrypoint`);
     check(Array.isArray(surface.capabilities) && surface.capabilities.includes("observe"), `${release.client_id}/${surface.surface_id} cannot observe`);
   }
@@ -90,9 +119,12 @@ for (const release of releases) {
   const evidence = release.conformance[0];
   exactKeys(evidence, ["contract", "evidence_digest"]);
   check(evidence.contract === contract, `${release.client_id} conformance contract is invalid`);
-  const releaseClaimsDigest = releaseClaimsIdentityDigest(normalizedRelease);
-  const evidenceDocument = evidenceByClient.get(release.client_id);
-  check(evidenceDocument !== undefined, `${release.client_id} has no conformance evidence`);
+  const releaseClaimsDigest = activityClientReleaseClaimsDigest(normalizedRelease);
+  const evidenceRecord = current
+    ? evidenceDocuments.find(({ name: evidenceName }) => evidenceName === currentEvidenceFiles.get(release.client_id))
+    : evidenceByDigest.get(evidence.evidence_digest);
+  const evidenceDocument = evidenceRecord?.evidence ?? evidenceRecord?.value;
+  check(evidenceDocument !== undefined, `${release.client_id}/${name} has no exact conformance evidence`);
   const normalizedEvidence = structuredClone(evidenceDocument);
   normalizedEvidence.subject = {
     client_id: release.client_id,
@@ -101,26 +133,31 @@ for (const release of releases) {
     client_contract: release.client_contract,
   };
   const expectedEvidenceDigest = digest(Buffer.from(JSON.stringify(normalizedEvidence, null, 2) + "\n"));
-  if (!printIdentities) {
+  if (!printIdentities || !current) {
     check(JSON.stringify(evidenceDocument.subject) === JSON.stringify(normalizedEvidence.subject), `${release.client_id} conformance subject is stale`);
     check(evidence.evidence_digest === expectedEvidenceDigest, `${release.client_id} conformance evidence identity is stale`);
   }
   normalizedRelease.conformance[0].evidence_digest = expectedEvidenceDigest;
-  const expectedReleaseDigest = releaseIdentityDigest(normalizedRelease);
+  const expectedReleaseDigest = activityClientReleaseDigest(normalizedRelease);
   normalizedRelease.release_digest = expectedReleaseDigest;
-  expectedIdentities[release.client_id] = {
-    artifact_digest: artifactDigest,
-    release_claims_digest: releaseClaimsDigest,
-    release_digest: expectedReleaseDigest,
-    evidence_digest: expectedEvidenceDigest,
-  };
-  if (!printIdentities) check(release.release_digest === expectedReleaseDigest, `${release.client_id} release digest is stale: expected ${expectedReleaseDigest}`);
+  if (current) {
+    expectedIdentities[release.client_id] = {
+      artifact_digest: artifactDigest,
+      release_claims_digest: releaseClaimsDigest,
+      release_digest: expectedReleaseDigest,
+      evidence_digest: expectedEvidenceDigest,
+    };
+  }
+  if (!printIdentities || !current) check(release.release_digest === expectedReleaseDigest, `${release.client_id}/${name} release digest is stale: expected ${expectedReleaseDigest}`);
   const key = `${release.client_id}\0${expectedReleaseDigest}`;
+  const declaredKey = `${release.client_id}\0${release.release_digest}`;
   check(!releaseIndex.has(key), `duplicate Activity Client Release ${release.client_id}`);
+  check(!declaredReleaseIndex.has(declaredKey), `duplicate declared Activity Client Release ${release.client_id}`);
   releaseIndex.set(key, normalizedRelease);
+  declaredReleaseIndex.set(declaredKey, normalizedRelease);
 }
 
-check(releaseIndex.size === buildRoots.size, "the first-party Release set is incomplete");
+check(Object.keys(expectedIdentities).length === buildRoots.size, "the current first-party Release set is incomplete");
 for (const distribution of distributions) {
   exactKeys(distribution, ["schema", "distribution_id", "version", "pack_bundles", "clients", "client_compatibility", "integration_artifacts"]);
   check(distribution.schema === "worldstream/activity-distribution/v1", "unknown Activity Distribution schema");
@@ -134,8 +171,15 @@ for (const distribution of distributions) {
     checkDigest(reference.bundle_digest, `${distribution.distribution_id} Pack Bundle`);
     packRevisions.add(reference.pack.digest);
     if (reference.pack.id === "worldstream.negotiate") {
-      check(reference.pack.digest === qualifiedNegotiate.bundle.revision_digest, `${distribution.distribution_id} does not reference the qualified Negotiate Pack Revision`);
-      check(reference.bundle_digest === qualifiedNegotiate.bundle.bundle_digest, `${distribution.distribution_id} does not reference the qualified Negotiate physical Bundle`);
+      const proved = negotiatePackProofs.get(reference.pack.digest);
+      check(proved !== undefined && reference.pack.version === proved.version, `${distribution.distribution_id} does not reference a proved exact Negotiate Pack Revision`);
+      check(proved.proof.proof_type === "complete" && proved.proof.status === "passed", `${distribution.distribution_id} Negotiate Pack proof is incomplete`);
+      check(reference.bundle_digest === proved.proof.bundle_digest, `${distribution.distribution_id} does not reference the proved Negotiate physical Bundle`);
+      const bundlePath = resolve(
+        workspace,
+        `packs/negotiate/releases/${reference.pack.version}/worldstream-negotiate-${reference.bundle_digest.slice("blake3:".length)}.wspack`,
+      );
+      check((await stat(bundlePath)).isFile(), `${distribution.distribution_id} proved Negotiate physical Bundle is unavailable`);
     }
   }
   check(Array.isArray(distribution.clients) && distribution.clients.length > 0, `${distribution.distribution_id} has no client references`);
@@ -166,13 +210,22 @@ for (const deployment of bootstrap.deployments) {
   exactKeys(deployment, ["schema", "deployment_id", "client_id", "release_digest", "trust_level", "surfaces"]);
   check(deployment.schema === "worldstream/client-deployment/v1", "unknown Client Deployment schema");
   check(deployment.trust_level === "externally_trusted", `${deployment.deployment_id} cannot claim verified bytes in the local Vite workflow`);
-  const release = releaseIndex.get(`${deployment.client_id}\0${deployment.release_digest}`);
+  const releaseKey = `${deployment.client_id}\0${deployment.release_digest}`;
+  const release = releaseIndex.get(releaseKey)
+    ?? (printIdentities ? declaredReleaseIndex.get(releaseKey) : undefined);
   if (!printIdentities) check(release !== undefined, `${deployment.deployment_id} references an unavailable Release`);
   const declared = new Set((release?.surfaces ?? []).map((surface) => surface.surface_id));
   for (const surface of deployment.surfaces) {
     exactKeys(surface, ["surface_id", "launch_url"]);
     if (!printIdentities) check(declared.has(surface.surface_id), `${deployment.deployment_id} exposes an undeclared surface`);
     check(/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::[1-9][0-9]{0,4})?\/[a-z0-9._/-]+\/$/.test(surface.launch_url), `${deployment.deployment_id} has an unsafe local launch URL`);
+    const entrypoint = new URL(surface.launch_url).pathname;
+    const artifactRoot = activityClientMounts.find((mount) => entrypoint.startsWith(mount.prefix))?.root;
+    check(artifactRoot !== undefined, `${deployment.deployment_id}/${surface.surface_id} has no exact Activity Client Host mount`);
+    const releaseSurface = release?.surfaces.find((candidate) => candidate.surface_id === surface.surface_id);
+    check(releaseSurface?.entrypoint === entrypoint, `${deployment.deployment_id}/${surface.surface_id} launch target differs from its Release entrypoint`);
+    const servedArtifactDigest = await activityClientBuildDigest(artifactRoot);
+    check(releaseSurface?.artifact_digest === servedArtifactDigest, `${deployment.deployment_id}/${surface.surface_id} serves bytes outside its declared Release artifact`);
   }
   check(!deployments.has(deployment.deployment_id), `duplicate deployment ${deployment.deployment_id}`);
   deployments.set(deployment.deployment_id, deployment);
@@ -203,12 +256,6 @@ if (printIdentities) {
 }
 
 async function verifySourceBoundaries() {
-  const studioFiles = (await walk(resolve(workspace, "web/studio/src")))
-    .filter((path) => /\.(?:ts|tsx)$/.test(path) && !/\.test\.(?:ts|tsx)$/.test(path));
-  const forbiddenStudio = /worldstream\.(?:agent-heist|negotiate)|\/(?:agent-heist|negotiate|inspector)\/|Counter\b|counter\/public-projection/i;
-  for (const path of studioFiles) {
-    check(!forbiddenStudio.test(await readFile(path, "utf8")), `Studio contains Pack/client implementation knowledge in ${relative(workspace, path)}`);
-  }
   for (const relativePath of [
     "crates/worldstream-studio-supervisor/src/client_bindings.rs",
     "crates/worldstream-studio-supervisor/src/participant_handoff.rs",
@@ -225,13 +272,14 @@ async function verifySourceBoundaries() {
     !/@worldstream\/(?:agent-heist|negotiate)-client|clientSurface === "(?:agent-heist|negotiate)"|NegotiateLiveApp|consumeNegotiateConsoleBootstrap|consumeLiveSessionBootstrap/.test(clientHostMain),
     "Inspector/recorded-gallery artifact still embeds a Pack-specific live client",
   );
-  const exactHost = await readFile(resolve(workspace, "scripts/serve-activity-clients.mjs"), "utf8");
   for (const [prefix, root] of [
     ["/agent-heist/", "clients/agent-heist-web/dist"],
-    ["/negotiate/", "clients/negotiate-web/dist"],
+    ["/negotiate-v2/", "clients/negotiate-web/dist"],
+    ["/negotiate/", "config/activity-clients/artifacts/negotiate-web-v1"],
     ["/", "web/console/dist"],
   ]) {
-    check(exactHost.includes(`prefix: "${prefix}"`) && exactHost.includes(`"${root}"`), `exact Activity Client Host is missing ${prefix} -> ${root}`);
+    const mounted = hostMounts.get(prefix);
+    check(mounted !== undefined && relative(workspace, mounted) === root, `exact Activity Client Host is missing ${prefix} -> ${root}`);
   }
   for (const path of [
     "clients/agent-heist-web/src/liveAdapter.ts",
@@ -240,42 +288,6 @@ async function verifySourceBoundaries() {
     const source = await readFile(resolve(workspace, path), "utf8");
     check(/return \{ kind: "awaiting" \};/.test(source), `${path} does not start from empty authorized state`);
   }
-}
-
-function releaseIdentityDigest(release) {
-  const identity = {
-    schema: release.schema,
-    client_id: release.client_id,
-    client_contract: release.client_contract,
-    artifacts: release.artifacts,
-    surfaces: release.surfaces,
-    conformance: release.conformance,
-  };
-  return digest(Buffer.from(`worldstream-activity-client-release-identity-v1\0${JSON.stringify(identity)}`));
-}
-
-function releaseClaimsIdentityDigest(release) {
-  const claims = {
-    schema: release.schema,
-    client_id: release.client_id,
-    client_contract: release.client_contract,
-    artifacts: release.artifacts,
-    surfaces: release.surfaces,
-  };
-  return digest(Buffer.from(`worldstream-activity-client-release-claims-v1\0${JSON.stringify(claims)}`));
-}
-
-async function buildTreeDigest(root) {
-  const hash = createHash("sha256");
-  hash.update("worldstream-activity-client-build-tree-v1\0");
-  for (const path of await walk(root)) {
-    const relativePath = relative(root, path).split(sep).join("/");
-    hash.update(relativePath);
-    hash.update("\0");
-    hash.update(createHash("sha256").update(await readFile(path)).digest());
-    hash.update("\0");
-  }
-  return `sha256:${hash.digest("hex")}`;
 }
 
 async function walk(root) {
@@ -291,10 +303,17 @@ async function walk(root) {
 }
 
 async function readJsonDirectory(path) {
+  return (await readNamedJsonDirectory(path)).map(({ value }) => value);
+}
+
+async function readNamedJsonDirectory(path) {
   const entries = (await readdir(path, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .sort((left, right) => left.name.localeCompare(right.name));
-  return Promise.all(entries.map((entry) => readJson(resolve(path, entry.name))));
+  return Promise.all(entries.map(async (entry) => ({
+    name: entry.name,
+    value: await readJson(resolve(path, entry.name)),
+  })));
 }
 
 async function readJson(path) {
@@ -308,6 +327,29 @@ function exactKeys(value, keys) {
 
 function checkDigest(value, label) {
   check(typeof value === "string" && /^(?:blake3|sha256):[0-9a-f]{64}$/.test(value), `${label} is not an exact digest`);
+}
+
+function validateNegotiatePackProof(proof) {
+  exactKeys(proof, [
+    "proof_type", "status", "pack_id", "bundle_digest", "revision_digest",
+    "transcript_digest", "accepted_action", "declared_rejection", "private_views",
+    "retained_old_revision", "room_id", "roles",
+  ]);
+  check(
+    proof.proof_type === "complete"
+      && proof.status === "passed"
+      && proof.pack_id === "worldstream.negotiate"
+      && proof.accepted_action === true
+      && proof.declared_rejection === true
+      && proof.private_views === 4
+      && proof.retained_old_revision === true
+      && /^[0-9A-HJKMNP-TV-Z]{26}$/.test(proof.room_id)
+      && proof.roles === 4,
+    "Negotiate production Pack proof does not satisfy the complete proof contract",
+  );
+  checkDigest(proof.bundle_digest, "Negotiate proved Pack Bundle");
+  checkDigest(proof.revision_digest, "Negotiate proved Pack Revision");
+  checkDigest(proof.transcript_digest, "Negotiate proved transcript");
 }
 
 function digest(bytes) {

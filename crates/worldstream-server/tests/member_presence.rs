@@ -1,5 +1,4 @@
 //! Direct participant synchronization supplies metadata-only readiness evidence.
-#![cfg(feature = "cli-operator-preview")]
 
 use axum::{Router, body::Body, http::Request};
 use http_body_util::BodyExt as _;

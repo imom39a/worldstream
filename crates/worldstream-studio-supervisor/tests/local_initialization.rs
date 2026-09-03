@@ -1,4 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
 #![allow(
     clippy::manual_assert_eq,
     reason = "Retained-state comparisons must not print secret bytes or their hashes on failure."

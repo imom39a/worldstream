@@ -43,7 +43,7 @@ evidence.
 For the visual version of the recorded story, run `pnpm demos:dev` and open
 `http://127.0.0.1:5180/demos/agent-heist/`. The demo reuses the Activity
 Client's presentation through a recorded adapter, but it has no Room authority
-or network connection. A live Studio handoff instead opens the exact approved
+or network connection. A live CLI/Controller handoff instead opens the exact approved
 `0.1.0` or `0.2.0` revision at
 `http://127.0.0.1:5173/agent-heist/`.
 
@@ -110,7 +110,7 @@ diagnosis because the otherwise temporary evidence directory is sensitive.
 
 The gate is designed to prove:
 
-1. reviewed Studio draft creates exactly one Room;
+1. reviewed CLI setup creates exactly one Room;
 2. human and external-agent seats are provisioned separately;
 3. Lobby remains gated on declared readiness and explicit launch;
 4. the agent uses only assigned MCP tools and exact Action Offers;

@@ -17,6 +17,7 @@ if [[ "$actual_python" != "$expected_python" ]]; then
     exit 2
 fi
 report_path=""
+release_inventory=""
 verify_args=()
 while (($#)); do
     case "$1" in
@@ -29,14 +30,31 @@ while (($#)); do
             report_path="${1#*=}"
             shift
             ;;
+        --release-inventory)
+            (($# >= 2)) || { echo "missing value for --release-inventory" >&2; exit 2; }
+            release_inventory="$2"
+            shift 2
+            ;;
+        --release-inventory=*)
+            release_inventory="${1#*=}"
+            shift
+            ;;
         *)
             verify_args+=("$1")
             shift
             ;;
     esac
 done
+if [[ -n "$release_inventory" ]]; then
+    verify_args+=(--release-inventory "$release_inventory")
+fi
 artifact_arg=""
-for token in "${verify_args[@]}"; do
+for ((index = 0; index < ${#verify_args[@]}; index++)); do
+    token="${verify_args[$index]}"
+    if [[ "$token" == "--release-inventory" ]]; then
+        ((index += 1))
+        continue
+    fi
     if [[ "$token" != -* ]]; then
         artifact_arg="$token"
         break
@@ -58,5 +76,9 @@ if [[ -z "$report_path" ]]; then
     exit 0
 fi
 artifact_arg="${artifact_arg:?--report requires an archive artifact path}"
-"$python_bin" -I "$workspace_dir/scripts/package.py" report "$artifact_arg" --check "$report_path"
+report_args=(report "$artifact_arg" --check "$report_path")
+if [[ -n "$release_inventory" ]]; then
+    report_args+=(--release-inventory "$release_inventory")
+fi
+"$python_bin" -I "$workspace_dir/scripts/package.py" "${report_args[@]}"
 echo "verified package report $report_path: $(basename "$artifact_arg")"

@@ -21,7 +21,6 @@ const BINDING_FILE: &str = "host-authority-reference.json";
 const BINDING_SCHEMA: &str = "worldstream/studio-host-authority-binding/v1";
 
 /// Binds review to retained Host identity without resolving any secret bytes.
-#[cfg(feature = "cli-operator-preview")]
 pub(crate) fn retained_host_identity(
     state_dir: &Path,
 ) -> Result<String, HostAuthorityStartupErrorV1> {

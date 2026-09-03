@@ -1,5 +1,5 @@
 //! A live launcher retains its pending generation while its child is delayed.
-#![cfg(all(feature = "cli-operator-preview", unix))]
+#![cfg(unix)]
 
 use std::{
     fs,

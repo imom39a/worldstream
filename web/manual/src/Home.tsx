@@ -11,7 +11,7 @@ export function Home() {
       <div className="actions"><a className="primary" href="#/quickstart">Start locally</a><a href="#/reference/capabilities">View capability reference</a></div>
     </section>
     <section className="feature-grid">
-      <Feature index="01" title="Run the whole stack" text="Install pinned tools, launch Studio and the daemon, verify readiness, and understand each process." route="/quickstart" />
+      <Feature index="01" title="Run the whole stack" text="Install pinned tools, start the Runtime from the CLI, verify readiness, and understand each process." route="/quickstart" />
       <Feature index="02" title="Build Activity Packs" text="Define typed Actions, deterministic state, scoped views, timers, attention, and Outcomes." route="/activity-packs/overview" />
       <Feature index="03" title="Connect any agent" text="Use one assignment-bound MCP contract from any model provider or external runner." route="/agents/overview" />
       <Feature index="04" title="Operate the stack" text="Use lifecycle, backup, recovery, observability, privacy, and release runbooks." route="/operations/runbook" />

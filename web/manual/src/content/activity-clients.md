@@ -5,8 +5,8 @@ an independent browser, terminal, mobile, service, SDK-built, or agent-owned
 application that presents and participates in that Room through scoped
 WorldStream protocol authority.
 
-Studio does not host these experiences. It operates the WorldStream
-installation and can broker an approved launch, while Pack-specific rendering,
+The operator CLI does not host these experiences. Its headless Controller can
+broker an approved launch, while Pack-specific rendering,
 Projection interpretation, and participant interaction stay in the separate
 client process.
 
@@ -19,7 +19,7 @@ pnpm ui:dev
 ```
 
 The command rebuilds and mounts each exact standalone client directory on one
-loopback origin. It does not rebundle Heist or Negotiate into Studio or the
+loopback origin. It does not rebundle Heist or Negotiate into the Controller or the
 Inspector/recorded-gallery artifact.
 
 It exposes:
@@ -27,12 +27,13 @@ It exposes:
 | Surface | Local path | Responsibility |
 | --- | --- | --- |
 | Agent Heist | `/agent-heist/` | exact Heist participant or spectator experience |
-| Negotiate | `/negotiate/` | exact Negotiate participant or spectator experience |
+| Negotiate 0.1 | `/negotiate/` | retained exact 0.1 participant or spectator experience |
+| Negotiate 0.2 | `/negotiate-v2/` | current exact 0.2 participant or spectator experience |
 | WorldStream Inspector | `/inspector/` | Pack-neutral authorized protocol workbench and configured fallback |
 
 Opening one of these paths does not create a Membership or grant authority.
-The normal browser flow starts from **Open participant client** in Studio. The
-Supervisor selects an approved surface for the current Membership and brokers
+The normal browser flow starts with `worldstreamctl client open`. The
+Controller selects an approved surface for the current Membership and brokers
 a short-lived, origin-bound, one-use handoff into an HttpOnly retained session.
 
 ## Release, deployment, and binding
@@ -58,7 +59,7 @@ Selection evaluates the current Membership before every retained operation
 and fails closed on stale Role or Access Mode, disabled Bindings, revoked or
 unready Deployments, disallowed trust levels, and any exact identity mismatch.
 With several eligible surfaces, a unique default wins or
-Studio presents opaque generic choices. Studio never selects through a
+the CLI presents opaque generic choices. The Controller never selects through a
 Pack-specific route branch.
 
 Disabling a Binding prevents new handoffs without terminating an already
@@ -84,7 +85,7 @@ components may be shared, but live state must never initialize from or overlay
 recorded fixture values. Agent Heist tests this boundary explicitly.
 
 Direct CLI, SDK, service, and agent clients may attach with their own scoped
-authority; they do not need Studio or a Client Binding.
+authority; they do not need the Controller or a Client Binding.
 
 ## Verify the contract
 
@@ -98,7 +99,7 @@ pnpm ui:build
 The conformance lane checks Rust formatting, rebuilds and checks exact local
 Release, Distribution,
 Deployment, Binding, fallback, and Release-bound evidence identities; enforces
-Studio, Supervisor, and Inspector Pack neutrality; and runs client, Studio,
+CLI, Controller, and Inspector Pack neutrality; and runs client,
 Client Host, focused and full-workspace Rust, browser, and documentation gates.
 Passing is informative evidence, not a security audit, production
 deployment-byte proof, or Host approval.

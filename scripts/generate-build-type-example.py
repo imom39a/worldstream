@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the canonical illustrative statement for the active build type."""
+"""Regenerate a canonical illustrative statement for a release build type."""
 
 from __future__ import annotations
 
@@ -48,19 +48,42 @@ def atomic_replace(path: Path, content: bytes) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--release-inventory",
+        choices=(
+            "worldstream/release-inventory/runtime-packs-studio-v1",
+            "worldstream/release-inventory/cli-first-v1",
+        ),
+        help=(
+            "omission regenerates the historical v4 example; select the "
+            "CLI-first inventory for the active v5 example"
+        ),
+    )
     args = parser.parse_args()
     identity = load_identity()
     try:
         entries = identity.source_entries_from_root(ROOT)
-        value = identity.build_type_v4_example(entries)
-        identity.validate_build_type_v4_example(value, entries)
+        if args.release_inventory == identity.INVENTORY.CLI_FIRST.identity:
+            for relative in identity.CLI_FIRST_AGGREGATION_MATERIAL_PATHS:
+                entries[relative] = identity.regular_bytes(
+                    ROOT / relative, f"source material {relative}"
+                )
+            value = identity.build_type_v5_example(entries)
+            identity.validate_build_type_v5_example(value, entries)
+            default_output = ROOT / identity.CLI_FIRST_BUILD_TYPE_EXAMPLE_PATH
+            version = 5
+        else:
+            value = identity.build_type_v4_example(entries)
+            identity.validate_build_type_v4_example(value, entries)
+            default_output = ROOT / identity.BUILD_TYPE_EXAMPLE_PATH
+            version = 4
         content = identity.canonical_json(value)
-        destination = args.output or ROOT / identity.BUILD_TYPE_EXAMPLE_PATH
+        destination = args.output or default_output
         atomic_replace(destination, content)
     except (identity.IdentityError, OSError, RuntimeError) as error:
         print(f"build-type example generation failed: {error}", file=sys.stderr)
         return 1
-    print(f"generated canonical v4 build-type example: {destination}")
+    print(f"generated canonical v{version} build-type example: {destination}")
     return 0
 
 

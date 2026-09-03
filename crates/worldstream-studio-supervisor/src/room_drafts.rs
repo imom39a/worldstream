@@ -579,7 +579,7 @@ pub(crate) fn validate_draft(draft: &RoomDraftV1) -> Result<(), RoomDraftErrorV1
     let configuration_bytes =
         serde_json::to_vec(&draft.configuration).map_err(|_| RoomDraftErrorV1::InvalidDraft)?;
     if configuration_bytes.len() > MAX_CONFIGURATION_BYTES
-        || contains_credential_field(&draft.configuration)
+        || crate::configuration_safety::contains_credential_material(&draft.configuration)
         || draft.seats.len() > MAX_SEATS
         || draft.readiness.len() > MAX_SEATS
     {
@@ -1016,30 +1016,6 @@ fn is_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn contains_credential_field(value: &Value) -> bool {
-    const CREDENTIAL_KEYS: [&str; 7] = [
-        "api_key",
-        "authorization",
-        "bearer",
-        "credential",
-        "password",
-        "secret",
-        "token",
-    ];
-    match value {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            let normalized = key.replace('-', "_").to_ascii_lowercase();
-            CREDENTIAL_KEYS
-                .iter()
-                .any(|credential| normalized.contains(credential))
-                || contains_credential_field(value)
-        }),
-        Value::Array(values) => values.iter().any(contains_credential_field),
-        Value::String(value) => looks_like_credential_value(value),
-        Value::Null | Value::Bool(_) | Value::Number(_) => false,
-    }
-}
-
 #[cfg(unix)]
 fn sync_directory(path: &Path) -> std::io::Result<()> {
     fs::File::open(path)?.sync_all()
@@ -1082,28 +1058,4 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?
         .sync_all()
-}
-
-fn looks_like_credential_value(value: &str) -> bool {
-    let value = value.trim();
-    let lower = value.to_ascii_lowercase();
-    if lower.starts_with("bearer ")
-        || lower.starts_with("sk-")
-        || lower.starts_with("sk_")
-        || lower.starts_with("ghp_")
-        || lower.starts_with("github_pat_")
-        || lower.starts_with("xoxb-")
-        || lower.starts_with("xoxp-")
-        || value.starts_with("AKIA")
-        || (value.starts_with("eyJ") && value.matches('.').count() == 2)
-    {
-        return true;
-    }
-    value.len() >= 32
-        && !value.bytes().any(|byte| byte.is_ascii_whitespace())
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'+' | b'=')
-        })
-        && value.bytes().any(|byte| byte.is_ascii_alphabetic())
-        && value.bytes().any(|byte| byte.is_ascii_digit())
 }

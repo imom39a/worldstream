@@ -14,7 +14,6 @@ agent-streamer/
 ├── scripts/                   gates, smoke tests, local launch, release tools
 ├── tests/fixtures/            compatibility/storage/conformance fixtures
 ├── web/console/               first-party Client Host and compatibility UI
-├── web/studio/                local operator portal
 ├── web/manual/                this static developer manual
 └── xtask/                     deterministic repository maintenance commands
 ```
@@ -28,11 +27,11 @@ agent-streamer/
 | wire shape | `worldstream-protocol` | server, SDK, Activity Clients, MCP, compatibility |
 | SQLite behavior | `worldstream-sqlite` | shared conformance and backup/transfer |
 | PostgreSQL behavior | `worldstream-postgres` | migrations, native restore, shared conformance |
-| daemon/operator API | `worldstream-server` | protocol docs, Studio proxies, SDK |
-| Studio workflow | `web/studio` + Supervisor module | Studio ADR/docs and browser-safe DTO tests |
-| Activity Client contract or binding | `worldstream-activity-client` + Supervisor binding store | ADR 0017, `config/activity-clients`, clients, Studio launcher |
+| daemon/operator API | `worldstream-server` | protocol docs, CLI, SDK |
+| CLI workflow | `worldstreamctl` + headless Controller | CLI docs and bounded DTO tests |
+| Activity Client contract or binding | `worldstream-activity-client` + Controller binding store | ADR 0017, `config/activity-clients`, independent clients |
 | Activity Pack | `worldstream-core` registry/pack | compatibility, retained corpus, examples, all views |
-| agent contract | assignment MCP + activation core/protocol | Studio setup, Runner attention, managed host |
+| agent contract | assignment MCP + activation core/protocol | CLI setup, Runner attention, managed host |
 | release contract | compatibility + packaging/gates | generated mirror, workflows, docs |
 | developer manual | `web/manual` | primary docs |
 

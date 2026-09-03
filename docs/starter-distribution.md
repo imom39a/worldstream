@@ -37,7 +37,7 @@ with the carrier.
 An official v1 Starter contains exactly one subject for each of these roles:
 
 - Runtime Distribution;
-- first-party Activity Client Host and Studio assets;
+- first-party independent Activity Client Host and client assets;
 - TypeScript Pack SDK and pinned Pack Toolchain;
 - official immutable WorldStream Negotiate bundle and conformance evidence;
 - A202 adapter and independent Negotiate evidence verifier;
@@ -59,6 +59,15 @@ Starter builder never walks a working tree, follows a symlink, downloads a
 dependency, or infers an unlisted file. This keeps the input reviewable and
 lets the same runtime archive bytes appear in both official and custom
 candidates.
+
+The current release workflow selects the CLI-first inventory explicitly.
+Omitting the selector remains supported only to verify the historical
+Studio-inclusive contract. A trusted v3 detached manifest
+selects `worldstream/release-inventory/cli-first-v1`; its closed Starter role
+set omits `studio` but still requires `participant-console` for the standalone
+Activity Client Host and clients. A Starter cannot relabel a v2 manifest, add
+the retired web application to the CLI-first role set, or treat a signature
+over the historical pre-sign inventory as successor coverage.
 
 The carrier rejects extra or duplicate members, links and special files,
 absolute or traversing paths, non-canonical ownership/modes/timestamps,
@@ -158,12 +167,12 @@ Pack selectable.
 The repository compatibility pair remains a fail-closed specification with
 `release_ready = false`. Therefore a cryptographically verified official
 Starter cannot yet be emitted from the checkout. The builder and offline
-verifier are complete and adversarially tested. The expanded release workflow
-now deterministically builds and re-verifies all twelve portable subjects and
-includes them in the 33-subject pre-sign inventory. It must still produce the
-native/OCI/source artifacts, obtain every genuine Runtime/Pack report, pass the
-existing supply-chain and platform evidence, and receive both detached
-signatures before an official carrier can exist.
+verifier are complete and adversarially tested. The active CLI-first release
+workflow now deterministically builds and re-verifies all eleven portable
+subjects and includes them in the 32-subject pre-sign inventory. It must still
+produce the native/OCI/source artifacts, obtain every genuine Runtime/Pack
+report, pass the existing supply-chain and platform evidence, and receive both
+detached signatures before an official carrier can exist.
 
 Starter recovery is a post-sign qualification. After an official and custom
 Starter both authenticate the same primary release, their exact verification

@@ -1,12 +1,12 @@
 # Managed reference Agent Host
 
 The managed reference host is a post-MVP convenience for running one constrained
-model-host process under the Studio Supervisor. External assignment-bound MCP
+model-host process under the headless Controller. External assignment-bound MCP
 remains the foundational interoperability contract.
 
 ## Isolation boundary
 
-The Supervisor starts two fixed child processes:
+The Controller starts two fixed child processes:
 
 1. `worldstream-assignment-mcp` receives the owner-only state directory and one
    opaque launch reference, then resolves sealed participant and Runner
@@ -16,7 +16,7 @@ The Supervisor starts two fixed child processes:
    Room/Membership ID, bearer, or daemon storage access.
 
 The model token is resolved immediately before launch, delivered through a
-private stdin frame, bounded, and zeroized. Child stderr is discarded. Studio
+private stdin frame, bounded, and zeroized. Child stderr is discarded. Controller
 status excludes prompts, responses, Invocation Context, memory, arguments,
 paths, secret references, and authority.
 
@@ -60,7 +60,7 @@ submits one exact offer, retains the Action response before ACK, and completes
 with `handled`, `declined`, or `failed`. Typed no-work keeps the process alive
 with bounded backoff.
 
-Studio reports only bounded lifecycle, selected capacity use, MCP-derived
+The Controller reports only bounded lifecycle, selected capacity use, MCP-derived
 freshness, and safe remediation. PID existence alone does not establish
 freshness.
 

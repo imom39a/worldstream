@@ -14,6 +14,7 @@ import argparse
 import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -39,6 +40,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SECRET_SCAN_PATH = ROOT / "scripts" / "verify-secret-absence.py"
 REFERENCE_HOST_PATH = ROOT / "scripts" / "reference_host_environment.py"
 BUILD_IDENTITY_PATH = ROOT / "scripts" / "release_build_identity.py"
+PACKAGE_PATH = ROOT / "scripts" / "package.py"
 POSTGRES_IMAGE = (
     "postgres:17.11-alpine@"
     "sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
@@ -272,8 +274,20 @@ def _load_build_identity() -> Any:
     return module
 
 
+def _load_package_verifier() -> Any:
+    name = "worldstream_postgres_packaged_package_verifier"
+    spec = importlib.util.spec_from_file_location(name, PACKAGE_PATH)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise RuntimeError(f"cannot load {PACKAGE_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 REFERENCE_HOST = _load_reference_host()
 BUILD_IDENTITY = _load_build_identity()
+PACKAGE = _load_package_verifier()
 
 
 SECRET_SCAN = _load_secret_scan()
@@ -648,8 +662,16 @@ def _bind_package(
     archive_path: pathlib.Path,
     report_path: pathlib.Path,
     extraction_root: pathlib.Path,
+    release_inventory: str | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path, dict[str, Any]]:
     """Validate exact identity and extract only the accepted runtime surface."""
+
+    if release_inventory is not None:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                PACKAGE.verify_archive(archive_path, release_inventory)
+        except (PACKAGE.PackageError, OSError, ValueError) as error:
+            raise LaneFailure("canonical_package_verification_failed") from error
 
     package_report_raw = _stable_regular_bytes(report_path, "package_report_invalid")
     package_report = _strict_json(package_report_raw, "package_report_invalid")
@@ -2865,6 +2887,11 @@ def main() -> int:
     parser.add_argument("--package-archive", type=pathlib.Path)
     parser.add_argument("--package-report", type=pathlib.Path)
     parser.add_argument(
+        "--release-inventory",
+        choices=tuple(PACKAGE.INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves historical verification",
+    )
+    parser.add_argument(
         "--diagnostic-source-tree",
         action="store_true",
         help="run non-promoting provider diagnostics with source-tree binaries",
@@ -2980,6 +3007,7 @@ def main() -> int:
         and args.browser_archive_url is None
         and args.browser_archive_sha256 is None
         and args.browser_archive_size_bytes is None
+        and args.release_inventory is None
     )
     if (package_mode and not package_inputs_valid) or (
         not package_mode and not diagnostic_inputs_valid
@@ -3004,6 +3032,7 @@ def main() -> int:
                 args.package_archive,
                 args.package_report,
                 package_root,
+                args.release_inventory,
             )
         except LaneFailure as error:
             report["reason_code"] = error.code

@@ -21,7 +21,7 @@ DeepSeek, OpenClaw, a local model, or hand-written code.
 ## Lifecycle
 
 ```text
-Studio Task setup
+CLI task setup
   → exact Agent Profile revision assigned to one seat
   → participant authority + separate Runner authority provisioned
   → Supervisor issues opaque assignment launch reference
@@ -56,7 +56,7 @@ Activation state. It does not restore an imagined continuous model mind.
 
 ## Before asking an agent to act
 
-1. Verify Studio shows the exact assignment and Runner readiness.
+1. Verify the CLI reports the exact assignment and Runner readiness.
 2. Start the helper with a current Supervisor-issued launch reference.
 3. Complete MCP initialization and list tools.
 4. Confirm all seven `worldstream.*` tools are present.

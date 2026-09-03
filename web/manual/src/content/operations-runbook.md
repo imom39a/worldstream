@@ -9,7 +9,7 @@ freshness, storage support, and task readiness are independent facts.
 2. While the daemon is stopped, run config-aware Pack restart readiness after
    any install, approval revocation, selectability change, retained-bundle
    restore, or removal.
-3. Start `worldstreamd` or use Studio Operations.
+3. Start the managed Runtime with `worldstreamctl server start`.
 4. Wait for `/healthz` before assuming the listener is live.
 5. Wait for `/readyz` before creating/serving ordinary Room work.
 6. Confirm `/version` matches the expected source/compatibility identity.
@@ -42,7 +42,7 @@ different config, data directory, profile, or provider deployment.
 | --- | --- | --- |
 | process not reachable | `/healthz`, process output, configured bind | correct fixed config/port; start once |
 | health works, readiness fails | `/readyz`, startup facts, storage/integrity reason, Pack readiness seal | fix the reported prerequisite; rerun config-aware Pack restart readiness while stopped when the seal is missing/stale; do not bypass readiness |
-| Studio disconnected | Supervisor process and `9420/api/v1/daemon/status` | restart the fixed Supervisor process |
+| Controller unavailable | Controller process and `9420/api/v1/daemon/status` | restart the fixed Controller process |
 | Room unavailable | operator Room detail/integrity | keep fault local; follow repair evidence, not direct edits |
 | Task cannot launch | Task setup readiness axes | provision missing seat/Runner or establish required session |
 | agent is stale | Runner/Activation attention freshness | restart exact approved Runner/helper and reconcile lease |
@@ -52,7 +52,7 @@ different config, data directory, profile, or provider deployment.
 
 ## Daemon lifecycle
 
-Studio's lifecycle operations are fixed at Supervisor startup. Browser requests
+The Controller's lifecycle operations are fixed at startup. Client requests
 contain no executable path or arguments. Start/restart is idempotent against
 retained expected state; graceful stop is bounded and does not silently force a
 process after timeout.
@@ -97,4 +97,4 @@ those cross-record invariants are intentionally fail-closed.
 
 Source: [getting started](https://github.com/imom39a/worldstream/blob/main/docs/getting-started.md),
 [runtime architecture](https://github.com/imom39a/worldstream/blob/main/docs/architecture.md),
-and [Studio operations](https://github.com/imom39a/worldstream/blob/main/docs/studio.md).
+and [CLI reference](https://github.com/imom39a/worldstream/blob/main/docs/cli-reference.md).

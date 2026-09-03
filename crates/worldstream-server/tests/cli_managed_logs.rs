@@ -1,5 +1,4 @@
 //! CLI logs use the existing proved Controller without creating a process.
-#![cfg(feature = "cli-operator-preview")]
 
 use axum::{Json, Router, extract::Request, http::StatusCode, routing::get};
 use std::process::{Command, Stdio};

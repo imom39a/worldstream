@@ -1,5 +1,4 @@
 //! Managed Controller proof and clean shutdown through the actual process.
-#![cfg(feature = "cli-operator-preview")]
 
 use std::{
     env,

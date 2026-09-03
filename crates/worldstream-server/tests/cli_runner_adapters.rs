@@ -1,5 +1,4 @@
 //! External Runners are inspectable but never managed process stop targets.
-#![cfg(feature = "cli-operator-preview")]
 
 use axum::{
     Json, Router,

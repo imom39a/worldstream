@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use serde_json::{Value, json};
 use worldstream_core::{agent_heist_lobby_digest, builtin_agent_heist_registry};
 use worldstream_protocol::ActivityPackCatalogRevisionResponse;
@@ -31,7 +29,7 @@ fn negotiate_catalog() -> Result<ActivityPackCatalogRevisionResponse, Box<dyn st
     use worldstream_core::Blake3DigestV1;
     use worldstream_pack_bundle::PackBundleVerifierV1;
     let bytes = include_bytes!(
-        "../../../packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack"
+        "../../../packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
     );
     let bundle = PackBundleVerifierV1.inspect(std::sync::Arc::from(bytes.as_slice()))?;
     let descriptor = bundle.descriptor();

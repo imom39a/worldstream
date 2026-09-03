@@ -19,7 +19,6 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "cli-operator-preview")]
 use std::sync::{RwLock, RwLockWriteGuard};
 use thiserror::Error;
 use worldstream_protocol::{BearerWireV1, PackReference, UlidString};
@@ -163,7 +162,6 @@ pub struct RunnerTemplateRegistryV1 {
 }
 
 impl RunnerTemplateRegistryV1 {
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn review_installed(
         root: &Path,
         template_id: &str,
@@ -185,7 +183,6 @@ impl RunnerTemplateRegistryV1 {
         Ok(manifest)
     }
     /// Validates selected exact imports and global instance uniqueness without writes.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn check_imports(
         root: &Path,
         selected: &[RunnerTemplateManifestV1],
@@ -243,7 +240,6 @@ impl RunnerTemplateRegistryV1 {
     }
 
     /// Publishes only one explicitly reviewed manifest, never a source directory.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn import_exact(
         root: &Path,
         manifest: &RunnerTemplateManifestV1,
@@ -803,7 +799,6 @@ pub struct RunnerSupervisorV1 {
     graceful_timeout: Duration,
     backend: Arc<dyn RunnerRuntimeBackend>,
     instances: Arc<Mutex<BTreeMap<String, RunnerRuntime>>>,
-    #[cfg(feature = "cli-operator-preview")]
     starts_paused: Arc<RwLock<bool>>,
 }
 
@@ -915,7 +910,6 @@ impl RunnerSupervisorV1 {
             graceful_timeout,
             backend: Arc::new(backend),
             instances: Arc::new(Mutex::new(instances)),
-            #[cfg(feature = "cli-operator-preview")]
             starts_paused: Arc::new(RwLock::new(false)),
         })
     }
@@ -978,7 +972,6 @@ impl RunnerSupervisorV1 {
 
     /// Captures owned children, refusing unresolved retained managed intent.
     /// An unowned health response is not proof of the earlier child's exit.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn owned_instances(&self) -> Result<Vec<String>, RunnerTemplateErrorV1> {
         let _ = self.statuses();
         let instances = self.lock();
@@ -998,7 +991,6 @@ impl RunnerSupervisorV1 {
     /// Idempotently starts one owner-installed instance.
     #[must_use]
     pub fn start(&self, instance_id: &str) -> Option<RunnerInstanceStatusResponseV1> {
-        #[cfg(feature = "cli-operator-preview")]
         let _admission = {
             let Ok(admission) = self.starts_paused.try_read() else {
                 return Some(self.status_response());
@@ -1011,7 +1003,6 @@ impl RunnerSupervisorV1 {
         self.start_permitted(instance_id)
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn pause_starts(
         &self,
     ) -> Result<(RwLockWriteGuard<'_, bool>, bool), RunnerTemplateErrorV1> {
@@ -1189,7 +1180,6 @@ impl RunnerSupervisorV1 {
     }
 
     /// Checks the retained exact binding without resolving authority or changing a process.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn task_runner_binding_matches(&self, instance_id: &str, runner_id: &str) -> bool {
         self.lock().get(instance_id).is_some_and(|runtime| {
             runtime.task_runner_id.as_deref() == Some(runner_id)
@@ -1198,13 +1188,13 @@ impl RunnerSupervisorV1 {
     }
 
     /// A fresh approval must still describe the exact cached launch definition.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn approved_template_matches(
         &self,
         instance_id: &str,
         approved: &RunnerTemplateManifestV1,
     ) -> bool {
-        self.registry.template_for_instance(instance_id)
+        self.registry
+            .template_for_instance(instance_id)
             .is_some_and(|(manifest, _)| manifest == approved)
     }
 

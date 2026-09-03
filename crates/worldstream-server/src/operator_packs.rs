@@ -1,6 +1,10 @@
 //! Offline Host Operator surface for exact Activity Pack Bundle lifecycle.
 
-use std::{fs, path::Path, str::FromStr as _};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    str::FromStr as _,
+};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -16,6 +20,10 @@ use worldstream_pack_bundle::{
 use worldstream_postgres::PostgresAdmin;
 use worldstream_runtime::{
     StorageConfig, StorageProfile, create_owner_only_file, prepare_data_directory,
+    validate_data_directory,
+};
+use worldstream_sqlite::{
+    SqliteCanonicalMetadataStatusV1, SqliteRoomStore, SqliteSourceTransferStateV1,
 };
 
 use crate::{
@@ -24,6 +32,7 @@ use crate::{
 };
 
 const RECEIPT_SCHEMA: &str = "worldstream/pack-operator-receipt/v1";
+const READINESS_SNAPSHOT_PREFIX: &str = ".pack-restart-readiness-";
 
 /// Closed operator failures without provider text, source bytes, or secrets.
 #[derive(Debug, Error)]
@@ -326,6 +335,17 @@ pub fn set_pack_selectable(
 /// faulted or quarantined Rooms remain isolated and are reported, never
 /// promoted. An absent database is a verified empty deployment.
 ///
+/// This is an offline mutating preflight: it opens the configured database
+/// through the production [`SqliteRoomStore`] path, which may apply a supported
+/// schema migration before the baseline is captured. Replay itself reads only
+/// a verified standalone snapshot. From that baseline onward, readiness must
+/// preserve the source's authority, native identity, and canonical semantics.
+/// Secure snapshot cleanup deliberately retains one private directory and a
+/// bounded set of zero-byte identity-bound markers; pathname deletion would
+/// reintroduce a same-owner substitution race. Successful completion
+/// separately writes the exact startup-readiness seal under Activity Pack
+/// operator state.
+///
 /// # Errors
 ///
 /// Returns a closed inventory, Component admission, native evidence, retained
@@ -340,7 +360,11 @@ pub fn verify_pack_restart_readiness_sqlite(
     }
     let database = exact_sqlite_database_target(data_directory, database)?;
     let startup = startup_registry(data_directory)?;
-    let replay = verify_sqlite_pack_replays(&database, startup.registry())?;
+    let replay = verify_sqlite_pack_replays_from_live_database(
+        data_directory,
+        &database,
+        startup.registry(),
+    )?;
     let deployment_binding = sqlite_deployment_binding(data_directory, storage, &replay)?;
     readiness_receipt(
         data_directory,
@@ -486,6 +510,163 @@ struct SqlitePackReplaySummaryV1 {
     isolated_rooms_skipped: usize,
     deployment_lineage: Option<String>,
     storage_epoch: Option<u64>,
+}
+
+fn verify_sqlite_pack_replays_from_live_database(
+    data_directory: &Path,
+    database: &Path,
+    registry: &PackRegistryV1,
+) -> Result<SqlitePackReplaySummaryV1, PackOperatorErrorV1> {
+    verify_sqlite_pack_replays_from_live_database_with(
+        data_directory,
+        database,
+        registry,
+        verify_sqlite_pack_replays,
+    )
+}
+
+fn verify_sqlite_pack_replays_from_live_database_with<F>(
+    data_directory: &Path,
+    database: &Path,
+    registry: &PackRegistryV1,
+    verifier: F,
+) -> Result<SqlitePackReplaySummaryV1, PackOperatorErrorV1>
+where
+    F: FnOnce(&Path, &PackRegistryV1) -> Result<SqlitePackReplaySummaryV1, PackOperatorErrorV1>,
+{
+    if !database.exists() {
+        return verifier(database, registry);
+    }
+    let source = SqliteRoomStore::open(database).map_err(|_| PackOperatorErrorV1::Readiness)?;
+    if source.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative {
+        return Err(PackOperatorErrorV1::Readiness);
+    }
+    let source_identity = source.database_identity();
+    let source_metadata = source
+        .canonical_metadata_status()
+        .map_err(|_| PackOperatorErrorV1::Readiness)?;
+    let snapshot = ReadinessSnapshotV1::create(data_directory)?;
+    let receipt = match source.create_restart_readiness_snapshot(snapshot.path()) {
+        Ok(receipt) => receipt,
+        Err(_) => return Err(PackOperatorErrorV1::Readiness),
+    };
+    let replay = verifier(snapshot.path(), registry);
+    if source
+        .scrub_restart_readiness_snapshot(snapshot.path(), &receipt)
+        .is_err()
+    {
+        return Err(PackOperatorErrorV1::Readiness);
+    }
+    if source.database_identity() != source_identity
+        || source.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative
+        || source
+            .canonical_metadata_status()
+            .map_err(|_| PackOperatorErrorV1::Readiness)?
+            != source_metadata
+    {
+        snapshot.verify_scrubbed_marker()?;
+        return Err(PackOperatorErrorV1::Readiness);
+    }
+    snapshot.verify_scrubbed_marker()?;
+    let replay = replay?;
+    if !replay_matches_live_metadata(&replay, source_metadata.as_ref()) {
+        return Err(PackOperatorErrorV1::Readiness);
+    }
+    Ok(replay)
+}
+
+struct ReadinessSnapshotV1 {
+    directory: PathBuf,
+    path: PathBuf,
+}
+
+impl ReadinessSnapshotV1 {
+    fn create(data_directory: &Path) -> Result<Self, PackOperatorErrorV1> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+
+        let parent = prepare_data_directory(data_directory)
+            .map_err(|_| PackOperatorErrorV1::DataDirectory)?;
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random).map_err(|_| PackOperatorErrorV1::Readiness)?;
+        let mut nonce = String::with_capacity(random.len().saturating_mul(2));
+        for byte in random {
+            nonce.push(char::from(HEX[usize::from(byte >> 4)]));
+            nonce.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        let directory =
+            prepare_data_directory(&parent.join(format!("{READINESS_SNAPSHOT_PREFIX}{nonce}")))
+                .map_err(|_| PackOperatorErrorV1::DataDirectory)?;
+        let path = directory.join("snapshot.sqlite3");
+        Ok(Self { directory, path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn verify_scrubbed_marker(&self) -> Result<(), PackOperatorErrorV1> {
+        if validate_data_directory(&self.directory).map_err(|_| PackOperatorErrorV1::Readiness)?
+            != self.directory
+        {
+            return Err(PackOperatorErrorV1::Readiness);
+        }
+        let entries = fs::read_dir(&self.directory)
+            .map_err(|_| PackOperatorErrorV1::Readiness)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| PackOperatorErrorV1::Readiness)?;
+        if entries.is_empty() || entries.len() > 2 {
+            return Err(PackOperatorErrorV1::Readiness);
+        }
+        let mut found_snapshot = false;
+        for entry in entries {
+            let path = entry.path();
+            let name = entry
+                .file_name()
+                .to_str()
+                .ok_or(PackOperatorErrorV1::Readiness)?
+                .to_owned();
+            if path == self.path {
+                found_snapshot = true;
+            } else if !is_scrubbed_snapshot_staging_name(&name) {
+                return Err(PackOperatorErrorV1::Readiness);
+            }
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|_| PackOperatorErrorV1::Readiness)?;
+            if !metadata.file_type().is_file() || metadata.len() != 0 {
+                return Err(PackOperatorErrorV1::Readiness);
+            }
+        }
+        if !found_snapshot {
+            return Err(PackOperatorErrorV1::Readiness);
+        }
+        Ok(())
+    }
+}
+
+fn is_scrubbed_snapshot_staging_name(name: &str) -> bool {
+    let Some(nonce) = name
+        .strip_prefix(".snapshot.sqlite3.worldstream-transfer-")
+        .and_then(|value| value.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn replay_matches_live_metadata(
+    replay: &SqlitePackReplaySummaryV1,
+    metadata: Option<&SqliteCanonicalMetadataStatusV1>,
+) -> bool {
+    match metadata {
+        None => replay.deployment_lineage.is_none() && replay.storage_epoch.is_none(),
+        Some(metadata) => {
+            replay.deployment_lineage.as_deref() == Some(metadata.deployment_lineage.as_str())
+                && replay.storage_epoch == Some(metadata.storage_epoch)
+        }
+    }
 }
 
 fn verify_sqlite_pack_replays(
@@ -744,12 +925,24 @@ fn parse_digest(value: &str) -> Result<PackBundleDigestV1, PackOperatorErrorV1> 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::too_many_lines)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
 
     use tempfile::tempdir;
+    use worldstream_core::{
+        AuthorityBootstrapV1, AuthorityCheckedAt, AuthorityV1, CapabilityBearerV1, PrincipalKindV1,
+        builtin_counter_registry, counter_v2_digest,
+    };
+    use worldstream_protocol::{
+        AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, PackReference, PrincipalKind,
+    };
     use worldstream_runtime::EffectiveConfig;
+    use worldstream_sqlite::{SqliteRoomStore, SqliteSourceTransferStateV1};
 
     use super::*;
+    use crate::{GatewayBackend, GatewaySession, SqliteGatewayBackend};
 
     struct References(bool);
 
@@ -771,6 +964,249 @@ mod tests {
         let mut config = EffectiveConfig::default();
         config.storage.data_dir = data_directory.to_owned();
         config.storage
+    }
+
+    fn seed_wal_database(data_directory: &Path) -> SqliteLiveBackupFixtureV1 {
+        prepare_data_directory(data_directory)
+            .unwrap_or_else(|error| panic!("prepare data directory: {error}"));
+        let database = data_directory.join("worldstream.sqlite3");
+        let startup = startup_registry(data_directory)
+            .unwrap_or_else(|error| panic!("startup registry: {error}"));
+        let store = SqliteRoomStore::open(&database)
+            .unwrap_or_else(|error| panic!("open WAL database: {error}"));
+        store
+            .initialize_canonical_metadata("deployment/pack-readiness", 9)
+            .unwrap_or_else(|error| panic!("initialize canonical metadata: {error}"));
+        store
+            .initialize_deployment_identity(startup.base_distribution_identity().clone())
+            .unwrap_or_else(|error| panic!("initialize deployment identity: {error}"));
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+        let source_identity = store.database_identity();
+        let witness = data_directory.join("pre-readiness-witness.sqlite3");
+        let receipt = store
+            .create_live_backup(&witness)
+            .unwrap_or_else(|error| panic!("create source witness: {error}"));
+        let semantic_digest = receipt.semantic_digest().clone();
+        store
+            .scrub_live_backup(&witness, &receipt)
+            .unwrap_or_else(|error| panic!("scrub source witness: {error}"));
+        drop(store);
+        let connection = rusqlite::Connection::open(&database)
+            .unwrap_or_else(|error| panic!("inspect journal mode: {error}"));
+        let journal_mode: String = connection
+            .query_row("PRAGMA journal_mode", (), |row| row.get(0))
+            .unwrap_or_else(|error| panic!("read journal mode: {error}"));
+        assert_eq!(journal_mode, "wal");
+        drop(connection);
+        SqliteLiveBackupFixtureV1 {
+            database,
+            source_identity,
+            semantic_digest,
+        }
+    }
+
+    fn seed_real_room_wal_database_without_canonical_metadata(
+        data_directory: &Path,
+    ) -> SqliteLiveBackupFixtureV1 {
+        prepare_data_directory(data_directory)
+            .unwrap_or_else(|error| panic!("prepare data directory: {error}"));
+        let database = data_directory.join("worldstream.sqlite3");
+        let startup = startup_registry(data_directory)
+            .unwrap_or_else(|error| panic!("startup registry: {error}"));
+        let store = SqliteRoomStore::open(&database)
+            .unwrap_or_else(|error| panic!("open WAL database: {error}"));
+        store
+            .initialize_deployment_identity(startup.base_distribution_identity().clone())
+            .unwrap_or_else(|error| panic!("initialize deployment identity: {error}"));
+
+        let bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
+        let principal = "01ARZ3NDEKTSV4RRFFQ69G5FC2"
+            .parse()
+            .unwrap_or_else(|error| panic!("principal: {error}"));
+        AuthorityV1::new(Arc::new(store.clone()))
+            .bootstrap(
+                AuthorityBootstrapV1::new(
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC4"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("capability id: {error}")),
+                    principal,
+                    PrincipalKindV1::Human,
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC3"
+                        .parse()
+                        .unwrap_or_else(|error| panic!("authority change id: {error}")),
+                    bearer.token_hash(),
+                    None,
+                )
+                .unwrap_or_else(|error| panic!("authority bootstrap: {error}")),
+                "2026-08-15T12:00:00Z"
+                    .parse::<AuthorityCheckedAt>()
+                    .unwrap_or_else(|error| panic!("authority checked at: {error}")),
+            )
+            .unwrap_or_else(|error| panic!("bootstrap authority: {error}"));
+
+        let registry = Arc::new(
+            builtin_counter_registry().unwrap_or_else(|error| panic!("counter registry: {error}")),
+        );
+        let retained_pack = registry
+            .load_retained(&counter_v2_digest())
+            .unwrap_or_else(|error| panic!("counter revision: {error}"));
+        let descriptor = retained_pack.descriptor();
+        let wire = BearerWireV1::from_bytes([0xa9; 32]);
+        let session = GatewaySession::new_with_wire(
+            "01ARZ3NDEKTSV4RRFFQ69G5FC5"
+                .parse()
+                .unwrap_or_else(|error| panic!("session id: {error}")),
+            CapabilityBearerV1::from_bytes(
+                BearerWireV1::parse(&wire.to_wire())
+                    .unwrap_or_else(|error| panic!("bearer wire: {error}"))
+                    .into_bytes(),
+            ),
+            wire,
+        );
+        let backend = SqliteGatewayBackend::new(store.clone(), Arc::clone(&registry));
+        let created = backend
+            .create_room(
+                &session,
+                CreateRoomRequest {
+                    pack: PackReference {
+                        id: descriptor.pack_id.clone(),
+                        version: descriptor.explanatory_version.clone(),
+                        digest: counter_v2_digest().to_string(),
+                    },
+                    configuration: serde_json::json!({
+                        "initial_value": 0,
+                        "maximum_value": 4
+                    }),
+                    members: vec![CreateMember {
+                        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC2".to_owned(),
+                        principal_kind: PrincipalKind::Human,
+                        role: Some("counter".to_owned()),
+                        access_mode: AccessMode::Participant,
+                    }],
+                    idempotency_key: "pack-readiness-real-wal-room".to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("create real Room: {error}"));
+        assert_eq!(created.room_head.room_seq, 0);
+        drop(backend);
+
+        assert_eq!(
+            store
+                .canonical_metadata_status()
+                .unwrap_or_else(|error| panic!("canonical metadata status: {error}")),
+            None
+        );
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+        let source_identity = store.database_identity();
+        let witness = data_directory.join("pre-readiness-real-room-witness.sqlite3");
+        let receipt = store
+            .create_restart_readiness_snapshot(&witness)
+            .unwrap_or_else(|error| panic!("create source witness: {error}"));
+        let semantic_digest = receipt.semantic_digest().clone();
+        store
+            .scrub_restart_readiness_snapshot(&witness, &receipt)
+            .unwrap_or_else(|error| panic!("scrub source witness: {error}"));
+        drop(store);
+
+        let connection = rusqlite::Connection::open(&database)
+            .unwrap_or_else(|error| panic!("inspect journal mode: {error}"));
+        let journal_mode: String = connection
+            .query_row("PRAGMA journal_mode", (), |row| row.get(0))
+            .unwrap_or_else(|error| panic!("read journal mode: {error}"));
+        assert_eq!(journal_mode, "wal");
+        drop(connection);
+        SqliteLiveBackupFixtureV1 {
+            database,
+            source_identity,
+            semantic_digest,
+        }
+    }
+
+    struct SqliteLiveBackupFixtureV1 {
+        database: PathBuf,
+        source_identity: worldstream_sqlite::SqliteFileIdentityV1,
+        semantic_digest: worldstream_transfer::DigestV1,
+    }
+
+    fn readiness_snapshot_directories(data_directory: &Path) -> Vec<PathBuf> {
+        fs::read_dir(data_directory)
+            .unwrap_or_else(|error| panic!("read data directory: {error}"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("read data directory entry: {error}"))
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(READINESS_SNAPSHOT_PREFIX))
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    fn assert_only_scrubbed_readiness_snapshots(data_directory: &Path, expected: usize) {
+        let directories = readiness_snapshot_directories(data_directory);
+        assert_eq!(directories.len(), expected);
+        for directory in directories {
+            let directory_metadata = fs::symlink_metadata(&directory)
+                .unwrap_or_else(|error| panic!("read readiness directory metadata: {error}"));
+            assert!(directory_metadata.file_type().is_dir());
+            assert!(!directory_metadata.file_type().is_symlink());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                assert_eq!(directory_metadata.permissions().mode() & 0o777, 0o700);
+            }
+            let entries = fs::read_dir(&directory)
+                .unwrap_or_else(|error| panic!("read readiness directory: {error}"))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_else(|error| panic!("read readiness entry: {error}"));
+            assert!((1..=2).contains(&entries.len()));
+            let snapshot = directory.join("snapshot.sqlite3");
+            assert!(entries.iter().any(|entry| entry.path() == snapshot));
+            for entry in entries {
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .unwrap_or_else(|| panic!("readiness marker name"))
+                    .to_owned();
+                assert!(entry.path() == snapshot || is_scrubbed_snapshot_staging_name(&name));
+                let metadata = fs::symlink_metadata(entry.path())
+                    .unwrap_or_else(|error| panic!("read scrubbed marker: {error}"));
+                assert!(metadata.file_type().is_file());
+                assert!(!metadata.file_type().is_symlink());
+                assert_eq!(metadata.len(), 0);
+            }
+            assert!(!PathBuf::from(format!("{}-wal", snapshot.display())).exists());
+            assert!(!PathBuf::from(format!("{}-shm", snapshot.display())).exists());
+        }
+    }
+
+    fn assert_source_semantics_unchanged_after_preflight(
+        data_directory: &Path,
+        fixture: &SqliteLiveBackupFixtureV1,
+    ) {
+        let store = SqliteRoomStore::open(&fixture.database)
+            .unwrap_or_else(|error| panic!("reopen source: {error}"));
+        assert_eq!(store.database_identity(), fixture.source_identity);
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+        let witness = data_directory.join("post-readiness-witness.sqlite3");
+        let receipt = store
+            .create_restart_readiness_snapshot(&witness)
+            .unwrap_or_else(|error| panic!("create post-readiness witness: {error}"));
+        assert_eq!(receipt.semantic_digest(), &fixture.semantic_digest);
+        store
+            .scrub_restart_readiness_snapshot(&witness, &receipt)
+            .unwrap_or_else(|error| panic!("scrub post-readiness witness: {error}"));
     }
 
     #[test]
@@ -935,5 +1371,184 @@ mod tests {
             ),
             Err(PackOperatorErrorV1::Readiness)
         ));
+    }
+
+    #[test]
+    fn sqlite_readiness_verifies_a_standalone_snapshot_of_real_wal_metadata() {
+        let temporary = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let data_directory = temporary.path().join("data");
+        let fixture = seed_wal_database(&data_directory);
+        let storage = sqlite_storage(&data_directory);
+
+        let readiness =
+            verify_pack_restart_readiness_sqlite(&data_directory, &fixture.database, &storage)
+                .unwrap_or_else(|error| panic!("verify WAL readiness: {error}"));
+
+        assert!(readiness.room_replay_checked);
+        assert_eq!(readiness.rooms_replayed, 0);
+        assert_eq!(readiness.isolated_rooms_skipped, 0);
+        assert_only_scrubbed_readiness_snapshots(&data_directory, 1);
+        assert_source_semantics_unchanged_after_preflight(&data_directory, &fixture);
+    }
+
+    #[test]
+    fn sqlite_readiness_replays_a_real_wal_room_without_canonical_metadata() {
+        let temporary = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let data_directory = temporary.path().join("data");
+        let fixture = seed_real_room_wal_database_without_canonical_metadata(&data_directory);
+        let storage = sqlite_storage(&data_directory);
+
+        let readiness =
+            verify_pack_restart_readiness_sqlite(&data_directory, &fixture.database, &storage)
+                .unwrap_or_else(|error| panic!("verify real Room WAL readiness: {error}"));
+
+        assert!(readiness.room_replay_checked);
+        assert_eq!(readiness.rooms_replayed, 1);
+        assert_eq!(readiness.isolated_rooms_skipped, 0);
+        assert_only_scrubbed_readiness_snapshots(&data_directory, 1);
+        assert_source_semantics_unchanged_after_preflight(&data_directory, &fixture);
+    }
+
+    #[test]
+    fn sqlite_readiness_scrubs_its_verified_snapshot_when_replay_fails() {
+        let temporary = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let data_directory = temporary.path().join("data");
+        let fixture = seed_wal_database(&data_directory);
+        let startup = startup_registry(&data_directory)
+            .unwrap_or_else(|error| panic!("startup registry: {error}"));
+
+        let result = verify_sqlite_pack_replays_from_live_database_with(
+            &data_directory,
+            &fixture.database,
+            startup.registry(),
+            |snapshot, _| {
+                assert_ne!(snapshot, fixture.database);
+                assert!(snapshot.exists());
+                let snapshot_metadata = fs::symlink_metadata(snapshot)
+                    .unwrap_or_else(|error| panic!("read snapshot metadata: {error}"));
+                assert!(snapshot_metadata.file_type().is_file());
+                assert!(!snapshot_metadata.file_type().is_symlink());
+                let directory = snapshot
+                    .parent()
+                    .unwrap_or_else(|| panic!("snapshot directory"));
+                let directory_metadata = fs::symlink_metadata(directory)
+                    .unwrap_or_else(|error| panic!("read snapshot directory metadata: {error}"));
+                assert!(directory_metadata.file_type().is_dir());
+                assert!(!directory_metadata.file_type().is_symlink());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    assert_eq!(directory_metadata.permissions().mode() & 0o777, 0o700);
+                }
+                let connection = rusqlite::Connection::open_with_flags(
+                    snapshot,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .unwrap_or_else(|error| panic!("open standalone snapshot: {error}"));
+                let journal_mode: String = connection
+                    .query_row("PRAGMA journal_mode", (), |row| row.get(0))
+                    .unwrap_or_else(|error| panic!("read snapshot journal mode: {error}"));
+                assert_eq!(journal_mode, "delete");
+                Err(PackOperatorErrorV1::Readiness)
+            },
+        );
+
+        assert!(matches!(result, Err(PackOperatorErrorV1::Readiness)));
+        assert_only_scrubbed_readiness_snapshots(&data_directory, 1);
+        assert_source_semantics_unchanged_after_preflight(&data_directory, &fixture);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_readiness_never_deletes_a_directory_substitution_victim() {
+        let temporary = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let data_directory = temporary.path().join("data");
+        let fixture = seed_wal_database(&data_directory);
+        let startup = startup_registry(&data_directory)
+            .unwrap_or_else(|error| panic!("startup registry: {error}"));
+        let victim = temporary.path().join("substitution-victim");
+        prepare_data_directory(&victim)
+            .unwrap_or_else(|error| panic!("prepare substitution victim: {error}"));
+        let victim_snapshot = victim.join("snapshot.sqlite3");
+        let victim_bytes = b"same-owner directory substitution victim";
+        fs::write(&victim_snapshot, victim_bytes)
+            .unwrap_or_else(|error| panic!("write substitution victim: {error}"));
+        let held_directory = data_directory.join("held-readiness-snapshot");
+        let mut original_bytes = None;
+
+        let result = verify_sqlite_pack_replays_from_live_database_with(
+            &data_directory,
+            &fixture.database,
+            startup.registry(),
+            |snapshot, registry| {
+                let replay = verify_sqlite_pack_replays(snapshot, registry)?;
+                let directory = snapshot
+                    .parent()
+                    .unwrap_or_else(|| panic!("snapshot directory"))
+                    .to_owned();
+                original_bytes = Some(
+                    fs::read(snapshot)
+                        .unwrap_or_else(|error| panic!("read admitted snapshot: {error}")),
+                );
+                fs::rename(&directory, &held_directory)
+                    .unwrap_or_else(|error| panic!("hold admitted directory: {error}"));
+                std::os::unix::fs::symlink(&victim, &directory)
+                    .unwrap_or_else(|error| panic!("substitute readiness directory: {error}"));
+                Ok(replay)
+            },
+        );
+
+        assert!(matches!(result, Err(PackOperatorErrorV1::Readiness)));
+        assert_eq!(
+            fs::read(&victim_snapshot)
+                .unwrap_or_else(|error| panic!("read substitution victim: {error}")),
+            victim_bytes
+        );
+        assert_eq!(
+            fs::read(held_directory.join("snapshot.sqlite3"))
+                .unwrap_or_else(|error| panic!("read retained admitted snapshot: {error}")),
+            original_bytes.unwrap_or_else(|| panic!("original snapshot bytes"))
+        );
+        assert_source_semantics_unchanged_after_preflight(&data_directory, &fixture);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_scrub_validation_never_deletes_a_directory_substitution_victim() {
+        let temporary = tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let data_directory = temporary.path().join("data");
+        let snapshot = ReadinessSnapshotV1::create(&data_directory)
+            .unwrap_or_else(|error| panic!("create readiness snapshot path: {error}"));
+        create_owner_only_file(snapshot.path())
+            .unwrap_or_else(|error| panic!("create scrubbed marker: {error}"));
+        let admitted_directory = snapshot.directory.clone();
+        let held_directory = data_directory.join("held-scrubbed-readiness");
+        fs::rename(&admitted_directory, &held_directory)
+            .unwrap_or_else(|error| panic!("hold scrubbed directory: {error}"));
+        let victim = temporary.path().join("post-scrub-victim");
+        prepare_data_directory(&victim)
+            .unwrap_or_else(|error| panic!("prepare post-scrub victim: {error}"));
+        let victim_file = victim.join("snapshot.sqlite3");
+        let victim_bytes = b"post-scrub directory substitution victim";
+        fs::write(&victim_file, victim_bytes)
+            .unwrap_or_else(|error| panic!("write post-scrub victim: {error}"));
+        std::os::unix::fs::symlink(&victim, &admitted_directory)
+            .unwrap_or_else(|error| panic!("substitute post-scrub directory: {error}"));
+
+        assert!(matches!(
+            snapshot.verify_scrubbed_marker(),
+            Err(PackOperatorErrorV1::Readiness)
+        ));
+        assert_eq!(
+            fs::read(&victim_file)
+                .unwrap_or_else(|error| panic!("read post-scrub victim: {error}")),
+            victim_bytes
+        );
+        assert_eq!(
+            fs::metadata(held_directory.join("snapshot.sqlite3"))
+                .unwrap_or_else(|error| panic!("read held scrubbed marker: {error}"))
+                .len(),
+            0
+        );
     }
 }

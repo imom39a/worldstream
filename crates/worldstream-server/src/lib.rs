@@ -3,7 +3,6 @@
 //! supervisor wires the verified storage seams into this process.
 
 mod args;
-#[cfg(feature = "cli-operator-preview")]
 pub mod managed_control;
 pub mod operator_packs;
 pub mod operator_storage;
@@ -78,8 +77,8 @@ use rate_limit::{
 pub use args::CommonConfigArgs;
 pub use pack_startup::{
     StartupPackFactsV1, StartupPackRegistryDiagnosticsV1, StartupPackRegistryErrorV1,
-    StartupPackRegistryV1, assemble_startup_pack_registry, pack_deployment_binding,
-    verify_startup_pack_readiness_seal,
+    StartupPackRegistryV1, assemble_startup_pack_registry, empty_startup_pack_inventory_digest,
+    pack_deployment_binding, verify_startup_pack_readiness_seal,
 };
 pub use postgres_backend::{PostgresGatewayBackend, read_postgres_dsn};
 pub use sqlite_backend::SqliteGatewayBackend;

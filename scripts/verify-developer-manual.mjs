@@ -29,8 +29,11 @@ for (const name of importedContent) {
 for (const name of contentFiles) {
   const source = readFileSync(join(contentDirectory, name), "utf8");
   if (!source.startsWith("# ")) failures.push(`${name} must begin with one level-one heading`);
-  if (/pnpm counter:studio(?::browser)? --(?:[ \t]|\\\r?\n)/gu.test(source)) {
-    failures.push(`${name} passes a standalone -- through a Counter pnpm script`);
+  if (/pnpm\s+(?:studio:[\w:-]+|counter:studio(?::browser)?)/gu.test(source)) {
+    failures.push(`${name} contains a retired Studio workspace command`);
+  }
+  if (/web\/studio|#\/studio\//gu.test(source)) {
+    failures.push(`${name} contains a deleted Studio path or route`);
   }
   for (const match of source.matchAll(/\]\(#(\/[^)]+)\)/gu)) {
     if (!routeSet.has(match[1])) failures.push(`${name} links to unknown manual route ${match[1]}`);

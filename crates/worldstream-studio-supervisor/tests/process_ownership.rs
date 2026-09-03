@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use worldstream_runtime::prepare_data_directory;
 use worldstream_studio_supervisor::process_ownership::{
     ProcessOwnership, ProcessPhase, ProcessRole, ProcessTermination,

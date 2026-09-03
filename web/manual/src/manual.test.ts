@@ -3,11 +3,11 @@ import { normalizeRoute, searchPages, type ManualPage } from "./manual";
 
 const pages: ManualPage[] = [
   {
-    route: "/studio/setup",
-    title: "Studio setup",
-    summary: "Run the local operator portal.",
-    group: "Studio",
-    source: "The Supervisor probes worldstreamd and preserves authority boundaries.",
+    route: "/quickstart",
+    title: "Local quickstart",
+    summary: "Run the local authority from the CLI.",
+    group: "Start here",
+    source: "The Controller probes worldstreamd and preserves authority boundaries.",
   },
   {
     route: "/agents/mcp",
@@ -20,15 +20,15 @@ const pages: ManualPage[] = [
 
 describe("manual routing and search", () => {
   it("accepts exact known routes and falls back to the manual home", () => {
-    expect(normalizeRoute("#/studio/setup", pages)).toBe("/studio/setup");
+    expect(normalizeRoute("#/quickstart", pages)).toBe("/quickstart");
     expect(normalizeRoute("#/missing", pages)).toBe("/");
     expect(normalizeRoute("", pages)).toBe("/");
   });
 
   it("searches titles, summaries, and documentation text case-insensitively", () => {
-    expect(searchPages("STUDIO", pages).map((page) => page.route)).toEqual(["/studio/setup"]);
+    expect(searchPages("CONTROLLER", pages).map((page) => page.route)).toEqual(["/quickstart"]);
     expect(searchPages("Action Offers", pages).map((page) => page.route)).toEqual(["/agents/mcp"]);
-    expect(searchPages("operator portal", pages).map((page) => page.route)).toEqual(["/studio/setup"]);
+    expect(searchPages("local authority", pages).map((page) => page.route)).toEqual(["/quickstart"]);
   });
 
   it("requires every query token and returns no results for an empty query", () => {

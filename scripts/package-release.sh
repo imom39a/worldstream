@@ -75,6 +75,7 @@ if "--dry-run" in tokens:
     raise SystemExit(0)
 
 target = option("--target")
+release_inventory = option("--release-inventory")
 output_value = option("--output", str(workspace / "dist"))
 names = {
     "source": "worldstream-{version}-source.tar.gz",
@@ -102,6 +103,8 @@ if artifact.is_symlink() or not artifact.is_file():
     raise SystemExit(f"packaging did not produce the expected regular archive: {artifact}")
 
 report_args = [sys.executable, str(workspace / "scripts/package.py"), "report", str(artifact)]
+if release_inventory:
+    report_args.extend(("--release-inventory", release_inventory))
 if report_value:
     report_args.extend(("--report", report_value))
 subprocess.run(report_args, check=True)

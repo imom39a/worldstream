@@ -11,7 +11,7 @@ describe("Client Host path selection", () => {
 
   it("preserves the recorded gallery and does not dispatch Pack-specific paths", () => {
     expect(clientSurfaceForPath("/")).toBe("legacy");
-    expect(clientSurfaceForPath("/prototype/studio")).toBe("legacy");
+    expect(clientSurfaceForPath("/unknown")).toBe("legacy");
     expect(clientSurfaceForPath("/agent-heist/")).toBe("legacy");
     expect(clientSurfaceForPath("/negotiate/")).toBe("legacy");
   });

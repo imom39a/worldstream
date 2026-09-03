@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use std::{collections::BTreeMap, fs, io::Write as _, path::Path};
 use worldstream_studio_supervisor::{
     process_ownership::{ProcessOwnership, ProcessRole},

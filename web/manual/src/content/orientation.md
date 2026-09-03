@@ -41,7 +41,7 @@ these three concepts is interchangeable.
 - One five-operation `ActivityPackV1` host with retained embedded revisions and an accepted WASI-free portable Pack contract now under implementation.
 - Reference Counter and Agent Heist behavior plus conformance and acceptance
   fixtures.
-- WorldStream Studio, its bounded local Supervisor, Task setup, Participant
+- the WorldStream CLI, its bounded local Controller, task setup, participant
   handoff, Runner Templates, Agent Profiles, backup operations, and attention
   inbox.
 - An assignment-bound local MCP server for external agents and a post-MVP
@@ -67,7 +67,7 @@ these three concepts is interchangeable.
 1. [Local quickstart](#/quickstart) — build and run the real stack.
 2. [Domain model](#/concepts/domain-model) — learn the precise vocabulary.
 3. [Architecture](#/concepts/architecture) — follow one Action through commit.
-4. [Studio setup](#/studio/setup) — operate the local control plane.
+4. [CLI reference](#/reference/cli) — operate the local control plane.
 5. [Activity Pack overview](#/activity-packs/overview) — build rules on the
    kernel.
 6. [WorldStream Negotiate](#/activity-packs/negotiate) — understand the first serious public Pack.

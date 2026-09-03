@@ -301,7 +301,14 @@ _BODY_FIELDS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "client.pong": (frozenset(), frozenset()),
     "runner.hello": (
         frozenset(("runner_id", "maximum_concurrent_activations", "supported_pack_ids")),
-        frozenset(("runner_id", "maximum_concurrent_activations", "supported_pack_ids")),
+        frozenset(
+            (
+                "runner_id",
+                "maximum_concurrent_activations",
+                "supported_pack_ids",
+                "supported_pack_revisions",
+            )
+        ),
     ),
     "runner.ready": (frozenset(("runner_id",)), frozenset(("runner_id",))),
     "activation.offer": (
@@ -456,6 +463,23 @@ def _validate_pack(value: Any, label: str = "pack") -> None:
     _wire_string(value["id"], f"{label}.id")
     _wire_string(value["version"], f"{label}.version")
     _validate_hash_text(value["digest"], f"{label}.digest")
+
+
+def _validate_runner_pack_revision(value: Any, label: str) -> None:
+    """Validate the exact PackReference bounds enforced by Runner admission."""
+
+    if not isinstance(value, dict) or set(value) != {"id", "version", "digest"}:
+        raise ProtocolError("invalid_envelope", f"{label} is invalid", False)
+    _wire_string(value["id"], f"{label}.id", max_bytes=256)
+    _wire_string(value["version"], f"{label}.version", max_bytes=64)
+    digest = value["digest"]
+    if (
+        not isinstance(digest, str)
+        or not digest.startswith("blake3:")
+        or len(digest) != 71
+        or any(character not in "0123456789abcdef" for character in digest[7:])
+    ):
+        raise ProtocolError("invalid_envelope", f"{label}.digest is invalid", False)
 
 
 _ROOM_HEAD_FIELDS = frozenset(
@@ -736,6 +760,19 @@ def _validate_body(message_type: str, body: Any) -> dict[str, Any]:
             raise ProtocolError("invalid_payload", "supported_pack_ids is invalid", False)
         for index, pack_id in enumerate(packs):
             _wire_string(pack_id, f"supported_pack_ids[{index}]", max_bytes=256)
+        revisions = body.get("supported_pack_revisions")
+        if revisions is not None:
+            if not isinstance(revisions, list) or len(revisions) > _RUNNER_MAX_SUPPORTED_PACKS:
+                raise ProtocolError("invalid_payload", "supported_pack_revisions is invalid", False)
+            identities: set[tuple[str, str, str]] = set()
+            for index, revision in enumerate(revisions):
+                _validate_runner_pack_revision(revision, f"supported_pack_revisions[{index}]")
+                identity = (revision["id"], revision["version"], revision["digest"])
+                if identity in identities:
+                    raise ProtocolError(
+                        "invalid_payload", "supported_pack_revisions is invalid", False
+                    )
+                identities.add(identity)
     elif message_type == "runner.ready":
         _validate_runner_id(body["runner_id"])
     elif message_type == "activation.offer":
@@ -1211,6 +1248,7 @@ class Client:
         runner_id: str,
         maximum_concurrent_activations: int,
         supported_pack_ids: list[str],
+        supported_pack_revisions: list[dict[str, Any]] | None = None,
     ) -> Runner:
         """Open and handshake a Runner control connection."""
 
@@ -1219,6 +1257,7 @@ class Client:
             runner_id,
             maximum_concurrent_activations,
             supported_pack_ids,
+            supported_pack_revisions,
         )
         await runner.connect()
         return runner
@@ -1398,24 +1437,31 @@ class Runner:
         runner_id: str,
         maximum_concurrent_activations: int,
         supported_pack_ids: list[str],
+        supported_pack_revisions: list[dict[str, Any]] | None = None,
     ) -> None:
         self.client = client
         self.runner_id = _validate_runner_id(runner_id)
         self.maximum_concurrent_activations = maximum_concurrent_activations
         self.supported_pack_ids = list(supported_pack_ids)
-        _validate_body(
-            "runner.hello",
-            {
-                "runner_id": self.runner_id,
-                "maximum_concurrent_activations": maximum_concurrent_activations,
-                "supported_pack_ids": self.supported_pack_ids,
-            },
+        self.supported_pack_revisions = (
+            None if supported_pack_revisions is None else copy.deepcopy(supported_pack_revisions)
         )
+        _validate_body("runner.hello", self._hello_body())
         self.websocket: Any = None
         self.welcome: dict[str, Any] | None = None
         self.ready: dict[str, Any] | None = None
         self.session_id: str | None = None
         self._pending: list[dict[str, Any]] = []
+
+    def _hello_body(self) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "runner_id": self.runner_id,
+            "maximum_concurrent_activations": self.maximum_concurrent_activations,
+            "supported_pack_ids": self.supported_pack_ids,
+        }
+        if self.supported_pack_revisions is not None:
+            body["supported_pack_revisions"] = copy.deepcopy(self.supported_pack_revisions)
+        return body
 
     async def connect(self) -> dict[str, Any]:
         """Open the Runner-mode session and complete the Runner handshake."""
@@ -1452,11 +1498,7 @@ class Runner:
         self.session_id = self.welcome["session_id"]
         self.ready = await self._command(
             "runner.hello",
-            {
-                "runner_id": self.runner_id,
-                "maximum_concurrent_activations": self.maximum_concurrent_activations,
-                "supported_pack_ids": self.supported_pack_ids,
-            },
+            self._hello_body(),
             "runner.ready",
         )
         if self.ready.get("runner_id") != self.runner_id:

@@ -353,6 +353,50 @@ test("vetoes Core kind drift and faults malformed callbacks before mutation", ()
   assert.equal(canonicalStringify(state as unknown as CanonicalJson), before);
 });
 
+test("public Pack Actions derive Host admission context and retained Pack basis", () => {
+  assert.equal(pack.descriptor.version, "0.2.0");
+  const state = freshState();
+  const publicPayload = clone(corpus.golden.steps[0]!.stimulus.value);
+  delete publicPayload.admitted_at;
+  delete publicPayload.basis;
+
+  const result = pack.reduce({
+    core_before: fixtureCore(),
+    deterministic_context: {
+      next_room_sequence: 1,
+      pack_digest: `blake3:${"0".repeat(64)}`,
+      room_seed: "00000000000000000000000000000000",
+    },
+    next_room_seq: 1,
+    prior_activity_state: state as unknown as CanonicalJson,
+    proposed_core_after: fixtureCore(),
+    recorded_stimulus: {
+      action_id: "01ARZ3NDEKTSV4RRFFQ69G5F02",
+      action_type: "submit_proposal_revision",
+      admitted_at: "1970-01-01T00:01:40.123456789Z",
+      canonical_payload: publicPayload,
+      exact_basis_head: {},
+      member_id: "01ARZ3NDEKTSV4RRFFQ69G5FC0",
+      payload_schema_digest: `blake3:${"0".repeat(64)}`,
+      stimulus_type: "participant_action",
+    },
+    scheduled_timers: {},
+  });
+
+  assert.equal(result.activity_disposition_type, "apply");
+  if (result.activity_disposition_type !== "apply") return;
+  const next = result.next_activity_state as unknown as NegotiateState;
+  assert.equal(next.phase, "formation_open");
+  assert.equal(next.session_state, "active");
+  assert.equal(next.room_head.sequence, 1);
+  assert.equal(next.evidence.length, 2);
+  assert.ok(
+    next.evidence.every(
+      (entry) => entry.action_id === "act_01_buyer_proposal",
+    ),
+  );
+});
+
 function freshState(): NegotiateState {
   return initializeState({
     a202_revision: corpus.golden.a202_revision,

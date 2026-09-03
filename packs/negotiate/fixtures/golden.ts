@@ -42,7 +42,7 @@ const accepted = corpus.golden.steps.map((step) => {
   return {
     action_type: String(action.action),
     admitted_at: semanticTimestamp(Number(action.admitted_at)),
-    canonical_payload: action,
+    canonical_payload: publicPayload(action),
     member_id: memberForRole(actor),
   };
 });
@@ -63,7 +63,7 @@ export const goldenFixture = {
   rejected: {
     action_type: String(rejectedAction.action),
     admitted_at: semanticTimestamp(Number(rejectedAction.admitted_at)),
-    canonical_payload: rejectedAction,
+    canonical_payload: publicPayload(rejectedAction),
     member_id: memberForRole(String(rejectedAction.actor)),
   },
   seller: participants[1],
@@ -110,4 +110,13 @@ function memberForRole(role: string): string {
 
 function semanticTimestamp(value: number): string {
   return new Date(value * 1_000).toISOString().replace(".000Z", "Z");
+}
+
+function publicPayload(
+  action: Record<string, CanonicalJson>,
+): Record<string, CanonicalJson> {
+  const payload = { ...action };
+  delete payload.admitted_at;
+  delete payload.basis;
+  return payload;
 }

@@ -22,7 +22,6 @@ pub fn protect_operator_routes(router: Router, control: ControlAccess) -> Router
     protect(router, control, false)
 }
 
-#[cfg(feature = "cli-operator-preview")]
 pub(crate) fn protect_managed_operator_routes(
     router: Router,
     control: ControlAccess,

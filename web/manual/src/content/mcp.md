@@ -6,7 +6,7 @@ assignment's sealed authority inside owner-only Supervisor state.
 
 ## Start shape
 
-Obtain a fresh reference from the Studio/Supervisor assignment flow, then make
+Obtain a fresh reference from the CLI/Controller assignment flow, then make
 your MCP host own this process:
 
 ```sh
@@ -109,7 +109,7 @@ the daemon's Activation generation fences.
 
 | Symptom | Meaning / next action |
 | --- | --- |
-| launch reference unavailable | assignment missing, revoked, expired, or wrong state directory; return to Studio setup |
+| launch reference unavailable | assignment missing, revoked, expired, or wrong state directory; repeat the CLI assignment setup |
 | no assigned Tasks | this helper is not a general discovery client; verify exact profile assignment |
 | stale Head / offer | observe again and select a new offer; do not reuse the changed Action identity |
 | already completed | advance to the next Activation; do not resubmit the old Action |

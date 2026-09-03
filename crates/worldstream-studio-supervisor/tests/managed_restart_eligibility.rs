@@ -1,4 +1,4 @@
-#![cfg(all(feature = "cli-operator-preview", unix))]
+#![cfg(unix)]
 
 use std::{
     fs,

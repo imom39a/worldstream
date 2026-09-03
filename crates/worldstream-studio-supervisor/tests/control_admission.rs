@@ -107,7 +107,6 @@ async fn exact_browser_session_keeps_its_existing_membership_admission() -> Test
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 mod production {
     use std::{
         io::{Read as _, Write as _},

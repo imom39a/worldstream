@@ -133,7 +133,6 @@ pub struct HttpDaemonRoomSource {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
-    #[cfg(feature = "cli-operator-preview")]
     managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
@@ -150,13 +149,11 @@ impl HttpDaemonRoomSource {
             timeout,
             vault,
             host_authority,
-            #[cfg(feature = "cli-operator-preview")]
             managed: None,
         }
     }
 
     /// Uses proof-bound managed Runtime transport; foreground `new` is unchanged.
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn new_managed(
         address: SocketAddr,
@@ -186,7 +183,6 @@ impl HttpDaemonRoomSource {
             .host_authority
             .as_ref()
             .ok_or(RoomSourceErrorV1::Unavailable)?;
-        #[cfg(feature = "cli-operator-preview")]
         if let Some(transport) = &self.managed {
             let maximum = usize::try_from(MAX_DAEMON_RESPONSE_BYTES)
                 .map_err(|_| RoomSourceErrorV1::InvalidResponse)?;

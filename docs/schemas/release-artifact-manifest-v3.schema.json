@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/imom39a/worldstream/blob/main/docs/schemas/release-artifact-manifest-v3.schema.json",
+  "title": "WorldStream CLI-first detached release artifact manifest v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "release_inventory",
+    "product",
+    "source_version",
+    "manifest",
+    "artifacts",
+    "artifact_digests",
+    "evidence",
+    "evidence_digests",
+    "verification_material"
+  ],
+  "properties": {
+    "schema": {"const": "worldstream/release-artifact-manifest/v3"},
+    "release_inventory": {"const": "worldstream/release-inventory/cli-first-v1"},
+    "product": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"},
+    "source_version": {"type": "string"},
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "mirror", "sha256"],
+      "properties": {
+        "source": {"const": "compatibility.toml"},
+        "mirror": {"const": "compatibility.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "artifacts": {"$ref": "#/$defs/artifactPaths"},
+    "artifact_digests": {"$ref": "#/$defs/artifactDigests"},
+    "evidence": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
+    "evidence_digests": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/sha256"}},
+    "verification_material": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sigstore-bundle"],
+      "properties": {
+        "sigstore-bundle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {"path": {"const": "sigstore.bundle.json"}}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "artifactPaths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source-archive", "native-linux-x86_64-archive", "native-windows-x64-archive", "oci-linux-amd64-image",
+        "worldstream-a202-adapter", "worldstream-deterministic-agents", "worldstream-documentation", "worldstream-examples",
+        "worldstream-licenses", "worldstream-negotiate-bundle", "worldstream-negotiate-evidence-verifier", "worldstream-pack-toolchain",
+        "worldstream-participant-console", "worldstream-release-metadata", "worldstream-typescript-pack-sdk",
+        "checksums", "sigstore-bundle", "spdx-sbom", "slsa-provenance"
+      ],
+      "properties": {
+        "source-archive": {"type": "string"}, "native-linux-x86_64-archive": {"type": "string"}, "native-windows-x64-archive": {"type": "string"}, "oci-linux-amd64-image": {"type": "string"},
+        "worldstream-a202-adapter": {"type": "string"}, "worldstream-deterministic-agents": {"type": "string"}, "worldstream-documentation": {"type": "string"}, "worldstream-examples": {"type": "string"},
+        "worldstream-licenses": {"type": "string"}, "worldstream-negotiate-bundle": {"type": "string"}, "worldstream-negotiate-evidence-verifier": {"type": "string"}, "worldstream-pack-toolchain": {"type": "string"},
+        "worldstream-participant-console": {"type": "string"}, "worldstream-release-metadata": {"type": "string"}, "worldstream-typescript-pack-sdk": {"type": "string"},
+        "checksums": {"const": "SHA256SUMS"}, "sigstore-bundle": {"const": "sigstore.bundle.json"}, "spdx-sbom": {"const": "sbom.spdx.json"}, "slsa-provenance": {"const": "provenance.json"}
+      }
+    },
+    "artifactDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source-archive", "native-linux-x86_64-archive", "native-windows-x64-archive", "oci-linux-amd64-image",
+        "worldstream-a202-adapter", "worldstream-deterministic-agents", "worldstream-documentation", "worldstream-examples",
+        "worldstream-licenses", "worldstream-negotiate-bundle", "worldstream-negotiate-evidence-verifier", "worldstream-pack-toolchain",
+        "worldstream-participant-console", "worldstream-release-metadata", "worldstream-typescript-pack-sdk",
+        "checksums", "spdx-sbom", "slsa-provenance"
+      ],
+      "properties": {
+        "source-archive": {"$ref": "#/$defs/sha256"}, "native-linux-x86_64-archive": {"$ref": "#/$defs/sha256"}, "native-windows-x64-archive": {"$ref": "#/$defs/sha256"}, "oci-linux-amd64-image": {"$ref": "#/$defs/sha256"},
+        "worldstream-a202-adapter": {"$ref": "#/$defs/sha256"}, "worldstream-deterministic-agents": {"$ref": "#/$defs/sha256"}, "worldstream-documentation": {"$ref": "#/$defs/sha256"}, "worldstream-examples": {"$ref": "#/$defs/sha256"},
+        "worldstream-licenses": {"$ref": "#/$defs/sha256"}, "worldstream-negotiate-bundle": {"$ref": "#/$defs/sha256"}, "worldstream-negotiate-evidence-verifier": {"$ref": "#/$defs/sha256"}, "worldstream-pack-toolchain": {"$ref": "#/$defs/sha256"},
+        "worldstream-participant-console": {"$ref": "#/$defs/sha256"}, "worldstream-release-metadata": {"$ref": "#/$defs/sha256"}, "worldstream-typescript-pack-sdk": {"$ref": "#/$defs/sha256"},
+        "checksums": {"$ref": "#/$defs/sha256"}, "spdx-sbom": {"$ref": "#/$defs/sha256"}, "slsa-provenance": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

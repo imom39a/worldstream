@@ -282,6 +282,47 @@ fn immutable_revision_round_trips_exact_reviewed_choices_after_restart() {
 }
 
 #[test]
+fn pack_domain_identifiers_survive_draft_and_template_validation_but_secrets_do_not() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let drafts = RoomDraftStoreV1::open(&directory.path().join("drafts"), ValidDraft)
+        .unwrap_or_else(|error| unreachable!("draft store: {error:?}"));
+    let mut domain_draft = reviewed_draft();
+    domain_draft.configuration = json!({
+        "a202_revision": "fa85aa8b49bfe7b3f7ded487c98500a600e92e41",
+        "session_id": "ses_northstar_delta_worldstream_01",
+        "transaction_id": "txn_calibration_worldstream_01",
+        "object_hash": "f0355964099f46e7abf4c9c04f1250f4e87b19d1e3b85e3ed0f0577433963798"
+    });
+    drafts
+        .save(&domain_draft)
+        .unwrap_or_else(|error| unreachable!("save domain configuration: {error:?}"));
+    let dependencies = Dependencies(Arc::new(Mutex::new(DependencyMode::Ready)));
+    let store = TaskTemplateStoreV1::open(
+        &directory.path().join("templates"),
+        drafts.clone(),
+        dependencies,
+    )
+    .unwrap_or_else(|error| unreachable!("template store: {error:?}"));
+    let published = store
+        .publish(&publish_request("domain-r1"))
+        .unwrap_or_else(|error| unreachable!("publish domain template: {error:?}"));
+    assert_eq!(
+        published.revision.configuration["transaction_id"],
+        "txn_calibration_worldstream_01"
+    );
+
+    let mut secret_draft = reviewed_draft();
+    secret_draft.draft_id = "secret-source".to_owned();
+    secret_draft.configuration = json!({
+        "api_key": "sk-THIS_MUST_NEVER_ENTER_A_TASK_TEMPLATE"
+    });
+    assert!(matches!(
+        drafts.save(&secret_draft),
+        Err(RoomDraftErrorV1::InvalidDraft)
+    ));
+}
+
+#[test]
 fn instantiate_creates_an_independent_editable_draft_and_records_usage_only() {
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
     let drafts = RoomDraftStoreV1::open(&directory.path().join("drafts"), ValidDraft)

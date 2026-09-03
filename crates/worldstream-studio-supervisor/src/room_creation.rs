@@ -160,7 +160,6 @@ pub struct HttpDaemonRoomCreatorV1 {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
-    #[cfg(feature = "cli-operator-preview")]
     managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
@@ -178,13 +177,11 @@ impl HttpDaemonRoomCreatorV1 {
             timeout,
             vault,
             host_authority,
-            #[cfg(feature = "cli-operator-preview")]
             managed: None,
         }
     }
 
     /// Keeps exact creation intent on the Runtime socket proved before Host authority.
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn new_managed(
         address: SocketAddr,
@@ -216,7 +213,6 @@ impl DaemonRoomCreatorV1 for HttpDaemonRoomCreatorV1 {
             .host_authority
             .as_ref()
             .ok_or(RoomCreationAttemptErrorV1::OperatorFixRequired)?;
-        #[cfg(feature = "cli-operator-preview")]
         if let Some(transport) = &self.managed {
             let body = Zeroizing::new(
                 serde_json::to_vec(request).map_err(|_| RoomCreationAttemptErrorV1::Rejected)?,
@@ -383,7 +379,6 @@ impl RoomCreationSupervisorV1 {
 
     /// Retains a freshly resolved CLI review without reading an editable draft
     /// or calling the daemon. Existing operation identities are never replaced.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn prepare_reviewed(&self, draft: &RoomDraftV1) -> Result<(), RoomCreationErrorV1> {
         crate::room_drafts::validate_draft(draft).map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
         let _guard = self.lock();
@@ -400,7 +395,6 @@ impl RoomCreationSupervisorV1 {
     /// Claims the single CLI setup preparation before it can allocate authority.
     /// A retained legacy record or an already claimed preparation cannot authorize
     /// replacement intent when the setup file is missing.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn begin_setup_preparation(
         &self,
         draft_id: &str,

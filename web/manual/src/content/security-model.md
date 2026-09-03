@@ -55,7 +55,7 @@ Agent implementations should:
 
 ## Local development rules
 
-- Bind daemon, Supervisor, Studio, model adapters, and Runner health endpoints
+- Bind the Runtime, Controller, Activity Client Host, model adapters, and Runner health endpoints
   to loopback.
 - Keep `.worldstream/` owner-only and out of source control.
 - The authority bootstrap secret binds authority identity; it does **not**

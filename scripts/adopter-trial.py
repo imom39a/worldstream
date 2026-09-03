@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -20,6 +21,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+INVENTORY_PATH = Path(__file__).with_name("release_inventory.py")
+INVENTORY_SPEC = importlib.util.spec_from_file_location(
+    "worldstream_adopter_trial_release_inventory", INVENTORY_PATH
+)
+if INVENTORY_SPEC is None or INVENTORY_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot load {INVENTORY_PATH}")
+INVENTORY = importlib.util.module_from_spec(INVENTORY_SPEC)
+sys.modules[INVENTORY_SPEC.name] = INVENTORY
+INVENTORY_SPEC.loader.exec_module(INVENTORY)
 
 SCHEMA = "worldstream/outside-adopter-trial/v1"
 SUMMARY_SCHEMA = "worldstream/outside-adopter-qualification/v1"
@@ -106,6 +117,13 @@ def strict_json(content: bytes, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail(f"{label} must be a JSON object")
     return value
+
+
+def validate_release_identity(value: dict[str, Any]) -> None:
+    try:
+        INVENTORY.identity_from_manifest(value)
+    except ValueError as error:
+        raise TrialError(str(error)) from error
 
 
 def regular_bytes(path: Path, label: str) -> bytes:
@@ -262,8 +280,7 @@ def validate_receipt(path: Path, expected_release_manifest_sha256: str) -> Trial
 def qualify(receipt_dir: Path, release_manifest: Path) -> dict[str, Any]:
     release_bytes = regular_bytes(release_manifest, "release manifest")
     release_value = strict_json(release_bytes, "release manifest")
-    if release_value.get("schema") != "worldstream/release-artifact-manifest/v2":
-        fail("release manifest has the wrong schema")
+    validate_release_identity(release_value)
     release_sha256 = hashlib.sha256(release_bytes).hexdigest()
     if receipt_dir.is_symlink() or not receipt_dir.is_dir():
         fail("receipt directory must be a real directory")

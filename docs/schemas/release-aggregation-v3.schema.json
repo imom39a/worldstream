@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/imom39a/worldstream/blob/main/docs/schemas/release-aggregation-v3.schema.json",
+  "title": "WorldStream CLI-first SLSA aggregation result v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "release_inventory", "operation", "product", "source_revision",
+    "subject_count", "component_graph_sha256", "evidence_producers",
+    "payload_producers", "portable_subject_producers", "source_date_epoch", "toolchains"
+  ],
+  "properties": {
+    "schema": {"const": "worldstream/release-aggregation/v3"},
+    "release_inventory": {"const": "worldstream/release-inventory/cli-first-v1"},
+    "operation": {"const": "validate-and-copy"},
+    "product": {"type": "string"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "subject_count": {"const": 32},
+    "component_graph_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "evidence_producers": {"type": "array", "minItems": 17, "maxItems": 17},
+    "payload_producers": {"type": "array", "minItems": 4, "maxItems": 4},
+    "portable_subject_producers": {"type": "array", "minItems": 11, "maxItems": 11},
+    "source_date_epoch": {"type": "integer", "minimum": 0},
+    "toolchains": {"type": "object"}
+  }
+}

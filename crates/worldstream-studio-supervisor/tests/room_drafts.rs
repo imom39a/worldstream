@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+#[path = "../src/configuration_safety.rs"]
+mod configuration_safety;
 #[path = "../src/room_drafts.rs"]
 mod room_drafts;
 

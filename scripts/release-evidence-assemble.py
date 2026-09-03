@@ -33,6 +33,15 @@ from typing import Any
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+INVENTORY_PATH = Path(__file__).with_name("release_inventory.py")
+INVENTORY_SPEC = importlib.util.spec_from_file_location(
+    "worldstream_release_assembly_inventory", INVENTORY_PATH
+)
+if INVENTORY_SPEC is None or INVENTORY_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot load {INVENTORY_PATH}")
+INVENTORY = importlib.util.module_from_spec(INVENTORY_SPEC)
+sys.modules[INVENTORY_SPEC.name] = INVENTORY
+INVENTORY_SPEC.loader.exec_module(INVENTORY)
 DEFAULT_MANIFEST_TOML = ROOT / "compatibility.toml"
 DEFAULT_MANIFEST_JSON = ROOT / "compatibility.json"
 SCHEMA = "worldstream/release-artifact-manifest/v2"
@@ -58,33 +67,11 @@ ARTIFACT_BINDING_FIELDS = {"sha256", "size_bytes"}
 SOURCE_REPORT_FIELDS = {"source_id", "evidence_id", "schema", "sha256"}
 BASE_RELEASE_EVIDENCE_COUNT = 14
 REQUIRED_RELEASE_EVIDENCE_COUNT = 18
-RUNTIME_PAYLOAD_ARTIFACT_IDS = (
-    "source-archive",
-    "native-linux-x86_64-archive",
-    "native-windows-x64-archive",
-    "oci-linux-amd64-image",
-)
-STARTER_SUBJECT_ARTIFACT_IDS = (
-    "worldstream-a202-adapter",
-    "worldstream-deterministic-agents",
-    "worldstream-documentation",
-    "worldstream-examples",
-    "worldstream-licenses",
-    "worldstream-negotiate-bundle",
-    "worldstream-negotiate-evidence-verifier",
-    "worldstream-pack-toolchain",
-    "worldstream-participant-console",
-    "worldstream-release-metadata",
-    "worldstream-studio",
-    "worldstream-typescript-pack-sdk",
-)
+# Historical aliases remain exact for already-defined v2 release manifests.
+RUNTIME_PAYLOAD_ARTIFACT_IDS = INVENTORY.RUNTIME_PAYLOAD_ARTIFACT_IDS
+STARTER_SUBJECT_ARTIFACT_IDS = INVENTORY.LEGACY.portable_subject_artifact_ids
 PAYLOAD_ARTIFACT_IDS = RUNTIME_PAYLOAD_ARTIFACT_IDS + STARTER_SUBJECT_ARTIFACT_IDS
-RELEASE_ARTIFACT_IDS = PAYLOAD_ARTIFACT_IDS + (
-    "checksums",
-    "sigstore-bundle",
-    "spdx-sbom",
-    "slsa-provenance",
-)
+RELEASE_ARTIFACT_IDS = INVENTORY.LEGACY.release_artifact_ids
 RELEASE_ARTIFACT_PROFILES = {
     "source-archive": "source",
     "native-linux-x86_64-archive": "native-linux-x86_64",
@@ -256,6 +243,13 @@ class AssemblyError(RuntimeError):
 
 def fail(message: str) -> None:
     raise AssemblyError(message)
+
+
+def inventory_contract(release_inventory: str | None = None):
+    try:
+        return INVENTORY.resolve(release_inventory)
+    except ValueError as error:
+        raise AssemblyError(str(error)) from error
 
 
 def strict_json_bytes(content: bytes, label: str) -> dict[str, Any]:
@@ -537,8 +531,8 @@ def validate_release_contract(manifest: dict[str, Any]) -> tuple[str, tuple[str,
     return product, release_evidence_ids(manifest)
 
 
-def payload_names(version: str) -> dict[str, str]:
-    return {
+def payload_names(version: str, release_inventory: str | None = None) -> dict[str, str]:
+    names = {
         "source-archive": f"worldstream-{version}-source.tar.gz",
         "native-linux-x86_64-archive": f"worldstream-{version}-linux-x86_64.tar.gz",
         "native-windows-x64-archive": f"worldstream-{version}-windows-x64.zip",
@@ -555,6 +549,10 @@ def payload_names(version: str) -> dict[str, str]:
         "worldstream-release-metadata": f"worldstream-{version}-release-metadata.tar.gz",
         "worldstream-studio": f"worldstream-{version}-studio.tar.gz",
         "worldstream-typescript-pack-sdk": f"worldstream-{version}-typescript-pack-sdk.tar.gz",
+    }
+    profile = inventory_contract(release_inventory)
+    return {
+        artifact_id: names[artifact_id] for artifact_id in profile.payload_artifact_ids
     }
 
 
@@ -577,9 +575,11 @@ def _flat_regular_entries(path: Path, label: str) -> dict[str, Path]:
     return entries
 
 
-def validate_payload_inputs(payload_dir: Path, version: str) -> dict[str, Path]:
+def validate_payload_inputs(
+    payload_dir: Path, version: str, release_inventory: str | None = None
+) -> dict[str, Path]:
     entries = _flat_regular_entries(payload_dir, "payload directory")
-    expected = payload_names(version)
+    expected = payload_names(version, release_inventory)
     missing = sorted(set(expected.values()) - set(entries))
     extra = sorted(set(entries) - set(expected.values()))
     if missing or extra:
@@ -798,6 +798,7 @@ def validate_release_payloads(
     report_paths: dict[str, Path],
     expected_manifest_sha256: str,
     manifest: dict[str, Any] | None = None,
+    release_inventory: str | None = None,
 ) -> None:
     """Deep-verify every payload and bind platform claims to its exact bytes."""
 
@@ -805,11 +806,12 @@ def validate_release_payloads(
         character not in HEX_DIGEST for character in expected_manifest_sha256
     ):
         fail("expected release manifest SHA-256 is invalid")
-    if set(payload_paths) != set(PAYLOAD_ARTIFACT_IDS):
+    profile = inventory_contract(release_inventory)
+    if set(payload_paths) != set(profile.payload_artifact_ids):
         fail(
             "release payload verification requires the exact closed payload set: "
-            f"missing={sorted(set(PAYLOAD_ARTIFACT_IDS) - set(payload_paths))}; "
-            f"extra={sorted(set(payload_paths) - set(PAYLOAD_ARTIFACT_IDS))}"
+            f"missing={sorted(set(profile.payload_artifact_ids) - set(payload_paths))}; "
+            f"extra={sorted(set(payload_paths) - set(profile.payload_artifact_ids))}"
         )
     binding_reports = {
         evidence_id: json_object(
@@ -839,7 +841,7 @@ def validate_release_payloads(
     for artifact_id in RUNTIME_PAYLOAD_ARTIFACT_IDS[:3]:
         try:
             payload = regular_file(payload_paths[artifact_id], artifact_id)
-            native.verify_archive(payload)
+            native.verify_archive(payload, release_inventory=profile.identity)
             entries = native.archive_entries(payload)
         except native.PackageError as error:
             fail(f"release payload {artifact_id} failed deep verification: {error}")
@@ -895,7 +897,7 @@ def validate_release_payloads(
     ]
     if len(official_rows) != 1:
         fail("release compatibility contract has no unique official Negotiate bundle")
-    for artifact_id in STARTER_SUBJECT_ARTIFACT_IDS:
+    for artifact_id in profile.portable_subject_artifact_ids:
         path = regular_file(payload_paths[artifact_id], artifact_id)
         try:
             content = starter.read_stable(path, artifact_id)
@@ -947,14 +949,18 @@ def validate_release_payloads(
             )
 
 
-def expected_release_files(version: str, evidence_ids: tuple[str, ...]) -> set[str]:
+def expected_release_files(
+    version: str,
+    evidence_ids: tuple[str, ...],
+    release_inventory: str | None = None,
+) -> set[str]:
     pre_sign_evidence_ids = tuple(
         evidence_id
         for evidence_id in evidence_ids
         if evidence_id != "checksums-signature-sbom-provenance"
     )
     return (
-        set(payload_names(version).values())
+        set(payload_names(version, release_inventory).values())
         | set(SIDECAR_PATHS.values())
         | {"release-manifest.json"}
         | {f"evidence/{evidence_id}.json" for evidence_id in evidence_ids}
@@ -967,12 +973,15 @@ def expected_release_files(version: str, evidence_ids: tuple[str, ...]) -> set[s
 
 
 def validate_existing_release_dir(
-    release_dir: Path, version: str, evidence_ids: tuple[str, ...]
+    release_dir: Path,
+    version: str,
+    evidence_ids: tuple[str, ...],
+    release_inventory: str | None = None,
 ) -> None:
     if release_dir.exists() and release_dir.is_symlink():
         fail(f"release directory must not be a symlink: {release_dir}")
     release_dir.mkdir(parents=True, exist_ok=True)
-    allowed = expected_release_files(version, evidence_ids)
+    allowed = expected_release_files(version, evidence_ids, release_inventory)
     for candidate in sorted(release_dir.rglob("*")):
         relative = candidate.relative_to(release_dir).as_posix()
         if candidate.is_symlink():
@@ -1098,12 +1107,18 @@ def stage_release_inputs(
     evidence_ids: tuple[str, ...],
     contract: dict[str, Any],
     manifest_sha256: str,
+    release_inventory: str | None = None,
 ) -> tuple[dict[str, Path], dict[str, Path]]:
-    payloads = validate_payload_inputs(payload_dir, version)
+    payloads = validate_payload_inputs(payload_dir, version, release_inventory)
     reports = validate_evidence_inputs(reports_dir, evidence_ids, version, contract)
-    validate_release_payloads(payloads, reports, manifest_sha256)
-    validate_existing_release_dir(release_dir, version, evidence_ids)
-    payload_paths = payload_names(version)
+    validate_release_payloads(
+        payloads,
+        reports,
+        manifest_sha256,
+        release_inventory=release_inventory,
+    )
+    validate_existing_release_dir(release_dir, version, evidence_ids, release_inventory)
+    payload_paths = payload_names(version, release_inventory)
     for artifact_id, source in payloads.items():
         copy_atomic(
             source,
@@ -1169,6 +1184,7 @@ def validate_pre_sign_material(
     version: str,
     contract: dict[str, Any],
     manifest_sha256: str,
+    release_inventory: str | None = None,
 ) -> dict[str, Path]:
     """Validate the signed pre-sign subject set used by final assembly."""
 
@@ -1184,14 +1200,27 @@ def validate_pre_sign_material(
             "pre-sign subject inventory requires exactly "
             f"{expected_pre_sign_reports} non-supply-chain reports"
         )
-    validate_release_payloads(payload_paths, evidence_paths, manifest_sha256)
+    profile = inventory_contract(release_inventory)
+    validate_release_payloads(
+        payload_paths,
+        evidence_paths,
+        manifest_sha256,
+        release_inventory=profile.identity,
+    )
     inventory = json_object(
         release_dir / PRE_SIGN_INVENTORY_PATH, "pre-sign subject inventory"
     )
-    if set(inventory) != {"schema", "phase", "product", "subjects"}:
+    expected_inventory_fields = {"schema", "phase", "product", "subjects"}
+    if profile.serialized_discriminator:
+        expected_inventory_fields.add("release_inventory")
+    if set(inventory) != expected_inventory_fields:
         fail("pre-sign subject inventory has wrong fields")
     if (
-        inventory["schema"] != "worldstream/release-subject-inventory/v1"
+        inventory["schema"] != profile.subject_inventory_schema
+        or (
+            profile.serialized_discriminator
+            and inventory.get("release_inventory") != profile.identity
+        )
         or inventory["phase"] != "pre-sign"
         or inventory["product"] != version
         or not isinstance(inventory["subjects"], list)
@@ -1530,7 +1559,9 @@ def build_release_manifest(
     release_dir: Path,
     payload_paths: dict[str, Path],
     evidence_paths: dict[str, Path],
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
+    profile = inventory_contract(release_inventory)
     version = str(manifest["release_candidate"])
     artifact_paths = {
         artifact_id: path.relative_to(release_dir).as_posix()
@@ -1553,8 +1584,8 @@ def build_release_manifest(
     }
     if "sigstore-bundle" in artifact_digests:
         fail("Sigstore bundle must never have a digest in release-manifest.json")
-    return {
-        "schema": SCHEMA,
+    result = {
+        "schema": profile.manifest_schema,
         "product": version,
         "source_version": version,
         "manifest": {
@@ -1570,6 +1601,9 @@ def build_release_manifest(
             "sigstore-bundle": {"path": SIDECAR_PATHS["sigstore-bundle"]}
         },
     }
+    if profile.serialized_discriminator:
+        result["release_inventory"] = profile.identity
+    return result
 
 
 def prepare_inputs(
@@ -1578,6 +1612,7 @@ def prepare_inputs(
     reports_dir: Path,
     manifest_toml: Path = DEFAULT_MANIFEST_TOML,
     manifest_json: Path = DEFAULT_MANIFEST_JSON,
+    release_inventory: str | None = None,
 ) -> tuple[
     dict[str, Any], bytes, bytes, tuple[str, ...], dict[str, Path], dict[str, Path]
 ]:
@@ -1593,6 +1628,7 @@ def prepare_inputs(
         evidence_ids,
         manifest["contracts"],
         sha256_bytes(mirror_bytes),
+        release_inventory,
     )
     return (
         manifest,
@@ -1611,7 +1647,9 @@ def assemble(
     manifest_toml: Path = DEFAULT_MANIFEST_TOML,
     manifest_json: Path = DEFAULT_MANIFEST_JSON,
     output: Path | None = None,
+    release_inventory: str | None = None,
 ) -> Path:
+    profile = inventory_contract(release_inventory)
     manifest, _authored, mirror_bytes = load_manifest(manifest_toml, manifest_json)
     version, evidence_ids = validate_release_contract(manifest)
     payload_paths, evidence_paths = stage_release_inputs(
@@ -1622,6 +1660,7 @@ def assemble(
         evidence_ids,
         manifest["contracts"],
         sha256_bytes(mirror_bytes),
+        profile.identity,
     )
     validate_pre_sign_material(
         release_dir,
@@ -1631,9 +1670,15 @@ def assemble(
         version,
         manifest["contracts"],
         sha256_bytes(mirror_bytes),
+        profile.identity,
     )
     metadata = build_release_manifest(
-        manifest, mirror_bytes, release_dir, payload_paths, evidence_paths
+        manifest,
+        mirror_bytes,
+        release_dir,
+        payload_paths,
+        evidence_paths,
+        profile.identity,
     )
     destination = output or release_dir / "release-manifest.json"
     if destination.resolve().parent != release_dir.resolve():
@@ -1647,14 +1692,21 @@ def check_inputs(
     reports_dir: Path,
     manifest_toml: Path = DEFAULT_MANIFEST_TOML,
     manifest_json: Path = DEFAULT_MANIFEST_JSON,
+    release_inventory: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     manifest, _authored, mirror = load_manifest(manifest_toml, manifest_json)
     version, evidence_ids = validate_release_contract(manifest)
-    payload_paths = validate_payload_inputs(payload_dir, version)
+    profile = inventory_contract(release_inventory)
+    payload_paths = validate_payload_inputs(payload_dir, version, profile.identity)
     report_paths = validate_evidence_inputs(
         reports_dir, evidence_ids, version, manifest["contracts"]
     )
-    validate_release_payloads(payload_paths, report_paths, sha256_bytes(mirror))
+    validate_release_payloads(
+        payload_paths,
+        report_paths,
+        sha256_bytes(mirror),
+        release_inventory=profile.identity,
+    )
     return version, evidence_ids
 
 
@@ -1666,6 +1718,11 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--manifest-toml", type=Path, default=DEFAULT_MANIFEST_TOML)
     command.add_argument("--manifest-json", type=Path, default=DEFAULT_MANIFEST_JSON)
     command.add_argument("--output", type=Path)
+    command.add_argument(
+        "--release-inventory",
+        choices=tuple(INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves the historical profile",
+    )
     command.add_argument(
         "--check-inputs",
         action="store_true",
@@ -1683,10 +1740,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.reports_dir,
                 args.manifest_toml,
                 args.manifest_json,
+                args.release_inventory,
             )
+            profile = inventory_contract(args.release_inventory)
             print(
                 f"release inputs valid: version={version}; "
-                f"payloads={len(PAYLOAD_ARTIFACT_IDS)}; evidence={len(evidence_ids)}"
+                f"payloads={len(profile.payload_artifact_ids)}; "
+                f"evidence={len(evidence_ids)}"
             )
         else:
             destination = assemble(
@@ -1696,6 +1756,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.manifest_toml,
                 args.manifest_json,
                 args.output,
+                args.release_inventory,
             )
             print(f"assembled detached release manifest: {destination}")
     except AssemblyError as error:

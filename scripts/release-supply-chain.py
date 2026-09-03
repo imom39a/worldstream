@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Produce and verify the non-circular release supply chain.
 
-The unsigned aggregation phase copies four Runtime payloads, twelve portable
-Starter subjects, and exactly seventeen non-supply-chain typed source reports
-into a canonical inventory, then creates and validates SHA256SUMS, SPDX, and
-SLSA over that closed 33-subject set. A separate,
+The active unsigned aggregation phase copies four Runtime payloads, eleven
+portable Starter subjects, and exactly seventeen non-supply-chain typed source
+reports into a canonical inventory, then creates and validates SHA256SUMS,
+SPDX, and SLSA over that closed 32-subject set. The implicit historical profile
+retains its twelve-portable-subject, 33-subject contract. A separate,
 minimal OIDC job signs only that exact inventory. A later no-OIDC phase
 identity-verifies the signature and emits the typed eighteenth producer report
 before final deterministic assembly. A second minimal OIDC job signs that exact
@@ -121,10 +122,15 @@ def source_specs() -> tuple[Any, ...]:
 
 
 def copy_payloads(
-    release_dir: Path, payload_dir: Path, version: str
+    release_dir: Path,
+    payload_dir: Path,
+    version: str,
+    release_inventory: str | None = None,
 ) -> dict[str, Path]:
-    payloads = ASSEMBLER.validate_payload_inputs(payload_dir, version)
-    names = ASSEMBLER.payload_names(version)
+    payloads = ASSEMBLER.validate_payload_inputs(
+        payload_dir, version, release_inventory
+    )
+    names = ASSEMBLER.payload_names(version, release_inventory)
     paths: dict[str, Path] = {}
     for artifact_id, source in payloads.items():
         destination = release_dir / names[artifact_id]
@@ -172,7 +178,9 @@ def inventory_value(
     payload_paths: dict[str, Path],
     source_paths: dict[str, Path],
     release_dir: Path,
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
+    profile = ASSEMBLER.inventory_contract(release_inventory)
     subjects: list[dict[str, Any]] = []
     for artifact_id, path in payload_paths.items():
         subjects.append(
@@ -195,12 +203,15 @@ def inventory_value(
             }
         )
     subjects.sort(key=lambda item: (item["kind"], item["id"]))
-    return {
-        "schema": INVENTORY_SCHEMA,
+    result = {
+        "schema": profile.subject_inventory_schema,
         "phase": PRE_SIGN_PHASE,
         "product": version,
         "subjects": subjects,
     }
+    if profile.serialized_discriminator:
+        result["release_inventory"] = profile.identity
+    return result
 
 
 def spdx_document_namespace(
@@ -220,10 +231,11 @@ def generate_spdx(
     subjects: dict[str, Path],
     created: str,
     payload_paths: dict[str, Path],
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
     try:
         identities, source_entries = IDENTITY.release_payload_identities(
-            runtime_payloads(payload_paths), version
+            runtime_payloads(payload_paths), version, release_inventory
         )
         revision = identities["source-archive"]["source"]["revision"]
         packages, relationships, document_describes = IDENTITY.spdx_graph(
@@ -279,11 +291,13 @@ def generate_provenance(
     subjects: dict[str, Path],
     created: str,
     payload_paths: dict[str, Path],
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
+    profile = ASSEMBLER.inventory_contract(release_inventory)
     try:
         compiled_payloads = runtime_payloads(payload_paths)
         identities, source_entries = IDENTITY.release_payload_identities(
-            compiled_payloads, version
+            compiled_payloads, version, profile.identity
         )
         revision = identities["source-archive"]["source"]["revision"]
         invocation_parameters = IDENTITY.release_invocation_parameters()
@@ -295,6 +309,7 @@ def generate_provenance(
             identities=identities,
             source_entries=source_entries,
             invocation_parameters=invocation_parameters,
+            release_inventory=profile.identity,
         )
         run_details = IDENTITY.github_run_details(aggregation_result)
     except IDENTITY.IdentityError as error:
@@ -311,7 +326,7 @@ def generate_provenance(
         "predicateType": "https://slsa.dev/provenance/v1",
         "predicate": {
             "buildDefinition": {
-                "buildType": IDENTITY.BUILD_TYPE,
+                "buildType": IDENTITY.build_type_for(profile.identity),
                 **graph,
             },
             "runDetails": run_details,
@@ -410,6 +425,7 @@ def validate_prepared_material(
     release_dir: Path,
     manifest_toml: Path,
     manifest_json: Path,
+    release_inventory: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Recompute the complete unsigned subject graph from assembled bytes."""
 
@@ -417,12 +433,17 @@ def validate_prepared_material(
         manifest_toml, manifest_json
     )
     version, evidence_ids = ASSEMBLER.validate_release_contract(manifest)
-    ASSEMBLER.validate_existing_release_dir(release_dir, version, evidence_ids)
+    profile = ASSEMBLER.inventory_contract(release_inventory)
+    ASSEMBLER.validate_existing_release_dir(
+        release_dir, version, evidence_ids, profile.identity
+    )
     payload_paths = {
         artifact_id: ASSEMBLER.regular_file(
             release_dir / relative, f"prepared payload {artifact_id}"
         )
-        for artifact_id, relative in ASSEMBLER.payload_names(version).items()
+        for artifact_id, relative in ASSEMBLER.payload_names(
+            version, profile.identity
+        ).items()
     }
     source_paths = {
         spec.evidence_id: ASSEMBLER.regular_file(
@@ -434,10 +455,13 @@ def validate_prepared_material(
         for spec in source_specs()
     }
     ASSEMBLER.validate_release_payloads(
-        payload_paths, source_paths, ASSEMBLER.sha256_bytes(mirror_bytes)
+        payload_paths,
+        source_paths,
+        ASSEMBLER.sha256_bytes(mirror_bytes),
+        release_inventory=profile.identity,
     )
     expected_inventory = inventory_value(
-        version, payload_paths, source_paths, release_dir
+        version, payload_paths, source_paths, release_dir, profile.identity
     )
     inventory_path = release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH
     inventory = ASSEMBLER.json_object(inventory_path, "pre-sign subject inventory")
@@ -470,6 +494,7 @@ def validate_prepared_material(
             subjects_by_relative=subjects,
             payloads_by_id=runtime_payloads(payload_paths),
             require_github=os.environ.get("GITHUB_ACTIONS") == "true",
+            release_inventory=profile.identity,
         )
     except IDENTITY.IdentityError as error:
         ASSEMBLER.fail(f"release supply-chain identity graph rejected: {error}")
@@ -482,6 +507,7 @@ def prepare_unsigned(
     sources: dict[str, Path],
     manifest_toml: Path,
     manifest_json: Path,
+    release_inventory: str | None = None,
 ) -> None:
     """Create and validate the exact pre-sign graph without an OIDC capability."""
 
@@ -490,6 +516,7 @@ def prepare_unsigned(
         manifest_toml, manifest_json
     )
     version, evidence_ids = ASSEMBLER.validate_release_contract(manifest)
+    profile = ASSEMBLER.inventory_contract(release_inventory)
     expected_sources = {spec.source_id for spec in source_specs()}
     if set(sources) != expected_sources:
         ASSEMBLER.fail(
@@ -498,23 +525,30 @@ def prepare_unsigned(
     if release_dir.exists() and release_dir.is_symlink():
         ASSEMBLER.fail(f"release directory must not be a symlink: {release_dir}")
     release_dir.mkdir(parents=True, exist_ok=True)
-    ASSEMBLER.validate_existing_release_dir(release_dir, version, evidence_ids)
+    ASSEMBLER.validate_existing_release_dir(
+        release_dir, version, evidence_ids, profile.identity
+    )
     for relative in (
         ASSEMBLER.PRE_SIGN_SIGNATURE_PATH,
         ASSEMBLER.SIDECAR_PATHS["sigstore-bundle"],
     ):
         if (release_dir / relative).exists():
             ASSEMBLER.fail("unsigned aggregation must not contain a signature bundle")
-    payload_paths = copy_payloads(release_dir, payload_dir, version)
+    payload_paths = copy_payloads(release_dir, payload_dir, version, profile.identity)
     source_paths = copy_source_reports(release_dir, sources, manifest)
     ASSEMBLER.validate_release_payloads(
-        payload_paths, source_paths, ASSEMBLER.sha256_bytes(mirror_bytes)
+        payload_paths,
+        source_paths,
+        ASSEMBLER.sha256_bytes(mirror_bytes),
+        release_inventory=profile.identity,
     )
     subjects = {
         path.relative_to(release_dir).as_posix(): path
         for path in (*payload_paths.values(), *source_paths.values())
     }
-    inventory = inventory_value(version, payload_paths, source_paths, release_dir)
+    inventory = inventory_value(
+        version, payload_paths, source_paths, release_dir, profile.identity
+    )
     inventory_path = release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH
     ASSEMBLER.atomic_write_bytes(
         inventory_path,
@@ -536,6 +570,7 @@ def prepare_unsigned(
                 subjects,
                 created,
                 payload_paths,
+                profile.identity,
             )
         ),
         "pre-sign SPDX SBOM",
@@ -543,7 +578,9 @@ def prepare_unsigned(
     ASSEMBLER.atomic_write_bytes(
         release_dir / ASSEMBLER.SIDECAR_PATHS["slsa-provenance"],
         ASSEMBLER.canonical_json(
-            generate_provenance(version, subjects, created, payload_paths)
+            generate_provenance(
+                version, subjects, created, payload_paths, profile.identity
+            )
         ),
         "pre-sign SLSA provenance",
     )
@@ -569,10 +606,13 @@ def prepare_unsigned(
             subjects_by_relative=subjects,
             payloads_by_id=runtime_payloads(payload_paths),
             require_github=os.environ.get("GITHUB_ACTIONS") == "true",
+            release_inventory=profile.identity,
         )
     except IDENTITY.IdentityError as error:
         ASSEMBLER.fail(f"release supply-chain identity graph rejected: {error}")
-    validate_prepared_material(release_dir, manifest_toml, manifest_json)
+    validate_prepared_material(
+        release_dir, manifest_toml, manifest_json, profile.identity
+    )
 
 
 def write_signed_reports(
@@ -581,11 +621,12 @@ def write_signed_reports(
     source_output: Path,
     manifest_toml: Path,
     manifest_json: Path,
+    release_inventory: str | None = None,
 ) -> None:
     """Verify the signed inventory and emit its deterministic typed reports."""
 
     manifest, inventory = validate_prepared_material(
-        release_dir, manifest_toml, manifest_json
+        release_dir, manifest_toml, manifest_json, release_inventory
     )
     inventory_path = release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH
     signature_path = release_dir / ASSEMBLER.PRE_SIGN_SIGNATURE_PATH
@@ -636,6 +677,7 @@ def finalize_signed(
     source_output: Path,
     manifest_toml: Path,
     manifest_json: Path,
+    release_inventory: str | None = None,
 ) -> None:
     """Finalize the typed supply-chain report in a no-OIDC job."""
 
@@ -646,6 +688,7 @@ def finalize_signed(
         source_output,
         manifest_toml,
         manifest_json,
+        release_inventory,
     )
 
 
@@ -657,6 +700,7 @@ def produce(
     source_output: Path,
     manifest_toml: Path,
     manifest_json: Path,
+    release_inventory: str | None = None,
 ) -> None:
     """Compatibility helper for local tests; release workflow uses split phases."""
 
@@ -666,6 +710,7 @@ def produce(
         sources,
         manifest_toml,
         manifest_json,
+        release_inventory,
     )
     sign_and_verify(
         release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH,
@@ -677,15 +722,30 @@ def produce(
         source_output,
         manifest_toml,
         manifest_json,
+        release_inventory,
     )
 
 
-def verify_final(release_dir: Path, manifest_toml: Path, manifest_json: Path) -> None:
+def verify_final(
+    release_dir: Path,
+    manifest_toml: Path,
+    manifest_json: Path,
+    release_inventory: str | None = None,
+) -> None:
     manifest, _authored, mirror = ASSEMBLER.load_manifest(manifest_toml, manifest_json)
     version, evidence_ids = ASSEMBLER.validate_release_contract(manifest)
+    profile = ASSEMBLER.inventory_contract(release_inventory)
     metadata = ASSEMBLER.json_object(
         release_dir / "release-manifest.json", "release manifest"
     )
+    try:
+        metadata_profile = ASSEMBLER.INVENTORY.identity_from_manifest(metadata)
+    except ValueError as error:
+        ASSEMBLER.fail(str(error))
+    if metadata_profile != profile:
+        ASSEMBLER.fail(
+            "final release manifest inventory differs from verification profile"
+        )
     evidence_metadata = metadata.get("evidence")
     if not isinstance(evidence_metadata, dict) or set(evidence_metadata) != set(
         evidence_ids
@@ -700,7 +760,9 @@ def verify_final(release_dir: Path, manifest_toml: Path, manifest_json: Path) ->
         ASSEMBLER.fail("final manifest supply-chain evidence path is not deterministic")
     payload_paths = {
         artifact_id: release_dir / relative
-        for artifact_id, relative in ASSEMBLER.payload_names(version).items()
+        for artifact_id, relative in ASSEMBLER.payload_names(
+            version, profile.identity
+        ).items()
     }
     evidence_paths = {
         evidence_id: release_dir / f"evidence/{evidence_id}.json"
@@ -717,6 +779,7 @@ def verify_final(release_dir: Path, manifest_toml: Path, manifest_json: Path) ->
         version,
         manifest["contracts"],
         ASSEMBLER.sha256_bytes(mirror),
+        profile.identity,
     )
     inventory = ASSEMBLER.json_object(
         release_dir / ASSEMBLER.PRE_SIGN_INVENTORY_PATH, "pre-sign subject inventory"
@@ -726,7 +789,7 @@ def verify_final(release_dir: Path, manifest_toml: Path, manifest_json: Path) ->
     }
     artifacts = metadata.get("artifacts")
     artifact_digests = metadata.get("artifact_digests")
-    expected_artifact_ids = set(ASSEMBLER.RELEASE_ARTIFACT_IDS)
+    expected_artifact_ids = set(profile.release_artifact_ids)
     if (
         not isinstance(artifacts, dict)
         or set(artifacts) != expected_artifact_ids
@@ -736,7 +799,7 @@ def verify_final(release_dir: Path, manifest_toml: Path, manifest_json: Path) ->
         ASSEMBLER.fail("final manifest artifact maps are incomplete or circular")
     for artifact_id, relative in artifacts.items():
         if not isinstance(relative, str) or relative != (
-            ASSEMBLER.payload_names(version).get(artifact_id)
+            ASSEMBLER.payload_names(version, profile.identity).get(artifact_id)
             or ASSEMBLER.SIDECAR_PATHS.get(artifact_id)
         ):
             ASSEMBLER.fail(
@@ -783,6 +846,7 @@ def verify_final(release_dir: Path, manifest_toml: Path, manifest_json: Path) ->
             subjects_by_relative=pre_sign_subjects,
             payloads_by_id=runtime_payloads(payload_paths),
             require_github=True,
+            release_inventory=profile.identity,
         )
     except IDENTITY.IdentityError as error:
         ASSEMBLER.fail(f"final release supply-chain identity graph rejected: {error}")
@@ -808,6 +872,11 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--manifest-json", type=Path, default=ASSEMBLER.DEFAULT_MANIFEST_JSON
     )
+    command.add_argument(
+        "--release-inventory",
+        choices=tuple(ASSEMBLER.INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves the historical profile",
+    )
     return command
 
 
@@ -815,7 +884,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         if args.verify:
-            verify_final(args.release_dir, args.manifest_toml, args.manifest_json)
+            verify_final(
+                args.release_dir,
+                args.manifest_toml,
+                args.manifest_json,
+                args.release_inventory,
+            )
         elif args.prepare_unsigned:
             if not args.payload_dir or args.producer_output or args.source_output:
                 ASSEMBLER.fail(
@@ -831,6 +905,7 @@ def main(argv: list[str] | None = None) -> int:
                 sources,
                 args.manifest_toml,
                 args.manifest_json,
+                args.release_inventory,
             )
         elif args.finalize_signed:
             if (
@@ -848,6 +923,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.source_output,
                 args.manifest_toml,
                 args.manifest_json,
+                args.release_inventory,
             )
         else:
             if (
@@ -870,6 +946,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.source_output,
                 args.manifest_toml,
                 args.manifest_json,
+                args.release_inventory,
             )
     except ASSEMBLER.AssemblyError as error:
         print(f"release supply-chain operation failed: {error}", file=sys.stderr)

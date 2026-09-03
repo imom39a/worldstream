@@ -120,8 +120,7 @@ The initial workspace should resist both a monolith and speculative crate explos
     │   ├── agent-heist-web/          independent Heist Activity Client
     │   └── negotiate-web/            independent Negotiate Activity Client
     ├── web/
-    │   ├── console/                  first-party Client Host and Inspector
-    │   └── studio/                   Host Operator portal
+    │   └── console/                  first-party Client Host and Inspector
     ├── config/
     │   └── activity-clients/         local Releases, Distributions, Deployments, and Bindings
     ├── examples/

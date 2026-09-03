@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -34,6 +32,7 @@ use worldstream_studio_supervisor::{
         RoomSetupCreateRequestV1, RoomSetupOperationStageV1, RoomSetupOperationsV1,
         room_setup_operations_router,
     },
+    room_setup_spec::resolve_setup_specification,
     runner_templates::RunnerTemplateRegistryV1,
     scoped_connections::{MembershipCredentialsV1, RunnerCredentialsV1, scoped_credentials_router},
     secrets::FileSecretVaultV1,
@@ -45,6 +44,7 @@ use worldstream_studio_supervisor::{
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+const NEGOTIATE_ROOM: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 
 #[derive(Clone)]
 struct Catalog(Arc<ActivityPackCatalogRevisionResponse>);
@@ -82,6 +82,48 @@ fn catalog() -> TestResult<Catalog> {
             "roles": revision.descriptor.roles.iter().map(|r| json!({"role":r.role,"minimum":r.minimum,"maximum":r.maximum})).collect::<Vec<_>>(),
             "configuration_schema":configuration_schema, "actions":[],
             "lobby_compatibility":{"contract":"worldstream/lobby/v1","configuration_schema":configuration_schema}
+        }
+    }))?)))
+}
+
+fn negotiate_catalog() -> TestResult<Catalog> {
+    use worldstream_core::Blake3DigestV1;
+    use worldstream_pack_bundle::PackBundleVerifierV1;
+
+    let bytes = include_bytes!(
+        "../../../packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
+    );
+    let bundle = PackBundleVerifierV1.inspect(Arc::from(bytes.as_slice()))?;
+    let descriptor = bundle.descriptor();
+    let reference = &descriptor.configuration_schema;
+    assert_eq!(
+        reference.schema_digest,
+        Blake3DigestV1::hash(br#"{"type":"object"}"#)
+    );
+    Ok(Catalog(Arc::new(serde_json::from_value(json!({
+        "version": "activity_pack_catalog.v1",
+        "revision": {
+            "summary": {
+                "pack": {
+                    "id": descriptor.pack_id,
+                    "version": descriptor.explanatory_version,
+                    "digest": bundle.revision_digest().to_string()
+                },
+                "name": descriptor.name,
+                "selectable_for_new_rooms": true,
+                "runnable_for_retained_rooms": true
+            },
+            "roles": descriptor.roles.iter().map(|role| json!({
+                "role": role.role,
+                "minimum": role.minimum,
+                "maximum": role.maximum
+            })).collect::<Vec<_>>(),
+            "configuration_schema": {
+                "schema_id": reference.schema_id,
+                "schema_digest": reference.schema_digest.to_string(),
+                "schema": {"type": "object"}
+            },
+            "actions": []
         }
     }))?)))
 }
@@ -132,6 +174,56 @@ impl DaemonTaskSetupProvisionerV1 for Daemon {
             permitted_memberships: request.permitted_memberships.clone(),
             scopes: request.scopes.clone(),
         })
+    }
+}
+
+#[derive(Clone)]
+struct NegotiateDaemon;
+
+impl DaemonRoomCreatorV1 for NegotiateDaemon {
+    fn create(
+        &self,
+        request: &CreateRoomRequest,
+    ) -> Result<CreateRoomResponse, RoomCreationAttemptErrorV1> {
+        if request.members.len() != 4 {
+            return Err(RoomCreationAttemptErrorV1::Rejected);
+        }
+        serde_json::from_value(json!({
+            "room_id": NEGOTIATE_ROOM,
+            "member_ids": [
+                "01ARZ3NDEKTSV4RRFFQ69G5FB1",
+                "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+                "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+                "01ARZ3NDEKTSV4RRFFQ69G5FB4"
+            ],
+            "room_head": {
+                "room_id": NEGOTIATE_ROOM,
+                "room_seq": 0,
+                "genesis_or_transition_hash": format!("blake3:{}", "b".repeat(64)),
+                "core_schema_version": "worldstream/core-room-state/v1",
+                "pack_digest": request.pack.digest,
+                "core_state_hash": format!("blake3:{}", "c".repeat(64)),
+                "activity_state_hash": format!("blake3:{}", "d".repeat(64)),
+                "authoritative_state_hash": format!("blake3:{}", "e".repeat(64))
+            }
+        }))
+        .map_err(|_| RoomCreationAttemptErrorV1::Rejected)
+    }
+}
+
+impl DaemonTaskSetupProvisionerV1 for NegotiateDaemon {
+    fn provision_member(
+        &self,
+        request: &MemberCapabilityProvisionRequestV1,
+    ) -> Result<MemberCapabilityProvisionResponseV1, TaskSetupAttemptErrorV1> {
+        Daemon.provision_member(request)
+    }
+
+    fn provision_runner(
+        &self,
+        request: &RunnerCapabilityProvisionRequestV1,
+    ) -> Result<RunnerCapabilityProvisionResponseV1, TaskSetupAttemptErrorV1> {
+        Daemon.provision_runner(request)
     }
 }
 
@@ -198,6 +290,67 @@ async fn reviewed_heist_setup_creates_provisions_and_exposes_one_public_operatio
         serde_json::from_slice::<Value>(&status.into_body().collect().await?.to_bytes())?,
         receipt
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reviewed_negotiate_setup_validates_and_creates_with_domain_identifiers_but_not_secrets()
+-> TestResult {
+    let temp = tempfile::tempdir()?;
+    let catalog = negotiate_catalog()?;
+    let source = include_bytes!("../../../examples/room-setup/negotiate-0.2.0.json");
+    let validated = resolve_setup_specification(source, catalog.0.as_ref())?;
+    assert_eq!(
+        validated.configuration["transaction_id"],
+        "txn_calibration_worldstream_01"
+    );
+    assert_eq!(
+        validated.configuration["a202_revision"],
+        "fa85aa8b49bfe7b3f7ded487c98500a600e92e41"
+    );
+
+    let mut secret_bearing: Value = serde_json::from_slice(source)?;
+    secret_bearing["configuration"]["api_key"] = json!("sk-THIS_MUST_NEVER_ENTER_A_RETAINED_DRAFT");
+    assert!(
+        resolve_setup_specification(&serde_json::to_vec(&secret_bearing)?, catalog.0.as_ref())
+            .is_err()
+    );
+
+    let drafts = RoomDraftStoreV1::open(
+        &temp.path().join("drafts"),
+        ExactActivityPackDraftValidatorV1::new(catalog.clone()),
+    )?;
+    let creation =
+        RoomCreationSupervisorV1::open(&temp.path().join("creation"), drafts, NegotiateDaemon)?;
+    let vault = FileSecretVaultV1::open(&temp.path().join("vault"))?;
+    let profiles = AgentProfileStoreV1::open(&temp.path().join("profiles"), vault.clone())?;
+    let runners = RunnerTemplateRegistryV1::open_installed(&temp.path().join("templates"))?;
+    let setup = TaskSetupSupervisorV1::open(
+        &temp.path().join("setup"),
+        creation.clone(),
+        vault,
+        NegotiateDaemon,
+    )?
+    .with_launch_applicability(CatalogTaskLaunchApplicabilitySourceV1::new(catalog.clone()));
+    let operations =
+        RoomSetupOperationsV1::new(creation.clone(), setup, catalog, profiles, runners);
+    let result = operations.create(
+        "cli-negotiate-first",
+        &RoomSetupCreateRequestV1 {
+            specification: serde_json::from_slice(source)?,
+            acknowledge_start: true,
+        },
+    )?;
+
+    assert!(result.complete);
+    assert_eq!(result.room_id.as_deref(), Some(NEGOTIATE_ROOM));
+    assert_eq!(result.stage, RoomSetupOperationStageV1::Complete);
+    let retained = creation.status("cli-negotiate-first")?;
+    assert_eq!(
+        retained.review.configuration["transaction_id"],
+        "txn_calibration_worldstream_01"
+    );
+    assert_eq!(retained.request.members.len(), 4);
     Ok(())
 }
 

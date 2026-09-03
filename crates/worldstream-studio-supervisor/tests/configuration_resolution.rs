@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use serde_json::{Value, json};
 use worldstream_core::{agent_heist_lobby_digest, builtin_agent_heist_registry};
 use worldstream_studio_supervisor::configuration_resolution::resolve_configuration;

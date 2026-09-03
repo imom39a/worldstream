@@ -1064,7 +1064,7 @@ pub struct SqliteLiveBackupReceiptV1 {
     artifact_digest: String,
     /// Exact published native database byte length.
     artifact_bytes: u64,
-    /// Canonical deployment evidence digest captured by the backup.
+    /// Durable semantic database transfer-point digest captured by the backup.
     semantic_digest: DigestV1,
     /// Stable native identity of the published artifact.
     identity: SqliteFileIdentityV1,
@@ -2922,6 +2922,10 @@ enum WriterCommand {
         destination: PathBuf,
         reply: mpsc::Sender<Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1>>,
     },
+    RestartReadinessSnapshot {
+        destination: PathBuf,
+        reply: mpsc::Sender<Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1>>,
+    },
     #[cfg(test)]
     BeginSourceTransferWithHook {
         backup_path: PathBuf,
@@ -4075,6 +4079,116 @@ impl SqliteRoomStore {
         let destination = normalized_path(destination)
             .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
         verify_published_live_backup(&destination)
+    }
+
+    /// Re-verifies and securely scrubs an exact live-backup artifact matching
+    /// `expected` while this store is source-authoritative. Cleanup is bound to
+    /// the artifact's native identity, so a substituted path, hard-link alias,
+    /// unexpected sidecar, or changed database is rejected without touching
+    /// the replacement. The admitted file is reduced to an exact zero-byte
+    /// placeholder because a pathname unlink cannot be made race-free on every
+    /// supported platform. This operation does not transition source authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed transfer error if source authority is unavailable,
+    /// the published backup no longer exactly matches `expected`, secure scrub
+    /// cannot be completed, or source authority is not observed before and
+    /// after cleanup.
+    pub fn scrub_live_backup(
+        &self,
+        destination: &Path,
+        expected: &SqliteLiveBackupReceiptV1,
+    ) -> Result<(), SqliteSourceTransferErrorV1> {
+        if self.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative {
+            return Err(SqliteSourceTransferErrorV1::NotSourceAuthoritative {
+                actual: self.source_transfer_state(),
+            });
+        }
+        let source_identity = self.database_identity();
+        let destination = normalized_path(destination)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let verified = verified_published_live_backup(&destination)?;
+        if &live_backup_receipt(verified) != expected {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        remove_verified_transfer_backup(&destination, verified)?;
+        if self.database_identity() != source_identity
+            || self.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative
+        {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        Ok(())
+    }
+
+    /// Creates a standalone online snapshot for the offline Pack
+    /// restart-readiness preflight. Unlike a transfer/export backup, this
+    /// narrow path permits canonical deployment metadata to be absent because
+    /// that metadata is optional for an ordinary local SQLite deployment. All
+    /// durable tables are still bound by the semantic digest, and the
+    /// transfer/export APIs remain strict.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed transfer error when source authority is unavailable,
+    /// the destination is unsafe or already exists, native backup fails, or
+    /// the standalone snapshot does not exactly match the captured source.
+    pub fn create_restart_readiness_snapshot(
+        &self,
+        destination: &Path,
+    ) -> Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1> {
+        if self.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative {
+            return Err(SqliteSourceTransferErrorV1::NotSourceAuthoritative {
+                actual: self.source_transfer_state(),
+            });
+        }
+        let destination = normalized_path(destination)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let (reply, receive) = mpsc::channel();
+        self.writer
+            .commands
+            .send(WriterCommand::RestartReadinessSnapshot { destination, reply })
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| SqliteSourceTransferErrorV1::StorageUnavailable)?
+    }
+
+    /// Re-verifies and securely scrubs the exact snapshot created by
+    /// [`Self::create_restart_readiness_snapshot`]. This uses the same native
+    /// identity-bound cleanup as transfer backups, but it does not require
+    /// canonical deployment metadata that the readiness-only create path
+    /// intentionally treats as optional.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed transfer error if source authority is unavailable,
+    /// the snapshot no longer exactly matches `expected`, secure scrub cannot
+    /// be completed, or source authority changes during cleanup.
+    pub fn scrub_restart_readiness_snapshot(
+        &self,
+        destination: &Path,
+        expected: &SqliteLiveBackupReceiptV1,
+    ) -> Result<(), SqliteSourceTransferErrorV1> {
+        if self.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative {
+            return Err(SqliteSourceTransferErrorV1::NotSourceAuthoritative {
+                actual: self.source_transfer_state(),
+            });
+        }
+        let source_identity = self.database_identity();
+        let destination = normalized_path(destination)
+            .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
+        let verified = verified_published_restart_readiness_snapshot(&destination)?;
+        if &live_backup_receipt(verified) != expected {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        remove_verified_transfer_backup(&destination, verified)?;
+        if self.database_identity() != source_identity
+            || self.source_transfer_state() != SqliteSourceTransferStateV1::SourceAuthoritative
+        {
+            return Err(SqliteSourceTransferErrorV1::EvidenceMismatch);
+        }
+        Ok(())
     }
 
     /// Returns the exact runtime engine identity verified at open.
@@ -9504,6 +9618,11 @@ fn writer_main(
                     .map(live_backup_receipt);
                 reply_after_namespace_check!(reply, result);
             }
+            WriterCommand::RestartReadinessSnapshot { destination, reply } => {
+                let result = create_verified_restart_readiness_snapshot(&connection, &destination)
+                    .map(live_backup_receipt);
+                reply_after_namespace_check!(reply, result);
+            }
             #[cfg(test)]
             WriterCommand::BeginSourceTransferWithHook {
                 backup_path,
@@ -12635,6 +12754,25 @@ fn create_verified_transfer_backup(
     create_verified_transfer_backup_with_hooks(source, destination, |_| Ok(()), |_| Ok(()))
 }
 
+fn create_verified_restart_readiness_snapshot(
+    source: &Connection,
+    destination: &Path,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1> {
+    create_verified_backup_with_hooks(
+        source,
+        destination,
+        BackupEvidencePolicyV1::RestartReadiness,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackupEvidencePolicyV1 {
+    CanonicalTransfer,
+    RestartReadiness,
+}
+
 #[allow(clippy::too_many_lines)]
 #[cfg(test)]
 fn create_verified_transfer_backup_with_publish_hook<F>(
@@ -12652,6 +12790,27 @@ where
 fn create_verified_transfer_backup_with_hooks<F, G>(
     source: &Connection,
     destination: &Path,
+    before_sqlite_open: F,
+    before_publish: G,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1>
+where
+    F: FnOnce(&Path) -> Result<(), SqliteSourceTransferErrorV1>,
+    G: FnOnce(&Path) -> Result<(), SqliteSourceTransferErrorV1>,
+{
+    create_verified_backup_with_hooks(
+        source,
+        destination,
+        BackupEvidencePolicyV1::CanonicalTransfer,
+        before_sqlite_open,
+        before_publish,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn create_verified_backup_with_hooks<F, G>(
+    source: &Connection,
+    destination: &Path,
+    evidence_policy: BackupEvidencePolicyV1,
     before_sqlite_open: F,
     before_publish: G,
 ) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1>
@@ -12681,8 +12840,13 @@ where
     let mut published: Option<(File, TransferFileIdentity)> = None;
     let mut source_moved = false;
     let result = (|| {
-        let source_export = read_canonical_export_from_connection(source)
-            .map_err(|_| SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)?;
+        let source_export = match evidence_policy {
+            BackupEvidencePolicyV1::CanonicalTransfer => Some(
+                read_canonical_export_from_connection(source)
+                    .map_err(|_| SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)?,
+            ),
+            BackupEvidencePolicyV1::RestartReadiness => None,
+        };
         let source_digest = durable_transfer_point_digest(source)?;
         before_sqlite_open(&temporary)?;
         publication_parent
@@ -12734,11 +12898,17 @@ where
             .prepare("PRAGMA foreign_key_check")
             .and_then(|mut statement| statement.exists(()))
             .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+        let canonical_export_matches = match source_export.as_ref() {
+            Some(source_export) => {
+                read_canonical_export_from_connection(&destination_connection)
+                    .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?
+                    == *source_export
+            }
+            None => true,
+        };
         if foreign_key_violation
             || durable_transfer_point_digest(&destination_connection)? != source_digest
-            || read_canonical_export_from_connection(&destination_connection)
-                .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?
-                != source_export
+            || !canonical_export_matches
         {
             return Err(SqliteSourceTransferErrorV1::BackupVerificationFailed);
         }
@@ -12873,6 +13043,25 @@ fn live_backup_receipt(backup: VerifiedTransferBackup) -> SqliteLiveBackupReceip
 fn verify_published_live_backup(
     path: &Path,
 ) -> Result<SqliteLiveBackupReceiptV1, SqliteSourceTransferErrorV1> {
+    verified_published_live_backup(path).map(live_backup_receipt)
+}
+
+fn verified_published_live_backup(
+    path: &Path,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1> {
+    verified_published_backup(path, BackupEvidencePolicyV1::CanonicalTransfer)
+}
+
+fn verified_published_restart_readiness_snapshot(
+    path: &Path,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1> {
+    verified_published_backup(path, BackupEvidencePolicyV1::RestartReadiness)
+}
+
+fn verified_published_backup(
+    path: &Path,
+    evidence_policy: BackupEvidencePolicyV1,
+) -> Result<VerifiedTransferBackup, SqliteSourceTransferErrorV1> {
     let (mut file, identity) = retain_sqlite_file(path, false)
         .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
     let connection = open_retained_sqlite(
@@ -12894,18 +13083,20 @@ fn verify_published_live_backup(
     if foreign_key_violation {
         return Err(SqliteSourceTransferErrorV1::BackupVerificationFailed);
     }
-    read_canonical_export_from_connection(&connection)
-        .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    if evidence_policy == BackupEvidencePolicyV1::CanonicalTransfer {
+        read_canonical_export_from_connection(&connection)
+            .map_err(|_| SqliteSourceTransferErrorV1::BackupVerificationFailed)?;
+    }
     let semantic_digest = durable_transfer_point_digest(&connection)?;
     drop(connection);
     let fingerprint = transfer_file_fingerprint(&mut file)?;
     require_retained_sqlite_name(path, &file, identity)
         .map_err(|_| SqliteSourceTransferErrorV1::UnsafeBackupPath)?;
-    Ok(live_backup_receipt(VerifiedTransferBackup {
+    Ok(VerifiedTransferBackup {
         digest: semantic_digest,
         identity: persisted_transfer_identity(identity),
         fingerprint,
-    }))
+    })
 }
 
 fn encode_lower_hex(bytes: &[u8]) -> String {
@@ -34014,6 +34205,65 @@ mod tests {
             SqliteSourceTransferStateV1::SourceAuthoritative
         );
         assert!(store.create_live_backup(&backup).is_err());
+        store
+            .scrub_live_backup(&backup, &receipt)
+            .unwrap_or_else(|error| panic!("scrub live backup: {error}"));
+        assert_eq!(
+            fs::metadata(&backup)
+                .unwrap_or_else(|error| panic!("scrubbed live backup metadata: {error}"))
+                .len(),
+            0
+        );
+        assert_eq!(store.database_identity(), before_identity);
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+    }
+
+    #[test]
+    fn restart_readiness_snapshot_allows_absent_canonical_metadata_without_weakening_transfer() {
+        let directory = tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+        let source = directory.path().join("source.sqlite3");
+        let transfer_backup = directory.path().join("transfer-backup.sqlite3");
+        let readiness_snapshot = directory.path().join("readiness-snapshot.sqlite3");
+        let store =
+            SqliteRoomStore::open(&source).unwrap_or_else(|error| panic!("open source: {error}"));
+        store
+            .initialize_deployment_identity(fixture_deployment_identity())
+            .unwrap_or_else(|error| panic!("identity: {error}"));
+
+        assert_eq!(
+            store.create_live_backup(&transfer_backup),
+            Err(SqliteSourceTransferErrorV1::SourceEvidenceIncomplete)
+        );
+
+        let before_identity = store.database_identity();
+        let receipt = store
+            .create_restart_readiness_snapshot(&readiness_snapshot)
+            .unwrap_or_else(|error| panic!("restart-readiness snapshot: {error}"));
+        assert_eq!(
+            store
+                .canonical_metadata_status()
+                .unwrap_or_else(|error| panic!("canonical metadata status: {error}")),
+            None
+        );
+        assert_eq!(store.database_identity(), before_identity);
+        assert_eq!(
+            store.source_transfer_state(),
+            SqliteSourceTransferStateV1::SourceAuthoritative
+        );
+
+        store
+            .scrub_restart_readiness_snapshot(&readiness_snapshot, &receipt)
+            .unwrap_or_else(|error| panic!("scrub restart-readiness snapshot: {error}"));
+        assert_eq!(
+            fs::metadata(&readiness_snapshot)
+                .unwrap_or_else(|error| panic!("scrubbed readiness snapshot metadata: {error}"))
+                .len(),
+            0
+        );
+        assert_eq!(store.database_identity(), before_identity);
         assert_eq!(
             store.source_transfer_state(),
             SqliteSourceTransferStateV1::SourceAuthoritative

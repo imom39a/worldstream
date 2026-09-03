@@ -6,7 +6,7 @@
       "schema": "worldstream/client-deployment/v1",
       "deployment_id": "first-party-inspector-web",
       "client_id": "worldstream.inspector.web",
-      "release_digest": "sha256:32285a61dc1f1555cc748927d7c2ec478e035996e644773ca891ad069831954b",
+      "release_digest": "sha256:4a5d7860dbf1d13c023d16ef21668973ce0088ba31ac972055275d9b3cca07bc",
       "trust_level": "externally_trusted",
       "surfaces": [
         {
@@ -19,7 +19,7 @@
       "schema": "worldstream/client-deployment/v1",
       "deployment_id": "first-party-agent-heist-web",
       "client_id": "worldstream.agent-heist.web",
-      "release_digest": "sha256:2baa5236b4ac8869123f6a03c562c24b3a745236086188bb1fb69c90c5877231",
+      "release_digest": "sha256:b6e5501bb98dc2ab300439bf9dafc2978cfc784741668fecb3c15b7c8f5be156",
       "trust_level": "externally_trusted",
       "surfaces": [
         {
@@ -38,6 +38,19 @@
         {
           "surface_id": "negotiate-web",
           "launch_url": "http://127.0.0.1:5173/negotiate/"
+        }
+      ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-negotiate-web-v2",
+      "client_id": "worldstream.negotiate.web",
+      "release_digest": "sha256:febbfd4f6545704479460c7b81408402a22e1175174bb96f14347d2ead571bf1",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "negotiate-web",
+          "launch_url": "http://127.0.0.1:5173/negotiate-v2/"
         }
       ]
     }
@@ -115,6 +128,41 @@
       "access_mode": "spectator",
       "roles": [],
       "deployment_id": "first-party-negotiate-web",
+      "surface_id": "negotiate-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "negotiate-0-2-participant-web",
+      "pack": {
+        "id": "worldstream.negotiate",
+        "version": "0.2.0",
+        "digest": "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": [
+        "buyer_agent",
+        "seller_agent",
+        "buyer_approver",
+        "venue_signer"
+      ],
+      "deployment_id": "first-party-negotiate-web-v2",
+      "surface_id": "negotiate-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "negotiate-0-2-spectator-web",
+      "pack": {
+        "id": "worldstream.negotiate",
+        "version": "0.2.0",
+        "digest": "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "first-party-negotiate-web-v2",
       "surface_id": "negotiate-web",
       "preference": "default"
     }

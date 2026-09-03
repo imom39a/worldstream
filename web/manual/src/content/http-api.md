@@ -1,7 +1,7 @@
 # HTTP and WebSocket reference
 
 The normative wire contract is `docs/protocol.md`. Build clients from its exact
-versioned envelopes and schemas; do not infer a public API from internal Studio
+versioned envelopes and schemas; do not infer a public API from internal Controller
 routes or test fixtures.
 
 ## Transport boundaries
@@ -11,7 +11,7 @@ routes or test fixtures.
 | Room WebSocket | Membership attach, Projection Reset, observations, ACK, Actions |
 | Runner WebSocket / HTTP long poll | Activation offers, claims, renewals, completion/release |
 | HTTP resource APIs | health/version, catalogs, creation, current projection, Replay, operator operations |
-| Studio Supervisor HTTP | local browser-safe bounded workflows; not the public Room protocol |
+| Controller HTTP | local bounded operator workflows; not the public Room protocol |
 | assignment MCP stdio | agent-friendly sealed assignment contract |
 
 ## Room client lifecycle

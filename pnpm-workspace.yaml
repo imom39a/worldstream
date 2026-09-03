@@ -6,6 +6,5 @@ packages:
   - web/console
   - web/demos
   - web/manual
-  - web/studio
 
 onlyBuiltDependencies: []

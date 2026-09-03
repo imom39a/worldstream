@@ -35,15 +35,15 @@ target/debug/worldstreamctl sqlite restore \
 `sqlite verify` is read-only native verification; it does not by itself assert
 complete restore readiness.
 
-## Studio live SQLite backup
+## Controller live SQLite backup
 
-Studio's live path uses a stable operation ID and a daemon-derived destination
+The retained Controller service uses a stable operation ID and a Runtime-derived destination
 under the fixed shared backup root. It performs SQLite online backup, reopens
 the artifact, and compares deterministic source/destination exports. The
 pathless result includes name, size, and checksum.
 
 This is intentionally narrower than the offline full semantic restore verifier.
-Studio reports that full semantic verification was not run.
+The operation reports when full semantic verification was not run.
 
 ## SQLite to PostgreSQL transfer
 

@@ -27,6 +27,7 @@ import {
 } from "./rules.js";
 import {
   initialTimerRequests,
+  semanticSecondFromTimestamp,
   timerIdForKind,
   timerRequestsForTransition,
   timestampFromSemanticSecond,
@@ -45,12 +46,12 @@ export function reduceNegotiate(input: CanonicalObject): PackReduceOutput {
     validateCoreInvariant(coreBefore);
     validateCoreInvariant(coreAfter);
     if (stimulusType === "participant_action") {
-      const action = record(stimulus.canonical_payload, "Action payload");
-      validateParticipantEnvelope(stimulus, action, coreBefore);
+      const publicPayload = record(stimulus.canonical_payload, "Action payload");
+      const action = adaptParticipantAction(before, stimulus, publicPayload, coreBefore);
       return appliedDisposition(
         before,
         applyParticipantAction(before, action),
-        stimulus,
+        { ...stimulus, canonical_payload: action },
         scheduled,
         coreAfter,
       );
@@ -166,13 +167,22 @@ function appliedDisposition(
   };
 }
 
-function validateParticipantEnvelope(
+function adaptParticipantAction(
+  state: NegotiateState,
   stimulus: Record<string, CanonicalJson>,
-  action: Record<string, CanonicalJson>,
+  publicPayload: Record<string, CanonicalJson>,
   core: Record<string, CanonicalJson>,
-): void {
+): Record<string, CanonicalJson> {
+  for (const field of ["admitted_at", "basis"] as const) {
+    if (Object.hasOwn(publicPayload, field)) {
+      throw new RuleRejection(
+        "invalid_phase",
+        `Action payload must not supply Host-owned field ${field}`,
+      );
+    }
+  }
   const outerType = stringValue(stimulus.action_type, "Action type");
-  const innerType = stringValue(action.action, "Action payload type");
+  const innerType = stringValue(publicPayload.action, "Action payload type");
   if (outerType !== innerType) {
     throw new RuleRejection("invalid_phase", "Action envelope and payload type differ");
   }
@@ -182,18 +192,20 @@ function validateParticipantEnvelope(
     "acting membership",
   );
   const role = roleValue(membership.role, "acting membership Role");
-  if (roleValue(action.actor, "Action actor") !== role) {
+  if (roleValue(publicPayload.actor, "Action actor") !== role) {
     throw new RuleRejection("role_violation", "Action actor differs from Core Membership Role");
   }
-  const admittedAt = action.admitted_at;
-  if (
-    typeof admittedAt !== "number" ||
-    !Number.isSafeInteger(admittedAt) ||
-    stringValue(stimulus.admitted_at, "Action admitted_at") !==
-      timestampFromSemanticSecond(admittedAt)
-  ) {
-    throw new RuleRejection("invalid_phase", "Action semantic time differs from host admission");
-  }
+  return {
+    ...publicPayload,
+    admitted_at: semanticSecondFromTimestamp(
+      stringValue(stimulus.admitted_at, "Action admitted_at"),
+    ),
+    basis: {
+      room: state.room_head as unknown as CanonicalJson,
+      transaction: state.transaction_head as unknown as CanonicalJson,
+      session: state.session_head as unknown as CanonicalJson,
+    },
+  };
 }
 
 function validateTimerEnvelope(
@@ -324,7 +336,7 @@ export default defineActivityPack({
   descriptor: {
     packId: "worldstream.negotiate",
     name: "WorldStream Negotiate",
-    version: "0.1.0",
+    version: "0.2.0",
     roles: ["buyer_agent", "seller_agent", "buyer_approver", "venue_signer"],
     actions: [
       "submit_proposal_revision",

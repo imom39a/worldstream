@@ -2,8 +2,8 @@
   "schema": "worldstream/client-conformance-evidence/v1",
   "subject": {
     "client_id": "worldstream.agent-heist.web",
-    "artifact_digest": "sha256:36c73dddea06defeb9af4d76da3f1743b276627eb4dcd986cb8502557af1cedc",
-    "release_claims_digest": "sha256:1af36cff44243b4c656949f6b029f290c68844f8c3aaaecdcdd1a221f20849db",
+    "artifact_digest": "sha256:f0db0df556653fd880cd69eb4d4f1af9562665b69f96a249cc9f28d1b6c138cd",
+    "release_claims_digest": "sha256:1ba5a0050f3617eb7f75b95663f32cd6d92d5c72883ec70ddab0999d672b6fde",
     "client_contract": "worldstream/activity-client-protocol/v1"
   },
   "checks": [

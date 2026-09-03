@@ -226,7 +226,6 @@ fn stop_without_an_owned_handle_does_not_claim_that_an_unresolved_host_exited()
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 mod coordinated_lifecycle {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicBool};

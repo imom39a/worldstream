@@ -4,6 +4,7 @@ import type { AuthorizedRoomDeliveryBatch } from "@worldstream/client";
 
 import {
   NEGOTIATE_REVISION_0_1,
+  NEGOTIATE_REVISION_0_2,
   initialNegotiateLiveState,
   reduceNegotiateObservation,
 } from "./liveAdapter";
@@ -16,6 +17,7 @@ function batch({
   projection = {},
   offers = [{ action_type: "submit_proposal", payload_schema_digest: digest("a") }],
   packId = "worldstream.negotiate",
+  packVersion = "0.1.0",
   packDigest = NEGOTIATE_REVISION_0_1,
   headDigest = packDigest,
   roomSequence = 12,
@@ -25,12 +27,13 @@ function batch({
   projection?: Record<string, unknown>;
   offers?: unknown[];
   packId?: string;
+  packVersion?: string;
   packDigest?: string;
   headDigest?: string;
   roomSequence?: number;
 } = {}): AuthorizedRoomDeliveryBatch {
   return {
-    pack: { id: packId, version: "0.1.0", digest: packDigest },
+    pack: { id: packId, version: packVersion, digest: packDigest },
     room_head: {
       room_seq: roomSequence,
       genesis_or_transition_hash: digest("1"),
@@ -95,6 +98,21 @@ describe("Negotiate retained live adapter", () => {
     expect(state.session.persona).toBe("spectator");
     expect(state.session.action_offers).toEqual([]);
     expect(state.offerBindings).toEqual([]);
+  });
+
+  it("accepts the corrected immutable 0.2.0 Pack Revision", () => {
+    const state = reduceNegotiateObservation(
+      initialNegotiateLiveState(),
+      batch({ packVersion: "0.2.0", packDigest: NEGOTIATE_REVISION_0_2 }),
+    );
+
+    expect(state.kind).toBe("ready");
+    if (state.kind !== "ready") throw new Error("expected ready state");
+    expect(state.pack).toEqual({
+      id: "worldstream.negotiate",
+      version: "0.2.0",
+      digest: NEGOTIATE_REVISION_0_2,
+    });
   });
 
   it("replaces the complete authorized activity view on Reset", () => {

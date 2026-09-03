@@ -27,7 +27,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(feature = "cli-operator-preview")]
 use std::sync::{RwLock, RwLockWriteGuard};
 use thiserror::Error;
 use worldstream_protocol::UlidString;
@@ -531,7 +530,6 @@ pub struct ManagedAgentHostOperationsV1 {
     launcher: Arc<dyn ManagedAgentHostProcessLauncherV1>,
     processes: Arc<Mutex<BTreeMap<String, Box<dyn ManagedAgentHostProcessV1>>>>,
     mutation: Arc<Mutex<()>>,
-    #[cfg(feature = "cli-operator-preview")]
     starts_paused: Arc<RwLock<bool>>,
     activation_status: Option<ManagedActivationStatusStoreV1>,
 }
@@ -602,7 +600,6 @@ impl ManagedAgentHostOperationsV1 {
             launcher: Arc::new(launcher),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             mutation: Arc::new(Mutex::new(())),
-            #[cfg(feature = "cli-operator-preview")]
             starts_paused: Arc::new(RwLock::new(false)),
             activation_status: None,
         })
@@ -617,7 +614,6 @@ impl ManagedAgentHostOperationsV1 {
         &self,
         assignment_id: &str,
     ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
-        #[cfg(feature = "cli-operator-preview")]
         let _admission = {
             let admission = self
                 .starts_paused
@@ -705,7 +701,6 @@ impl ManagedAgentHostOperationsV1 {
         }
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn pause_starts(
         &self,
     ) -> Result<(RwLockWriteGuard<'_, bool>, bool), ManagedAgentHostErrorV1> {
@@ -752,7 +747,6 @@ impl ManagedAgentHostOperationsV1 {
         Ok(statuses)
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn owned_assignments(&self) -> Result<Vec<String>, ManagedAgentHostErrorV1> {
         let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
         let records = json_files(&self.root)?;

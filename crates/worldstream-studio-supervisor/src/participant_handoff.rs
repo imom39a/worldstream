@@ -837,9 +837,7 @@ struct SessionRecordV1 {
     target_fingerprint: [u8; 32],
     durable_cursor: Option<u64>,
     expires_at: Instant,
-    #[cfg(feature = "cli-operator-preview")]
     pending_delivery: Option<(String, u64, Instant)>,
-    #[cfg(feature = "cli-operator-preview")]
     acknowledged_at: Option<Instant>,
 }
 
@@ -1081,9 +1079,7 @@ impl ParticipantHandoffBrokerV1 {
                 ),
                 durable_cursor: None,
                 expires_at: Instant::now() + Duration::from_secs(SESSION_MAX_AGE_SECONDS),
-                #[cfg(feature = "cli-operator-preview")]
                 pending_delivery: None,
-                #[cfg(feature = "cli-operator-preview")]
                 acknowledged_at: None,
             },
         );
@@ -1300,14 +1296,11 @@ impl ParticipantHandoffBrokerV1 {
 
 /// Short-lived evidence of actual browser receipt, separate from legacy health
 /// probes and from the canonical Membership Cursor.
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Clone)]
 pub struct BrowserDeliveryReadinessV1(ParticipantHandoffBrokerV1);
 
-#[cfg(feature = "cli-operator-preview")]
 const BROWSER_RECEIPT_LEASE: Duration = Duration::from_secs(5);
 
-#[cfg(feature = "cli-operator-preview")]
 impl ParticipantHandoffBrokerV1 {
     #[must_use]
     pub fn browser_readiness(&self) -> BrowserDeliveryReadinessV1 {
@@ -1372,7 +1365,6 @@ impl ParticipantHandoffBrokerV1 {
     }
 }
 
-#[cfg(feature = "cli-operator-preview")]
 impl ParticipantConsoleReadinessSourceV1 for BrowserDeliveryReadinessV1 {
     fn session_health(&self, room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
         if !is_ulid(room_id) || !is_ulid(member_id) {
@@ -1651,7 +1643,6 @@ pub fn participant_handoff_router(broker: ParticipantHandoffBrokerV1) -> Router 
             "/api/v1/participant-console/session:replay",
             post(replay).options(cors_preflight),
         );
-    #[cfg(feature = "cli-operator-preview")]
     let router = router.route(
         "/api/v1/participant-console/session:acknowledge",
         post(acknowledge_delivery).options(cors_preflight),
@@ -1663,7 +1654,6 @@ pub fn participant_handoff_router(broker: ParticipantHandoffBrokerV1) -> Router 
 
 /// Merged only inside installation-control admission. This is deliberately not
 /// a browser CORS route and never substitutes a forged Studio Origin.
-#[cfg(feature = "cli-operator-preview")]
 pub fn operator_client_handoff_router(broker: ParticipantHandoffBrokerV1) -> Router {
     Router::new()
         .route(
@@ -1674,7 +1664,6 @@ pub fn operator_client_handoff_router(broker: ParticipantHandoffBrokerV1) -> Rou
         .with_state(broker)
 }
 
-#[cfg(feature = "cli-operator-preview")]
 async fn issue_operator_handoff(
     State(broker): State<ParticipantHandoffBrokerV1>,
     axum::extract::Path((operation, seat)): axum::extract::Path<(String, String)>,
@@ -1785,7 +1774,6 @@ fn valid_preflight(request: &Request) -> bool {
 }
 
 fn apply_cors_headers(headers: &mut HeaderMap, origin: &str) {
-    #[cfg(feature = "cli-operator-preview")]
     headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
         HeaderValue::from_static("X-WorldStream-Delivery-Acknowledgement"),
@@ -1890,7 +1878,6 @@ async fn observe(
     run_blocking(move || {
         let cookie = cookie.as_ref().map(|value| value.as_str());
         let value = broker.observe(cookie, request)?;
-        #[cfg(feature = "cli-operator-preview")]
         let acknowledgement = broker.delivery_receipt(
             cookie,
             value
@@ -1899,7 +1886,6 @@ async fn observe(
                 .ok_or(ParticipantHandoffErrorV1::Upstream)?,
         )?;
         let response = Json(value).into_response();
-        #[cfg(feature = "cli-operator-preview")]
         let response = {
             let mut response = response;
             response.headers_mut().insert(
@@ -1914,7 +1900,6 @@ async fn observe(
     .await
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeliveryAcknowledgementV1 {
@@ -1922,7 +1907,6 @@ struct DeliveryAcknowledgementV1 {
     frame_head: u64,
 }
 
-#[cfg(feature = "cli-operator-preview")]
 async fn acknowledge_delivery(
     State(broker): State<ParticipantHandoffBrokerV1>,
     headers: HeaderMap,

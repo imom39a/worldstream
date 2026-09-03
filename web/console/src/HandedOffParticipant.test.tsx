@@ -214,4 +214,20 @@ describe("handed-off Participant Console", () => {
       retryable: false,
     });
   });
+
+  it("sends expired handoffs back to the CLI without coupling the client to Studio", () => {
+    const markup = renderToStaticMarkup(<ParticipantHandoffView
+      state={{
+        state: "setup_required",
+        action: "return_to_task_setup",
+        message: "This participant client session is missing or expired.",
+      }}
+      onReconnect={vi.fn()}
+      onAct={vi.fn()}
+    />);
+    expect(markup).toContain(
+      "Ask the Host Operator to run worldstreamctl client open again for this Room setup operation.",
+    );
+    expect(markup).not.toMatch(/Studio|control credential|wsb1:/i);
+  });
 });

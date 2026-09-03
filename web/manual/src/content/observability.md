@@ -11,7 +11,7 @@ must never decide canonical truth or change a successful/failed operation.
 | `/readyz` | are selected storage, authority, writer, scheduler, and startup recovery ready? |
 | `/version` | which compatibility/build/storage identity is running? |
 | `/metrics` | what bounded runtime/transport/storage counters and gauges are exposed? |
-| Studio daemon status | can the local Supervisor establish a typed live snapshot? |
+| Controller Runtime status | can the local Controller establish a typed live snapshot? |
 | Room detail/integrity | is this exact Room healthy/faulted/quarantined and fresh? |
 | Runner attention | is the exact approved instance live, fresh, at capacity, or holding/backlogging work? |
 
@@ -41,7 +41,7 @@ It does not make storage-neutral behavior depend on one collector.
 
 Treat freshness as its own axis. A PID may exist while a Runner is no longer
 making MCP progress. The managed host advances freshness on completed outbound
-MCP messages, not merely process existence. Studio preserves authoritative
+MCP messages, not merely process existence. The Controller preserves authoritative
 `observed_at` values instead of replacing them with browser polling time.
 
 ## Diagnostic capture

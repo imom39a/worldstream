@@ -3,6 +3,7 @@ export { NegotiateApp, type NegotiateAppProps, type NegotiateDisplaySession } fr
 export {
   NEGOTIATE_PACK_ID,
   NEGOTIATE_REVISION_0_1,
+  NEGOTIATE_REVISION_0_2,
   initialNegotiateLiveState,
   reduceNegotiateObservation,
   type NegotiateLiveState,

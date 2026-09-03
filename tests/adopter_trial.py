@@ -30,14 +30,15 @@ def canonical(value: object) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
 
 
-def release_manifest(path: Path) -> str:
-    content = canonical(
-        {
-            "schema": "worldstream/release-artifact-manifest/v2",
-            "artifacts": {},
-            "evidence": {},
-        }
-    )
+def release_manifest(path: Path, profile=TRIAL.INVENTORY.LEGACY) -> str:
+    value = {
+        "schema": profile.manifest_schema,
+        "artifacts": {},
+        "evidence": {},
+    }
+    if profile.serialized_discriminator:
+        value["release_inventory"] = profile.identity
+    content = canonical(value)
     path.write_bytes(content)
     return hashlib.sha256(content).hexdigest()
 
@@ -164,9 +165,10 @@ def write_complete_set(root: Path, manifest_sha256: str) -> None:
         (root / f"{index}.json").write_bytes(canonical(receipt(*row, manifest_sha256)))
 
 
-def test_qualifies_exact_six_outside_adopter_receipts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile", [TRIAL.INVENTORY.LEGACY, TRIAL.INVENTORY.CLI_FIRST])
+def test_qualifies_exact_six_outside_adopter_receipts(tmp_path: Path, profile) -> None:
     manifest = tmp_path / "release-manifest.json"
-    digest = release_manifest(manifest)
+    digest = release_manifest(manifest, profile)
     receipts = tmp_path / "receipts"
     receipts.mkdir()
     write_complete_set(receipts, digest)
@@ -181,6 +183,32 @@ def test_qualifies_exact_six_outside_adopter_receipts(tmp_path: Path) -> None:
         "native-linux-x86_64",
         "native-windows-x64",
     ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {
+            "schema": TRIAL.INVENTORY.CLI_FIRST.manifest_schema,
+        },
+        {
+            "schema": TRIAL.INVENTORY.CLI_FIRST.manifest_schema,
+            "release_inventory": TRIAL.INVENTORY.LEGACY.identity,
+        },
+        {
+            "schema": TRIAL.INVENTORY.LEGACY.manifest_schema,
+            "release_inventory": TRIAL.INVENTORY.LEGACY.identity,
+        },
+    ],
+)
+def test_rejects_cross_wired_release_identity(tmp_path: Path, value: dict) -> None:
+    manifest = tmp_path / "release-manifest.json"
+    manifest.write_bytes(canonical(value))
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+
+    with pytest.raises(TRIAL.TrialError, match="release manifest"):
+        TRIAL.qualify(receipts, manifest)
 
 
 @pytest.mark.parametrize(

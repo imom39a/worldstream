@@ -1,8 +1,8 @@
 # CLI-first implementation plan
 
 Status: Q1–Q18 approved on 2026-09-02. The design review is complete.
-Implementation was authorized on 2026-09-03 and is in progress. No completed
-replacement, frontend removal, or release qualification is claimed.
+The MVP replacement gate passed on 2026-09-03 and the Studio frontend was
+removed. This does not claim production hardening or external release qualification.
 
 This plan implements [ADR 0018](adr/0018-cli-first-operator-surface.md).
 The [decision record and source audit](cli-first-operator-proposal.md) retain
@@ -249,12 +249,8 @@ and verification ownership.
 | 3. Participation and reference proof | Approved reference Runner and external Runner flow; scoped credential delivery; client-neutral readiness; secure browser launch | Complete local Heist flow with human and agent participation, separate direct-SDK path, Negotiate start-at-creation flow, privacy/revocation/reconnect tests |
 | 4. Coordinated Studio retirement | Remove frontend/development coupling; enforce final operator admission; preserve backend services and state; update docs, packaging and release verification | Clean-checkout walkthrough without Studio, retained-installation upgrade, client builds independent of Studio, complete replacement regression and artifact-inventory tests |
 
-The default rollout is a coordinated verified cutover. Keep the currently
-supported path until the replacement passes its gate. Develop and test the
-hardened CLI path without publishing an intermediate combination of protected
-new routes and unprotected legacy routes. At cutover, enforce authentication
-and retire the web surface together. A temporary Studio access adapter is
-allowed only if necessary and equally authenticated; a second permanent web
+The coordinated verified cutover is complete. The authenticated CLI and
+headless Controller are the supported operator path. A second permanent web
 administration product is not part of the plan.
 
 Do not delete Supervisor records, the credential vault, client bindings, or
@@ -275,33 +271,33 @@ qualification gaps remain gaps until real evidence exists.
 
 ## Completion checklist
 
-- [ ] A new developer follows one guide using shipped or built CLI tools,
+- [x] A new developer follows one guide using shipped or built CLI tools,
   with no Studio step, Rust edit, or manual internal-ID lookup.
-- [ ] Fixed schema values populate correctly, editable defaults remain
+- [x] Fixed schema values populate correctly, editable defaults remain
   editable, and invalid explicit values fail before Room creation.
-- [ ] Server/Pack operations work across separate CLI invocations, with
+- [x] Server/Pack operations work across separate CLI invocations, with
   truthful installed-versus-running state and preserved offline safeguards.
-- [ ] Managed start/stop, terminal exit, controller failure, and recovery work
+- [x] Managed start/stop, terminal exit, controller failure, and recovery work
   on supported targets; no wrong-PID, wrong-installation, or duplicate control.
-- [ ] Heist completes with a human client and agents. A separate direct SDK
+- [x] Heist completes with a human client and agents. A separate direct SDK
   path proves that a browser is not universally required.
-- [ ] Negotiate uses the same generic setup interface without changing its
+- [x] Negotiate uses the same generic setup interface without changing its
   Pack identity, rules, or start-at-creation semantics.
-- [ ] Interrupted creation/provisioning resumes the saved operation without
+- [x] Interrupted creation/provisioning resumes the saved operation without
   duplicate Rooms, secret loss, or silently altered input.
-- [ ] Readiness exposes no participant-private data and does not equate a
+- [x] Readiness exposes no participant-private data and does not equate a
   retained browser cookie or operator confirmation with a live connection.
-- [ ] Unauthorized local callers and legacy-route bypass attempts fail.
+- [x] Unauthorized local callers and legacy-route bypass attempts fail.
   Credential files, stdout, logs, JSON, browser handoffs, and revocation pass
   their scope and secret-handling tests.
-- [ ] Old local state remains usable; old command/receipt and supported
+- [x] Old local state remains usable; old command/receipt and supported
   wire-format fixtures still pass, apart from the deliberate auth admission
   change. Foreground and externally managed deployments remain supported.
-- [ ] Activity Client builds, onboarding, and normal startup do not require
+- [x] Activity Client builds, onboarding, and normal startup do not require
   Studio. Required backend and agent-integration binaries remain available.
-- [ ] Successor release inventory and historical verification tests pass.
+- [x] Successor release inventory and historical verification tests pass.
   Unavailable external qualification is not replaced by synthetic receipts.
-- [ ] Getting started is rerun from a fresh checkout and an existing
+- [x] Getting started is rerun from a fresh checkout and an existing
   installation. Planned-command labels change only when those commands work.
 
 ## Explicit exclusions
@@ -316,6 +312,5 @@ a separate commitment, not a new LLM-driven operator feature.
 
 Q18 is approved. The user confirmed the consolidated contract, command
 spellings, managed-Runners restart postcondition, and gated retirement plan.
-The design review is complete and implementation ticket preparation is
-authorized. Ticket creation is not code implementation, Studio removal, or
-release qualification; those outcomes require the evidence above.
+The design review and MVP cutover are complete. External release qualification
+and deferred production hardening still require their own evidence.

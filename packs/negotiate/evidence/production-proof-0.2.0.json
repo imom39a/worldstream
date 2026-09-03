@@ -1,0 +1,14 @@
+{
+  "proof_type": "complete",
+  "status": "passed",
+  "pack_id": "worldstream.negotiate",
+  "bundle_digest": "blake3:83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8",
+  "revision_digest": "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c",
+  "transcript_digest": "blake3:2094ce73055f7598a7747b57c01e1a496648e7467bca755ad8246c8cb63b50ae",
+  "accepted_action": true,
+  "declared_rejection": true,
+  "private_views": 4,
+  "retained_old_revision": true,
+  "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "roles": 4
+}

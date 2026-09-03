@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use std::{
     net::TcpListener,
     process::{Child, Command, Stdio},

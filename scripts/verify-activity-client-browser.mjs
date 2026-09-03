@@ -13,16 +13,24 @@ try {
     const body = await page.locator("body").innerText();
     reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
   });
-  await verifySurface("Negotiate", "/negotiate/", "Negotiate · WorldStream Activity Client", async (page) => {
+  await verifySurface("Negotiate 0.1", "/negotiate/", "Negotiate · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
-    reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate live client exposed recorded data");
+    reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate 0.1 live client exposed recorded data");
+  });
+  await verifySurface("Negotiate 0.2", "/negotiate-v2/", "Negotiate · WorldStream Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
+    const body = await page.locator("body").innerText();
+    reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate 0.2 live client exposed recorded data");
   });
   await verifySurface("Inspector", "/inspector/", "WorldStream Client Host", async (page) => {
     await page.getByText("This participant client session is missing or expired.", { exact: true }).waitFor();
-    await page.getByText("Return to Studio Task setup.", { exact: true }).waitFor();
+    await page.getByText(
+      "Ask the Host Operator to run worldstreamctl client open again for this Room setup operation.",
+      { exact: true },
+    ).waitFor();
   });
-  console.log("Activity Client browser acceptance passed for exact Heist, Negotiate, and Inspector artifacts.");
+  console.log("Activity Client browser acceptance passed for exact Heist, Negotiate 0.1/0.2, and Inspector artifacts.");
 } finally {
   await browser.close();
   await host.close();

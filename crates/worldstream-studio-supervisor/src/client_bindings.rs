@@ -119,7 +119,6 @@ struct ClientBindingBootstrapV1 {
 }
 
 /// Exact non-secret client identities and targets approved by initialization.
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Clone, Debug, Serialize)]
 pub struct ClientImportReviewV1 {
     pub deployment_trust_policy: ClientDeploymentTrustPolicyV1,
@@ -129,7 +128,6 @@ pub struct ClientImportReviewV1 {
     pub inspector_fallback: InspectorFallbackV1,
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewedClientPolicyV1 {
@@ -269,14 +267,12 @@ impl ClientBindingStoreV1 {
     ///
     /// # Errors
     /// Rejects malformed or unprotected retained policy.
-    #[cfg(feature = "cli-operator-preview")]
     pub fn installed_policy(
         root: &Path,
     ) -> Result<ClientDeploymentTrustPolicyV1, ClientBindingStoreErrorV1> {
         Ok(read_reviewed_policy(root)?.unwrap_or(ClientDeploymentTrustPolicyV1::VerifiedOnly))
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn read_import(
         release_documents: &[Vec<u8>],
         bootstrap_document: &[u8],
@@ -300,7 +296,6 @@ impl ClientBindingStoreV1 {
         })
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     #[allow(
         clippy::too_many_lines,
         reason = "Keep retained-state validation and ordered aggregate identity merge visible before publication"
@@ -432,7 +427,6 @@ impl ClientBindingStoreV1 {
         Ok(reused)
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn import_reviewed(
         root: &Path,
         imports: &[ClientImportReviewV1],
@@ -977,7 +971,6 @@ struct ClientBindingInventoryV1 {
     binding_status: BTreeMap<String, ClientBindingStatusV1>,
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn validate_empty_import_layout(
     root: &Path,
     directories: &[&PathBuf],
@@ -1002,7 +995,6 @@ fn validate_empty_import_layout(
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn validate_retained_import_inventory(
     inventory: &ClientBindingInventoryV1,
 ) -> Result<(), ClientBindingStoreErrorV1> {
@@ -1033,7 +1025,6 @@ fn validate_retained_import_inventory(
     Ok(())
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn read_reviewed_policy(
     root: &Path,
 ) -> Result<Option<ClientDeploymentTrustPolicyV1>, ClientBindingStoreErrorV1> {
@@ -1053,7 +1044,6 @@ fn read_reviewed_policy(
     }
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn read_import_record<T: DeserializeOwned>(path: &Path) -> Result<T, ClientBindingStoreErrorV1> {
     use std::io::Read as _;
     validate_owner_only_file(path).map_err(|_| ClientBindingStoreErrorV1::Unavailable)?;
@@ -1069,14 +1059,12 @@ fn read_import_record<T: DeserializeOwned>(path: &Path) -> Result<T, ClientBindi
     serde_json::from_slice(&bytes).map_err(|_| ClientBindingStoreErrorV1::Unavailable)
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Clone, Copy)]
 enum ImportRecordPolicy {
     PreserveStatus,
     RequireExact,
 }
 
-#[cfg(feature = "cli-operator-preview")]
 fn publish_import_record<T: Serialize + DeserializeOwned + Eq>(
     directory: &Path,
     id: &str,

@@ -21,7 +21,6 @@ use worldstream_server::{
     pack_deployment_binding, read_postgres_dsn, telemetry, verify_startup_pack_readiness_seal,
 };
 use worldstream_sqlite::SqliteRoomStore;
-#[cfg(feature = "cli-operator-preview")]
 use worldstream_studio_supervisor::{
     managed_http::AcceptedLocalSocket,
     process_ownership::{ProcessLease, ProcessOwnership, ProcessRole, ProcessTermination},
@@ -43,21 +42,12 @@ struct DaemonArgs {
     #[command(flatten)]
     config: CommonConfigArgs,
     /// Internal launch reference selected by the local controller.
-    #[cfg(feature = "cli-operator-preview")]
     #[arg(long, hide = true, requires = "managed_generation")]
     managed_state_dir: Option<std::path::PathBuf>,
-    #[cfg(feature = "cli-operator-preview")]
     #[arg(long, hide = true, requires = "managed_state_dir")]
     managed_generation: Option<String>,
 }
 
-#[cfg(not(feature = "cli-operator-preview"))]
-#[tokio::main]
-async fn main() -> Result<()> {
-    run(DaemonArgs::parse()).await
-}
-
-#[cfg(feature = "cli-operator-preview")]
 fn main() -> Result<()> {
     let args = DaemonArgs::parse();
     let mut lease = match (&args.managed_state_dir, &args.managed_generation) {
@@ -97,10 +87,7 @@ fn main() -> Result<()> {
 }
 
 #[allow(clippy::redundant_closure_for_method_calls, clippy::too_many_lines)]
-async fn run(
-    args: DaemonArgs,
-    #[cfg(feature = "cli-operator-preview")] managed_lease: &mut Option<ProcessLease>,
-) -> Result<()> {
+async fn run(args: DaemonArgs, managed_lease: &mut Option<ProcessLease>) -> Result<()> {
     let config = args.config.load().context("configuration rejected")?;
 
     if let Err(error) = tracing_subscriber::fmt()
@@ -114,7 +101,6 @@ async fn run(
     }
 
     let bind = config.server.bind;
-    #[cfg(feature = "cli-operator-preview")]
     let managed_listener = if managed_lease.is_some() {
         if !bind.ip().is_loopback() || bind.port() == 0 {
             anyhow::bail!("managed Runtime control requires a fixed loopback listener");
@@ -157,7 +143,6 @@ async fn run(
     );
     let pack_startup = assemble_startup_pack_registry(&data_dir)
         .context("startup Activity Pack registry assembly failed closed")?;
-    #[cfg(feature = "cli-operator-preview")]
     let startup_pack_facts = pack_startup.facts().clone();
     let registry = Arc::clone(pack_startup.registry());
     let pack_diagnostics = pack_startup.diagnostics();
@@ -376,7 +361,6 @@ async fn run(
             state
         }
     };
-    #[cfg(feature = "cli-operator-preview")]
     let listener = if let Some(listener) = managed_listener {
         listener
     } else {
@@ -384,17 +368,12 @@ async fn run(
             .await
             .context("listener bind failed")?
     };
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .with_context(|| format!("listener bind failed at {bind}"))?;
     info!(
         listen_address = %bind,
         storage_profile = %profile,
         "WorldStream operator listener bound"
     );
 
-    #[cfg(feature = "cli-operator-preview")]
     if let Some(lease) = managed_lease.as_mut() {
         let proof = lease
             .publish_endpoint(listener.local_addr()?)

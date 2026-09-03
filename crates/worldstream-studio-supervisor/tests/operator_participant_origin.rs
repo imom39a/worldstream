@@ -1,5 +1,5 @@
 //! Retained participant origin selection reaches only the owned launch boundary.
-#![cfg(all(feature = "cli-operator-preview", unix))]
+#![cfg(unix)]
 
 use std::{fs, net::TcpListener, os::unix::fs::PermissionsExt as _, time::Duration};
 use worldstream_runtime::{CliOverrides, ConfigLoader};

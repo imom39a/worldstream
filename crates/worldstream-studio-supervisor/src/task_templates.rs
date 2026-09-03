@@ -826,7 +826,7 @@ fn validate_revision(revision: &TaskTemplateRevisionV1) -> Result<(), TaskTempla
         || !is_digest(&revision.pack.digest)
         || revision.seats.len() > 64
         || revision.readiness.len() != revision.seats.len()
-        || contains_credential_field(&revision.configuration)
+        || crate::configuration_safety::contains_credential_material(&revision.configuration)
     {
         return Err(TaskTemplateErrorV1::Invalid);
     }
@@ -1055,48 +1055,6 @@ fn is_digest(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
-}
-
-fn contains_credential_field(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            let normalized = key.replace('-', "_").to_ascii_lowercase();
-            normalized.contains("secret")
-                || normalized.contains("bearer")
-                || normalized.contains("password")
-                || normalized.contains("api_key")
-                || normalized.contains("apikey")
-                || normalized.contains("token")
-                || contains_credential_field(value)
-        }),
-        Value::Array(values) => values.iter().any(contains_credential_field),
-        Value::String(value) => looks_like_credential_value(value),
-        _ => false,
-    }
-}
-
-fn looks_like_credential_value(value: &str) -> bool {
-    let value = value.trim();
-    let lower = value.to_ascii_lowercase();
-    if lower.starts_with("bearer ")
-        || lower.starts_with("sk-")
-        || lower.starts_with("sk_")
-        || lower.starts_with("ghp_")
-        || lower.starts_with("github_pat_")
-        || lower.starts_with("xoxb-")
-        || lower.starts_with("xoxp-")
-        || value.starts_with("AKIA")
-        || (value.starts_with("eyJ") && value.matches('.').count() == 2)
-    {
-        return true;
-    }
-    value.len() >= 32
-        && !value.bytes().any(|byte| byte.is_ascii_whitespace())
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'+' | b'=')
-        })
-        && value.bytes().any(|byte| byte.is_ascii_alphabetic())
-        && value.bytes().any(|byte| byte.is_ascii_digit())
 }
 
 fn encode_component(value: &str) -> String {

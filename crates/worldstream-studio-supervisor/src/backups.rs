@@ -183,7 +183,6 @@ pub struct HttpDaemonBackupExecutorV1 {
     profile: BackupStorageProfileV1,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
-    #[cfg(feature = "cli-operator-preview")]
     managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
@@ -202,13 +201,11 @@ impl HttpDaemonBackupExecutorV1 {
             profile,
             vault,
             host_authority,
-            #[cfg(feature = "cli-operator-preview")]
             managed: None,
         }
     }
 
     /// Uses proof-bound managed Runtime transport without changing backup policy.
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn new_managed(
         address: SocketAddr,
@@ -259,7 +256,6 @@ impl HttpDaemonBackupExecutorV1 {
             .host_authority
             .as_ref()
             .ok_or(BackupExecutionErrorV1::Unavailable)?;
-        #[cfg(feature = "cli-operator-preview")]
         if let Some(transport) = &self.managed {
             let response = transport
                 .request(method, path, body, MAX_MESSAGE_BYTES, || {

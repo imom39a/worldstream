@@ -2,13 +2,7 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
-#[cfg(not(feature = "cli-operator-preview"))]
-use worldstream_runtime::ConfigError;
 use worldstream_runtime::{CliOverrides, ConfigLoader};
-#[cfg(not(feature = "cli-operator-preview"))]
-use worldstream_studio_supervisor::startup_authority::{
-    bootstrap_source_for_local_development, establish_host_authority_reference,
-};
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
     activity_packs::HttpDaemonActivityPackSource,
@@ -45,7 +39,6 @@ use worldstream_studio_supervisor::{
     },
     task_templates::{InstalledTaskTemplateDependenciesV1, TaskTemplateStoreV1},
 };
-#[cfg(feature = "cli-operator-preview")]
 use worldstream_studio_supervisor::{
     control_access::ControlAccess,
     control_admission::protect_operator_routes,
@@ -67,19 +60,17 @@ use worldstream_studio_supervisor::{
 #[command(
     name = "worldstream-studio-supervisor",
     version,
-    about = "Local bounded Supervisor for WorldStream Studio"
+    about = "Local bounded WorldStream Controller"
 )]
 struct Args {
     /// Internal launch generation selected by the CLI for this installation.
-    #[cfg(feature = "cli-operator-preview")]
     #[arg(long, hide = true)]
     managed_generation: Option<String>,
-    /// Assert this binary supports operator control; preview always enforces it.
-    #[cfg(feature = "cli-operator-preview")]
+    /// Compatibility assertion; operator control is always enforced.
     #[arg(long = "require-operator-control", hide = true)]
     _require_operator_control: bool,
 
-    /// Studio Supervisor API listener.
+    /// WorldStream Controller API listener.
     #[arg(long, default_value = "127.0.0.1:9420")]
     bind: SocketAddr,
 
@@ -91,11 +82,11 @@ struct Args {
     #[arg(long, default_value_t = 750)]
     probe_timeout_ms: u64,
 
-    /// Fixed worldstreamd executable controlled by this Supervisor.
+    /// Fixed worldstreamd executable controlled by this Controller.
     #[arg(long, default_value = "target/debug/worldstreamd")]
     daemon_executable: PathBuf,
 
-    /// Fixed worldstreamd configuration controlled by this Supervisor.
+    /// Fixed worldstreamd configuration controlled by this Controller.
     #[arg(long, default_value = "config/development.toml")]
     daemon_config: PathBuf,
 
@@ -103,7 +94,7 @@ struct Args {
     #[arg(long, default_value_t = 10_000)]
     graceful_stop_timeout_ms: u64,
 
-    /// Owner-only Supervisor state directory.
+    /// Owner-only Controller state directory.
     #[arg(long, default_value = ".worldstream/studio")]
     state_dir: PathBuf,
 
@@ -115,41 +106,19 @@ struct Args {
     #[arg(long, value_parser = parse_secret_reference)]
     host_authority_reference: Option<SecretReferenceV1>,
 
-    /// Owner-controlled directory of approved Runner Template manifests.
-    #[cfg(not(feature = "cli-operator-preview"))]
-    #[arg(long, default_value = "config/runner-templates")]
-    runner_templates_dir: PathBuf,
-
-    /// Owner-controlled directory of named protected model-provider credentials.
-    #[cfg(not(feature = "cli-operator-preview"))]
-    #[arg(long, default_value = "config/model-provider-credentials")]
-    model_provider_credentials_dir: PathBuf,
-
     /// Storage profile configured for the controlled worldstreamd process.
     #[arg(long, default_value = "sqlite-bundled", value_parser = parse_backup_profile)]
     storage_profile: BackupStorageProfileV1,
 
-    /// Exact loopback Studio browser origin admitted for handoff creation.
+    /// Exact loopback operator browser origin admitted for handoff creation.
     #[arg(long, default_value = "http://127.0.0.1:5174")]
     studio_origin: String,
 
     /// Exact loopback Participant Console origin placed in one-use URLs.
     #[arg(long, default_value = "http://127.0.0.1:5173")]
     participant_console_origin: String,
-
-    /// Operator-controlled Activity Client release and local binding declarations.
-    #[cfg(not(feature = "cli-operator-preview"))]
-    #[arg(long, default_value = "config/activity-clients")]
-    activity_clients_dir: PathBuf,
 }
 
-#[cfg(not(feature = "cli-operator-preview"))]
-#[tokio::main]
-async fn main() -> Result<()> {
-    run(Args::parse()).await
-}
-
-#[cfg(feature = "cli-operator-preview")]
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut lease = args
@@ -186,13 +155,8 @@ fn main() -> Result<()> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run(
-    args: Args,
-    #[cfg(feature = "cli-operator-preview")] managed_lease: &mut Option<ProcessLease>,
-) -> Result<()> {
-    // This temporary compile-time branch is removed with the Studio cutover.
-    // There is no runtime flag which disables operator admission in preview.
-    #[cfg(feature = "cli-operator-preview")]
+async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()> {
+    // There is no runtime flag which disables operator admission.
     let (daemon_effective, control, vault, host_authority_reference) = {
         if !args.bind.ip().is_loopback() || args.bind.port() == 0 {
             anyhow::bail!("operator control requires a loopback address and nonzero port");
@@ -223,57 +187,19 @@ async fn run(
         (effective, control, vault, reference)
     };
 
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let (daemon_effective, bootstrap_source) = {
-        let mut bootstrap_source = None;
-        let daemon_effective =
-        ConfigLoader::from_process(Some(args.daemon_config.clone()), CliOverrides::default())
-            .context("controlled worldstreamd configuration could not be selected")?
-            .load_with_bootstrap_preparation(|effective| {
-                bootstrap_source = Some(
-                    bootstrap_source_for_local_development(
-                        &args.state_dir,
-                        &effective.storage.data_dir,
-                        effective.storage.profile,
-                        effective.authority.bootstrap_secret.as_ref(),
-                    )
-                    .map_err(|_| {
-                        ConfigError::Missing(
-                            "Studio bootstrap authority requires fresh empty local SQLite state or its existing owner-only secret source",
-                        )
-                    })?,
-                );
-                Ok(())
-            })
-            .context("controlled worldstreamd configuration is invalid")?;
-        let bootstrap_source = bootstrap_source
-            .context("Studio Supervisor bootstrap authority preparation did not select a source")?;
-        (daemon_effective, bootstrap_source)
-    };
     let backup_root = prepare_shared_backup_root(
         &args.state_dir,
         &daemon_effective.storage.data_dir,
     )
     .map_err(|error| {
         anyhow::anyhow!(
-            "Studio and worldstreamd must use one identical canonical backup root: {error:?}"
+            "the Controller and worldstreamd must use one identical canonical backup root: {error:?}"
         )
     })?;
     let daemon_timeout = Duration::from_millis(args.probe_timeout_ms);
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let vault = FileSecretVaultV1::open(&args.state_dir.join("secrets"))
-        .context("Studio Supervisor protected secret backend is unavailable")?;
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let host_authority_reference = establish_host_authority_reference(
-        &args.state_dir,
-        &vault,
-        Some(&bootstrap_source),
-        args.host_authority_reference.as_ref(),
-    )
-    .context("Studio Supervisor Host authority startup is unavailable")?;
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
-        .with_context(|| format!("Studio Supervisor listener bind failed at {}", args.bind))?;
+        .with_context(|| format!("Controller listener bind failed at {}", args.bind))?;
     let source = HttpDaemonStatusSource::new(args.daemon, daemon_timeout);
     let lifecycle = ConfiguredDaemonLifecycle::new(
         args.daemon_executable.clone(),
@@ -281,7 +207,6 @@ async fn run(
         Duration::from_millis(args.graceful_stop_timeout_ms),
         source.clone(),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let managed_transport_ownership = if managed_lease.is_some() {
         Some(ProcessOwnership::open(&args.state_dir)?)
     } else {
@@ -293,7 +218,6 @@ async fn run(
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let activity_packs = if let Some(ownership) = &managed_transport_ownership {
         HttpDaemonActivityPackSource::new_managed(
             args.daemon,
@@ -305,33 +229,20 @@ async fn run(
     } else {
         activity_packs
     };
-    #[cfg(feature = "cli-operator-preview")]
     let runner_registry = RunnerTemplateRegistryV1::open_installed(
         &args.state_dir.join("runner-templates/installed"),
     );
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let runner_registry = RunnerTemplateRegistryV1::open(
-        &args.state_dir.join("runner-templates/installed"),
-        &args.runner_templates_dir,
-    );
     let runner_registry =
-        runner_registry.context("Studio Supervisor Runner Template registry is unavailable")?;
+        runner_registry.context("Controller Runner Template registry is unavailable")?;
     let agent_profiles =
         AgentProfileStoreV1::open(&args.state_dir.join("agent-profiles"), vault.clone())
-            .context("Studio Supervisor Agent Profile store is unavailable")?;
-    #[cfg(feature = "cli-operator-preview")]
+            .context("Controller Agent Profile store is unavailable")?;
     let model_provider_credentials = ModelProviderCredentialRegistryV1::open_installed(
         &args.state_dir.join("model-provider-credentials/installed"),
         vault.clone(),
     );
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let model_provider_credentials = ModelProviderCredentialRegistryV1::open(
-        &args.state_dir.join("model-provider-credentials/installed"),
-        &args.model_provider_credentials_dir,
-        vault.clone(),
-    );
     let model_provider_credentials = model_provider_credentials
-        .context("Studio Supervisor model-provider credential registry is unavailable")?;
+        .context("Controller model-provider credential registry is unavailable")?;
     let draft_dependencies = InstalledTaskTemplateDependenciesV1::new(
         ExactActivityPackDraftValidatorV1::new(activity_packs.clone()),
         agent_profiles.clone(),
@@ -341,20 +252,19 @@ async fn run(
         &args.state_dir.join("room-drafts"),
         draft_dependencies.clone(),
     )
-    .context("Studio Supervisor protected Room draft store is unavailable")?;
+    .context("Controller protected Room draft store is unavailable")?;
     let task_templates = TaskTemplateStoreV1::open(
         &args.state_dir.join("task-templates"),
         drafts.clone(),
         draft_dependencies,
     )
-    .context("Studio Supervisor protected Task Template store is unavailable")?;
+    .context("Controller protected Task Template store is unavailable")?;
     let rooms = HttpDaemonRoomSource::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let rooms = if let Some(ownership) = &managed_transport_ownership {
         HttpDaemonRoomSource::new_managed(
             args.daemon,
@@ -372,7 +282,6 @@ async fn run(
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let room_creator = if let Some(ownership) = &managed_transport_ownership {
         HttpDaemonRoomCreatorV1::new_managed(
             args.daemon,
@@ -389,7 +298,7 @@ async fn run(
         drafts.clone(),
         room_creator,
     )
-    .context("Studio Supervisor protected Room creation store is unavailable")?;
+    .context("Controller protected Room creation store is unavailable")?;
     let backup_executor = HttpDaemonBackupExecutorV1::new(
         args.daemon,
         daemon_timeout,
@@ -397,7 +306,6 @@ async fn run(
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let backup_executor = if let Some(ownership) = &managed_transport_ownership {
         HttpDaemonBackupExecutorV1::new_managed(
             args.daemon,
@@ -411,9 +319,7 @@ async fn run(
         backup_executor
     };
     let backups = BackupOperationsV1::open(&backup_root, backup_executor).map_err(|error| {
-        anyhow::anyhow!(
-            "Studio Supervisor protected backup operation store is unavailable: {error:?}"
-        )
+        anyhow::anyhow!("Controller protected backup operation store is unavailable: {error:?}")
     })?;
     let runners = RunnerSupervisorV1::open(
         runner_registry.clone(),
@@ -421,14 +327,13 @@ async fn run(
         vault.clone(),
         Duration::from_millis(args.graceful_stop_timeout_ms),
     )
-    .context("Studio Supervisor Runner instance state is unavailable")?;
+    .context("Controller Runner instance state is unavailable")?;
     let task_runtime = HttpDaemonTaskRuntimeV1::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let task_runtime = if let Some(ownership) = &managed_transport_ownership {
         HttpDaemonTaskRuntimeV1::new_managed(
             args.daemon,
@@ -446,7 +351,6 @@ async fn run(
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let task_setup_provisioner = if let Some(ownership) = &managed_transport_ownership {
         HttpDaemonTaskSetupProvisionerV1::new_managed(
             args.daemon,
@@ -464,28 +368,20 @@ async fn run(
         vault.clone(),
         task_setup_provisioner,
     )
-    .context("Studio Supervisor protected Task setup store is unavailable")?
+    .context("Controller protected Task setup store is unavailable")?
     .with_agent_profiles(agent_profiles.clone())
     .with_launch_applicability(CatalogTaskLaunchApplicabilitySourceV1::new(
         activity_packs.clone(),
     ));
     // Startup uses retained reviewed policy only; it never imports declarations
     // or promotes deployment trust from a working-directory configuration file.
-    #[cfg(feature = "cli-operator-preview")]
     let client_policy = ClientBindingStoreV1::installed_policy(
         &args.state_dir.join("client-bindings"),
     )
     .map_err(|_| anyhow::anyhow!("reviewed Activity Client selection policy is unavailable"))?;
-    #[cfg(feature = "cli-operator-preview")]
     let client_bindings = ClientBindingStoreV1::open_installed(
         &args.state_dir.join("client-bindings"),
         client_policy,
-    );
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let client_bindings = ClientBindingStoreV1::open_configured(
-        &args.state_dir.join("client-bindings"),
-        &args.activity_clients_dir.join("releases"),
-        &args.activity_clients_dir.join("local-bindings.json"),
     );
     let client_bindings = client_bindings
         .map_err(|error| anyhow::anyhow!("Activity Client bindings are unavailable: {error}"))?;
@@ -499,18 +395,11 @@ async fn run(
         client_bindings,
     )
     .map_err(|error| anyhow::anyhow!("Participant Console handoff is unavailable: {error:?}"))?;
-    #[cfg(feature = "cli-operator-preview")]
     let task_setup = task_setup_base.with_launch_readiness(
         ClientNeutralReadinessSourceV1::new(
             task_runtime.clone(),
             participant_handoff.browser_readiness(),
         ),
-        LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
-        task_runtime,
-    );
-    #[cfg(not(feature = "cli-operator-preview"))]
-    let task_setup = task_setup_base.with_launch_readiness(
-        participant_handoff.clone(),
         LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
         task_runtime,
     );
@@ -540,7 +429,6 @@ async fn run(
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let daemon_runner_attention = if let Some(ownership) = &managed_transport_ownership {
         HttpDaemonRunnerAttentionSourceV1::new_managed(
             args.daemon,
@@ -566,7 +454,7 @@ async fn run(
     let canonical_state_dir = args
         .state_dir
         .canonicalize()
-        .context("Studio Supervisor state directory is unavailable")?;
+        .context("Controller state directory is unavailable")?;
     let assignment_mcp_executable = args
         .assignment_mcp_executable
         .canonicalize()
@@ -583,7 +471,6 @@ async fn run(
     )
     .map_err(|error| anyhow::anyhow!("managed Agent Host operations are unavailable: {error:?}"))?;
     let runner_attention = runner_attention.with_managed_hosts(managed_agent_hosts.clone());
-    #[cfg(feature = "cli-operator-preview")]
     let managed_lifecycle = if managed_lease.is_some() {
         Some(ManagedLifecycle::open(
             &args.state_dir,
@@ -603,7 +490,6 @@ async fn run(
     } else {
         None
     };
-    #[cfg(feature = "cli-operator-preview")]
     let lifecycle = match &managed_lifecycle {
         Some(control) => ControllerLifecycle::Managed(control.clone()),
         None => ControllerLifecycle::Foreground(lifecycle),
@@ -619,7 +505,6 @@ async fn run(
         FileAttentionHistoryV1::open(&args.state_dir.join("attention-inbox"))
             .map_err(|error| anyhow::anyhow!("attention inbox is unavailable: {error:?}"))?,
     );
-    #[cfg(feature = "cli-operator-preview")]
     let room_operations = RoomSetupOperationsV1::new(
         room_creation.clone(),
         task_setup.clone(),
@@ -627,23 +512,19 @@ async fn run(
         agent_profiles.clone(),
         runner_registry,
     );
-    #[cfg(feature = "cli-operator-preview")]
     let room_launch = worldstream_studio_supervisor::room_launch::room_launch_router(
         room_creation.clone(),
         task_setup.clone(),
     );
-    #[cfg(feature = "cli-operator-preview")]
     let scoped_credentials =
         worldstream_studio_supervisor::scoped_connections::scoped_credentials_router(
             task_setup.clone(),
             args.daemon,
         );
-    #[cfg(feature = "cli-operator-preview")]
     let client_handoff =
         worldstream_studio_supervisor::participant_handoff::operator_client_handoff_router(
             participant_handoff.clone(),
         );
-    #[cfg(feature = "cli-operator-preview")]
     let room_runners = worldstream_studio_supervisor::scoped_runners::room_runner_router(
         worldstream_studio_supervisor::scoped_runners::RoomRunnerControlV1::new(
             task_setup.clone(),
@@ -674,7 +555,6 @@ async fn run(
     .merge(managed_agent_host_seat_router(agent_profiles, managed_agent_hosts))
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
-    #[cfg(feature = "cli-operator-preview")]
     let router = router
         .merge(room_setup_operations_router(room_operations))
         .merge(room_launch)
@@ -684,7 +564,6 @@ async fn run(
 
     // Admission must wrap the complete graph, including all late merges and
     // assignment-MCP aliases. No operator routes may be merged after this point.
-    #[cfg(feature = "cli-operator-preview")]
     if let Some(lease) = managed_lease.as_mut() {
         let proof = lease
             .publish_endpoint(listener.local_addr()?)
@@ -711,11 +590,10 @@ async fn run(
         .await
         .context("managed Controller server failed");
     }
-    #[cfg(feature = "cli-operator-preview")]
     let router = protect_operator_routes(router, control);
     axum::serve(listener, router)
         .await
-        .context("Studio Supervisor server failed")
+        .context("Controller server failed")
 }
 
 fn parse_secret_reference(value: &str) -> Result<SecretReferenceV1, &'static str> {

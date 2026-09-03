@@ -1,19 +1,10 @@
 # Operator CLI contract
 
-This is the additive `worldstreamctl` interface frozen by IMO-135 and
-[ADR 0018](adr/0018-cli-first-operator-surface.md). Existing commands continue
-to work. The new commands below form the approved contract. A command whose
-backend is still pending returns `not_implemented` with exit status 3, without
-reading configuration or starting services. Help listing a command does not
-mean its backend is available. The [ticket plan](cli-first-ticket-plan.md)
-records implementation progress.
-
-During implementation, the internal `cli-operator-preview` Cargo feature
-enables completed replacement slices together. It is not a second supported
-installation mode. The default build keeps the current Studio path until the
-CLI-only acceptance and cutover gates pass. The cutover must remove this
-temporary feature boundary and the unauthenticated startup branch; disabling
-default features must not restore an authentication bypass.
+This is the authenticated `worldstreamctl` interface frozen by IMO-135 and
+[ADR 0018](adr/0018-cli-first-operator-surface.md). The CLI-first commands are
+part of the default build. The retired internal preview feature is not an
+installation mode and must not appear in runnable instructions. The
+[ticket plan](cli-first-ticket-plan.md) records the completed cutover.
 
 ## Compatibility and output
 
@@ -118,8 +109,8 @@ The controller credential belongs to the local operating-system owner. It is
 not a Runtime Host, Membership, Runner, or model-provider credential. The CLI
 loads it from protected local state for a control request; it does not accept
 it as an argument or print it. The controller listens only on a literal
-loopback address with a nonzero port. Loopback reachability, cookies, and a
-Studio Origin header are not operator authentication.
+loopback address with a nonzero port. Loopback reachability, cookies, and an
+Activity Client Origin header are not operator authentication.
 
 Control rotation changes only this controller credential. Existing controller
 instances read the current protected record for each authenticated request,
@@ -230,8 +221,8 @@ The exact local HTTP origin is retained with the Controller configuration.
 Omission reuses it; fresh installations and older records default to
 `http://127.0.0.1:5173`. A conflicting explicit origin is rejected before
 starting or reusing a Controller. Origins have no trailing slash or path;
-`http://127.0.0.1:5174` remains reserved for the legacy Studio origin until
-retirement. This setting neither starts a Client Host nor changes approved
+`http://127.0.0.1:5174` is the retired historical Studio origin. This setting
+neither starts a Client Host nor changes approved
 Deployment URLs. Review/import matching launch URLs separately, and configure
 the client build's `VITE_WORLDSTREAM_SUPERVISOR_URL` for a nondefault Controller.
 
@@ -345,7 +336,7 @@ Human and agent credential delivery remain separate from administration.
 An agent can require a Membership credential and a Runner-control credential;
 export these separately. Exports require a protected file destination and
 never silently overwrite it. `client open` launches only an approved compatible
-client through a one-use handoff, not a fabricated Studio Origin header.
+client through a one-use handoff, not a fabricated browser Origin header.
 
 ### Connect participants, then launch
 

@@ -51,6 +51,12 @@ const CALLBACK_NATIVE_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum concurrent compilation attempts across this process.
 pub const COMPILE_CONCURRENCY_LIMIT: usize = 1;
+/// Whether Cranelift may compile one admitted Component across worker threads.
+///
+/// Admission remains serialized by [`COMPILE_CONCURRENCY_LIMIT`]. Parallelism
+/// is internal to that one verified Component and does not change its bytes or
+/// the deterministic execution settings.
+pub const COMPONENT_PARALLEL_COMPILATION: bool = true;
 /// Maximum concurrent portable callbacks across this process.
 pub const CALLBACK_CONCURRENCY_LIMIT: usize = 4;
 /// Fuel installed in every fresh callback Store.
@@ -101,7 +107,7 @@ impl ComponentPackHostV1 {
             .consume_fuel(true)
             .max_wasm_stack(COMPONENT_MAX_WASM_STACK_BYTES)
             .cranelift_nan_canonicalization(true)
-            .parallel_compilation(false);
+            .parallel_compilation(COMPONENT_PARALLEL_COMPILATION);
         let engine = Engine::new(&config).map_err(|_| ComponentHostErrorV1::ComponentRejected)?;
         Ok(Self { engine })
     }

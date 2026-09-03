@@ -35,13 +35,13 @@ daemon-specific credentials or querying arbitrary Rooms.
 Use the [MCP agent runbook](#/agents/mcp). The managed reference host is a
 post-MVP convenience, not the kernel's interoperability boundary.
 
-## 4. Presentation: Studio and product UI
+## 4. Presentation: independent clients
 
-Studio is the local host-operator portal and client launcher. Participant UI
+The CLI is the local host-operator surface and client launcher. Participant UI
 belongs to an independently executing Activity Client—a browser, terminal,
 mobile, SDK-based, or agent-owned application—and receives only
 Membership-authorized responses. An Activity Pack is headless and never ships
-a React component into Studio. Presentation may group or label facts, but must
+a React component into the Controller. Presentation may group or label facts, but must
 not invent canonical state, collapse integrity and freshness into one status,
 or duplicate Activity Pack legality logic.
 
@@ -62,7 +62,7 @@ Before adding a new feature, ask:
 
 A new kernel behavior should first exist as a storage-neutral contract and
 black-box scenario. Then implement SQLite and PostgreSQL adapters, add protocol
-surfaces, and finally add Studio/UI convenience. Do not make a browser workflow
+surfaces, and finally add client convenience. Do not make a browser workflow
 the only proof of a canonical invariant.
 
 Primary source: [architecture invariants](https://github.com/imom39a/worldstream/blob/main/docs/architecture.md#architecture-invariants),

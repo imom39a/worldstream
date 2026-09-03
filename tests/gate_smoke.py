@@ -1472,12 +1472,14 @@ def test_release_job_bootstraps_pinned_gate_toolchain_before_release_gate():
     assert "actions/setup-node@" in release
     assert "corepack install" in release
     assert release.index("uv python install 3.14.7") < release.index(
-        "scripts/gates.py release --ci --strict"
+        "scripts/gates.py release --release-inventory"
     )
     assert "id-token: write" in release
     assert "id-token: write" not in workflow[: workflow.index("  release-evidence:")]
     assert (
-        "scripts/gates.py release --ci --strict --report reports/release-gate.json "
+        "scripts/gates.py release --release-inventory "
+        '"$WORLDSTREAM_RELEASE_INVENTORY" --ci --strict '
+        "--report reports/release-gate.json "
         "--handoff reports/release-evidence-handoff.json --offline" in release
     )
 
@@ -1853,6 +1855,58 @@ def test_detached_inventory_binds_exact_artifact_and_evidence_maps(tmp_path):
         outcome.name == "release-detached-inventory" and outcome.status == "FAIL"
         for outcome in runner.outcomes
     )
+
+
+def test_detached_cli_first_inventory_is_explicit_and_excludes_only_studio():
+    gates = load_gates()
+    profile = gates.INVENTORY.CLI_FIRST
+    artifact_ids = set(profile.release_artifact_ids)
+    metadata = {
+        "schema": profile.manifest_schema,
+        "release_inventory": profile.identity,
+        "product": "0.1.0",
+        "source_version": "0.1.0",
+        "manifest": {
+            "source": "compatibility.toml",
+            "mirror": "compatibility.json",
+            "sha256": gates.hashlib.sha256(gates.MIRROR_PATH.read_bytes()).hexdigest(),
+        },
+        "artifacts": {
+            artifact_id: f"artifacts/{artifact_id}.bin" for artifact_id in artifact_ids
+        },
+        "artifact_digests": {
+            artifact_id: "sha256:" + "1" * 64
+            for artifact_id in artifact_ids
+            if artifact_id != "sigstore-bundle"
+        },
+        "evidence": {"evidence-a": "evidence/evidence-a.json"},
+        "evidence_digests": {"evidence-a": "sha256:" + "2" * 64},
+        "verification_material": {
+            "sigstore-bundle": {"path": "artifacts/sigstore-bundle.bin"}
+        },
+    }
+    manifest = {
+        "release_candidate": "0.1.0",
+        "evidence": [{"id": "evidence-a", "release_gate": True}],
+    }
+
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    assert gates.detached_release_inventory(runner, metadata, manifest) is not None
+    assert "worldstream-participant-console" in metadata["artifacts"]
+    assert "worldstream-studio" not in metadata["artifacts"]
+
+    missing_discriminator = dict(metadata)
+    missing_discriminator.pop("release_inventory")
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    assert (
+        gates.detached_release_inventory(runner, missing_discriminator, manifest)
+        is None
+    )
+
+    cross_version = dict(metadata)
+    cross_version["schema"] = gates.INVENTORY.LEGACY.manifest_schema
+    runner = gates.GateRunner(strict=True, offline=True, ci=False)
+    assert gates.detached_release_inventory(runner, cross_version, manifest) is None
 
 
 def test_spdx_subject_identity_requires_exact_detached_subjects():

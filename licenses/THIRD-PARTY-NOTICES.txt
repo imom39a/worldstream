@@ -1618,6 +1618,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ===== END NOTICE sha256:0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f =====
 
+===== BEGIN NOTICE sha256:0faa6031b55341fc671734ff4f052dc06f3684935eccb03ddd90530d8b31b5cb =====
+Component: cargo:rustix@0.38.44
+Declared license: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:0faa6031b55341fc671734ff4f052dc06f3684935eccb03ddd90530d8b31b5cb =====
+
+===== BEGIN NOTICE sha256:0fe34a84a21811b9d46d46a05f0ae9701f51cb491971f2fa7c66002f92f6b523 =====
+Component: cargo:linux-raw-sys@0.4.15
+Declared license: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:0fe34a84a21811b9d46d46a05f0ae9701f51cb491971f2fa7c66002f92f6b523 =====
+
 ===== BEGIN NOTICE sha256:0fef0ed38e03851254952d87b38f55721ee502b949f177aa3b79babf58444164 =====
 Component: cargo:http-body-util@0.1.5
 Declared license: MIT
@@ -13915,6 +13927,28 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ===== END NOTICE sha256:898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1 =====
 
+===== BEGIN NOTICE sha256:89a0f9662c20fc93a9c6d25aee58c7d6073f1538e92b8fa668a3aed60b0beda3 =====
+Copyright (c) 2015 Markus Unterwaditzer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+===== END NOTICE sha256:89a0f9662c20fc93a9c6d25aee58c7d6073f1538e92b8fa668a3aed60b0beda3 =====
+
 ===== BEGIN NOTICE sha256:89ba312f423b030f57fc673bc07f3a066928c156be482cad7ccf1ba5bf771888 =====
 Component: cargo:wasmtime-internal-versioned-export-macros@48.0.1
 Declared license: Apache-2.0 WITH LLVM-exception
@@ -18541,6 +18575,12 @@ Component: npm:@emnapi/core@1.11.1
 Declared license: MIT
 Source: https://registry.npmjs.org/@emnapi%2Fcore/-/core-1.11.1.tgz
 ===== END NOTICE sha256:c4c6a57f27c87216c2132c595961ac2056483c7a6204bf59d2bb1c2098fb0298 =====
+
+===== BEGIN NOTICE sha256:c501d56a7b696d2550c3388ca8273b2a4074a12d5cd85fe9369fe9365982f626 =====
+Component: cargo:atomicwrites@0.4.4
+Declared license: MIT
+Source: registry+https://github.com/rust-lang/crates.io-index
+===== END NOTICE sha256:c501d56a7b696d2550c3388ca8273b2a4074a12d5cd85fe9369fe9365982f626 =====
 
 ===== BEGIN NOTICE sha256:c58432d07748ea982f156d4f0b78373be730468b664253589bae4f3732cb7921 =====
 Component: cargo:tracing-log@0.2.0

@@ -33,6 +33,7 @@ export interface PendingPreparation {
   readonly offer: NegotiateActionOffer;
   readonly binding: NegotiateOfferBinding;
   readonly basedOnRoomSequence: number;
+  readonly pack: NegotiateReadyState["pack"];
 }
 
 const IDLE_RECEIPT: NegotiateActionReceipt = {
@@ -218,6 +219,7 @@ function requestPreparation(
     offer,
     binding,
     basedOnRoomSequence: state.roomSequence,
+    pack: { ...state.pack },
   };
   window.dispatchEvent(new CustomEvent("worldstream:negotiate-action-requested", {
     detail: {
@@ -225,6 +227,7 @@ function requestPreparation(
       action_type: binding.actionType,
       payload_schema_digest: binding.schemaDigest,
       based_on_room_seq: state.roomSequence,
+      pack: state.pack,
     },
   }));
 }
@@ -237,14 +240,20 @@ export function preparedActionMatches(
   readonly action_type: string;
   readonly payload_schema_digest: string;
   readonly based_on_room_seq: number;
+  readonly pack: NegotiateReadyState["pack"];
   readonly payload: JsonValue;
 } {
   const candidate = record(value);
-  return Object.keys(candidate).length === 5
+  const pack = record(candidate.pack);
+  return Object.keys(candidate).length === 6
+    && Object.keys(pack).length === 3
     && candidate.request_id === pending.requestId
     && candidate.action_type === pending.binding.actionType
     && candidate.payload_schema_digest === pending.binding.schemaDigest
     && candidate.based_on_room_seq === pending.basedOnRoomSequence
+    && pack.id === pending.pack.id
+    && pack.version === pending.pack.version
+    && pack.digest === pending.pack.digest
     && Object.hasOwn(candidate, "payload");
 }
 
@@ -253,6 +262,9 @@ export function preparationMatchesCurrentState(
   current: NegotiateReadyState,
 ): boolean {
   return current.roomSequence === pending.basedOnRoomSequence
+    && current.pack.id === pending.pack.id
+    && current.pack.version === pending.pack.version
+    && current.pack.digest === pending.pack.digest
     && current.offerBindings.some((binding) => (
       binding.offerId === pending.binding.offerId
       && binding.actionType === pending.binding.actionType

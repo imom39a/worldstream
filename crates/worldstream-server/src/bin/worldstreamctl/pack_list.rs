@@ -2,10 +2,12 @@
 
 use super::cli_contract::CommandOptions;
 use serde::Serialize;
-use std::{env, io, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, env, io, path::PathBuf, time::Duration};
 use worldstream_pack_bundle::{InstalledPackBundleV1, PackBundleStoreV1, PackInstallStateV1};
 use worldstream_runtime::{CliOverrides, ConfigLoader};
-use worldstream_server::{CommonConfigArgs, StartupPackFactsV1};
+use worldstream_server::{
+    CommonConfigArgs, StartupPackFactsV1, empty_startup_pack_inventory_digest,
+};
 use worldstream_studio_supervisor::operator_connection::OperatorConnection;
 
 #[derive(Debug, Serialize)]
@@ -52,6 +54,11 @@ pub struct PackListSummary {
     pub pending_changes: Option<bool>,
 }
 
+struct LocalInventory {
+    entries: Vec<InstalledPackBundleV1>,
+    readiness_inventory_digest: Option<String>,
+}
+
 impl PackListSummary {
     #[must_use]
     pub const fn complete(&self) -> bool {
@@ -69,12 +76,18 @@ impl PackListSummary {
                     entries.len()
                 )?;
                 for entry in entries {
+                    let selection = if running_embeds_revision(
+                        &self.running,
+                        &entry.revision_digest.to_string(),
+                    ) {
+                        "shadowed-by-embedded"
+                    } else {
+                        selection_label(entry.install_state)
+                    };
                     writeln!(
                         output,
                         "  {}  revision={}  next-start={}",
-                        entry.bundle_digest,
-                        entry.revision_digest,
-                        selection_label(entry.install_state)
+                        entry.bundle_digest, entry.revision_digest, selection
                     )?;
                 }
             }
@@ -143,30 +156,49 @@ const fn selection_label(state: PackInstallStateV1) -> &'static str {
 }
 
 pub fn execute(options: &CommandOptions, config: &CommonConfigArgs) -> PackListSummary {
-    let installed = local_inventory(config).map_or(InstalledInventory::Unavailable, |entries| {
-        InstalledInventory::Available {
-            evidence: InventoryEvidence::UnverifiedMetadata,
-            entries,
-        }
-    });
+    let local = local_inventory(config);
+    let installed = local
+        .as_ref()
+        .map_or(InstalledInventory::Unavailable, |local| {
+            InstalledInventory::Available {
+                evidence: InventoryEvidence::UnverifiedMetadata,
+                entries: local.entries.clone(),
+            }
+        });
+    let running = running_inventory(options);
+    let embedded = running_embedded_revisions(&running);
     let next_start = match &installed {
         InstalledInventory::Available { entries, .. } => NextStartInventory::Available {
             evidence: InventoryEvidence::UnverifiedMetadata,
             selectable_bundle_digests: entries
                 .iter()
-                .filter(|entry| entry.install_state == PackInstallStateV1::Selectable)
+                .filter(|entry| {
+                    entry.install_state == PackInstallStateV1::Selectable
+                        && !embedded.contains(&entry.revision_digest.to_string())
+                })
                 .map(|entry| entry.bundle_digest.to_string())
                 .collect(),
             readiness_verified: false,
         },
         InstalledInventory::Unavailable => NextStartInventory::Unavailable,
     };
-    let running = running_inventory(options);
     let pending_changes = match (&installed, &running) {
         (InstalledInventory::Available { entries, .. }, RunningInventory::Available { facts }) => {
+            let effective = entries
+                .iter()
+                .filter(|entry| !embedded.contains(&entry.revision_digest.to_string()))
+                .collect::<Vec<_>>();
+            let current_inventory_digest = if entries.is_empty() {
+                empty_startup_pack_inventory_digest().ok()
+            } else {
+                local
+                    .as_ref()
+                    .and_then(|value| value.readiness_inventory_digest.clone())
+            };
             Some(
-                entries.len() != facts.installed.len()
-                    || entries
+                current_inventory_digest.as_deref() != Some(facts.inventory_digest.as_str())
+                    || effective.len() != facts.installed.len()
+                    || effective
                         .iter()
                         .zip(&facts.installed)
                         .any(|(desired, loaded)| {
@@ -186,7 +218,28 @@ pub fn execute(options: &CommandOptions, config: &CommonConfigArgs) -> PackListS
     }
 }
 
-fn local_inventory(config: &CommonConfigArgs) -> Option<Vec<InstalledPackBundleV1>> {
+fn running_embedded_revisions(running: &RunningInventory) -> BTreeSet<String> {
+    match running {
+        RunningInventory::Available { facts } => facts
+            .embedded_revisions
+            .iter()
+            .map(|pack| pack.digest.clone())
+            .collect(),
+        RunningInventory::Unavailable | RunningInventory::Stale => BTreeSet::new(),
+    }
+}
+
+fn running_embeds_revision(running: &RunningInventory, revision_digest: &str) -> bool {
+    match running {
+        RunningInventory::Available { facts } => facts
+            .embedded_revisions
+            .iter()
+            .any(|pack| pack.digest == revision_digest),
+        RunningInventory::Unavailable | RunningInventory::Stale => false,
+    }
+}
+
+fn local_inventory(config: &CommonConfigArgs) -> Option<LocalInventory> {
     let selected = config
         .config
         .clone()
@@ -208,7 +261,20 @@ fn local_inventory(config: &CommonConfigArgs) -> Option<Vec<InstalledPackBundleV
     // Validation observes existing paths only; missing state is not initialized.
     let data =
         worldstream_runtime::validate_data_directory(&configuration.storage.data_dir).ok()?;
-    PackBundleStoreV1::read_inventory_metadata(&data.join("activity-packs")).ok()
+    let root = data.join("activity-packs");
+    let entries = PackBundleStoreV1::read_inventory_metadata(&root).ok()?;
+    let readiness_inventory_digest = if entries.is_empty() {
+        None
+    } else {
+        PackBundleStoreV1::read_startup_readiness(&root)
+            .ok()
+            .flatten()
+            .map(|seal| seal.inventory_digest)
+    };
+    Some(LocalInventory {
+        entries,
+        readiness_inventory_digest,
+    })
 }
 
 fn running_inventory(options: &CommandOptions) -> RunningInventory {

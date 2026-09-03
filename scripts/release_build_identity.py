@@ -7,12 +7,14 @@ import ast
 import base64
 import binascii
 import hashlib
+import importlib.util
 import json
 import math
 import os
 import re
 import stat
 import subprocess
+import sys
 import tarfile
 import zipfile
 from datetime import datetime, timezone
@@ -21,6 +23,16 @@ from typing import Any
 from urllib.parse import quote
 
 import tomllib
+
+INVENTORY_PATH = Path(__file__).with_name("release_inventory.py")
+INVENTORY_SPEC = importlib.util.spec_from_file_location(
+    "worldstream_release_build_inventory", INVENTORY_PATH
+)
+if INVENTORY_SPEC is None or INVENTORY_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot load {INVENTORY_PATH}")
+INVENTORY = importlib.util.module_from_spec(INVENTORY_SPEC)
+sys.modules[INVENTORY_SPEC.name] = INVENTORY
+INVENTORY_SPEC.loader.exec_module(INVENTORY)
 
 BUILD_IDENTITY_SCHEMA = "worldstream/release-build-identity/v2"
 REPOSITORY = "https://github.com/imom39a/worldstream"
@@ -31,6 +43,16 @@ BUILD_TYPE_EXAMPLE_PATH = (
     "docs/build-types/pre-sign-subject-aggregation-v4.example.json"
 )
 BUILD_TYPE = f"urn:worldstream:build-type:sha256:{BUILD_TYPE_SHA256}"
+CLI_FIRST_BUILD_TYPE_PATH = "docs/build-types/pre-sign-subject-aggregation-v5.md"
+CLI_FIRST_BUILD_TYPE_EXAMPLE_PATH = (
+    "docs/build-types/pre-sign-subject-aggregation-v5.example.json"
+)
+CLI_FIRST_BUILD_TYPE_SHA256 = (
+    "34097c7d9b4c3f3bf93724365f294acead66f7825fe54217059a52f0781d5853"
+)
+CLI_FIRST_BUILD_TYPE = (
+    f"urn:worldstream:build-type:sha256:{CLI_FIRST_BUILD_TYPE_SHA256}"
+)
 WITHDRAWN_BUILD_TYPE_V3 = (
     f"{REPOSITORY}/blob/9a130028c0631e1eaff2f57037e2c8b3b0659ac8/"
     "docs/build-types/pre-sign-subject-aggregation-v3.md"
@@ -167,6 +189,10 @@ PROVENANCE_MATERIAL_PATHS = (
     "scripts/verify-secret-absence.py",
     "web/console/live-browser-story.sh",
 )
+CLI_FIRST_AGGREGATION_MATERIAL_PATHS = (
+    CLI_FIRST_BUILD_TYPE_PATH,
+    "scripts/release_inventory.py",
+)
 SOURCE_ENTRY_PATHS = tuple(
     dict.fromkeys((*PINNED_MATERIAL_PATHS, *PROVENANCE_MATERIAL_PATHS))
 )
@@ -186,20 +212,7 @@ PAYLOAD_TARGETS = {
     "native-windows-x64-archive": "windows-x64",
     "oci-linux-amd64-image": "oci-linux-amd64",
 }
-PORTABLE_SUBJECT_ARTIFACT_IDS = (
-    "worldstream-a202-adapter",
-    "worldstream-deterministic-agents",
-    "worldstream-documentation",
-    "worldstream-examples",
-    "worldstream-licenses",
-    "worldstream-negotiate-bundle",
-    "worldstream-negotiate-evidence-verifier",
-    "worldstream-pack-toolchain",
-    "worldstream-participant-console",
-    "worldstream-release-metadata",
-    "worldstream-studio",
-    "worldstream-typescript-pack-sdk",
-)
+PORTABLE_SUBJECT_ARTIFACT_IDS = INVENTORY.LEGACY.portable_subject_artifact_ids
 TARGET_TRIPLES = {
     "source": "source",
     "linux-x86_64": "x86_64-unknown-linux-musl",
@@ -252,12 +265,12 @@ PAYLOAD_STEP_CONTRACTS = {
     ("native", "Build Linux release archive"): {
         "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-linux-x86_64' }}",
         "shell": "bash",
-        "sha256": "a6ead5dc8ff3ae176450e1b988c0007fdbc623e20314d5a420b0269d09b09a68",
+        "sha256": "97798511b8717603b58f3d5e6ed93663b8bae75225e5e13b17186538aeb2a410",
     },
     ("native", "Build Windows release archive"): {
         "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'native-windows-x64' }}",
         "shell": "pwsh",
-        "sha256": "5a5beebefc6903e2af00692392e5aeacb4d1c14250cb431e41a4e62113d55dd2",
+        "sha256": "43e01cf9a3fe269ca655c36be118d3a96f04f5708fb66492a1062f8904c35f8e",
     },
     ("native", "Build and test OCI release image"): {
         "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' && matrix.platform == 'oci-linux-amd64' }}",
@@ -267,17 +280,17 @@ PAYLOAD_STEP_CONTRACTS = {
     ("release-evidence", "Build and verify source archive from the clean checkout"): {
         "if": "${{ github.event_name == 'workflow_dispatch' && inputs.release == true && github.ref == 'refs/heads/main' }}",
         "shell": "bash",
-        "sha256": "8866c226189412847dc9bda17156ab7dfb7826d89b6686f85cc23714fd6b0a47",
+        "sha256": "57afe38554b7783252679af47946effaba760da45f1bd57da9acd4266efdb774",
     },
 }
 OCI_SETUP_STEP_SHA256 = (
     "cdb0942efb3e5fe8953c93c031a215c0469e99342c679d1494cfa497591f59bd"
 )
 RELEASE_SIGNING_JOB_SHA256 = (
-    "c10b251ee07833e5de348c642af8e4042493c536036f3e670c4b9cf8fcda844d"
+    "218b5a741d7c00f4ce39695b462a7c33a1f625ef7d88e3e5de0eb6fefc1774ce"
 )
 RELEASE_MANIFEST_SIGNING_JOB_SHA256 = (
-    "881e60913a2c55b21648de9b26bc41a5eeb0d537afd0e289250c01ec5598ba7f"
+    "b3efac850433edbe96f235bb6ad510810e05c5e7cc5aaf76e03e14113f9c8250"
 )
 SLSA_EXECUTION_STEP_CONTRACTS = {
     (
@@ -319,7 +332,7 @@ SLSA_EXECUTION_STEP_CONTRACTS = {
     (
         "packaged-backend-release",
         "Run package-bound browser Heist plus six backend cells",
-    ): "07e831c71a0190d0caf723b9445dba2ace9c09948168509e4fce45547b39b452",
+    ): "efcbc21a54fc56c7aca8ccd951a2936f7b8f0963682a89848785940b9c8fdc8e",
     (
         "reference-performance-release",
         "Build the source-bound snapshot-tail fixture generator",
@@ -327,7 +340,7 @@ SLSA_EXECUTION_STEP_CONTRACTS = {
     (
         "reference-performance-release",
         "Verify and extract the unique packaged reference daemon",
-    ): "d6291847a79c040f79b0100b28a407167dd7ee808672a576a1670331adcfeb19",
+    ): "2ae18e58ac2917aa88fd983a5af1e569e3e194da45049040bc6db6d47396eeb9",
     (
         "reference-performance-release",
         "Run the exact frozen packaged reference-target workload",
@@ -343,7 +356,7 @@ SLSA_EXECUTION_STEP_CONTRACTS = {
     (
         "release-evidence",
         "Produce and verify unsigned subject inventory, SPDX SBOM, and SLSA provenance",
-    ): "0f417a20a3505289ff9f4b936db79df621c2f050769cd40431ea08c831e9f643",
+    ): "b9b7b520149da39ca51f40b4f41af4cb50f1165fb96e0a94a418ad44e23fb857",
     (
         "release-verify",
         "Enable pinned pnpm and install byte-pinned scanners",
@@ -595,6 +608,18 @@ def reject(message: str) -> None:
     raise IdentityError(message)
 
 
+def inventory_contract(release_inventory: str | None = None):
+    try:
+        return INVENTORY.resolve(release_inventory)
+    except ValueError as error:
+        raise IdentityError(str(error)) from error
+
+
+def build_type_for(release_inventory: str | None = None) -> str:
+    profile = inventory_contract(release_inventory)
+    return BUILD_TYPE if profile is INVENTORY.LEGACY else CLI_FIRST_BUILD_TYPE
+
+
 def canonical_json(value: object) -> bytes:
     return (
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -827,13 +852,23 @@ def pinned_materials_from_source(entries: dict[str, bytes]) -> dict[str, str]:
     return materials
 
 
-def validate_build_type_material(entries: dict[str, bytes]) -> None:
+def validate_build_type_material(
+    entries: dict[str, bytes], release_inventory: str | None = None
+) -> None:
     """Require the active immutable build-type definition's exact published bytes."""
 
-    content = entries.get(BUILD_TYPE_PATH)
-    if not isinstance(content, bytes) or sha256_bytes(content) != BUILD_TYPE_SHA256:
+    profile = inventory_contract(release_inventory)
+    path = BUILD_TYPE_PATH if profile is INVENTORY.LEGACY else CLI_FIRST_BUILD_TYPE_PATH
+    expected = (
+        BUILD_TYPE_SHA256
+        if profile is INVENTORY.LEGACY
+        else CLI_FIRST_BUILD_TYPE_SHA256
+    )
+    content = entries.get(path)
+    if not isinstance(content, bytes) or sha256_bytes(content) != expected:
         reject(
-            "active build-type definition differs from its immutable published bytes"
+            f"build-type v{profile.build_type_version} definition differs from "
+            "its immutable published bytes"
         )
 
 
@@ -980,10 +1015,16 @@ def cargo_arguments(target: str) -> list[str]:
     return arguments
 
 
-def package_arguments(target: str, epoch: int) -> list[str]:
+def package_arguments(
+    target: str, epoch: int, release_inventory: str | None = None
+) -> list[str]:
     if target == "oci-linux-amd64":
         return ["oci-context", "--source-date-epoch", str(epoch)]
-    return ["package", "--target", target, "--source-date-epoch", str(epoch)]
+    arguments = ["package", "--target", target, "--source-date-epoch", str(epoch)]
+    profile = inventory_contract(release_inventory)
+    if profile.serialized_discriminator:
+        arguments.extend(("--release-inventory", profile.identity))
+    return arguments
 
 
 def _is_absolute_tool_path(value: str, target: str) -> bool:
@@ -1477,7 +1518,9 @@ def build_identity(
     manifest_sha256: str,
     base_image: str | None = None,
     observed_build_environment: dict[str, Any] | None = None,
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
+    profile = inventory_contract(release_inventory)
     if target not in TARGET_TRIPLES:
         reject(f"unsupported release build target: {target}")
     if GIT_REVISION.fullmatch(revision) is None:
@@ -1567,7 +1610,7 @@ def build_identity(
         "compiler": compiler,
         "arguments": {
             "cargo": cargo_arguments(target),
-            "package": package_arguments(target, source_date_epoch),
+            "package": package_arguments(target, source_date_epoch, profile.identity),
         },
         "materials": materials,
         "manifest_sha256": "sha256:" + manifest_sha256,
@@ -1600,6 +1643,7 @@ def validate_build_identity(
     manifest_sha256: str,
     base_image: str | None = None,
     require_hosted_environment: bool = False,
+    release_inventory: str | None = None,
 ) -> None:
     observed_build_environment = value.get("observed_build_environment")
     toolchains = toolchains_from_materials(source_entries)
@@ -1617,6 +1661,7 @@ def validate_build_identity(
         manifest_sha256=manifest_sha256,
         base_image=base_image,
         observed_build_environment=observed_build_environment,
+        release_inventory=release_inventory,
     )
     if value != expected:
         reject(
@@ -1630,6 +1675,7 @@ def validate_build_identity_shape(
     target: str,
     manifest_sha256: str,
     source_date_epoch: int,
+    release_inventory: str | None = None,
 ) -> None:
     """Validate a standalone archive identity before the source payload is available."""
 
@@ -1683,7 +1729,7 @@ def validate_build_identity_shape(
     arguments = value.get("arguments")
     if arguments != {
         "cargo": cargo_arguments(target),
-        "package": package_arguments(target, source_date_epoch),
+        "package": package_arguments(target, source_date_epoch, release_inventory),
     }:
         reject("archive build identity arguments are not canonical")
     toolchains = value.get("toolchains")
@@ -1876,7 +1922,9 @@ def oci_config_labels(path: Path) -> dict[str, str]:
 
 
 def release_payload_identities(
-    payloads: dict[str, Path], version: str
+    payloads: dict[str, Path],
+    version: str,
+    release_inventory: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, bytes]]:
     if set(payloads) != set(PAYLOAD_TARGETS):
         reject("release build identity requires exactly all four payloads")
@@ -1923,6 +1971,7 @@ def release_payload_identities(
             source_date_epoch=identity.get("source_date_epoch"),
             manifest_sha256=manifest_sha,
             require_hosted_environment=True,
+            release_inventory=release_inventory,
         )
         identities[artifact_id] = identity
 
@@ -3324,6 +3373,16 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
         gates = source_entries["scripts/gates.py"].decode("utf-8")
     except (KeyError, UnicodeError) as error:
         raise IdentityError("release workflow route materials are missing") from error
+    if (
+        workflow.splitlines().count(
+            "  WORLDSTREAM_RELEASE_INVENTORY: "
+            "worldstream/release-inventory/cli-first-v1"
+        )
+        != 1
+        or workflow.count('--release-inventory "$WORLDSTREAM_RELEASE_INVENTORY"') != 17
+        or workflow.count("--release-inventory $env:WORLDSTREAM_RELEASE_INVENTORY") != 4
+    ):
+        reject("release workflow CLI-first inventory selection drifted")
 
     self_hosted = (
         "runs-on: [self-hosted, linux, x64, "
@@ -3697,7 +3756,10 @@ def validate_workflow_producer_contract(source_entries: dict[str, bytes]) -> Non
             reject(f"release workflow final assembly flag drifted: {flag}")
     verify_lines = workflow_run_lines(blocks["release-verify"])
     if (
-        verify_lines.count("scripts/verify-release.sh dist") != 1
+        verify_lines.count(
+            'scripts/verify-release.sh dist --release-inventory "$WORLDSTREAM_RELEASE_INVENTORY"'
+        )
+        != 1
         or sum(
             line.startswith(
                 "uv run --python 3.14.7 --no-project python scripts/gates.py release"
@@ -3836,12 +3898,15 @@ def portable_subject_basename(version: str, artifact_id: str) -> str:
 
 
 def portable_subject_rows(
-    release_subjects: dict[str, Path], version: str
+    release_subjects: dict[str, Path],
+    version: str,
+    release_inventory: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Bind the twelve deterministic Starter subjects without claiming compilation."""
+    """Bind the profile's deterministic subjects without claiming compilation."""
 
+    profile = inventory_contract(release_inventory)
     rows: list[dict[str, Any]] = []
-    for artifact_id in PORTABLE_SUBJECT_ARTIFACT_IDS:
+    for artifact_id in profile.portable_subject_artifact_ids:
         subject = portable_subject_basename(version, artifact_id)
         path = release_subjects.get(subject)
         if path is None:
@@ -3898,14 +3963,17 @@ def provenance_graph(
     identities: dict[str, dict[str, Any]],
     source_entries: dict[str, bytes],
     invocation_parameters: dict[str, Any] | None = None,
+    release_inventory: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    profile = inventory_contract(release_inventory)
     validate_workflow_producer_contract(source_entries)
+    validate_build_type_material(source_entries, profile.identity)
     if invocation_parameters is None:
         invocation_parameters = local_invocation_parameters()
     validate_invocation_parameters(invocation_parameters, require_github=False)
     expected_subject_count = (
         len(PAYLOAD_TARGETS)
-        + len(PORTABLE_SUBJECT_ARTIFACT_IDS)
+        + len(profile.portable_subject_artifact_ids)
         + len(EVIDENCE_UPSTREAM_JOBS)
     )
     if len(release_subjects) != expected_subject_count:
@@ -3960,7 +4028,7 @@ def provenance_graph(
                 ),
             }
         )
-    portable_rows = portable_subject_rows(release_subjects, version)
+    portable_rows = portable_subject_rows(release_subjects, version, profile.identity)
     payload_subject_names = set(names.values()) | {
         row["subject"] for row in portable_rows
     }
@@ -3989,6 +4057,14 @@ def provenance_graph(
         for relative in PROVENANCE_MATERIAL_PATHS
     )
     dependencies.extend(workflow_action_dependencies(source_entries))
+    if profile.serialized_discriminator:
+        dependencies.extend(
+            {
+                "uri": f"file:{relative}",
+                "digest": {"sha256": sha256_bytes(source_entries[relative])},
+            }
+            for relative in CLI_FIRST_AGGREGATION_MATERIAL_PATHS
+        )
     base = expected_base_image(source_entries)
     for image in (
         base,
@@ -4043,7 +4119,7 @@ def provenance_graph(
         "resolvedDependencies": dependencies,
     }
     aggregation_result = {
-        "schema": RELEASE_AGGREGATION_SCHEMA,
+        "schema": profile.aggregation_schema,
         "operation": "validate-and-copy",
         "product": version,
         "source_revision": revision,
@@ -4056,12 +4132,19 @@ def provenance_graph(
         "source_date_epoch": identities["source-archive"]["source_date_epoch"],
         "toolchains": identities["source-archive"]["toolchains"],
     }
+    if profile.serialized_discriminator:
+        aggregation_result["release_inventory"] = profile.identity
+        build_definition["externalParameters"]["release_inventory"] = profile.identity
     return build_definition, aggregation_result
 
 
 def aggregation_byproduct(value: dict[str, Any]) -> dict[str, Any]:
     """Encode the derived aggregation graph as a SLSA ResourceDescriptor."""
 
+    try:
+        profile = INVENTORY.identity_from_aggregation(value)
+    except ValueError as error:
+        raise IdentityError(str(error)) from error
     expected_fields = {
         "schema",
         "operation",
@@ -4075,26 +4158,37 @@ def aggregation_byproduct(value: dict[str, Any]) -> dict[str, Any]:
         "source_date_epoch",
         "toolchains",
     }
+    if profile.serialized_discriminator:
+        expected_fields.add("release_inventory")
+    expected_subject_count = (
+        len(PAYLOAD_TARGETS)
+        + len(profile.portable_subject_artifact_ids)
+        + len(EVIDENCE_UPSTREAM_JOBS)
+    )
     if (
         set(value) != expected_fields
-        or value.get("schema") != RELEASE_AGGREGATION_SCHEMA
+        or value.get("schema") != profile.aggregation_schema
         or value.get("operation") != "validate-and-copy"
-        or value.get("subject_count") != 33
+        or value.get("subject_count") != expected_subject_count
         or GIT_REVISION.fullmatch(value.get("source_revision", "")) is None
         or SHA256_REF.fullmatch(value.get("component_graph_sha256", "")) is None
         or not isinstance(value.get("payload_producers"), list)
         or len(value["payload_producers"]) != 4
         or not isinstance(value.get("portable_subject_producers"), list)
-        or len(value["portable_subject_producers"]) != 12
+        or len(value["portable_subject_producers"])
+        != len(profile.portable_subject_artifact_ids)
         or not isinstance(value.get("evidence_producers"), list)
         or len(value["evidence_producers"]) != 17
     ):
         reject("SLSA aggregation byproduct is malformed")
     content = canonical_json(value)
+    version = "v2" if profile is INVENTORY.LEGACY else "v3"
     return {
-        "name": "worldstream-release-aggregation-v2.json",
+        "name": f"worldstream-release-aggregation-{version}.json",
         "digest": {"sha256": sha256_bytes(content)},
-        "mediaType": "application/vnd.worldstream.release-aggregation.v2+json",
+        "mediaType": (
+            f"application/vnd.worldstream.release-aggregation.{version}+json"
+        ),
         "content": base64.b64encode(content).decode("ascii"),
     }
 
@@ -4116,11 +4210,11 @@ def runner_byproduct(identity: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_type_example_digest(label: str) -> str:
+def _build_type_example_digest(label: str, build_type_version: int = 4) -> str:
     """Return a stable illustrative digest that cannot be mistaken for a build."""
 
     return "sha256:" + sha256_bytes(
-        f"worldstream-build-type-v4-example:{label}".encode()
+        f"worldstream-build-type-v{build_type_version}-example:{label}".encode()
     )
 
 
@@ -4211,6 +4305,8 @@ def _build_type_example_identity(
     revision: str,
     source_date_epoch: int,
     manifest_sha256: str,
+    build_type_version: int = 4,
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
     toolchains = json.loads(json.dumps(toolchains_from_materials(source_entries)))
     if target in {"linux-x86_64", "oci-linux-amd64"}:
@@ -4224,7 +4320,7 @@ def _build_type_example_identity(
         target, rustc_version=toolchains["rustc"]["version"]
     )
     materials = {
-        relative: _build_type_example_digest(f"material:{relative}")
+        relative: _build_type_example_digest(f"material:{relative}", build_type_version)
         for relative in PINNED_MATERIAL_PATHS
     }
     compiler = (
@@ -4270,7 +4366,7 @@ def _build_type_example_identity(
         "compiler": compiler,
         "arguments": {
             "cargo": cargo_arguments(target),
-            "package": package_arguments(target, source_date_epoch),
+            "package": package_arguments(target, source_date_epoch, release_inventory),
         },
         "materials": materials,
         "manifest_sha256": "sha256:" + manifest_sha256,
@@ -4282,17 +4378,24 @@ def _build_type_example_identity(
         target=target,
         manifest_sha256=manifest_sha256,
         source_date_epoch=source_date_epoch,
+        release_inventory=release_inventory,
     )
     return identity
 
 
-def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
-    """Build the complete deterministic documentation example for build type v4."""
+def _build_type_example(
+    source_entries: dict[str, bytes], release_inventory: str | None = None
+) -> dict[str, Any]:
+    """Build a complete deterministic example for one inventory generation."""
 
+    profile = inventory_contract(release_inventory)
+    validate_build_type_material(source_entries, profile.identity)
     revision = "0123456789abcdef0123456789abcdef01234567"
     version = _product_version(source_entries)
     source_date_epoch = 0
-    manifest_sha256 = _build_type_example_digest("manifest").removeprefix("sha256:")
+    manifest_sha256 = _build_type_example_digest(
+        "manifest", profile.build_type_version
+    ).removeprefix("sha256:")
     identities = {
         artifact_id: _build_type_example_identity(
             target,
@@ -4300,6 +4403,8 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
             revision=revision,
             source_date_epoch=source_date_epoch,
             manifest_sha256=manifest_sha256,
+            build_type_version=profile.build_type_version,
+            release_inventory=profile.identity,
         )
         for artifact_id, target in PAYLOAD_TARGETS.items()
     }
@@ -4313,7 +4418,9 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
     for artifact_id in PAYLOAD_TARGETS:
         identity = identities[artifact_id]
         subject = payload_names[artifact_id]
-        subject_sha256 = _build_type_example_digest(f"subject:{subject}")
+        subject_sha256 = _build_type_example_digest(
+            f"subject:{subject}", profile.build_type_version
+        )
         upstream_job, configured_runner = PAYLOAD_UPSTREAM_JOBS[artifact_id]
         payload_rows.append(
             {
@@ -4350,13 +4457,15 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
             }
         )
     portable_rows = []
-    for artifact_id in PORTABLE_SUBJECT_ARTIFACT_IDS:
+    for artifact_id in profile.portable_subject_artifact_ids:
         subject = portable_subject_basename(version, artifact_id)
         portable_rows.append(
             {
                 "artifact_id": artifact_id,
                 "subject": subject,
-                "subject_sha256": _build_type_example_digest(f"subject:{subject}"),
+                "subject_sha256": _build_type_example_digest(
+                    f"subject:{subject}", profile.build_type_version
+                ),
                 "input_uri": f"file:release-inputs/payload/{subject}",
                 "producer_id": "starter-release-subjects/v1",
                 "upstream_job": "release-evidence",
@@ -4375,7 +4484,9 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
             {
                 **spec,
                 "subject": subject,
-                "subject_sha256": _build_type_example_digest(f"subject:{subject}"),
+                "subject_sha256": _build_type_example_digest(
+                    f"subject:{subject}", profile.build_type_version
+                ),
                 "input_uri": (f"file:release-inputs/source-reports/{evidence_id}.json"),
                 "upstream_job": upstream_job,
                 "configured_runners": list(configured_runners),
@@ -4407,7 +4518,7 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
                 "uri": f"file:{relative}",
                 "digest": {
                     "sha256": _build_type_example_digest(
-                        f"provenance-material:{relative}"
+                        f"provenance-material:{relative}", profile.build_type_version
                     ).removeprefix("sha256:")
                 },
             }
@@ -4415,6 +4526,19 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
         ),
         *workflow_action_dependencies(source_entries),
     ]
+    if profile.serialized_discriminator:
+        dependencies.extend(
+            {
+                "uri": f"file:{relative}",
+                "digest": {
+                    "sha256": _build_type_example_digest(
+                        f"aggregation-material:{relative}",
+                        profile.build_type_version,
+                    ).removeprefix("sha256:")
+                },
+            }
+            for relative in CLI_FIRST_AGGREGATION_MATERIAL_PATHS
+        )
     for image in (
         expected_base_image(source_entries),
         expected_buildkit_image(source_entries),
@@ -4443,11 +4567,15 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
     components.extend(apk_component_packages(source_entries))
     components.sort(key=lambda item: item["SPDXID"])
     aggregation = {
-        "schema": RELEASE_AGGREGATION_SCHEMA,
+        "schema": profile.aggregation_schema,
         "operation": "validate-and-copy",
         "product": version,
         "source_revision": revision,
-        "subject_count": 33,
+        "subject_count": (
+            len(PAYLOAD_TARGETS)
+            + len(profile.portable_subject_artifact_ids)
+            + len(EVIDENCE_UPSTREAM_JOBS)
+        ),
         "component_graph_sha256": "sha256:" + sha256_bytes(canonical_json(components)),
         "evidence_producers": evidence_rows,
         "payload_producers": payload_rows,
@@ -4470,49 +4598,48 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
         "image": "ubuntu24",
         "image_version": "20990101.1.0",
     }
+    if profile.serialized_discriminator:
+        aggregation["release_inventory"] = profile.identity
+    external_parameters = {
+        "trigger": {
+            "event": "workflow_dispatch",
+            "ref": "refs/heads/main",
+            "inputs": {"release": True},
+        },
+        "source": {
+            "repository": REPOSITORY,
+            "ref": "refs/heads/main",
+        },
+        "manifest_inputs": [
+            "file:compatibility.toml",
+            "file:compatibility.json",
+        ],
+        "payload_inputs": [
+            {"artifact_id": row["artifact_id"], "uri": row["input_uri"]}
+            for row in sorted(payload_rows, key=lambda item: item["artifact_id"])
+        ],
+        "portable_subject_inputs": [
+            {
+                "artifact_id": row["artifact_id"],
+                "uri": row["input_uri"],
+            }
+            for row in sorted(portable_rows, key=lambda item: item["artifact_id"])
+        ],
+        "evidence_inputs": [
+            {"source_id": row["source_id"], "uri": row["input_uri"]}
+            for row in sorted(evidence_rows, key=lambda item: item["source_id"])
+        ],
+    }
+    if profile.serialized_discriminator:
+        external_parameters["release_inventory"] = profile.identity
     return {
         "_type": "https://in-toto.io/Statement/v1",
         "subject": subject_rows,
         "predicateType": "https://slsa.dev/provenance/v1",
         "predicate": {
             "buildDefinition": {
-                "buildType": BUILD_TYPE,
-                "externalParameters": {
-                    "trigger": {
-                        "event": "workflow_dispatch",
-                        "ref": "refs/heads/main",
-                        "inputs": {"release": True},
-                    },
-                    "source": {
-                        "repository": REPOSITORY,
-                        "ref": "refs/heads/main",
-                    },
-                    "manifest_inputs": [
-                        "file:compatibility.toml",
-                        "file:compatibility.json",
-                    ],
-                    "payload_inputs": [
-                        {"artifact_id": row["artifact_id"], "uri": row["input_uri"]}
-                        for row in sorted(
-                            payload_rows, key=lambda item: item["artifact_id"]
-                        )
-                    ],
-                    "portable_subject_inputs": [
-                        {
-                            "artifact_id": row["artifact_id"],
-                            "uri": row["input_uri"],
-                        }
-                        for row in sorted(
-                            portable_rows, key=lambda item: item["artifact_id"]
-                        )
-                    ],
-                    "evidence_inputs": [
-                        {"source_id": row["source_id"], "uri": row["input_uri"]}
-                        for row in sorted(
-                            evidence_rows, key=lambda item: item["source_id"]
-                        )
-                    ],
-                },
+                "buildType": build_type_for(profile.identity),
+                "externalParameters": external_parameters,
                 "internalParameters": {},
                 "resolvedDependencies": dependencies,
             },
@@ -4526,6 +4653,18 @@ def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
             },
         },
     }
+
+
+def build_type_v4_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
+    """Build the exact historical build type v4 example."""
+
+    return _build_type_example(source_entries, INVENTORY.LEGACY.identity)
+
+
+def build_type_v5_example(source_entries: dict[str, bytes]) -> dict[str, Any]:
+    """Build the active CLI-first build type v5 example."""
+
+    return _build_type_example(source_entries, INVENTORY.CLI_FIRST.identity)
 
 
 def validate_build_type_v4_example(
@@ -4544,9 +4683,32 @@ def validate_build_type_v4_example(
     if value != build_type_v4_example(source_entries):
         reject("build-type v4 example differs from the canonical illustrative graph")
     if BUILD_TYPE in {WITHDRAWN_BUILD_TYPE_V2, WITHDRAWN_BUILD_TYPE_V3}:
-        reject("active build type must not equal a superseded Type URI")
+        reject("historical v4 build type must not equal a superseded Type URI")
     if BUILD_TYPE != f"urn:worldstream:build-type:sha256:{BUILD_TYPE_SHA256}":
-        reject("active build type is not content-addressed to its exact definition")
+        reject(
+            "historical v4 build type is not content-addressed to its exact definition"
+        )
+
+
+def validate_build_type_v5_example(
+    value: object, source_entries: dict[str, bytes]
+) -> None:
+    """Require the active CLI-first example to be the exact complete v5 graph."""
+
+    validate_build_type_material(source_entries, INVENTORY.CLI_FIRST.identity)
+    if not isinstance(value, dict) or set(value) != {
+        "_type",
+        "subject",
+        "predicateType",
+        "predicate",
+    }:
+        reject("build-type v5 example is not a closed in-toto Statement")
+    if value != build_type_v5_example(source_entries):
+        reject("build-type v5 example differs from the canonical illustrative graph")
+    if CLI_FIRST_BUILD_TYPE != (
+        f"urn:worldstream:build-type:sha256:{CLI_FIRST_BUILD_TYPE_SHA256}"
+    ):
+        reject("build type v5 is not content-addressed to its exact definition")
 
 
 def build_type_v2_tombstone() -> dict[str, Any]:
@@ -4787,7 +4949,9 @@ def validate_identity_documents(
     subjects_by_relative: dict[str, Path],
     payloads_by_id: dict[str, Path],
     require_github: bool,
+    release_inventory: str | None = None,
 ) -> None:
+    profile = inventory_contract(release_inventory)
     if set(provenance) != {"_type", "subject", "predicateType", "predicate"}:
         reject("SLSA provenance Statement has unknown or missing fields")
     if (
@@ -4820,7 +4984,9 @@ def validate_identity_documents(
         "resolvedDependencies",
     }:
         reject("SLSA buildDefinition has unknown or missing fields")
-    identities, source_entries = release_payload_identities(payloads_by_id, version)
+    identities, source_entries = release_payload_identities(
+        payloads_by_id, version, profile.identity
+    )
     revision = identities["source-archive"]["source"]["revision"]
     expected_packages, expected_relationships, expected_describes = spdx_graph(
         version=version,
@@ -4902,8 +5068,9 @@ def validate_identity_documents(
         identities=identities,
         source_entries=source_entries,
         invocation_parameters=invocation_parameters,
+        release_inventory=profile.identity,
     )
-    if definition.get("buildType") != BUILD_TYPE:
+    if definition.get("buildType") != build_type_for(profile.identity):
         reject("SLSA buildType is not the WorldStream release build")
     for field, expected in expected_graph.items():
         if definition.get(field) != expected:

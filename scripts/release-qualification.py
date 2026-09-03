@@ -26,7 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "worldstream/release-qualification-manifest/v1"
 EVIDENCE_SCHEMA = "worldstream/release-qualification-evidence/v1"
 SUMMARY_SCHEMA = "worldstream/outside-adopter-qualification/v1"
-RELEASE_SCHEMA = "worldstream/release-artifact-manifest/v2"
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -70,6 +69,11 @@ STARTER = load_module(
     "worldstream_qualification_starter_verifier",
     ROOT / "scripts/starter-distribution.py",
 )
+INVENTORY = load_module(
+    "worldstream_qualification_release_inventory",
+    ROOT / "scripts/release_inventory.py",
+)
+RELEASE_SCHEMA = INVENTORY.LEGACY.manifest_schema
 
 
 def canonical_json(value: object) -> bytes:
@@ -94,6 +98,13 @@ def strict_json(content: bytes, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail(f"{label} must be a JSON object")
     return value
+
+
+def validate_release_identity(value: dict[str, Any], label: str) -> None:
+    try:
+        INVENTORY.identity_from_manifest(value)
+    except ValueError as error:
+        raise QualificationError(f"{label} identity is unsupported: {error}") from error
 
 
 def regular_bytes(path: Path, label: str, maximum: int) -> bytes:
@@ -176,8 +187,7 @@ def validate_release_inputs(release_dir: Path) -> tuple[dict[str, Any], bytes, b
         signature_path, "release Sigstore bundle", MAX_JSON_BYTES
     )
     manifest = strict_json(manifest_bytes, "signed release manifest")
-    if manifest.get("schema") != RELEASE_SCHEMA:
-        fail("signed release manifest schema is unsupported")
+    validate_release_identity(manifest, "signed release manifest")
     try:
         ASSEMBLER.verify_sigstore_signature(
             manifest_path, signature_path, "primary release manifest"
@@ -529,6 +539,8 @@ def validate_layout(root: Path, *, require_signature: bool) -> dict[str, Any]:
     )
     if release.get("sha256") != sha256_ref(release_bytes):
         fail("bound release manifest bytes were substituted")
+    bound_release = strict_json(release_bytes, "bound release manifest")
+    validate_release_identity(bound_release, "bound release manifest")
     if require_signature:
         try:
             ASSEMBLER.verify_sigstore_signature(

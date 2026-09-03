@@ -288,10 +288,15 @@ def preflight_archive(archive_path: pathlib.Path, version: str) -> None:
             )
 
 
-def canonical_verify_archive(archive_path: pathlib.Path) -> None:
+def canonical_verify_archive(
+    archive_path: pathlib.Path, release_inventory: str | None = None
+) -> None:
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            PACKAGE.verify_archive(archive_path)
+            if release_inventory is None:
+                PACKAGE.verify_archive(archive_path)
+            else:
+                PACKAGE.verify_archive(archive_path, release_inventory)
     except (PACKAGE.PackageError, OSError, ValueError, tarfile.TarError) as error:
         raise ExtractionError(
             f"canonical package archive verification failed: {error}"
@@ -422,6 +427,7 @@ def extract(
     manifest_toml: pathlib.Path,
     manifest_json: pathlib.Path,
     sdk_output: pathlib.Path | None = None,
+    release_inventory: str | None = None,
 ) -> dict[str, Any]:
     input_destinations = {
         archive_path.resolve(strict=False),
@@ -467,7 +473,7 @@ def extract(
             snapshot_archive, snapshot_report, manifest_toml, manifest_json
         )
         preflight_archive(snapshot_archive, identity["version"])
-        canonical_verify_archive(snapshot_archive)
+        canonical_verify_archive(snapshot_archive, release_inventory)
         archive_sha256 = sha256_file(snapshot_archive)
         package_report_sha256 = sha256_file(snapshot_report)
         try:
@@ -568,6 +574,11 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--manifest-json", type=pathlib.Path, default=pathlib.Path("compatibility.json")
     )
+    command.add_argument(
+        "--release-inventory",
+        choices=tuple(PACKAGE.INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves historical verification",
+    )
     return command
 
 
@@ -581,6 +592,7 @@ def main() -> int:
             args.manifest_toml,
             args.manifest_json,
             args.sdk_output,
+            args.release_inventory,
         )
     except (ExtractionError, OSError, UnicodeError, json.JSONDecodeError) as error:
         print(f"safe package extraction failed: {error}", file=sys.stderr)

@@ -1,6 +1,6 @@
 #![cfg_attr(test, allow(clippy::panic, clippy::unwrap_used))]
 
-use std::{fs, path::Path, sync::Arc};
+use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -111,7 +111,14 @@ pub fn assemble_startup_pack_registry(
     let inventory = store.load_startup_inventory()?;
     let inventory_counts = inventory.counts();
     let inventory_digest = startup_pack_inventory_digest(&inventory)?;
+    let host = ComponentPackHostV1::new()?;
+    // Official portable Packs remain outside the immutable Runtime
+    // Distribution. Operators admit their exact Bundles through inventory.
     let embedded = builtin_worldstream_registry()?;
+    let embedded_revision_digests = embedded
+        .catalog_revisions()
+        .map(|revision| revision.revision_digest)
+        .collect::<BTreeSet<_>>();
     let facts = StartupPackFactsV1 {
         schema: "worldstream/startup-pack-facts/v1".into(),
         inventory_digest: inventory_digest.clone(),
@@ -126,6 +133,7 @@ pub fn assemble_startup_pack_registry(
         installed: inventory
             .entries()
             .iter()
+            .filter(|entry| !embedded_revision_digests.contains(entry.bundle().revision_digest()))
             .map(|entry| crate::operator_packs::PackInventoryEntryV1 {
                 pack_id: entry.bundle().descriptor().pack_id.clone(),
                 explanatory_version: entry.bundle().descriptor().explanatory_version.clone(),
@@ -137,11 +145,13 @@ pub fn assemble_startup_pack_registry(
     };
     let embedded_revisions = embedded.len();
     let base_distribution_identity = distribution_identity(&embedded)?;
-    let host = ComponentPackHostV1::new()?;
     let mut portable = Vec::with_capacity(inventory_counts.installed);
 
     for entry in inventory.into_entries() {
         let (installed, bundle) = entry.into_parts();
+        if embedded_revision_digests.contains(bundle.revision_digest()) {
+            continue;
+        }
         let status = match installed.install_state {
             PackInstallStateV1::Selectable => PackRegistryStatusV1 {
                 selectable_for_new_rooms: true,
@@ -211,9 +221,8 @@ struct PackDeploymentBindingIdentityV1 {
 pub(crate) fn startup_pack_inventory_digest(
     inventory: &PackBundleStartupInventoryV1,
 ) -> Result<String, CanonicalJsonError> {
-    let identity = StartupPackInventoryIdentityV1 {
-        schema: STARTUP_PACK_INVENTORY_ID,
-        entries: inventory
+    startup_pack_inventory_identity_digest(
+        inventory
             .entries()
             .iter()
             .map(|entry| StartupPackInventoryEntryIdentityV1 {
@@ -224,6 +233,24 @@ pub(crate) fn startup_pack_inventory_digest(
                 install_state: entry.installed().install_state,
             })
             .collect(),
+    )
+}
+
+/// Returns the frozen identity of an empty installed Bundle inventory.
+///
+/// The read-only CLI uses this value when both current metadata and the
+/// startup snapshot are empty; a nonempty inventory must instead carry its
+/// target-bound readiness seal before it can equal running facts.
+pub fn empty_startup_pack_inventory_digest() -> Result<String, CanonicalJsonError> {
+    startup_pack_inventory_identity_digest(Vec::new())
+}
+
+fn startup_pack_inventory_identity_digest(
+    entries: Vec<StartupPackInventoryEntryIdentityV1>,
+) -> Result<String, CanonicalJsonError> {
+    let identity = StartupPackInventoryIdentityV1 {
+        schema: STARTUP_PACK_INVENTORY_ID,
+        entries,
     };
     let serialized = serde_json::to_vec(&identity)
         .map_err(|error| CanonicalJsonError::Serialization(error.to_string()))?;
@@ -344,7 +371,6 @@ mod tests {
             .unwrap_or_else(|error| panic!("startup registry: {error}"));
         let expected = builtin_worldstream_registry()
             .unwrap_or_else(|error| panic!("embedded registry: {error}"));
-
         assert_eq!(startup.registry().len(), expected.len());
         assert_eq!(startup.diagnostics().embedded_revisions, expected.len());
         assert_eq!(startup.diagnostics().installed_bundles, 0);

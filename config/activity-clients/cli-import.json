@@ -3,6 +3,7 @@
   "release_files": [
     "./releases/agent-heist-web.json",
     "./releases/negotiate-web.json",
+    "./releases/negotiate-web-v2.json",
     "./releases/inspector-web.json"
   ],
   "bindings_file": "./local-bindings.json"

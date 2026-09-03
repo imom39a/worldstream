@@ -27,7 +27,7 @@ services publicly.
 
 ### SQLite authority bootstrap conflicts after restart
 
-This failure commonly appears when Studio starts the daemon after
+This failure commonly appears when the Controller starts the Runtime after
 `.worldstream/authority.secret` was regenerated but `.worldstream/data` still
 contains the database bound to the previous secret:
 
@@ -57,7 +57,7 @@ Stop the daemon before recovery, then choose one path:
   mkdir -m 700 .worldstream/data
   ```
 
-  Start the daemon again from Studio. The archived directory remains available
+  Start the Runtime again with `worldstreamctl server start`. The archived directory remains available
   if it is needed for later investigation.
 
 The [quickstart](#/quickstart) reuses an existing secret instead of overwriting
@@ -76,15 +76,14 @@ Use an owner-only local filesystem path. Symlinks, broad secret permissions,
 path substitution, existing backup destinations, and unsupported filesystems
 may fail closed by design.
 
-## Studio
+## Controller and Activity Clients
 
-### Studio loads but requests fail
+### Controller requests fail
 
-Verify the Supervisor at `127.0.0.1:9420` and the Vite `/api` proxy. Check the
-browser origin values. Current local application ports require:
+Verify the Controller at `127.0.0.1:9420`. Check the configured Activity Client
+origin. The current local client host uses:
 
 ```text
---studio-origin http://127.0.0.1:5174
 --participant-console-origin http://127.0.0.1:5173
 ```
 

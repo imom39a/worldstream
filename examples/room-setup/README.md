@@ -2,13 +2,13 @@
 
 These reusable JSON inputs use the [Room Setup Specification editor schema](../../docs/schemas/room-setup-v1.schema.json).
 They are input examples, not installed approvals or retained setup operations.
-The CLI backend is being delivered behind `cli-operator-preview`; an example
-file does not claim that the complete create/connect/launch flow is released.
+The default `worldstreamctl` build supports this setup flow. An example file
+does not install its Pack, client, or Runner prerequisites.
 
 - Agent Heist 0.2.0 uses its existing lobby, one human Navigator, one external
   Agent Insider, and an optional unfilled Broker. Its configuration supplies the
   required Role choice; generic resolution fills the exact schema's constants.
-- Negotiate 0.1.0 uses three external Agents and one human Buyer Approver.
+- Negotiate 0.2.0 uses three external Agents and one human Buyer Approver.
   It starts at creation, not through a generic pause or lobby. Its
   `formation_deadline` is explicit Unix seconds: `4102444800` means
   2100-01-01 00:00:00 UTC. Review and change this absolute deadline before a
@@ -60,11 +60,11 @@ executable settings, approvals, and retained operation state do not belong in
 this specification. Server TOML and prerequisite import declarations remain
 separate inputs.
 
-## Preview CLI flow
+## CLI flow
 
-Use a `worldstreamctl` build with `cli-operator-preview` enabled and an already
-running managed local Controller/Runtime with these exact Pack revisions installed
-and selectable. These commands do not start services or install missing Packs.
+Use the default `worldstreamctl` build and an already running managed local
+Controller and Runtime with these exact Pack revisions installed and selectable.
+These commands do not start services or install missing Packs.
 For a non-default installation, pass the same `--state-dir` and `--controller`
 options used to start it.
 
@@ -72,7 +72,7 @@ options used to start it.
 worldstreamctl room example --pack worldstream.agent-heist@0.2.0 --output heist-setup.json
 worldstreamctl room validate --file heist-setup.json
 
-worldstreamctl room example --pack worldstream.negotiate@0.1.0 --output negotiate-setup.json
+worldstreamctl room example --pack worldstream.negotiate@0.2.0 --output negotiate-setup.json
 worldstreamctl room validate --file negotiate-setup.json
 ```
 
@@ -84,7 +84,7 @@ credentials. Add `--json` for a structured result with bounded field-path errors
 
 This MVP generates only the two reviewed exact revisions above. Other revisions
 or missing choices return an explicit error without creating output. Interactive
-prompts are deferred: `--interactive` is not supported by this preview. A local
+prompts are deferred: `--interactive` is not supported. A local
 write failure can leave an incomplete output file; inspect it before retrying
 with a new output path.
 
@@ -118,7 +118,7 @@ credentials. The original provisioning intent is missing. See the
 [retained-state guidance](../../docs/cli-reference.md#room-setup-and-participation).
 
 Agent Heist 0.2.0 creates a Room in its existing Lobby. Completing setup does not
-launch the Activity or prove participant connection/readiness. Negotiate 0.1.0
+launch the Activity or prove participant connection/readiness. Negotiate 0.2.0
 starts its Activity at Genesis instead: review its absolute `formation_deadline`
 before explicitly acknowledging creation:
 
@@ -127,5 +127,5 @@ worldstreamctl room create --file negotiate-setup.json --acknowledge-start
 ```
 
 Incomplete provisioning does not pause Negotiate's Activity or deadlines. These
-commands cover creation and retained setup only; they do not claim that client
-connection or Runner attachment is available in this preview.
+commands cover creation and retained setup only. Continue with the client and
+Runner connection steps in the [getting-started guide](../../docs/getting-started.md).

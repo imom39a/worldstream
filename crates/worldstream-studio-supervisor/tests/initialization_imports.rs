@@ -1,5 +1,3 @@
-#![cfg(feature = "cli-operator-preview")]
-
 use std::{
     collections::BTreeMap,
     fs,
@@ -362,6 +360,11 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
                 .as_slice(),
         ),
         (
+            "negotiate-v2.json",
+            include_bytes!("../../../config/activity-clients/releases/negotiate-web-v2.json")
+                .as_slice(),
+        ),
+        (
             "bindings.json",
             include_bytes!("../../../config/activity-clients/local-bindings.json").as_slice(),
         ),
@@ -369,7 +372,7 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
         fs::write(directory.path().join(name), bytes)?;
     }
     let declaration = directory.path().join("clients.json");
-    fs::write(&declaration, br#"{"schema":"worldstream/client-declaration-import/v1","release_files":["inspector.json","heist.json","negotiate.json"],"bindings_file":"bindings.json"}"#)?;
+    fs::write(&declaration, br#"{"schema":"worldstream/client-declaration-import/v1","release_files":["inspector.json","heist.json","negotiate.json","negotiate-v2.json"],"bindings_file":"bindings.json"}"#)?;
     let mut request = InitializationImportRequest {
         installation,
         runner_templates: Vec::new(),
@@ -390,11 +393,11 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
             .deployments
             .iter()
             .any(
-                |deployment| deployment.deployment_id == "first-party-negotiate-web"
+                |deployment| deployment.deployment_id == "first-party-negotiate-web-v2"
                     && deployment
                         .surfaces
                         .iter()
-                        .any(|surface| surface.launch_url == "http://127.0.0.1:5173/negotiate/")
+                        .any(|surface| surface.launch_url == "http://127.0.0.1:5173/negotiate-v2/")
             )
     );
     assert!(snapshot(directory.path())? == before);
@@ -409,22 +412,37 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
         ClientDeploymentTrustPolicyV1::AllowExternallyTrusted
     );
     let store = ClientBindingStoreV1::open_installed(&root, policy)?;
-    let selected = store.select(
-        &ClientSelectionRequestV1 {
-            pack: ExactPackReferenceV1 {
-                id: "worldstream.negotiate".to_owned(),
-                version: "0.1.0".to_owned(),
-                digest: "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589"
-                    .to_owned(),
+    for (version, digest, binding, launch_url) in [
+        (
+            "0.1.0",
+            "blake3:a62585c88ffebe0b2222f5f93e17de1e9cbb003593eca4891225f75dca985589",
+            "negotiate-0-1-spectator-web",
+            "http://127.0.0.1:5173/negotiate/",
+        ),
+        (
+            "0.2.0",
+            "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c",
+            "negotiate-0-2-spectator-web",
+            "http://127.0.0.1:5173/negotiate-v2/",
+        ),
+    ] {
+        let selected = store.select(
+            &ClientSelectionRequestV1 {
+                pack: ExactPackReferenceV1 {
+                    id: "worldstream.negotiate".to_owned(),
+                    version: version.to_owned(),
+                    digest: digest.to_owned(),
+                },
+                client_contract: "worldstream/activity-client-protocol/v1".to_owned(),
+                access_mode: AccessMode::Spectator,
+                role: None,
             },
-            client_contract: "worldstream/activity-client-protocol/v1".to_owned(),
-            access_mode: AccessMode::Spectator,
-            role: None,
-        },
-        None,
-    )?;
-    assert!(matches!(selected, ClientSelectionV1::Selected { candidate }
-        if candidate.launch_url == "http://127.0.0.1:5173/negotiate/"));
+            None,
+        )?;
+        assert!(matches!(selected, ClientSelectionV1::Selected { candidate }
+            if candidate.candidate_id == binding
+                && candidate.launch_url == launch_url));
+    }
     let after = snapshot(directory.path())?;
     assert_eq!(apply_imports(&request)?.reused_client_declarations.len(), 1);
     assert!(snapshot(directory.path())? == after);

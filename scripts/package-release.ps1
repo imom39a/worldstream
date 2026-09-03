@@ -27,10 +27,13 @@ if ($LASTEXITCODE -ne 0 -or $ActualPython -ne $ExpectedPython) {
 if ($LASTEXITCODE -ne 0) { throw "release packaging failed with exit code $LASTEXITCODE" }
 if ($PackageArgs -contains '--dry-run') { exit 0 }
 $Target = $null
+$ReleaseInventory = $null
 $Output = Join-Path $WorkspaceDir 'dist'
 for ($Index = 0; $Index -lt $PackageArgs.Count; $Index++) {
     if ($PackageArgs[$Index] -eq '--target') { $Target = $PackageArgs[++$Index] }
     elseif ($PackageArgs[$Index] -like '--target=*') { $Target = $PackageArgs[$Index].Substring(9) }
+    elseif ($PackageArgs[$Index] -eq '--release-inventory') { $ReleaseInventory = $PackageArgs[++$Index] }
+    elseif ($PackageArgs[$Index] -like '--release-inventory=*') { $ReleaseInventory = $PackageArgs[$Index].Substring(20) }
     elseif ($PackageArgs[$Index] -eq '--output') { $Output = $PackageArgs[++$Index] }
     elseif ($PackageArgs[$Index] -like '--output=*') { $Output = $PackageArgs[$Index].Substring(9) }
 }
@@ -47,6 +50,10 @@ if (-not (Test-Path -LiteralPath $Artifact -PathType Leaf)) { throw "packaging d
 $ReportArgs = [System.Collections.Generic.List[string]]::new()
 $ReportArgs.Add('report')
 $ReportArgs.Add($Artifact)
+if ($null -ne $ReleaseInventory) {
+    $ReportArgs.Add('--release-inventory')
+    $ReportArgs.Add($ReleaseInventory)
+}
 if ($null -ne $ReportPath) {
     $ReportArgs.Add('--report')
     $ReportArgs.Add($ReportPath)

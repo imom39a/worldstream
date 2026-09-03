@@ -621,9 +621,27 @@ impl PackBundleStoreV1 {
     pub fn startup_readiness(
         &self,
     ) -> Result<Option<PackStartupReadinessSealV1>, PackBundleErrorV1> {
-        let path = self.readiness_path();
-        if !path.exists() {
-            return Ok(None);
+        Self::read_startup_readiness(&self.root)
+    }
+
+    /// Reads a readiness seal without creating or repairing any Pack store
+    /// path. This is the read-only operator-inspection entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns a canonical, filesystem, or validation error for a present but
+    /// malformed seal.
+    pub fn read_startup_readiness(
+        root: &Path,
+    ) -> Result<Option<PackStartupReadinessSealV1>, PackBundleErrorV1> {
+        let path = root.join("restart-readiness-v1.json");
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                return Err(PackBundleErrorV1::InventoryNotCanonical);
+            }
+            Ok(_) => {}
         }
         let seal: PackStartupReadinessSealV1 = read_canonical(&path)?;
         validate_readiness_seal(&seal)?;

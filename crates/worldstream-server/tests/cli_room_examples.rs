@@ -1,5 +1,4 @@
 //! Reviewed examples use one exact-catalog CLI path for both reference Packs.
-#![cfg(feature = "cli-operator-preview")]
 
 use axum::{Json, Router, routing::get};
 use serde_json::{Value, json};
@@ -28,7 +27,7 @@ fn catalogs() -> Result<Vec<Value>, Box<dyn std::error::Error>> {
             .to_bytes()?,
     )?;
     let bundle = PackBundleVerifierV1.inspect(std::sync::Arc::from(include_bytes!(
-        "../../../packs/negotiate/releases/0.1.0/worldstream-negotiate-9033a1aa10ca37c301660b7427d79c4e71d7af59006bc7d51edc4b470c8c2db5.wspack"
+        "../../../packs/negotiate/releases/0.2.0/worldstream-negotiate-83453ea9641f8b16e9b96bf536c5ee932611611817458f130d8b77c7b93ff9a8.wspack"
     ).as_slice()))?;
     assert_eq!(
         bundle.descriptor().configuration_schema.schema_digest,
@@ -126,7 +125,7 @@ async fn reviewed_heist_and_negotiate_examples_can_be_generated_then_validated()
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
         for (selector, filename, seat_count) in [
             ("worldstream.agent-heist@0.2.0", "heist.json", 3),
-            ("worldstream.negotiate@0.1.0", "negotiate.json", 4),
+            ("worldstream.negotiate@0.2.0", "negotiate.json", 4),
         ] {
             let example = cli(
                 &root,

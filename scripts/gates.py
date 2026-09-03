@@ -34,6 +34,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "compatibility.toml"
 MIRROR_PATH = ROOT / "compatibility.json"
+INVENTORY_PATH = ROOT / "scripts/release_inventory.py"
+INVENTORY_SPEC = importlib.util.spec_from_file_location(
+    "worldstream_gate_release_inventory", INVENTORY_PATH
+)
+if INVENTORY_SPEC is None or INVENTORY_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot load release inventory: {INVENTORY_PATH}")
+INVENTORY = importlib.util.module_from_spec(INVENTORY_SPEC)
+sys.modules[INVENTORY_SPEC.name] = INVENTORY
+INVENTORY_SPEC.loader.exec_module(INVENTORY)
 ROOT_PYTHON_TESTS = tuple(
     str(path.relative_to(ROOT)) for path in sorted((ROOT / "tests").glob("*.py"))
 )
@@ -1076,7 +1085,7 @@ def release_evidence_collector_contract():
 
 
 def build_type_contract_gate(runner: GateRunner) -> None:
-    """Validate the active content-addressed build type and historical tombstone."""
+    """Validate both supported content-addressed release build types."""
 
     identity = release_build_identity_verifier()
     try:
@@ -1088,6 +1097,20 @@ def build_type_contract_gate(runner: GateRunner) -> None:
         identity.validate_build_type_v4_example(example, entries)
         if example_bytes != identity.canonical_json(example):
             raise identity.IdentityError("build-type v4 example is not canonical JSON")
+
+        cli_entries = dict(entries)
+        for relative in identity.CLI_FIRST_AGGREGATION_MATERIAL_PATHS:
+            cli_entries[relative] = identity.regular_bytes(
+                ROOT / relative, f"CLI-first source material {relative}"
+            )
+        cli_example_bytes = identity.regular_bytes(
+            ROOT / identity.CLI_FIRST_BUILD_TYPE_EXAMPLE_PATH,
+            "build-type v5 example",
+        )
+        cli_example = identity.strict_json(cli_example_bytes, "build-type v5 example")
+        identity.validate_build_type_v5_example(cli_example, cli_entries)
+        if cli_example_bytes != identity.canonical_json(cli_example):
+            raise identity.IdentityError("build-type v5 example is not canonical JSON")
 
         collector = release_evidence_collector_contract()
         expected_evidence = {
@@ -1126,7 +1149,7 @@ def build_type_contract_gate(runner: GateRunner) -> None:
     else:
         runner.pass_(
             "release-build-type-contract",
-            "content-addressed v4 definition, 33-subject example, and withdrawn v2 tombstone verified",
+            "content-addressed historical v4 and CLI-first v5 definitions, examples, and withdrawn v2 tombstone verified",
         )
 
 
@@ -1204,7 +1227,7 @@ def runtime_pack_contract_gate(runner: GateRunner, manifest: dict[str, Any]) -> 
     else:
         runner.pass_(
             "runtime-pack-release-contract",
-            "official Negotiate Bundle/Component/Core proof, original 14 rows, four expanded release rows, twelve Starter subjects, and three post-sign qualification rows agree",
+            "official Negotiate Bundle/Component/Core proof, original 14 rows, four expanded release rows, historical twelve-subject Starter inventory, and three post-sign qualification rows agree",
         )
 
 
@@ -4010,19 +4033,21 @@ def parse_release_checksums(
 def detached_release_inventory(
     runner: GateRunner, metadata: dict[str, Any], manifest: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]] | None:
-    """Validate the detached v2 release inventory shape and identities.
+    """Validate one versioned detached release inventory and its identities.
 
     The compatibility manifest deliberately contains no archive/evidence
     bytes' SHA-256 values.  This detached document is the sole source of
     release byte identities.  It contains exact path and digest maps for the
-    eight release artifacts plus every release-gated evidence report.
+    selected release-profile artifacts plus every release-gated evidence
+    report.
     """
 
-    if metadata.get("schema") != DETACHED_RELEASE_MANIFEST_SCHEMA:
+    try:
+        profile = INVENTORY.identity_from_manifest(metadata)
+    except ValueError as error:
         runner.fail(
             "release-detached-inventory",
-            "release-manifest.json must use the detached v2 inventory schema; "
-            f"observed={metadata.get('schema')!r}",
+            str(error),
         )
         return None
 
@@ -4084,16 +4109,7 @@ def detached_release_inventory(
                 ),
             )
 
-    release_rows = manifest.get("release_artifacts")
-    expected_artifact_ids = (
-        {
-            row.get("id")
-            for row in release_rows
-            if isinstance(row, dict) and isinstance(row.get("id"), str)
-        }
-        if isinstance(release_rows, list)
-        else set(RELEASE_ARTIFACT_PROFILES)
-    )
+    expected_artifact_ids = set(profile.release_artifact_ids)
     artifact_paths = metadata.get("artifacts")
     artifact_digests = metadata.get("artifact_digests")
     if not isinstance(artifact_paths, dict) or not isinstance(artifact_digests, dict):
@@ -4109,9 +4125,9 @@ def detached_release_inventory(
     ):
         runner.fail(
             "release-detached-inventory",
-            "detached artifact paths must match all compatibility release artifact IDs "
-            "and artifact_digests must match all signed IDs; Sigstore has no digest "
-            "in the manifest",
+            "detached artifact paths must match the selected release inventory and "
+            "artifact_digests must match all signed IDs; Sigstore has no digest in "
+            "the manifest",
         )
 
     verification_material = metadata.get("verification_material")
@@ -4231,7 +4247,7 @@ def detached_release_inventory(
         return None
     runner.pass_(
         "release-detached-inventory",
-        f"detached v2 inventory binds {len(artifact_paths)} artifacts and {len(evidence_paths)} release-gated evidence reports",
+        f"{profile.identity} binds {len(artifact_paths)} artifacts and {len(evidence_paths)} release-gated evidence reports",
     )
     return (
         {str(key): str(value) for key, value in artifact_paths.items()},
@@ -4241,7 +4257,11 @@ def detached_release_inventory(
     )
 
 
-def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> None:
+def verify_release_artifacts(
+    runner: GateRunner,
+    manifest: dict[str, Any],
+    release_inventory: str | None = None,
+) -> None:
     configured_dir = os.environ.get("WORLDSTREAM_RELEASE_DIR")
     release_dir = Path(configured_dir) if configured_dir else ROOT / "dist"
     digest_cache: ReleaseDigestCache = {}
@@ -4276,6 +4296,24 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
     metadata = load_json_object(runner, "release-artifact-manifest", metadata_path)
     if metadata is None:
         return
+
+    try:
+        profile = INVENTORY.identity_from_manifest(metadata)
+    except ValueError:
+        # The detached-inventory validator below emits the exact diagnostic.
+        profile = INVENTORY.LEGACY
+    if release_inventory is not None:
+        try:
+            selected_profile = INVENTORY.resolve(release_inventory)
+        except ValueError as error:
+            runner.fail("release-detached-inventory", str(error))
+        else:
+            if selected_profile is not profile:
+                runner.fail(
+                    "release-detached-inventory",
+                    "release manifest inventory differs from the explicitly selected "
+                    "release inventory",
+                )
 
     product = manifest.get("release_candidate")
     detached = uses_detached_release_identity(manifest)
@@ -4348,11 +4386,23 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
     release_artifact_rows = manifest.get("release_artifacts", [])
     if not isinstance(release_artifact_rows, list):
         release_artifact_rows = []
-    rows = {
+    compatibility_rows = {
         row.get("id"): row
         for row in release_artifact_rows
         if isinstance(row, dict) and isinstance(row.get("id"), str)
     }
+    expected_ids = set(profile.release_artifact_ids)
+    rows = {
+        artifact_id: compatibility_rows[artifact_id]
+        for artifact_id in expected_ids
+        if artifact_id in compatibility_rows
+    }
+    if set(rows) != expected_ids:
+        runner.fail(
+            "release-artifact-manifest",
+            "compatibility manifest omits selected release inventory IDs: "
+            + ",".join(sorted(expected_ids - set(rows))),
+        )
     paths = (
         detached_inventory[0]
         if detached_inventory is not None
@@ -4365,7 +4415,6 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
     )
     evidence_paths = detached_inventory[2] if detached_inventory is not None else {}
     evidence_digests = detached_inventory[3] if detached_inventory is not None else {}
-    expected_ids = set(rows)
     signed_ids = expected_ids - {SIGSTORE_VERIFICATION_ARTIFACT_ID}
     if not isinstance(paths, dict):
         runner.fail(
@@ -4377,7 +4426,7 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
         extra = sorted(set(paths) - expected_ids)
         runner.fail(
             "release-artifact-manifest",
-            "artifact ID identity differs from compatibility inventory: "
+            "artifact ID identity differs from the selected release inventory: "
             + (f"missing={','.join(missing)}" if missing else "")
             + (f"; extra={','.join(extra)}" if extra else ""),
         )
@@ -4392,7 +4441,7 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
         extra = sorted(set(digests) - signed_ids)
         runner.fail(
             "release-artifact-manifest",
-            "signed artifact digest identity differs from compatibility inventory: "
+            "signed artifact digest identity differs from the selected release inventory: "
             + (f"missing={','.join(missing)}" if missing else "")
             + (f"; extra={','.join(extra)}" if extra else ""),
         )
@@ -4467,7 +4516,7 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
             continue
         maximum = (
             MAX_RELEASE_PAYLOAD_BYTES
-            if artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+            if artifact_id in profile.payload_artifact_ids
             else MAX_RELEASE_CONTROL_BYTES
         )
         try:
@@ -4574,9 +4623,9 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
         and row.get("release_gate") is True
         and isinstance(row.get("id"), str)
     )
-    if set(evidence_files) == set(
-        release_evidence_ids
-    ) and CHECKSUM_PAYLOAD_ARTIFACT_IDS.issubset(artifact_files):
+    if set(evidence_files) == set(release_evidence_ids) and set(
+        profile.payload_artifact_ids
+    ).issubset(artifact_files):
         verifier = release_evidence_verifier()
         try:
             verifier.validate_normalized_evidence_reports(
@@ -4589,13 +4638,14 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
                 release_dir,
                 {
                     artifact_id: artifact_files[artifact_id]
-                    for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+                    for artifact_id in profile.payload_artifact_ids
                 },
                 evidence_files,
                 release_evidence_ids,
                 str(product or ""),
                 manifest["contracts"],
                 mirror_digest or "",
+                profile.identity,
             )
         except verifier.AssemblyError as error:
             runner.fail("release-evidence-semantics", str(error))
@@ -4647,7 +4697,7 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
     checksums_relative = artifact_paths.get("checksums")
     payload_subject_relatives = {
         artifact_paths[artifact_id]
-        for artifact_id in CHECKSUM_PAYLOAD_ARTIFACT_IDS
+        for artifact_id in profile.payload_artifact_ids
         if artifact_id in artifact_paths
     }
     evidence_subject_relatives = {
@@ -4821,7 +4871,7 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
     if (
         spdx is not None
         and provenance is not None
-        and CHECKSUM_PAYLOAD_ARTIFACT_IDS.issubset(artifact_files)
+        and set(profile.payload_artifact_ids).issubset(artifact_files)
         and set(subject_paths) == subject_relatives
     ):
         identity = release_build_identity_verifier()
@@ -4838,6 +4888,7 @@ def verify_release_artifacts(runner: GateRunner, manifest: dict[str, Any]) -> No
                     for artifact_id in BUILD_IDENTITY_PAYLOAD_ARTIFACT_IDS
                 },
                 require_github=True,
+                release_inventory=profile.identity,
             )
         except identity.IdentityError as error:
             runner.fail("release-build-identity", str(error))
@@ -4931,7 +4982,11 @@ def root_python_suite_required(
 
 
 def run_tier(
-    runner: GateRunner, manifest: dict[str, Any], tier: str, cell: str | None
+    runner: GateRunner,
+    manifest: dict[str, Any],
+    tier: str,
+    cell: str | None,
+    release_inventory: str | None = None,
 ) -> int:
     runner.configure_deadline(manifest, tier)
     release = tier == "release"
@@ -4965,7 +5020,7 @@ def run_tier(
         else:
             process_contract_checks(runner)
         contract_inventory(runner, manifest, release=True)
-        verify_release_artifacts(runner, manifest)
+        verify_release_artifacts(runner, manifest, release_inventory)
         return runner.finish(manifest=manifest, tier=tier)
 
     if tier != "fast":
@@ -5051,6 +5106,11 @@ def parse_args() -> argparse.Namespace:
         "--handoff",
         help="write a manifest-driven release evidence handoff (release tier only)",
     )
+    parser.add_argument(
+        "--release-inventory",
+        choices=tuple(INVENTORY.BY_ID),
+        help="expected release inventory for the release tier",
+    )
     return parser.parse_args()
 
 
@@ -5067,7 +5127,13 @@ def main() -> int:
         report_path=args.report,
         handoff_path=args.handoff,
     )
-    return run_tier(runner, manifest, args.tier, args.cell)
+    return run_tier(
+        runner,
+        manifest,
+        args.tier,
+        args.cell,
+        args.release_inventory if args.tier == "release" else None,
+    )
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@
 use crate::cli_reference::PublicReference;
 use serde::Serialize;
 use std::io::{self, Write};
-#[cfg(feature = "cli-operator-preview")]
 use worldstream_studio_supervisor::initialization_imports::{ImportApplyV1, ImportReviewV1};
 
 /// Process statuses shared by new operator commands.
@@ -124,7 +123,6 @@ struct SetupProgress {
     stage: SetupStage,
 }
 
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Debug, Serialize)]
 struct SetupReceipt {
     operation_id: PublicReference,
@@ -167,7 +165,6 @@ impl CommandStatus {
 }
 
 /// Explicit non-secret local initialization output, not a configuration dump.
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InitializationMode {
@@ -176,7 +173,6 @@ pub enum InitializationMode {
 }
 
 /// Explicit non-secret local initialization output, not a configuration dump.
-#[cfg(feature = "cli-operator-preview")]
 #[derive(Debug, Serialize)]
 pub struct InitializationOutput {
     pub mode: InitializationMode,
@@ -202,77 +198,55 @@ pub struct CommandReport {
     setup: Option<SetupProgress>,
     #[serde(flatten)]
     lifecycle: Option<LifecycleProgress>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     initialization: Option<InitializationOutput>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     import_review: Option<ImportReviewV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     import_apply: Option<ImportApplyV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     server: Option<worldstream_studio_supervisor::managed_lifecycle::LifecycleStatus>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     retained_server:
         Option<worldstream_studio_supervisor::retained_server_inspection::RetainedServerInspection>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     logs: Option<Vec<worldstream_studio_supervisor::managed_lifecycle::LifecycleLogEntry>>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     room_setup: Option<crate::cli_room_setup::RoomSetupSummary>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     setup_issue: Option<worldstream_studio_supervisor::room_setup_spec::RoomSetupError>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     packs: Option<crate::cli_pack_list::PackListSummary>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(flatten)]
     setup_receipt: Option<SetupReceipt>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     room_operation:
         Option<worldstream_studio_supervisor::room_setup_operations::RoomSetupOperationStatusV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     room_operations:
         Option<worldstream_studio_supervisor::room_setup_operations::RoomSetupOperationListV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     rooms: Option<worldstream_studio_supervisor::rooms::StudioRoomInventoryPageV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     room: Option<worldstream_studio_supervisor::rooms::StudioRoomSummaryV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_export: Option<crate::cli_participant_connections::ExportSummary>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     launch_assessment: Option<worldstream_studio_supervisor::room_launch::RoomLaunchAssessmentV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(rename = "room_id", skip_serializing_if = "Option::is_none")]
     launch_target: Option<PublicReference>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     client_open: Option<crate::cli_client_handoff::OpenedClient>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     client_candidates:
         Option<Vec<worldstream_studio_supervisor::participant_handoff::ClientCandidateSummaryV1>>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     runner: Option<worldstream_studio_supervisor::scoped_runners::RoomRunnerStatusV1>,
-    #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     runners: Option<worldstream_studio_supervisor::scoped_runners::RoomRunnerListV1>,
 }
 
 impl CommandReport {
-    #[cfg(feature = "cli-operator-preview")]
     pub fn runner(
         command: &'static str,
         result: crate::cli_runner_adapters::RunnerExecution,
@@ -338,7 +312,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub fn client_open(result: crate::cli_client_handoff::ClientOpenExecution) -> Self {
         use crate::cli_client_handoff::ClientOpenExecution;
         match result {
@@ -377,7 +350,6 @@ impl CommandReport {
         }
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub fn room_launch(result: crate::cli_room_launch::RoomLaunchExecution) -> Self {
         use crate::cli_room_launch::RoomLaunchExecution;
         use worldstream_studio_supervisor::task_setup::TaskLaunchApplicabilityV1;
@@ -424,7 +396,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub fn participant(
         command: &'static str,
         result: crate::cli_participant_connections::ParticipantExecution,
@@ -485,7 +456,6 @@ impl CommandReport {
         }
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub fn room_operation(
         command: &'static str,
         result: crate::cli_room_operations::RoomOperationExecution,
@@ -581,7 +551,6 @@ impl CommandReport {
         }
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     fn room_inspection(
         command: &'static str,
         inspection: crate::cli_room_operations::RoomInspection,
@@ -604,7 +573,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub fn pack_list(summary: crate::cli_pack_list::PackListSummary) -> Self {
         let mut report = Self::new(
             "pack list",
@@ -624,7 +592,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub fn bound_runner_restart_unsupported() -> Self {
         let mut report = Self::new("server restart", CommandOutcome::Rejected);
         report.code = "managed_runner_restart_unsupported";
@@ -634,7 +601,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     pub fn unavailable_server(command: &'static str, state: &std::path::Path) -> Self {
         let mut report = Self::new(command, CommandOutcome::ControllerUnavailable);
         report.retained_server = Some(
@@ -644,7 +610,6 @@ impl CommandReport {
         );
         report
     }
-    #[cfg(feature = "cli-operator-preview")]
     pub fn logs(
         command: &'static str,
         entries: Vec<worldstream_studio_supervisor::managed_lifecycle::LifecycleLogEntry>,
@@ -653,7 +618,6 @@ impl CommandReport {
         report.logs = Some(entries);
         report
     }
-    #[cfg(feature = "cli-operator-preview")]
     pub fn room_setup(
         command: &'static str,
         result: crate::cli_room_setup::RoomSetupExecution,
@@ -680,7 +644,6 @@ impl CommandReport {
             }
         }
     }
-    #[cfg(feature = "cli-operator-preview")]
     pub fn server(
         command: &'static str,
         outcome: CommandOutcome,
@@ -690,7 +653,6 @@ impl CommandReport {
         report.server = Some(server);
         report
     }
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization_import_requires_initialization() -> Self {
         let mut report = Self::new("init", CommandOutcome::Rejected);
@@ -701,7 +663,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization_import_requires_approval() -> Self {
         let mut report = Self::new("init", CommandOutcome::Rejected);
@@ -712,7 +673,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization_import_review(review: ImportReviewV1) -> Self {
         let mut report = Self::new("init", CommandOutcome::Complete);
@@ -723,7 +683,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization_import_apply(applied: ImportApplyV1) -> Self {
         let mut report = Self::new("init", CommandOutcome::Complete);
@@ -732,7 +691,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization_import_incomplete() -> Self {
         let mut report = Self::new("init", CommandOutcome::Failed);
@@ -742,7 +700,6 @@ impl CommandReport {
         report
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization(output: InitializationOutput) -> Self {
         let mut report = Self::new("init", CommandOutcome::Complete);
@@ -863,47 +820,26 @@ impl CommandReport {
             next_action,
             setup,
             lifecycle,
-            #[cfg(feature = "cli-operator-preview")]
             initialization: None,
-            #[cfg(feature = "cli-operator-preview")]
             import_review: None,
-            #[cfg(feature = "cli-operator-preview")]
             import_apply: None,
-            #[cfg(feature = "cli-operator-preview")]
             server: None,
-            #[cfg(feature = "cli-operator-preview")]
             retained_server: None,
-            #[cfg(feature = "cli-operator-preview")]
             logs: None,
-            #[cfg(feature = "cli-operator-preview")]
             room_setup: None,
-            #[cfg(feature = "cli-operator-preview")]
             setup_issue: None,
-            #[cfg(feature = "cli-operator-preview")]
             packs: None,
-            #[cfg(feature = "cli-operator-preview")]
             setup_receipt: None,
-            #[cfg(feature = "cli-operator-preview")]
             room_operation: None,
-            #[cfg(feature = "cli-operator-preview")]
             room_operations: None,
-            #[cfg(feature = "cli-operator-preview")]
             rooms: None,
-            #[cfg(feature = "cli-operator-preview")]
             room: None,
-            #[cfg(feature = "cli-operator-preview")]
             credential_export: None,
-            #[cfg(feature = "cli-operator-preview")]
             launch_assessment: None,
-            #[cfg(feature = "cli-operator-preview")]
             launch_target: None,
-            #[cfg(feature = "cli-operator-preview")]
             client_open: None,
-            #[cfg(feature = "cli-operator-preview")]
             client_candidates: None,
-            #[cfg(feature = "cli-operator-preview")]
             runner: None,
-            #[cfg(feature = "cli-operator-preview")]
             runners: None,
         }
     }
@@ -932,15 +868,12 @@ impl CommandReport {
                 self.status.label(),
                 self.code
             )?;
-            #[cfg(feature = "cli-operator-preview")]
             self.write_initialization_details(stdout)?;
-            #[cfg(feature = "cli-operator-preview")]
             if let Some(server) = &self.server {
                 let document = serde_json::to_string_pretty(server)
                     .map_err(|_| io::Error::other("server status could not be encoded"))?;
                 writeln!(stdout, "{document}")?;
             }
-            #[cfg(feature = "cli-operator-preview")]
             if let Some(retained) = &self.retained_server {
                 let document = serde_json::to_string_pretty(retained).map_err(|_| {
                     io::Error::other("retained server evidence could not be encoded")
@@ -950,29 +883,22 @@ impl CommandReport {
                     "Retained evidence only; this is not live process health.\n{document}"
                 )?;
             }
-            #[cfg(feature = "cli-operator-preview")]
             if let Some(logs) = &self.logs {
                 let document = serde_json::to_string_pretty(logs)
                     .map_err(|_| io::Error::other("server logs could not be encoded"))?;
                 writeln!(stdout, "{document}")?;
             }
-            #[cfg(feature = "cli-operator-preview")]
             if let Some(summary) = &self.room_setup {
                 let document = serde_json::to_string_pretty(summary)
                     .map_err(|_| io::Error::other("setup summary could not be encoded"))?;
                 writeln!(stdout, "{document}")?;
             }
-            #[cfg(feature = "cli-operator-preview")]
             if let Some(packs) = &self.packs {
                 packs.write_human(stdout)?;
             }
-            #[cfg(feature = "cli-operator-preview")]
             self.write_room_details(stdout)?;
-            #[cfg(feature = "cli-operator-preview")]
             self.write_client_details(stdout)?;
-            #[cfg(feature = "cli-operator-preview")]
             self.write_runner_details(stdout)?;
-            #[cfg(feature = "cli-operator-preview")]
             if let Some(export) = &self.credential_export {
                 writeln!(stdout, "Credentials: {}", export.output_file.display())?;
                 writeln!(
@@ -981,7 +907,6 @@ impl CommandReport {
                     export.operation, export.seat
                 )?;
             }
-            #[cfg(feature = "cli-operator-preview")]
             if let Some(issue) = &self.setup_issue {
                 let document = serde_json::to_string(issue)
                     .map_err(|_| io::Error::other("setup diagnostic could not be encoded"))?;
@@ -1004,7 +929,6 @@ impl CommandReport {
         Ok(self.status.exit())
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     fn write_initialization_details(&self, stdout: &mut impl Write) -> io::Result<()> {
         #[allow(
             clippy::unnecessary_debug_formatting,
@@ -1032,7 +956,6 @@ impl CommandReport {
         Ok(())
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     fn write_room_details(&self, stdout: &mut impl Write) -> io::Result<()> {
         if let Some(room) = &self.launch_target {
             writeln!(stdout, "Room: {}", room.as_str())?;
@@ -1095,7 +1018,6 @@ impl CommandReport {
         Ok(())
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     fn write_client_details(&self, stdout: &mut impl Write) -> io::Result<()> {
         if let Some(client) = &self.client_open {
             writeln!(
@@ -1121,7 +1043,6 @@ impl CommandReport {
         Ok(())
     }
 
-    #[cfg(feature = "cli-operator-preview")]
     fn write_runner_details(&self, stdout: &mut impl Write) -> io::Result<()> {
         if let Some(runner) = &self.runner {
             let document = serde_json::to_string_pretty(runner)

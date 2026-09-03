@@ -131,6 +131,19 @@ def write_json(path: Path, value: object) -> Path:
     return path
 
 
+def use_isolated_release_manifest(tmp_path: Path, module) -> None:
+    """Point one diagnostic fixture at a release-ready copy of the contract."""
+
+    release_manifest = tmp_path / "compatibility.release.toml"
+    checked_manifest = (ROOT / "compatibility.toml").read_text(encoding="utf-8")
+    release_contract = checked_manifest.replace(
+        'manifest_kind = "specification"', 'manifest_kind = "release"'
+    ).replace("release_ready = false", "release_ready = true")
+    assert release_contract != checked_manifest
+    release_manifest.write_text(release_contract, encoding="utf-8")
+    module.MANIFEST = release_manifest
+
+
 def gate_report(system: str, outcomes: set[str]) -> dict:
     return {
         "schema": "worldstream/compatibility-gate-report/v1",
@@ -236,6 +249,7 @@ def native_args(tmp_path: Path, module, source: str) -> argparse.Namespace:
     tmp_path.mkdir(parents=True, exist_ok=True)
     system = "Linux" if source == "native-linux" else "Windows"
     target = "linux-x86_64" if source == "native-linux" else "windows-x64"
+    use_isolated_release_manifest(tmp_path, module)
     version = module.manifest()["release_candidate"]
     artifact = tmp_path / f"worldstream-{version}-{target}.archive"
     artifact.write_bytes(b"exact packaged native archive")
@@ -1483,6 +1497,7 @@ def macos_report(module, architecture: str) -> dict:
 
 
 def macos_args(tmp_path: Path, module, architectures: list[str]) -> argparse.Namespace:
+    use_isolated_release_manifest(tmp_path, module)
     return argparse.Namespace(
         quickstart_report=[
             write_json(
@@ -1675,6 +1690,7 @@ def test_macos_diagnostic_rejects_wrong_or_mismatched_source_revision(tmp_path):
 
 
 def security_args(tmp_path: Path, module, report: dict) -> argparse.Namespace:
+    use_isolated_release_manifest(tmp_path, module)
     common = {
         "secret-scan",
         "evidence-privacy-local",
@@ -1848,6 +1864,7 @@ def test_oci_diagnostic_requires_binary_healthcheck_to_fail_without_daemon(
     tmp_path, monkeypatch
 ):
     module = load_module()
+    use_isolated_release_manifest(tmp_path, module)
     actual_context_verifier = module.independently_verify_oci_context
     actual_archive_verifier = module.independently_verify_oci_archive
     sqlite = module.manifest()["storage"]["sqlite"]

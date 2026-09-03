@@ -211,7 +211,6 @@ impl FileSecretVaultV1 {
     }
 
     /// Publishes one pending provider import's chosen reference without rotation.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn publish_imported_provider(
         &self,
         reference: &SecretReferenceV1,
@@ -315,7 +314,6 @@ impl FileSecretVaultV1 {
     }
 
     /// Checks protected retained-file metadata without opening secret material.
-    #[cfg(feature = "cli-operator-preview")]
     pub(crate) fn reference_metadata(
         &self,
         kind: SecretKindV1,

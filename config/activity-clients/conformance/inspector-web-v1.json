@@ -2,8 +2,8 @@
   "schema": "worldstream/client-conformance-evidence/v1",
   "subject": {
     "client_id": "worldstream.inspector.web",
-    "artifact_digest": "sha256:c1efad80dc9ad321d08d03364676af4d457cab531f980126e28a6f0993439da6",
-    "release_claims_digest": "sha256:8c816116366a5260a0e609f98220878adc13f29bef2886f69399c3490a2364f4",
+    "artifact_digest": "sha256:99f700badb37eb4e94bef2ff65a04915e74258942d5f52b6553a2ee98855e3c1",
+    "release_claims_digest": "sha256:bc426c6314cfac0db2c626d3fb26f35a2c1fc98c333082eb5678490c6d91b28a",
     "client_contract": "worldstream/activity-client-protocol/v1"
   },
   "checks": [

@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-#[cfg(feature = "cli-operator-preview")]
 use worldstream_studio_supervisor::{managed_daemon_transport, process_ownership};
 
 mod activity_packs {
@@ -11,6 +10,8 @@ mod secrets {
     pub use worldstream_studio_supervisor::secrets::*;
 }
 
+#[path = "../src/configuration_safety.rs"]
+mod configuration_safety;
 #[path = "../src/room_creation.rs"]
 mod room_creation;
 #[path = "../src/room_drafts.rs"]

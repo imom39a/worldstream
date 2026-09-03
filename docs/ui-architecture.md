@@ -2,7 +2,7 @@
 
 ## Status
 
-The frozen releases use independently executing first-party Activity Clients plus a Pack-neutral WorldStream Inspector. Studio operates the host and launches clients; it does not own Pack-specific participant renderers. WorldStream remains headless: every capability needed by a participant or runner is available through HTTP/WebSocket and the SDK.
+The frozen releases use independently executing first-party Activity Clients plus a Pack-neutral WorldStream Inspector. The authenticated CLI and headless Controller operate the host and launch clients; they do not own Pack-specific participant renderers. WorldStream remains headless: every capability needed by a participant or runner is available through HTTP/WebSocket and the SDK.
 
 The release freezes registry-neutral Activity Client Release and Distribution
 contracts, but not automatic third-party deployment, an embedded Client
@@ -11,7 +11,7 @@ JavaScript, or runtime LLM-generated UI.
 
 ## Product principle
 
-> The Activity Pack defines the shared reality. Activity Clients present it. Studio operates the host and launches clients. The WorldStream Inspector debugs the protocol.
+> The Activity Pack defines the shared reality. Activity Clients present it. The CLI operates the host and launches clients. The WorldStream Inspector debugs the protocol.
 
 This keeps the project focused. A general dynamic UI framework would become another product before the Room Kernel is validated.
 
@@ -259,7 +259,7 @@ Avoid adding a large state framework until real complexity requires it. A small 
 - The UI cannot request another membership's view by changing a client-side ID.
 - Controls shown beside an Operator Membership view require a separate host-operator capability; the Operator Membership itself remains read-only.
 - Pack data cannot choose component types, CSS, event handlers, or network endpoints in the frozen releases.
-- Studio never imports or executes Pack-specific participant client code in its trusted JavaScript realm.
+- The Controller never imports or executes Pack-specific participant client code.
 
 ## Accessibility and testability
 
@@ -285,7 +285,7 @@ Required UI tests:
 
 An Activity Client is a specialized game, terminal UI, mobile app, enterprise front end, SDK process, or agent-owned application using the same scoped protocol. A Pack may have no specialized client, one reference client, or several independently released clients.
 
-Activity Clients receive no special database access. Their actions remain typed and server-validated. Client choice is Host-local operational integration state and never changes retained Room lineage. The Client Binding Store resolves an approved Deployment and Surface from the exact Pack revision, client contract, current Access Mode and Role, trust, readiness, and Host preference. When no specialized binding is eligible, the Host may offer its separately configured Inspector fallback; Studio and the Supervisor contain no Pack-specific route branch.
+Activity Clients receive no special database access. Their actions remain typed and server-validated. Client choice is Host-local operational integration state and never changes retained Room lineage. The Client Binding Store resolves an approved Deployment and Surface from the exact Pack revision, client contract, current Access Mode and Role, trust, readiness, and Host preference. When no specialized binding is eligible, the Host may offer its separately configured Inspector fallback; the CLI and Controller contain no Pack-specific route branch.
 
 The Agent Heist client has disjoint recorded and live adapters. Recorded mode may switch illustrative lenses. Live mode starts with no Activity data, atomically installs only its Membership-authorized Projection Reset/Observation data, and cannot select another Role or Access Mode in browser state.
 
@@ -318,6 +318,6 @@ Runtime LLM generation of executable UI is not a target. It would make permissio
 12. No UI control can mark a Room healthy or rewrite Genesis/Transitions.
 13. Complete Head and all three state hashes are displayed as metadata, never Core or Activity State.
 14. Controls are rendered only from the exact Action Offer bytes carried by the installed Projection/Frame; the UI invents no second legality model.
-15. Studio launches Activity Clients but contains no Pack-specific participant renderer.
+15. The CLI launches Activity Clients through the Controller; neither contains a Pack-specific participant renderer.
 16. Live Activity Clients contain no fixture fallback path; a Projection Reset replaces omitted domain state.
 17. Missing or incompatible specialized clients fail closed to the Pack-neutral Inspector.

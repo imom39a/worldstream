@@ -684,6 +684,7 @@ def verify_and_extract(
     manifest_toml: Path,
     manifest_json: Path,
     output_dir: Path,
+    release_inventory: str | None = None,
 ) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
     regular_file(archive, "package_archive_invalid")
     report = read_json(package_report_path, "package_report_invalid")
@@ -732,7 +733,10 @@ def verify_and_extract(
     )
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            PACKAGE.verify_archive(archive)
+            if release_inventory is None:
+                PACKAGE.verify_archive(archive)
+            else:
+                PACKAGE.verify_archive(archive, release_inventory)
         entries = PACKAGE.archive_entries(archive)
     except (PACKAGE.PackageError, OSError, ValueError) as error:
         raise SmokeError("canonical_package_verification_failed") from error
@@ -2228,6 +2232,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             args.manifest_toml,
             args.manifest_json,
             root / "package",
+            getattr(args, "release_inventory", None),
         )
         retained_control = root / "verified-operator-control" / control.name
         persist_control_output(control, retained_control, binding)
@@ -2487,6 +2492,11 @@ def parser() -> argparse.ArgumentParser:
     )
     command.add_argument(
         "--manifest-json", type=Path, default=ROOT / "compatibility.json"
+    )
+    command.add_argument(
+        "--release-inventory",
+        choices=tuple(PACKAGE.INVENTORY.BY_ID),
+        help="closed release inventory; omission preserves historical verification",
     )
     return command
 

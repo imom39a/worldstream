@@ -543,7 +543,6 @@ pub struct HttpDaemonRunnerAttentionSourceV1 {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
-    #[cfg(feature = "cli-operator-preview")]
     managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
@@ -560,13 +559,11 @@ impl HttpDaemonRunnerAttentionSourceV1 {
             timeout,
             vault,
             host_authority,
-            #[cfg(feature = "cli-operator-preview")]
             managed: None,
         }
     }
 
     /// Reads existing Runner evidence on the proved managed Runtime connection.
-    #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn new_managed(
         address: SocketAddr,
@@ -602,7 +599,6 @@ impl HttpDaemonRunnerAttentionSourceV1 {
             .host_authority
             .as_ref()
             .ok_or(RunnerAttentionSourceErrorV1::Unavailable)?;
-        #[cfg(feature = "cli-operator-preview")]
         if let Some(transport) = &self.managed {
             let response = transport
                 .request("GET", path, b"", MAX_MESSAGE_BYTES, || {

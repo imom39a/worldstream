@@ -22,7 +22,7 @@ export function CapabilityExplorer() {
       <h1>Capability explorer</h1>
       <p className="lede">Filter WorldStream capabilities by area, interface, and implementation status. Each result links to its manual page.</p>
       <div className="capability-filters">
-        <label className="capability-query"><span>Search</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="replay, Studio, MCP…" /></label>
+        <label className="capability-query"><span>Search</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="replay, clients, MCP…" /></label>
         <Filter label="Area" value={area} values={unique("area")} onChange={setArea} />
         <Filter label="Interface" value={interfaceName} values={unique("interface")} onChange={setInterfaceName} />
         <Filter label="Status" value={status} values={unique("status")} onChange={setStatus} />

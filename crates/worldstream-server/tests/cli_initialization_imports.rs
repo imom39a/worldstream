@@ -1,5 +1,4 @@
 //! Explicit prerequisite review and approval through the shipped CLI process.
-#![cfg(feature = "cli-operator-preview")]
 
 use std::{
     env, fs,

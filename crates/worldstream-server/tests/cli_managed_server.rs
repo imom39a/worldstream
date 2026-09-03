@@ -1,5 +1,4 @@
 //! Separate CLI invocations operate one detached installation.
-#![cfg(feature = "cli-operator-preview")]
 
 use std::{
     env,

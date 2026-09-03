@@ -9,7 +9,7 @@ typed, authorized operations.
 ```text
 Activity Client ─┐
 External Agent ──┼─ HTTP/WebSocket/MCP ─ Gateway ─ Room supervisor
-Studio ──────────┘                              │
+Operator CLI ───┘                              │
                                               ▼
                                       single Room actor
                                               │
@@ -87,7 +87,7 @@ reruns a model.
 | `worldstream-runtime` | configuration, filesystem admission, embedded compatibility |
 | `worldstream-backup` | backup evidence and semantic verification |
 | `worldstream-transfer` | provider-neutral logical transfer |
-| `worldstream-studio-supervisor` | bounded local Studio control plane and agent bridge |
+| `worldstream-studio-supervisor` | bounded headless Controller and agent bridge; binary name retained for compatibility |
 | `worldstream-conformance` | backend-neutral black-box scenarios |
 
 Primary source: [architecture](https://github.com/imom39a/worldstream/blob/main/docs/architecture.md),

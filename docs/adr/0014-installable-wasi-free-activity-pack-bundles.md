@@ -36,11 +36,20 @@ section, and the destination establishes its own approval state. This split
 allows offline Pack installation followed by restart without weakening the
 immutable distribution or transfer witness.
 
+“Official” does not mean “embedded.” Agent Heist remains part of the base
+Runtime Distribution. Negotiate is an official portable Bundle carried by the
+Starter Distribution and admitted through the same explicit operator lifecycle
+as any other portable Pack. Adding an official portable release never rewrites
+the base Distribution identity.
+
 Portable Components execute synchronously under the
 `worldstream/component-deterministic/v1` profile in a pinned Wasmtime host. The
 launch profile permits zero imports and installs no WASI linker; every callback
 uses a fresh Store and instance under fixed fuel, memory, table, stack, byte,
-and concurrency limits. Original Component bytes are authoritative and any AOT
+and admission-concurrency limits. The Host may use bounded internal parallel
+Cranelift compilation to keep cold startup usable; Pack admission remains
+serialized and the compilation schedule has no semantic or authority effect.
+Original Component bytes are authoritative and any AOT
 cache is disposable. Traps, malformed output, policy violations, and identity
 or Replay disagreement fail closed before persistence under the existing
 `PackFault`, Room fault, and quarantine semantics. This is capability-denying

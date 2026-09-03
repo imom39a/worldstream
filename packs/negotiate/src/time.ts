@@ -2,6 +2,55 @@ import type { CanonicalJson } from "@worldstream/pack-sdk";
 
 import { integerValue, record, reject, stringValue } from "./model.js";
 
+/**
+ * Convert Core's normalized UTC Admitted Time to the Pack's retained whole
+ * semantic-second model. Fractional precision is truncated, preserving every
+ * half-open integer-second deadline used by this Pack.
+ */
+export function semanticSecondFromTimestamp(value: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u.exec(
+    value,
+  );
+  if (match === null || (match[7] !== undefined && match[7].endsWith("0"))) {
+    throw new TypeError("semantic time must be normalized UTC RFC 3339");
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (
+    year === 0 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw new TypeError("semantic time must be normalized UTC RFC 3339");
+  }
+
+  const adjustedYear = year - (month <= 2 ? 1 : 0);
+  const era = Math.floor(adjustedYear / 400);
+  const yearOfEra = adjustedYear - era * 400;
+  const adjustedMonth = month + (month > 2 ? -3 : 9);
+  const dayOfYear = Math.floor((153 * adjustedMonth + 2) / 5) + day - 1;
+  const dayOfEra =
+    yearOfEra * 365 +
+    Math.floor(yearOfEra / 4) -
+    Math.floor(yearOfEra / 100) +
+    dayOfYear;
+  const days = era * 146_097 + dayOfEra - 719_468;
+  const result = days * 86_400 + hour * 3_600 + minute * 60 + second;
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new TypeError("semantic time is outside the Pack's supported range");
+  }
+  return result;
+}
+
 export function timestampFromSemanticSecond(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
     reject("resource_limit", "semantic seconds must be a non-negative safe integer");
@@ -192,4 +241,11 @@ function formationTimerId(): string {
 
 function pad(value: number, length: number): string {
   return String(value).padStart(length, "0");
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    return year % 400 === 0 || (year % 4 === 0 && year % 100 !== 0) ? 29 : 28;
+  }
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
 }

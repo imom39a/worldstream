@@ -2,11 +2,13 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const workspace = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const mounts = Object.freeze([
+export const activityClientMounts = Object.freeze([
   Object.freeze({ prefix: "/agent-heist/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
-  Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "clients/negotiate-web/dist") }),
+  Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "clients/negotiate-web/dist") }),
+  Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v1") }),
   Object.freeze({ prefix: "/", root: resolve(workspace, "web/console/dist") }),
 ]);
 
@@ -24,13 +26,23 @@ const contentTypes = new Map([
 /**
  * Serves each first-party Activity Client from the exact directory retained by
  * its Release. Pack-specific clients are never imported into the Inspector or
- * Studio build.
+ * another client build.
  */
-export async function startActivityClientHost({ hostname = "127.0.0.1", port = 5173 } = {}) {
-  await Promise.all(mounts.map(({ root }) => stat(resolve(root, "index.html"))));
+export async function startActivityClientHost({
+  hostname = "127.0.0.1",
+  port = 5173,
+  controllerOrigin = "http://127.0.0.1:9420",
+} = {}) {
+  if (hostname !== "127.0.0.1" && hostname !== "localhost") throw new Error("Activity Client Host must bind to loopback");
+  if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("Activity Client Host port is invalid");
+  const authorizedControllerOrigin = exactLoopbackOrigin(controllerOrigin);
+  await Promise.all(activityClientMounts.map(async ({ root }) => {
+    await activityClientBuildDigest(root);
+    await stat(resolve(root, "index.html"));
+  }));
   const server = createServer((request, response) => {
-    void serve(request, response).catch(() => {
-      if (!response.headersSent) response.writeHead(500, commonHeaders("text/plain; charset=utf-8"));
+    void serve(request, response, authorizedControllerOrigin).catch(() => {
+      if (!response.headersSent) response.writeHead(500, commonHeaders("text/plain; charset=utf-8", authorizedControllerOrigin));
       response.end("Activity Client Host failed to read a retained artifact.\n");
     });
   });
@@ -48,21 +60,21 @@ export async function startActivityClientHost({ hostname = "127.0.0.1", port = 5
   };
 }
 
-async function serve(request, response) {
+async function serve(request, response, controllerOrigin) {
   if (request.method !== "GET" && request.method !== "HEAD") {
-    response.writeHead(405, { ...commonHeaders("text/plain; charset=utf-8"), Allow: "GET, HEAD" });
+    response.writeHead(405, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Allow: "GET, HEAD" });
     response.end("Method not allowed.\n");
     return;
   }
   const url = new URL(request.url ?? "/", "http://activity-client-host.invalid");
-  if (url.pathname === "/agent-heist" || url.pathname === "/negotiate") {
-    response.writeHead(308, { ...commonHeaders("text/plain; charset=utf-8"), Location: `${url.pathname}/${url.search}` });
+  if (["/agent-heist", "/negotiate", "/negotiate-v2"].includes(url.pathname)) {
+    response.writeHead(308, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Location: `${url.pathname}/${url.search}` });
     response.end();
     return;
   }
-  const mount = mounts.find(({ prefix }) => url.pathname.startsWith(prefix));
+  const mount = activityClientMounts.find(({ prefix }) => url.pathname.startsWith(prefix));
   if (mount === undefined) {
-    response.writeHead(404, commonHeaders("text/plain; charset=utf-8"));
+    response.writeHead(404, commonHeaders("text/plain; charset=utf-8", controllerOrigin));
     response.end("Not found.\n");
     return;
   }
@@ -70,26 +82,26 @@ async function serve(request, response) {
   try {
     requested = decodeURIComponent(url.pathname.slice(mount.prefix.length));
   } catch {
-    response.writeHead(400, commonHeaders("text/plain; charset=utf-8"));
+    response.writeHead(400, commonHeaders("text/plain; charset=utf-8", controllerOrigin));
     response.end("Invalid path.\n");
     return;
   }
   if (requested.includes("\0") || requested.includes("\\") || requested.split("/").includes("..")) {
-    response.writeHead(400, commonHeaders("text/plain; charset=utf-8"));
+    response.writeHead(400, commonHeaders("text/plain; charset=utf-8", controllerOrigin));
     response.end("Invalid path.\n");
     return;
   }
   const candidate = resolve(mount.root, requested || "index.html");
   const candidateRelative = relative(mount.root, candidate);
   if (candidateRelative.startsWith("..") || candidateRelative === "") {
-    response.writeHead(400, commonHeaders("text/plain; charset=utf-8"));
+    response.writeHead(400, commonHeaders("text/plain; charset=utf-8", controllerOrigin));
     response.end("Invalid path.\n");
     return;
   }
   const file = await readableFile(candidate) ? candidate : resolve(mount.root, "index.html");
   const body = await readFile(file);
   response.writeHead(200, {
-    ...commonHeaders(contentTypes.get(extname(file)) ?? "application/octet-stream"),
+    ...commonHeaders(contentTypes.get(extname(file)) ?? "application/octet-stream", controllerOrigin),
     "Content-Length": String(body.byteLength),
   });
   response.end(request.method === "HEAD" ? undefined : body);
@@ -104,17 +116,53 @@ async function readableFile(path) {
   }
 }
 
-function commonHeaders(contentType) {
+function commonHeaders(contentType, controllerOrigin) {
   return {
     "Cache-Control": "no-store",
-    "Content-Security-Policy": "default-src 'self'; connect-src 'self' http://127.0.0.1:9420; style-src 'self' 'unsafe-inline'; script-src 'self'",
+    "Content-Security-Policy": `default-src 'self'; connect-src 'self' ${controllerOrigin}; style-src 'self' 'unsafe-inline'; script-src 'self'`,
     "Content-Type": contentType,
     "X-Content-Type-Options": "nosniff",
   };
 }
 
+function exactLoopbackOrigin(value) {
+  if (typeof value !== "string" || value.length > 256) throw new Error("Controller origin is invalid");
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("Controller origin is invalid");
+  }
+  if (
+    parsed.protocol !== "http:"
+    || !["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)
+    || parsed.port === ""
+    || parsed.username !== ""
+    || parsed.password !== ""
+    || parsed.pathname !== "/"
+    || parsed.search !== ""
+    || parsed.hash !== ""
+    || parsed.origin !== value
+  ) throw new Error("Controller origin must be an exact loopback HTTP origin");
+  return parsed.origin;
+}
+
+function commandOptions(values) {
+  const options = {};
+  for (let index = 0; index < values.length; index += 2) {
+    const flag = values[index];
+    const value = values[index + 1];
+    if (value === undefined || value.startsWith("--")) throw new Error("Activity Client Host arguments must be --name value pairs");
+    if (flag === "--hostname") options.hostname = value;
+    else if (flag === "--port" && /^(?:0|[1-9][0-9]{0,4})$/.test(value) && Number(value) <= 65_535) options.port = Number(value);
+    else if (flag === "--controller-origin") options.controllerOrigin = value;
+    else throw new Error(`Unknown Activity Client Host argument ${flag}`);
+  }
+  return options;
+}
+
 const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
 if (invokedPath === fileURLToPath(import.meta.url)) {
-  const host = await startActivityClientHost();
+  const host = await startActivityClientHost(commandOptions(process.argv.slice(2)));
   console.log(`WorldStream Activity Client Host listening on ${host.origin}`);
 }

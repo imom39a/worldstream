@@ -185,7 +185,7 @@ def test_third_party_notice_bundle_exactly_covers_locked_and_base_components():
         entries[module.THIRD_PARTY_NOTICE_MANIFEST_PATH], "notice manifest"
     )
 
-    assert sum(ecosystem == "cargo" for ecosystem, _name, _version in declared) == 323
+    assert sum(ecosystem == "cargo" for ecosystem, _name, _version in declared) == 326
     assert sum(ecosystem == "npm" for ecosystem, _name, _version in declared) == 333
     assert sum(ecosystem == "apk" for ecosystem, _name, _version in declared) == 15
     assert manifest["inputs"] == {

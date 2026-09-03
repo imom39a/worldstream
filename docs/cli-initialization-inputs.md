@@ -1,11 +1,10 @@
 # Initialization input contracts
 
 This document defines the files accepted by the approved `init` import flags.
-It complements the [operator CLI reference](cli-reference.md). IMO-135 adds
-the bounded declaration parsers; IMO-142 adds the import workflow behind
-`cli-operator-preview`. The default build remains unavailable until the
-coordinated CLI cutover. Parsing a declaration alone does not approve it,
-read its referenced files, or start a process.
+It complements the [operator CLI reference](cli-reference.md). The bounded
+declaration parsers and reviewed import workflow are part of the default
+CLI-first build. Parsing a declaration alone does not approve it, read its
+referenced files, or start a process.
 
 These are local prerequisite declarations, not Room Setup Specifications.
 An external-only Room needs no managed provider credential. Do not put secret
@@ -176,7 +175,7 @@ Select an explicit bounded set of existing descriptors:
 ```json
 {
   "schema": "worldstream/client-declaration-import/v1",
-  "release_files": ["./releases/agent-heist-web.json", "./releases/negotiate-web.json", "./releases/inspector-web.json"],
+  "release_files": ["./releases/agent-heist-web.json", "./releases/negotiate-web.json", "./releases/negotiate-web-v2.json", "./releases/inspector-web.json"],
   "bindings_file": "./local-bindings.json"
 }
 ```
@@ -226,10 +225,9 @@ independent Client Host in another terminal:
 pnpm ui:dev
 ```
 
-This existing workflow builds and serves the retained client directories at
-`http://127.0.0.1:5173`; it does not start the Runtime or controller. The
-aggregate build still includes Studio artifacts until the coordinated retirement,
-so this command is not evidence of a Studio-free release. See
+This workflow builds and serves the retained client directories at
+`http://127.0.0.1:5173`; it does not start the Runtime or Controller. The
+Activity Clients are independent of the retired Studio web application. See
 [Activity Client local development](activity-clients.md#local-development)
 for the existing hosting and artifact-identity workflow.
 
@@ -241,6 +239,16 @@ new immutable identities; it cannot silently replace an existing Deployment.
 Local examples remain `externally_trusted`, not attestation of running bytes.
 Import may succeed while the Client Host is offline: it prepares approved
 metadata, not runtime health or browser sessions.
+
+When the Controller does not use port 9420, changing only the Client Host
+Content Security Policy is insufficient. The build-time
+`VITE_WORLDSTREAM_SUPERVISOR_URL`, Host `--controller-origin`, prepared exact
+Release and Deployment launch URLs, and Runtime
+`--participant-console-origin` must agree. Building for another Controller
+changes the artifact digest, so do not reuse the checked-in Release or Binding.
+Follow the complete
+[alternate-Controller preparation recipe](activity-clients.md#local-development),
+then review and import the generated `client-declaration.json` below.
 
 ## Review and application boundary
 
@@ -314,5 +322,5 @@ require their separate end-to-end qualification; this work does not close the
 existing IMO-81 live-proof debt. Counter-compatible examples must not be
 presented as Heist-compatible managed execution.
 
-See the executable declaration fixtures in
-[Supervisor tests](../crates/worldstream-studio-supervisor/tests/initialization_inputs.rs).
+See the executable declaration fixtures in the retained Controller crate's
+[initialization tests](../crates/worldstream-studio-supervisor/tests/initialization_inputs.rs).

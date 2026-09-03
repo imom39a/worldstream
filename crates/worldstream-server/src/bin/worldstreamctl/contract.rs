@@ -172,10 +172,15 @@ pub struct OperationArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RunnerCommand {
+    /// List Runner seats, optionally limited to one Room Setup Operation.
     List(RunnerListArgs),
+    /// Inspect one Runner seat without starting it.
     Inspect(SeatArgs),
+    /// Start the approved Runner assigned to one setup seat.
     Start(SeatArgs),
+    /// Stop the managed Runner assigned to one setup seat.
     Stop(SeatArgs),
+    /// Write one seat-scoped Runner credential to a new owner-only file.
     ExportCredentials(ExportArgs),
 }
 
@@ -210,7 +215,9 @@ pub struct ExportArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ClientCommand {
+    /// Open an approved Activity Client with a one-use scoped browser handoff.
     Open(ClientOpenArgs),
+    /// Write one seat-scoped Membership credential to a new owner-only file.
     ExportCredentials(ExportArgs),
 }
 

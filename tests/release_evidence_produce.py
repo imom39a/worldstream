@@ -668,7 +668,15 @@ def test_workflow_orders_pre_sign_inventory_before_collection_and_final_signing(
     manifest_sign_block = workflow[manifest_sign:verify]
     verify_block = workflow[verify:]
     assert "--prepare-unsigned" in unsigned_block
-    assert 'test "$(find dist -type f | wc -l)" -eq 37' in unsigned_block
+    assert (
+        "WORLDSTREAM_RELEASE_INVENTORY: worldstream/release-inventory/cli-first-v1"
+    ) in workflow
+    assert 'test "$(find dist -type f | wc -l)" -eq 36' in unsigned_block
+    assert 'test "$(wc -l < dist/SHA256SUMS)" -eq 32' in unsigned_block
+    assert (
+        "--subject worldstream-participant-console=web/console/dist" in unsigned_block
+    )
+    assert "--subject worldstream-studio=" not in unsigned_block
     assert "released-linux/bin/worldstreamctl" in unsigned_block
     assert 'pack prove "$negotiate_bundle" --json' in unsigned_block
     assert "--pack-evidence packs/negotiate" not in unsigned_block
@@ -677,14 +685,15 @@ def test_workflow_orders_pre_sign_inventory_before_collection_and_final_signing(
     assert "cosign sign-blob" in inventory_sign_block
     assert '" = "$EXPECTED_LAYOUT_SHA256"' in inventory_sign_block
     assert "--finalize-signed" in assemble_block
-    assert "Assemble detached v2 release manifest" in assemble_block
-    assert 'test "$(find dist -type f | wc -l)" -eq 57' in assemble_block
+    assert "Assemble detached v3 release manifest" in assemble_block
+    assert 'test "$(find dist -type f | wc -l)" -eq 56' in assemble_block
     assert "layout_sha256=" in assemble_block
     assert "cosign sign-blob" not in assemble_block
     assert "cosign sign-blob" in manifest_sign_block
     assert '" = "$EXPECTED_LAYOUT_SHA256"' in manifest_sign_block
     assert "scripts/verify-release.sh dist" in verify_block
-    assert 'test "$(find dist -type f | wc -l)" -eq 58' in verify_block
+    assert 'test "$(find dist -type f | wc -l)" -eq 57' in verify_block
+    assert verify_block.count("--release-inventory") == 2
 
 
 def test_workflow_confines_oidc_to_two_minimal_main_bound_signing_jobs():

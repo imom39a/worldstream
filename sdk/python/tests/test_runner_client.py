@@ -170,6 +170,58 @@ def test_runner_handshake_and_offer_poll_preserve_correlated_request_ids() -> No
     }
 
 
+def test_runner_handshake_can_declare_exact_supported_pack_revisions() -> None:
+    fake = RunnerFakeWebSocket()
+    revision = {
+        "id": "worldstream.agent-heist",
+        "version": "0.2.0",
+        "digest": "blake3:" + "b" * 64,
+    }
+    runner = Runner(
+        Client("http://localhost", BEARER, ws_factory=lambda *_args, **_kwargs: None),
+        "runner-a",
+        4,
+        ["worldstream.agent-heist"],
+        [revision],
+    )
+
+    async def ws_factory(*_args, **_kwargs):
+        return fake
+
+    runner.client.ws_factory = ws_factory
+    asyncio.run(runner.connect())
+    assert fake.sent[1]["body"]["supported_pack_revisions"] == [revision]
+
+
+def test_runner_rejects_duplicate_or_malformed_exact_pack_revisions() -> None:
+    client = Client("http://localhost", BEARER)
+    revision = {
+        "id": "worldstream.agent-heist",
+        "version": "0.2.0",
+        "digest": "blake3:" + "b" * 64,
+    }
+    with pytest.raises(ProtocolError):
+        Runner(client, "runner-a", 1, ["worldstream.agent-heist"], [revision, revision])
+    with pytest.raises(ProtocolError):
+        Runner(client, "runner-a", 1, ["worldstream.agent-heist"], [{"id": "missing"}])
+    with pytest.raises(ProtocolError):
+        Runner(
+            client,
+            "runner-a",
+            1,
+            ["worldstream.agent-heist"],
+            [{**revision, "digest": "blake3:not-a-digest"}],
+        )
+    with pytest.raises(ProtocolError):
+        Runner(
+            client,
+            "runner-a",
+            1,
+            ["worldstream.agent-heist"],
+            [{**revision, "version": "v" * 65}],
+        )
+
+
 def test_runner_uses_dedicated_control_stream_url() -> None:
     client = Client("https://example.test/prefix", BEARER)
     assert client.ws_url() == "wss://example.test/prefix/v1/stream"

@@ -27,6 +27,15 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+INVENTORY_PATH = Path(__file__).with_name("release_inventory.py")
+INVENTORY_SPEC = importlib.util.spec_from_file_location(
+    "worldstream_starter_distribution_release_inventory", INVENTORY_PATH
+)
+if INVENTORY_SPEC is None or INVENTORY_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot load {INVENTORY_PATH}")
+INVENTORY = importlib.util.module_from_spec(INVENTORY_SPEC)
+sys.modules[INVENTORY_SPEC.name] = INVENTORY
+INVENTORY_SPEC.loader.exec_module(INVENTORY)
 CANDIDATE_SCHEMA = "worldstream/starter-candidate/v1"
 MANIFEST_SCHEMA = "worldstream/starter-distribution-manifest/v1"
 RECEIPT_SCHEMA = "worldstream/starter-distribution-verification/v1"
@@ -346,24 +355,29 @@ def expected_release_binding(role: str, profile: str) -> tuple[str, str] | None:
     return inventory, release_id
 
 
-def validate_release_manifest(value: dict[str, Any]) -> None:
+def validate_release_manifest(value: dict[str, Any]):
+    try:
+        release_profile = INVENTORY.identity_from_manifest(value)
+    except ValueError as error:
+        raise StarterError(str(error)) from error
+    fields = {
+        "schema",
+        "product",
+        "source_version",
+        "manifest",
+        "artifacts",
+        "artifact_digests",
+        "evidence",
+        "evidence_digests",
+        "verification_material",
+    }
+    if release_profile.serialized_discriminator:
+        fields.add("release_inventory")
     exact_fields(
         value,
-        {
-            "schema",
-            "product",
-            "source_version",
-            "manifest",
-            "artifacts",
-            "artifact_digests",
-            "evidence",
-            "evidence_digests",
-            "verification_material",
-        },
+        fields,
         "release manifest",
     )
-    if value["schema"] != RELEASE_MANIFEST_SCHEMA:
-        fail("release manifest schema is unsupported")
     product = value["product"]
     if not isinstance(product, str) or VERSION.fullmatch(product) is None:
         fail("release manifest product version is invalid")
@@ -414,6 +428,11 @@ def validate_release_manifest(value: dict[str, Any]) -> None:
     exact_fields(sigstore, {"path"}, "Sigstore material")
     if artifacts.get("sigstore-bundle") != sigstore["path"]:
         fail("release manifest Sigstore paths disagree")
+    if release_profile is INVENTORY.CLI_FIRST and set(artifacts) != set(
+        release_profile.release_artifact_ids
+    ):
+        fail("release manifest artifact inventory differs from its versioned profile")
+    return release_profile
 
 
 def validate_compatibility_manifest(
@@ -640,7 +659,7 @@ def verify_release_signature(manifest: bytes, sigstore: bytes) -> None:
 def trust_inputs(
     inventory_path: Path,
     trust: dict[str, Any],
-) -> tuple[Path, bytes, dict[str, Any], bytes, dict[str, Any], bytes]:
+) -> tuple[Path, bytes, dict[str, Any], bytes, dict[str, Any], bytes, Any]:
     exact_fields(
         trust,
         {"release_manifest", "sigstore_bundle", "compatibility_manifest"},
@@ -652,7 +671,7 @@ def trust_inputs(
     release = strict_json(release_bytes, "release manifest")
     if release_bytes != canonical_json(release):
         fail("release manifest is not canonical JSON")
-    validate_release_manifest(release)
+    release_profile = validate_release_manifest(release)
     sigstore_path = resolve_input(base, trust["sigstore_bundle"], "Sigstore bundle")
     sigstore_bytes = regular_bytes(sigstore_path, "Sigstore bundle", MAX_TRUST_BYTES)
     expected_sigstore = release_path.parent.joinpath(
@@ -680,6 +699,7 @@ def trust_inputs(
         sigstore_bytes,
         compatibility,
         compatibility_bytes,
+        release_profile,
     )
 
 
@@ -690,7 +710,15 @@ def prepare_subjects(
     profile: str,
     release_dir: Path,
     release_manifest: dict[str, Any],
+    release_profile=None,
 ) -> list[PreparedSubject]:
+    if release_profile is None:
+        release_profile = validate_release_manifest(release_manifest)
+    base_roles = BASE_ROLES
+    official_roles = OFFICIAL_ROLES
+    if release_profile is INVENTORY.CLI_FIRST:
+        base_roles = BASE_ROLES - {"studio"}
+        official_roles = base_roles | {"negotiate-bundle", "negotiate-evidence"}
     prepared: list[PreparedSubject] = []
     ids: set[str] = set()
     release_references: set[tuple[str, str]] = set()
@@ -786,7 +814,7 @@ def prepare_subjects(
         )
     counts = {role: roles.count(role) for role in set(roles)}
     if mode == "official":
-        if set(roles) != OFFICIAL_ROLES or any(count != 1 for count in counts.values()):
+        if set(roles) != official_roles or any(count != 1 for count in counts.values()):
             fail(
                 "official Starter must contain exactly one subject for every official role"
             )
@@ -795,10 +823,10 @@ def prepare_subjects(
                 "official Starter contains a subject outside the signed release inventory"
             )
     else:
-        if not set(roles).issubset(BASE_ROLES | CUSTOM_PACK_ROLES):
+        if not set(roles).issubset(base_roles | CUSTOM_PACK_ROLES):
             fail("custom Starter contains an unsupported official-only role")
-        if not BASE_ROLES.issubset(roles) or any(
-            counts.get(role) != 1 for role in BASE_ROLES
+        if not base_roles.issubset(roles) or any(
+            counts.get(role) != 1 for role in base_roles
         ):
             fail("custom Starter must contain exactly one subject for every base role")
         if counts.get("activity-pack-bundle", 0) < 1:
@@ -808,7 +836,7 @@ def prepare_subjects(
         if counts.get("activity-pack-bundle") != counts.get("activity-pack-evidence"):
             fail("custom Starter Pack bundle/evidence counts differ")
         if any(
-            subject.role in BASE_ROLES and subject.release_binding is None
+            subject.role in base_roles and subject.release_binding is None
             for subject in prepared
         ):
             fail("custom Starter base subjects must remain release-bound")
@@ -972,6 +1000,7 @@ def load_candidate(
         sigstore_bytes,
         compatibility,
         compatibility_bytes,
+        release_profile,
     ) = trust_inputs(inventory_path, trust)
     if release_manifest["product"] != version:
         fail("Starter version differs from the signed release manifest")
@@ -983,6 +1012,7 @@ def load_candidate(
         profile,
         release_dir,
         release_manifest,
+        release_profile,
     )
     packs = validate_pack_rows(
         list_value(candidate["activity_packs"], "Starter Activity Packs", 64),
@@ -1203,7 +1233,12 @@ def verify_manifest_and_entries(
         if content is None or sha256_reference(content) != expected_digest:
             fail(f"Starter {stem} bytes differ from the manifest")
     release = strict_json(entries[trust["release_manifest_path"]], "release manifest")
-    validate_release_manifest(release)
+    release_profile = validate_release_manifest(release)
+    base_roles = BASE_ROLES
+    official_roles = OFFICIAL_ROLES
+    if release_profile is INVENTORY.CLI_FIRST:
+        base_roles = BASE_ROLES - {"studio"}
+        official_roles = base_roles | {"negotiate-bundle", "negotiate-evidence"}
     compatibility = strict_json(
         entries[trust["compatibility_manifest_path"]], "compatibility manifest"
     )
@@ -1323,16 +1358,16 @@ def verify_manifest_and_entries(
     mode = distribution["mode"]
     roles = [subject.role for subject in subjects]
     if mode == "official":
-        if set(roles) != OFFICIAL_ROLES or len(roles) != len(OFFICIAL_ROLES):
+        if set(roles) != official_roles or len(roles) != len(official_roles):
             fail("official Starter role inventory is not closed")
         if any(subject.authentication != "release-manifest" for subject in subjects):
             fail("official Starter contains unsigned candidate material")
     else:
         counts = {role: roles.count(role) for role in set(roles)}
-        if not set(roles).issubset(BASE_ROLES | CUSTOM_PACK_ROLES):
+        if not set(roles).issubset(base_roles | CUSTOM_PACK_ROLES):
             fail("custom Starter contains an unsupported official-only role")
-        if not BASE_ROLES.issubset(roles) or any(
-            counts.get(role) != 1 for role in BASE_ROLES
+        if not base_roles.issubset(roles) or any(
+            counts.get(role) != 1 for role in base_roles
         ):
             fail("custom Starter base role inventory is incomplete")
         if counts.get("activity-pack-bundle", 0) < 1 or counts.get(

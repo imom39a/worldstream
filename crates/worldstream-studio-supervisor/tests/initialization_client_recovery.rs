@@ -1,5 +1,4 @@
 //! Exact retry of incomplete client publication without restoring lost trust state.
-#![cfg(feature = "cli-operator-preview")]
 
 use std::{
     collections::BTreeMap,
@@ -45,6 +44,11 @@ fn exact_client_retry_completes_orphan_status_but_never_recreates_lost_status() 
         (
             "releases/negotiate-web.json",
             include_bytes!("../../../config/activity-clients/releases/negotiate-web.json")
+                .as_slice(),
+        ),
+        (
+            "releases/negotiate-web-v2.json",
+            include_bytes!("../../../config/activity-clients/releases/negotiate-web-v2.json")
                 .as_slice(),
         ),
         (

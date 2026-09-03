@@ -7,7 +7,9 @@ date: 2026-09-02
 
 ## Delivery-phase clarification — 2026-09-03
 
-The user has directed MVP/POC delivery first and production hardening later.
+The user directed MVP/POC delivery first and production hardening later. The
+verified MVP replacement gate passed and the Studio web application was
+retired on 2026-09-03.
 The usable CLI-only Heist flow, Negotiate check, and getting-started guide take
 priority. Existing safety boundaries remain; critical defects are fixed when
 found. Automatic bound-Runner restoration, optional interactive setup UX, and
@@ -16,14 +18,14 @@ unsupported bound-Runner restart must reject before process mutation. The
 long-term decisions below are not a claim that the MVP is production-qualified.
 
 WorldStream will use the operator CLI as its primary administration interface
-and retire the Studio web app after a verified replacement is available.
+and has retired the Studio web app after verifying the replacement.
 Maintaining a second administration interface before the core setup flow is
 usable adds cost without resolving the main adoption problem. Keep the
 Runtime, reusable headless operations, SDKs, external Runners, and independent
 Activity Clients; do not replace them or delete the Supervisor wholesale.
 
 Server, configuration, and Pack administration are the first delivery slice.
-Studio retirement requires a new developer to complete a live Agent Heist
+The retirement gate required a new developer to complete a live Agent Heist
 Room flow without the administration website, including participant and
 agent setup. Check the same generic setup with Negotiate. Full
 screen-for-command parity is not required.
@@ -94,13 +96,12 @@ without an unauthenticated legacy bypass. Initialize or rotate it explicitly;
 do not replace daemon bootstrap or participant/Runner authority. Preserve
 browser cookie, Origin, and one-use handoff boundaries separately. Requiring
 operator authentication is an intentional admission change, not a violation
-of wire-format compatibility. Harden transitional Studio access safely or
-coordinate authentication and frontend retirement at the verified cutover.
+of wire-format compatibility. Authentication and frontend retirement were
+coordinated at the verified cutover.
 
 ## Consequences
 
-- Freeze new Studio web features. Keep the existing interface available
-  during migration, including its required safety and correctness behavior.
+- The Studio web interface is retired. Keep the CLI and Controller Pack-neutral.
 - Retain the Supervisor's necessary headless capabilities initially. Exact
   internal types, ownership-recovery proofs, and implementation layout must
   satisfy the accepted contract and its tests. They do not authorize a new
@@ -113,15 +114,12 @@ coordinate authentication and frontend retirement at the verified cutover.
   not prove that manual CLI Room setup is complete.
 - Partially supersede ADR 0013's Studio web product choice and ADR 0017's
   permanent Studio-as-operator-surface commitment. Their authority and client
-  boundaries remain in force. Studio-specific interface obligations apply
-  during transition and retire only with the verified replacement.
-- Do not remove Studio from the closed release inventory until packaging,
-  verification, and the successor release contract change together. This
-  ADR does not change ADR 0016's current artifact set or claim release
-  qualification.
+  boundaries remain in force. Studio-specific interface obligations are historical.
+- Use the CLI-first successor release inventory. Continue to verify historical
+  formats as compatibility evidence. This ADR does not claim release qualification.
 
 See the [CLI-first proposal](../cli-first-operator-proposal.md) for the source
 audit and approved Q1–Q18 decisions. The consolidated
 [implementation plan](../cli-first-implementation-plan.md) is confirmed and
-the design review is complete. No implementation or Studio removal is
-claimed by this ADR.
+the design review and MVP cutover are complete. Production hardening and
+external release qualification remain separate work.
