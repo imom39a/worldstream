@@ -50,8 +50,8 @@ fn receipt(directory: &Path, config: &Path, arguments: &[&str]) -> TestResult<Va
     Ok(serde_json::from_str(&stdout)?)
 }
 
-fn check(receipts: &Value, key: &str, actual: Value) {
-    assert_eq!(actual, receipts[key], "legacy Pack receipt: {key}");
+fn check(receipts: &Value, key: &str, actual: &Value) {
+    assert_eq!(actual, &receipts[key], "legacy Pack receipt: {key}");
 }
 
 #[test]
@@ -84,11 +84,11 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
     let inspected = receipt(directory.path(), &config, &["inspect", "--bundle", bundle])?;
     assert_eq!(inspected["bundle_digest"], BUNDLE_DIGEST);
     assert_eq!(inspected["revision_digest"], REVISION_DIGEST);
-    check(receipts, "inspect", inspected);
+    check(receipts, "inspect", &inspected);
     check(
         receipts,
         "approve",
-        receipt(
+        &receipt(
             directory.path(),
             &config,
             &[
@@ -105,7 +105,7 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
     check(
         receipts,
         "install",
-        receipt(
+        &receipt(
             directory.path(),
             &config,
             &[
@@ -120,12 +120,12 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
     check(
         receipts,
         "retained_inventory",
-        receipt(directory.path(), &config, &["inventory"])?,
+        &receipt(directory.path(), &config, &["inventory"])?,
     );
     check(
         receipts,
         "set_selectable",
-        receipt(
+        &receipt(
             directory.path(),
             &config,
             &[
@@ -140,7 +140,7 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
     check(
         receipts,
         "selectable_inventory",
-        receipt(directory.path(), &config, &["inventory"])?,
+        &receipt(directory.path(), &config, &["inventory"])?,
     );
     let mut readiness = receipt(directory.path(), &config, &["restart-readiness"])?;
     let binding = readiness["deployment_binding"]
@@ -155,13 +155,13 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     readiness["deployment_binding"] = Value::String("<temporary-deployment-binding>".to_owned());
-    check(receipts, "restart_readiness", readiness);
+    check(receipts, "restart_readiness", &readiness);
     let exports = worldstream_runtime::prepare_data_directory(&directory.path().join("exports"))?;
     let exported = exports.join("exported.wspack");
     check(
         receipts,
         "export",
-        receipt(
+        &receipt(
             directory.path(),
             &config,
             &[
@@ -181,7 +181,7 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
     check(
         receipts,
         "revoke",
-        receipt(
+        &receipt(
             directory.path(),
             &config,
             &[
@@ -198,7 +198,7 @@ fn exact_bundle_keeps_legacy_receipts_through_the_offline_lifecycle() -> TestRes
     check(
         receipts,
         "revoked_inventory",
-        receipt(directory.path(), &config, &["inventory"])?,
+        &receipt(directory.path(), &config, &["inventory"])?,
     );
     Ok(())
 }
