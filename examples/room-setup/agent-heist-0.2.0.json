@@ -1,0 +1,47 @@
+{
+  "schema": "worldstream/room-setup/v1",
+  "pack": {
+    "id": "worldstream.agent-heist",
+    "version": "0.2.0",
+    "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+  },
+  "configuration": {
+    "roles": [
+      "navigator",
+      "insider",
+      "broker"
+    ]
+  },
+  "seats": [
+    {
+      "label": "navigator",
+      "role": "navigator",
+      "required": true,
+      "display_name": "navigator",
+      "principal": {
+        "reference": "navigator",
+        "kind": "human"
+      }
+    },
+    {
+      "label": "insider",
+      "role": "insider",
+      "required": true,
+      "display_name": "insider",
+      "principal": {
+        "reference": "insider",
+        "kind": "agent"
+      },
+      "assignment": {
+        "mode": "external"
+      }
+    },
+    {
+      "label": "broker",
+      "role": "broker",
+      "required": false,
+      "display_name": "broker"
+    }
+  ],
+  "operator_view": false
+}

@@ -71,6 +71,8 @@ pub struct HttpDaemonActivityPackSource {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
 impl HttpDaemonActivityPackSource {
@@ -87,6 +89,32 @@ impl HttpDaemonActivityPackSource {
             timeout,
             vault,
             host_authority,
+            #[cfg(feature = "cli-operator-preview")]
+            managed: None,
+        }
+    }
+
+    /// Uses retained managed Runtime ownership and same-socket proof before
+    /// resolving Host authority. The explicit foreground constructor is unchanged.
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn new_managed(
+        address: SocketAddr,
+        timeout: Duration,
+        vault: FileSecretVaultV1,
+        host_authority: Option<SecretReferenceV1>,
+        ownership: crate::process_ownership::ProcessOwnership,
+    ) -> Self {
+        Self {
+            address,
+            timeout,
+            vault,
+            host_authority,
+            managed: Some(
+                crate::managed_daemon_transport::ManagedDaemonTransport::new(
+                    ownership, address, timeout,
+                ),
+            ),
         }
     }
 
@@ -95,6 +123,44 @@ impl HttpDaemonActivityPackSource {
             .host_authority
             .as_ref()
             .ok_or(ActivityPackProxyErrorV1::AuthorityUnavailable)?;
+        #[cfg(feature = "cli-operator-preview")]
+        if let Some(transport) = &self.managed {
+            let mut authority_unavailable = false;
+            let response = transport
+                .request("GET", path, b"", MAX_MESSAGE_BYTES, || {
+                    let resolved = (|| {
+                        let secret = self
+                            .vault
+                            .resolve(SecretKindV1::HostAuthority, reference)
+                            .map_err(|_| ())?;
+                        let bytes: [u8; 32] = secret.as_bytes().try_into().map_err(|_| ())?;
+                        let token = Zeroizing::new(format!(
+                            "Bearer {}",
+                            BearerWireV1::from_bytes(bytes).to_wire()
+                        ));
+                        let mut header =
+                            axum::http::HeaderValue::from_str(&token).map_err(|_| ())?;
+                        header.set_sensitive(true);
+                        Ok::<_, ()>(header)
+                    })();
+                    authority_unavailable = resolved.is_err();
+                    resolved
+                })
+                .map_err(|_| {
+                    if authority_unavailable {
+                        ActivityPackProxyErrorV1::AuthorityUnavailable
+                    } else {
+                        ActivityPackProxyErrorV1::DaemonUnavailable
+                    }
+                })?;
+            if response.body.len() > MAX_MESSAGE_BYTES {
+                return Err(ActivityPackProxyErrorV1::InvalidResponse);
+            }
+            return Ok(DaemonHttpResponse {
+                status: response.status,
+                body: response.body,
+            });
+        }
         let secret = self
             .vault
             .resolve(SecretKindV1::HostAuthority, reference)

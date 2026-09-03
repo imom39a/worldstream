@@ -2,10 +2,11 @@
 
 This is the additive `worldstreamctl` interface frozen by IMO-135 and
 [ADR 0018](adr/0018-cli-first-operator-surface.md). Existing commands continue
-to work. The new commands below are **parser/output contracts only**: until
-their implementation tickets land, valid invocations return `not_implemented`
-with exit status 3, without reading configuration or starting services.
-Help listing a command does not mean its backend is available.
+to work. The new commands below form the approved contract. A command whose
+backend is still pending returns `not_implemented` with exit status 3, without
+reading configuration or starting services. Help listing a command does not
+mean its backend is available. The [ticket plan](cli-first-ticket-plan.md)
+records implementation progress.
 
 During implementation, the internal `cli-operator-preview` Cargo feature
 enables completed replacement slices together. It is not a second supported
@@ -64,7 +65,7 @@ initialization preview, successful mutation, or live status observation.
 | `status` | Closed `code` values | Exit |
 | --- | --- | --- |
 | `complete` | `complete` | 0 |
-| `rejected` | `operation_rejected` | 1 |
+| `rejected` | `operation_rejected`, `managed_runner_restart_unsupported` | 1 |
 | `failed` | `operation_failed` | 1 |
 | `invalid_arguments` | `invalid_arguments` | 2 |
 | `unavailable` | `not_implemented`, `controller_unavailable`, `stale_evidence` | 3 |
@@ -84,8 +85,9 @@ and offer no Room setup resume command. Inspect `server status` and
 the report makes no rollback claim. Restoration concerns only the previously
 running owned managed Runners after current approval and eligibility checks.
 
-The formatter supports these outcomes for later adapters; current accepted
-CLI invocations still return only `not_implemented` (or input rejection).
+Completed adapters use these outcomes; commands with pending backends still
+return `not_implemented`. Initialization has additional closed result codes
+documented by its input and approval contract.
 
 ## Installation and server
 
@@ -196,6 +198,13 @@ Lifecycle commands accept `--timeout-seconds N` (1–300, default 30). `logs`
 accepts `--tail N` (1–1000, default 100); live following is not part of this
 contract. Partial shutdown or restart-restoration failure exits 4. A controller
 that cannot prove ownership must refuse unsafe control, not kill by stale PID.
+
+MVP limit: `server restart` rejects before stopping anything when a running
+Runner Template instance is bound to a task. Its result code is
+`managed_runner_restart_unsupported`. Use `server stop`, `server start`, and
+explicit agent startup instead. Automatic restoration of these bound instances
+is deferred to IMO-147. Existing supported managed Agent Host restoration is
+unchanged. This preview is not production-qualified process supervision.
 
 ## Room setup and participation
 

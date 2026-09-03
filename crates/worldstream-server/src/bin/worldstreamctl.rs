@@ -7,6 +7,12 @@ mod cli_initialization;
 mod cli_reference;
 #[path = "worldstreamctl/report.rs"]
 mod cli_report;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/room_setup.rs"]
+mod cli_room_setup;
+#[cfg(feature = "cli-operator-preview")]
+#[path = "worldstreamctl/server.rs"]
+mod cli_server;
 
 use cli_contract::OperatorCommand;
 use cli_report::CommandReport;
@@ -563,6 +569,10 @@ fn finish_operator_report(report: &CommandReport, json: bool) -> Result<()> {
     std::process::exit(exit.code());
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "preserve the explicit preview and legacy command admission order"
+)]
 fn main() -> Result<()> {
     if let Some(result) = dispatch_hidden_native_postgres_worker() {
         return result;
@@ -595,6 +605,16 @@ fn main() -> Result<()> {
             #[cfg(feature = "cli-operator-preview")]
             if let Some(report) = cli_initialization::execute(&command, &config_args) {
                 return finish_operator_report(&report, json);
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(report) = cli_server::execute(&command, &config_args) {
+                return finish_operator_report(&report, json);
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let OperatorCommand::Room { command: room } = &command
+                && let Some(result) = cli_room_setup::execute(room)
+            {
+                return finish_operator_report(&CommandReport::room_setup(name, result), json);
             }
             finish_operator_report(&CommandReport::not_implemented(name), json)
         }

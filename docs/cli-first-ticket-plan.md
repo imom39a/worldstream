@@ -2,8 +2,11 @@
 
 Status: Q1–Q18 approved; 12 implementation tickets filed in Linear.
 Ticket preparation is complete. IMO-135's contract work, IMO-136's protected
-initialization and control admission, and IMO-142's explicit prerequisite imports
-are complete. Studio retirement remains gated on the complete replacement proof.
+initialization and control admission, IMO-137's MVP managed lifecycle,
+IMO-139's reviewed setup generation and validation, and IMO-142's explicit
+prerequisite imports are complete. Studio retirement remains
+gated on the complete replacement proof. Production hardening is deferred to
+IMO-147 under the user-approved MVP delivery update.
 
 The [approved implementation plan](cli-first-implementation-plan.md) owns the
 product contract. [ADR 0018](adr/0018-cli-first-operator-surface.md) records the
@@ -21,8 +24,8 @@ adds protected initialization and control admission behind the internal preview
 gate. The completed
 [IMO-142](https://linear.app/imom39a/issue/IMO-142/prepare-approved-agent-and-client-prerequisites-without-studio)
 adds exact reviewed local prerequisite imports through the same preview gate.
-The current frontier is managed lifecycle (IMO-137) and generic JSON setup
-(IMO-139).
+The current frontier is Pack inventory display (IMO-138) and immutable Room
+creation and provisioning operations (IMO-140).
 
 Each other ticket has native Linear blocking relations. Start a ticket only
 after all its blockers are complete. Update its readiness label at that point;

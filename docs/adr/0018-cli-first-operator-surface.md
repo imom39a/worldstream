@@ -5,6 +5,16 @@ date: 2026-09-02
 
 # Make the Host Operator interface CLI-first
 
+## Delivery-phase clarification — 2026-09-03
+
+The user has directed MVP/POC delivery first and production hardening later.
+The usable CLI-only Heist flow, Negotiate check, and getting-started guide take
+priority. Existing safety boundaries remain; critical defects are fixed when
+found. Automatic bound-Runner restoration, optional interactive setup UX, and
+expanded failure/platform qualification are follow-up work in IMO-147. An
+unsupported bound-Runner restart must reject before process mutation. The
+long-term decisions below are not a claim that the MVP is production-qualified.
+
 WorldStream will use the operator CLI as its primary administration interface
 and retire the Studio web app after a verified replacement is available.
 Maintaining a second administration interface before the core setup flow is

@@ -27,6 +27,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(feature = "cli-operator-preview")]
+use std::sync::{RwLock, RwLockWriteGuard};
 use thiserror::Error;
 use worldstream_protocol::UlidString;
 use worldstream_runtime::{
@@ -529,6 +531,8 @@ pub struct ManagedAgentHostOperationsV1 {
     launcher: Arc<dyn ManagedAgentHostProcessLauncherV1>,
     processes: Arc<Mutex<BTreeMap<String, Box<dyn ManagedAgentHostProcessV1>>>>,
     mutation: Arc<Mutex<()>>,
+    #[cfg(feature = "cli-operator-preview")]
+    starts_paused: Arc<RwLock<bool>>,
     activation_status: Option<ManagedActivationStatusStoreV1>,
 }
 
@@ -598,6 +602,8 @@ impl ManagedAgentHostOperationsV1 {
             launcher: Arc::new(launcher),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             mutation: Arc::new(Mutex::new(())),
+            #[cfg(feature = "cli-operator-preview")]
+            starts_paused: Arc::new(RwLock::new(false)),
             activation_status: None,
         })
     }
@@ -608,6 +614,26 @@ impl ManagedAgentHostOperationsV1 {
     ///
     /// Rejects altered bindings and returns closed dependency/process failures.
     pub fn start(
+        &self,
+        assignment_id: &str,
+    ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
+        #[cfg(feature = "cli-operator-preview")]
+        let _admission = {
+            let admission = self
+                .starts_paused
+                .try_read()
+                .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
+            if *admission {
+                return Err(ManagedAgentHostErrorV1::Unavailable);
+            }
+            admission
+        };
+        self.start_permitted(assignment_id)
+    }
+
+    // The lifecycle coordinator holds the exclusive start gate while restoring.
+    // All HTTP/public start paths must use `start`, including retry aliases.
+    pub(crate) fn start_permitted(
         &self,
         assignment_id: &str,
     ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
@@ -679,6 +705,19 @@ impl ManagedAgentHostOperationsV1 {
         }
     }
 
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn pause_starts(
+        &self,
+    ) -> Result<(RwLockWriteGuard<'_, bool>, bool), ManagedAgentHostErrorV1> {
+        let mut paused = self
+            .starts_paused
+            .write()
+            .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
+        let previous = *paused;
+        *paused = true;
+        Ok((paused, previous))
+    }
+
     /// Returns and reconciles browser-safe lifecycle/capacity/freshness state.
     ///
     /// # Errors
@@ -713,6 +752,43 @@ impl ManagedAgentHostOperationsV1 {
         Ok(statuses)
     }
 
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn owned_assignments(&self) -> Result<Vec<String>, ManagedAgentHostErrorV1> {
+        let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        let records = json_files(&self.root)?;
+        if records.len() > 256 {
+            return Err(ManagedAgentHostErrorV1::Corrupt);
+        }
+        for path in records {
+            let id = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .ok_or(ManagedAgentHostErrorV1::Corrupt)?;
+            self.status_locked(id)?;
+            let operation = self
+                .load_operation(id)?
+                .ok_or(ManagedAgentHostErrorV1::Corrupt)?;
+            if operation.expected_running
+                && !self
+                    .processes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .contains_key(id)
+            {
+                // A recovered Controller cannot silently omit a retained live
+                // intent just because its old child handle is unavailable.
+                return Err(ManagedAgentHostErrorV1::Unavailable);
+            }
+        }
+        Ok(self
+            .processes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect())
+    }
+
     fn status_locked(
         &self,
         assignment_id: &str,
@@ -736,6 +812,8 @@ impl ManagedAgentHostOperationsV1 {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(assignment_id);
+            // This is an observed exit of our owned child, unlike a lost handle.
+            operation.expected_running = false;
             operation.state = ManagedAgentHostStateV1::NeedsAttention;
             operation.failure = Some(process_exit_failure(exit_code));
             self.persist_operation(&operation)?;
@@ -791,13 +869,21 @@ impl ManagedAgentHostOperationsV1 {
         let mut operation = self
             .load_operation(assignment_id)?
             .ok_or(ManagedAgentHostErrorV1::InvalidInput)?;
-        if let Some(mut process) = self
-            .processes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(assignment_id)
         {
-            process.stop()?;
+            let mut processes = self
+                .processes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(process) = processes.get_mut(assignment_id) {
+                // Keep ownership when a stop fails so the same process can be
+                // inspected or stopped again. An error does not prove exit.
+                process.stop()?;
+            } else if operation.expected_running {
+                // A retained running intent without its owned process handle
+                // is unresolved, not evidence of a successful shutdown.
+                return Err(ManagedAgentHostErrorV1::Unavailable);
+            }
+            processes.remove(assignment_id);
         }
         operation.state = ManagedAgentHostStateV1::Stopped;
         operation.expected_running = false;

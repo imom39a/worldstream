@@ -21,6 +21,11 @@ use worldstream_server::{
     pack_deployment_binding, read_postgres_dsn, telemetry, verify_startup_pack_readiness_seal,
 };
 use worldstream_sqlite::SqliteRoomStore;
+#[cfg(feature = "cli-operator-preview")]
+use worldstream_studio_supervisor::{
+    managed_http::AcceptedLocalSocket,
+    process_ownership::{ProcessLease, ProcessOwnership, ProcessRole, ProcessTermination},
+};
 use worldstream_transfer::DeploymentIdentityV1;
 
 const BOOTSTRAP_CHANGE_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC4";
@@ -37,12 +42,65 @@ const BOOTSTRAP_CAPABILITY_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FC3";
 struct DaemonArgs {
     #[command(flatten)]
     config: CommonConfigArgs,
+    /// Internal launch reference selected by the local controller.
+    #[cfg(feature = "cli-operator-preview")]
+    #[arg(long, hide = true, requires = "managed_generation")]
+    managed_state_dir: Option<std::path::PathBuf>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[arg(long, hide = true, requires = "managed_state_dir")]
+    managed_generation: Option<String>,
 }
 
+#[cfg(not(feature = "cli-operator-preview"))]
 #[tokio::main]
-#[allow(clippy::redundant_closure_for_method_calls, clippy::too_many_lines)]
 async fn main() -> Result<()> {
+    run(DaemonArgs::parse()).await
+}
+
+#[cfg(feature = "cli-operator-preview")]
+fn main() -> Result<()> {
     let args = DaemonArgs::parse();
+    let mut lease = match (&args.managed_state_dir, &args.managed_generation) {
+        (Some(state), Some(generation)) => Some(
+            ProcessOwnership::open(state)
+                .and_then(|ownership| ownership.claim(ProcessRole::Runtime, generation))
+                .context("managed Runtime ownership could not be claimed")?,
+        ),
+        (None, None) => None,
+        _ => anyhow::bail!("managed Runtime launch is incomplete"),
+    };
+    #[cfg(unix)]
+    if lease.is_some() {
+        rustix::process::setsid().context("managed Runtime could not detach its session")?;
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Runtime executor initialization failed")?;
+    let result = runtime.block_on(run(args, &mut lease));
+    if let Some(lease) = &lease {
+        lease.stop_proving();
+    }
+    // Upgraded sessions and background tasks can retain the scheduler and store.
+    // Keep ownership through their teardown, not only through HTTP listener drain.
+    drop(runtime);
+    if let Some(lease) = lease {
+        lease
+            .finish(if result.is_ok() {
+                ProcessTermination::Stopped
+            } else {
+                ProcessTermination::Failed
+            })
+            .context("managed Runtime terminal publication is uncertain")?;
+    }
+    result
+}
+
+#[allow(clippy::redundant_closure_for_method_calls, clippy::too_many_lines)]
+async fn run(
+    args: DaemonArgs,
+    #[cfg(feature = "cli-operator-preview")] managed_lease: &mut Option<ProcessLease>,
+) -> Result<()> {
     let config = args.config.load().context("configuration rejected")?;
 
     if let Err(error) = tracing_subscriber::fmt()
@@ -55,9 +113,23 @@ async fn main() -> Result<()> {
         anyhow::bail!("structured logging initialization failed: {error}");
     }
 
+    let bind = config.server.bind;
+    #[cfg(feature = "cli-operator-preview")]
+    let managed_listener = if managed_lease.is_some() {
+        if !bind.ip().is_loopback() || bind.port() == 0 {
+            anyhow::bail!("managed Runtime control requires a fixed loopback listener");
+        }
+        // Reserve the listener before any mutable Runtime store is opened.
+        Some(
+            tokio::net::TcpListener::bind(bind)
+                .await
+                .context("managed Runtime listener unavailable")?,
+        )
+    } else {
+        None
+    };
     let data_dir = prepare_data_directory(&config.storage.data_dir)
         .context("data-directory validation failed")?;
-    let bind = config.server.bind;
     let profile = config.storage.profile;
     let telemetry_exporter = build_telemetry_exporter(
         config
@@ -297,6 +369,15 @@ async fn main() -> Result<()> {
             state
         }
     };
+    #[cfg(feature = "cli-operator-preview")]
+    let listener = if let Some(listener) = managed_listener {
+        listener
+    } else {
+        tokio::net::TcpListener::bind(bind)
+            .await
+            .context("listener bind failed")?
+    };
+    #[cfg(not(feature = "cli-operator-preview"))]
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("listener bind failed at {bind}"))?;
@@ -305,6 +386,32 @@ async fn main() -> Result<()> {
         storage_profile = %profile,
         "WorldStream operator listener bound"
     );
+
+    #[cfg(feature = "cli-operator-preview")]
+    if let Some(lease) = managed_lease.as_mut() {
+        let proof = lease
+            .publish_endpoint(listener.local_addr()?)
+            .context("managed Runtime endpoint publication failed")?;
+        let (shutdown, mut requested) = tokio::sync::watch::channel(false);
+        let router = worldstream_server::managed_control::managed_runtime_router(
+            state,
+            proof.clone(),
+            shutdown,
+        );
+        return axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<AcceptedLocalSocket>(),
+        )
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                () = shutdown_signal() => {},
+                _ = requested.changed() => {},
+            }
+            proof.disable_for_shutdown();
+        })
+        .await
+        .context("managed operator HTTP server failed");
+    }
 
     axum::serve(
         listener,

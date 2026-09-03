@@ -47,8 +47,16 @@ use worldstream_studio_supervisor::{
 };
 #[cfg(feature = "cli-operator-preview")]
 use worldstream_studio_supervisor::{
-    control_access::ControlAccess, control_admission::protect_operator_routes,
+    control_access::ControlAccess,
+    control_admission::protect_operator_routes,
     local_initialization::validate_initialized,
+    managed_controller::{
+        ControllerLifecycle, managed_controller_router, managed_lifecycle_router,
+    },
+    managed_http::AcceptedLocalSocket,
+    managed_lifecycle::ManagedLifecycle,
+    process_ownership::{ProcessLease, ProcessOwnership, ProcessRole, ProcessTermination},
+    process_runtime::{ManagedRuntimeSpec, ProcessRuntimeControl},
     startup_authority::validate_existing_host_authority,
 };
 
@@ -59,6 +67,10 @@ use worldstream_studio_supervisor::{
     about = "Local bounded Supervisor for WorldStream Studio"
 )]
 struct Args {
+    /// Internal launch generation selected by the CLI for this installation.
+    #[cfg(feature = "cli-operator-preview")]
+    #[arg(long, hide = true)]
+    managed_generation: Option<String>,
     /// Assert this binary supports operator control; preview always enforces it.
     #[cfg(feature = "cli-operator-preview")]
     #[arg(long = "require-operator-control", hide = true)]
@@ -128,11 +140,53 @@ struct Args {
     activity_clients_dir: PathBuf,
 }
 
+#[cfg(not(feature = "cli-operator-preview"))]
 #[tokio::main]
-#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    run(Args::parse()).await
+}
 
+#[cfg(feature = "cli-operator-preview")]
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let mut lease = args
+        .managed_generation
+        .as_ref()
+        .map(|generation| {
+            ProcessOwnership::open(&args.state_dir)?.claim(ProcessRole::Controller, generation)
+        })
+        .transpose()
+        .context("managed Controller ownership could not be claimed")?;
+    #[cfg(unix)]
+    if lease.is_some() {
+        rustix::process::setsid().context("managed Controller could not detach its session")?;
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Controller executor initialization failed")?;
+    let result = runtime.block_on(run(args, &mut lease));
+    if let Some(lease) = &lease {
+        lease.stop_proving();
+    }
+    drop(runtime);
+    if let Some(lease) = lease {
+        lease
+            .finish(if result.is_ok() {
+                ProcessTermination::Stopped
+            } else {
+                ProcessTermination::Failed
+            })
+            .context("managed Controller terminal publication is uncertain")?;
+    }
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run(
+    args: Args,
+    #[cfg(feature = "cli-operator-preview")] managed_lease: &mut Option<ProcessLease>,
+) -> Result<()> {
     // This temporary compile-time branch is removed with the Studio cutover.
     // There is no runtime flag which disables operator admission in preview.
     #[cfg(feature = "cli-operator-preview")]
@@ -219,17 +273,35 @@ async fn main() -> Result<()> {
         .with_context(|| format!("Studio Supervisor listener bind failed at {}", args.bind))?;
     let source = HttpDaemonStatusSource::new(args.daemon, daemon_timeout);
     let lifecycle = ConfiguredDaemonLifecycle::new(
-        args.daemon_executable,
-        args.daemon_config,
+        args.daemon_executable.clone(),
+        args.daemon_config.clone(),
         Duration::from_millis(args.graceful_stop_timeout_ms),
         source.clone(),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let managed_transport_ownership = if managed_lease.is_some() {
+        Some(ProcessOwnership::open(&args.state_dir)?)
+    } else {
+        None
+    };
     let activity_packs = HttpDaemonActivityPackSource::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let activity_packs = if let Some(ownership) = &managed_transport_ownership {
+        HttpDaemonActivityPackSource::new_managed(
+            args.daemon,
+            daemon_timeout,
+            vault.clone(),
+            Some(host_authority_reference.clone()),
+            ownership.clone(),
+        )
+    } else {
+        activity_packs
+    };
     #[cfg(feature = "cli-operator-preview")]
     let runner_registry = RunnerTemplateRegistryV1::open_installed(
         &args.state_dir.join("runner-templates/installed"),
@@ -279,12 +351,36 @@ async fn main() -> Result<()> {
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let rooms = if let Some(ownership) = &managed_transport_ownership {
+        HttpDaemonRoomSource::new_managed(
+            args.daemon,
+            daemon_timeout,
+            vault.clone(),
+            Some(host_authority_reference.clone()),
+            ownership.clone(),
+        )
+    } else {
+        rooms
+    };
     let room_creator = HttpDaemonRoomCreatorV1::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let room_creator = if let Some(ownership) = &managed_transport_ownership {
+        HttpDaemonRoomCreatorV1::new_managed(
+            args.daemon,
+            daemon_timeout,
+            vault.clone(),
+            Some(host_authority_reference.clone()),
+            ownership.clone(),
+        )
+    } else {
+        room_creator
+    };
     let room_creation = RoomCreationSupervisorV1::open(
         &args.state_dir.join("room-creations"),
         drafts.clone(),
@@ -298,6 +394,19 @@ async fn main() -> Result<()> {
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let backup_executor = if let Some(ownership) = &managed_transport_ownership {
+        HttpDaemonBackupExecutorV1::new_managed(
+            args.daemon,
+            daemon_timeout,
+            args.storage_profile,
+            vault.clone(),
+            Some(host_authority_reference.clone()),
+            ownership.clone(),
+        )
+    } else {
+        backup_executor
+    };
     let backups = BackupOperationsV1::open(&backup_root, backup_executor).map_err(|error| {
         anyhow::anyhow!(
             "Studio Supervisor protected backup operation store is unavailable: {error:?}"
@@ -316,12 +425,36 @@ async fn main() -> Result<()> {
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let task_runtime = if let Some(ownership) = &managed_transport_ownership {
+        HttpDaemonTaskRuntimeV1::new_managed(
+            args.daemon,
+            daemon_timeout,
+            vault.clone(),
+            Some(host_authority_reference.clone()),
+            ownership.clone(),
+        )
+    } else {
+        task_runtime
+    };
     let task_setup_provisioner = HttpDaemonTaskSetupProvisionerV1::new(
         args.daemon,
         daemon_timeout,
         vault.clone(),
         Some(host_authority_reference.clone()),
     );
+    #[cfg(feature = "cli-operator-preview")]
+    let task_setup_provisioner = if let Some(ownership) = &managed_transport_ownership {
+        HttpDaemonTaskSetupProvisionerV1::new_managed(
+            args.daemon,
+            daemon_timeout,
+            vault.clone(),
+            Some(host_authority_reference.clone()),
+            ownership.clone(),
+        )
+    } else {
+        task_setup_provisioner
+    };
     let task_setup_base = TaskSetupSupervisorV1::open(
         &args.state_dir.join("task-setups"),
         room_creation.clone(),
@@ -388,14 +521,27 @@ async fn main() -> Result<()> {
         assignment_mcp_launches.clone(),
         task_setup.clone(),
     );
-    let runner_attention_source = LiveRunnerAttentionSourceV1::new(
-        runner_attention_assignments,
-        HttpDaemonRunnerAttentionSourceV1::new(
+    let daemon_runner_attention = HttpDaemonRunnerAttentionSourceV1::new(
+        args.daemon,
+        daemon_timeout,
+        vault.clone(),
+        Some(host_authority_reference.clone()),
+    );
+    #[cfg(feature = "cli-operator-preview")]
+    let daemon_runner_attention = if let Some(ownership) = &managed_transport_ownership {
+        HttpDaemonRunnerAttentionSourceV1::new_managed(
             args.daemon,
             daemon_timeout,
             vault.clone(),
-            Some(host_authority_reference),
-        ),
+            Some(host_authority_reference.clone()),
+            ownership.clone(),
+        )
+    } else {
+        daemon_runner_attention
+    };
+    let runner_attention_source = LiveRunnerAttentionSourceV1::new(
+        runner_attention_assignments,
+        daemon_runner_attention,
         runners.clone(),
     );
     let runner_attention = RunnerAttentionSupervisorV1::new(
@@ -424,6 +570,31 @@ async fn main() -> Result<()> {
     )
     .map_err(|error| anyhow::anyhow!("managed Agent Host operations are unavailable: {error:?}"))?;
     let runner_attention = runner_attention.with_managed_hosts(managed_agent_hosts.clone());
+    #[cfg(feature = "cli-operator-preview")]
+    let managed_lifecycle = if managed_lease.is_some() {
+        Some(ManagedLifecycle::open(
+            &args.state_dir,
+            ProcessRuntimeControl::open(ManagedRuntimeSpec {
+                // Capture lexical absolute paths without requiring the Runtime
+                // executable to exist merely to inspect or stop the Controller.
+                executable: std::path::absolute(&args.daemon_executable)?,
+                config: std::path::absolute(&args.daemon_config)?,
+                state: canonical_state_dir.clone(),
+                working_directory: std::env::current_dir()?,
+                endpoint: args.daemon,
+                timeout: Duration::from_millis(args.graceful_stop_timeout_ms),
+            })?,
+            runners.clone(),
+            managed_agent_hosts.clone(),
+        )?)
+    } else {
+        None
+    };
+    #[cfg(feature = "cli-operator-preview")]
+    let lifecycle = match &managed_lifecycle {
+        Some(control) => ControllerLifecycle::Managed(control.clone()),
+        None => ControllerLifecycle::Foreground(lifecycle),
+    };
     let attention_inbox = AttentionInboxV1::new(
         LiveAttentionInboxSourceV1::new(
             lifecycle.clone(),
@@ -459,6 +630,29 @@ async fn main() -> Result<()> {
 
     // Admission must wrap the complete graph, including all late merges and
     // assignment-MCP aliases. No operator routes may be merged after this point.
+    #[cfg(feature = "cli-operator-preview")]
+    if let Some(lease) = managed_lease.as_mut() {
+        let proof = lease
+            .publish_endpoint(listener.local_addr()?)
+            .context("managed Controller endpoint publication failed")?;
+        let (shutdown, mut requested) = tokio::sync::watch::channel(false);
+        let lifecycle = managed_lifecycle.context("managed lifecycle is unavailable")?;
+        let router = router.merge(managed_lifecycle_router(lifecycle));
+        let router = managed_controller_router(router, control, proof.clone(), shutdown);
+        return axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<AcceptedLocalSocket>(),
+        )
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = requested.changed() => {},
+            }
+            proof.disable_for_shutdown();
+        })
+        .await
+        .context("managed Controller server failed");
+    }
     #[cfg(feature = "cli-operator-preview")]
     let router = protect_operator_routes(router, control);
     axum::serve(listener, router)

@@ -3377,6 +3377,7 @@ dependencies = [
  "winsafe",
  "worldstream-activity-client",
  "worldstream-core",
+ "worldstream-pack-bundle",
  "worldstream-protocol",
  "worldstream-runtime",
  "zeroize",

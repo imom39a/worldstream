@@ -19,14 +19,51 @@ use crate::control_access::ControlAccess;
 /// Protect the complete route graph, including unknown paths and method fallbacks.
 /// No operator routes may be merged outside this boundary afterward.
 pub fn protect_operator_routes(router: Router, control: ControlAccess) -> Router {
-    router.layer(from_fn_with_state(Arc::new(control), admit_control))
+    protect(router, control, false)
+}
+
+#[cfg(feature = "cli-operator-preview")]
+pub(crate) fn protect_managed_operator_routes(
+    router: Router,
+    control: ControlAccess,
+    proof: crate::verified_control::ProofService,
+) -> Router {
+    // The only added unauthenticated route is this fixed bounded proof handler.
+    // Callers cannot substitute an operator handler behind its exception.
+    protect(
+        router.merge(crate::managed_http::local_proof_router(proof)),
+        control,
+        true,
+    )
+}
+
+struct Admission {
+    control: ControlAccess,
+    process_proof: bool,
+}
+
+fn protect(router: Router, control: ControlAccess, process_proof: bool) -> Router {
+    router.layer(from_fn_with_state(
+        Arc::new(Admission {
+            control,
+            process_proof,
+        }),
+        admit_control,
+    ))
 }
 
 async fn admit_control(
-    State(control): State<Arc<ControlAccess>>,
+    State(admission): State<Arc<Admission>>,
     mut request: Request,
     next: Next,
 ) -> Response {
+    if admission.process_proof
+        && request.method() == axum::http::Method::POST
+        && request.uri().path() == "/api/v1/control/proof"
+    {
+        request.headers_mut().remove(header::AUTHORIZATION);
+        return next.run(request).await;
+    }
     if is_membership_browser_request(request.method().as_str(), request.uri().path()) {
         // These handlers retain their exact Origin, one-use handoff and opaque
         // Membership session checks. Installation authority never reaches them.
@@ -34,7 +71,8 @@ async fn admit_control(
         return next.run(request).await;
     }
     let headers = request.headers().clone();
-    let authentication = tokio::task::spawn_blocking(move || control.authenticate(&headers)).await;
+    let authentication =
+        tokio::task::spawn_blocking(move || admission.control.authenticate(&headers)).await;
     match authentication {
         Ok(Ok(true)) => {
             // Downstream operator adapters use their separately scoped authorities.

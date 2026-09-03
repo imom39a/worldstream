@@ -63,7 +63,7 @@ pub struct CommandOptions {
 pub enum OperatorCommand {
     /// Explicit protected initialization or reviewed prerequisite import; starts no processes.
     Init(InitArgs),
-    /// Manage the configured local installation (backend not implemented yet).
+    /// Manage the configured local installation.
     Server {
         #[command(subcommand)]
         command: ServerCommand,

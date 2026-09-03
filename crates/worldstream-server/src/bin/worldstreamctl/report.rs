@@ -203,9 +203,91 @@ pub struct CommandReport {
     #[cfg(feature = "cli-operator-preview")]
     #[serde(skip_serializing_if = "Option::is_none")]
     import_apply: Option<ImportApplyV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server: Option<worldstream_studio_supervisor::managed_lifecycle::LifecycleStatus>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retained_server:
+        Option<worldstream_studio_supervisor::retained_server_inspection::RetainedServerInspection>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logs: Option<Vec<worldstream_studio_supervisor::managed_lifecycle::LifecycleLogEntry>>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    room_setup: Option<crate::cli_room_setup::RoomSetupSummary>,
+    #[cfg(feature = "cli-operator-preview")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup_issue: Option<worldstream_studio_supervisor::room_setup_spec::RoomSetupError>,
 }
 
 impl CommandReport {
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn bound_runner_restart_unsupported() -> Self {
+        let mut report = Self::new("server restart", CommandOutcome::Rejected);
+        report.code = "managed_runner_restart_unsupported";
+        report.message = "Automatic restart of bound Runner instances is not supported in this preview. No processes were stopped.";
+        "Use server stop, then server start, and explicitly start the required agents."
+            .clone_into(&mut report.next_action);
+        report
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn unavailable_server(command: &'static str, state: &std::path::Path) -> Self {
+        let mut report = Self::new(command, CommandOutcome::ControllerUnavailable);
+        report.retained_server = Some(
+            worldstream_studio_supervisor::retained_server_inspection::inspect_retained_server(
+                state,
+            ),
+        );
+        report
+    }
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn logs(
+        command: &'static str,
+        entries: Vec<worldstream_studio_supervisor::managed_lifecycle::LifecycleLogEntry>,
+    ) -> Self {
+        let mut report = Self::new(command, CommandOutcome::Complete);
+        report.logs = Some(entries);
+        report
+    }
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn room_setup(
+        command: &'static str,
+        result: crate::cli_room_setup::RoomSetupExecution,
+    ) -> Self {
+        use crate::cli_room_setup::RoomSetupExecution;
+        match result {
+            RoomSetupExecution::Complete(summary) => {
+                let mut report = Self::new(command, CommandOutcome::Complete);
+                report.room_setup = Some(summary);
+                report
+            }
+            RoomSetupExecution::Rejected(issue) => {
+                let mut report = Self::new(command, CommandOutcome::Rejected);
+                report.setup_issue = Some(issue);
+                report
+            }
+            RoomSetupExecution::Failed(issue) => {
+                let mut report = Self::new(command, CommandOutcome::Failed);
+                report.setup_issue = Some(issue);
+                report
+            }
+            RoomSetupExecution::Unavailable => {
+                Self::new(command, CommandOutcome::ControllerUnavailable)
+            }
+        }
+    }
+    #[cfg(feature = "cli-operator-preview")]
+    pub fn server(
+        command: &'static str,
+        outcome: CommandOutcome,
+        server: worldstream_studio_supervisor::managed_lifecycle::LifecycleStatus,
+    ) -> Self {
+        let mut report = Self::new(command, outcome);
+        report.server = Some(server);
+        report
+    }
     #[cfg(feature = "cli-operator-preview")]
     #[must_use]
     pub fn initialization_import_requires_initialization() -> Self {
@@ -286,6 +368,10 @@ impl CommandReport {
     }
 
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep the closed command outcome and stable output mapping together"
+    )]
     pub fn new(command: &'static str, outcome: CommandOutcome) -> Self {
         let mut setup = None;
         let mut lifecycle = None;
@@ -381,6 +467,16 @@ impl CommandReport {
             import_review: None,
             #[cfg(feature = "cli-operator-preview")]
             import_apply: None,
+            #[cfg(feature = "cli-operator-preview")]
+            server: None,
+            #[cfg(feature = "cli-operator-preview")]
+            retained_server: None,
+            #[cfg(feature = "cli-operator-preview")]
+            logs: None,
+            #[cfg(feature = "cli-operator-preview")]
+            room_setup: None,
+            #[cfg(feature = "cli-operator-preview")]
+            setup_issue: None,
         }
     }
 
@@ -432,6 +528,40 @@ impl CommandReport {
             if let Some(applied) = &self.import_apply {
                 let document = serde_json::to_string_pretty(applied)
                     .map_err(|_| io::Error::other("operator result could not be encoded"))?;
+                writeln!(stdout, "{document}")?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(server) = &self.server {
+                let document = serde_json::to_string_pretty(server)
+                    .map_err(|_| io::Error::other("server status could not be encoded"))?;
+                writeln!(stdout, "{document}")?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(retained) = &self.retained_server {
+                let document = serde_json::to_string_pretty(retained).map_err(|_| {
+                    io::Error::other("retained server evidence could not be encoded")
+                })?;
+                writeln!(
+                    stdout,
+                    "Retained evidence only; this is not live process health.\n{document}"
+                )?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(logs) = &self.logs {
+                let document = serde_json::to_string_pretty(logs)
+                    .map_err(|_| io::Error::other("server logs could not be encoded"))?;
+                writeln!(stdout, "{document}")?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(summary) = &self.room_setup {
+                let document = serde_json::to_string_pretty(summary)
+                    .map_err(|_| io::Error::other("setup summary could not be encoded"))?;
+                writeln!(stdout, "{document}")?;
+            }
+            #[cfg(feature = "cli-operator-preview")]
+            if let Some(issue) = &self.setup_issue {
+                let document = serde_json::to_string(issue)
+                    .map_err(|_| io::Error::other("setup diagnostic could not be encoded"))?;
                 writeln!(stdout, "{document}")?;
             }
             if let Some(progress) = &self.setup {

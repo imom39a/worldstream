@@ -19,6 +19,8 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "cli-operator-preview")]
+use std::sync::{RwLock, RwLockWriteGuard};
 use thiserror::Error;
 use worldstream_protocol::{BearerWireV1, PackReference, UlidString};
 use worldstream_runtime::{create_owner_only_file, prepare_data_directory};
@@ -801,6 +803,8 @@ pub struct RunnerSupervisorV1 {
     graceful_timeout: Duration,
     backend: Arc<dyn RunnerRuntimeBackend>,
     instances: Arc<Mutex<BTreeMap<String, RunnerRuntime>>>,
+    #[cfg(feature = "cli-operator-preview")]
+    starts_paused: Arc<RwLock<bool>>,
 }
 
 struct RunnerRuntime {
@@ -911,6 +915,8 @@ impl RunnerSupervisorV1 {
             graceful_timeout,
             backend: Arc::new(backend),
             instances: Arc::new(Mutex::new(instances)),
+            #[cfg(feature = "cli-operator-preview")]
+            starts_paused: Arc::new(RwLock::new(false)),
         })
     }
 
@@ -970,9 +976,59 @@ impl RunnerSupervisorV1 {
         self.status_response()
     }
 
+    /// Captures owned children, refusing unresolved retained managed intent.
+    /// An unowned health response is not proof of the earlier child's exit.
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn owned_instances(&self) -> Result<Vec<String>, RunnerTemplateErrorV1> {
+        let _ = self.statuses();
+        let instances = self.lock();
+        if instances
+            .values()
+            .any(|instance| instance.expected_running && instance.process.is_none())
+        {
+            return Err(RunnerTemplateErrorV1::RegistryUnavailable);
+        }
+        Ok(instances
+            .iter()
+            .filter(|(_, instance)| instance.managed && instance.process.is_some())
+            .map(|(id, _)| id.clone())
+            .collect())
+    }
+
     /// Idempotently starts one owner-installed instance.
     #[must_use]
     pub fn start(&self, instance_id: &str) -> Option<RunnerInstanceStatusResponseV1> {
+        #[cfg(feature = "cli-operator-preview")]
+        let _admission = {
+            let Ok(admission) = self.starts_paused.try_read() else {
+                return Some(self.status_response());
+            };
+            if *admission {
+                return Some(self.status_response());
+            }
+            admission
+        };
+        self.start_permitted(instance_id)
+    }
+
+    #[cfg(feature = "cli-operator-preview")]
+    pub(crate) fn pause_starts(
+        &self,
+    ) -> Result<(RwLockWriteGuard<'_, bool>, bool), RunnerTemplateErrorV1> {
+        let mut paused = self
+            .starts_paused
+            .write()
+            .map_err(|_| RunnerTemplateErrorV1::RegistryUnavailable)?;
+        let previous = *paused;
+        *paused = true;
+        Ok((paused, previous))
+    }
+
+    // Only the lifecycle coordinator bypasses admission while holding its fence.
+    pub(crate) fn start_permitted(
+        &self,
+        instance_id: &str,
+    ) -> Option<RunnerInstanceStatusResponseV1> {
         self.reconcile(instance_id);
         let (manifest, _) = self.registry.template_for_instance(instance_id)?;
         {
@@ -1072,15 +1128,27 @@ impl RunnerSupervisorV1 {
         };
         runtime.operation_id = runtime.operation_id.saturating_add(1);
         runtime.state = RunnerInstanceStateV1::Stopping;
-        runtime.expected_running = false;
-        let _ = self.persist(runtime);
+        // A stop request is not proof of exit. Retain running intent until the
+        // exact owned child exits, so reopening cannot mistake a timeout for stop.
+        runtime.expected_running = true;
+        if self.persist(runtime).is_err() {
+            runtime.process = Some(process);
+            runtime.state = RunnerInstanceStateV1::Failed;
+            runtime.failure = Some(stop_failed());
+            return Some(self.status_response_from(&instances));
+        }
         match process.graceful_stop(self.graceful_timeout) {
             Ok(true) => {
                 runtime.state = RunnerInstanceStateV1::Stopped;
+                runtime.expected_running = false;
                 runtime.managed = false;
                 runtime.health = RunnerInstanceHealthV1::Stopped;
                 runtime.capacity_in_use = 0;
                 runtime.failure = None;
+                if self.persist(runtime).is_err() {
+                    runtime.state = RunnerInstanceStateV1::Failed;
+                    runtime.failure = Some(stop_failed());
+                }
             }
             Ok(false) => {
                 runtime.process = Some(process);

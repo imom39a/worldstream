@@ -156,6 +156,8 @@ pub struct HttpDaemonRoomCreatorV1 {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
 impl HttpDaemonRoomCreatorV1 {
@@ -172,6 +174,31 @@ impl HttpDaemonRoomCreatorV1 {
             timeout,
             vault,
             host_authority,
+            #[cfg(feature = "cli-operator-preview")]
+            managed: None,
+        }
+    }
+
+    /// Keeps exact creation intent on the Runtime socket proved before Host authority.
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn new_managed(
+        address: SocketAddr,
+        timeout: Duration,
+        vault: FileSecretVaultV1,
+        host_authority: Option<SecretReferenceV1>,
+        ownership: crate::process_ownership::ProcessOwnership,
+    ) -> Self {
+        Self {
+            address,
+            timeout,
+            vault,
+            host_authority,
+            managed: Some(
+                crate::managed_daemon_transport::ManagedDaemonTransport::new(
+                    ownership, address, timeout,
+                ),
+            ),
         }
     }
 }
@@ -185,6 +212,45 @@ impl DaemonRoomCreatorV1 for HttpDaemonRoomCreatorV1 {
             .host_authority
             .as_ref()
             .ok_or(RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+        #[cfg(feature = "cli-operator-preview")]
+        if let Some(transport) = &self.managed {
+            let body = Zeroizing::new(
+                serde_json::to_vec(request).map_err(|_| RoomCreationAttemptErrorV1::Rejected)?,
+            );
+            let mut authority_unavailable = false;
+            let response = transport
+                .request("POST", "/v1/rooms", &body, MAX_MESSAGE_BYTES, || {
+                    let resolved = (|| {
+                        let secret = self
+                            .vault
+                            .resolve(SecretKindV1::HostAuthority, reference)
+                            .map_err(|_| ())?;
+                        let bytes: [u8; 32] = secret.as_bytes().try_into().map_err(|_| ())?;
+                        let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+                        let token = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
+                        let mut header =
+                            axum::http::HeaderValue::from_str(&token).map_err(|_| ())?;
+                        header.set_sensitive(true);
+                        Ok::<_, ()>(header)
+                    })();
+                    authority_unavailable = resolved.is_err();
+                    resolved
+                })
+                .map_err(|_| {
+                    if authority_unavailable {
+                        RoomCreationAttemptErrorV1::OperatorFixRequired
+                    } else {
+                        RoomCreationAttemptErrorV1::Ambiguous
+                    }
+                })?;
+            return match response.status {
+                200 => serde_json::from_slice(&response.body)
+                    .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous),
+                401 | 403 => Err(RoomCreationAttemptErrorV1::OperatorFixRequired),
+                400 | 404 | 409 | 422 => Err(RoomCreationAttemptErrorV1::Rejected),
+                _ => Err(RoomCreationAttemptErrorV1::Ambiguous),
+            };
+        }
         let secret = self
             .vault
             .resolve(SecretKindV1::HostAuthority, reference)

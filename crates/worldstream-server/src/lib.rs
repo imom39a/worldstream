@@ -3,6 +3,8 @@
 //! supervisor wires the verified storage seams into this process.
 
 mod args;
+#[cfg(feature = "cli-operator-preview")]
+pub mod managed_control;
 pub mod operator_packs;
 pub mod operator_storage;
 pub mod operator_transfer;

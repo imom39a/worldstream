@@ -137,6 +137,612 @@ impl ManagedAgentHostProcessV1 for FixedProcess {
     }
 }
 
+#[derive(Clone)]
+struct RetryableStopLauncher(Arc<AtomicUsize>);
+
+impl ManagedAgentHostProcessLauncherV1 for RetryableStopLauncher {
+    fn launch_bridged(
+        &self,
+        _plan: &ManagedAgentHostLaunchPlanV1,
+        _credential: &zeroize::Zeroizing<Vec<u8>>,
+    ) -> Result<Box<dyn ManagedAgentHostProcessV1>, ManagedAgentHostErrorV1> {
+        Ok(Box::new(RetryableStopProcess(Arc::clone(&self.0))))
+    }
+}
+
+struct RetryableStopProcess(Arc<AtomicUsize>);
+
+impl ManagedAgentHostProcessV1 for RetryableStopProcess {
+    fn try_wait(&mut self) -> Result<Option<i32>, ManagedAgentHostErrorV1> {
+        Ok(None)
+    }
+
+    fn last_activity_at_ms(&self) -> Option<u64> {
+        Some(test_now_ms())
+    }
+
+    fn stop(&mut self) -> Result<(), ManagedAgentHostErrorV1> {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(ManagedAgentHostErrorV1::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn failed_stop_retains_the_owned_agent_host_for_a_later_retry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let root = directory.path().canonicalize()?;
+    let stop_calls = Arc::new(AtomicUsize::new(0));
+    let operations = ManagedAgentHostOperationsV1::open_with(
+        &root.join("operations"),
+        FixedStartSource::new(root),
+        RetryableStopLauncher(Arc::clone(&stop_calls)),
+    )?;
+    operations.start(ASSIGNMENT)?;
+    assert!(matches!(
+        operations.stop(ASSIGNMENT),
+        Err(ManagedAgentHostErrorV1::Unavailable)
+    ));
+    assert_eq!(stop_calls.load(Ordering::SeqCst), 1);
+    let stopped = operations.stop(ASSIGNMENT)?;
+    assert_eq!(stop_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        stopped.state,
+        worldstream_studio_supervisor::managed_agent_host::ManagedAgentHostStateV1::Stopped
+    );
+    assert!(!stopped.ready);
+    Ok(())
+}
+
+#[test]
+fn stop_without_an_owned_handle_does_not_claim_that_an_unresolved_host_exited()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let root = directory.path().canonicalize()?;
+    let source = FixedStartSource::new(root.clone());
+    let launcher = RecordingProcessLauncher::default();
+    let original = ManagedAgentHostOperationsV1::open_with(
+        &root.join("operations"),
+        source.clone(),
+        launcher.clone(),
+    )?;
+    original.start(ASSIGNMENT)?;
+    drop(original);
+    let reopened =
+        ManagedAgentHostOperationsV1::open_with(&root.join("operations"), source, launcher)?;
+    assert!(matches!(
+        reopened.stop(ASSIGNMENT),
+        Err(ManagedAgentHostErrorV1::Unavailable)
+    ));
+    let status = reopened.status(ASSIGNMENT)?;
+    assert_eq!(
+        status.state,
+        worldstream_studio_supervisor::managed_agent_host::ManagedAgentHostStateV1::NeedsAttention
+    );
+    assert!(!status.ready);
+    Ok(())
+}
+
+#[cfg(feature = "cli-operator-preview")]
+mod coordinated_lifecycle {
+    use super::*;
+    use std::sync::{Mutex, atomic::AtomicBool};
+    use worldstream_runtime::prepare_data_directory;
+    use worldstream_studio_supervisor::{
+        managed_agent_host::ManagedAgentHostStateV1,
+        managed_lifecycle::{
+            LifecycleError, LifecycleStage, ManagedLifecycle, RuntimeControl, RuntimeObservation,
+        },
+        runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
+        secrets::FileSecretVaultV1,
+    };
+
+    // Only the OS process seam is substituted. The operation stores, Runner
+    // registry, managed-host lifecycle and restart coordination remain real.
+    #[derive(Clone)]
+    struct Processes {
+        active_hosts: Arc<AtomicUsize>,
+        runtime_running: Arc<AtomicBool>,
+        fail_runtime_starts: Arc<AtomicUsize>,
+        stop_gate: Option<Arc<StopGate>>,
+    }
+
+    struct StopGate {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl ManagedAgentHostProcessLauncherV1 for Processes {
+        fn launch_bridged(
+            &self,
+            _plan: &ManagedAgentHostLaunchPlanV1,
+            _credential: &zeroize::Zeroizing<Vec<u8>>,
+        ) -> Result<Box<dyn ManagedAgentHostProcessV1>, ManagedAgentHostErrorV1> {
+            if !self.runtime_running.load(Ordering::SeqCst) {
+                return Err(ManagedAgentHostErrorV1::Unavailable);
+            }
+            self.active_hosts.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(HostProcess {
+                processes: self.clone(),
+                stopped: false,
+            }))
+        }
+    }
+
+    struct HostProcess {
+        processes: Processes,
+        stopped: bool,
+    }
+
+    impl ManagedAgentHostProcessV1 for HostProcess {
+        fn try_wait(&mut self) -> Result<Option<i32>, ManagedAgentHostErrorV1> {
+            Ok(self.stopped.then_some(0))
+        }
+
+        fn last_activity_at_ms(&self) -> Option<u64> {
+            Some(test_now_ms())
+        }
+
+        fn stop(&mut self) -> Result<(), ManagedAgentHostErrorV1> {
+            if !self.stopped {
+                self.processes.active_hosts.fetch_sub(1, Ordering::SeqCst);
+                self.stopped = true;
+            }
+            Ok(())
+        }
+    }
+
+    impl RuntimeControl for Processes {
+        fn observe(&self) -> RuntimeObservation {
+            if self.runtime_running.load(Ordering::SeqCst) {
+                RuntimeObservation::Ready
+            } else {
+                RuntimeObservation::Stopped
+            }
+        }
+
+        fn start(&self) -> Result<(), LifecycleError> {
+            if self
+                .fail_runtime_starts
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(LifecycleError::Unavailable);
+            }
+            self.runtime_running.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn stop(&self) -> Result<(), LifecycleError> {
+            if let Some(gate) = &self.stop_gate {
+                gate.entered
+                    .send(())
+                    .map_err(|_| LifecycleError::Unavailable)?;
+                gate.release
+                    .lock()
+                    .map_err(|_| LifecycleError::Unavailable)?
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| LifecycleError::Unavailable)?;
+            }
+            if self.active_hosts.load(Ordering::SeqCst) != 0 {
+                return Err(LifecycleError::Unavailable);
+            }
+            self.runtime_running.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restart_stops_owned_runners_before_runtime_and_restores_only_the_running_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let state = prepare_data_directory(&temporary.path().join("state"))?;
+        let processes = Processes {
+            active_hosts: Arc::new(AtomicUsize::new(0)),
+            runtime_running: Arc::new(AtomicBool::new(true)),
+            fail_runtime_starts: Arc::new(AtomicUsize::new(0)),
+            stop_gate: None,
+        };
+        let mut source = FixedStartSource::new(state.clone());
+        source.capacity = 2;
+        let hosts = ManagedAgentHostOperationsV1::open_with(
+            &state.join("managed-hosts"),
+            source,
+            processes.clone(),
+        )?;
+        hosts.start(ASSIGNMENT)?;
+        hosts.start(SECOND_ASSIGNMENT)?;
+        hosts.stop(SECOND_ASSIGNMENT)?;
+        let runners = RunnerSupervisorV1::open(
+            RunnerTemplateRegistryV1::open_installed(&state.join("runner-templates"))?,
+            &state.join("runner-runtime"),
+            FileSecretVaultV1::open(&state.join("secrets"))?,
+            Duration::from_secs(1),
+        )?;
+        let lifecycle =
+            ManagedLifecycle::open(&state, processes.clone(), runners.clone(), hosts.clone())?;
+        let result = lifecycle.restart()?;
+        assert_eq!(result.stage, LifecycleStage::Complete);
+        assert!(result.restore_remaining.is_empty());
+        assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 1);
+        assert!(hosts.status(ASSIGNMENT)?.ready);
+        assert_eq!(
+            hosts.status(SECOND_ASSIGNMENT)?.state,
+            ManagedAgentHostStateV1::Stopped
+        );
+        drop(lifecycle);
+        let reopened = ManagedLifecycle::open(&state, processes, runners, hosts)?;
+        let retained = reopened
+            .status()?
+            .operation
+            .ok_or("missing retained lifecycle operation")?;
+        assert_eq!(retained.operation_id, result.operation_id);
+        assert_eq!(retained.stage, LifecycleStage::Complete);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_after_runtime_start_failure_preserves_the_original_restore_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let state = prepare_data_directory(&temporary.path().join("state"))?;
+        let processes = Processes {
+            active_hosts: Arc::new(AtomicUsize::new(0)),
+            runtime_running: Arc::new(AtomicBool::new(true)),
+            fail_runtime_starts: Arc::new(AtomicUsize::new(1)),
+            stop_gate: None,
+        };
+        let hosts = ManagedAgentHostOperationsV1::open_with(
+            &state.join("managed-hosts"),
+            FixedStartSource::new(state.clone()),
+            processes.clone(),
+        )?;
+        hosts.start(ASSIGNMENT)?;
+        let runners = RunnerSupervisorV1::open(
+            RunnerTemplateRegistryV1::open_installed(&state.join("runner-templates"))?,
+            &state.join("runner-runtime"),
+            FileSecretVaultV1::open(&state.join("secrets"))?,
+            Duration::from_secs(1),
+        )?;
+        let lifecycle =
+            ManagedLifecycle::open(&state, processes.clone(), runners.clone(), hosts.clone())?;
+        assert!(matches!(
+            lifecycle.restart(),
+            Err(LifecycleError::Unavailable)
+        ));
+        let checkpoint = lifecycle
+            .status()?
+            .operation
+            .ok_or("missing partial restart")?;
+        assert_eq!(checkpoint.stage, LifecycleStage::RuntimeRestart);
+        assert_eq!(checkpoint.restore_remaining.len(), 1);
+        assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 0);
+        drop(lifecycle);
+        let reopened = ManagedLifecycle::open(&state, processes.clone(), runners, hosts.clone())?;
+        let resumed = reopened.restart()?;
+        assert_eq!(resumed.operation_id, checkpoint.operation_id);
+        assert_eq!(resumed.stage, LifecycleStage::Complete);
+        assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 1);
+        assert!(hosts.status(ASSIGNMENT)?.ready);
+        Ok(())
+    }
+
+    #[test]
+    fn new_managed_start_cannot_race_with_the_captured_restart_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let state = prepare_data_directory(&temporary.path().join("state"))?;
+        let (entered, reached_stop) = std::sync::mpsc::sync_channel(1);
+        let (release, proceed) = std::sync::mpsc::sync_channel(1);
+        let processes = Processes {
+            active_hosts: Arc::new(AtomicUsize::new(0)),
+            runtime_running: Arc::new(AtomicBool::new(true)),
+            fail_runtime_starts: Arc::new(AtomicUsize::new(0)),
+            stop_gate: Some(Arc::new(StopGate {
+                entered,
+                release: Mutex::new(proceed),
+            })),
+        };
+        let mut source = FixedStartSource::new(state.clone());
+        source.capacity = 2;
+        let hosts = ManagedAgentHostOperationsV1::open_with(
+            &state.join("managed-hosts"),
+            source,
+            processes.clone(),
+        )?;
+        hosts.start(ASSIGNMENT)?;
+        let runners = RunnerSupervisorV1::open(
+            RunnerTemplateRegistryV1::open_installed(&state.join("runner-templates"))?,
+            &state.join("runner-runtime"),
+            FileSecretVaultV1::open(&state.join("secrets"))?,
+            Duration::from_secs(1),
+        )?;
+        let lifecycle = ManagedLifecycle::open(&state, processes.clone(), runners, hosts.clone())?;
+        let restart = std::thread::spawn(move || lifecycle.restart());
+        reached_stop.recv_timeout(Duration::from_secs(5))?;
+        let unexpected_start = hosts.start(SECOND_ASSIGNMENT);
+        release.send(())?;
+        let restarted = restart.join().map_err(|_| "restart thread failed")?;
+        assert!(matches!(
+            unexpected_start,
+            Err(ManagedAgentHostErrorV1::Unavailable)
+        ));
+        assert_eq!(restarted?.stage, LifecycleStage::Complete);
+        assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 1);
+        assert!(hosts.status(ASSIGNMENT)?.ready);
+        assert!(
+            hosts.start(SECOND_ASSIGNMENT)?.ready,
+            "starts reopen after completion"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_stop_then_start_does_not_restore_previously_stopped_hosts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let state = prepare_data_directory(&temporary.path().join("state"))?;
+        let processes = Processes {
+            active_hosts: Arc::new(AtomicUsize::new(0)),
+            runtime_running: Arc::new(AtomicBool::new(true)),
+            fail_runtime_starts: Arc::new(AtomicUsize::new(0)),
+            stop_gate: None,
+        };
+        let hosts = ManagedAgentHostOperationsV1::open_with(
+            &state.join("managed-hosts"),
+            FixedStartSource::new(state.clone()),
+            processes.clone(),
+        )?;
+        hosts.start(ASSIGNMENT)?;
+        let runners = RunnerSupervisorV1::open(
+            RunnerTemplateRegistryV1::open_installed(&state.join("runner-templates"))?,
+            &state.join("runner-runtime"),
+            FileSecretVaultV1::open(&state.join("secrets"))?,
+            Duration::from_secs(1),
+        )?;
+        let lifecycle =
+            ManagedLifecycle::open(&state, processes.clone(), runners.clone(), hosts.clone())?;
+        let stopped = lifecycle.stop()?;
+        assert_eq!(stopped.stage, LifecycleStage::Complete);
+        assert_eq!(lifecycle.status()?.runtime, RuntimeObservation::Stopped);
+        assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 0);
+        assert!(hosts.start(ASSIGNMENT).is_err());
+        drop(lifecycle);
+        let reopened = ManagedLifecycle::open(&state, processes.clone(), runners, hosts.clone())?;
+        assert_eq!(reopened.stop()?.stage, LifecycleStage::Complete);
+        assert_eq!(reopened.start()?.stage, LifecycleStage::Complete);
+        assert_eq!(reopened.status()?.runtime, RuntimeObservation::Ready);
+        assert_eq!(
+            hosts.status(ASSIGNMENT)?.state,
+            ManagedAgentHostStateV1::Stopped
+        );
+        assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 0);
+        assert!(hosts.start(ASSIGNMENT)?.ready);
+        Ok(())
+    }
+
+    #[test]
+    fn unowned_retained_host_blocks_runtime_stop_and_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for restart in [false, true] {
+            let temporary = tempdir()?;
+            let state = prepare_data_directory(&temporary.path().join("state"))?;
+            let processes = Processes {
+                active_hosts: Arc::new(AtomicUsize::new(0)),
+                runtime_running: Arc::new(AtomicBool::new(true)),
+                fail_runtime_starts: Arc::new(AtomicUsize::new(0)),
+                stop_gate: None,
+            };
+            let hosts = ManagedAgentHostOperationsV1::open_with(
+                &state.join("managed-hosts"),
+                FixedStartSource::new(state.clone()),
+                processes.clone(),
+            )?;
+            hosts.start(ASSIGNMENT)?;
+            drop(hosts);
+            let reopened = ManagedAgentHostOperationsV1::open_with(
+                &state.join("managed-hosts"),
+                FixedStartSource::new(state.clone()),
+                processes.clone(),
+            )?;
+            // The Runtime's OS-control boundary cannot know about a Controller's
+            // lost child handles. Coordination must reject unresolved ownership.
+            let runtime = Processes {
+                active_hosts: Arc::new(AtomicUsize::new(0)),
+                ..processes.clone()
+            };
+            let runners = RunnerSupervisorV1::open(
+                RunnerTemplateRegistryV1::open_installed(&state.join("runner-templates"))?,
+                &state.join("runner-runtime"),
+                FileSecretVaultV1::open(&state.join("secrets"))?,
+                Duration::from_secs(1),
+            )?;
+            let lifecycle = ManagedLifecycle::open(&state, runtime, runners, reopened)?;
+            let outcome = if restart {
+                lifecycle.restart()
+            } else {
+                lifecycle.stop()
+            };
+            assert!(matches!(outcome, Err(LifecycleError::Unavailable)));
+            assert!(processes.runtime_running.load(Ordering::SeqCst));
+            assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 1);
+            assert!(lifecycle.status()?.operation.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retained_lifecycle_logs_are_bounded_ordered_and_read_without_starting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempdir()?;
+        let state = prepare_data_directory(&temporary.path().join("state"))?;
+        let processes = Processes {
+            active_hosts: Arc::new(AtomicUsize::new(0)),
+            runtime_running: Arc::new(AtomicBool::new(true)),
+            fail_runtime_starts: Arc::new(AtomicUsize::new(0)),
+            stop_gate: None,
+        };
+        let hosts = ManagedAgentHostOperationsV1::open_with(
+            &state.join("managed-hosts"),
+            FixedStartSource::new(state.clone()),
+            processes.clone(),
+        )?;
+        let runners = RunnerSupervisorV1::open(
+            RunnerTemplateRegistryV1::open_installed(&state.join("runner-templates"))?,
+            &state.join("runner-runtime"),
+            FileSecretVaultV1::open(&state.join("secrets"))?,
+            Duration::from_secs(1),
+        )?;
+        let lifecycle =
+            ManagedLifecycle::open(&state, processes.clone(), runners.clone(), hosts.clone())?;
+        assert!(lifecycle.logs(100)?.is_empty());
+        for _ in 0..20 {
+            lifecycle.start()?;
+            lifecycle.stop()?;
+        }
+        let expected = lifecycle.logs(3)?;
+        assert_eq!(expected.len(), 3);
+        assert_eq!(
+            expected.last().ok_or("missing final log")?.stage,
+            LifecycleStage::Complete
+        );
+        assert_eq!(expected.last().ok_or("missing final log")?.operation_id, 40);
+        assert!(
+            expected
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        assert!(lifecycle.logs(1001).is_err());
+        drop(lifecycle);
+        let reopened = ManagedLifecycle::open(&state, processes.clone(), runners, hosts)?;
+        assert_eq!(reopened.logs(3)?, expected);
+        assert!(!processes.runtime_running.load(Ordering::SeqCst));
+        assert_eq!(processes.active_hosts.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn owned_runner_fixture(
+        state: &std::path::Path,
+    ) -> Result<RunnerSupervisorV1, Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let executable = state.join("owned-runner.sh");
+        let script = b"#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do /bin/sleep 1; done\n";
+        std::fs::write(&executable, script)?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+        let declarations = prepare_data_directory(&state.join("runner-declarations"))?;
+        let health = std::net::TcpListener::bind("127.0.0.1:0")?;
+        std::fs::write(
+            declarations.join("runner.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema":"worldstream/runner-template/v1", "template_id":"owned-runner", "revision":"1",
+                "display_name":"Owned runner", "executable":{"path":executable,"blake3":blake3::hash(script).to_hex().to_string()},
+                "compatibility":[{"activity_pack_id":"worldstream.counter","exact_revisions":["4.0.0"]}],
+                "capacity":{"maximum_concurrent_invocations":1},
+                "health":{"path":"/health", "timeout_ms":100,"stale_after_ms":1000},
+                "non_secret_environment":{}, "secret_environment":[],
+                "instances":[{"instance_id":"owned-local", "health_address":health.local_addr()?.to_string()}]
+            }))?,
+        )?;
+        drop(health);
+        Ok(RunnerSupervisorV1::open(
+            RunnerTemplateRegistryV1::open(&state.join("runner-templates"), &declarations)?,
+            &state.join("runner-runtime"),
+            FileSecretVaultV1::open(&state.join("secrets"))?,
+            Duration::from_secs(5),
+        )?)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_installation_stop_blocks_new_managed_runner_starts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use worldstream_studio_supervisor::runner_templates::RunnerInstanceStateV1;
+        let temporary = tempdir()?;
+        let state = prepare_data_directory(&temporary.path().join("state"))?;
+        let runners = owned_runner_fixture(&state)?;
+        let processes = Processes {
+            active_hosts: Arc::new(AtomicUsize::new(0)),
+            runtime_running: Arc::new(AtomicBool::new(true)),
+            fail_runtime_starts: Arc::new(AtomicUsize::new(0)),
+            stop_gate: None,
+        };
+        let hosts = ManagedAgentHostOperationsV1::open_with(
+            &state.join("managed-hosts"),
+            FixedStartSource::new(state.clone()),
+            processes.clone(),
+        )?;
+        let lifecycle = ManagedLifecycle::open(&state, processes, runners.clone(), hosts)?;
+        assert_eq!(lifecycle.stop()?.stage, LifecycleStage::Complete);
+        let attempted = runners.start("owned-local").ok_or("missing owned Runner")?;
+        // Cleanup remains with the original public owner even when the assertion fails.
+        let cleanup = runners
+            .stop("owned-local")
+            .ok_or("missing Runner cleanup")?;
+        assert_eq!(cleanup.instances[0].state, RunnerInstanceStateV1::Stopped);
+        assert_eq!(attempted.instances[0].state, RunnerInstanceStateV1::Stopped);
+        assert!(!attempted.instances[0].managed_by_supervisor);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unresolved_retained_runner_blocks_runtime_shutdown_without_touching_its_process()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use worldstream_studio_supervisor::runner_templates::RunnerInstanceStateV1;
+        for restart in [false, true] {
+            let temporary = tempdir()?;
+            let state = prepare_data_directory(&temporary.path().join("state"))?;
+            let original = owned_runner_fixture(&state)?;
+            let started = original
+                .start("owned-local")
+                .ok_or("missing owned Runner")?;
+            assert_eq!(started.instances[0].state, RunnerInstanceStateV1::Running);
+            // A new Controller has retained intent, but not the old child handle.
+            // Keep the original owner solely for test cleanup.
+            let reopened = RunnerSupervisorV1::open(
+                RunnerTemplateRegistryV1::open_installed(&state.join("runner-templates"))?,
+                &state.join("runner-runtime"),
+                FileSecretVaultV1::open(&state.join("secrets"))?,
+                Duration::from_secs(5),
+            )?;
+            let processes = Processes {
+                active_hosts: Arc::new(AtomicUsize::new(0)),
+                runtime_running: Arc::new(AtomicBool::new(true)),
+                fail_runtime_starts: Arc::new(AtomicUsize::new(0)),
+                stop_gate: None,
+            };
+            let hosts = ManagedAgentHostOperationsV1::open_with(
+                &state.join("managed-hosts"),
+                FixedStartSource::new(state.clone()),
+                processes.clone(),
+            )?;
+            let lifecycle = ManagedLifecycle::open(&state, processes.clone(), reopened, hosts)?;
+            let outcome = if restart {
+                lifecycle.restart()
+            } else {
+                lifecycle.stop()
+            };
+            let still_running =
+                original.statuses().instances[0].state == RunnerInstanceStateV1::Running;
+            let cleanup = original
+                .stop("owned-local")
+                .ok_or("missing cleanup owner")?;
+            assert_eq!(cleanup.instances[0].state, RunnerInstanceStateV1::Stopped);
+            assert!(matches!(outcome, Err(LifecycleError::Unavailable)));
+            assert!(still_running);
+            assert!(processes.runtime_running.load(Ordering::SeqCst));
+            assert!(lifecycle.status()?.operation.is_none());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(unix)]
 #[derive(Clone)]
 struct MakeOperationDirectoryReadOnlyLauncher {

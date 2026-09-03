@@ -39,8 +39,13 @@ fn server_status_fails_closed_with_machine_readable_unavailable_output() {
     assert_eq!(report["schema"], "worldstream/operator-command/v1");
     assert_eq!(report["command"], "server status");
     assert_eq!(report["status"], "unavailable");
-    assert_eq!(report["code"], "not_implemented");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not implemented"));
+    if cfg!(feature = "cli-operator-preview") {
+        assert_eq!(report["code"], "controller_unavailable");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("controller"));
+    } else {
+        assert_eq!(report["code"], "not_implemented");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not implemented"));
+    }
     assert_eq!(
         control(&["--config", "missing.toml", "server", "status", "--json"])
             .status
@@ -243,15 +248,28 @@ fn room_runner_client_and_pack_leaves_freeze_public_selectors() {
         let mut json_arguments = arguments.clone();
         json_arguments.push("--json");
         let output = control(&json_arguments);
+        let missing_setup_file = cfg!(feature = "cli-operator-preview")
+            && arguments.get(..2) == Some(&["room", "validate"]);
         assert_eq!(
             output.status.code(),
-            Some(3),
+            Some(if missing_setup_file { 1 } else { 3 }),
             "{arguments:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         let report: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|error| unreachable!("JSON stdout: {error}"));
-        assert_eq!(report["code"], "not_implemented");
+        assert_eq!(
+            report["code"],
+            if missing_setup_file {
+                "operation_rejected"
+            } else if cfg!(feature = "cli-operator-preview")
+                && arguments.get(..2) == Some(&["room", "example"])
+            {
+                "controller_unavailable"
+            } else {
+                "not_implemented"
+            }
+        );
         let mut help_arguments = arguments;
         help_arguments.push("--help");
         assert_eq!(control(&help_arguments).status.code(), Some(0));

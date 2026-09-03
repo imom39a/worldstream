@@ -9,6 +9,22 @@ The [decision record and source audit](cli-first-operator-proposal.md) retain
 the reasoning. This document collects the work into one usable contract; it
 does not replace the Runtime, Pack, client, or authority specifications.
 
+## MVP delivery update — 2026-09-03
+
+The user confirmed that this delivery is an MVP/POC. Prioritize a usable
+CLI-only Heist flow, verify the same setup contract with Negotiate, and provide
+one working getting-started guide. Fix critical defects as they appear; do not
+expand production hardening before this flow works.
+
+Keep implemented credential protection, ownership checks, bounded input, and
+durable setup reuse. Defer automatic restoration of bound Runner instances,
+additional fault-injection/platform qualification, and optional interactive
+setup UX to [IMO-147](https://linear.app/imom39a/issue/IMO-147/post-mvp-hardening-for-cli-managed-installations).
+An unsupported bound-Runner restart must reject before stopping that Runner;
+use explicit stop/start and deliberate agent startup instead. Keep existing
+working behavior and tests. The long-term requirements below remain the target,
+not a claim of MVP production qualification.
+
 ## Outcome
 
 A developer can operate a local installation, configure one Room, connect

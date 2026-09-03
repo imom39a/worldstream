@@ -133,6 +133,8 @@ pub struct HttpDaemonRoomSource {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
 impl HttpDaemonRoomSource {
@@ -148,6 +150,31 @@ impl HttpDaemonRoomSource {
             timeout,
             vault,
             host_authority,
+            #[cfg(feature = "cli-operator-preview")]
+            managed: None,
+        }
+    }
+
+    /// Uses proof-bound managed Runtime transport; foreground `new` is unchanged.
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn new_managed(
+        address: SocketAddr,
+        timeout: Duration,
+        vault: FileSecretVaultV1,
+        host_authority: Option<SecretReferenceV1>,
+        ownership: crate::process_ownership::ProcessOwnership,
+    ) -> Self {
+        Self {
+            address,
+            timeout,
+            vault,
+            host_authority,
+            managed: Some(
+                crate::managed_daemon_transport::ManagedDaemonTransport::new(
+                    ownership, address, timeout,
+                ),
+            ),
         }
     }
 
@@ -159,6 +186,38 @@ impl HttpDaemonRoomSource {
             .host_authority
             .as_ref()
             .ok_or(RoomSourceErrorV1::Unavailable)?;
+        #[cfg(feature = "cli-operator-preview")]
+        if let Some(transport) = &self.managed {
+            let maximum = usize::try_from(MAX_DAEMON_RESPONSE_BYTES)
+                .map_err(|_| RoomSourceErrorV1::InvalidResponse)?;
+            let response = transport
+                .request("GET", path, b"", maximum, || {
+                    let secret = self
+                        .vault
+                        .resolve(SecretKindV1::HostAuthority, reference)
+                        .map_err(|_| ())?;
+                    let bytes: [u8; 32] = secret.as_bytes().try_into().map_err(|_| ())?;
+                    let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+                    let token = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
+                    let mut header = axum::http::HeaderValue::from_str(&token).map_err(|_| ())?;
+                    header.set_sensitive(true);
+                    Ok::<_, ()>(header)
+                })
+                .map_err(|error| match error {
+                    crate::verified_control::ControlTransportError::Protocol => {
+                        RoomSourceErrorV1::InvalidResponse
+                    }
+                    _ => RoomSourceErrorV1::Unavailable,
+                })?;
+            return match response.status {
+                200 => serde_json::from_slice(&response.body)
+                    .map_err(|_| RoomSourceErrorV1::InvalidResponse),
+                401 | 403 => Err(RoomSourceErrorV1::Forbidden),
+                404 => Err(RoomSourceErrorV1::NotFound),
+                500..=599 => Err(RoomSourceErrorV1::Unavailable),
+                _ => Err(RoomSourceErrorV1::InvalidResponse),
+            };
+        }
         let secret = self
             .vault
             .resolve(SecretKindV1::HostAuthority, reference)

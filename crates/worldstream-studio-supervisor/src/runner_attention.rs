@@ -543,6 +543,8 @@ pub struct HttpDaemonRunnerAttentionSourceV1 {
     timeout: Duration,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
 impl HttpDaemonRunnerAttentionSourceV1 {
@@ -558,6 +560,31 @@ impl HttpDaemonRunnerAttentionSourceV1 {
             timeout,
             vault,
             host_authority,
+            #[cfg(feature = "cli-operator-preview")]
+            managed: None,
+        }
+    }
+
+    /// Reads existing Runner evidence on the proved managed Runtime connection.
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn new_managed(
+        address: SocketAddr,
+        timeout: Duration,
+        vault: FileSecretVaultV1,
+        host_authority: Option<SecretReferenceV1>,
+        ownership: crate::process_ownership::ProcessOwnership,
+    ) -> Self {
+        Self {
+            address,
+            timeout,
+            vault,
+            host_authority,
+            managed: Some(
+                crate::managed_daemon_transport::ManagedDaemonTransport::new(
+                    ownership, address, timeout,
+                ),
+            ),
         }
     }
 
@@ -575,6 +602,38 @@ impl HttpDaemonRunnerAttentionSourceV1 {
             .host_authority
             .as_ref()
             .ok_or(RunnerAttentionSourceErrorV1::Unavailable)?;
+        #[cfg(feature = "cli-operator-preview")]
+        if let Some(transport) = &self.managed {
+            let response = transport
+                .request("GET", path, b"", MAX_MESSAGE_BYTES, || {
+                    let secret = self
+                        .vault
+                        .resolve(SecretKindV1::HostAuthority, reference)
+                        .map_err(|_| ())?;
+                    let mut bytes: [u8; 32] = secret.as_bytes().try_into().map_err(|_| ())?;
+                    let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+                    bytes.zeroize();
+                    let token = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
+                    let mut header = axum::http::HeaderValue::from_str(&token).map_err(|_| ())?;
+                    header.set_sensitive(true);
+                    Ok::<_, ()>(header)
+                })
+                .map_err(|error| match error {
+                    crate::verified_control::ControlTransportError::Protocol => {
+                        RunnerAttentionSourceErrorV1::InvalidData
+                    }
+                    _ => RunnerAttentionSourceErrorV1::Unavailable,
+                })?;
+            if response.status != 200 {
+                return Err(if matches!(response.status, 400 | 409 | 422) {
+                    RunnerAttentionSourceErrorV1::InvalidData
+                } else {
+                    RunnerAttentionSourceErrorV1::Unavailable
+                });
+            }
+            return serde_json::from_slice(&response.body)
+                .map_err(|_| RunnerAttentionSourceErrorV1::InvalidData);
+        }
         let secret = self
             .vault
             .resolve(SecretKindV1::HostAuthority, reference)

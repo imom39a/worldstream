@@ -183,6 +183,8 @@ pub struct HttpDaemonBackupExecutorV1 {
     profile: BackupStorageProfileV1,
     vault: FileSecretVaultV1,
     host_authority: Option<SecretReferenceV1>,
+    #[cfg(feature = "cli-operator-preview")]
+    managed: Option<crate::managed_daemon_transport::ManagedDaemonTransport>,
 }
 
 impl HttpDaemonBackupExecutorV1 {
@@ -200,6 +202,33 @@ impl HttpDaemonBackupExecutorV1 {
             profile,
             vault,
             host_authority,
+            #[cfg(feature = "cli-operator-preview")]
+            managed: None,
+        }
+    }
+
+    /// Uses proof-bound managed Runtime transport without changing backup policy.
+    #[cfg(feature = "cli-operator-preview")]
+    #[must_use]
+    pub fn new_managed(
+        address: SocketAddr,
+        timeout: Duration,
+        profile: BackupStorageProfileV1,
+        vault: FileSecretVaultV1,
+        host_authority: Option<SecretReferenceV1>,
+        ownership: crate::process_ownership::ProcessOwnership,
+    ) -> Self {
+        Self {
+            address,
+            timeout,
+            profile,
+            vault,
+            host_authority,
+            managed: Some(
+                crate::managed_daemon_transport::ManagedDaemonTransport::new(
+                    ownership, address, timeout,
+                ),
+            ),
         }
     }
 
@@ -230,6 +259,32 @@ impl HttpDaemonBackupExecutorV1 {
             .host_authority
             .as_ref()
             .ok_or(BackupExecutionErrorV1::Unavailable)?;
+        #[cfg(feature = "cli-operator-preview")]
+        if let Some(transport) = &self.managed {
+            let response = transport
+                .request(method, path, body, MAX_MESSAGE_BYTES, || {
+                    let secret = self
+                        .vault
+                        .resolve(SecretKindV1::HostAuthority, reference)
+                        .map_err(|_| ())?;
+                    let bytes: [u8; 32] = secret.as_bytes().try_into().map_err(|_| ())?;
+                    let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+                    let token = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
+                    let mut header = axum::http::HeaderValue::from_str(&token).map_err(|_| ())?;
+                    header.set_sensitive(true);
+                    Ok::<_, ()>(header)
+                })
+                .map_err(|_| BackupExecutionErrorV1::Unavailable)?;
+            if response.status != 200 {
+                return Err(if response.status == 501 {
+                    BackupExecutionErrorV1::Unsupported
+                } else {
+                    BackupExecutionErrorV1::Unavailable
+                });
+            }
+            return serde_json::from_slice(&response.body)
+                .map_err(|_| BackupExecutionErrorV1::Unavailable);
+        }
         let secret = self
             .vault
             .resolve(SecretKindV1::HostAuthority, reference)
