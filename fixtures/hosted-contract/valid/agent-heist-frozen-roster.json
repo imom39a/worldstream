@@ -1,0 +1,18 @@
+{
+  "schema": "worldstream/frozen-roster/v1",
+  "listing_revision_digest": "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b",
+  "members": [
+    {
+      "seat_id": "navigator",
+      "participation": "account_human",
+      "principal_reference": "github:1001",
+      "display_name": "Navigator One"
+    },
+    {
+      "seat_id": "insider",
+      "participation": "account_external_agent",
+      "principal_reference": "agent:user-insider-1",
+      "display_name": "Remote Insider"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/worldstream-activity-client",
+    "crates/worldstream-hosted-contract",
     "crates/worldstream-core",
     "crates/worldstream-protocol",
     "crates/worldstream-runtime",

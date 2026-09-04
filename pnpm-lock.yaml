@@ -92,6 +92,19 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@types/node@24.13.3)(jsdom@29.0.1(@noble/hashes@2.4.0))(vite@8.2.1(@types/node@24.13.3))
 
+  sdk/typescript-hosted-contract:
+    dependencies:
+      '@worldstream/pack-sdk':
+        specifier: workspace:*
+        version: link:../typescript-pack/packages/pack-sdk
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
   sdk/typescript-pack/packages/pack-cli:
     dependencies:
       '@bytecodealliance/componentize-js':

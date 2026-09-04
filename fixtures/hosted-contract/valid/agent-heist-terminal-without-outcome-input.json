@@ -1,0 +1,30 @@
+{
+  "schema": "worldstream/result-projector-input/v1",
+  "listing_revision_digest": "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b",
+  "projector_revision_digest": "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf",
+  "pack": {"id": "worldstream.agent-heist", "version": "0.2.0", "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"},
+  "projection_schema": "agent-heist/projection/v1",
+  "source_head": {
+    "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "room_seq": 14,
+    "genesis_or_transition_hash": "blake3:5555555555555555555555555555555555555555555555555555555555555555",
+    "core_schema_version": "worldstream.core-room-state.v1",
+    "pack_digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820",
+    "core_state_hash": "blake3:6666666666666666666666666666666666666666666666666666666666666666",
+    "activity_state_hash": "blake3:7777777777777777777777777777777777777777777777777777777777777777",
+    "authoritative_state_hash": "blake3:8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "public_projection": {
+    "phase": "complete",
+    "phase_generation": 7,
+    "phase_start": "2026-09-04T05:10:00Z",
+    "phase_deadline": null,
+    "seats": [{"role": "navigator", "present": true}, {"role": "insider", "present": true}, {"role": "broker", "present": false}],
+    "public_claims": [],
+    "plans": [],
+    "endorsements": {},
+    "challenges": [],
+    "commitment_count": 0,
+    "outcome": null
+  }
+}

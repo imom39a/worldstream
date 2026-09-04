@@ -1,0 +1,25 @@
+{
+  "schema": "worldstream/result-projector-runtime-artifact/v1",
+  "runtime_id": "worldstream.result-projector.declarative",
+  "version": "1.0.0",
+  "implementations": [
+    {
+      "language": "rust",
+      "path": "crates/worldstream-hosted-contract/src/runtime_v1.rs",
+      "digest": "blake3:29abed9d256ae4978fb30090b4e8f1f1b61bd0e28653b54080c324c04cfb0f1f"
+    },
+    {
+      "language": "typescript",
+      "path": "sdk/typescript-hosted-contract/src/runtimeV1.ts",
+      "digest": "blake3:375f96e77cec51ed81ffb83f22bc9187579dfaf00223917815bc947d07e30701"
+    }
+  ],
+  "semantics": {
+    "input": "Accept one canonical bounded projector envelope after exact Listing, projector, Pack, projection-schema, and Complete-Head verification.",
+    "terminal": "Read the configured top-level string field and compare it exactly with the configured terminal value.",
+    "missing_outcome": "Return terminal_without_outcome only when the configured outcome field is canonical null on a terminal projection.",
+    "summary": "Copy only configured enum, nullable-identifier, and bounded-integer fields into the pinned summary schema.",
+    "canonicalization": "Return only canonical worldstream/canonical-json/v1 bytes within the pinned output byte limit.",
+    "capabilities": "No network, clock, randomness, environment, filesystem, process, dynamic code, or Pack-name dispatch."
+  }
+}

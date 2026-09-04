@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldstream.dev/schemas/result-summary-v1.schema.json",
+  "title": "WorldStream privacy-reviewed public result envelope v1",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["status"],
+      "properties": {"status": {"const": "not_terminal"}}
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["status"],
+      "properties": {"status": {"const": "terminal_without_outcome"}}
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "summary"],
+      "properties": {
+        "status": {"const": "summary"},
+        "summary": {
+          "type": "object", "additionalProperties": false,
+          "required": ["schema", "outcome", "selected_plan_id", "score", "reason"],
+          "properties": {
+            "schema": {"const": "worldstream/result-summary/v1"},
+            "outcome": {"enum": ["success", "partial_failure", "failure"]},
+            "selected_plan_id": {"anyOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"}]},
+            "score": {"type": "integer", "minimum": 0, "maximum": 5},
+            "reason": {"enum": ["no_strict_majority", "scored_selected_plan"]}
+          }
+        }
+      }
+    }
+  ]
+}

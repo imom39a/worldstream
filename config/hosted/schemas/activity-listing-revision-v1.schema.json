@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldstream.dev/schemas/activity-listing-revision-v1.schema.json",
+  "title": "WorldStream Activity Listing Revision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "listing_id", "version", "title", "description", "catalog", "pack", "client", "launch_input_schema", "room_setup", "seats", "creator_access", "public_viewing_policy", "pre_start_deadline_seconds", "result"],
+  "properties": {
+    "schema": {"const": "worldstream/activity-listing-revision/v1"},
+    "listing_id": {"$ref": "#/$defs/identifier"},
+    "version": {"$ref": "#/$defs/version"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 128},
+    "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "catalog": {
+      "type": "object", "additionalProperties": false,
+      "required": ["visibility", "review_status"],
+      "properties": {
+        "visibility": {"enum": ["public", "unlisted", "private"]},
+        "review_status": {"const": "reviewed"}
+      }
+    },
+    "pack": {"$ref": "#/$defs/pack"},
+    "client": {
+      "type": "object", "additionalProperties": false,
+      "required": ["client_id", "release_digest", "client_contract", "surface_id"],
+      "properties": {
+        "client_id": {"$ref": "#/$defs/identifier"},
+        "release_digest": {"$ref": "#/$defs/sha256"},
+        "client_contract": {"$ref": "#/$defs/identifier"},
+        "surface_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "launch_input_schema": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "accepts", "defaults"],
+      "properties": {
+        "schema": {"const": "worldstream/launch-input-schema/v1"},
+        "accepts": {"const": "none"},
+        "defaults": {"type": "object", "maxProperties": 0}
+      }
+    },
+    "room_setup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["configuration"],
+      "properties": {"configuration": {}}
+    },
+    "seats": {
+      "type": "array", "minItems": 1, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["seat_id", "role", "display_name", "required", "allowed_participation", "allowed_house_agent_revisions"],
+        "properties": {
+          "seat_id": {"$ref": "#/$defs/seat_label"},
+          "role": {"$ref": "#/$defs/public_reference"},
+          "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
+          "required": {"type": "boolean"},
+          "allowed_participation": {
+            "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true,
+            "items": {"enum": ["account_human", "account_external_agent", "house_agent_fill"]}
+          },
+          "allowed_house_agent_revisions": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/blake3"}}
+        }
+      }
+    },
+    "creator_access": {"enum": ["must_claim_seat", "may_spectate"]},
+    "public_viewing_policy": {"enum": ["disabled", "anonymous_by_link"]},
+    "pre_start_deadline_seconds": {"type": "integer", "minimum": 60, "maximum": 86400},
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["projection", "projector", "publication"],
+      "properties": {
+        "projection": {"$ref": "#/$defs/schema_reference"},
+        "projector": {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "version", "digest"],
+          "properties": {"id": {"$ref": "#/$defs/identifier"}, "version": {"$ref": "#/$defs/version"}, "digest": {"$ref": "#/$defs/blake3"}}
+        },
+        "publication": {
+          "type": "object", "additionalProperties": false,
+          "required": ["policy", "attribution", "public_output", "suppression"],
+          "properties": {
+            "policy": {"enum": ["disabled", "public_recent_results"]},
+            "attribution": {"enum": ["none", "reviewed_pseudonymous_seats"]},
+            "public_output": {"enum": ["none", "projector_summary_only"]},
+            "suppression": {"const": "unhealthy_inconclusive_or_conflict"}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "public_reference": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "seat_label": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "version": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+    "blake3": {"type": "string", "pattern": "^blake3:[0-9a-f]{64}$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "digest"],
+      "properties": {"id": {"$ref": "#/$defs/identifier"}, "version": {"$ref": "#/$defs/version"}, "digest": {"$ref": "#/$defs/blake3"}}
+    },
+    "schema_reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "digest"],
+      "properties": {"schema": {"$ref": "#/$defs/identifier"}, "digest": {"$ref": "#/$defs/blake3"}}
+    }
+  }
+}

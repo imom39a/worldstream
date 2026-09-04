@@ -1,0 +1,78 @@
+{
+  "schema": "worldstream/activity-listing-revision/v1",
+  "listing_id": "worldstream.agent-heist.public-preview",
+  "version": "0.2.0",
+  "title": "Agent Heist",
+  "description": "A live social strategy game for people and external agents.",
+  "catalog": {
+    "visibility": "public",
+    "review_status": "reviewed"
+  },
+  "pack": {
+    "id": "worldstream.agent-heist",
+    "version": "0.2.0",
+    "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+  },
+  "client": {
+    "client_id": "worldstream.agent-heist.web",
+    "release_digest": "sha256:b6e5501bb98dc2ab300439bf9dafc2978cfc784741668fecb3c15b7c8f5be156",
+    "client_contract": "worldstream/activity-client-protocol/v1",
+    "surface_id": "heist-web"
+  },
+  "launch_input_schema": {
+    "schema": "worldstream/launch-input-schema/v1",
+    "accepts": "none",
+    "defaults": {}
+  },
+  "room_setup": {
+    "configuration": {
+      "roles": ["navigator", "insider", "broker"]
+    }
+  },
+  "seats": [
+    {
+      "seat_id": "navigator",
+      "role": "navigator",
+      "display_name": "Navigator",
+      "required": true,
+      "allowed_participation": ["account_human", "account_external_agent"],
+      "allowed_house_agent_revisions": []
+    },
+    {
+      "seat_id": "insider",
+      "role": "insider",
+      "display_name": "Insider",
+      "required": true,
+      "allowed_participation": ["account_human", "account_external_agent"],
+      "allowed_house_agent_revisions": []
+    },
+    {
+      "seat_id": "broker",
+      "role": "broker",
+      "display_name": "Broker",
+      "required": false,
+      "allowed_participation": ["account_human", "account_external_agent"],
+      "allowed_house_agent_revisions": []
+    }
+  ],
+  "creator_access": "must_claim_seat",
+  "public_viewing_policy": "anonymous_by_link",
+  "pre_start_deadline_seconds": 1800,
+  "result": {
+    "projection": {
+      "schema": "agent-heist/projection/v1",
+      "digest": "blake3:a617f398abd1469d237ce4d832704459deddf44193267fab8bb0e1311e5faa8f"
+    },
+    "projector": {
+      "id": "worldstream.agent-heist.result",
+      "version": "0.2.0",
+      "digest": "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf"
+    },
+    "publication": {
+      "policy": "public_recent_results",
+      "attribution": "reviewed_pseudonymous_seats",
+      "public_output": "projector_summary_only",
+      "suppression": "unhealthy_inconclusive_or_conflict"
+    }
+  }
+}

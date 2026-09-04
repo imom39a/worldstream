@@ -15,6 +15,8 @@
 /sdk/python/.venv/
 /sdk/typescript-client/node_modules/
 /sdk/typescript-client/dist/
+/sdk/typescript-hosted-contract/node_modules/
+/sdk/typescript-hosted-contract/dist/
 /sdk/typescript-pack/packages/*/node_modules/
 /sdk/typescript-pack/packages/*/dist/
 /sdk/typescript-pack/packages/*/.worldstream/

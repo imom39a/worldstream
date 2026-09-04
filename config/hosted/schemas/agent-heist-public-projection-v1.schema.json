@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldstream.dev/schemas/agent-heist-public-projection-v1.schema.json",
+  "title": "Privacy-reviewed Agent Heist public projection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["phase", "phase_generation", "phase_start", "phase_deadline", "seats", "public_claims", "plans", "endorsements", "challenges", "commitment_count", "outcome"],
+  "properties": {
+    "phase": {"enum": ["lobby", "briefing", "negotiation", "commitment", "resolution", "result", "complete"]},
+    "phase_generation": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "phase_start": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[0-9T:Z.+-]+$"},
+    "phase_deadline": {"anyOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[0-9T:Z.+-]+$"}]},
+    "seats": {
+      "type": "array", "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["role", "present"],
+        "properties": {"role": {"$ref": "#/$defs/role"}, "present": {"type": "boolean"}}
+      }
+    },
+    "public_claims": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["clue_id", "claim_code"],
+        "properties": {"clue_id": {"$ref": "#/$defs/identifier"}, "claim_code": {"$ref": "#/$defs/identifier"}}
+      }
+    },
+    "plans": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["plan_id", "proposer_role", "created_room_seq", "route", "entry_window", "required_tool", "extraction"],
+        "properties": {
+          "plan_id": {"$ref": "#/$defs/identifier"},
+          "proposer_role": {"$ref": "#/$defs/role"},
+          "created_room_seq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "route": {"enum": ["canal", "service", "roof"]},
+          "entry_window": {"enum": ["late", "early", "middle"]},
+          "required_tool": {"enum": ["disguise", "thermal_key", "jammer"]},
+          "extraction": {"enum": ["van", "boat", "motorbike"]}
+        }
+      }
+    },
+    "endorsements": {"type": "object", "maxProperties": 32, "propertyNames": {"$ref": "#/$defs/role"}, "additionalProperties": {"$ref": "#/$defs/identifier"}},
+    "challenges": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["role", "plan_id", "reason"],
+        "properties": {
+          "role": {"$ref": "#/$defs/role"},
+          "plan_id": {"$ref": "#/$defs/identifier"},
+          "reason": {"enum": ["route_conflict", "timing_conflict", "tool_conflict", "extraction_conflict"]}
+        }
+      }
+    },
+    "commitment_count": {"type": "integer", "minimum": 0, "maximum": 32},
+    "outcome": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["outcome", "selected_plan_id", "vote_counts", "missing_roles", "checks", "score", "reason"],
+          "properties": {
+            "outcome": {"enum": ["success", "partial_failure", "failure"]},
+            "selected_plan_id": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/identifier"}]},
+            "vote_counts": {"type": "object", "maxProperties": 64, "propertyNames": {"$ref": "#/$defs/identifier"}, "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 32}},
+            "missing_roles": {"type": "array", "maxItems": 3, "uniqueItems": true, "items": {"$ref": "#/$defs/role"}},
+            "checks": {
+              "anyOf": [
+                {"type": "null"},
+                {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["route", "entry_window", "required_tool", "extraction", "resource_contributed"],
+                  "properties": {"route": {"type": "boolean"}, "entry_window": {"type": "boolean"}, "required_tool": {"type": "boolean"}, "extraction": {"type": "boolean"}, "resource_contributed": {"type": "boolean"}}
+                }
+              ]
+            },
+            "score": {"type": "integer", "minimum": 0, "maximum": 5},
+            "reason": {"enum": ["no_strict_majority", "scored_selected_plan"]}
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "role": {"enum": ["navigator", "insider", "broker"]}
+  }
+}

@@ -39,6 +39,7 @@
     "pack:build": "pnpm --filter @worldstream/pack-sdk build && pnpm --filter @worldstream/pack-cli build",
     "pack:lint": "pnpm --filter @worldstream/pack-sdk lint && pnpm --filter @worldstream/pack-cli lint",
     "pack:test": "pnpm --filter @worldstream/pack-sdk test && pnpm --filter @worldstream/pack-cli test",
+    "hosted-contracts:check": "cargo fmt --all -- --check && cargo clippy -p worldstream-hosted-contract --all-targets -- -D warnings && cargo test -p worldstream-hosted-contract && pnpm --filter @worldstream/hosted-contract lint && pnpm --filter @worldstream/hosted-contract test",
     "ui:dev": "pnpm activity-clients:serve",
     "ui:source-dev": "pnpm --dir web/console dev",
     "ui:build": "pnpm --dir web/console build",

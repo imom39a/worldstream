@@ -1,0 +1,34 @@
+{
+  "schema": "worldstream/hosted-contract-fixture-corpus/v1",
+  "listing_source": "config/hosted/listings/agent-heist-0.2.0.json",
+  "projector_source": "config/hosted/result-projectors/agent-heist-0.2.0.json",
+  "runtime_source": "config/hosted/result-projector-runtimes/declarative-runtime-1.0.0.json",
+  "projection_schema_source": "config/hosted/schemas/agent-heist-public-projection-v1.schema.json",
+  "result_schema_source": "config/hosted/schemas/result-summary-v1.schema.json",
+  "client_release_source": "config/activity-clients/releases/agent-heist-web.json",
+  "listing_digest": "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b",
+  "projector_digest": "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf",
+  "runtime_digest": "blake3:7278757ac8f047330292e399ac3c8f4ed49225b05ecb6b997b75500784b0526e",
+  "expected_room_setup": "fixtures/hosted-contract/expected/agent-heist-room-setup.json",
+  "expected_result_summary": "fixtures/hosted-contract/expected/agent-heist-result-summary.json",
+  "wire_cases": [
+    {"name": "listing_unknown_field", "target": "listing", "operation": "replace", "from": "\"result\":{", "to": "\"unknown\":true,\"result\":{"},
+    {"name": "listing_unsupported_schema", "target": "listing", "operation": "replace", "from": "worldstream/activity-listing-revision/v1", "to": "worldstream/activity-listing-revision/v2"},
+    {"name": "listing_unsupported_participation", "target": "listing", "operation": "replace", "from": "\"allowed_participation\":[\"account_human\",\"account_external_agent\"],\"display_name\":\"Navigator\"", "to": "\"allowed_participation\":[\"robot\",\"account_external_agent\"],\"display_name\":\"Navigator\""},
+    {"name": "listing_bad_seat_label", "target": "listing", "operation": "replace", "from": "\"seat_id\":\"navigator\"", "to": "\"seat_id\":\".bad\""},
+    {"name": "listing_unbounded_deadline", "target": "listing", "operation": "replace", "from": "\"pre_start_deadline_seconds\":1800", "to": "\"pre_start_deadline_seconds\":86401"},
+    {"name": "listing_non_ascii_config_key", "target": "listing", "operation": "replace", "from": "\"configuration\":{\"roles\"", "to": "\"configuration\":{\"é\":true,\"roles\""},
+    {"name": "listing_noncanonical_bytes", "target": "listing", "operation": "prefix_space"},
+    {"name": "projector_unknown_field", "target": "projector", "operation": "replace", "from": "\"runtime\":{", "to": "\"unknown\":true,\"runtime\":{"},
+    {"name": "projector_unsupported_runtime", "target": "projector", "operation": "replace", "from": "worldstream.result-projector.declarative", "to": "worldstream.result-projector.declarative-v2"},
+    {"name": "projector_unbounded_output", "target": "projector", "operation": "replace", "from": "\"maximum_bytes\":4096", "to": "\"maximum_bytes\":16385"},
+    {"name": "projector_bad_projection_digest", "target": "projector", "operation": "replace", "from": "blake3:a617f398abd1469d237ce4d832704459deddf44193267fab8bb0e1311e5faa8f", "to": "blake3:0617f398abd1469d237ce4d832704459deddf44193267fab8bb0e1311e5faa8f"},
+    {"name": "projector_wrong_output_schema", "target": "projector", "operation": "replace", "from": "worldstream/result-summary/v1", "to": "worldstream/result-summary/v2"},
+    {"name": "projector_noncanonical_bytes", "target": "projector", "operation": "prefix_space"}
+  ],
+  "result_inputs": {
+    "not_terminal": "fixtures/hosted-contract/valid/agent-heist-nonterminal-input.json",
+    "terminal_without_outcome": "fixtures/hosted-contract/valid/agent-heist-terminal-without-outcome-input.json",
+    "summary": "fixtures/hosted-contract/valid/agent-heist-terminal-input.json"
+  }
+}

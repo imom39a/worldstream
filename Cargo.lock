@@ -3190,6 +3190,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "worldstream-hosted-contract"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "worldstream-activity-client",
+ "worldstream-core",
+]
+
+[[package]]
 name = "worldstream-negotiate-evidence"
 version = "0.1.0"
 dependencies = [

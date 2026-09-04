@@ -1,0 +1,38 @@
+{
+  "schema": "worldstream/result-projector-input/v1",
+  "listing_revision_digest": "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b",
+  "projector_revision_digest": "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf",
+  "pack": {"id": "worldstream.agent-heist", "version": "0.2.0", "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"},
+  "projection_schema": "agent-heist/projection/v1",
+  "source_head": {
+    "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "room_seq": 15,
+    "genesis_or_transition_hash": "blake3:9999999999999999999999999999999999999999999999999999999999999999",
+    "core_schema_version": "worldstream.core-room-state.v1",
+    "pack_digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820",
+    "core_state_hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "activity_state_hash": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "authoritative_state_hash": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "public_projection": {
+    "phase": "complete",
+    "phase_generation": 7,
+    "phase_start": "2026-09-04T05:10:00Z",
+    "phase_deadline": null,
+    "seats": [{"role": "navigator", "present": true}, {"role": "insider", "present": true}, {"role": "broker", "present": false}],
+    "public_claims": [{"clue_id": "route", "claim_code": "route_canal"}],
+    "plans": [{"plan_id": "01ARZ3NDEKTSV4RRFFQ69G5FNP", "proposer_role": "navigator", "created_room_seq": 6, "route": "canal", "entry_window": "late", "required_tool": "disguise", "extraction": "van"}],
+    "endorsements": {"navigator": "01ARZ3NDEKTSV4RRFFQ69G5FNP", "insider": "01ARZ3NDEKTSV4RRFFQ69G5FNP"},
+    "challenges": [],
+    "commitment_count": 2,
+    "outcome": {
+      "outcome": "success",
+      "selected_plan_id": "01ARZ3NDEKTSV4RRFFQ69G5FNP",
+      "vote_counts": {"01ARZ3NDEKTSV4RRFFQ69G5FNP": 2},
+      "missing_roles": ["broker"],
+      "checks": {"route": true, "entry_window": true, "required_tool": true, "extraction": true, "resource_contributed": true},
+      "score": 5,
+      "reason": "scored_selected_plan"
+    }
+  }
+}

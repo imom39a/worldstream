@@ -1,0 +1,10 @@
+{
+  "status": "summary",
+  "summary": {
+    "schema": "worldstream/result-summary/v1",
+    "outcome": "success",
+    "selected_plan_id": "01ARZ3NDEKTSV4RRFFQ69G5FNP",
+    "score": 5,
+    "reason": "scored_selected_plan"
+  }
+}
