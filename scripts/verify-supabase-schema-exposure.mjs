@@ -25,10 +25,20 @@ if (JSON.stringify(anonymousPaths) !== JSON.stringify(["/"])) {
 const servicePaths = readPaths(servicePath);
 const expectedServicePaths = [
   "/",
+  "/rpc/authorize_host_mutation_v1",
   "/rpc/begin_account_erasure_v1",
   "/rpc/begin_github_oauth_v1",
+  "/rpc/cancel_launch_request_v1",
+  "/rpc/claim_invited_seat_v1",
   "/rpc/consume_github_oauth_v1",
+  "/rpc/create_launch_request_v1",
+  "/rpc/expire_launch_request_v1",
+  "/rpc/freeze_launch_request_v1",
   "/rpc/purge_expired_oauth_attempts_v1",
+  "/rpc/read_launch_request_v1",
+  "/rpc/release_seat_claim_v1",
+  "/rpc/reset_seat_claim_v1",
+  "/rpc/rotate_seat_invitation_v1",
   "/rpc/set_public_profile_v1",
   "/rpc/sync_github_identity_v1",
 ].sort();

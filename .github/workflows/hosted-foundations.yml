@@ -60,6 +60,8 @@ jobs:
         run: supabase db reset
       - name: Run pgTAP identity and grant tests
         run: supabase test db
+      - name: Run formation concurrency probes
+        run: pnpm hosted-formation:concurrency
       - name: Verify the exact PostgREST schema exposure
         run: |
           status_file="$RUNNER_TEMP/worldstream-supabase.env"
