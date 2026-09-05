@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use worldstream_activity_client::read_activity_client_release;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    ContractError, ListingRevision, PackReference, ResolvedResultProjector,
+    ContractError, HouseAgentRevision, ListingRevision, PackReference, ResolvedResultProjector,
     ResultProjectorRevision, derive_room_setup, project_result,
 };
 
@@ -37,6 +37,12 @@ const EXPECTED_SETUP: &[u8] =
     include_bytes!("../../../fixtures/hosted-contract/expected/agent-heist-room-setup.json");
 const EXPECTED_SUMMARY: &[u8] =
     include_bytes!("../../../fixtures/hosted-contract/expected/agent-heist-result-summary.json");
+const COOPERATIVE_HOUSE_AGENT: &[u8] =
+    include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+const SKEPTICAL_HOUSE_AGENT: &[u8] =
+    include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json");
+const HOUSE_LISTING: &[u8] =
+    include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
 
 fn canonical(source: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(CanonicalJsonV1::parse(source)?.to_bytes()?)
@@ -54,6 +60,57 @@ fn contracts() -> Result<(ListingRevision, ResultProjectorRevision), Box<dyn Err
     let listing = ListingRevision::from_canonical_bytes(&canonical(LISTING)?)?;
     let projector = ResultProjectorRevision::from_canonical_bytes(&canonical(PROJECTOR)?)?;
     Ok((listing, projector))
+}
+
+#[test]
+fn validates_two_exact_bounded_house_agent_revisions() -> Result<(), Box<dyn Error>> {
+    let cooperative =
+        HouseAgentRevision::from_canonical_bytes(&canonical(COOPERATIVE_HOUSE_AGENT)?)?;
+    let skeptical = HouseAgentRevision::from_canonical_bytes(&canonical(SKEPTICAL_HOUSE_AGENT)?)?;
+    let listing = ListingRevision::from_canonical_bytes(&canonical(HOUSE_LISTING)?)?;
+    assert_eq!(
+        cooperative.digest(),
+        "blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81"
+    );
+    assert_eq!(
+        skeptical.digest(),
+        "blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a"
+    );
+    assert_eq!(
+        listing.digest(),
+        "blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447"
+    );
+    assert_ne!(cooperative.digest(), skeptical.digest());
+    assert_ne!(cooperative.model_slug(), skeptical.model_slug());
+    assert_ne!(cooperative.provider_slug(), skeptical.provider_slug());
+    assert_eq!(cooperative.allowance().model_call_attempts, 10);
+    assert_eq!(cooperative.allowance().total_input_tokens, 120_000);
+    assert_eq!(cooperative.allowance().total_output_tokens, 10_000);
+    assert_eq!(cooperative.allowance().input_tokens_per_call, 12_000);
+    assert_eq!(cooperative.allowance().output_tokens_per_call, 1_000);
+    assert_eq!(cooperative.allowance().concurrent_calls, 1);
+    assert_eq!(cooperative.allowance().call_timeout_seconds, 60);
+    Ok(())
+}
+
+#[test]
+fn house_agent_revision_rejects_tools_fallback_and_mutable_allowance() -> Result<(), Box<dyn Error>>
+{
+    let source = source_value(COOPERATIVE_HOUSE_AGENT)?;
+    for mutation in ["tools", "route", "allowance"] {
+        let mut value = source.clone();
+        match mutation {
+            "tools" => value["tools"] = json!(["browser"]),
+            "route" => value["route"]["zero_data_retention"] = json!(false),
+            "allowance" => value["allowance"]["model_call_attempts"] = json!(11),
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            HouseAgentRevision::from_canonical_bytes(&canonical_value(&value)?),
+            Err(ContractError::InvalidShape)
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_projector(

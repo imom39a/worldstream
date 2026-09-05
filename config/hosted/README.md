@@ -13,6 +13,10 @@ They are not a Room Host allowlist.
   runtime registry entry, including digests of the exact Rust and TypeScript
   interpreter sources. Its canonical-byte digest is part of every projector identity,
   so runtime behavior changes require a new artifact and projector revision.
+- `house-agents/` contains the two reviewed exhibition-only House Agent
+  Revisions. Each revision pins one behavior policy, exact OpenRouter model and
+  provider route, Host profile and Runner template references, empty tool set,
+  accounting tokenizer, and fixed execution allowance.
 - `schemas/` describes the closed JSON shapes. Rust and TypeScript readers also
   enforce byte, tree-depth, string, item-count, and immutable-reference bounds.
 
@@ -26,8 +30,10 @@ Artifact resolution returns the only executable Result Projector handle. Project
 cannot run directly from an unverified Result Projector Revision.
 
 The Agent Heist `0.2.0` listing permits account-owned people and external agents.
-It contains no placeholder House Agent identities. A later listing revision can
-add `house_agent_fill` only with exact reviewed House Agent Revision digests.
+It contains no placeholder House Agent identities. The separate `0.3.0` listing
+adds `house_agent_fill` and allowlists only the exact two reviewed House Agent
+Revision digests. Existing Launch Requests remain pinned to the revision they
+selected.
 
 Catalog review and Host execution authority are separate controls. A checked-in
 listing is review evidence; it is not a Room Host allowlist. The Host must still

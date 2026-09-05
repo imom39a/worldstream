@@ -162,6 +162,52 @@ export interface ListingRevision {
   readonly digest: string;
 }
 
+export interface HouseAgentExecutionAllowanceV1 {
+  readonly model_call_attempts: 10;
+  readonly total_input_tokens: 120_000;
+  readonly total_output_tokens: 10_000;
+  readonly input_tokens_per_call: 12_000;
+  readonly output_tokens_per_call: 1_000;
+  readonly concurrent_calls: 1;
+  readonly call_timeout_seconds: 60;
+}
+
+export interface HouseAgentRevisionValue {
+  readonly schema: "worldstream/house-agent-revision/v1";
+  readonly house_agent_id: string;
+  readonly version: string;
+  readonly display_name: string;
+  readonly behavior_policy: {
+    readonly policy_id: string;
+    readonly revision: string;
+    readonly instructions: string;
+  };
+  readonly route: {
+    readonly gateway: "openrouter";
+    readonly model_slug: string;
+    readonly provider_slug: string;
+    readonly completion_token_parameter: "max_tokens" | "max_completion_tokens";
+    readonly maximum_prompt_price: string;
+    readonly maximum_completion_price: string;
+    readonly zero_data_retention: true;
+    readonly data_collection: "deny";
+  };
+  readonly agent_profile: AgentProfileReference;
+  readonly runner_template: RunnerTemplateReference;
+  readonly tools: readonly [];
+  readonly accounting_tokenizer: {
+    readonly tokenizer_id: string;
+    readonly revision: string;
+  };
+  readonly allowance: HouseAgentExecutionAllowanceV1;
+}
+
+export interface HouseAgentRevision {
+  readonly value: HouseAgentRevisionValue;
+  readonly canonicalBytes: Uint8Array;
+  readonly digest: string;
+}
+
 export interface ResultProjectorRevision {
   readonly value: ResultProjectorRevisionValue;
   readonly canonicalBytes: Uint8Array;
@@ -174,6 +220,7 @@ export interface ResolvedResultProjector {
 }
 
 const validatedListings = new WeakSet<object>();
+const validatedHouseAgents = new WeakSet<object>();
 const validatedProjectors = new WeakSet<object>();
 const resolvedProjectors = new WeakSet<object>();
 
@@ -201,6 +248,19 @@ export function readListingRevision(bytes: Uint8Array): ListingRevision {
     digest: taggedBlake3(bytes),
   });
   validatedListings.add(revision);
+  return revision;
+}
+
+export function readHouseAgentRevision(bytes: Uint8Array): HouseAgentRevision {
+  const value = readCanonical(bytes, MAX_REVISION_BYTES);
+  validateHouseAgentRevision(value);
+  const canonicalBytes = bytes.slice();
+  const revision = Object.freeze({
+    value: deepFreeze(value) as unknown as HouseAgentRevisionValue,
+    get canonicalBytes(): Uint8Array { return canonicalBytes.slice(); },
+    digest: taggedBlake3(bytes),
+  });
+  validatedHouseAgents.add(revision);
   return revision;
 }
 
@@ -552,6 +612,61 @@ function validateListing(value: CanonicalJson): void {
     if ((kinds.includes("house_agent_fill") !== (house.length > 0)) || house.length > 32 || new Set(house).size !== house.length) {
       throw new ContractViolation("invalid_shape");
     }
+  }
+}
+
+function validateHouseAgentRevision(value: CanonicalJson): void {
+  const revision = closedRecord(value, [
+    "schema", "house_agent_id", "version", "display_name", "behavior_policy", "route",
+    "agent_profile", "runner_template", "tools", "accounting_tokenizer", "allowance",
+  ]);
+  if (revision.schema !== "worldstream/house-agent-revision/v1") {
+    throw new ContractViolation("unsupported");
+  }
+  identifier(revision.house_agent_id, 128);
+  version(revision.version);
+  text(revision.display_name, 128);
+  const policy = closedRecord(revision.behavior_policy, ["policy_id", "revision", "instructions"]);
+  identifier(policy.policy_id, 128);
+  version(policy.revision);
+  text(policy.instructions, 4_096);
+  const route = closedRecord(revision.route, [
+    "gateway", "model_slug", "provider_slug", "completion_token_parameter",
+    "maximum_prompt_price", "maximum_completion_price", "zero_data_retention", "data_collection",
+  ]);
+  if (
+    route.gateway !== "openrouter"
+    || route.zero_data_retention !== true
+    || route.data_collection !== "deny"
+  ) {
+    throw new ContractViolation("invalid_shape");
+  }
+  identifier(route.model_slug, 192);
+  identifier(route.provider_slug, 192);
+  enumValue(route.completion_token_parameter, ["max_tokens", "max_completion_tokens"]);
+  decimalPrice(route.maximum_prompt_price);
+  decimalPrice(route.maximum_completion_price);
+  agentProfileReference(revision.agent_profile);
+  runnerTemplateReference(revision.runner_template);
+  if (array(revision.tools).length !== 0) throw new ContractViolation("invalid_shape");
+  const tokenizer = closedRecord(revision.accounting_tokenizer, ["tokenizer_id", "revision"]);
+  identifier(tokenizer.tokenizer_id, 128);
+  version(tokenizer.revision);
+  const allowance = closedRecord(revision.allowance, [
+    "model_call_attempts", "total_input_tokens", "total_output_tokens",
+    "input_tokens_per_call", "output_tokens_per_call", "concurrent_calls", "call_timeout_seconds",
+  ]);
+  const expected: Readonly<Record<string, number>> = {
+    model_call_attempts: 10,
+    total_input_tokens: 120_000,
+    total_output_tokens: 10_000,
+    input_tokens_per_call: 12_000,
+    output_tokens_per_call: 1_000,
+    concurrent_calls: 1,
+    call_timeout_seconds: 60,
+  };
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    if (integer(allowance[field]) !== expectedValue) throw new ContractViolation("invalid_shape");
   }
 }
 
@@ -940,6 +1055,12 @@ function version(value: CanonicalJson | undefined): string {
 function text(value: CanonicalJson | undefined, maximumBytes: number): string {
   const item = stringValue(value);
   if (item.length === 0 || utf8Length(item) > maximumBytes || /\p{Cc}/u.test(item)) throw new ContractViolation("unbounded");
+  return item;
+}
+
+function decimalPrice(value: CanonicalJson | undefined): string {
+  const item = stringValue(value);
+  if (!/^0\.[0-9]{1,18}$/u.test(item)) throw new ContractViolation("invalid_shape");
   return item;
 }
 

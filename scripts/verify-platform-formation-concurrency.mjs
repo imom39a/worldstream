@@ -4,9 +4,11 @@ import { createHash, randomUUID } from "node:crypto";
 const repository = new URL("..", import.meta.url).pathname;
 const runNamespace = `concurrency-${randomUUID()}`;
 const heistListing = "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b";
+const houseHeistListing = "blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447";
 const singleListing = `blake3:${sha256(runNamespace)}`;
+const houseHost = `house-concurrency-${sha256(runNamespace).slice(0, 16)}`;
 const packDigest = `blake3:${"2".repeat(64)}`;
-const accounts = Array.from({ length: 20 }, () => randomUUID());
+const accounts = Array.from({ length: 22 }, () => randomUUID());
 const createdLaunches = [];
 
 const status = parseEnv(execFileSync("supabase", ["status", "-o", "env"], {
@@ -44,6 +46,18 @@ try {
       '[{"seat_id":"host","role":"host","display_name":"Host","required":true,"allowed_participation":["account_human"],"allowed_house_agent_revisions":[]}]'::jsonb,
       false, 1800
     );
+    insert into platform_store.house_agent_host_approvals (
+      host_installation_id, house_agent_revision_digest,
+      agent_profile_revision_digest, runner_template_revision_digest,
+      runner_executable_digest, named_credential_reference,
+      approval_receipt_digest, available_for_new_assignments
+    )
+    select '${houseHost}', revisions.house_agent_revision_digest,
+      'blake3:${"1".repeat(64)}', 'blake3:${"2".repeat(64)}',
+      'blake3:${"3".repeat(64)}', 'openrouter-house',
+      extensions.digest(convert_to('concurrency:' || revisions.house_agent_revision_digest, 'utf8'), 'sha256'),
+      true
+    from platform_store.house_agent_revisions revisions;
     notify pgrst, 'reload schema';
   `);
 
@@ -81,6 +95,51 @@ try {
     })),
   );
   assert(claims.filter((outcome) => outcome.ok).length === 1, "concurrent invitation claims did not have one winner");
+
+  const houseLaunch = expectSingleRow(await rpc("create_launch_request_v1", launchBody({
+    accountId: accounts[20],
+    listingDigest: houseHeistListing,
+    namespace: runNamespace,
+    key: "house-launch",
+    seatId: "navigator",
+    houseFillChoice: "fill_unclaimed",
+  })));
+  const houseLaunchId = stringField(houseLaunch, "launch_request_id");
+  createdLaunches.push(houseLaunchId);
+  const starts = await Promise.all(
+    Array.from({ length: 16 }, () => rpc("start_house_fill_v1", {
+      p_creator_account_id: accounts[20],
+      p_launch_request_id: houseLaunchId,
+    })),
+  );
+  const fillOperationIds = new Set(starts.map((value) =>
+    stringField(expectRecord(value), "house_fill_operation_id")
+  ));
+  assert(fillOperationIds.size === 1, "concurrent House starts returned different operations");
+  psql(`
+    set session_replication_role = replica;
+    update platform_store.house_fill_operations
+    set claim_window_opened_at = claim_window_opened_at - interval '31 seconds',
+        claim_window_closes_at = claim_window_closes_at - interval '31 seconds'
+    where launch_request_id = '${houseLaunchId}';
+    set session_replication_role = origin;
+  `);
+  const selections = await Promise.all(
+    Array.from({ length: 16 }, () => rpc("retain_house_fill_selection_v1", {
+      p_launch_request_id: houseLaunchId,
+      p_host_installation_id: houseHost,
+    })),
+  );
+  const reservationSets = new Set(selections.map((value) => {
+    const operation = expectRecord(value);
+    assert(operation.state === "reserving", "concurrent House selection did not retain reserving state");
+    const reservations = operation.reservations;
+    assert(Array.isArray(reservations) && reservations.length === 2, "House selection did not retain two reservations");
+    return JSON.stringify(reservations.map((reservation) =>
+      stringField(expectRecord(reservation), "reservation_operation_id")
+    ).sort());
+  }));
+  assert(reservationSets.size === 1, "concurrent House selection rerolled reservation identities");
 
   const capacityLaunches = [];
   for (let index = 0; index < 11; index += 1) {
@@ -134,12 +193,12 @@ try {
   assert(authorizations.filter((outcome) => outcome.ok).length === 10, "the global gate did not admit exactly ten concurrent Runs");
   assert(authorizations.filter((outcome) => !outcome.ok).length === 1, "the global gate did not reject exactly one concurrent Run");
 
-  console.log("Formation concurrency verified: one launch, one invitation winner, and ten global Run reservations.");
+  console.log("Formation concurrency verified: one launch, one invitation winner, one House draw, and ten global Run reservations.");
 } finally {
   cleanup();
 }
 
-function launchBody({ accountId, listingDigest, namespace, key, seatId }) {
+function launchBody({ accountId, listingDigest, namespace, key, seatId, houseFillChoice = "disabled" }) {
   const canonicalInput = Buffer.from("{}");
   return {
     p_creator_account_id: accountId,
@@ -149,7 +208,7 @@ function launchBody({ accountId, listingDigest, namespace, key, seatId }) {
     p_canonical_launch_input: bytea(canonicalInput),
     p_launch_input_digest: bytea(sha256Bytes(canonicalInput)),
     p_canonicalizer_version: "worldstream/canonical-json/v1",
-    p_house_fill_choice: "disabled",
+    p_house_fill_choice: houseFillChoice,
     p_creator_access_choice: "seat",
     p_creator_seat_id: seatId,
     p_creator_participation_kind: "account_human",
@@ -187,6 +246,11 @@ function expectSingleRow(value) {
   return value[0];
 }
 
+function expectRecord(value) {
+  assert(isRecord(value), "RPC did not return an object");
+  return value;
+}
+
 function stringField(record, name) {
   const value = record[name];
   assert(typeof value === "string" && value.length > 0, `RPC omitted ${name}`);
@@ -197,6 +261,25 @@ function cleanup() {
   const quotedAccounts = accounts.map((id) => `'${id}'`).join(",");
   psql(`
     set session_replication_role = replica;
+    delete from platform_store.house_agent_assignments where launch_request_id in (
+      select launch_request_id from platform_store.launch_requests
+      where idempotency_namespace = '${runNamespace}'
+    );
+    delete from platform_store.house_runner_reservations where launch_request_id in (
+      select launch_request_id from platform_store.launch_requests
+      where idempotency_namespace = '${runNamespace}'
+    );
+    delete from platform_store.house_fill_candidate_evidence where house_fill_operation_id in (
+      select house_fill_operation_id from platform_store.house_fill_operations
+      where launch_request_id in (
+        select launch_request_id from platform_store.launch_requests
+        where idempotency_namespace = '${runNamespace}'
+      )
+    );
+    delete from platform_store.house_fill_operations where launch_request_id in (
+      select launch_request_id from platform_store.launch_requests
+      where idempotency_namespace = '${runNamespace}'
+    );
     delete from platform_store.seat_invitations where launch_request_id in (
       select launch_request_id from platform_store.launch_requests
       where idempotency_namespace = '${runNamespace}'
@@ -211,6 +294,7 @@ function cleanup() {
     );
     delete from platform_store.launch_requests where idempotency_namespace = '${runNamespace}';
     delete from platform_store.activity_listing_revisions where listing_revision_digest = '${singleListing}';
+    delete from platform_store.house_agent_host_approvals where host_installation_id = '${houseHost}';
     delete from platform_store.platform_accounts where account_id in (${quotedAccounts});
     set session_replication_role = origin;
   `);

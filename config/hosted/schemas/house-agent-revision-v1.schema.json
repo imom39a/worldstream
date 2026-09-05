@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldstream.dev/schemas/house-agent-revision-v1.schema.json",
+  "title": "WorldStream House Agent Revision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "house_agent_id", "version", "display_name", "behavior_policy", "route", "agent_profile", "runner_template", "tools", "accounting_tokenizer", "allowance"],
+  "properties": {
+    "schema": {"const": "worldstream/house-agent-revision/v1"},
+    "house_agent_id": {"$ref": "#/$defs/identifier"},
+    "version": {"$ref": "#/$defs/version"},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "behavior_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_id", "revision", "instructions"],
+      "properties": {
+        "policy_id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/version"},
+        "instructions": {"type": "string", "minLength": 1, "maxLength": 4096}
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gateway", "model_slug", "provider_slug", "completion_token_parameter", "maximum_prompt_price", "maximum_completion_price", "zero_data_retention", "data_collection"],
+      "properties": {
+        "gateway": {"const": "openrouter"},
+        "model_slug": {"$ref": "#/$defs/route"},
+        "provider_slug": {"$ref": "#/$defs/route"},
+        "completion_token_parameter": {"enum": ["max_tokens", "max_completion_tokens"]},
+        "maximum_prompt_price": {"$ref": "#/$defs/price"},
+        "maximum_completion_price": {"$ref": "#/$defs/price"},
+        "zero_data_retention": {"const": true},
+        "data_collection": {"const": "deny"}
+      }
+    },
+    "agent_profile": {"$ref": "#/$defs/profile_reference"},
+    "runner_template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template_id", "revision"],
+      "properties": {
+        "template_id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/version"}
+      }
+    },
+    "tools": {"type": "array", "maxItems": 0},
+    "accounting_tokenizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tokenizer_id", "revision"],
+      "properties": {
+        "tokenizer_id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/version"}
+      }
+    },
+    "allowance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_call_attempts", "total_input_tokens", "total_output_tokens", "input_tokens_per_call", "output_tokens_per_call", "concurrent_calls", "call_timeout_seconds"],
+      "properties": {
+        "model_call_attempts": {"const": 10},
+        "total_input_tokens": {"const": 120000},
+        "total_output_tokens": {"const": 10000},
+        "input_tokens_per_call": {"const": 12000},
+        "output_tokens_per_call": {"const": 1000},
+        "concurrent_calls": {"const": 1},
+        "call_timeout_seconds": {"const": 60}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "version": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+    "route": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "price": {"type": "string", "pattern": "^0\\.[0-9]{1,18}$"},
+    "profile_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "revision"],
+      "properties": {
+        "profile_id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/version"}
+      }
+    }
+  }
+}

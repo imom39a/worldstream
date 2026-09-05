@@ -12,6 +12,51 @@ begin
 end;
 $$;
 
+insert into platform_store.house_agent_host_approvals (
+  host_installation_id,
+  house_agent_revision_digest,
+  agent_profile_revision_digest,
+  runner_template_revision_digest,
+  runner_executable_digest,
+  named_credential_reference,
+  approval_receipt_digest,
+  available_for_new_assignments
+) values
+(
+  'hosted-dev',
+  'blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81',
+  'blake3:1111111111111111111111111111111111111111111111111111111111111111',
+  'blake3:2222222222222222222222222222222222222222222222222222222222222222',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:1', 'utf8'), 'sha256'),
+  true
+),
+(
+  'hosted-dev',
+  'blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a',
+  'blake3:4444444444444444444444444444444444444444444444444444444444444444',
+  'blake3:2222222222222222222222222222222222222222222222222222222222222222',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:skeptical-auditor:1', 'utf8'), 'sha256'),
+  true
+)
+on conflict (host_installation_id, house_agent_revision_digest) do nothing;
+
+do $$
+begin
+  if (select count(*)
+      from platform_store.house_agent_host_approvals approvals
+      where approvals.host_installation_id = 'hosted-dev'
+        and approvals.revoked_at is null
+        and approvals.available_for_new_assignments) <> 2
+  then
+    raise exception using errcode = '23505', message = 'development_house_approval_conflict';
+  end if;
+end;
+$$;
+
 insert into auth.users(id)
 values ('00000000-0000-4000-8000-00000000d001')
 on conflict (id) do nothing;

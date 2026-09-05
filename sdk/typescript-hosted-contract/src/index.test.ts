@@ -8,6 +8,7 @@ import { encodeCanonical, taggedBlake3, type CanonicalJson } from "@worldstream/
 import {
   deriveRoomSetup,
   projectResult,
+  readHouseAgentRevision,
   readListingRevision,
   readResultProjectorRevision,
   resolveProjectorArtifacts,
@@ -68,6 +69,41 @@ test("resolves every exact pre-genesis identity", () => {
   assert.throws(() => verifyListingPack(listing, { ...listing.value.pack, id: "worldstream.wrong" }), /reference_mismatch/);
   assert.throws(() => verifyListingClientRelease(listing, { ...client, client_id: "worldstream.wrong.web" }), /reference_mismatch/);
   assert.throws(() => verifyListingClientRelease(listing, { ...client, surfaces: [{ surface_id: "wrong-surface" }] }), /reference_mismatch/);
+});
+
+test("validates the exact two-revision House Agent pool", () => {
+  const cooperative = readHouseAgentRevision(canonical(
+    "config/hosted/house-agents/cooperative-planner-1.json",
+  ));
+  const skeptical = readHouseAgentRevision(canonical(
+    "config/hosted/house-agents/skeptical-auditor-1.json",
+  ));
+  const listing = readListingRevision(canonical("config/hosted/listings/agent-heist-0.3.0.json"));
+  assert.equal(
+    cooperative.digest,
+    "blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81",
+  );
+  assert.equal(
+    skeptical.digest,
+    "blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a",
+  );
+  assert.equal(
+    listing.digest,
+    "blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447",
+  );
+  assert.notEqual(cooperative.value.route.model_slug, skeptical.value.route.model_slug);
+  assert.equal(cooperative.value.allowance.model_call_attempts, 10);
+});
+
+test("House Agent revisions reject tools, fallback policy, and mutable allowance", () => {
+  const source = mutable("config/hosted/house-agents/cooperative-planner-1.json");
+  for (const mutation of ["tools", "route", "allowance"] as const) {
+    const value = structuredClone(source);
+    if (mutation === "tools") value.tools = ["browser"];
+    if (mutation === "route") record(value.route).zero_data_retention = false;
+    if (mutation === "allowance") record(value.allowance).model_call_attempts = 11;
+    assert.throws(() => readHouseAgentRevision(encodeCanonical(value)), /invalid_shape/);
+  }
 });
 
 test("artifact verification requires canonical duplicate-free bytes", () => {

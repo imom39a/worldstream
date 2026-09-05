@@ -328,6 +328,219 @@ impl ListingRevision {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HouseAgentBehaviorPolicyV1 {
+    policy_id: String,
+    revision: String,
+    instructions: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum HouseAgentGatewayV1 {
+    Openrouter,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum CompletionTokenParameterV1 {
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ProviderDataCollectionV1 {
+    Deny,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HouseAgentRouteV1 {
+    gateway: HouseAgentGatewayV1,
+    model_slug: String,
+    provider_slug: String,
+    completion_token_parameter: CompletionTokenParameterV1,
+    maximum_prompt_price: String,
+    maximum_completion_price: String,
+    zero_data_retention: bool,
+    data_collection: ProviderDataCollectionV1,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HouseAgentProfileReferenceV1 {
+    profile_id: String,
+    revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HouseRunnerTemplateReferenceV1 {
+    template_id: String,
+    revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountingTokenizerReferenceV1 {
+    tokenizer_id: String,
+    revision: String,
+}
+
+/// Fixed operator-funded limits attached to every House Agent Assignment.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HouseAgentExecutionAllowanceV1 {
+    pub model_call_attempts: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub input_tokens_per_call: u64,
+    pub output_tokens_per_call: u64,
+    pub concurrent_calls: u64,
+    pub call_timeout_seconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HouseAgentRevisionDocumentV1 {
+    schema: String,
+    house_agent_id: String,
+    version: String,
+    display_name: String,
+    behavior_policy: HouseAgentBehaviorPolicyV1,
+    route: HouseAgentRouteV1,
+    agent_profile: HouseAgentProfileReferenceV1,
+    runner_template: HouseRunnerTemplateReferenceV1,
+    tools: Vec<Value>,
+    accounting_tokenizer: AccountingTokenizerReferenceV1,
+    allowance: HouseAgentExecutionAllowanceV1,
+}
+
+/// Validated, immutable House Agent Revision identified by canonical bytes.
+#[derive(Clone, Debug)]
+pub struct HouseAgentRevision {
+    document: HouseAgentRevisionDocumentV1,
+    canonical_bytes: Vec<u8>,
+    digest: String,
+}
+
+impl HouseAgentRevision {
+    /// Reads canonical revision bytes and enforces the complete exhibition-only contract.
+    ///
+    /// # Errors
+    /// Returns a closed contract error for noncanonical, malformed, or unbounded bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ContractError> {
+        let (document, canonical_bytes) = decode_canonical(bytes, MAX_REVISION_BYTES)?;
+        validate_house_agent_revision(&document)?;
+        let digest = blake3_digest(&canonical_bytes);
+        Ok(Self {
+            document,
+            canonical_bytes,
+            digest,
+        })
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    #[must_use]
+    pub fn house_agent_id(&self) -> &str {
+        &self.document.house_agent_id
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.document.display_name
+    }
+
+    #[must_use]
+    pub fn model_slug(&self) -> &str {
+        &self.document.route.model_slug
+    }
+
+    #[must_use]
+    pub fn provider_slug(&self) -> &str {
+        &self.document.route.provider_slug
+    }
+
+    #[must_use]
+    pub const fn allowance(&self) -> HouseAgentExecutionAllowanceV1 {
+        self.document.allowance
+    }
+}
+
+fn validate_house_agent_revision(
+    document: &HouseAgentRevisionDocumentV1,
+) -> Result<(), ContractError> {
+    const ALLOWANCE: HouseAgentExecutionAllowanceV1 = HouseAgentExecutionAllowanceV1 {
+        model_call_attempts: 10,
+        total_input_tokens: 120_000,
+        total_output_tokens: 10_000,
+        input_tokens_per_call: 12_000,
+        output_tokens_per_call: 1_000,
+        concurrent_calls: 1,
+        call_timeout_seconds: 60,
+    };
+    if document.schema != "worldstream/house-agent-revision/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_identifier(&document.house_agent_id, 128)?;
+    validate_version(&document.version)?;
+    validate_text(&document.display_name, 128)?;
+    validate_identifier(&document.behavior_policy.policy_id, 128)?;
+    validate_version(&document.behavior_policy.revision)?;
+    validate_text(&document.behavior_policy.instructions, 4_096)?;
+    validate_identifier(&document.route.model_slug, 192)?;
+    validate_identifier(&document.route.provider_slug, 192)?;
+    validate_decimal_price(&document.route.maximum_prompt_price)?;
+    validate_decimal_price(&document.route.maximum_completion_price)?;
+    if !document.route.zero_data_retention
+        || !matches!(document.route.gateway, HouseAgentGatewayV1::Openrouter)
+        || !matches!(
+            document.route.data_collection,
+            ProviderDataCollectionV1::Deny
+        )
+        || !matches!(
+            document.route.completion_token_parameter,
+            CompletionTokenParameterV1::MaxTokens | CompletionTokenParameterV1::MaxCompletionTokens
+        )
+        || !document.tools.is_empty()
+        || document.allowance != ALLOWANCE
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    validate_identifier(&document.agent_profile.profile_id, 128)?;
+    validate_version(&document.agent_profile.revision)?;
+    validate_identifier(&document.runner_template.template_id, 128)?;
+    validate_version(&document.runner_template.revision)?;
+    validate_identifier(&document.accounting_tokenizer.tokenizer_id, 128)?;
+    validate_version(&document.accounting_tokenizer.revision)?;
+    Ok(())
+}
+
+fn validate_decimal_price(value: &str) -> Result<(), ContractError> {
+    let Some(fraction) = value.strip_prefix("0.") else {
+        return Err(ContractError::InvalidShape);
+    };
+    if fraction.is_empty()
+        || fraction.len() > 18
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        Err(ContractError::InvalidShape)
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_listing(document: &ListingDocument) -> Result<(), ContractError> {
     if document.schema != "worldstream/activity-listing-revision/v1"
         || document.launch_input_schema.schema != "worldstream/launch-input-schema/v1"
