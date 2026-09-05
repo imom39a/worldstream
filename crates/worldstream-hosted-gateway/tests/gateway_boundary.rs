@@ -2,19 +2,26 @@
 
 use std::{
     collections::BTreeSet,
-    net::SocketAddr,
-    sync::{Arc, Mutex, PoisonError},
+    io::{BufRead as _, BufReader, Read as _, Write as _},
+    net::{SocketAddr, TcpListener, TcpStream},
+    sync::{Arc, Mutex, PoisonError, mpsc},
+    thread,
     time::Duration,
 };
 
 use axum::{body::Body, http::Request};
 use http_body_util::BodyExt as _;
+use serde::Serialize;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
+use worldstream_core::CanonicalJsonV1;
+use worldstream_hosted_contract::{
+    HostedCapacityAuthorizationV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStageV1, HostedLaunchStatusV1,
+};
 use worldstream_hosted_gateway::{
-    DEVELOPMENT_GATEWAY_BACKEND_MODE, HostedGatewayBackend, HostedGatewayBackendMode,
-    HostedGatewayConfig, HostedGatewayError, HostedServiceRequestV1, hosted_gateway_router,
-    select_hosted_gateway_backend_mode,
+    FixedHostAdapterBackend, HostedGatewayBackend, HostedGatewayConfig, HostedGatewayError,
+    hosted_gateway_router,
 };
 
 const LISTING: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -22,7 +29,8 @@ const TOKEN: &str = "service-authority-that-never-leaves-fly";
 
 #[derive(Clone, Default)]
 struct Backend {
-    requests: Arc<Mutex<Vec<HostedServiceRequestV1>>>,
+    launches: Arc<Mutex<Vec<HostedLaunchRequestV1>>>,
+    evidence_reads: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
     ready: bool,
 }
 
@@ -31,16 +39,49 @@ impl HostedGatewayBackend for Backend {
         self.ready
     }
 
-    fn launch(&self, request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError> {
-        self.requests
+    fn launch(
+        &self,
+        request: &HostedLaunchRequestV1,
+    ) -> Result<HostedLaunchStatusV1, HostedGatewayError> {
+        self.launches
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(request.clone());
-        Ok(())
+        Ok(status(
+            &request.listing_revision_digest,
+            &request.launch_request_digest,
+            &request.room_setup_operation_id,
+        ))
     }
 
-    fn evidence(&self, request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError> {
-        self.launch(request)
+    fn evidence(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedLaunchStatusV1, HostedGatewayError> {
+        self.evidence_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(status(
+            &request.listing_revision_digest,
+            &request.launch_request_digest,
+            &request.room_setup_operation_id,
+        ))
+    }
+}
+
+fn status(listing: &str, launch: &str, operation: &str) -> HostedLaunchStatusV1 {
+    HostedLaunchStatusV1 {
+        schema: "worldstream/hosted-launch-status/v1".to_owned(),
+        listing_revision_digest: listing.to_owned(),
+        launch_request_digest: launch.to_owned(),
+        room_setup_operation_id: operation.to_owned(),
+        room_id: None,
+        stage: HostedLaunchStageV1::Bound,
+        room_setup_complete: false,
+        lobby_launch_committed: false,
+        retryable: true,
+        terminal_before_genesis: false,
     }
 }
 
@@ -60,49 +101,26 @@ fn config(max_requests: u32) -> HostedGatewayConfig {
 }
 
 #[test]
-fn development_backend_is_loopback_debug_and_explicit_only() {
-    let loopback = "127.0.0.1:8080"
+fn fixed_host_adapter_requires_loopback_strong_authority_and_bounded_timeout() {
+    let loopback = "127.0.0.1:9420"
         .parse::<SocketAddr>()
         .expect("loopback fixture");
-    assert_eq!(
-        select_hosted_gateway_backend_mode(None, None, loopback, false),
-        Ok(HostedGatewayBackendMode::Unavailable)
+    assert!(
+        FixedHostAdapterBackend::new(loopback, "weak".to_owned(), Duration::from_secs(5)).is_err()
     );
-    assert_eq!(
-        select_hosted_gateway_backend_mode(
-            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
-            Some("development"),
-            loopback,
-            false,
-        ),
-        Ok(HostedGatewayBackendMode::DevelopmentSubstitute)
+    assert!(
+        FixedHostAdapterBackend::new(
+            "192.0.2.1:9420".parse().expect("remote fixture"),
+            TOKEN.to_owned(),
+            Duration::from_secs(5),
+        )
+        .is_err()
     );
-    assert_eq!(
-        select_hosted_gateway_backend_mode(
-            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
-            Some("development"),
-            loopback,
-            true,
-        ),
-        Err(HostedGatewayError::InvalidConfiguration)
+    assert!(
+        FixedHostAdapterBackend::new(loopback, TOKEN.to_owned(), Duration::from_secs(31)).is_err()
     );
-    assert_eq!(
-        select_hosted_gateway_backend_mode(
-            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
-            Some("production"),
-            loopback,
-            false,
-        ),
-        Err(HostedGatewayError::InvalidConfiguration)
-    );
-    assert_eq!(
-        select_hosted_gateway_backend_mode(
-            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
-            Some("development"),
-            "0.0.0.0:8080".parse().expect("public fixture"),
-            false,
-        ),
-        Err(HostedGatewayError::InvalidConfiguration)
+    assert!(
+        FixedHostAdapterBackend::new(loopback, TOKEN.to_owned(), Duration::from_secs(5)).is_ok()
     );
 }
 
@@ -152,18 +170,48 @@ fn configuration_requires_exact_listings_strong_authority_and_loopback_upstream(
     );
 }
 
-fn service_request(path: &str, token: &str, listing: &str) -> Request<Body> {
+fn launch_request(listing: &str) -> HostedLaunchRequestV1 {
+    HostedLaunchRequestV1 {
+        schema: "worldstream/hosted-launch-request/v1".to_owned(),
+        listing_revision_digest: listing.to_owned(),
+        launch_request_digest:
+            "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+        launch_input_digest:
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_owned(),
+        frozen_roster_digest:
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_owned(),
+        room_setup_specification_digest:
+            "blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_owned(),
+        room_setup_operation_id: "hosted-launch-01".to_owned(),
+        capacity_authorization: HostedCapacityAuthorizationV1 {
+            schema: "worldstream/platform-capacity-authorization/v1".to_owned(),
+            host_installation_id: "hosted-test".to_owned(),
+            reservation_reference: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+        },
+        frozen_launch_request: json!({}),
+        frozen_roster: json!({}),
+        frozen_room_setup_specification: json!({}),
+    }
+}
+
+fn evidence_request(listing: &str) -> HostedLaunchEvidenceRequestV1 {
+    let launch = launch_request(listing);
+    HostedLaunchEvidenceRequestV1 {
+        schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+        listing_revision_digest: launch.listing_revision_digest,
+        launch_request_digest: launch.launch_request_digest,
+        room_setup_operation_id: launch.room_setup_operation_id,
+    }
+}
+
+fn service_request(path: &str, token: &str, body: &impl Serialize) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(path)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(
-            serde_json::to_vec(&json!({
-                "listing_revision_digest": listing,
-                "operation_reference": "launch-01"
-            }))
-            .expect("request fixture"),
+            serde_json::to_vec(body).expect("request fixture"),
         ))
         .expect("request")
 }
@@ -231,20 +279,22 @@ async fn service_authority_and_listing_allowlist_fail_before_backend_mutation() 
         service_request(
             "/v1/hosted/launch",
             "wrong-authority-value-long-enough",
-            LISTING,
+            &launch_request(LISTING),
         ),
         service_request(
             "/v1/hosted/launch",
             TOKEN,
-            "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            &launch_request(
+                "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
         ),
         Request::builder()
             .method("POST")
             .uri("/v1/hosted/evidence")
             .header("content-type", "application/json")
-            .body(Body::from(format!(
-                "{{\"listing_revision_digest\":\"{LISTING}\",\"operation_reference\":\"run-01\"}}"
-            )))
+            .body(Body::from(
+                serde_json::to_vec(&evidence_request(LISTING)).expect("request fixture"),
+            ))
             .expect("request"),
     ] {
         let response = app.clone().oneshot(request).await.expect("response");
@@ -252,7 +302,7 @@ async fn service_authority_and_listing_allowlist_fail_before_backend_mutation() 
     }
     assert!(
         backend
-            .requests
+            .launches
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_empty()
@@ -265,17 +315,25 @@ async fn accepted_service_calls_are_typed_and_globally_rate_bounded() {
     let app = hosted_gateway_router(config(1), backend.clone());
     let accepted = app
         .clone()
-        .oneshot(service_request("/v1/hosted/launch", TOKEN, LISTING))
+        .oneshot(service_request(
+            "/v1/hosted/launch",
+            TOKEN,
+            &launch_request(LISTING),
+        ))
         .await
         .expect("response");
     assert_eq!(accepted.status(), 202);
     let limited = app
-        .oneshot(service_request("/v1/hosted/evidence", TOKEN, LISTING))
+        .oneshot(service_request(
+            "/v1/hosted/evidence",
+            TOKEN,
+            &evidence_request(LISTING),
+        ))
         .await
         .expect("response");
     assert_eq!(limited.status(), 429);
     let requests = backend
-        .requests
+        .launches
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     assert_eq!(requests.len(), 1);
@@ -347,7 +405,7 @@ async fn browser_and_public_seams_reject_header_smuggling_without_internal_calls
     assert_eq!(public.status(), 501);
     assert!(
         backend
-            .requests
+            .launches
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_empty()
@@ -363,7 +421,7 @@ async fn malformed_and_oversized_service_payloads_are_safe() {
         .uri("/v1/hosted/launch")
         .header("authorization", format!("Bearer {TOKEN}"))
         .header("content-type", "application/json")
-        .body(Body::from(vec![b'x'; 65 * 1024]))
+        .body(Body::from(vec![b'x'; 257 * 1024]))
         .expect("request");
     let response = app.oneshot(oversized).await.expect("response");
     assert_eq!(response.status(), 413);
@@ -380,9 +438,111 @@ async fn malformed_and_oversized_service_payloads_are_safe() {
     assert!(value.get("authority").is_none());
     assert!(
         backend
-            .requests
+            .launches
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_empty()
     );
+}
+
+#[test]
+fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+    let address = listener.local_addr().expect("fixture address");
+    let (sender, receiver) = mpsc::channel();
+    let server = thread::spawn(move || {
+        for index in 0..3 {
+            let (stream, _) = listener.accept().expect("fixture connection");
+            let (request_line, authorization, body, mut stream) = read_request(stream);
+            sender
+                .send((request_line, authorization, body.clone()))
+                .expect("fixture observation");
+            let response_body = if index == 0 {
+                serde_json::to_vec(&json!({
+                    "schema": "worldstream/hosted-launch-readiness/v1",
+                    "ready": true
+                }))
+                .expect("readiness response")
+            } else {
+                serde_json::to_vec(&status(
+                    LISTING,
+                    "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "hosted-launch-01",
+                ))
+                .expect("status response")
+            };
+            let status_code = if index == 1 { 202 } else { 200 };
+            write!(
+                stream,
+                "HTTP/1.1 {status_code} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            )
+            .expect("fixture response headers");
+            stream
+                .write_all(&response_body)
+                .expect("fixture response body");
+        }
+    });
+
+    let backend = FixedHostAdapterBackend::new(address, TOKEN.to_owned(), Duration::from_secs(2))
+        .expect("fixed adapter");
+    assert!(backend.ready());
+    assert!(backend.launch(&launch_request(LISTING)).is_ok());
+    assert!(backend.evidence(&evidence_request(LISTING)).is_ok());
+    server.join().expect("fixture server");
+
+    let observations = receiver.try_iter().collect::<Vec<_>>();
+    assert_eq!(observations.len(), 3);
+    assert_eq!(
+        observations[0].0,
+        "GET /api/v1/hosted-launches/ready HTTP/1.1"
+    );
+    assert_eq!(
+        observations[1].0,
+        "POST /api/v1/hosted-launches:submit HTTP/1.1"
+    );
+    assert_eq!(
+        observations[2].0,
+        "POST /api/v1/hosted-launches:read HTTP/1.1"
+    );
+    assert!(
+        observations
+            .iter()
+            .all(|(_, authority, _)| authority == &format!("Bearer {TOKEN}"))
+    );
+    assert!(observations[0].2.is_empty());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[1].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[2].2).is_ok());
+}
+
+fn read_request(stream: TcpStream) -> (String, String, Vec<u8>, TcpStream) {
+    let writer = stream.try_clone().expect("fixture writer");
+    let mut reader = BufReader::new(stream);
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .expect("fixture request line");
+    let mut authorization = None;
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("fixture header");
+        if line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Authorization: ") {
+            authorization = Some(value.trim().to_owned());
+        }
+        if let Some(value) = line.strip_prefix("Content-Length: ") {
+            content_length = Some(value.trim().parse::<usize>().expect("fixture length"));
+        }
+    }
+    let mut body = vec![0_u8; content_length.expect("content length")];
+    reader.read_exact(&mut body).expect("fixture body");
+    (
+        request_line.trim().to_owned(),
+        authorization.expect("controller authority"),
+        body,
+        writer,
+    )
 }

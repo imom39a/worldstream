@@ -1,7 +1,9 @@
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
+use worldstream_core::CanonicalJsonV1;
+use worldstream_hosted_contract::{HouseAgentRevision, ListingRevision};
 use worldstream_runtime::{CliOverrides, ConfigLoader};
 use worldstream_studio_supervisor::{
     HttpDaemonStatusSource,
@@ -42,6 +44,7 @@ use worldstream_studio_supervisor::{
 use worldstream_studio_supervisor::{
     control_access::ControlAccess,
     control_admission::protect_operator_routes,
+    hosted_launch::{HostedLaunchAccessV1, HostedLaunchOperationsV1, hosted_launch_router},
     local_initialization::validate_initialized,
     managed_controller::{
         ControllerLifecycle, managed_controller_router, managed_lifecycle_router,
@@ -70,7 +73,7 @@ struct Args {
     #[arg(long = "require-operator-control", hide = true)]
     _require_operator_control: bool,
 
-    /// WorldStream Controller API listener.
+    /// `WorldStream` Controller API listener.
     #[arg(long, default_value = "127.0.0.1:9420")]
     bind: SocketAddr,
 
@@ -512,6 +515,31 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         agent_profiles.clone(),
         runner_registry,
     );
+    let hosted_launch = match (
+        env::var("WORLDSTREAM_HOSTED_INSTALLATION_ID").ok(),
+        env::var("WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY").ok(),
+    ) {
+        (None, None) => None,
+        (Some(installation_id), Some(authority)) => {
+            let (listings, house_agents) = reviewed_hosted_artifacts()?;
+            let operations = HostedLaunchOperationsV1::open(
+                &args.state_dir.join("hosted-launches"),
+                &installation_id,
+                listings,
+                house_agents,
+                room_operations.clone(),
+                task_setup.clone(),
+            )
+            .map_err(|_| anyhow::anyhow!("hosted launch adapter is unavailable"))?;
+            let access = HostedLaunchAccessV1::new(&authority)
+                .map_err(|_| anyhow::anyhow!("hosted launch authority is invalid"))?;
+            drop(authority);
+            Some(hosted_launch_router(operations, access))
+        }
+        _ => anyhow::bail!(
+            "hosted launch installation and Controller authority must be configured together"
+        ),
+    };
     let room_launch = worldstream_studio_supervisor::room_launch::room_launch_router(
         room_creation.clone(),
         task_setup.clone(),
@@ -555,12 +583,15 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
     .merge(managed_agent_host_seat_router(agent_profiles, managed_agent_hosts))
     .merge(runner_attention_router(runner_attention))
     .merge(attention_inbox_router(attention_inbox));
-    let router = router
+    let mut router = router
         .merge(room_setup_operations_router(room_operations))
         .merge(room_launch)
         .merge(scoped_credentials)
         .merge(client_handoff)
         .merge(room_runners);
+    if let Some(hosted_launch) = hosted_launch {
+        router = router.merge(hosted_launch);
+    }
 
     // Admission must wrap the complete graph, including all late merges and
     // assignment-MCP aliases. No operator routes may be merged after this point.
@@ -608,4 +639,32 @@ fn parse_backup_profile(value: &str) -> Result<BackupStorageProfileV1, &'static 
         "ephemeral" => Ok(BackupStorageProfileV1::Ephemeral),
         _ => Err("profile must be sqlite-bundled, postgres-primary, or ephemeral"),
     }
+}
+
+fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAgentRevision>)> {
+    const LISTINGS: &[&[u8]] = &[
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
+    ];
+    const HOUSE_AGENTS: &[&[u8]] = &[
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json"),
+    ];
+    let listings = LISTINGS
+        .iter()
+        .map(|source| {
+            let bytes = CanonicalJsonV1::parse(source)?.to_bytes()?;
+            ListingRevision::from_canonical_bytes(&bytes)
+                .map_err(|_| anyhow::anyhow!("reviewed hosted Listing is invalid"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let house_agents = HOUSE_AGENTS
+        .iter()
+        .map(|source| {
+            let bytes = CanonicalJsonV1::parse(source)?.to_bytes()?;
+            HouseAgentRevision::from_canonical_bytes(&bytes)
+                .map_err(|_| anyhow::anyhow!("reviewed House Agent is invalid"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((listings, house_agents))
 }

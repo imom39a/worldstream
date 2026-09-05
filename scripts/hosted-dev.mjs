@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
@@ -14,6 +14,8 @@ const DEVELOPMENT_USER_ID = "00000000-0000-4000-8000-00000000d001";
 const DEVELOPMENT_PROVIDER_SUBJECT = "worldstream-development";
 const DEVELOPMENT_LOGIN = "worldstream-local-developer";
 const SERVICE_AUTHORITY = "worldstream-local-service-authority-000000000000";
+const CONTROLLER_AUTHORITY = "worldstream-local-controller-authority-000000000";
+const HOST_INSTALLATION_ID = "hosted-dev";
 const FAKE_OPENROUTER_KEY = "worldstream-development-key-000000000000";
 const SUPABASE_EXCLUDES =
   "realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
@@ -90,6 +92,8 @@ async function main() {
     ...process.env,
     NODE_ENV: "development",
     WORLDSTREAM_DEPLOYMENT_ENVIRONMENT: "development",
+    WORLDSTREAM_HOSTED_INSTALLATION_ID: HOST_INSTALLATION_ID,
+    WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: CONTROLLER_AUTHORITY,
   };
   const ctl = (command, options = {}) =>
     run(
@@ -128,9 +132,14 @@ async function main() {
       ),
     ]);
     worldstreamctlBuilt = true;
-    await run("pnpm", ["--filter", "@worldstream/platform", "build"], {
-      environment: commonEnvironment,
-    });
+    await Promise.all([
+      run("pnpm", ["--filter", "@worldstream/platform", "build"], {
+        environment: commonEnvironment,
+      }),
+      run("pnpm", ["--filter", "@worldstream/pack-sdk", "build"], {
+        environment: commonEnvironment,
+      }),
+    ]);
 
     await mkdir(stateRoot, { recursive: true, mode: 0o700 });
     await ensureSecret(secretFile);
@@ -238,12 +247,12 @@ async function main() {
         {
           ...childEnvironment,
           HOSTED_GATEWAY_BIND: `127.0.0.1:${ports.gateway}`,
-          WORLDSTREAM_RUNTIME_UPSTREAM: `127.0.0.1:${ports.runtime}`,
+          WORLDSTREAM_HOST_ADAPTER_UPSTREAM: `127.0.0.1:${ports.controller}`,
+          WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: CONTROLLER_AUTHORITY,
           WORLDSTREAM_PUBLIC_AUTHORITY: `127.0.0.1:${ports.gateway}`,
           WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
           WORLDSTREAM_LISTING_ALLOWLIST: LISTING_DIGEST,
           WORLDSTREAM_DEPLOYMENT_VERSION: "hosted-local-development",
-          WORLDSTREAM_DEVELOPMENT_GATEWAY_BACKEND: DEVELOPMENT_MODE,
           RUST_LOG: "worldstream_hosted_gateway=info",
         },
       ),
@@ -541,18 +550,79 @@ async function verifyDevelopmentFlow(ports) {
   );
   if (provider.status !== 200) throw new Error("fake OpenRouter contract check failed");
 
+  const { encodeCanonical, taggedBlake3 } = await import(
+    pathToFileURL(
+      join(REPOSITORY_ROOT, "sdk", "typescript-pack", "packages", "pack-sdk", "dist", "index.js"),
+    ).href
+  );
+  const [frozenLaunchRequest, frozenRoster, frozenRoomSetupSpecification] = await Promise.all(
+    [
+      "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
+      "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
+      "fixtures/hosted-contract/expected/agent-heist-room-setup.json",
+    ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
+  );
+  const launchBytes = encodeCanonical(frozenLaunchRequest);
+  const rosterBytes = encodeCanonical(frozenRoster);
+  const setupBytes = encodeCanonical(frozenRoomSetupSpecification);
+  const launchRequest = {
+    schema: "worldstream/hosted-launch-request/v1",
+    listing_revision_digest: LISTING_DIGEST,
+    launch_request_digest: taggedBlake3(launchBytes),
+    launch_input_digest: taggedSha256(encodeCanonical(frozenLaunchRequest.inputs)),
+    frozen_roster_digest: taggedSha256(rosterBytes),
+    room_setup_specification_digest: taggedBlake3(setupBytes),
+    room_setup_operation_id: "hosted-local-readiness",
+    capacity_authorization: {
+      schema: "worldstream/platform-capacity-authorization/v1",
+      host_installation_id: HOST_INSTALLATION_ID,
+      reservation_reference: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    },
+    frozen_launch_request: frozenLaunchRequest,
+    frozen_roster: frozenRoster,
+    frozen_room_setup_specification: frozenRoomSetupSpecification,
+  };
   const gateway = await fetch(`http://127.0.0.1:${ports.gateway}/v1/hosted/launch`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${SERVICE_AUTHORITY}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({
-      listing_revision_digest: LISTING_DIGEST,
-      operation_reference: "hosted-local-readiness",
-    }),
+    body: encodeCanonical(launchRequest),
   });
   if (gateway.status !== 202) throw new Error("development Hosted Gateway contract check failed");
+  const launchStatus = await gateway.json();
+  if (
+    launchStatus.schema !== "worldstream/hosted-launch-status/v1" ||
+    launchStatus.room_setup_operation_id !== launchRequest.room_setup_operation_id
+  ) {
+    throw new Error("development Hosted Gateway returned invalid launch status");
+  }
+  const evidence = await fetch(`http://127.0.0.1:${ports.gateway}/v1/hosted/evidence`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${SERVICE_AUTHORITY}`,
+      "content-type": "application/json",
+    },
+    body: encodeCanonical({
+      schema: "worldstream/hosted-launch-evidence-request/v1",
+      listing_revision_digest: launchRequest.listing_revision_digest,
+      launch_request_digest: launchRequest.launch_request_digest,
+      room_setup_operation_id: launchRequest.room_setup_operation_id,
+    }),
+  });
+  if (evidence.status !== 200) throw new Error("development Hosted Gateway evidence check failed");
+  const evidenceStatus = await evidence.json();
+  if (
+    evidenceStatus.launch_request_digest !== launchStatus.launch_request_digest ||
+    evidenceStatus.room_setup_operation_id !== launchStatus.room_setup_operation_id
+  ) {
+    throw new Error("development Hosted Gateway evidence identity changed");
+  }
+}
+
+function taggedSha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 function printReady(ports, supabase) {
@@ -567,7 +637,7 @@ function printReady(ports, supabase) {
       `Runtime:        127.0.0.1:${ports.runtime} (loopback only)`,
       `Controller:     127.0.0.1:${ports.controller} (loopback only)`,
       "",
-      "Development substitutes are ACTIVE: identity bypass, fake OpenRouter, and Gateway backend.",
+      "Development substitutes are ACTIVE: identity bypass and fake OpenRouter.",
       "Press Ctrl-C to stop owned processes. Retained local data is preserved.",
       "",
     ].join("\n"),

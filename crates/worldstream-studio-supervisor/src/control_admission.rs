@@ -63,6 +63,11 @@ async fn admit_control(
         request.headers_mut().remove(header::AUTHORIZATION);
         return next.run(request).await;
     }
+    if crate::hosted_launch::is_hosted_launch_route(request.method(), request.uri().path()) {
+        // The exact hosted routes install their own least-privilege service
+        // admission. Preserve that bearer only for those three handlers.
+        return next.run(request).await;
+    }
     if is_membership_browser_request(request.method().as_str(), request.uri().path()) {
         // These handlers retain their exact Origin, one-use handoff and opaque
         // Membership session checks. Installation authority never reaches them.

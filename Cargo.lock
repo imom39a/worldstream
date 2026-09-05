@@ -3196,6 +3196,7 @@ dependencies = [
  "blake3",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "worldstream-activity-client",
  "worldstream-core",
@@ -3215,6 +3216,9 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "worldstream-core",
+ "worldstream-hosted-contract",
+ "zeroize",
 ]
 
 [[package]]
@@ -3397,6 +3401,7 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "http-body-util",
+ "ring",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -3408,6 +3413,7 @@ dependencies = [
  "winsafe",
  "worldstream-activity-client",
  "worldstream-core",
+ "worldstream-hosted-contract",
  "worldstream-pack-bundle",
  "worldstream-protocol",
  "worldstream-runtime",

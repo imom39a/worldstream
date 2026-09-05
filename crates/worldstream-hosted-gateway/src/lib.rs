@@ -4,7 +4,8 @@
 
 use std::{
     collections::BTreeSet,
-    net::SocketAddr,
+    io::{BufRead as _, BufReader, Read as _, Write as _},
+    net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
@@ -13,7 +14,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, State, rejection::BytesRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -21,8 +22,16 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
+use worldstream_core::CanonicalJsonV1;
+use worldstream_hosted_contract::{
+    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStatusV1,
+    validate_hosted_launch_evidence_request,
+};
+use zeroize::Zeroizing;
 
-const MAX_SERVICE_BODY_BYTES: usize = 64 * 1024;
+const MAX_SERVICE_BODY_BYTES: usize = 256 * 1024;
+const MAX_UPSTREAM_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_UPSTREAM_HEADERS_BYTES: usize = 16 * 1024;
 const MAX_LISTINGS: usize = 64;
 const SERVICE_AUTHORITY_TAG_KEY: &[u8] = b"worldstream/hosted-service-authority/v1";
 
@@ -107,17 +116,7 @@ impl HostedGatewayConfig {
     }
 }
 
-/// Typed Vercel-to-Fly stub request. HTTP headers and arbitrary upstreams are
-/// deliberately absent, preventing browser forwarding data from crossing the
-/// internal call seam.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostedServiceRequestV1 {
-    pub listing_revision_digest: String,
-    pub operation_reference: String,
-}
-
-/// Narrow backend seam used by later retained launch and evidence tickets.
+/// Narrow backend seam between the public gateway and the retained Host adapter.
 pub trait HostedGatewayBackend: Send + Sync + 'static {
     fn ready(&self) -> bool;
 
@@ -125,67 +124,140 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns only a closed rejection or availability class.
-    fn launch(&self, request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError>;
+    fn launch(
+        &self,
+        request: &HostedLaunchRequestV1,
+    ) -> Result<HostedLaunchStatusV1, HostedGatewayError>;
 
     /// Reads one typed, allowlisted evidence operation.
     ///
     /// # Errors
     /// Returns only a closed rejection or availability class.
-    fn evidence(&self, request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError>;
+    fn evidence(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedLaunchStatusV1, HostedGatewayError>;
 }
 
-/// Production skeleton backend. It proves route isolation while all stateful
-/// hosted operations remain unavailable until their dedicated tickets land.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct UnavailableHostedGatewayBackend;
-
-impl HostedGatewayBackend for UnavailableHostedGatewayBackend {
-    fn ready(&self) -> bool {
-        false
-    }
-
-    fn launch(&self, _request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError> {
-        Err(HostedGatewayError::Unavailable)
-    }
-
-    fn evidence(&self, _request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError> {
-        Err(HostedGatewayError::Unavailable)
-    }
+/// Fixed loopback-only client for the Controller's three hosted-launch routes.
+/// It cannot forward caller paths, headers, credentials, or arbitrary operations.
+#[derive(Clone)]
+pub struct FixedHostAdapterBackend {
+    upstream: SocketAddr,
+    controller_authority: Arc<Zeroizing<String>>,
+    timeout: Duration,
 }
 
-/// Explicit process mode for the gateway's backend seam. The development
-/// substitute is selected only by the binary after this fail-closed check.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HostedGatewayBackendMode {
-    Unavailable,
-    DevelopmentSubstitute,
-}
-
-/// Exact opt-in value for the deterministic local backend.
-pub const DEVELOPMENT_GATEWAY_BACKEND_MODE: &str = "visible-local-only";
-
-/// Validates the process-level development substitute boundary.
-///
-/// # Errors
-/// The substitute is rejected by release builds, non-development
-/// environments, non-loopback listeners, and unknown mode values.
-pub fn select_hosted_gateway_backend_mode(
-    requested_mode: Option<&str>,
-    deployment_environment: Option<&str>,
-    bind: SocketAddr,
-    release_build: bool,
-) -> Result<HostedGatewayBackendMode, HostedGatewayError> {
-    match requested_mode {
-        None => Ok(HostedGatewayBackendMode::Unavailable),
-        Some(DEVELOPMENT_GATEWAY_BACKEND_MODE)
-            if deployment_environment == Some("development")
-                && bind.ip().is_loopback()
-                && !release_build =>
+impl FixedHostAdapterBackend {
+    /// Builds a least-privilege adapter using one literal loopback endpoint.
+    ///
+    /// # Errors
+    /// Rejects remote endpoints, weak authority material, and unsafe timeouts.
+    pub fn new(
+        upstream: SocketAddr,
+        controller_authority: String,
+        timeout: Duration,
+    ) -> Result<Self, HostedGatewayError> {
+        if !upstream.ip().is_loopback()
+            || controller_authority.len() < 32
+            || controller_authority.len() > 512
+            || !controller_authority
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+            || timeout < Duration::from_millis(100)
+            || timeout > Duration::from_secs(30)
         {
-            Ok(HostedGatewayBackendMode::DevelopmentSubstitute)
+            return Err(HostedGatewayError::InvalidConfiguration);
         }
-        Some(_) => Err(HostedGatewayError::InvalidConfiguration),
+        Ok(Self {
+            upstream,
+            controller_authority: Arc::new(Zeroizing::new(controller_authority)),
+            timeout,
+        })
     }
+
+    fn call<T: Serialize>(
+        &self,
+        path: &'static str,
+        body: &T,
+    ) -> Result<(u16, Vec<u8>), HostedGatewayError> {
+        let encoded = serde_json::to_vec(body).map_err(|_| HostedGatewayError::Rejected)?;
+        let body = CanonicalJsonV1::parse(&encoded)
+            .and_then(|value| value.to_bytes())
+            .map_err(|_| HostedGatewayError::Rejected)?;
+        fixed_http_request(
+            self.upstream,
+            self.timeout,
+            "POST",
+            path,
+            &self.controller_authority,
+            &body,
+        )
+    }
+}
+
+impl HostedGatewayBackend for FixedHostAdapterBackend {
+    fn ready(&self) -> bool {
+        fixed_http_request(
+            self.upstream,
+            self.timeout,
+            "GET",
+            "/api/v1/hosted-launches/ready",
+            &self.controller_authority,
+            &[],
+        )
+        .ok()
+        .filter(|(status, _)| *status == 200)
+        .and_then(|(_, body)| serde_json::from_slice::<HostedAdapterReadinessV1>(&body).ok())
+        .is_some_and(|ready| {
+            ready.schema == "worldstream/hosted-launch-readiness/v1" && ready.ready
+        })
+    }
+
+    fn launch(
+        &self,
+        request: &HostedLaunchRequestV1,
+    ) -> Result<HostedLaunchStatusV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-launches:submit", request)?;
+        if !matches!(status, 200 | 202) {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedLaunchStatusV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_launch_response(
+            &response,
+            &request.listing_revision_digest,
+            &request.launch_request_digest,
+            &request.room_setup_operation_id,
+        )?;
+        Ok(response)
+    }
+
+    fn evidence(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedLaunchStatusV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-launches:read", request)?;
+        if status != 200 {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedLaunchStatusV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_launch_response(
+            &response,
+            &request.listing_revision_digest,
+            &request.launch_request_digest,
+            &request.room_setup_operation_id,
+        )?;
+        Ok(response)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostedAdapterReadinessV1 {
+    schema: String,
+    ready: bool,
 }
 
 struct RateWindow {
@@ -238,7 +310,11 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 async fn readiness(State(state): State<GatewayState>) -> Response {
-    let (status, value) = if state.backend.ready() {
+    let backend = Arc::clone(&state.backend);
+    let ready = tokio::task::spawn_blocking(move || backend.ready())
+        .await
+        .unwrap_or(false);
+    let (status, value) = if ready {
         (StatusCode::OK, "ready")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
@@ -265,7 +341,7 @@ async fn launch(
     let Ok(body) = body else {
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
-    service_operation(&state, &headers, &body, ServiceOperation::Launch)
+    launch_operation(&state, &headers, &body).await
 }
 
 async fn evidence(
@@ -276,77 +352,114 @@ async fn evidence(
     let Ok(body) = body else {
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
-    service_operation(&state, &headers, &body, ServiceOperation::Evidence)
+    evidence_operation(&state, &headers, &body).await
 }
 
-#[derive(Clone, Copy)]
-enum ServiceOperation {
-    Launch,
-    Evidence,
-}
-
-impl ServiceOperation {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Launch => "launch",
-            Self::Evidence => "evidence",
-        }
+async fn launch_operation(state: &GatewayState, headers: &HeaderMap, body: &[u8]) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
     }
-}
-
-fn service_operation(
-    state: &GatewayState,
-    headers: &HeaderMap,
-    body: &[u8],
-    operation: ServiceOperation,
-) -> Response {
-    if !is_json(headers) {
-        return safe_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "json_required");
-    }
-    if !service_authorized(headers, &state.config.service_authority_tag) {
-        return safe_error(StatusCode::UNAUTHORIZED, "service_authority_required");
-    }
-    let Ok(request) = serde_json::from_slice::<HostedServiceRequestV1>(body) else {
+    let Ok(request) = serde_json::from_slice::<HostedLaunchRequestV1>(body) else {
         return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
     };
-    if !is_digest(&request.listing_revision_digest) || !safe_reference(&request.operation_reference)
-    {
+    if !is_digest(&request.listing_revision_digest) {
         return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
     }
-    if !state
-        .config
-        .listing_allowlist
-        .contains(&request.listing_revision_digest)
-    {
+    if !listing_allowed(state, &request.listing_revision_digest) {
         return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
     }
     if !admit_rate(state) {
         return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     }
-    let result = match operation {
-        ServiceOperation::Launch => state.backend.launch(&request),
-        ServiceOperation::Evidence => state.backend.evidence(&request),
+    let backend = Arc::clone(&state.backend);
+    let listing_revision_digest = request.listing_revision_digest.clone();
+    let result = tokio::task::spawn_blocking(move || backend.launch(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    service_result(
+        "launch",
+        &listing_revision_digest,
+        result,
+        StatusCode::ACCEPTED,
+    )
+}
+
+async fn evidence_operation(state: &GatewayState, headers: &HeaderMap, body: &[u8]) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedLaunchEvidenceRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
     };
+    if validate_hosted_launch_evidence_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let listing_revision_digest = request.listing_revision_digest.clone();
+    let result = tokio::task::spawn_blocking(move || backend.evidence(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    service_result("evidence", &listing_revision_digest, result, StatusCode::OK)
+}
+
+fn reject_service_envelope(state: &GatewayState, headers: &HeaderMap) -> Option<Response> {
+    if !is_json(headers) {
+        return Some(safe_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "json_required",
+        ));
+    }
+    if !service_authorized(headers, &state.config.service_authority_tag) {
+        return Some(safe_error(
+            StatusCode::UNAUTHORIZED,
+            "service_authority_required",
+        ));
+    }
+    None
+}
+
+fn listing_allowed(state: &GatewayState, listing_revision_digest: &str) -> bool {
+    state
+        .config
+        .listing_allowlist
+        .contains(listing_revision_digest)
+}
+
+fn service_result(
+    operation: &'static str,
+    listing_revision_digest: &str,
+    result: Result<HostedLaunchStatusV1, HostedGatewayError>,
+    pending_status: StatusCode,
+) -> Response {
     match result {
-        Ok(()) => {
+        Ok(status) => {
             tracing::info!(
                 target: "worldstream.hosted_gateway",
-                operation = operation.name(),
-                listing_revision_digest = request.listing_revision_digest,
+                operation,
+                listing_revision_digest,
                 outcome = "accepted",
                 "hosted gateway operation"
             );
-            (
-                StatusCode::ACCEPTED,
-                Json(json!({"version":"hosted_gateway_stub.v1","accepted":true})),
-            )
-                .into_response()
+            let response_status = if status.lobby_launch_committed {
+                StatusCode::OK
+            } else {
+                pending_status
+            };
+            no_store((response_status, Json(status)).into_response())
         }
         Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
             tracing::warn!(
                 target: "worldstream.hosted_gateway",
-                operation = operation.name(),
-                listing_revision_digest = request.listing_revision_digest,
+                operation,
+                listing_revision_digest,
                 outcome = "rejected",
                 "hosted gateway operation"
             );
@@ -355,14 +468,158 @@ fn service_operation(
         Err(HostedGatewayError::Unavailable) => {
             tracing::warn!(
                 target: "worldstream.hosted_gateway",
-                operation = operation.name(),
-                listing_revision_digest = request.listing_revision_digest,
+                operation,
+                listing_revision_digest,
                 outcome = "unavailable",
                 "hosted gateway operation"
             );
             safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
         }
     }
+}
+
+fn fixed_http_request(
+    upstream: SocketAddr,
+    timeout: Duration,
+    method: &'static str,
+    path: &'static str,
+    controller_authority: &str,
+    body: &[u8],
+) -> Result<(u16, Vec<u8>), HostedGatewayError> {
+    if !upstream.ip().is_loopback()
+        || !matches!(
+            (method, path),
+            ("GET", "/api/v1/hosted-launches/ready")
+                | (
+                    "POST",
+                    "/api/v1/hosted-launches:submit" | "/api/v1/hosted-launches:read"
+                )
+        )
+        || body.len() > MAX_SERVICE_BODY_BYTES
+    {
+        return Err(HostedGatewayError::Rejected);
+    }
+    let mut request = Zeroizing::new(Vec::with_capacity(body.len().saturating_add(512)));
+    write!(
+        &mut *request,
+        "{method} {path} HTTP/1.1\r\nHost: {upstream}\r\nAccept: application/json\r\nContent-Type: application/json\r\nAuthorization: Bearer {controller_authority}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .map_err(|_| HostedGatewayError::Unavailable)?;
+    request.extend_from_slice(body);
+
+    let stream = TcpStream::connect_timeout(&upstream, timeout)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| stream.set_write_timeout(Some(timeout)))
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    let mut reader = BufReader::new(stream);
+    reader
+        .get_mut()
+        .write_all(&request)
+        .and_then(|()| reader.get_mut().flush())
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+
+    let mut used = 0_usize;
+    let status_line = read_upstream_line(&mut reader, &mut used)?;
+    let mut fields = status_line.split_whitespace();
+    if fields.next() != Some("HTTP/1.1") {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    let status = fields
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|value| (200..=599).contains(value))
+        .ok_or(HostedGatewayError::Unavailable)?;
+    let mut content_length = None;
+    loop {
+        let line = read_upstream_line(&mut reader, &mut used)?;
+        if line == "\r\n" {
+            break;
+        }
+        let (name, value) = line
+            .trim_end_matches(['\r', '\n'])
+            .split_once(':')
+            .ok_or(HostedGatewayError::Unavailable)?;
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(HostedGatewayError::Unavailable);
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(HostedGatewayError::Unavailable);
+            }
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|length| *length <= MAX_UPSTREAM_RESPONSE_BYTES)
+                    .ok_or(HostedGatewayError::Unavailable)?,
+            );
+        }
+    }
+    let content_length = content_length.ok_or(HostedGatewayError::Unavailable)?;
+    let mut response = vec![0_u8; content_length];
+    reader
+        .read_exact(&mut response)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    Ok((status, response))
+}
+
+fn read_upstream_line(
+    reader: &mut BufReader<TcpStream>,
+    used: &mut usize,
+) -> Result<String, HostedGatewayError> {
+    let remaining = MAX_UPSTREAM_HEADERS_BYTES
+        .checked_sub(*used)
+        .filter(|remaining| *remaining > 0)
+        .ok_or(HostedGatewayError::Unavailable)?;
+    let mut line = String::new();
+    let count = reader
+        .take(u64::try_from(remaining).unwrap_or(u64::MAX))
+        .read_line(&mut line)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    *used = used.saturating_add(count);
+    if count == 0 || !line.ends_with("\r\n") {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(line)
+}
+
+fn classify_upstream_status(status: u16) -> HostedGatewayError {
+    if matches!(status, 400 | 401 | 403 | 404 | 409 | 422) {
+        HostedGatewayError::Rejected
+    } else {
+        HostedGatewayError::Unavailable
+    }
+}
+
+fn validate_launch_response(
+    response: &HostedLaunchStatusV1,
+    listing_revision_digest: &str,
+    launch_request_digest: &str,
+    room_setup_operation_id: &str,
+) -> Result<(), HostedGatewayError> {
+    if response.schema != "worldstream/hosted-launch-status/v1"
+        || response.listing_revision_digest != listing_revision_digest
+        || response.launch_request_digest != launch_request_digest
+        || response.room_setup_operation_id != room_setup_operation_id
+        || response
+            .room_id
+            .as_deref()
+            .is_some_and(|room_id| !safe_reference(room_id))
+        || (response.lobby_launch_committed
+            && (!response.room_setup_complete || response.room_id.is_none()))
+        || (response.terminal_before_genesis
+            && (response.lobby_launch_committed
+                || response.retryable
+                || response.stage
+                    != worldstream_hosted_contract::HostedLaunchStageV1::NeedsAttention))
+    {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(())
 }
 
 async fn browser_admission_seam(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
@@ -485,9 +742,19 @@ fn safe_reference(value: &str) -> bool {
 }
 
 fn safe_error(status: StatusCode, code: &'static str) -> Response {
-    (
-        status,
-        Json(json!({"error":{"code":code,"retryable":status.is_server_error()}})),
+    no_store(
+        (
+            status,
+            Json(json!({"error":{"code":code,"retryable":status.is_server_error()}})),
+        )
+            .into_response(),
     )
-        .into_response()
+}
+
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store, max-age=0"),
+    );
+    response
 }

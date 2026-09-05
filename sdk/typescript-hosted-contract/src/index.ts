@@ -341,8 +341,16 @@ export function deriveRoomSetup(
   listing: ListingRevision,
   launchBytes: Uint8Array,
   rosterBytes: Uint8Array,
+  houseAgents: readonly HouseAgentRevision[] = [],
 ): Uint8Array {
   requireValidatedListing(listing);
+  if (houseAgents.length > 32) throw new ContractViolation("unbounded");
+  const houseAgentRevisions = new Map<string, HouseAgentRevision>();
+  for (const revision of houseAgents) {
+    requireValidatedHouseAgent(revision);
+    if (houseAgentRevisions.has(revision.digest)) throw new ContractViolation("invalid_shape");
+    houseAgentRevisions.set(revision.digest, revision);
+  }
   const launch = closedRecord(readCanonical(launchBytes, 16_384), ["schema", "listing_revision_digest", "inputs", "creator"]);
   const roster = closedRecord(readCanonical(rosterBytes, 65_536), ["schema", "listing_revision_digest", "members"]);
   if (launch.schema !== "worldstream/launch-request/v2" || roster.schema !== "worldstream/frozen-roster/v1") {
@@ -397,7 +405,7 @@ export function deriveRoomSetup(
       required: listed.required,
       display_name: member?.display_name ?? listed.display_name,
     };
-    if (member !== undefined) installParticipation(seat, listed, member);
+    if (member !== undefined) installParticipation(seat, listed, member, houseAgentRevisions);
     seats.push(seat);
   }
   if (members.size !== 0) throw new ContractViolation("invalid_shape");
@@ -499,6 +507,7 @@ function installParticipation(
   seat: Record<string, CanonicalJson>,
   listed: ListingSeat,
   member: FrozenMember,
+  houseAgents: ReadonlyMap<string, HouseAgentRevision>,
 ): void {
   if (!listed.allowed_participation.includes(member.participation)) throw new ContractViolation("unsupported");
   seat.principal = {
@@ -515,6 +524,16 @@ function installParticipation(
       throw new ContractViolation("invalid_shape");
     }
     if (!listed.allowed_house_agent_revisions.includes(member.house_agent_revision_digest)) {
+      throw new ContractViolation("reference_mismatch");
+    }
+    const revision = houseAgents.get(member.house_agent_revision_digest);
+    if (
+      revision === undefined
+      || revision.value.agent_profile.profile_id !== member.agent_profile.profile_id
+      || revision.value.agent_profile.revision !== member.agent_profile.revision
+      || revision.value.runner_template.template_id !== member.runner_template.template_id
+      || revision.value.runner_template.revision !== member.runner_template.revision
+    ) {
       throw new ContractViolation("reference_mismatch");
     }
     seat.assignment = {
@@ -892,6 +911,10 @@ function sameSchema(left: SchemaReference, right: SchemaReference): boolean {
 
 function requireValidatedListing(listing: ListingRevision): void {
   if (!validatedListings.has(listing)) throw new ContractViolation("unsupported");
+}
+
+function requireValidatedHouseAgent(houseAgent: HouseAgentRevision): void {
+  if (!validatedHouseAgents.has(houseAgent)) throw new ContractViolation("unsupported");
 }
 
 function requireValidatedProjector(projector: ResultProjectorRevision): void {

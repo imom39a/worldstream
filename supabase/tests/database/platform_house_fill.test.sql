@@ -323,6 +323,167 @@ select is(
   2,
   'every selected House seat receives one immutable assignment'
 );
+
+create temporary table house_frozen_documents as
+with listing as (
+  select
+    listings.*,
+    convert_from(listings.canonical_document, 'utf8')::jsonb as document
+  from platform_store.activity_listing_revisions listings
+  where listings.listing_revision_digest =
+    'blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447'
+), ordered_members as (
+  select
+    seats.position,
+    case
+      when claims.claim_id is not null then jsonb_build_object(
+        'seat_id', claims.seat_id,
+        'participation', claims.participation_kind,
+        'principal_reference', claims.principal_reference,
+        'display_name', seats.value ->> 'display_name'
+      )
+      else jsonb_build_object(
+        'seat_id', assignments.seat_id,
+        'participation', 'house_agent_fill',
+        'principal_reference', assignments.setup_principal_reference,
+        'display_name', revisions.display_name,
+        'house_agent_revision_digest', assignments.house_agent_revision_digest,
+        'agent_profile', jsonb_build_object(
+          'profile_id', assignments.agent_profile_id,
+          'revision', assignments.agent_profile_revision
+        ),
+        'runner_template', jsonb_build_object(
+          'template_id', assignments.runner_template_id,
+          'revision', assignments.runner_template_revision
+        )
+      )
+    end as roster_member,
+    case
+      when claims.claim_id is not null then jsonb_build_object(
+        'label', claims.seat_id,
+        'role', seats.value ->> 'role',
+        'required', (seats.value ->> 'required')::boolean,
+        'display_name', seats.value ->> 'display_name',
+        'principal', jsonb_build_object(
+          'reference', claims.principal_reference,
+          'kind', case claims.participation_kind
+            when 'account_human' then 'human' else 'agent' end
+        )
+      )
+      else jsonb_build_object(
+        'label', assignments.seat_id,
+        'role', seats.value ->> 'role',
+        'required', (seats.value ->> 'required')::boolean,
+        'display_name', revisions.display_name,
+        'principal', jsonb_build_object(
+          'reference', assignments.setup_principal_reference,
+          'kind', 'agent'
+        ),
+        'assignment', jsonb_build_object(
+          'mode', 'managed',
+          'agent_profile', jsonb_build_object(
+            'profile_id', assignments.agent_profile_id,
+            'revision', assignments.agent_profile_revision
+          ),
+          'runner_template', jsonb_build_object(
+            'template_id', assignments.runner_template_id,
+            'revision', assignments.runner_template_revision
+          )
+        )
+      )
+    end as setup_seat
+  from listing
+  cross join lateral jsonb_array_elements(listing.seat_templates)
+    with ordinality seats(value, position)
+  left join platform_store.seat_claims claims
+    on claims.launch_request_id = (select launch_request_id from house_launch)
+    and claims.seat_id = seats.value ->> 'seat_id'
+    and claims.released_at is null
+  left join platform_store.house_agent_assignments assignments
+    on assignments.launch_request_id = (select launch_request_id from house_launch)
+    and assignments.seat_id = seats.value ->> 'seat_id'
+  left join platform_store.house_agent_revisions revisions
+    on revisions.house_agent_revision_digest = assignments.house_agent_revision_digest
+), documents as (
+  select
+    jsonb_build_object(
+      'schema', 'worldstream/frozen-roster/v1',
+      'listing_revision_digest', listing.listing_revision_digest,
+      'members', (select jsonb_agg(roster_member order by position) from ordered_members)
+    ) as roster,
+    jsonb_build_object(
+      'schema', 'worldstream/room-setup/v2',
+      'pack', listing.document -> 'pack',
+      'configuration', listing.room_setup_configuration,
+      'seats', (select jsonb_agg(setup_seat order by position) from ordered_members),
+      'spectators', jsonb_build_array(
+        jsonb_build_object(
+          'purpose', 'result_indexer',
+          'principal', jsonb_build_object(
+            'reference', 'worldstream:result-indexer', 'kind', 'agent'
+          )
+        ),
+        jsonb_build_object(
+          'purpose', 'public_relay',
+          'principal', jsonb_build_object(
+            'reference', 'worldstream:public-relay', 'kind', 'agent'
+          )
+        )
+      ),
+      'operator_view', false
+    ) as setup
+  from listing
+)
+select
+  convert_to(roster::text, 'utf8') as roster,
+  convert_to(
+    jsonb_set(roster, '{members,1,agent_profile,revision}', '"wrong"'::jsonb)::text,
+    'utf8'
+  ) as mismatched_roster,
+  convert_to(setup::text, 'utf8') as setup
+from documents;
+
+select throws_ok(
+  $$select platform_api.freeze_launch_request_v1(
+    '20000000-0000-4000-8000-000000000001',
+    (select launch_request_id from house_launch),
+    (select mismatched_roster from house_frozen_documents),
+    extensions.digest((select mismatched_roster from house_frozen_documents), 'sha256'),
+    (select setup from house_frozen_documents),
+    'blake3:' || repeat('f', 64),
+    'house-test-host',
+    'house-launch-operation'
+  )$$,
+  '22023',
+  'frozen_roster_mismatch',
+  'freeze rejects a House member whose exact Profile reference changed'
+);
+select ok(
+  platform_api.freeze_launch_request_v1(
+    '20000000-0000-4000-8000-000000000001',
+    (select launch_request_id from house_launch),
+    (select roster from house_frozen_documents),
+    extensions.digest((select roster from house_frozen_documents), 'sha256'),
+    (select setup from house_frozen_documents),
+    'blake3:' || repeat('f', 64),
+    'house-test-host',
+    'house-launch-operation'
+  ),
+  'freeze accepts the complete exact human and House Agent roster'
+);
+select ok(
+  platform_api.freeze_launch_request_v1(
+    '20000000-0000-4000-8000-000000000001',
+    (select launch_request_id from house_launch),
+    (select roster from house_frozen_documents),
+    extensions.digest((select roster from house_frozen_documents), 'sha256'),
+    (select setup from house_frozen_documents),
+    'blake3:' || repeat('f', 64),
+    'house-test-host',
+    'house-launch-operation'
+  ),
+  'the exact mixed-roster freeze is idempotent'
+);
 select ok(
   (select bool_and(
      assignments.execution_allowance = '{

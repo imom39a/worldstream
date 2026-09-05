@@ -300,11 +300,10 @@ test("creator participation is frozen and mutually exclusive", () => {
 });
 
 test("reviewed house fill uses the existing managed assignment shape", () => {
-  const listingValue = mutable("config/hosted/listings/agent-heist-0.2.0.json");
-  const seats = array(listingValue.seats).map(record);
-  seats[1]!.allowed_participation = ["account_human", "account_external_agent", "house_agent_fill"];
-  seats[1]!.allowed_house_agent_revisions = [`blake3:${"a".repeat(64)}`];
-  const listing = readListingRevision(encodeCanonical(listingValue));
+  const listing = readListingRevision(canonical("config/hosted/listings/agent-heist-0.3.0.json"));
+  const houseAgent = readHouseAgentRevision(
+    canonical("config/hosted/house-agents/cooperative-planner-1.json"),
+  );
   const launch = mutable("fixtures/hosted-contract/valid/agent-heist-launch-request.json");
   launch.listing_revision_digest = listing.digest;
   const roster = mutable("fixtures/hosted-contract/valid/agent-heist-frozen-roster.json");
@@ -313,18 +312,32 @@ test("reviewed house fill uses the existing managed assignment shape", () => {
     seat_id: "insider",
     participation: "house_agent_fill",
     principal_reference: "house:insider-1",
-    display_name: "House Insider",
-    house_agent_revision_digest: `blake3:${"a".repeat(64)}`,
-    agent_profile: { profile_id: "house-insider", revision: "1" },
+    display_name: "Cooperative Planner",
+    house_agent_revision_digest: houseAgent.digest,
+    agent_profile: { profile_id: "house-cooperative-planner", revision: "1" },
     runner_template: { template_id: "openrouter-house", revision: "1" },
   };
+  assert.throws(
+    () => deriveRoomSetup(listing, encodeCanonical(launch), encodeCanonical(roster)),
+    /reference_mismatch/,
+  );
   const output = deriveRoomSetup(
     listing,
     encodeCanonical(launch),
     encodeCanonical(roster),
+    [houseAgent],
   );
   const setup = JSON.parse(new TextDecoder().decode(output)) as { seats: Array<{ assignment?: { mode: string } }> };
   assert.equal(setup.seats[1]?.assignment?.mode, "managed");
+
+  record(array(roster.members)[1]!).agent_profile = {
+    profile_id: "house-cooperative-planner",
+    revision: "2",
+  };
+  assert.throws(
+    () => deriveRoomSetup(listing, encodeCanonical(launch), encodeCanonical(roster), [houseAgent]),
+    /reference_mismatch/,
+  );
 });
 
 test("projects exactly three bounded states including lobby", () => {

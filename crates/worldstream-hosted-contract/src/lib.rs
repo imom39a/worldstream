@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use worldstream_activity_client::ActivityClientReleaseV1;
 use worldstream_core::CanonicalJsonV1;
@@ -473,6 +474,22 @@ impl HouseAgentRevision {
     }
 
     #[must_use]
+    pub fn agent_profile(&self) -> (&str, &str) {
+        (
+            &self.document.agent_profile.profile_id,
+            &self.document.agent_profile.revision,
+        )
+    }
+
+    #[must_use]
+    pub fn runner_template(&self) -> (&str, &str) {
+        (
+            &self.document.runner_template.template_id,
+            &self.document.runner_template.revision,
+        )
+    }
+
+    #[must_use]
     pub const fn allowance(&self) -> HouseAgentExecutionAllowanceV1 {
         self.document.allowance
     }
@@ -762,6 +779,21 @@ pub fn derive_room_setup(
     launch_bytes: &[u8],
     roster_bytes: &[u8],
 ) -> Result<DerivedRoomSetup, ContractError> {
+    derive_room_setup_with_house_agents(listing, launch_bytes, roster_bytes, &[])
+}
+
+/// Derives a complete Room Setup while resolving every House assignment to an
+/// exact reviewed immutable House Agent Revision.
+///
+/// # Errors
+/// Returns a closed contract error for malformed inputs, identity mismatch,
+/// an unreviewed House revision, or a mismatched Profile/Runner reference.
+pub fn derive_room_setup_with_house_agents(
+    listing: &ListingRevision,
+    launch_bytes: &[u8],
+    roster_bytes: &[u8],
+    house_agents: &[HouseAgentRevision],
+) -> Result<DerivedRoomSetup, ContractError> {
     let (launch, _) = decode_canonical::<LaunchRequest>(launch_bytes, 16_384)?;
     let (roster, _) = decode_canonical::<FrozenRoster>(roster_bytes, 65_536)?;
     if launch.schema != "worldstream/launch-request/v2"
@@ -779,6 +811,7 @@ pub fn derive_room_setup(
     }
     validate_public_reference(&launch.creator.principal_reference, 128)?;
     let (mut members, mut principal_references) = index_frozen_members(roster.members)?;
+    validate_house_assignments(&members, house_agents)?;
     let creator_spectator_reference = resolve_creator_spectator(
         listing.document.creator_access,
         launch.creator,
@@ -855,6 +888,251 @@ pub fn derive_room_setup(
         return Err(ContractError::OutputTooLarge);
     }
     Ok(DerivedRoomSetup(bytes))
+}
+
+fn validate_house_assignments(
+    members: &BTreeMap<String, FrozenMember>,
+    house_agents: &[HouseAgentRevision],
+) -> Result<(), ContractError> {
+    let mut revisions = BTreeMap::new();
+    let mut assigned_revisions = BTreeSet::new();
+    for revision in house_agents {
+        if revisions.insert(revision.digest(), revision).is_some() {
+            return Err(ContractError::InvalidShape);
+        }
+    }
+    for member in members.values() {
+        if !matches!(member.participation, ParticipationKind::HouseAgentFill) {
+            continue;
+        }
+        let revision = revisions
+            .get(
+                member
+                    .house_agent_revision_digest
+                    .as_deref()
+                    .ok_or(ContractError::InvalidShape)?,
+            )
+            .ok_or(ContractError::ReferenceMismatch)?;
+        if !assigned_revisions.insert(revision.digest())
+            || member.display_name != revision.display_name()
+        {
+            return Err(ContractError::ReferenceMismatch);
+        }
+        let profile = member
+            .agent_profile
+            .as_ref()
+            .ok_or(ContractError::InvalidShape)?;
+        let runner = member
+            .runner_template
+            .as_ref()
+            .ok_or(ContractError::InvalidShape)?;
+        let expected_profile = revision.agent_profile();
+        let expected_runner = revision.runner_template();
+        if (profile.profile_id.as_str(), profile.revision.as_str()) != expected_profile
+            || (runner.template_id.as_str(), runner.revision.as_str()) != expected_runner
+        {
+            return Err(ContractError::ReferenceMismatch);
+        }
+    }
+    Ok(())
+}
+
+/// Service-authenticated proof that the platform reserved one exact active-Run slot.
+/// The reference is the frozen Launch UUID. Fly treats it as an immutable
+/// attestation and receives no Supabase key.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedCapacityAuthorizationV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub reservation_reference: String,
+}
+
+/// Complete frozen input accepted by the narrow Host launch adapter.
+/// It contains no credential, provider choice, arbitrary Host path, or raw model content.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedLaunchRequestV1 {
+    pub schema: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub launch_input_digest: String,
+    pub frozen_roster_digest: String,
+    pub room_setup_specification_digest: String,
+    pub room_setup_operation_id: String,
+    pub capacity_authorization: HostedCapacityAuthorizationV1,
+    pub frozen_launch_request: Value,
+    pub frozen_roster: Value,
+    pub frozen_room_setup_specification: Value,
+}
+
+/// Identity-only read request for one previously retained hosted launch.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedLaunchEvidenceRequestV1 {
+    pub schema: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+}
+
+/// Bounded hosted launch progress. Activity phase and outcome remain `WorldStream` facts.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedLaunchStageV1 {
+    Bound,
+    CreatingRoom,
+    Provisioning,
+    WaitingForReadiness,
+    Launching,
+    Launched,
+    NeedsAttention,
+}
+
+/// Secret-free evidence returned from Fly to the platform BFF.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct HostedLaunchStatusV1 {
+    pub schema: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+    pub room_id: Option<String>,
+    pub stage: HostedLaunchStageV1,
+    pub room_setup_complete: bool,
+    pub lobby_launch_committed: bool,
+    pub retryable: bool,
+    pub terminal_before_genesis: bool,
+}
+
+/// Validates every digest and independently re-derives the supplied Room Setup.
+///
+/// # Errors
+/// Returns a closed contract error when any frozen value, reviewed identity,
+/// House assignment, capacity attestation, or derived setup differs.
+pub fn validate_hosted_launch_request(
+    request: &HostedLaunchRequestV1,
+    expected_host_installation_id: &str,
+    listing: &ListingRevision,
+    house_agents: &[HouseAgentRevision],
+) -> Result<DerivedRoomSetup, ContractError> {
+    if request.schema != "worldstream/hosted-launch-request/v1"
+        || request.capacity_authorization.schema != "worldstream/platform-capacity-authorization/v1"
+        || request.listing_revision_digest != listing.digest()
+        || request.capacity_authorization.host_installation_id != expected_host_installation_id
+        || house_agents.len() > 32
+    {
+        return Err(ContractError::ReferenceMismatch);
+    }
+    validate_host_installation_reference(expected_host_installation_id)?;
+    validate_hosted_operation_reference(&request.room_setup_operation_id)?;
+    validate_uuid_reference(&request.capacity_authorization.reservation_reference)?;
+    validate_digest(&request.launch_request_digest, "blake3")?;
+    validate_digest(&request.launch_input_digest, "sha256")?;
+    validate_digest(&request.frozen_roster_digest, "sha256")?;
+    validate_digest(&request.room_setup_specification_digest, "blake3")?;
+
+    let launch = canonicalize(&request.frozen_launch_request)?;
+    let launch_document = serde_json::from_slice::<LaunchRequest>(&launch)
+        .map_err(|_| ContractError::InvalidShape)?;
+    let launch_inputs = canonicalize(&launch_document.inputs)?;
+    let roster = canonicalize(&request.frozen_roster)?;
+    let roster_document =
+        serde_json::from_slice::<FrozenRoster>(&roster).map_err(|_| ContractError::InvalidShape)?;
+    validate_hosted_house_principals(
+        &roster_document,
+        &request.capacity_authorization.reservation_reference,
+    )?;
+    let supplied_setup = canonicalize(&request.frozen_room_setup_specification)?;
+    if launch.len() > 16_384 || roster.len() > 65_536 || supplied_setup.len() > 65_536 {
+        return Err(ContractError::TooLarge);
+    }
+    if blake3_digest(&launch) != request.launch_request_digest
+        || sha256_digest(&launch_inputs) != request.launch_input_digest
+        || sha256_digest(&roster) != request.frozen_roster_digest
+        || blake3_digest(&supplied_setup) != request.room_setup_specification_digest
+    {
+        return Err(ContractError::ReferenceMismatch);
+    }
+
+    let derived = derive_room_setup_with_house_agents(listing, &launch, &roster, house_agents)?;
+    if derived.canonical_bytes()? != supplied_setup {
+        return Err(ContractError::ReferenceMismatch);
+    }
+    Ok(derived)
+}
+
+fn validate_hosted_house_principals(
+    roster: &FrozenRoster,
+    launch_reference: &str,
+) -> Result<(), ContractError> {
+    for member in &roster.members {
+        if matches!(member.participation, ParticipationKind::HouseAgentFill)
+            && member.principal_reference != format!("house:{launch_reference}:{}", member.seat_id)
+        {
+            return Err(ContractError::ReferenceMismatch);
+        }
+    }
+    Ok(())
+}
+
+/// Validates the immutable identity tuple used for status and reconciliation reads.
+///
+/// # Errors
+/// Returns a closed contract error for malformed or mismatched identities.
+pub fn validate_hosted_launch_evidence_request(
+    request: &HostedLaunchEvidenceRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-launch-evidence-request/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_digest(&request.listing_revision_digest, "blake3")?;
+    validate_digest(&request.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&request.room_setup_operation_id)
+}
+
+fn validate_hosted_operation_reference(value: &str) -> Result<(), ContractError> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value.as_bytes()[0].is_ascii_lowercase()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+fn validate_host_installation_reference(value: &str) -> Result<(), ContractError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value.as_bytes()[0].is_ascii_alphanumeric()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+fn validate_uuid_reference(value: &str) -> Result<(), ContractError> {
+    if value.len() != 36
+        || value.as_bytes().get(8) != Some(&b'-')
+        || value.as_bytes().get(13) != Some(&b'-')
+        || value.as_bytes().get(18) != Some(&b'-')
+        || value.as_bytes().get(23) != Some(&b'-')
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 8 | 13 | 18 | 23)
+                || byte.is_ascii_digit()
+                || (b'a'..=b'f').contains(&byte)
+        })
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
 }
 
 fn index_frozen_members(
@@ -1808,6 +2086,17 @@ fn resolve_runtime_artifact(
 
 fn blake3_digest(bytes: &[u8]) -> String {
     format!("blake3:{}", blake3::hash(bytes).to_hex())
+}
+
+fn sha256_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut value = String::with_capacity(71);
+    value.push_str("sha256:");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
 }
 
 fn validate_pack(pack: &PackReference) -> Result<(), ContractError> {

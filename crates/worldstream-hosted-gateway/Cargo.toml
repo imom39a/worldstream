@@ -16,6 +16,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+worldstream-core = { path = "../worldstream-core" }
+worldstream-hosted-contract = { path = "../worldstream-hosted-contract" }
+zeroize.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true

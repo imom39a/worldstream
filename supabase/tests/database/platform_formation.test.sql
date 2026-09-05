@@ -308,7 +308,7 @@ select throws_ok(
     $query$select platform_api.freeze_launch_request_v1(
       '10000000-0000-4000-8000-000000000001', %L, decode(%L, 'hex'),
       decode(%L, 'hex'), decode(%L, 'hex'),
-      'blake3:%s', 'host-local', '01ARZ3NDEKTSV4RRFFQ69G5FB3')$query$,
+      'blake3:%s', 'host-local', 'hosted-launch-01')$query$,
     (select launch_request_id from first_launch),
     encode((select roster from incomplete_roster), 'hex'),
     encode(extensions.digest((select roster from incomplete_roster), 'sha256'), 'hex'),
@@ -515,7 +515,7 @@ select ok(
     setup,
     'blake3:' || repeat('a', 64),
     'host-local',
-    '01ARZ3NDEKTSV4RRFFQ69G5FB3'
+    'hosted-launch-01'
   ) from complete_frozen_payload),
   'the complete exact roster and Room Setup Specification freeze once'
 );
@@ -528,7 +528,7 @@ select ok(
     setup,
     'blake3:' || repeat('a', 64),
     'host-local',
-    '01ARZ3NDEKTSV4RRFFQ69G5FB3'
+    'hosted-launch-01'
   ) from complete_frozen_payload),
   'an exact freeze retry returns the retained frozen launch'
 );
@@ -537,7 +537,7 @@ select throws_ok(
     $query$select platform_api.freeze_launch_request_v1(
       '10000000-0000-4000-8000-000000000001', %L, decode(%L, 'hex'),
       decode(%L, 'hex'), decode(%L, 'hex'),
-      'blake3:%s', 'host-local', 'DIFFERENT')$query$,
+      'blake3:%s', 'host-local', 'different-operation')$query$,
     (select launch_request_id from first_launch),
     encode((select roster from complete_frozen_payload), 'hex'),
     encode(extensions.digest((select roster from complete_frozen_payload), 'sha256'), 'hex'),
@@ -574,7 +574,7 @@ select ok(
     '10000000-0000-4000-8000-000000000001',
     (select launch_request_id from first_launch),
     'host-local',
-    '01ARZ3NDEKTSV4RRFFQ69G5FB3'
+    'hosted-launch-01'
   ),
   'Host mutation authorization atomically acquires active-Run capacity'
 );
@@ -583,7 +583,7 @@ select ok(
     '10000000-0000-4000-8000-000000000001',
     (select launch_request_id from first_launch),
     'host-local',
-    '01ARZ3NDEKTSV4RRFFQ69G5FB3'
+    'hosted-launch-01'
   ),
   'an exact Host authorization retry reuses the retained capacity reservation'
 );
@@ -599,7 +599,7 @@ select throws_ok(
   format(
     $query$select platform_api.authorize_host_mutation_v1(
       '10000000-0000-4000-8000-000000000001', %L,
-      'host-local', 'DIFFERENT')$query$,
+      'host-local', 'different-operation')$query$,
     (select launch_request_id from first_launch)
   ),
   '55000',

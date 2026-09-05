@@ -2,11 +2,15 @@ use std::error::Error;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use worldstream_activity_client::read_activity_client_release;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    ContractError, HouseAgentRevision, ListingRevision, PackReference, ResolvedResultProjector,
-    ResultProjectorRevision, derive_room_setup, project_result,
+    ContractError, HostedCapacityAuthorizationV1, HostedLaunchEvidenceRequestV1,
+    HostedLaunchRequestV1, HouseAgentRevision, ListingRevision, PackReference,
+    ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
+    derive_room_setup_with_house_agents, project_result, validate_hosted_launch_evidence_request,
+    validate_hosted_launch_request,
 };
 
 const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
@@ -54,6 +58,15 @@ fn canonical_value(value: &Value) -> Result<Vec<u8>, Box<dyn Error>> {
 
 fn source_value(source: &[u8]) -> Result<Value, Box<dyn Error>> {
     Ok(serde_json::from_slice(source)?)
+}
+
+fn tagged_sha256(bytes: &[u8]) -> String {
+    let mut value = String::from("sha256:");
+    for byte in Sha256::digest(bytes) {
+        value.push(char::from(b"0123456789abcdef"[usize::from(byte >> 4)]));
+        value.push(char::from(b"0123456789abcdef"[usize::from(byte & 0x0f)]));
+    }
+    value
 }
 
 fn contracts() -> Result<(ListingRevision, ResultProjectorRevision), Box<dyn Error>> {
@@ -319,15 +332,8 @@ fn creator_participation_is_frozen_and_mutually_exclusive() -> Result<(), Box<dy
 
 #[test]
 fn reviewed_house_fill_derives_existing_managed_assignment_shape() -> Result<(), Box<dyn Error>> {
-    let mut listing_value = source_value(LISTING)?;
-    listing_value["seats"][1]["allowed_participation"] = json!([
-        "account_human",
-        "account_external_agent",
-        "house_agent_fill"
-    ]);
-    listing_value["seats"][1]["allowed_house_agent_revisions"] =
-        json!(["blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
-    let listing = ListingRevision::from_canonical_bytes(&canonical_value(&listing_value)?)?;
+    let listing = ListingRevision::from_canonical_bytes(&canonical(HOUSE_LISTING)?)?;
+    let house = HouseAgentRevision::from_canonical_bytes(&canonical(COOPERATIVE_HOUSE_AGENT)?)?;
     let mut launch = source_value(LAUNCH)?;
     launch["listing_revision_digest"] = json!(listing.digest());
     let mut roster = source_value(ROSTER)?;
@@ -336,21 +342,180 @@ fn reviewed_house_fill_derives_existing_managed_assignment_shape() -> Result<(),
         "seat_id": "insider",
         "participation": "house_agent_fill",
         "principal_reference": "house:insider-1",
-        "display_name": "House Insider",
-        "house_agent_revision_digest": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "agent_profile": {"profile_id": "house-insider", "revision": "1"},
+        "display_name": "Cooperative Planner",
+        "house_agent_revision_digest": house.digest(),
+        "agent_profile": {"profile_id": "house-cooperative-planner", "revision": "1"},
         "runner_template": {"template_id": "openrouter-house", "revision": "1"}
     });
-    let setup = derive_room_setup(
+    assert_eq!(
+        derive_room_setup(
+            &listing,
+            &canonical_value(&launch)?,
+            &canonical_value(&roster)?,
+        ),
+        Err(ContractError::ReferenceMismatch)
+    );
+    let setup = derive_room_setup_with_house_agents(
         &listing,
         &canonical_value(&launch)?,
         &canonical_value(&roster)?,
+        std::slice::from_ref(&house),
     )?;
     let value: Value = serde_json::from_slice(&setup.canonical_bytes()?)?;
     assert_eq!(value["seats"][1]["assignment"]["mode"], "managed");
     assert_eq!(
         value["seats"][1]["assignment"]["agent_profile"]["profile_id"],
-        "house-insider"
+        "house-cooperative-planner"
+    );
+
+    roster["members"][1]["agent_profile"]["revision"] = json!("2");
+    assert_eq!(
+        derive_room_setup_with_house_agents(
+            &listing,
+            &canonical_value(&launch)?,
+            &canonical_value(&roster)?,
+            std::slice::from_ref(&house),
+        ),
+        Err(ContractError::ReferenceMismatch)
+    );
+
+    roster["members"][1]["agent_profile"]["revision"] = json!("1");
+    roster["members"][1]["display_name"] = json!("Mutable Alias");
+    assert_eq!(
+        derive_room_setup_with_house_agents(
+            &listing,
+            &canonical_value(&launch)?,
+            &canonical_value(&roster)?,
+            std::slice::from_ref(&house),
+        ),
+        Err(ContractError::ReferenceMismatch)
+    );
+    Ok(())
+}
+
+#[test]
+fn hosted_house_fill_is_bound_to_the_exact_launch_reference() -> Result<(), Box<dyn Error>> {
+    let listing = ListingRevision::from_canonical_bytes(&canonical(HOUSE_LISTING)?)?;
+    let house = HouseAgentRevision::from_canonical_bytes(&canonical(COOPERATIVE_HOUSE_AGENT)?)?;
+    let launch_reference = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut launch = source_value(LAUNCH)?;
+    launch["listing_revision_digest"] = json!(listing.digest());
+    let mut roster = source_value(ROSTER)?;
+    roster["listing_revision_digest"] = json!(listing.digest());
+    roster["members"][1] = json!({
+        "seat_id": "insider",
+        "participation": "house_agent_fill",
+        "principal_reference": format!("house:{launch_reference}:insider"),
+        "display_name": house.display_name(),
+        "house_agent_revision_digest": house.digest(),
+        "agent_profile": {"profile_id": "house-cooperative-planner", "revision": "1"},
+        "runner_template": {"template_id": "openrouter-house", "revision": "1"}
+    });
+    let launch_bytes = canonical_value(&launch)?;
+    let roster_bytes = canonical_value(&roster)?;
+    let setup = derive_room_setup_with_house_agents(
+        &listing,
+        &launch_bytes,
+        &roster_bytes,
+        std::slice::from_ref(&house),
+    )?
+    .canonical_bytes()?;
+    let mut request = HostedLaunchRequestV1 {
+        schema: "worldstream/hosted-launch-request/v1".to_owned(),
+        listing_revision_digest: listing.digest().to_owned(),
+        launch_request_digest: format!("blake3:{}", blake3::hash(&launch_bytes).to_hex()),
+        launch_input_digest: tagged_sha256(b"{}"),
+        frozen_roster_digest: tagged_sha256(&roster_bytes),
+        room_setup_specification_digest: format!("blake3:{}", blake3::hash(&setup).to_hex()),
+        room_setup_operation_id: "hosted-house-launch-01".to_owned(),
+        capacity_authorization: HostedCapacityAuthorizationV1 {
+            schema: "worldstream/platform-capacity-authorization/v1".to_owned(),
+            host_installation_id: "hosted-preview-1".to_owned(),
+            reservation_reference: launch_reference.to_owned(),
+        },
+        frozen_launch_request: launch,
+        frozen_roster: roster,
+        frozen_room_setup_specification: source_value(&setup)?,
+    };
+    assert!(
+        validate_hosted_launch_request(
+            &request,
+            "hosted-preview-1",
+            &listing,
+            std::slice::from_ref(&house),
+        )
+        .is_ok()
+    );
+
+    request.frozen_roster["members"][1]["principal_reference"] =
+        json!("house:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:insider");
+    request.frozen_roster_digest = tagged_sha256(&canonical_value(&request.frozen_roster)?);
+    assert_eq!(
+        validate_hosted_launch_request(
+            &request,
+            "hosted-preview-1",
+            &listing,
+            std::slice::from_ref(&house),
+        ),
+        Err(ContractError::ReferenceMismatch)
+    );
+    Ok(())
+}
+
+#[test]
+fn hosted_launch_rederives_every_frozen_value_and_capacity_binding() -> Result<(), Box<dyn Error>> {
+    let listing = ListingRevision::from_canonical_bytes(&canonical(LISTING)?)?;
+    let launch = canonical(LAUNCH)?;
+    let roster = canonical(ROSTER)?;
+    let setup = canonical(EXPECTED_SETUP)?;
+    let request = HostedLaunchRequestV1 {
+        schema: "worldstream/hosted-launch-request/v1".to_owned(),
+        listing_revision_digest: listing.digest().to_owned(),
+        launch_request_digest: format!("blake3:{}", blake3::hash(&launch).to_hex()),
+        launch_input_digest: tagged_sha256(b"{}"),
+        frozen_roster_digest: tagged_sha256(&roster),
+        room_setup_specification_digest: format!("blake3:{}", blake3::hash(&setup).to_hex()),
+        room_setup_operation_id: "hosted-launch-01".to_owned(),
+        capacity_authorization: HostedCapacityAuthorizationV1 {
+            schema: "worldstream/platform-capacity-authorization/v1".to_owned(),
+            host_installation_id: "hosted-preview-1".to_owned(),
+            reservation_reference: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+        },
+        frozen_launch_request: source_value(&launch)?,
+        frozen_roster: source_value(&roster)?,
+        frozen_room_setup_specification: source_value(&setup)?,
+    };
+    assert!(validate_hosted_launch_request(&request, "hosted-preview-1", &listing, &[]).is_ok());
+
+    let mut changed = request.clone();
+    changed.frozen_room_setup_specification["operator_view"] = json!(true);
+    assert_eq!(
+        validate_hosted_launch_request(&changed, "hosted-preview-1", &listing, &[]),
+        Err(ContractError::ReferenceMismatch)
+    );
+    let mut changed_input_digest = request.clone();
+    changed_input_digest.launch_input_digest = format!("sha256:{}", "0".repeat(64));
+    assert_eq!(
+        validate_hosted_launch_request(&changed_input_digest, "hosted-preview-1", &listing, &[],),
+        Err(ContractError::ReferenceMismatch)
+    );
+    assert_eq!(
+        validate_hosted_launch_request(&request, "different-host", &listing, &[]),
+        Err(ContractError::ReferenceMismatch)
+    );
+
+    let evidence = HostedLaunchEvidenceRequestV1 {
+        schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+        listing_revision_digest: request.listing_revision_digest,
+        launch_request_digest: request.launch_request_digest,
+        room_setup_operation_id: request.room_setup_operation_id,
+    };
+    assert!(validate_hosted_launch_evidence_request(&evidence).is_ok());
+    let mut wrong_operation = evidence;
+    wrong_operation.room_setup_operation_id = "UPSTREAM/path".to_owned();
+    assert_eq!(
+        validate_hosted_launch_evidence_request(&wrong_operation),
+        Err(ContractError::InvalidShape)
     );
     Ok(())
 }
