@@ -26,6 +26,13 @@ export interface BrowserNavigationTarget {
   history: Pick<History, "replaceState">;
 }
 
+export interface HostedActivityClientConnection {
+  /** Exact canonical browser origin serving this Activity Client. */
+  readonly browserOrigin: string;
+  /** Platform-session-bound CSRF value obtained from the same-origin BFF. */
+  readonly csrf: string;
+}
+
 export type ActivityClientStartup =
   | { kind: "direct" }
   | { kind: "handoff"; handoff: string }
@@ -142,9 +149,17 @@ export async function resumeRetainedActivityClient(
 export class ActivityClientHandoffClient {
   private readonly endpoint: string;
   private readonly fetch: typeof globalThis.fetch;
+  private readonly hostedCsrf: string | null;
 
-  constructor(endpoint: string, fetch?: typeof globalThis.fetch) {
-    this.endpoint = exactLoopbackEndpoint(endpoint);
+  constructor(
+    endpoint: string,
+    fetch?: typeof globalThis.fetch,
+    hosted?: HostedActivityClientConnection,
+  ) {
+    this.endpoint = hosted === undefined
+      ? exactLoopbackEndpoint(endpoint)
+      : exactHostedEndpoint(endpoint, hosted);
+    this.hostedCsrf = hosted?.csrf ?? null;
     this.fetch = fetch === undefined
       ? (input, init) => globalThis.fetch(input, init)
       : (input, init) => fetch(input, init);
@@ -159,11 +174,19 @@ export class ActivityClientHandoffClient {
         false,
       );
     }
+    const headers = new Headers({ "X-WorldStream-Participant-Handoff": handoff });
+    let body: string | undefined;
+    if (this.hostedCsrf !== null) {
+      headers.set("Content-Type", "application/json");
+      headers.set("X-WorldStream-CSRF", this.hostedCsrf);
+      body = "{}";
+    }
     return this.statusRequest("/api/v1/participant-console/handoffs:redeem", {
       method: "POST",
       credentials: "include",
       cache: "no-store",
-      headers: { "X-WorldStream-Participant-Handoff": handoff },
+      headers,
+      body,
     });
   }
 
@@ -173,6 +196,40 @@ export class ActivityClientHandoffClient {
       credentials: "include",
       cache: "no-store",
     });
+  }
+
+  /** Retires the hosted Browser Activity Session and clears its HttpOnly cookie. */
+  async logout(): Promise<void> {
+    if (this.hostedCsrf === null) {
+      throw new ActivityClientHandoffError(
+        "participant_logout_unavailable",
+        "Hosted Activity Client logout is not configured.",
+        "return_to_task_setup",
+        false,
+      );
+    }
+    const value = await this.jsonRequest("/api/v1/participant-console/session:logout", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        "X-WorldStream-CSRF": this.hostedCsrf,
+      },
+      body: "{}",
+    });
+    if (
+      !isExactObject(value, ["version", "logged_out"]) ||
+      value.version !== "participant_console_logout.v1" ||
+      value.logged_out !== true
+    ) {
+      throw new ActivityClientHandoffError(
+        "participant_session_invalid_response",
+        "Activity Client received an invalid logout response.",
+        "return_to_task_setup",
+        false,
+      );
+    }
   }
 
   async observe(afterFrameSeq: number | null): Promise<AuthorizedRoomDeliveryBatch> {
@@ -340,6 +397,40 @@ function exactLoopbackEndpoint(value: string): string {
     || url.password !== ""
   ) {
     throw new TypeError("Activity Client Supervisor endpoint must be a fixed loopback origin");
+  }
+  return url.origin;
+}
+
+function exactHostedEndpoint(
+  endpoint: string,
+  connection: HostedActivityClientConnection,
+): string {
+  let url: URL;
+  let browser: URL;
+  try {
+    url = new URL(endpoint);
+    browser = new URL(connection.browserOrigin);
+  } catch {
+    throw new TypeError("Hosted Activity Client endpoint must be its exact browser origin");
+  }
+  const local = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+  if (
+    url.origin !== browser.origin ||
+    (!local && url.protocol !== "https:") ||
+    (local && url.protocol !== "http:") ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    browser.pathname !== "/" ||
+    browser.search !== "" ||
+    browser.hash !== "" ||
+    connection.csrf.length < 43 ||
+    connection.csrf.length > 128 ||
+    !/^[A-Za-z0-9_-]+$/u.test(connection.csrf)
+  ) {
+    throw new TypeError("Hosted Activity Client endpoint must be its exact browser origin");
   }
   return url.origin;
 }

@@ -16,6 +16,14 @@ import {
   PlatformCredentialRejectedError,
   PlatformDependencyUnavailableError,
 } from "./bff.js";
+import {
+  HostedBrowserSessionMissingError,
+  HostedBrowserSessionRejectedError,
+  type HostedBrowserHandoff,
+  type HostedBrowserSessionClient,
+  type HostedBrowserSessionStatus,
+  type OwnedRunMembershipCorrespondence,
+} from "./browser-sessions.js";
 
 const ORIGIN = "https://arena.example";
 
@@ -32,6 +40,12 @@ class FakeData implements PlatformDataClient {
   accountMutations = new Map<string, number>();
   oauthStartLimit = 120;
   accountMutationLimit = 32;
+  membership: OwnedRunMembershipCorrespondence | null = null;
+  readonly membershipResolutions: Array<{
+    readonly accountId: string;
+    readonly runId: string;
+    readonly entrySelector: string;
+  }> = [];
 
   async beginGithubOAuth(attempt: OAuthAttempt): Promise<boolean> {
     if (this.oauthStarts >= this.oauthStartLimit) return false;
@@ -127,6 +141,57 @@ class FakeData implements PlatformDataClient {
     this.erased = true;
     return true;
   }
+
+  async resolveOwnedRunMembership(input: {
+    accountId: string;
+    runId: string;
+    entrySelector: string;
+  }): Promise<OwnedRunMembershipCorrespondence | null> {
+    this.membershipResolutions.push(input);
+    return this.membership;
+  }
+}
+
+class FakeHostedBrowserSessions implements HostedBrowserSessionClient {
+  readonly issued: Array<{ accountId: string; binding: OwnedRunMembershipCorrespondence }> = [];
+  readonly redeemed: Array<{
+    accountId: string;
+    handoff: string;
+    priorSession: string | null;
+  }> = [];
+  readonly statusReads: string[] = [];
+  readonly logouts: string[] = [];
+  redeemError: Error | null = null;
+  nextSession = `wss1:${"b".repeat(64)}`;
+
+  async issueHandoff(
+    accountId: string,
+    binding: OwnedRunMembershipCorrespondence,
+  ): Promise<HostedBrowserHandoff> {
+    this.issued.push({ accountId, binding });
+    return {
+      clientUrl: `https://arena.example/clients/heist/#handoff=wsh1:${"a".repeat(64)}`,
+    };
+  }
+
+  async redeemHandoff(
+    accountId: string,
+    handoff: string,
+    priorSession: string | null,
+  ): Promise<string> {
+    this.redeemed.push({ accountId, handoff, priorSession });
+    if (this.redeemError !== null) throw this.redeemError;
+    return this.nextSession;
+  }
+
+  async sessionStatus(session: string): Promise<HostedBrowserSessionStatus> {
+    this.statusReads.push(session);
+    return { state: "usable" };
+  }
+
+  async logoutSession(session: string): Promise<void> {
+    this.logouts.push(session);
+  }
 }
 
 class FakeAuth implements PlatformAuthClient {
@@ -208,12 +273,13 @@ function session(
   return { accessToken, refreshToken, expiresAt };
 }
 
-function harness() {
+function harness(hostedBrowserSessions?: HostedBrowserSessionClient) {
   const auth = new FakeAuth();
   const data = new FakeData();
   const dependencies: BffDependencies = {
     authClient: () => auth,
     dataClient: data,
+    ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
   };
   const bff = createPlatformBff(
     {
@@ -225,6 +291,30 @@ function harness() {
     dependencies,
   );
   return { auth, bff, data };
+}
+
+function membership(): OwnedRunMembershipCorrespondence {
+  return {
+    runId: "20000000-0000-4000-8000-000000000001",
+    listingRevisionDigest: `blake3:${"1".repeat(64)}`,
+    hostInstallationId: "hosted-preview-1",
+    roomSetupOperationId: "hosted-launch-01",
+    roomId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    pack: {
+      id: "worldstream.agent-heist",
+      version: "0.2.0",
+      digest: `blake3:${"2".repeat(64)}`,
+    },
+    clientReleaseDigest: `blake3:${"3".repeat(64)}`,
+    clientSurfaceId: "participant",
+    accessMode: "participant",
+    purpose: "participant",
+    seatId: "navigator",
+    role: "navigator",
+    principalKind: "human",
+    principalId: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    membershipId: "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+  };
 }
 
 function cookieValue(response: Response, name: string): string | undefined {
@@ -886,6 +976,176 @@ test("OAuth starts and mutations share durable limits across BFF instances", asy
   assert.equal(accepted.status, 200);
   assert.equal(limited.status, 429);
   assert.equal(auth.userCalls, 3);
+});
+
+test("hosted Run entry resolves only the signed-in account and returns one client URL", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const { bff, data } = harness(hosted);
+  data.membership = membership();
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const response = await bff.fetch(
+    mutation(
+      "/api/runs/enter",
+      signedIn.sessionCookie,
+      csrfValue,
+      JSON.stringify({
+        run_id: data.membership.runId,
+        entry_selector: "e".repeat(32),
+      }),
+    ),
+  );
+  assert.equal(response.status, 201);
+  const body = await response.json() as Record<string, unknown>;
+  assert.deepEqual(body, {
+    version: "platform_run_entry.v1",
+    client_url: `https://arena.example/clients/heist/#handoff=wsh1:${"a".repeat(64)}`,
+  });
+  assert.deepEqual(data.membershipResolutions, [{
+    accountId: "00000000-0000-4000-8000-000000000001",
+    runId: data.membership.runId,
+    entrySelector: "e".repeat(32),
+  }]);
+  assert.equal(hosted.issued.length, 1);
+  assert.equal(hosted.issued[0]?.accountId, "00000000-0000-4000-8000-000000000001");
+  const browserPayload = JSON.stringify(body);
+  assert.doesNotMatch(browserPayload, /room_id|membership_id|principal_id|wss1:|wsb1:/u);
+
+  const forged = await bff.fetch(
+    mutation(
+      "/api/runs/enter",
+      signedIn.sessionCookie,
+      csrfValue,
+      JSON.stringify({
+        run_id: data.membership.runId,
+        entry_selector: "e".repeat(32),
+        account_id: "attacker-selected",
+      }),
+    ),
+  );
+  assert.equal(forged.status, 400);
+  const malformed = await bff.fetch(
+    mutation(
+      "/api/runs/enter",
+      signedIn.sessionCookie,
+      csrfValue,
+      JSON.stringify({ run_id: "latest", entry_selector: "not-a-selector" }),
+    ),
+  );
+  assert.equal(malformed.status, 400);
+  assert.equal(hosted.issued.length, 1);
+  assert.equal(data.membershipResolutions.length, 1);
+});
+
+test("hosted redemption installs and rotates only the strict path-scoped opaque cookie", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const { bff } = harness(hosted);
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const handoff = `wsh1:${"a".repeat(64)}`;
+
+  const firstRequest = mutation(
+    "/api/v1/participant-console/handoffs:redeem",
+    signedIn.sessionCookie,
+    csrfValue,
+  );
+  firstRequest.headers.set("x-worldstream-participant-handoff", handoff);
+  const first = await bff.fetch(firstRequest);
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), {
+    version: "participant_console_session.v1",
+    state: "usable",
+    next_action: "continue",
+  });
+  const firstCookie = first.headers.getSetCookie().join("\n");
+  assert.match(firstCookie, /^ws_participant_session=wss1:[0-9a-f]{64};/u);
+  assert.match(firstCookie, /Path=\/api\/v1\/participant-console/u);
+  assert.match(firstCookie, /Max-Age=43200/u);
+  assert.match(firstCookie, /Secure/u);
+  assert.match(firstCookie, /HttpOnly/u);
+  assert.match(firstCookie, /SameSite=Strict/u);
+  assert.doesNotMatch(firstCookie, /Domain=|room_id|membership_id|principal_id|client_id/u);
+
+  const prior = cookieValue(first, "ws_participant_session");
+  assert.ok(prior);
+  hosted.nextSession = `wss1:${"c".repeat(64)}`;
+  const secondRequest = mutation(
+    "/api/v1/participant-console/handoffs:redeem",
+    signedIn.sessionCookie,
+    csrfValue,
+  );
+  secondRequest.headers.set(
+    "cookie",
+    `__Host-worldstream-session=${signedIn.sessionCookie}; ws_participant_session=${prior}`,
+  );
+  secondRequest.headers.set("x-worldstream-participant-handoff", handoff);
+  const second = await bff.fetch(secondRequest);
+  assert.equal(second.status, 200);
+  assert.equal(cookieValue(second, "ws_participant_session"), hosted.nextSession);
+  assert.equal(hosted.redeemed[1]?.priorSession, prior);
+  assert.equal(hosted.redeemed[1]?.accountId, "00000000-0000-4000-8000-000000000001");
+  assert.equal(hosted.redeemed.length, 2);
+});
+
+test("hosted status and logout use only the opaque session and fail closed", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const { bff, data } = harness(hosted);
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const activitySession = `wss1:${"b".repeat(64)}`;
+  data.resolveOwnedRunMembership = async () => {
+    throw new Error("Supabase should not be needed after admission");
+  };
+
+  const status = await bff.fetch(new Request(
+    `${ORIGIN}/api/v1/participant-console/session`,
+    {
+      headers: {
+        cookie: `ws_participant_session=${activitySession}`,
+        origin: ORIGIN,
+        "sec-fetch-site": "same-origin",
+      },
+    },
+  ));
+  assert.equal(status.status, 200);
+  assert.deepEqual(hosted.statusReads, [activitySession]);
+
+  const logout = mutation(
+    "/api/v1/participant-console/session:logout",
+    signedIn.sessionCookie,
+    csrfValue,
+  );
+  logout.headers.set(
+    "cookie",
+    `__Host-worldstream-session=${signedIn.sessionCookie}; ws_participant_session=${activitySession}`,
+  );
+  const loggedOut = await bff.fetch(logout);
+  assert.equal(loggedOut.status, 200);
+  assert.deepEqual(hosted.logouts, [activitySession]);
+  assert.match(
+    loggedOut.headers.getSetCookie().join("\n"),
+    /ws_participant_session=; Path=\/api\/v1\/participant-console; Max-Age=0; Secure; HttpOnly; SameSite=Strict/u,
+  );
+
+  hosted.redeemError = new HostedBrowserSessionRejectedError();
+  const rejected = mutation(
+    "/api/v1/participant-console/handoffs:redeem",
+    signedIn.sessionCookie,
+    csrfValue,
+  );
+  rejected.headers.set("x-worldstream-participant-handoff", `wsh1:${"d".repeat(64)}`);
+  assert.equal((await bff.fetch(rejected)).status, 403);
+  assert.equal(hosted.redeemed.length, 1);
+
+  hosted.redeemError = new HostedBrowserSessionMissingError();
+  const missing = mutation(
+    "/api/v1/participant-console/handoffs:redeem",
+    signedIn.sessionCookie,
+    csrfValue,
+  );
+  missing.headers.set("x-worldstream-participant-handoff", `wsh1:${"e".repeat(64)}`);
+  assert.equal((await bff.fetch(missing)).status, 401);
+  assert.equal(hosted.redeemed.length, 2);
 });
 
 test("development identity substitute is explicit and preserves the production session contract", async () => {

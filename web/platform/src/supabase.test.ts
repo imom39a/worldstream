@@ -223,6 +223,61 @@ test("session refresh admission uses the identity-bound non-mutating sync overlo
   }
 });
 
+test("owned Run entry resolves through the service-only immutable membership RPC", async () => {
+  const originalFetch = globalThis.fetch;
+  let rpcUrl = "";
+  let rpcBody: unknown;
+  try {
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      rpcUrl = request.url;
+      rpcBody = JSON.parse(await request.clone().text()) as unknown;
+      assert.equal(request.headers.get("apikey"), SECRET);
+      return Response.json({
+        version: "platform_owned_run_membership.v1",
+        run_id: "20000000-0000-4000-8000-000000000001",
+        listing_revision_digest: `blake3:${"1".repeat(64)}`,
+        host_installation_id: "hosted-preview-1",
+        room_setup_operation_id: "hosted-launch-01",
+        room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        pack: {
+          id: "worldstream.agent-heist",
+          version: "0.2.0",
+          digest: `blake3:${"2".repeat(64)}`,
+        },
+        client_release_digest: `blake3:${"3".repeat(64)}`,
+        client_surface_id: "participant",
+        access_mode: "participant",
+        purpose: "participant",
+        seat_id: "navigator",
+        role: "navigator",
+        principal_kind: "human",
+        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+      });
+    };
+    const data = createSupabaseBffDependencies({
+      url: URL,
+      publishableKey: PUBLISHABLE,
+      dataSecretKey: SECRET,
+    }).dataClient;
+    const resolved = await data.resolveOwnedRunMembership({
+      accountId: "10000000-0000-4000-8000-000000000001",
+      runId: "20000000-0000-4000-8000-000000000001",
+      entrySelector: "e".repeat(32),
+    });
+    assert.equal(resolved?.membershipId, "01ARZ3NDEKTSV4RRFFQ69G5FAX");
+    assert.match(rpcUrl, /\/rpc\/resolve_owned_run_membership_v1$/u);
+    assert.deepEqual(rpcBody, {
+      p_requesting_account_id: "10000000-0000-4000-8000-000000000001",
+      p_activity_run_id: "20000000-0000-4000-8000-000000000001",
+      p_entry_selector: "e".repeat(32),
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Supabase user verification classifies an HTTP credential rejection", async () => {
   const originalFetch = globalThis.fetch;
   try {

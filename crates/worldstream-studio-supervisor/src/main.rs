@@ -44,6 +44,7 @@ use worldstream_studio_supervisor::{
 use worldstream_studio_supervisor::{
     control_access::ControlAccess,
     control_admission::protect_operator_routes,
+    hosted_browser_sessions::{HostedBrowserSessionBrokerV1, hosted_browser_session_router},
     hosted_house_runners::HostedHouseRunnerOperationsV1,
     hosted_launch::{HostedLaunchAccessV1, HostedLaunchOperationsV1, hosted_launch_router},
     hosted_result_source::HttpHostedResultSourceV1,
@@ -390,14 +391,16 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
     );
     let client_bindings = client_bindings
         .map_err(|error| anyhow::anyhow!("Activity Client bindings are unavailable: {error}"))?;
+    let participant_gateway =
+        FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, daemon_timeout);
     let participant_handoff = ParticipantHandoffBrokerV1::new(
         &args.studio_origin,
         &args.participant_console_origin,
         Duration::from_secs(90),
         256,
         task_setup_base.clone(),
-        FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, daemon_timeout),
-        client_bindings,
+        participant_gateway,
+        client_bindings.clone(),
     )
     .map_err(|error| anyhow::anyhow!("Participant Console handoff is unavailable: {error:?}"))?;
     let task_setup = task_setup_base.with_launch_readiness(
@@ -564,8 +567,26 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
             .with_result_source(result_source);
             let access = HostedLaunchAccessV1::new(&authority)
                 .map_err(|_| anyhow::anyhow!("hosted launch authority is invalid"))?;
+            let client_origin = env::var("WORLDSTREAM_HOSTED_CLIENT_ORIGIN").map_err(|_| {
+                anyhow::anyhow!(
+                    "WORLDSTREAM_HOSTED_CLIENT_ORIGIN is required with hosted launch configuration"
+                )
+            })?;
+            let browser_sessions = HostedBrowserSessionBrokerV1::new(
+                &installation_id,
+                &client_origin,
+                Duration::from_secs(60),
+                512,
+                task_setup.clone(),
+                participant_gateway,
+                client_bindings.clone(),
+            )
+            .map_err(|_| anyhow::anyhow!("hosted Browser Activity Sessions are unavailable"))?;
             drop(authority);
-            Some(hosted_launch_router(operations, access))
+            Some(
+                hosted_launch_router(operations, access.clone())
+                    .merge(hosted_browser_session_router(browser_sessions, access)),
+            )
         }
         _ => anyhow::bail!(
             "hosted launch installation and Controller authority must be configured together"

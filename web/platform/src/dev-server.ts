@@ -8,6 +8,7 @@ import {
   DEVELOPMENT_IDENTITY_MODE,
   type PlatformBff,
 } from "./bff.js";
+import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
 
 const MAX_HTTP_BODY_BYTES = 32 * 1024;
@@ -22,6 +23,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     publishableKey: required(environment, "SUPABASE_PUBLISHABLE_KEY"),
     dataSecretKey: required(environment, "SUPABASE_DATA_SECRET_KEY"),
   });
+  const hostedBrowserSessions = hostedBrowserSessionClient(environment, canonicalOrigin);
   const bff = createDevelopmentPlatformBff(
     {
       canonicalOrigin,
@@ -38,11 +40,29 @@ export function createDevelopmentPlatformServer(environment = process.env) {
       },
     },
     dependencies.dataClient,
+    hostedBrowserSessions,
   );
   const server = createServer((request, response) => {
     void dispatch(bff, canonicalOrigin, request, response);
   });
   return { bind, port, server };
+}
+
+function hostedBrowserSessionClient(
+  environment: NodeJS.ProcessEnv,
+  canonicalOrigin: string,
+): HttpHostedBrowserSessionClient | undefined {
+  const baseUrl = environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
+  const serviceAuthority = environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
+  if (baseUrl === undefined && serviceAuthority === undefined) return undefined;
+  if (baseUrl === undefined || serviceAuthority === undefined) {
+    throw new Error("hosted_browser_session_configuration_incomplete");
+  }
+  return new HttpHostedBrowserSessionClient({
+    baseUrl,
+    clientOrigin: canonicalOrigin,
+    serviceAuthority,
+  });
 }
 
 async function dispatch(

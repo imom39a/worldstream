@@ -24,9 +24,16 @@ use serde_json::json;
 use thiserror::Error;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    HostedGenesisEvidenceV1, HostedHouseRunnerReservationReceiptV1,
-    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStatusV1, HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
+    HostedBrowserHandoffRedeemRequestV1, HostedBrowserHandoffRedeemResponseV1,
+    HostedBrowserHandoffRequestV1, HostedBrowserHandoffResponseV1, HostedBrowserSessionLogoutV1,
+    HostedBrowserSessionRequestV1, HostedBrowserSessionStatusV1, HostedGenesisEvidenceV1,
+    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
+    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStatusV1,
+    HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
+    validate_hosted_browser_handoff_redeem_request,
+    validate_hosted_browser_handoff_redeem_response, validate_hosted_browser_handoff_request,
+    validate_hosted_browser_handoff_response, validate_hosted_browser_session_logout,
+    validate_hosted_browser_session_request, validate_hosted_browser_session_status,
     validate_hosted_genesis_evidence, validate_hosted_house_runner_reservation_receipt,
     validate_hosted_launch_evidence_request, validate_hosted_result_source_evidence,
     validate_hosted_result_source_request,
@@ -47,6 +54,8 @@ pub enum HostedGatewayError {
     InvalidConfiguration,
     #[error("hosted operation was rejected")]
     Rejected,
+    #[error("hosted operation target is missing")]
+    Missing,
     #[error("hosted operation is unavailable")]
     Unavailable,
 }
@@ -181,9 +190,53 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
     ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
         Err(HostedGatewayError::Rejected)
     }
+
+    /// Issues one Membership- and client-bound browser handoff.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, missing-target, or availability failure.
+    fn issue_browser_handoff(
+        &self,
+        _request: &HostedBrowserHandoffRequestV1,
+    ) -> Result<HostedBrowserHandoffResponseV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Atomically consumes one hosted browser handoff and rotates a prior session.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, missing-target, or availability failure.
+    fn redeem_browser_handoff(
+        &self,
+        _request: &HostedBrowserHandoffRedeemRequestV1,
+    ) -> Result<HostedBrowserHandoffRedeemResponseV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Revalidates one opaque Browser Activity Session.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, missing-session, or availability failure.
+    fn browser_session_status(
+        &self,
+        _request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionStatusV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Idempotently retires one opaque Browser Activity Session.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, missing-session, or availability failure.
+    fn logout_browser_session(
+        &self,
+        _request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionLogoutV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
 }
 
-/// Fixed loopback-only client for the Controller's three hosted-launch routes.
+/// Fixed loopback-only client for the Controller's reviewed hosted routes.
 /// It cannot forward caller paths, headers, credentials, or arbitrary operations.
 #[derive(Clone)]
 pub struct FixedHostAdapterBackend {
@@ -337,6 +390,66 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
     ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
         self.house_runner_call("/api/v1/hosted-house-runners:read", request)
     }
+
+    fn issue_browser_handoff(
+        &self,
+        request: &HostedBrowserHandoffRequestV1,
+    ) -> Result<HostedBrowserHandoffResponseV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-browser-handoffs:issue", request)?;
+        if status != 201 {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedBrowserHandoffResponseV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_hosted_browser_handoff_response(&response)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        Ok(response)
+    }
+
+    fn redeem_browser_handoff(
+        &self,
+        request: &HostedBrowserHandoffRedeemRequestV1,
+    ) -> Result<HostedBrowserHandoffRedeemResponseV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-browser-handoffs:redeem", request)?;
+        if status != 201 {
+            return Err(classify_browser_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedBrowserHandoffRedeemResponseV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_hosted_browser_handoff_redeem_response(&response)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        Ok(response)
+    }
+
+    fn browser_session_status(
+        &self,
+        request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionStatusV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-browser-sessions:status", request)?;
+        if status != 200 {
+            return Err(classify_browser_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedBrowserSessionStatusV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_hosted_browser_session_status(&response)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        Ok(response)
+    }
+
+    fn logout_browser_session(
+        &self,
+        request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionLogoutV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-browser-sessions:logout", request)?;
+        if status != 200 {
+            return Err(classify_browser_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedBrowserSessionLogoutV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_hosted_browser_session_logout(&response)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        Ok(response)
+    }
 }
 
 impl FixedHostAdapterBackend {
@@ -406,8 +519,20 @@ pub fn hosted_gateway_router(
         )
         .route("/v1/hosted/house-runners/read", post(read_house_runner))
         .route(
+            "/v1/hosted/browser-handoffs/issue",
+            post(issue_browser_handoff),
+        )
+        .route(
             "/v1/hosted/browser-sessions/admit",
-            post(browser_admission_seam),
+            post(redeem_browser_handoff),
+        )
+        .route(
+            "/v1/hosted/browser-sessions/status",
+            post(browser_session_status),
+        )
+        .route(
+            "/v1/hosted/browser-sessions/logout",
+            post(logout_browser_session),
         )
         .route(
             "/v1/hosted/public-runs/{public_run_id}/stream",
@@ -510,6 +635,50 @@ async fn read_house_runner(
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
     house_runner_operation(&state, &headers, &body, false).await
+}
+
+async fn issue_browser_handoff(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    browser_handoff_issue_operation(&state, &headers, &body).await
+}
+
+async fn redeem_browser_handoff(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    browser_handoff_redeem_operation(&state, &headers, &body).await
+}
+
+async fn browser_session_status(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    browser_session_operation(&state, &headers, &body, false).await
+}
+
+async fn logout_browser_session(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    browser_session_operation(&state, &headers, &body, true).await
 }
 
 async fn launch_operation(state: &GatewayState, headers: &HeaderMap, body: &[u8]) -> Response {
@@ -666,6 +835,112 @@ async fn house_runner_operation(
     house_runner_result(operation, &listing_revision_digest, result)
 }
 
+async fn browser_handoff_issue_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedBrowserHandoffRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_browser_handoff_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || backend.issue_browser_handoff(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    browser_service_result(result, StatusCode::CREATED)
+}
+
+async fn browser_handoff_redeem_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedBrowserHandoffRedeemRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_browser_handoff_redeem_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || backend.redeem_browser_handoff(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    browser_service_result(result, StatusCode::CREATED)
+}
+
+async fn browser_session_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+    logout: bool,
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedBrowserSessionRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_browser_session_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    if logout {
+        let result = tokio::task::spawn_blocking(move || backend.logout_browser_session(&request))
+            .await
+            .map_err(|_| HostedGatewayError::Unavailable)
+            .and_then(|result| result);
+        browser_service_result(result, StatusCode::OK)
+    } else {
+        let result = tokio::task::spawn_blocking(move || backend.browser_session_status(&request))
+            .await
+            .map_err(|_| HostedGatewayError::Unavailable)
+            .and_then(|result| result);
+        browser_service_result(result, StatusCode::OK)
+    }
+}
+
+fn browser_service_result<T: Serialize>(
+    result: Result<T, HostedGatewayError>,
+    status: StatusCode,
+) -> Response {
+    match result {
+        Ok(value) => no_store((status, Json(value)).into_response()),
+        Err(HostedGatewayError::Missing) => {
+            safe_error(StatusCode::UNAUTHORIZED, "browser_session_missing")
+        }
+        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
+            safe_error(StatusCode::FORBIDDEN, "browser_session_rejected")
+        }
+        Err(HostedGatewayError::Unavailable) => safe_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "browser_session_unavailable",
+        ),
+    }
+}
+
 fn reject_service_envelope(state: &GatewayState, headers: &HeaderMap) -> Option<Response> {
     if !is_json(headers) {
         return Some(safe_error(
@@ -711,7 +986,11 @@ fn service_result(
             };
             no_store((response_status, Json(status)).into_response())
         }
-        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
+        Err(
+            HostedGatewayError::Rejected
+            | HostedGatewayError::Missing
+            | HostedGatewayError::InvalidConfiguration,
+        ) => {
             tracing::warn!(
                 target: "worldstream.hosted_gateway",
                 operation,
@@ -750,9 +1029,11 @@ fn house_runner_result(
             );
             no_store((StatusCode::OK, Json(receipt)).into_response())
         }
-        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
-            safe_error(StatusCode::CONFLICT, "operation_rejected")
-        }
+        Err(
+            HostedGatewayError::Rejected
+            | HostedGatewayError::Missing
+            | HostedGatewayError::InvalidConfiguration,
+        ) => safe_error(StatusCode::CONFLICT, "operation_rejected"),
         Err(HostedGatewayError::Unavailable) => {
             safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
         }
@@ -774,9 +1055,11 @@ fn genesis_result(
             );
             no_store((StatusCode::OK, Json(evidence)).into_response())
         }
-        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
-            safe_error(StatusCode::CONFLICT, "operation_rejected")
-        }
+        Err(
+            HostedGatewayError::Rejected
+            | HostedGatewayError::Missing
+            | HostedGatewayError::InvalidConfiguration,
+        ) => safe_error(StatusCode::CONFLICT, "operation_rejected"),
         Err(HostedGatewayError::Unavailable) => {
             safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
         }
@@ -798,9 +1081,11 @@ fn result_source_result(
             );
             no_store((StatusCode::OK, Json(evidence)).into_response())
         }
-        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
-            safe_error(StatusCode::CONFLICT, "operation_rejected")
-        }
+        Err(
+            HostedGatewayError::Rejected
+            | HostedGatewayError::Missing
+            | HostedGatewayError::InvalidConfiguration,
+        ) => safe_error(StatusCode::CONFLICT, "operation_rejected"),
         Err(HostedGatewayError::Unavailable) => {
             safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
         }
@@ -827,6 +1112,10 @@ fn fixed_http_request(
                         | "/api/v1/hosted-launches:read-result-source"
                         | "/api/v1/hosted-house-runners:reserve"
                         | "/api/v1/hosted-house-runners:read"
+                        | "/api/v1/hosted-browser-handoffs:issue"
+                        | "/api/v1/hosted-browser-handoffs:redeem"
+                        | "/api/v1/hosted-browser-sessions:status"
+                        | "/api/v1/hosted-browser-sessions:logout"
                 )
         )
         || body.len() > MAX_SERVICE_BODY_BYTES
@@ -929,6 +1218,14 @@ fn classify_upstream_status(status: u16) -> HostedGatewayError {
     }
 }
 
+fn classify_browser_upstream_status(status: u16) -> HostedGatewayError {
+    match status {
+        401 | 404 => HostedGatewayError::Missing,
+        400 | 403 | 409 | 422 => HostedGatewayError::Rejected,
+        _ => HostedGatewayError::Unavailable,
+    }
+}
+
 fn validate_launch_response(
     response: &HostedLaunchStatusV1,
     listing_revision_digest: &str,
@@ -1002,16 +1299,6 @@ fn validate_house_runner_response(
         return Err(HostedGatewayError::Unavailable);
     }
     Ok(())
-}
-
-async fn browser_admission_seam(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
-    if !browser_headers_are_safe(&headers, &state.config.public_authority) {
-        return safe_error(StatusCode::BAD_REQUEST, "unsafe_browser_headers");
-    }
-    safe_error(
-        StatusCode::NOT_IMPLEMENTED,
-        "browser_admission_not_implemented",
-    )
 }
 
 async fn public_stream_seam(

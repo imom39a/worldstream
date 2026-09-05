@@ -18,6 +18,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use worldstream_hosted_contract::{
+    HostedBrowserHandoffRequestV1, HostedGenesisAccessModeV1, HostedGenesisMembershipPurposeV1,
+    HostedGenesisPrincipalKindV1,
+};
 use worldstream_protocol::{
     AccessMode, BearerWireV1, LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES,
     MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1, OperatorRoomSummary,
@@ -42,6 +46,7 @@ use crate::{
         AssignedMembershipLaunchSourceV1, AssignedMembershipSourceErrorV1,
         AssignedMembershipSourceV1,
     },
+    hosted_browser_sessions::HostedBrowserMembershipAuthoritySourceV1,
     participant_handoff::{
         HumanSeatAuthorityV1, ParticipantConsoleReadinessSourceV1,
         ParticipantConsoleSessionHealthV1, ParticipantHandoffAuthorityErrorV1,
@@ -2404,6 +2409,107 @@ impl ParticipantHandoffAuthoritySourceV1 for TaskSetupSupervisorV1 {
             operation.pack.clone(),
             AccessMode::Participant,
             Some(seat.role.clone()),
+            SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
+        )
+    }
+}
+
+impl HostedBrowserMembershipAuthoritySourceV1 for TaskSetupSupervisorV1 {
+    fn resolve_hosted_browser_membership(
+        &self,
+        binding: &HostedBrowserHandoffRequestV1,
+    ) -> Result<HumanSeatAuthorityV1, ParticipantHandoffAuthorityErrorV1> {
+        let operation = self
+            .load_unlocked(&binding.room_setup_operation_id)
+            .map_err(|error| match error {
+                TaskSetupErrorV1::NotFound | TaskSetupErrorV1::InvalidCreation => {
+                    ParticipantHandoffAuthorityErrorV1::SeatNotFound
+                }
+                TaskSetupErrorV1::NotReady | TaskSetupErrorV1::Unavailable => {
+                    ParticipantHandoffAuthorityErrorV1::Unavailable
+                }
+            })?;
+        if operation.state != TaskSetupStateV1::Ready
+            || operation.room_id != binding.room_id
+            || operation.pack.id != binding.pack.id
+            || operation.pack.version != binding.pack.version
+            || operation.pack.digest != binding.pack.digest
+            || binding.principal_kind != HostedGenesisPrincipalKindV1::Human
+        {
+            return Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid);
+        }
+
+        let (secret_reference, access_mode, role) = match binding.purpose {
+            HostedGenesisMembershipPurposeV1::Participant => {
+                if binding.access_mode != HostedGenesisAccessModeV1::Participant {
+                    return Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid);
+                }
+                let seat_id = binding
+                    .seat_id
+                    .as_deref()
+                    .ok_or(ParticipantHandoffAuthorityErrorV1::SeatNotFound)?;
+                let seat = operation
+                    .seats
+                    .iter()
+                    .find(|seat| seat.seat_id == seat_id)
+                    .ok_or(ParticipantHandoffAuthorityErrorV1::SeatNotFound)?;
+                if seat.principal_kind != Some(PrincipalKind::Human)
+                    || seat.principal_id.as_deref() != Some(&binding.principal_id)
+                    || seat.member_id.as_deref() != Some(&binding.membership_id)
+                    || binding.role.as_deref() != Some(seat.role.as_str())
+                {
+                    return Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid);
+                }
+                let capability = seat
+                    .member_capability
+                    .as_ref()
+                    .filter(|capability| capability.provisioned)
+                    .ok_or(ParticipantHandoffAuthorityErrorV1::NotProvisioned)?;
+                (
+                    &capability.secret_reference,
+                    AccessMode::Participant,
+                    Some(seat.role.clone()),
+                )
+            }
+            HostedGenesisMembershipPurposeV1::CreatorSpectator => {
+                if binding.access_mode != HostedGenesisAccessModeV1::Spectator
+                    || binding.seat_id.is_some()
+                    || binding.role.is_some()
+                {
+                    return Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid);
+                }
+                let spectator = operation
+                    .spectators
+                    .iter()
+                    .find(|spectator| spectator.purpose == SetupSpectatorPurposeV2::Creator)
+                    .ok_or(ParticipantHandoffAuthorityErrorV1::SeatNotFound)?;
+                if spectator.principal_kind != PrincipalKind::Human
+                    || spectator.principal_id != binding.principal_id
+                    || spectator.member_id != binding.membership_id
+                {
+                    return Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid);
+                }
+                (&spectator.secret_reference, AccessMode::Spectator, None)
+            }
+            HostedGenesisMembershipPurposeV1::ResultIndexer
+            | HostedGenesisMembershipPurposeV1::PublicProjectionRelay => {
+                return Err(ParticipantHandoffAuthorityErrorV1::NotHuman);
+            }
+        };
+        let secret = self
+            .vault
+            .resolve(SecretKindV1::MembershipAuthority, secret_reference)
+            .map_err(|_| ParticipantHandoffAuthorityErrorV1::AuthorityInvalid)?;
+        let bytes: [u8; 32] = secret
+            .as_bytes()
+            .try_into()
+            .map_err(|_| ParticipantHandoffAuthorityErrorV1::AuthorityInvalid)?;
+        HumanSeatAuthorityV1::new(
+            &operation.room_id,
+            &binding.membership_id,
+            operation.pack,
+            access_mode,
+            role,
             SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
         )
     }

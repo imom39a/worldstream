@@ -7,12 +7,24 @@ import {
 } from "node:crypto";
 import { isIP } from "node:net";
 
+import {
+  HostedBrowserSessionMissingError,
+  HostedBrowserSessionRejectedError,
+  type HostedBrowserSessionClient,
+  type OwnedRunMembershipCorrespondence,
+} from "./browser-sessions.js";
+
 const OAUTH_COOKIE = "__Host-worldstream-oauth";
 const SESSION_COOKIE = "__Host-worldstream-session";
+const ACTIVITY_SESSION_COOKIE = "ws_participant_session";
+const ACTIVITY_SESSION_COOKIE_PATH = "/api/v1/participant-console";
+const ACTIVITY_SESSION_MAX_AGE = 12 * 60 * 60;
 const OAUTH_MAX_AGE = 600;
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_RETURN_TARGETS = 32;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const ENTRY_SELECTOR_PATTERN = /^[0-9a-f]{32}$/u;
 export const DEVELOPMENT_IDENTITY_MODE = "visible-local-only" as const;
 const VERCEL_FORWARDING_HEADERS = new Set([
   "x-forwarded-host",
@@ -102,6 +114,11 @@ export interface PlatformDataClient {
   }): Promise<PlatformAccount | null>;
   setPublicProfile(authUserId: string, enabled: boolean): Promise<boolean>;
   beginAccountErasure(authUserId: string): Promise<boolean>;
+  resolveOwnedRunMembership(input: {
+    accountId: string;
+    runId: string;
+    entrySelector: string;
+  }): Promise<OwnedRunMembershipCorrespondence | null>;
 }
 
 export interface BffDependencies {
@@ -109,6 +126,8 @@ export interface BffDependencies {
   readonly authClient: () => PlatformAuthClient;
   /** A standalone server-secret data client with no user session installed. */
   readonly dataClient: PlatformDataClient;
+  /** Fixed service-only client for the Fly hosted browser-session boundary. */
+  readonly hostedBrowserSessions?: HostedBrowserSessionClient;
 }
 
 export interface PlatformBffConfig {
@@ -144,6 +163,10 @@ interface SessionPayload {
 interface AcceptedMutation {
   readonly payload: SessionPayload;
   readonly body: Record<string, unknown>;
+}
+
+interface VerifiedMutation extends AcceptedMutation {
+  readonly account: PlatformAccount;
 }
 
 export interface PlatformBff {
@@ -223,6 +246,27 @@ export function createPlatformBff(
       if (request.method === "POST" && url.pathname === "/api/account/erasure") {
         return beginErasure(request, origin, sessionKey, dependencies);
       }
+      if (request.method === "POST" && url.pathname === "/api/runs/enter") {
+        return enterRun(request, origin, sessionKey, dependencies);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/v1/participant-console/handoffs:redeem"
+      ) {
+        return redeemHostedHandoff(request, origin, sessionKey, dependencies);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/v1/participant-console/session"
+      ) {
+        return hostedSessionStatus(request, origin, dependencies);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/v1/participant-console/session:logout"
+      ) {
+        return logoutHostedSession(request, origin, sessionKey, dependencies);
+      }
       return safeJson(404, "route_not_found");
     },
   };
@@ -236,6 +280,7 @@ export function createPlatformBff(
 export function createDevelopmentPlatformBff(
   config: DevelopmentPlatformBffConfig,
   dataClient: PlatformDataClient,
+  hostedBrowserSessions?: HostedBrowserSessionClient,
 ): PlatformBff {
   const origin = validateDevelopmentConfiguration(config);
   const user = developmentUser(config.identity);
@@ -243,6 +288,7 @@ export function createDevelopmentPlatformBff(
   const inner = createPlatformBff(config, {
     authClient: () => auth,
     dataClient,
+    ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
   });
 
   return {
@@ -638,9 +684,11 @@ async function signOut(
   );
   if (admitted instanceof Response) return admitted;
   try {
+    await retireActivitySession(request, dependencies);
     await dependencies.authClient().signOut(admitted.payload.accessToken);
     const response = privateJson(200, { version: "platform_sign_out.v1" });
     response.headers.append("set-cookie", clearCookie(SESSION_COOKIE));
+    response.headers.append("set-cookie", clearActivitySessionCookie());
     return response;
   } catch {
     return temporarilyUnavailable();
@@ -698,9 +746,156 @@ async function beginErasure(
     }
     const response = privateJson(202, { version: "platform_account_erasure.v1", accepted: true });
     response.headers.append("set-cookie", clearCookie(SESSION_COOKIE));
+    response.headers.append("set-cookie", clearActivitySessionCookie());
     return response;
   } catch {
     return temporarilyUnavailable();
+  }
+}
+
+async function enterRun(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+): Promise<Response> {
+  const admitted = await verifiedMutation(request, origin, sessionKey, dependencies);
+  if (admitted instanceof Response) return admitted;
+  if (
+    !isExactObject(admitted.body, ["run_id", "entry_selector"]) ||
+    typeof admitted.body.run_id !== "string" ||
+    !UUID_PATTERN.test(admitted.body.run_id) ||
+    typeof admitted.body.entry_selector !== "string" ||
+    !ENTRY_SELECTOR_PATTERN.test(admitted.body.entry_selector)
+  ) {
+    return privateError(400, "invalid_request");
+  }
+  const hosted = dependencies.hostedBrowserSessions;
+  if (hosted === undefined) return temporarilyUnavailable();
+  try {
+    const binding = await dependencies.dataClient.resolveOwnedRunMembership({
+      accountId: admitted.account.accountId,
+      runId: admitted.body.run_id,
+      entrySelector: admitted.body.entry_selector,
+    });
+    if (binding === null) return privateError(404, "run_entry_unavailable");
+    const handoff = await hosted.issueHandoff(admitted.account.accountId, binding);
+    const client = new URL(handoff.clientUrl);
+    if (client.origin !== origin) return temporarilyUnavailable();
+    return privateJson(201, {
+      version: "platform_run_entry.v1",
+      client_url: handoff.clientUrl,
+    });
+  } catch (error) {
+    return error instanceof HostedBrowserSessionRejectedError
+      ? privateError(403, "run_entry_rejected")
+      : temporarilyUnavailable();
+  }
+}
+
+async function redeemHostedHandoff(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+): Promise<Response> {
+  const admitted = await verifiedMutation(request, origin, sessionKey, dependencies);
+  if (admitted instanceof Response) return admitted;
+  if (!isExactObject(admitted.body, [])) return participantError(400, "participant_handoff_invalid");
+  const hosted = dependencies.hostedBrowserSessions;
+  if (hosted === undefined) return participantUnavailable();
+  const handoff = request.headers.get("x-worldstream-participant-handoff");
+  if (handoff === null || !/^wsh1:[0-9a-f]{64}$/u.test(handoff)) {
+    return participantError(401, "participant_handoff_invalid");
+  }
+  const priorSession = readCookie(request, ACTIVITY_SESSION_COOKIE);
+  try {
+    const session = await hosted.redeemHandoff(
+      admitted.account.accountId,
+      handoff,
+      priorSession,
+    );
+    const response = participantStatus("usable");
+    response.headers.append("set-cookie", activitySessionCookie(session));
+    return response;
+  } catch (error) {
+    if (error instanceof HostedBrowserSessionMissingError) {
+      return participantError(401, "participant_handoff_invalid");
+    }
+    return error instanceof HostedBrowserSessionRejectedError
+      ? participantError(403, "participant_handoff_invalid")
+      : participantUnavailable();
+  }
+}
+
+async function hostedSessionStatus(
+  request: Request,
+  origin: string,
+  dependencies: BffDependencies,
+): Promise<Response> {
+  if (!readRequestIsSafe(request, origin)) return participantError(403, "participant_request_rejected");
+  const hosted = dependencies.hostedBrowserSessions;
+  if (hosted === undefined) return participantUnavailable();
+  const session = readCookie(request, ACTIVITY_SESSION_COOKIE);
+  if (session === null) return clearActivitySessionError(401, "participant_session_missing");
+  try {
+    const status = await hosted.sessionStatus(session);
+    return participantStatus(status.state);
+  } catch (error) {
+    if (
+      error instanceof HostedBrowserSessionMissingError ||
+      error instanceof HostedBrowserSessionRejectedError
+    ) {
+      return clearActivitySessionError(401, "participant_session_authority_invalid");
+    }
+    return participantUnavailable();
+  }
+}
+
+async function logoutHostedSession(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+): Promise<Response> {
+  const admitted = await admitMutation(request, origin, sessionKey);
+  if (admitted instanceof Response) return admitted;
+  if (!isExactObject(admitted.body, [])) return participantError(400, "participant_request_invalid");
+  const hosted = dependencies.hostedBrowserSessions;
+  const session = readCookie(request, ACTIVITY_SESSION_COOKIE);
+  if (hosted === undefined || session === null) {
+    return clearActivitySessionError(401, "participant_session_missing");
+  }
+  try {
+    await hosted.logoutSession(session);
+    const response = privateJson(200, {
+      version: "participant_console_logout.v1",
+      logged_out: true,
+    });
+    response.headers.append("set-cookie", clearActivitySessionCookie());
+    return response;
+  } catch (error) {
+    if (
+      error instanceof HostedBrowserSessionMissingError ||
+      error instanceof HostedBrowserSessionRejectedError
+    ) {
+      return clearActivitySessionError(401, "participant_session_missing");
+    }
+    return participantUnavailable();
+  }
+}
+
+async function retireActivitySession(
+  request: Request,
+  dependencies: BffDependencies,
+): Promise<void> {
+  const session = readCookie(request, ACTIVITY_SESSION_COOKIE);
+  if (session === null || dependencies.hostedBrowserSessions === undefined) return;
+  try {
+    await dependencies.hostedBrowserSessions.logoutSession(session);
+  } catch {
+    // Clearing the host-only cookie still removes browser authority. Fly keeps
+    // no durable Browser Activity Session and expires the orphan automatically.
   }
 }
 
@@ -709,7 +904,7 @@ async function verifiedMutation(
   origin: string,
   sessionKey: Buffer,
   dependencies: BffDependencies,
-): Promise<AcceptedMutation | Response> {
+): Promise<VerifiedMutation | Response> {
   const admitted = await admitMutation(request, origin, sessionKey);
   if (admitted instanceof Response) return admitted;
   try {
@@ -726,7 +921,7 @@ async function verifiedMutation(
       avatarUrl: github.avatarUrl,
     });
     if (account === null) return privateError(429, "rate_limited");
-    return admitted;
+    return { ...admitted, account };
   } catch (error) {
     return credentialWasRejected(error)
       ? clearSessionError(401, "session_invalid")
@@ -1064,6 +1259,21 @@ function clearCookie(name: string): string {
   return `${name}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`;
 }
 
+function activitySessionCookie(value: string): string {
+  if (!/^wss1:[0-9a-f]{64}$/u.test(value)) throw new Error("invalid_activity_session");
+  return (
+    `${ACTIVITY_SESSION_COOKIE}=${value}; Path=${ACTIVITY_SESSION_COOKIE_PATH}; ` +
+    `Max-Age=${ACTIVITY_SESSION_MAX_AGE}; Secure; HttpOnly; SameSite=Strict`
+  );
+}
+
+function clearActivitySessionCookie(): string {
+  return (
+    `${ACTIVITY_SESSION_COOKIE}=; Path=${ACTIVITY_SESSION_COOKIE_PATH}; ` +
+    "Max-Age=0; Secure; HttpOnly; SameSite=Strict"
+  );
+}
+
 function constantEqual(left: string | null, right: string): boolean {
   if (left === null) return false;
   const leftBytes = Buffer.from(left);
@@ -1089,6 +1299,36 @@ function privateError(status: number, code: string): Response {
   return privateJson(status, { error: { code } });
 }
 
+function participantStatus(state: "usable" | "disconnected"): Response {
+  return privateJson(200, {
+    version: "participant_console_session.v1",
+    state,
+    next_action: state === "usable" ? "continue" : "reconnect",
+  });
+}
+
+function participantError(status: number, code: string): Response {
+  const retryable = status >= 500;
+  return privateJson(status, {
+    code,
+    message: retryable
+      ? "The Activity Client cannot reach the Room service safely."
+      : "This Activity Client session is not available.",
+    next_action: retryable ? "reconnect" : "return_to_task_setup",
+    retryable,
+  });
+}
+
+function participantUnavailable(): Response {
+  return participantError(503, "participant_session_unavailable");
+}
+
+function clearActivitySessionError(status: number, code: string): Response {
+  const response = participantError(status, code);
+  response.headers.append("set-cookie", clearActivitySessionCookie());
+  return response;
+}
+
 function temporarilyUnavailable(): Response {
   return privateError(503, "temporarily_unavailable");
 }
@@ -1112,4 +1352,11 @@ function credentialWasRejected(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isExactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }

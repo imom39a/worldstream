@@ -6,7 +6,10 @@ use sha2::{Digest as _, Sha256};
 use worldstream_activity_client::read_activity_client_release;
 use worldstream_core::{CanonicalJsonV1, projection_hash_for_canonical_bytes};
 use worldstream_hosted_contract::{
-    ContractError, HostedAuthorizedPublicProjectionV1, HostedCapacityAuthorizationV1,
+    ContractError, HostedAuthorizedPublicProjectionV1, HostedBrowserHandoffRedeemRequestV1,
+    HostedBrowserHandoffRedeemResponseV1, HostedBrowserHandoffRequestV1,
+    HostedBrowserHandoffResponseV1, HostedBrowserSessionLogoutV1, HostedBrowserSessionRequestV1,
+    HostedBrowserSessionStateV1, HostedBrowserSessionStatusV1, HostedCapacityAuthorizationV1,
     HostedGenesisAccessModeV1, HostedGenesisEvidenceV1, HostedGenesisHeadV1,
     HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1,
     HostedHouseRunnerAssignmentV1, HostedHouseRunnerReservationOutcomeV1,
@@ -14,9 +17,14 @@ use worldstream_hosted_contract::{
     HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1,
     HostedResultSourceHeadV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
     PackReference, ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
-    derive_room_setup_with_house_agents, project_result, validate_hosted_genesis_evidence,
-    validate_hosted_launch_evidence_request, validate_hosted_launch_request,
-    validate_hosted_result_source_evidence, validate_hosted_result_source_request,
+    derive_room_setup_with_house_agents, project_result,
+    validate_hosted_browser_handoff_redeem_request,
+    validate_hosted_browser_handoff_redeem_response, validate_hosted_browser_handoff_request,
+    validate_hosted_browser_handoff_response, validate_hosted_browser_session_logout,
+    validate_hosted_browser_session_request, validate_hosted_browser_session_status,
+    validate_hosted_genesis_evidence, validate_hosted_launch_evidence_request,
+    validate_hosted_launch_request, validate_hosted_result_source_evidence,
+    validate_hosted_result_source_request,
 };
 
 const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
@@ -79,6 +87,137 @@ fn contracts() -> Result<(ListingRevision, ResultProjectorRevision), Box<dyn Err
     let listing = ListingRevision::from_canonical_bytes(&canonical(LISTING)?)?;
     let projector = ResultProjectorRevision::from_canonical_bytes(&canonical(PROJECTOR)?)?;
     Ok((listing, projector))
+}
+
+fn hosted_browser_handoff_request() -> HostedBrowserHandoffRequestV1 {
+    HostedBrowserHandoffRequestV1 {
+        schema: "worldstream/hosted-browser-handoff-request/v1".to_owned(),
+        platform_account_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        run_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+        listing_revision_digest: format!("blake3:{}", "1".repeat(64)),
+        host_installation_id: "hosted-preview-1".to_owned(),
+        room_setup_operation_id: "hosted-launch-01".to_owned(),
+        room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        pack: PackReference {
+            id: "worldstream.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: format!("blake3:{}", "2".repeat(64)),
+        },
+        client_release_digest: format!("blake3:{}", "3".repeat(64)),
+        client_surface_id: "participant".to_owned(),
+        access_mode: HostedGenesisAccessModeV1::Participant,
+        purpose: HostedGenesisMembershipPurposeV1::Participant,
+        seat_id: Some("navigator".to_owned()),
+        role: Some("navigator".to_owned()),
+        principal_kind: HostedGenesisPrincipalKindV1::Human,
+        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+        membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+    }
+}
+
+#[test]
+fn hosted_browser_contract_accepts_only_account_controlled_human_memberships() {
+    let participant = hosted_browser_handoff_request();
+    assert_eq!(
+        validate_hosted_browser_handoff_request(&participant),
+        Ok(())
+    );
+
+    let mut spectator = participant.clone();
+    spectator.access_mode = HostedGenesisAccessModeV1::Spectator;
+    spectator.purpose = HostedGenesisMembershipPurposeV1::CreatorSpectator;
+    spectator.seat_id = None;
+    spectator.role = None;
+    assert_eq!(validate_hosted_browser_handoff_request(&spectator), Ok(()));
+
+    let mut agent = participant.clone();
+    agent.principal_kind = HostedGenesisPrincipalKindV1::Agent;
+    assert_eq!(
+        validate_hosted_browser_handoff_request(&agent),
+        Err(ContractError::InvalidShape)
+    );
+
+    let mut widened = spectator;
+    widened.purpose = HostedGenesisMembershipPurposeV1::ResultIndexer;
+    assert_eq!(
+        validate_hosted_browser_handoff_request(&widened),
+        Err(ContractError::InvalidShape)
+    );
+
+    let mut mismatched = participant;
+    mismatched.access_mode = HostedGenesisAccessModeV1::Spectator;
+    assert_eq!(
+        validate_hosted_browser_handoff_request(&mismatched),
+        Err(ContractError::InvalidShape)
+    );
+}
+
+#[test]
+fn hosted_browser_contract_keeps_handoffs_and_sessions_opaque_and_bounded() {
+    let handoff = format!("wsh1:{}", "a".repeat(64));
+    let session = format!("wss1:{}", "b".repeat(64));
+    assert_eq!(
+        validate_hosted_browser_handoff_response(&HostedBrowserHandoffResponseV1 {
+            schema: "worldstream/hosted-browser-handoff-response/v1".to_owned(),
+            client_url: format!("https://arena.example/clients/heist/#handoff={handoff}"),
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        validate_hosted_browser_handoff_redeem_request(&HostedBrowserHandoffRedeemRequestV1 {
+            schema: "worldstream/hosted-browser-handoff-redeem-request/v1".to_owned(),
+            platform_account_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+            handoff,
+            prior_session: Some(session.clone()),
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        validate_hosted_browser_handoff_redeem_response(&HostedBrowserHandoffRedeemResponseV1 {
+            schema: "worldstream/hosted-browser-handoff-redeem-response/v1".to_owned(),
+            session: session.clone(),
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        validate_hosted_browser_session_request(&HostedBrowserSessionRequestV1 {
+            schema: "worldstream/hosted-browser-session-request/v1".to_owned(),
+            session: session.clone(),
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        validate_hosted_browser_session_status(&HostedBrowserSessionStatusV1 {
+            schema: "worldstream/hosted-browser-session-status/v1".to_owned(),
+            state: HostedBrowserSessionStateV1::Usable,
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        validate_hosted_browser_session_logout(&HostedBrowserSessionLogoutV1 {
+            schema: "worldstream/hosted-browser-session-logout/v1".to_owned(),
+            logged_out: true,
+        }),
+        Ok(())
+    );
+
+    assert!(
+        validate_hosted_browser_handoff_response(&HostedBrowserHandoffResponseV1 {
+            schema: "worldstream/hosted-browser-handoff-response/v1".to_owned(),
+            client_url: format!(
+                "https://arena.example/clients/heist/?room_id=private#handoff=wsh1:{}",
+                "a".repeat(64)
+            ),
+        })
+        .is_err()
+    );
+    assert!(
+        validate_hosted_browser_session_request(&HostedBrowserSessionRequestV1 {
+            schema: "worldstream/hosted-browser-session-request/v1".to_owned(),
+            session: session.to_uppercase(),
+        })
+        .is_err()
+    );
 }
 
 #[test]

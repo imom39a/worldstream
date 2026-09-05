@@ -13,11 +13,14 @@ const ROOM_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const MEMBER_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
 const BEARER = `wsb1:${"cd".repeat(32)}`;
 
-function browser(hash: string): BrowserNavigationTarget & { replaced: string[] } {
+function browser(
+  hash: string,
+  origin = "http://127.0.0.1:5173",
+): BrowserNavigationTarget & { replaced: string[] } {
   const replaced: string[] = [];
   const target = {
     location: {
-      origin: "http://127.0.0.1:5173",
+      origin,
       pathname: "/",
       search: "",
       hash,
@@ -270,5 +273,75 @@ describe("Activity Client opaque handoff", () => {
       vi.fn().mockResolvedValue(new Response(JSON.stringify({ state: "queued" }), { status: 200 })),
     );
     await expect(unknownState.act(submission)).rejects.toMatchObject({ code: "participant_session_invalid_response" });
+  });
+
+  it("redeems hosted handoffs only through the exact same-origin BFF", async () => {
+    const csrf = "c".repeat(43);
+    const target = browser(`#handoff=${HANDOFF}`, "https://arena.example");
+    const startup = selectActivityClientStartup(target);
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(target.location.hash).toBe("");
+      expect(String(input)).toBe(
+        "https://arena.example/api/v1/participant-console/handoffs:redeem",
+      );
+      expect(init).toMatchObject({
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        body: "{}",
+      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get("content-type")).toBe("application/json");
+      expect(headers.get("x-worldstream-csrf")).toBe(csrf);
+      expect(headers.get("x-worldstream-participant-handoff")).toBe(HANDOFF);
+      expect(headers.has("authorization")).toBe(false);
+      return Response.json({
+        version: "participant_console_session.v1",
+        state: "usable",
+        next_action: "continue",
+      });
+    });
+    const client = new ActivityClientHandoffClient(
+      "https://arena.example",
+      fetch,
+      { browserOrigin: "https://arena.example", csrf },
+    );
+    await expect(
+      client.redeem(startup.kind === "handoff" ? startup.handoff : ""),
+    ).resolves.toMatchObject({ state: "usable" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses CSRF-protected hosted logout and rejects cross-origin configuration", async () => {
+    const csrf = "d".repeat(43);
+    expect(() => new ActivityClientHandoffClient(
+      "https://gateway.example",
+      vi.fn(),
+      { browserOrigin: "https://arena.example", csrf },
+    )).toThrow(/exact browser origin/u);
+    expect(() => new ActivityClientHandoffClient(
+      "http://arena.example",
+      vi.fn(),
+      { browserOrigin: "http://arena.example", csrf },
+    )).toThrow(/exact browser origin/u);
+
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        "https://arena.example/api/v1/participant-console/session:logout",
+      );
+      expect(init).toMatchObject({ method: "POST", credentials: "include", body: "{}" });
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-worldstream-csrf")).toBe(csrf);
+      return Response.json({
+        version: "participant_console_logout.v1",
+        logged_out: true,
+      });
+    });
+    await expect(new ActivityClientHandoffClient(
+      "https://arena.example",
+      fetch,
+      { browserOrigin: "https://arena.example", csrf },
+    ).logout()).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

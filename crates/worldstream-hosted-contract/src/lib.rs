@@ -1170,6 +1170,96 @@ pub struct HostedGenesisMembershipV1 {
     pub scopes: Vec<String>,
 }
 
+/// Private service-only correspondence used to issue one hosted browser
+/// handoff. The platform obtains this tuple only after resolving the signed-in
+/// account, Activity Run, and opaque entry selector in its server data plane.
+/// It contains no Membership bearer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserHandoffRequestV1 {
+    pub schema: String,
+    pub platform_account_id: String,
+    pub run_id: String,
+    pub listing_revision_digest: String,
+    pub host_installation_id: String,
+    pub room_setup_operation_id: String,
+    pub room_id: String,
+    pub pack: PackReference,
+    pub client_release_digest: String,
+    pub client_surface_id: String,
+    pub access_mode: HostedGenesisAccessModeV1,
+    pub purpose: HostedGenesisMembershipPurposeV1,
+    pub seat_id: Option<String>,
+    pub role: Option<String>,
+    pub principal_kind: HostedGenesisPrincipalKindV1,
+    pub principal_id: String,
+    pub membership_id: String,
+}
+
+/// Secret one-use Activity Client launch returned only across the authenticated
+/// platform-to-Fly service boundary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserHandoffResponseV1 {
+    pub schema: String,
+    pub client_url: String,
+}
+
+/// One-use redemption request. The previous opaque session, when present,
+/// identifies the browser profile session that must be retired atomically.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserHandoffRedeemRequestV1 {
+    pub schema: String,
+    pub platform_account_id: String,
+    pub handoff: String,
+    pub prior_session: Option<String>,
+}
+
+/// New opaque Browser Activity Session returned only to the platform BFF. The
+/// BFF installs it in the accepted `HttpOnly` cookie and never exposes this
+/// service response to browser JavaScript.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserHandoffRedeemResponseV1 {
+    pub schema: String,
+    pub session: String,
+}
+
+/// Service-only request for status or logout of one opaque Browser Activity
+/// Session.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserSessionRequestV1 {
+    pub schema: String,
+    pub session: String,
+}
+
+/// Browser-safe state after Fly has revalidated the exact Membership and
+/// retained Activity Client selection.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedBrowserSessionStateV1 {
+    Usable,
+    Disconnected,
+}
+
+/// Service response for a retained hosted browser session.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserSessionStatusV1 {
+    pub schema: String,
+    pub state: HostedBrowserSessionStateV1,
+}
+
+/// Idempotent service acknowledgement for Browser Activity Session logout.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserSessionLogoutV1 {
+    pub schema: String,
+    pub logged_out: bool,
+}
+
 /// The immutable sequence-zero Room Head retained by the Host.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1284,6 +1374,167 @@ pub struct HostedResultSourceEvidenceV1 {
     pub projection_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<HostedResultReplayEvidenceV1>,
+}
+
+/// Validates the private immutable Membership correspondence accepted for one
+/// hosted browser handoff.
+///
+/// # Errors
+/// Returns a closed error for malformed identities, an unsupported account
+/// participant kind, widened spectator purpose, or incoherent seat and Role.
+pub fn validate_hosted_browser_handoff_request(
+    request: &HostedBrowserHandoffRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-browser-handoff-request/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_uuid_reference(&request.platform_account_id)?;
+    validate_uuid_reference(&request.run_id)?;
+    validate_digest(&request.listing_revision_digest, "blake3")?;
+    validate_host_installation_reference(&request.host_installation_id)?;
+    validate_hosted_operation_reference(&request.room_setup_operation_id)?;
+    validate_ulid_reference(&request.room_id)?;
+    validate_pack(&request.pack)?;
+    validate_digest(&request.client_release_digest, "blake3")?;
+    validate_public_reference(&request.client_surface_id, 128)?;
+    validate_ulid_reference(&request.principal_id)?;
+    validate_ulid_reference(&request.membership_id)?;
+    if request.principal_kind != HostedGenesisPrincipalKindV1::Human {
+        return Err(ContractError::InvalidShape);
+    }
+    match request.purpose {
+        HostedGenesisMembershipPurposeV1::Participant => {
+            let seat = request
+                .seat_id
+                .as_deref()
+                .ok_or(ContractError::InvalidShape)?;
+            let role = request.role.as_deref().ok_or(ContractError::InvalidShape)?;
+            validate_seat_label(seat)?;
+            validate_public_reference(role, 128)?;
+            if request.access_mode != HostedGenesisAccessModeV1::Participant {
+                return Err(ContractError::InvalidShape);
+            }
+        }
+        HostedGenesisMembershipPurposeV1::CreatorSpectator => {
+            if request.access_mode != HostedGenesisAccessModeV1::Spectator
+                || request.seat_id.is_some()
+                || request.role.is_some()
+            {
+                return Err(ContractError::InvalidShape);
+            }
+        }
+        HostedGenesisMembershipPurposeV1::ResultIndexer
+        | HostedGenesisMembershipPurposeV1::PublicProjectionRelay => {
+            return Err(ContractError::InvalidShape);
+        }
+    }
+    Ok(())
+}
+
+/// Validates a Host-issued browser launch without interpreting its registered
+/// Activity Client path.
+///
+/// # Errors
+/// Returns a closed error unless the response carries one exact fragment-only
+/// handoff on an HTTPS or loopback HTTP URL.
+pub fn validate_hosted_browser_handoff_response(
+    response: &HostedBrowserHandoffResponseV1,
+) -> Result<(), ContractError> {
+    if response.schema != "worldstream/hosted-browser-handoff-response/v1"
+        || response.client_url.len() > 2_048
+        || response.client_url.contains(['\r', '\n', '?', '\\'])
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    let (launch, handoff) = response
+        .client_url
+        .rsplit_once("#handoff=")
+        .ok_or(ContractError::InvalidShape)?;
+    if launch.contains('#')
+        || !(launch.starts_with("https://")
+            || launch.starts_with("http://127.0.0.1:")
+            || launch.starts_with("http://localhost:"))
+        || !valid_opaque_token(handoff, "wsh1:")
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates one hosted handoff redemption request.
+///
+/// # Errors
+/// Returns a closed error for a malformed schema or opaque token.
+pub fn validate_hosted_browser_handoff_redeem_request(
+    request: &HostedBrowserHandoffRedeemRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-browser-handoff-redeem-request/v1"
+        || validate_uuid_reference(&request.platform_account_id).is_err()
+        || !valid_opaque_token(&request.handoff, "wsh1:")
+        || request
+            .prior_session
+            .as_deref()
+            .is_some_and(|value| !valid_opaque_token(value, "wss1:"))
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates a newly issued opaque Browser Activity Session response.
+///
+/// # Errors
+/// Returns a closed error for a malformed schema or session token.
+pub fn validate_hosted_browser_handoff_redeem_response(
+    response: &HostedBrowserHandoffRedeemResponseV1,
+) -> Result<(), ContractError> {
+    if response.schema != "worldstream/hosted-browser-handoff-redeem-response/v1"
+        || !valid_opaque_token(&response.session, "wss1:")
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates a status or logout request for one opaque Browser Activity Session.
+///
+/// # Errors
+/// Returns a closed error for a malformed schema or session token.
+pub fn validate_hosted_browser_session_request(
+    request: &HostedBrowserSessionRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-browser-session-request/v1"
+        || !valid_opaque_token(&request.session, "wss1:")
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates a browser-safe hosted session status.
+///
+/// # Errors
+/// Returns a closed error for an unsupported response schema.
+pub fn validate_hosted_browser_session_status(
+    status: &HostedBrowserSessionStatusV1,
+) -> Result<(), ContractError> {
+    if status.schema != "worldstream/hosted-browser-session-status/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    Ok(())
+}
+
+/// Validates the idempotent hosted session logout acknowledgement.
+///
+/// # Errors
+/// Returns a closed error for an unsupported or negative acknowledgement.
+pub fn validate_hosted_browser_session_logout(
+    response: &HostedBrowserSessionLogoutV1,
+) -> Result<(), ContractError> {
+    if response.schema != "worldstream/hosted-browser-session-logout/v1" || !response.logged_out {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
 }
 
 /// Validates the exact identifiers accepted by the result-source pull.
@@ -1784,6 +2035,14 @@ fn validate_hosted_operation_reference(value: &str) -> Result<(), ContractError>
         return Err(ContractError::InvalidShape);
     }
     Ok(())
+}
+
+fn valid_opaque_token(value: &str, prefix: &str) -> bool {
+    value.len() == prefix.len() + 64
+        && value.starts_with(prefix)
+        && value[prefix.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_host_installation_reference(value: &str) -> Result<(), ContractError> {

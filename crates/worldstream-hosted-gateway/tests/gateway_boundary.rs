@@ -16,14 +16,17 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use worldstream_core::{CanonicalJsonV1, projection_hash_for_canonical_bytes};
 use worldstream_hosted_contract::{
-    HostedAuthorizedPublicProjectionV1, HostedCapacityAuthorizationV1, HostedGenesisAccessModeV1,
-    HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedGenesisMembershipPurposeV1,
-    HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerReservationOutcomeV1,
-    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
-    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStageV1,
-    HostedLaunchStatusV1, HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1,
-    HostedResultSourceEvidenceV1, HostedResultSourceHeadV1, HostedResultSourceRequestV1,
-    PackReference,
+    HostedAuthorizedPublicProjectionV1, HostedBrowserHandoffRedeemRequestV1,
+    HostedBrowserHandoffRedeemResponseV1, HostedBrowserHandoffRequestV1,
+    HostedBrowserHandoffResponseV1, HostedBrowserSessionLogoutV1, HostedBrowserSessionRequestV1,
+    HostedBrowserSessionStateV1, HostedBrowserSessionStatusV1, HostedCapacityAuthorizationV1,
+    HostedGenesisAccessModeV1, HostedGenesisEvidenceV1, HostedGenesisHeadV1,
+    HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1,
+    HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
+    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStageV1, HostedLaunchStatusV1, HostedResultIntegrityStatusV1,
+    HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1, HostedResultSourceHeadV1,
+    HostedResultSourceRequestV1, PackReference,
 };
 use worldstream_hosted_gateway::{
     FixedHostAdapterBackend, HostedGatewayBackend, HostedGatewayConfig, HostedGatewayError,
@@ -41,6 +44,10 @@ struct Backend {
     result_source_reads: Arc<Mutex<Vec<HostedResultSourceRequestV1>>>,
     house_reservations: Arc<Mutex<Vec<HostedHouseRunnerReservationRequestV1>>>,
     house_reads: Arc<Mutex<Vec<HostedHouseRunnerReservationRequestV1>>>,
+    browser_handoffs: Arc<Mutex<Vec<HostedBrowserHandoffRequestV1>>>,
+    browser_redemptions: Arc<Mutex<Vec<HostedBrowserHandoffRedeemRequestV1>>>,
+    browser_status_reads: Arc<Mutex<Vec<HostedBrowserSessionRequestV1>>>,
+    browser_logouts: Arc<Mutex<Vec<HostedBrowserSessionRequestV1>>>,
     ready: bool,
 }
 
@@ -121,6 +128,65 @@ impl HostedGatewayBackend for Backend {
             .unwrap_or_else(PoisonError::into_inner)
             .push(request.clone());
         Ok(house_receipt(request))
+    }
+
+    fn issue_browser_handoff(
+        &self,
+        request: &HostedBrowserHandoffRequestV1,
+    ) -> Result<HostedBrowserHandoffResponseV1, HostedGatewayError> {
+        self.browser_handoffs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(HostedBrowserHandoffResponseV1 {
+            schema: "worldstream/hosted-browser-handoff-response/v1".to_owned(),
+            client_url: format!(
+                "https://arena.example/clients/heist/#handoff=wsh1:{}",
+                "a".repeat(64)
+            ),
+        })
+    }
+
+    fn redeem_browser_handoff(
+        &self,
+        request: &HostedBrowserHandoffRedeemRequestV1,
+    ) -> Result<HostedBrowserHandoffRedeemResponseV1, HostedGatewayError> {
+        self.browser_redemptions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(HostedBrowserHandoffRedeemResponseV1 {
+            schema: "worldstream/hosted-browser-handoff-redeem-response/v1".to_owned(),
+            session: format!("wss1:{}", "b".repeat(64)),
+        })
+    }
+
+    fn browser_session_status(
+        &self,
+        request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionStatusV1, HostedGatewayError> {
+        self.browser_status_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(HostedBrowserSessionStatusV1 {
+            schema: "worldstream/hosted-browser-session-status/v1".to_owned(),
+            state: HostedBrowserSessionStateV1::Usable,
+        })
+    }
+
+    fn logout_browser_session(
+        &self,
+        request: &HostedBrowserSessionRequestV1,
+    ) -> Result<HostedBrowserSessionLogoutV1, HostedGatewayError> {
+        self.browser_logouts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(HostedBrowserSessionLogoutV1 {
+            schema: "worldstream/hosted-browser-session-logout/v1".to_owned(),
+            logged_out: true,
+        })
     }
 }
 
@@ -419,6 +485,48 @@ fn house_receipt(
     }
 }
 
+fn browser_handoff_request(listing: &str) -> HostedBrowserHandoffRequestV1 {
+    HostedBrowserHandoffRequestV1 {
+        schema: "worldstream/hosted-browser-handoff-request/v1".to_owned(),
+        platform_account_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        run_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+        listing_revision_digest: listing.to_owned(),
+        host_installation_id: "hosted-preview-1".to_owned(),
+        room_setup_operation_id: "hosted-launch-01".to_owned(),
+        room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        pack: PackReference {
+            id: "worldstream.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: format!("blake3:{}", "d".repeat(64)),
+        },
+        client_release_digest: format!("blake3:{}", "e".repeat(64)),
+        client_surface_id: "participant".to_owned(),
+        access_mode: HostedGenesisAccessModeV1::Participant,
+        purpose: HostedGenesisMembershipPurposeV1::Participant,
+        seat_id: Some("navigator".to_owned()),
+        role: Some("navigator".to_owned()),
+        principal_kind: HostedGenesisPrincipalKindV1::Human,
+        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+        membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+    }
+}
+
+fn browser_redeem_request() -> HostedBrowserHandoffRedeemRequestV1 {
+    HostedBrowserHandoffRedeemRequestV1 {
+        schema: "worldstream/hosted-browser-handoff-redeem-request/v1".to_owned(),
+        platform_account_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        handoff: format!("wsh1:{}", "a".repeat(64)),
+        prior_session: None,
+    }
+}
+
+fn browser_session_request() -> HostedBrowserSessionRequestV1 {
+    HostedBrowserSessionRequestV1 {
+        schema: "worldstream/hosted-browser-session-request/v1".to_owned(),
+        session: format!("wss1:{}", "b".repeat(64)),
+    }
+}
+
 fn service_request(path: &str, token: &str, body: &impl Serialize) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -710,57 +818,34 @@ async fn house_reservation_routes_are_service_only_typed_and_allowlisted() {
 }
 
 #[tokio::test]
-async fn browser_and_public_seams_reject_header_smuggling_without_internal_calls() {
+async fn browser_session_routes_are_service_only_and_public_stream_stays_browser_safe() {
     let backend = Backend::default();
     let app = hosted_gateway_router(config(8), backend.clone());
-    for (name, value) in [
-        ("authorization", "Bearer browser-token"),
-        ("cookie", "secret=value"),
-        ("forwarded", "host=internal"),
-        ("x-forwarded-host", "127.0.0.1:9310"),
-        ("upgrade", "websocket"),
+    for path in [
+        "/v1/hosted/browser-handoffs/issue",
+        "/v1/hosted/browser-sessions/admit",
+        "/v1/hosted/browser-sessions/status",
+        "/v1/hosted/browser-sessions/logout",
     ] {
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/hosted/browser-sessions/admit")
-                    .header("host", "arena.example")
-                    .header(name, value)
-                    .body(Body::empty())
+                    .uri(path)
+                    .header(
+                        "authorization",
+                        "Bearer browser-token-that-is-not-the-service",
+                    )
+                    .header("content-type", "application/json")
+                    .header("cookie", "browser=value")
+                    .body(Body::from("{}"))
                     .expect("request"),
             )
             .await
             .expect("response");
-        assert_eq!(response.status(), 400, "{name}");
+        assert_eq!(response.status(), 401, "{path}");
     }
-    let hostile_host = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/hosted/browser-sessions/admit")
-                .header("host", "attacker.internal")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(hostile_host.status(), 400);
-    let admitted_seam = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/hosted/browser-sessions/admit")
-                .header("host", "arena.example")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    assert_eq!(admitted_seam.status(), 501);
     let public = app
         .oneshot(
             Request::builder()
@@ -778,6 +863,95 @@ async fn browser_and_public_seams_reject_header_smuggling_without_internal_calls
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_empty()
+    );
+    assert!(
+        backend
+            .browser_handoffs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    );
+    assert!(
+        backend
+            .browser_redemptions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn hosted_browser_session_service_calls_are_typed_no_store_and_rate_bounded() {
+    let backend = Backend::default();
+    let app = hosted_gateway_router(config(8), backend.clone());
+    let calls = [
+        service_request(
+            "/v1/hosted/browser-handoffs/issue",
+            TOKEN,
+            &browser_handoff_request(LISTING),
+        ),
+        service_request(
+            "/v1/hosted/browser-sessions/admit",
+            TOKEN,
+            &browser_redeem_request(),
+        ),
+        service_request(
+            "/v1/hosted/browser-sessions/status",
+            TOKEN,
+            &browser_session_request(),
+        ),
+        service_request(
+            "/v1/hosted/browser-sessions/logout",
+            TOKEN,
+            &browser_session_request(),
+        ),
+    ];
+    for (index, request) in calls.into_iter().enumerate() {
+        let response = app.clone().oneshot(request).await.expect("response");
+        assert_eq!(
+            response.status(),
+            if index < 2 { 201 } else { 200 },
+            "call {index}"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("private, no-store, max-age=0")
+        );
+    }
+    assert_eq!(
+        backend
+            .browser_handoffs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
+    );
+    assert_eq!(
+        backend
+            .browser_redemptions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
+    );
+    assert_eq!(
+        backend
+            .browser_status_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
+    );
+    assert_eq!(
+        backend
+            .browser_logouts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
     );
 }
 
@@ -815,41 +989,67 @@ async fn malformed_and_oversized_service_payloads_are_safe() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
     let address = listener.local_addr().expect("fixture address");
     let (sender, receiver) = mpsc::channel();
     let server = thread::spawn(move || {
-        for index in 0..7 {
+        for index in 0..11 {
             let (stream, _) = listener.accept().expect("fixture connection");
             let (request_line, authorization, body, mut stream) = read_request(stream);
             sender
                 .send((request_line, authorization, body.clone()))
                 .expect("fixture observation");
-            let response_body = if index == 0 {
-                serde_json::to_vec(&json!({
+            let response_body = match index {
+                0 => serde_json::to_vec(&json!({
                     "schema": "worldstream/hosted-launch-readiness/v1",
                     "ready": true
                 }))
-                .expect("readiness response")
-            } else if index == 3 {
-                serde_json::to_vec(&genesis(&evidence_request(LISTING)))
-                    .expect("Genesis evidence response")
-            } else if index == 4 {
-                serde_json::to_vec(&result_source_evidence(&result_source_request(LISTING)))
-                    .expect("result-source evidence response")
-            } else if index >= 5 {
-                serde_json::to_vec(&house_receipt(&house_request(LISTING)))
-                    .expect("House receipt response")
-            } else {
-                serde_json::to_vec(&status(
+                .expect("readiness response"),
+                3 => serde_json::to_vec(&genesis(&evidence_request(LISTING)))
+                    .expect("Genesis evidence response"),
+                4 => serde_json::to_vec(&result_source_evidence(&result_source_request(LISTING)))
+                    .expect("result-source evidence response"),
+                5 | 6 => serde_json::to_vec(&house_receipt(&house_request(LISTING)))
+                    .expect("House receipt response"),
+                7 => serde_json::to_vec(&HostedBrowserHandoffResponseV1 {
+                    schema: "worldstream/hosted-browser-handoff-response/v1".to_owned(),
+                    client_url: format!(
+                        "https://arena.example/clients/heist/#handoff=wsh1:{}",
+                        "a".repeat(64)
+                    ),
+                })
+                .expect("browser handoff response"),
+                8 => serde_json::to_vec(&HostedBrowserHandoffRedeemResponseV1 {
+                    schema: "worldstream/hosted-browser-handoff-redeem-response/v1".to_owned(),
+                    session: format!("wss1:{}", "b".repeat(64)),
+                })
+                .expect("browser redemption response"),
+                9 => serde_json::to_vec(&HostedBrowserSessionStatusV1 {
+                    schema: "worldstream/hosted-browser-session-status/v1".to_owned(),
+                    state: HostedBrowserSessionStateV1::Usable,
+                })
+                .expect("browser status response"),
+                10 => serde_json::to_vec(&HostedBrowserSessionLogoutV1 {
+                    schema: "worldstream/hosted-browser-session-logout/v1".to_owned(),
+                    logged_out: true,
+                })
+                .expect("browser logout response"),
+                _ => serde_json::to_vec(&status(
                     LISTING,
                     "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "hosted-launch-01",
                 ))
-                .expect("status response")
+                .expect("status response"),
             };
-            let status_code = if index == 1 { 202 } else { 200 };
+            let status_code = if index == 1 {
+                202
+            } else if matches!(index, 7 | 8) {
+                201
+            } else {
+                200
+            };
             write!(
                 stream,
                 "HTTP/1.1 {status_code} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -879,6 +1079,26 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
             .is_ok()
     );
     assert!(backend.read_house_runner(&house_request(LISTING)).is_ok());
+    assert!(
+        backend
+            .issue_browser_handoff(&browser_handoff_request(LISTING))
+            .is_ok()
+    );
+    assert!(
+        backend
+            .redeem_browser_handoff(&browser_redeem_request())
+            .is_ok()
+    );
+    assert!(
+        backend
+            .browser_session_status(&browser_session_request())
+            .is_ok()
+    );
+    assert!(
+        backend
+            .logout_browser_session(&browser_session_request())
+            .is_ok()
+    );
     server.join().expect("fixture server");
 
     let observations = receiver.try_iter().collect::<Vec<_>>();
@@ -886,7 +1106,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
 }
 
 fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)]) {
-    assert_eq!(observations.len(), 7);
+    assert_eq!(observations.len(), 11);
     assert_eq!(
         observations[0].0,
         "GET /api/v1/hosted-launches/ready HTTP/1.1"
@@ -915,6 +1135,22 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
         observations[6].0,
         "POST /api/v1/hosted-house-runners:read HTTP/1.1"
     );
+    assert_eq!(
+        observations[7].0,
+        "POST /api/v1/hosted-browser-handoffs:issue HTTP/1.1"
+    );
+    assert_eq!(
+        observations[8].0,
+        "POST /api/v1/hosted-browser-handoffs:redeem HTTP/1.1"
+    );
+    assert_eq!(
+        observations[9].0,
+        "POST /api/v1/hosted-browser-sessions:status HTTP/1.1"
+    );
+    assert_eq!(
+        observations[10].0,
+        "POST /api/v1/hosted-browser-sessions:logout HTTP/1.1"
+    );
     assert!(
         observations
             .iter()
@@ -927,6 +1163,10 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[4].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[5].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[6].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[7].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[8].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[9].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[10].2).is_ok());
 }
 
 fn read_request(stream: TcpStream) -> (String, String, Vec<u8>, TcpStream) {

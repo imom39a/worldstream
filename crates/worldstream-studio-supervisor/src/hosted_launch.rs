@@ -934,7 +934,7 @@ impl HostedLaunchAccessV1 {
         })
     }
 
-    fn authenticate(&self, headers: &HeaderMap) -> bool {
+    pub(crate) fn authenticate(&self, headers: &HeaderMap) -> bool {
         let mut values = headers.get_all(header::AUTHORIZATION).iter();
         let Some(value) = values.next() else {
             return false;
@@ -964,6 +964,10 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
                     | "/api/v1/hosted-launches:read-result-source"
                     | "/api/v1/hosted-house-runners:reserve"
                     | "/api/v1/hosted-house-runners:read"
+                    | "/api/v1/hosted-browser-handoffs:issue"
+                    | "/api/v1/hosted-browser-handoffs:redeem"
+                    | "/api/v1/hosted-browser-sessions:status"
+                    | "/api/v1/hosted-browser-sessions:logout"
             )
     )
 }

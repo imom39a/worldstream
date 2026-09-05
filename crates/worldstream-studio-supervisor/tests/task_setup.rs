@@ -11,6 +11,10 @@ use http_body_util::BodyExt as _;
 use serde_json::json;
 use tempfile::tempdir;
 use tower::ServiceExt as _;
+use worldstream_hosted_contract::{
+    HostedBrowserHandoffRequestV1, HostedGenesisAccessModeV1, HostedGenesisMembershipPurposeV1,
+    HostedGenesisPrincipalKindV1, PackReference as HostedPackReference,
+};
 use worldstream_protocol::{
     CreateRoomRequest, CreateRoomResponse, LobbyLaunchRequest, LobbyLaunchResponse,
     MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
@@ -29,6 +33,7 @@ use worldstream_studio_supervisor::{
         AgentHostContractV1, AgentProfileRevisionV1, AgentProfileSecretSettingV1,
         AgentProfileStoreV1, ManagedReferenceProviderV1,
     },
+    hosted_browser_sessions::HostedBrowserMembershipAuthoritySourceV1,
     participant_handoff::{
         ParticipantConsoleReadinessSourceV1, ParticipantConsoleSessionHealthV1,
         ParticipantHandoffAuthorityErrorV1, ParticipantHandoffAuthoritySourceV1,
@@ -1023,6 +1028,83 @@ fn corrupt_checkpoint_cannot_claim_ready_or_issue_another_daemon_effect() {
             .len(),
         calls_before_corruption
     );
+}
+
+#[test]
+fn hosted_browser_authority_requires_the_exact_ready_human_membership() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let supervisor = open_setup(
+        directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    );
+    let status = supervisor
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("ready setup: {error:?}"));
+    let human = &status.seats[0];
+    let binding = HostedBrowserHandoffRequestV1 {
+        schema: "worldstream/hosted-browser-handoff-request/v1".to_owned(),
+        platform_account_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        run_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+        listing_revision_digest: format!("blake3:{}", "1".repeat(64)),
+        host_installation_id: "hosted-preview-1".to_owned(),
+        room_setup_operation_id: status.draft_id,
+        room_id: status.room_id.clone(),
+        pack: HostedPackReference {
+            id: "counter".to_owned(),
+            version: "2.0.0".to_owned(),
+            digest: DIGEST.to_owned(),
+        },
+        client_release_digest: format!("blake3:{}", "2".repeat(64)),
+        client_surface_id: "participant".to_owned(),
+        access_mode: HostedGenesisAccessModeV1::Participant,
+        purpose: HostedGenesisMembershipPurposeV1::Participant,
+        seat_id: Some(human.seat_id.clone()),
+        role: Some(human.role.clone()),
+        principal_kind: HostedGenesisPrincipalKindV1::Human,
+        principal_id: human
+            .principal_id
+            .clone()
+            .unwrap_or_else(|| unreachable!("human principal")),
+        membership_id: human
+            .member_id
+            .clone()
+            .unwrap_or_else(|| unreachable!("human Membership")),
+    };
+    let authority = supervisor
+        .resolve_hosted_browser_membership(&binding)
+        .unwrap_or_else(|error| unreachable!("hosted authority: {error:?}"));
+    assert_eq!(authority.room_id(), status.room_id);
+    assert_eq!(authority.member_id(), binding.membership_id);
+    assert_eq!(
+        authority.access_mode(),
+        worldstream_protocol::AccessMode::Participant
+    );
+    assert_eq!(authority.role(), Some("navigator"));
+
+    for changed in [
+        {
+            let mut value = binding.clone();
+            value.membership_id = "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned();
+            value
+        },
+        {
+            let mut value = binding.clone();
+            value.role = Some("analyst".to_owned());
+            value
+        },
+        {
+            let mut value = binding.clone();
+            value.room_id = "01ARZ3NDEKTSV4RRFFQ69G5FB2".to_owned();
+            value
+        },
+    ] {
+        assert_eq!(
+            supervisor
+                .resolve_hosted_browser_membership(&changed)
+                .map(|_| ()),
+            Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid)
+        );
+    }
 }
 
 #[derive(Clone)]

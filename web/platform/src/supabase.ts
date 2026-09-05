@@ -25,6 +25,7 @@ import type {
   ResultReconciliationState,
   TerminalReconciliationState,
 } from "./result-reconciliation.js";
+import type { OwnedRunMembershipCorrespondence } from "./browser-sessions.js";
 
 interface RpcResult {
   readonly data: unknown;
@@ -345,6 +346,49 @@ class SupabasePlatformDataClient implements PlatformDataClient {
       p_auth_user_id: authUserId,
     });
     return readRows(data).length === 1;
+  }
+
+  async resolveOwnedRunMembership(input: {
+    accountId: string;
+    runId: string;
+    entrySelector: string;
+  }): Promise<OwnedRunMembershipCorrespondence | null> {
+    const data = await requiredRpc(this.#rpc, "resolve_owned_run_membership_v1", {
+      p_requesting_account_id: input.accountId,
+      p_activity_run_id: input.runId,
+      p_entry_selector: input.entrySelector,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    if (
+      value.version !== "platform_owned_run_membership.v1" ||
+      value.principal_kind !== "human" ||
+      (value.purpose !== "participant" && value.purpose !== "creator_spectator")
+    ) {
+      return null;
+    }
+    const pack = requiredRecord(value.pack);
+    return {
+      runId: requiredString(value.run_id),
+      listingRevisionDigest: requiredString(value.listing_revision_digest),
+      hostInstallationId: requiredString(value.host_installation_id),
+      roomSetupOperationId: requiredString(value.room_setup_operation_id),
+      roomId: requiredString(value.room_id),
+      pack: {
+        id: requiredString(pack.id),
+        version: requiredString(pack.version),
+        digest: requiredString(pack.digest),
+      },
+      clientReleaseDigest: requiredString(value.client_release_digest),
+      clientSurfaceId: requiredString(value.client_surface_id),
+      accessMode: requiredEnum(value.access_mode, ["participant", "spectator"]),
+      purpose: value.purpose,
+      seatId: nullableString(value.seat_id),
+      role: nullableString(value.role),
+      principalKind: "human",
+      principalId: requiredString(value.principal_id),
+      membershipId: requiredString(value.membership_id),
+    };
   }
 }
 
