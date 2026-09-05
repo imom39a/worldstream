@@ -345,7 +345,7 @@ enum HouseAgentGatewayV1 {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum CompletionTokenParameterV1 {
+pub enum HouseAgentCompletionTokenParameterV1 {
     MaxTokens,
     MaxCompletionTokens,
 }
@@ -362,7 +362,7 @@ struct HouseAgentRouteV1 {
     gateway: HouseAgentGatewayV1,
     model_slug: String,
     provider_slug: String,
-    completion_token_parameter: CompletionTokenParameterV1,
+    completion_token_parameter: HouseAgentCompletionTokenParameterV1,
     maximum_prompt_price: String,
     maximum_completion_price: String,
     zero_data_retention: bool,
@@ -474,6 +474,38 @@ impl HouseAgentRevision {
     }
 
     #[must_use]
+    pub fn behavior_policy(&self) -> (&str, &str, &str) {
+        (
+            &self.document.behavior_policy.policy_id,
+            &self.document.behavior_policy.revision,
+            &self.document.behavior_policy.instructions,
+        )
+    }
+
+    #[must_use]
+    pub const fn completion_token_parameter(&self) -> HouseAgentCompletionTokenParameterV1 {
+        self.document.route.completion_token_parameter
+    }
+
+    #[must_use]
+    pub fn maximum_prompt_price(&self) -> &str {
+        &self.document.route.maximum_prompt_price
+    }
+
+    #[must_use]
+    pub fn maximum_completion_price(&self) -> &str {
+        &self.document.route.maximum_completion_price
+    }
+
+    #[must_use]
+    pub fn accounting_tokenizer(&self) -> (&str, &str) {
+        (
+            &self.document.accounting_tokenizer.tokenizer_id,
+            &self.document.accounting_tokenizer.revision,
+        )
+    }
+
+    #[must_use]
     pub fn agent_profile(&self) -> (&str, &str) {
         (
             &self.document.agent_profile.profile_id,
@@ -528,7 +560,8 @@ fn validate_house_agent_revision(
         )
         || !matches!(
             document.route.completion_token_parameter,
-            CompletionTokenParameterV1::MaxTokens | CompletionTokenParameterV1::MaxCompletionTokens
+            HouseAgentCompletionTokenParameterV1::MaxTokens
+                | HouseAgentCompletionTokenParameterV1::MaxCompletionTokens
         )
         || !document.tools.is_empty()
         || document.allowance != ALLOWANCE

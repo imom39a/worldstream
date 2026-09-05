@@ -1206,6 +1206,22 @@ fn valid_schema(schema: &ActivityPackCatalogSchema) -> bool {
         && valid_schema_shape(&schema.schema, 0)
 }
 
+/// Checks one model-proposed payload against an already verified listed-Action schema.
+///
+/// This validation-only seam is used by the authority-free managed model host.
+/// The assignment helper repeats the complete offer, schema, Head, and
+/// participant-authority checks before it submits the Action.
+#[must_use]
+pub fn action_payload_matches_schema_v1(schema: &Value, payload: &Value) -> bool {
+    valid_schema_shape(schema, 0) && valid_schema_instance(schema, payload, 0)
+}
+
+/// Checks the bounded JSON-Schema subset accepted for listed Action payloads.
+#[must_use]
+pub fn action_payload_schema_is_valid_v1(schema: &Value) -> bool {
+    valid_schema_shape(schema, 0)
+}
+
 fn valid_schema_instance(schema: &Value, instance: &Value, depth: usize) -> bool {
     if depth > MAX_SCHEMA_DEPTH {
         return false;
