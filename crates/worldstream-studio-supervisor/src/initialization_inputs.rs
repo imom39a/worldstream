@@ -66,6 +66,10 @@ enum HostContractInput {
         provider_address: SocketAddr,
         model_id: String,
     },
+    ManagedHouseOpenrouter {
+        host_contract_revision: String,
+        runner_template: crate::room_drafts::RunnerTemplateRevisionReferenceV1,
+    },
 }
 
 fn strict_host_contract<'de, D: serde::Deserializer<'de>>(
@@ -85,6 +89,13 @@ fn strict_host_contract<'de, D: serde::Deserializer<'de>>(
             provider,
             provider_address,
             model_id,
+        },
+        HostContractInput::ManagedHouseOpenrouter {
+            host_contract_revision,
+            runner_template,
+        } => AgentHostContractV1::ManagedHouseOpenrouter {
+            host_contract_revision,
+            runner_template,
         },
     })
 }
@@ -228,6 +239,20 @@ pub fn parse_agent_profile(
                     && provider_address.ip().is_loopback()
                     && provider_address.port() != 0
                     && text(model_id, 256),
+            )?;
+        }
+        (
+            AgentHostContractV1::ManagedHouseOpenrouter {
+                host_contract_revision,
+                runner_template,
+            },
+            Some(id),
+        ) => {
+            require(
+                identifier(id)
+                    && revision(host_contract_revision)
+                    && identifier(&runner_template.template_id)
+                    && revision(&runner_template.revision),
             )?;
         }
         _ => return Err(InitializationInputError),

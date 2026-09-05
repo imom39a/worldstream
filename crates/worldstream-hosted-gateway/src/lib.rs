@@ -24,8 +24,9 @@ use serde_json::json;
 use thiserror::Error;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
+    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
     HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStatusV1,
-    validate_hosted_launch_evidence_request,
+    validate_hosted_house_runner_reservation_receipt, validate_hosted_launch_evidence_request,
 };
 use zeroize::Zeroizing;
 
@@ -137,6 +138,28 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
         &self,
         request: &HostedLaunchEvidenceRequestV1,
     ) -> Result<HostedLaunchStatusV1, HostedGatewayError>;
+
+    /// Reserves one exact Host-local House Runner before Room creation.
+    ///
+    /// # Errors
+    /// Returns a closed rejection or availability failure.
+    fn reserve_house_runner(
+        &self,
+        _request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Reads one exact retained House Runner reservation.
+    ///
+    /// # Errors
+    /// Returns a closed rejection or availability failure.
+    fn read_house_runner(
+        &self,
+        _request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
 }
 
 /// Fixed loopback-only client for the Controller's three hosted-launch routes.
@@ -251,6 +274,37 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
         )?;
         Ok(response)
     }
+
+    fn reserve_house_runner(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        self.house_runner_call("/api/v1/hosted-house-runners:reserve", request)
+    }
+
+    fn read_house_runner(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        self.house_runner_call("/api/v1/hosted-house-runners:read", request)
+    }
+}
+
+impl FixedHostAdapterBackend {
+    fn house_runner_call(
+        &self,
+        path: &'static str,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        let (status, body) = self.call(path, request)?;
+        if status != 200 {
+            return Err(classify_upstream_status(status));
+        }
+        let receipt = serde_json::from_slice::<HostedHouseRunnerReservationReceiptV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_house_runner_response(&receipt, request)?;
+        Ok(receipt)
+    }
 }
 
 #[derive(Deserialize)]
@@ -292,6 +346,11 @@ pub fn hosted_gateway_router(
         .route("/version", get(version))
         .route("/v1/hosted/launch", post(launch))
         .route("/v1/hosted/evidence", post(evidence))
+        .route(
+            "/v1/hosted/house-runners/reserve",
+            post(reserve_house_runner),
+        )
+        .route("/v1/hosted/house-runners/read", post(read_house_runner))
         .route(
             "/v1/hosted/browser-sessions/admit",
             post(browser_admission_seam),
@@ -355,6 +414,28 @@ async fn evidence(
     evidence_operation(&state, &headers, &body).await
 }
 
+async fn reserve_house_runner(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    house_runner_operation(&state, &headers, &body, true).await
+}
+
+async fn read_house_runner(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    house_runner_operation(&state, &headers, &body, false).await
+}
+
 async fn launch_operation(state: &GatewayState, headers: &HeaderMap, body: &[u8]) -> Response {
     if let Some(response) = reject_service_envelope(state, headers) {
         return response;
@@ -408,6 +489,47 @@ async fn evidence_operation(state: &GatewayState, headers: &HeaderMap, body: &[u
         .map_err(|_| HostedGatewayError::Unavailable)
         .and_then(|result| result);
     service_result("evidence", &listing_revision_digest, result, StatusCode::OK)
+}
+
+async fn house_runner_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+    reserve: bool,
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedHouseRunnerReservationRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if !is_digest(&request.listing_revision_digest) {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let listing_revision_digest = request.listing_revision_digest.clone();
+    let operation = if reserve {
+        "house_reserve"
+    } else {
+        "house_read"
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        if reserve {
+            backend.reserve_house_runner(&request)
+        } else {
+            backend.read_house_runner(&request)
+        }
+    })
+    .await
+    .map_err(|_| HostedGatewayError::Unavailable)
+    .and_then(|result| result);
+    house_runner_result(operation, &listing_revision_digest, result)
 }
 
 fn reject_service_envelope(state: &GatewayState, headers: &HeaderMap) -> Option<Response> {
@@ -478,6 +600,31 @@ fn service_result(
     }
 }
 
+fn house_runner_result(
+    operation: &'static str,
+    listing_revision_digest: &str,
+    result: Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError>,
+) -> Response {
+    match result {
+        Ok(receipt) => {
+            tracing::info!(
+                target: "worldstream.hosted_gateway",
+                operation,
+                listing_revision_digest,
+                outcome = "accepted",
+                "hosted gateway operation"
+            );
+            no_store((StatusCode::OK, Json(receipt)).into_response())
+        }
+        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
+            safe_error(StatusCode::CONFLICT, "operation_rejected")
+        }
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
+}
+
 fn fixed_http_request(
     upstream: SocketAddr,
     timeout: Duration,
@@ -492,7 +639,10 @@ fn fixed_http_request(
             ("GET", "/api/v1/hosted-launches/ready")
                 | (
                     "POST",
-                    "/api/v1/hosted-launches:submit" | "/api/v1/hosted-launches:read"
+                    "/api/v1/hosted-launches:submit"
+                        | "/api/v1/hosted-launches:read"
+                        | "/api/v1/hosted-house-runners:reserve"
+                        | "/api/v1/hosted-house-runners:read"
                 )
         )
         || body.len() > MAX_SERVICE_BODY_BYTES
@@ -616,6 +766,24 @@ fn validate_launch_response(
                 || response.retryable
                 || response.stage
                     != worldstream_hosted_contract::HostedLaunchStageV1::NeedsAttention))
+    {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_house_runner_response(
+    receipt: &HostedHouseRunnerReservationReceiptV1,
+    request: &HostedHouseRunnerReservationRequestV1,
+) -> Result<(), HostedGatewayError> {
+    validate_hosted_house_runner_reservation_receipt(receipt)
+        .map_err(|_| HostedGatewayError::Unavailable)?;
+    if receipt.host_installation_id != request.host_installation_id
+        || receipt.reservation_operation_id != request.reservation_operation_id
+        || receipt.launch_request_id != request.launch_request_id
+        || receipt.listing_revision_digest != request.listing_revision_digest
+        || receipt.seat_id != request.seat_id
+        || receipt.house_agent_revision_digest != request.house_agent_revision_digest
     {
         return Err(HostedGatewayError::Unavailable);
     }

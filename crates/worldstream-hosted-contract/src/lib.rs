@@ -271,6 +271,32 @@ impl ListingRevision {
         &self.document.pack
     }
 
+    /// Verifies that one exact seat permits one reviewed House Agent Revision.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::ReferenceMismatch`] unless the seat and revision
+    /// are both fixed by this Listing Revision.
+    pub fn verify_house_agent_for_seat(
+        &self,
+        seat_id: &str,
+        house_agent_revision_digest: &str,
+    ) -> Result<(), ContractError> {
+        self.document
+            .seats
+            .iter()
+            .find(|seat| seat.seat_id == seat_id)
+            .filter(|seat| {
+                seat.allowed_participation
+                    .contains(&ParticipationKind::HouseAgentFill)
+                    && seat
+                        .allowed_house_agent_revisions
+                        .iter()
+                        .any(|digest| digest == house_agent_revision_digest)
+            })
+            .map(|_| ())
+            .ok_or(ContractError::ReferenceMismatch)
+    }
+
     /// Verifies the exact catalog-resolved Pack revision.
     ///
     /// # Errors
@@ -981,6 +1007,59 @@ pub struct HostedCapacityAuthorizationV1 {
     pub reservation_reference: String,
 }
 
+/// Stable pre-Genesis request for one exact Host-local House Runner unit.
+///
+/// This request contains no credential, executable path, mutable provider
+/// choice, Room identity, Membership identity, or participant authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedHouseRunnerReservationRequestV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub reservation_operation_id: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub seat_id: String,
+    pub house_agent_revision_digest: String,
+}
+
+/// Closed terminal outcomes for a signed House Runner reservation receipt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedHouseRunnerReservationOutcomeV1 {
+    Succeeded,
+    TerminalFailed,
+}
+
+/// Host-authenticated result for one immutable reservation operation.
+///
+/// The authentication tag is opaque to the platform. The Host verifies it
+/// again when the frozen launch is submitted.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedHouseRunnerReservationReceiptV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub reservation_operation_id: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub seat_id: String,
+    pub house_agent_revision_digest: String,
+    pub outcome: HostedHouseRunnerReservationOutcomeV1,
+    pub runner_unit_id: Option<String>,
+    pub failure_code: Option<String>,
+    pub binding_digest: String,
+    pub authentication_tag: String,
+}
+
+/// Immutable platform Assignment paired with the exact authenticated Host receipt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedHouseRunnerAssignmentV1 {
+    pub house_agent_assignment_id: String,
+    pub reservation_receipt: HostedHouseRunnerReservationReceiptV1,
+}
+
 /// Complete frozen input accepted by the narrow Host launch adapter.
 /// It contains no credential, provider choice, arbitrary Host path, or raw model content.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -994,6 +1073,8 @@ pub struct HostedLaunchRequestV1 {
     pub room_setup_specification_digest: String,
     pub room_setup_operation_id: String,
     pub capacity_authorization: HostedCapacityAuthorizationV1,
+    #[serde(default)]
+    pub house_runner_assignments: Vec<HostedHouseRunnerAssignmentV1>,
     pub frozen_launch_request: Value,
     pub frozen_roster: Value,
     pub frozen_room_setup_specification: Value,
@@ -1077,6 +1158,7 @@ pub fn validate_hosted_launch_request(
         &roster_document,
         &request.capacity_authorization.reservation_reference,
     )?;
+    validate_hosted_house_runner_assignments(request, &roster_document, house_agents)?;
     let supplied_setup = canonicalize(&request.frozen_room_setup_specification)?;
     if launch.len() > 16_384 || roster.len() > 65_536 || supplied_setup.len() > 65_536 {
         return Err(ContractError::TooLarge);
@@ -1094,6 +1176,186 @@ pub fn validate_hosted_launch_request(
         return Err(ContractError::ReferenceMismatch);
     }
     Ok(derived)
+}
+
+/// Validates one reservation request against exact reviewed artifacts.
+///
+/// # Errors
+/// Returns a closed contract error for a malformed identity, unknown artifact,
+/// or Listing/seat/revision mismatch.
+pub fn validate_hosted_house_runner_reservation_request(
+    request: &HostedHouseRunnerReservationRequestV1,
+    expected_host_installation_id: &str,
+    listing: &ListingRevision,
+    house_agents: &[HouseAgentRevision],
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/house-runner-reservation-request/v1"
+        || request.host_installation_id != expected_host_installation_id
+        || request.listing_revision_digest != listing.digest()
+        || house_agents.len() > 32
+    {
+        return Err(ContractError::ReferenceMismatch);
+    }
+    validate_host_installation_reference(&request.host_installation_id)?;
+    validate_uuid_reference(&request.reservation_operation_id)?;
+    validate_uuid_reference(&request.launch_request_id)?;
+    validate_seat_label(&request.seat_id)?;
+    validate_digest(&request.house_agent_revision_digest, "blake3")?;
+    listing.verify_house_agent_for_seat(&request.seat_id, &request.house_agent_revision_digest)?;
+    if house_agents
+        .iter()
+        .filter(|revision| revision.digest() == request.house_agent_revision_digest)
+        .count()
+        != 1
+    {
+        return Err(ContractError::ReferenceMismatch);
+    }
+    Ok(())
+}
+
+/// Validates the closed, secret-free shape of one reservation receipt.
+/// Authentication is deliberately verified only by the issuing Host.
+///
+/// # Errors
+/// Returns a closed contract error for a malformed or internally inconsistent receipt.
+pub fn validate_hosted_house_runner_reservation_receipt(
+    receipt: &HostedHouseRunnerReservationReceiptV1,
+) -> Result<(), ContractError> {
+    if receipt.schema != "worldstream/house-runner-reservation-receipt/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&receipt.host_installation_id)?;
+    validate_uuid_reference(&receipt.reservation_operation_id)?;
+    validate_uuid_reference(&receipt.launch_request_id)?;
+    validate_digest(&receipt.listing_revision_digest, "blake3")?;
+    validate_seat_label(&receipt.seat_id)?;
+    validate_digest(&receipt.house_agent_revision_digest, "blake3")?;
+    validate_digest(&receipt.binding_digest, "blake3")?;
+    validate_hex(&receipt.authentication_tag, 64)?;
+    match receipt.outcome {
+        HostedHouseRunnerReservationOutcomeV1::Succeeded
+            if receipt
+                .runner_unit_id
+                .as_deref()
+                .is_some_and(valid_runner_unit_id)
+                && receipt.failure_code.is_none() =>
+        {
+            Ok(())
+        }
+        HostedHouseRunnerReservationOutcomeV1::TerminalFailed
+            if receipt.runner_unit_id.is_none()
+                && receipt
+                    .failure_code
+                    .as_deref()
+                    .is_some_and(valid_failure_code) =>
+        {
+            Ok(())
+        }
+        HostedHouseRunnerReservationOutcomeV1::Succeeded
+        | HostedHouseRunnerReservationOutcomeV1::TerminalFailed => Err(ContractError::InvalidShape),
+    }
+}
+
+fn validate_hosted_house_runner_assignments(
+    request: &HostedLaunchRequestV1,
+    roster: &FrozenRoster,
+    house_agents: &[HouseAgentRevision],
+) -> Result<(), ContractError> {
+    let house_members = roster
+        .members
+        .iter()
+        .filter(|member| matches!(member.participation, ParticipationKind::HouseAgentFill))
+        .collect::<Vec<_>>();
+    if house_members.len() > 2 || request.house_runner_assignments.len() != house_members.len() {
+        return Err(ContractError::InvalidShape);
+    }
+    let revisions = house_agents
+        .iter()
+        .map(|revision| (revision.digest(), revision))
+        .collect::<BTreeMap<_, _>>();
+    let mut assignment_ids = BTreeSet::new();
+    let mut reservation_ids = BTreeSet::new();
+    let mut runner_units = BTreeSet::new();
+    let mut seats = BTreeSet::new();
+    for assignment in &request.house_runner_assignments {
+        validate_uuid_reference(&assignment.house_agent_assignment_id)?;
+        if !assignment_ids.insert(assignment.house_agent_assignment_id.as_str()) {
+            return Err(ContractError::InvalidShape);
+        }
+        let receipt = &assignment.reservation_receipt;
+        validate_hosted_house_runner_reservation_receipt(receipt)?;
+        if receipt.outcome != HostedHouseRunnerReservationOutcomeV1::Succeeded
+            || receipt.host_installation_id != request.capacity_authorization.host_installation_id
+            || receipt.launch_request_id != request.capacity_authorization.reservation_reference
+            || receipt.listing_revision_digest != request.listing_revision_digest
+            || !reservation_ids.insert(receipt.reservation_operation_id.as_str())
+            || !seats.insert(receipt.seat_id.as_str())
+            || !runner_units.insert(
+                receipt
+                    .runner_unit_id
+                    .as_deref()
+                    .ok_or(ContractError::InvalidShape)?,
+            )
+        {
+            return Err(ContractError::ReferenceMismatch);
+        }
+        let member = house_members
+            .iter()
+            .find(|member| member.seat_id == receipt.seat_id)
+            .ok_or(ContractError::ReferenceMismatch)?;
+        if member.house_agent_revision_digest.as_deref()
+            != Some(receipt.house_agent_revision_digest.as_str())
+        {
+            return Err(ContractError::ReferenceMismatch);
+        }
+        let revision = revisions
+            .get(receipt.house_agent_revision_digest.as_str())
+            .ok_or(ContractError::ReferenceMismatch)?;
+        if member
+            .agent_profile
+            .as_ref()
+            .map(|profile| (profile.profile_id.as_str(), profile.revision.as_str()))
+            != Some(revision.agent_profile())
+            || member
+                .runner_template
+                .as_ref()
+                .map(|runner| (runner.template_id.as_str(), runner.revision.as_str()))
+                != Some(revision.runner_template())
+        {
+            return Err(ContractError::ReferenceMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn validate_hex(value: &str, length: usize) -> Result<(), ContractError> {
+    if value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(ContractError::InvalidShape)
+    }
+}
+
+fn valid_runner_unit_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_failure_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn validate_hosted_house_principals(

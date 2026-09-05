@@ -423,12 +423,18 @@ fn prepare(request: &InitializationImportRequest) -> Result<PreparedImports, Imp
             64 * 1024,
         )?;
         let profile = parse_agent_profile(&bytes).map_err(|_| ImportError::Invalid)?;
-        if let AgentHostContractV1::ManagedReference {
-            runner_template,
-            provider,
-            ..
-        } = &profile.host_contract
-        {
+        let managed_dependency = match &profile.host_contract {
+            AgentHostContractV1::GenericMcp => None,
+            AgentHostContractV1::ManagedReference {
+                runner_template,
+                provider,
+                ..
+            } => Some((runner_template, *provider)),
+            AgentHostContractV1::ManagedHouseOpenrouter {
+                runner_template, ..
+            } => Some((runner_template, ManagedReferenceProviderV1::Openrouter)),
+        };
+        if let Some((runner_template, provider)) = managed_dependency {
             let key = (
                 runner_template.template_id.clone(),
                 runner_template.revision.clone(),
@@ -463,7 +469,7 @@ fn prepare(request: &InitializationImportRequest) -> Result<PreparedImports, Imp
                         .state_dir
                         .join("model-provider-credentials/installed"),
                     credential_id,
-                    *provider,
+                    provider,
                     &vault,
                 )
                 .map_err(|_| ImportError::Invalid)?;
@@ -688,6 +694,27 @@ fn profile_provider_reference(
             } else {
                 ModelProviderCredentialRegistryV1::resolve_import_reference(
                     root, id, *provider, vault,
+                )
+                .map(Some)
+                .map_err(|_| ImportError::Invalid)
+            }
+        }
+        (AgentHostContractV1::ManagedHouseOpenrouter { .. }, Some(id)) => {
+            if let Some(declaration) = selected
+                .iter()
+                .find(|declaration| &declaration.credential_id == id)
+            {
+                if declaration.provider != ManagedReferenceProviderV1::Openrouter {
+                    return Err(ImportError::Invalid);
+                }
+                ModelProviderCredentialRegistryV1::check_import(root, declaration, vault)
+                    .map_err(|_| ImportError::Invalid)
+            } else {
+                ModelProviderCredentialRegistryV1::resolve_import_reference(
+                    root,
+                    id,
+                    ManagedReferenceProviderV1::Openrouter,
+                    vault,
                 )
                 .map(Some)
                 .map_err(|_| ImportError::Invalid)

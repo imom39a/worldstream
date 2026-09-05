@@ -123,6 +123,9 @@ pub fn validate_profile_assignment(
             AgentAssignmentModeV1::Managed,
             AgentHostContractV1::ManagedReference {
                 runner_template, ..
+            }
+            | AgentHostContractV1::ManagedHouseOpenrouter {
+                runner_template, ..
             },
         ) if assignment.runner_template.as_ref() == Some(runner_template) => Ok(()),
         _ => Err(RoomSetupDependencyError::Incompatible),

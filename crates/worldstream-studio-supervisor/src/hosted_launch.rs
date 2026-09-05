@@ -26,6 +26,7 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
+    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
     HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStageV1,
     HostedLaunchStatusV1, HouseAgentRevision, ListingRevision,
     validate_hosted_launch_evidence_request, validate_hosted_launch_request,
@@ -35,6 +36,9 @@ use worldstream_runtime::{
 };
 
 use crate::{
+    hosted_house_runners::{
+        HostedHouseRunnerErrorV1, HostedHouseRunnerGateV1, HostedHouseRunnerOperationsV1,
+    },
     room_setup_operations::{
         RoomSetupCreateRequestV1, RoomSetupOperationErrorV1, RoomSetupOperationStatusV1,
         RoomSetupOperationsV1,
@@ -80,6 +84,56 @@ trait HostedRoomOperationBackendV1: Send + Sync + 'static {
     ) -> Result<RoomSetupOperationStatusV1, HostedLaunchErrorV1>;
 
     fn inspect(&self, operation: &str) -> Result<RoomSetupOperationStatusV1, HostedLaunchErrorV1>;
+
+    fn launch(&self, operation: &str) -> Result<(), HostedLaunchErrorV1>;
+}
+
+trait HostedHouseRunnerBackendV1: Send + Sync + 'static {
+    fn reserve(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1>;
+
+    fn read(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1>;
+
+    fn bind_launch(&self, request: &HostedLaunchRequestV1) -> Result<(), HostedHouseRunnerErrorV1>;
+
+    fn start_launch(
+        &self,
+        request: &HostedLaunchRequestV1,
+        room_id: &str,
+    ) -> HostedHouseRunnerGateV1;
+}
+
+impl HostedHouseRunnerBackendV1 for HostedHouseRunnerOperationsV1 {
+    fn reserve(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1> {
+        HostedHouseRunnerOperationsV1::reserve(self, request)
+    }
+
+    fn read(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1> {
+        HostedHouseRunnerOperationsV1::read(self, request)
+    }
+
+    fn bind_launch(&self, request: &HostedLaunchRequestV1) -> Result<(), HostedHouseRunnerErrorV1> {
+        HostedHouseRunnerOperationsV1::bind_launch(self, request)
+    }
+
+    fn start_launch(
+        &self,
+        request: &HostedLaunchRequestV1,
+        room_id: &str,
+    ) -> HostedHouseRunnerGateV1 {
+        HostedHouseRunnerOperationsV1::start_launch(self, request, room_id)
+    }
 }
 
 #[derive(Clone)]
@@ -94,7 +148,7 @@ impl HostedRoomOperationBackendV1 for LiveHostedRoomOperationBackendV1 {
         operation: &str,
         specification: RoomSetupSpecificationV1,
     ) -> Result<RoomSetupOperationStatusV1, HostedLaunchErrorV1> {
-        let status = match self.rooms.status(operation) {
+        match self.rooms.status(operation) {
             Ok(_) => self.rooms.resume(operation),
             Err(RoomSetupOperationErrorV1::NotFound) => self.rooms.create(
                 operation,
@@ -107,17 +161,6 @@ impl HostedRoomOperationBackendV1 for LiveHostedRoomOperationBackendV1 {
         }
         .map_err(|error| map_room_error(&error))?;
 
-        if status.complete {
-            match self.setup.launch(operation) {
-                Ok(_) | Err(TaskSetupErrorV1::NotReady) => {}
-                Err(TaskSetupErrorV1::NotFound | TaskSetupErrorV1::InvalidCreation) => {
-                    return Err(HostedLaunchErrorV1::Invalid);
-                }
-                Err(TaskSetupErrorV1::Unavailable) => {
-                    return Err(HostedLaunchErrorV1::Unavailable);
-                }
-            }
-        }
         self.rooms
             .status(operation)
             .map_err(|error| map_room_error(&error))
@@ -127,6 +170,16 @@ impl HostedRoomOperationBackendV1 for LiveHostedRoomOperationBackendV1 {
         self.rooms
             .status(operation)
             .map_err(|error| map_room_error(&error))
+    }
+
+    fn launch(&self, operation: &str) -> Result<(), HostedLaunchErrorV1> {
+        match self.setup.launch(operation) {
+            Ok(_) | Err(TaskSetupErrorV1::NotReady) => Ok(()),
+            Err(TaskSetupErrorV1::NotFound | TaskSetupErrorV1::InvalidCreation) => {
+                Err(HostedLaunchErrorV1::Invalid)
+            }
+            Err(TaskSetupErrorV1::Unavailable) => Err(HostedLaunchErrorV1::Unavailable),
+        }
     }
 }
 
@@ -149,6 +202,7 @@ pub struct HostedLaunchOperationsV1 {
     listings: Arc<BTreeMap<String, ListingRevision>>,
     house_agents: Arc<Vec<HouseAgentRevision>>,
     backend: Arc<dyn HostedRoomOperationBackendV1>,
+    house_runners: Option<Arc<dyn HostedHouseRunnerBackendV1>>,
     mutation: Arc<Mutex<()>>,
 }
 
@@ -213,8 +267,22 @@ impl HostedLaunchOperationsV1 {
             listings: Arc::new(indexed),
             house_agents: Arc::new(house_agents),
             backend: Arc::new(backend),
+            house_runners: None,
             mutation: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Adds the Host-authenticated House reservation and readiness gate.
+    #[must_use]
+    pub fn with_house_runners(mut self, house_runners: HostedHouseRunnerOperationsV1) -> Self {
+        self.house_runners = Some(Arc::new(house_runners));
+        self
+    }
+
+    #[cfg(test)]
+    fn with_house_runner_backend(mut self, house_runners: impl HostedHouseRunnerBackendV1) -> Self {
+        self.house_runners = Some(Arc::new(house_runners));
+        self
     }
 
     /// Retains or resumes one exact launch before delegating any Room mutation.
@@ -258,10 +326,40 @@ impl HostedLaunchOperationsV1 {
                 .clone(),
         };
         self.bind(&binding)?;
-        let status = self
+        if !request.house_runner_assignments.is_empty() {
+            self.house_runners
+                .as_ref()
+                .ok_or(HostedLaunchErrorV1::Invalid)?
+                .bind_launch(request)
+                .map_err(map_house_error)?;
+        }
+        let mut status = self
             .backend
             .advance(&binding.room_setup_operation_id, specification)?;
-        Ok(public_status(&binding, Some(status)))
+        let gate = if status.complete {
+            if request.house_runner_assignments.is_empty() {
+                self.backend.launch(&binding.room_setup_operation_id)?;
+                None
+            } else {
+                let room_id = status
+                    .room_id
+                    .as_deref()
+                    .ok_or(HostedLaunchErrorV1::Unavailable)?;
+                let gate = self
+                    .house_runners
+                    .as_ref()
+                    .ok_or(HostedLaunchErrorV1::Invalid)?
+                    .start_launch(request, room_id);
+                if gate == HostedHouseRunnerGateV1::Ready {
+                    self.backend.launch(&binding.room_setup_operation_id)?;
+                }
+                Some(gate)
+            }
+        } else {
+            None
+        };
+        status = self.backend.inspect(&binding.room_setup_operation_id)?;
+        Ok(public_status(&binding, Some(status), gate))
     }
 
     /// Reads one exact retained launch without creating or replacing intent.
@@ -286,7 +384,37 @@ impl HostedLaunchOperationsV1 {
             Err(HostedLaunchErrorV1::NotFound) => None,
             Err(error) => return Err(error),
         };
-        Ok(public_status(&binding, room))
+        Ok(public_status(&binding, room, None))
+    }
+
+    /// Retains one stable pre-Genesis House Runner capacity operation.
+    ///
+    /// # Errors
+    /// Returns a closed rejection or availability failure from the House coordinator.
+    pub fn reserve_house_runner(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedLaunchErrorV1> {
+        self.house_runners
+            .as_ref()
+            .ok_or(HostedLaunchErrorV1::NotFound)?
+            .reserve(request)
+            .map_err(map_house_error)
+    }
+
+    /// Reads one exact retained House Runner capacity operation.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, not-found, or availability failure.
+    pub fn read_house_runner(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedLaunchErrorV1> {
+        self.house_runners
+            .as_ref()
+            .ok_or(HostedLaunchErrorV1::NotFound)?
+            .read(request)
+            .map_err(map_house_error)
     }
 
     fn bind(&self, requested: &RetainedHostedLaunchBindingV1) -> Result<(), HostedLaunchErrorV1> {
@@ -424,6 +552,7 @@ impl HostedLaunchOperationsV1 {
 fn public_status(
     binding: &RetainedHostedLaunchBindingV1,
     status: Option<RoomSetupOperationStatusV1>,
+    gate: Option<HostedHouseRunnerGateV1>,
 ) -> HostedLaunchStatusV1 {
     let Some(status) = status else {
         return HostedLaunchStatusV1 {
@@ -443,6 +572,27 @@ fn public_status(
         .assessment
         .as_ref()
         .and_then(|assessment| assessment.launch.as_ref());
+    if let Some(gate) = gate.filter(|gate| *gate != HostedHouseRunnerGateV1::Ready) {
+        return HostedLaunchStatusV1 {
+            schema: "worldstream/hosted-launch-status/v1".to_owned(),
+            listing_revision_digest: binding.listing_revision_digest.clone(),
+            launch_request_digest: binding.launch_request_digest.clone(),
+            room_setup_operation_id: binding.room_setup_operation_id.clone(),
+            room_id: status.room_id.clone(),
+            stage: if gate == HostedHouseRunnerGateV1::TerminalFailure {
+                HostedLaunchStageV1::NeedsAttention
+            } else {
+                HostedLaunchStageV1::WaitingForReadiness
+            },
+            room_setup_complete: status.complete,
+            lobby_launch_committed: false,
+            retryable: gate == HostedHouseRunnerGateV1::RetryableFailure,
+            // The gate is evaluated only after Room setup completed. A terminal
+            // Runner failure therefore needs bounded post-Genesis abandonment;
+            // it must not be reported as a failed pre-Genesis formation.
+            terminal_before_genesis: false,
+        };
+    }
     let lobby_launch_committed =
         launch.is_some_and(|item| item.state == TaskLaunchStateV1::Launched);
     let attention_retryable = launch
@@ -475,6 +625,15 @@ fn public_status(
         lobby_launch_committed,
         retryable,
         terminal_before_genesis: !lobby_launch_committed && needs_attention && !retryable,
+    }
+}
+
+const fn map_house_error(error: HostedHouseRunnerErrorV1) -> HostedLaunchErrorV1 {
+    match error {
+        HostedHouseRunnerErrorV1::Invalid => HostedLaunchErrorV1::Invalid,
+        HostedHouseRunnerErrorV1::Conflict => HostedLaunchErrorV1::Conflict,
+        HostedHouseRunnerErrorV1::NotFound => HostedLaunchErrorV1::NotFound,
+        HostedHouseRunnerErrorV1::Unavailable => HostedLaunchErrorV1::Unavailable,
     }
 }
 
@@ -591,7 +750,10 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
         ("GET", "/api/v1/hosted-launches/ready")
             | (
                 "POST",
-                "/api/v1/hosted-launches:submit" | "/api/v1/hosted-launches:read"
+                "/api/v1/hosted-launches:submit"
+                    | "/api/v1/hosted-launches:read"
+                    | "/api/v1/hosted-house-runners:reserve"
+                    | "/api/v1/hosted-house-runners:read"
             )
     )
 }
@@ -605,6 +767,11 @@ pub fn hosted_launch_router(
         .route("/api/v1/hosted-launches/ready", get(hosted_ready))
         .route("/api/v1/hosted-launches:submit", post(hosted_submit))
         .route("/api/v1/hosted-launches:read", post(hosted_read))
+        .route(
+            "/api/v1/hosted-house-runners:reserve",
+            post(hosted_house_reserve),
+        )
+        .route("/api/v1/hosted-house-runners:read", post(hosted_house_read))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(from_fn_with_state(Arc::new(access), admit_hosted_launch))
         .with_state(operations)
@@ -639,6 +806,28 @@ async fn hosted_read(
 ) -> Result<Json<HostedLaunchStatusV1>, HostedLaunchErrorV1> {
     let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
     tokio::task::spawn_blocking(move || operations.read(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_house_reserve(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedHouseRunnerReservationReceiptV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedHouseRunnerReservationRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.reserve_house_runner(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_house_read(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedHouseRunnerReservationReceiptV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedHouseRunnerReservationRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.read_house_runner(&request))
         .await
         .map_err(|_| HostedLaunchErrorV1::Unavailable)?
         .map(Json)
@@ -699,13 +888,19 @@ mod tests {
     use tempfile::tempdir;
     use tower::ServiceExt as _;
     use worldstream_hosted_contract::{
-        HostedCapacityAuthorizationV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+        HostedCapacityAuthorizationV1, HostedHouseRunnerAssignmentV1,
+        HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
+        HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, derive_room_setup_with_house_agents,
     };
 
     use super::*;
     use crate::room_setup_operations::RoomSetupOperationStageV1;
 
     const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
+    const HOUSE_LISTING: &[u8] =
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json");
+    const HOUSE_AGENT: &[u8] =
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
     const LAUNCH: &[u8] =
         include_bytes!("../../../fixtures/hosted-contract/valid/agent-heist-launch-request.json");
     const ROSTER: &[u8] =
@@ -717,6 +912,17 @@ mod tests {
     struct FakeBackend {
         statuses: Arc<Mutex<BTreeMap<String, RoomSetupOperationStatusV1>>>,
         advances: Arc<Mutex<Vec<String>>>,
+        launches: Arc<Mutex<Vec<String>>>,
+        complete_on_advance: Arc<Mutex<bool>>,
+    }
+
+    impl FakeBackend {
+        fn complete_on_advance(&self) {
+            *self
+                .complete_on_advance
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = true;
+        }
     }
 
     impl HostedRoomOperationBackendV1 for FakeBackend {
@@ -729,7 +935,17 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(operation.to_owned());
-            let status = room_status(operation);
+            let mut status = room_status(operation);
+            if *self
+                .complete_on_advance
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+            {
+                status.room_id = Some("01JY0000000000000000000000".to_owned());
+                status.complete = true;
+                status.stage = RoomSetupOperationStageV1::Complete;
+                status.next_action = "launch".to_owned();
+            }
             self.statuses
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -747,6 +963,70 @@ mod tests {
                 .get(operation)
                 .cloned()
                 .ok_or(HostedLaunchErrorV1::NotFound)
+        }
+
+        fn launch(&self, operation: &str) -> Result<(), HostedLaunchErrorV1> {
+            self.launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(operation.to_owned());
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeHouseBackend {
+        gate: Arc<Mutex<HostedHouseRunnerGateV1>>,
+        binds: Arc<Mutex<usize>>,
+        starts: Arc<Mutex<usize>>,
+    }
+
+    impl FakeHouseBackend {
+        fn new(gate: HostedHouseRunnerGateV1) -> Self {
+            Self {
+                gate: Arc::new(Mutex::new(gate)),
+                binds: Arc::new(Mutex::new(0)),
+                starts: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn set_gate(&self, gate: HostedHouseRunnerGateV1) {
+            *self.gate.lock().unwrap_or_else(PoisonError::into_inner) = gate;
+        }
+    }
+
+    impl HostedHouseRunnerBackendV1 for FakeHouseBackend {
+        fn reserve(
+            &self,
+            _request: &HostedHouseRunnerReservationRequestV1,
+        ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1> {
+            Err(HostedHouseRunnerErrorV1::NotFound)
+        }
+
+        fn read(
+            &self,
+            _request: &HostedHouseRunnerReservationRequestV1,
+        ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerErrorV1> {
+            Err(HostedHouseRunnerErrorV1::NotFound)
+        }
+
+        fn bind_launch(
+            &self,
+            _request: &HostedLaunchRequestV1,
+        ) -> Result<(), HostedHouseRunnerErrorV1> {
+            let mut binds = self.binds.lock().unwrap_or_else(PoisonError::into_inner);
+            *binds = binds.saturating_add(1);
+            Ok(())
+        }
+
+        fn start_launch(
+            &self,
+            _request: &HostedLaunchRequestV1,
+            _room_id: &str,
+        ) -> HostedHouseRunnerGateV1 {
+            let mut starts = self.starts.lock().unwrap_or_else(PoisonError::into_inner);
+            *starts = starts.saturating_add(1);
+            *self.gate.lock().unwrap_or_else(PoisonError::into_inner)
         }
     }
 
@@ -801,6 +1081,7 @@ mod tests {
                 host_installation_id: "hosted-test".to_owned(),
                 reservation_reference: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
             },
+            house_runner_assignments: vec![],
             frozen_launch_request: value(&launch),
             frozen_roster: value(&roster),
             frozen_room_setup_specification: value(&setup),
@@ -810,6 +1091,80 @@ mod tests {
     fn listing() -> ListingRevision {
         ListingRevision::from_canonical_bytes(&canonical(LISTING))
             .unwrap_or_else(|error| unreachable!("valid fixture: {error}"))
+    }
+
+    fn house_request(
+        operation: &str,
+    ) -> (HostedLaunchRequestV1, ListingRevision, HouseAgentRevision) {
+        let listing = ListingRevision::from_canonical_bytes(&canonical(HOUSE_LISTING))
+            .unwrap_or_else(|error| unreachable!("valid House listing: {error}"));
+        let house = HouseAgentRevision::from_canonical_bytes(&canonical(HOUSE_AGENT))
+            .unwrap_or_else(|error| unreachable!("valid House revision: {error}"));
+        let launch_reference = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut launch = value(LAUNCH);
+        launch["listing_revision_digest"] = serde_json::json!(listing.digest());
+        let mut roster = value(ROSTER);
+        roster["listing_revision_digest"] = serde_json::json!(listing.digest());
+        roster["members"][1] = serde_json::json!({
+            "seat_id": "insider",
+            "participation": "house_agent_fill",
+            "principal_reference": format!("house:{launch_reference}:insider"),
+            "display_name": house.display_name(),
+            "house_agent_revision_digest": house.digest(),
+            "agent_profile": {"profile_id": "house-cooperative-planner", "revision": "1"},
+            "runner_template": {"template_id": "openrouter-house", "revision": "1"}
+        });
+        let launch_bytes = canonical(
+            &serde_json::to_vec(&launch)
+                .unwrap_or_else(|error| unreachable!("serialize launch: {error}")),
+        );
+        let roster_bytes = canonical(
+            &serde_json::to_vec(&roster)
+                .unwrap_or_else(|error| unreachable!("serialize roster: {error}")),
+        );
+        let setup = derive_room_setup_with_house_agents(
+            &listing,
+            &launch_bytes,
+            &roster_bytes,
+            std::slice::from_ref(&house),
+        )
+        .and_then(|setup| setup.canonical_bytes())
+        .unwrap_or_else(|error| unreachable!("derive House setup: {error}"));
+        let request = HostedLaunchRequestV1 {
+            schema: "worldstream/hosted-launch-request/v1".to_owned(),
+            listing_revision_digest: listing.digest().to_owned(),
+            launch_request_digest: format!("blake3:{}", blake3::hash(&launch_bytes).to_hex()),
+            launch_input_digest: sha256(b"{}"),
+            frozen_roster_digest: sha256(&roster_bytes),
+            room_setup_specification_digest: format!("blake3:{}", blake3::hash(&setup).to_hex()),
+            room_setup_operation_id: operation.to_owned(),
+            capacity_authorization: HostedCapacityAuthorizationV1 {
+                schema: "worldstream/platform-capacity-authorization/v1".to_owned(),
+                host_installation_id: "hosted-test".to_owned(),
+                reservation_reference: launch_reference.to_owned(),
+            },
+            house_runner_assignments: vec![HostedHouseRunnerAssignmentV1 {
+                house_agent_assignment_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_owned(),
+                reservation_receipt: HostedHouseRunnerReservationReceiptV1 {
+                    schema: "worldstream/house-runner-reservation-receipt/v1".to_owned(),
+                    host_installation_id: "hosted-test".to_owned(),
+                    reservation_operation_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_owned(),
+                    launch_request_id: launch_reference.to_owned(),
+                    listing_revision_digest: listing.digest().to_owned(),
+                    seat_id: "insider".to_owned(),
+                    house_agent_revision_digest: house.digest().to_owned(),
+                    outcome: HostedHouseRunnerReservationOutcomeV1::Succeeded,
+                    runner_unit_id: Some("house-insider-01".to_owned()),
+                    failure_code: None,
+                    binding_digest: format!("blake3:{}", "e".repeat(64)),
+                    authentication_tag: "f".repeat(64),
+                },
+            }],
+            frozen_launch_request: launch,
+            frozen_roster: roster,
+            frozen_room_setup_specification: value(&setup),
+        };
+        (request, listing, house)
     }
 
     #[test]
@@ -927,7 +1282,7 @@ mod tests {
         status.room_id = Some("01JY0000000000000000000000".to_owned());
         status.next_action = "inspect_operation".to_owned();
 
-        let result = public_status(&binding, Some(status));
+        let result = public_status(&binding, Some(status), None);
         assert_eq!(result.stage, HostedLaunchStageV1::NeedsAttention);
         assert_eq!(
             result.room_id.as_deref(),
@@ -936,6 +1291,99 @@ mod tests {
         assert!(!result.retryable);
         assert!(result.terminal_before_genesis);
         assert!(!result.lobby_launch_committed);
+    }
+
+    #[test]
+    fn lobby_launch_waits_for_exact_house_readiness_and_retries_the_same_gate() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let house_backend = FakeHouseBackend::new(HostedHouseRunnerGateV1::RetryableFailure);
+        let (request, listing, house) = house_request("hosted-house-gate-01");
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing],
+            vec![house],
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"))
+        .with_house_runner_backend(house_backend.clone());
+
+        let waiting = operations
+            .submit(&request)
+            .unwrap_or_else(|error| unreachable!("waiting submit: {error:?}"));
+        assert_eq!(waiting.stage, HostedLaunchStageV1::WaitingForReadiness);
+        assert!(waiting.room_setup_complete);
+        assert!(waiting.retryable);
+        assert!(
+            backend
+                .launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        );
+
+        house_backend.set_gate(HostedHouseRunnerGateV1::Ready);
+        operations
+            .submit(&request)
+            .unwrap_or_else(|error| unreachable!("ready retry: {error:?}"));
+        assert_eq!(
+            backend
+                .launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            ["hosted-house-gate-01"]
+        );
+        assert_eq!(
+            *house_backend
+                .binds
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            2
+        );
+        assert_eq!(
+            *house_backend
+                .starts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            2
+        );
+    }
+
+    #[test]
+    fn terminal_house_gate_requires_post_genesis_attention_without_pack_outcome() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let house_backend = FakeHouseBackend::new(HostedHouseRunnerGateV1::TerminalFailure);
+        let (request, listing, house) = house_request("hosted-house-terminal-01");
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing],
+            vec![house],
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"))
+        .with_house_runner_backend(house_backend);
+
+        let status = operations
+            .submit(&request)
+            .unwrap_or_else(|error| unreachable!("terminal submit: {error:?}"));
+        assert_eq!(status.stage, HostedLaunchStageV1::NeedsAttention);
+        assert!(status.room_setup_complete);
+        assert!(!status.retryable);
+        assert!(!status.terminal_before_genesis);
+        assert!(!status.lobby_launch_committed);
+        assert!(
+            backend
+                .launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        );
     }
 
     #[tokio::test]

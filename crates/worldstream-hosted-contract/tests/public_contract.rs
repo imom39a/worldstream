@@ -6,9 +6,10 @@ use sha2::{Digest as _, Sha256};
 use worldstream_activity_client::read_activity_client_release;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    ContractError, HostedCapacityAuthorizationV1, HostedLaunchEvidenceRequestV1,
-    HostedLaunchRequestV1, HouseAgentRevision, ListingRevision, PackReference,
-    ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
+    ContractError, HostedCapacityAuthorizationV1, HostedHouseRunnerAssignmentV1,
+    HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
+    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HouseAgentRevision, ListingRevision,
+    PackReference, ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
     derive_room_setup_with_house_agents, project_result, validate_hosted_launch_evidence_request,
     validate_hosted_launch_request,
 };
@@ -433,6 +434,23 @@ fn hosted_house_fill_is_bound_to_the_exact_launch_reference() -> Result<(), Box<
             host_installation_id: "hosted-preview-1".to_owned(),
             reservation_reference: launch_reference.to_owned(),
         },
+        house_runner_assignments: vec![HostedHouseRunnerAssignmentV1 {
+            house_agent_assignment_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_owned(),
+            reservation_receipt: HostedHouseRunnerReservationReceiptV1 {
+                schema: "worldstream/house-runner-reservation-receipt/v1".to_owned(),
+                host_installation_id: "hosted-preview-1".to_owned(),
+                reservation_operation_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_owned(),
+                launch_request_id: launch_reference.to_owned(),
+                listing_revision_digest: listing.digest().to_owned(),
+                seat_id: "insider".to_owned(),
+                house_agent_revision_digest: house.digest().to_owned(),
+                outcome: HostedHouseRunnerReservationOutcomeV1::Succeeded,
+                runner_unit_id: Some("house-insider-01".to_owned()),
+                failure_code: None,
+                binding_digest: format!("blake3:{}", "e".repeat(64)),
+                authentication_tag: "f".repeat(64),
+            },
+        }],
         frozen_launch_request: launch,
         frozen_roster: roster,
         frozen_room_setup_specification: source_value(&setup)?,
@@ -481,6 +499,7 @@ fn hosted_launch_rederives_every_frozen_value_and_capacity_binding() -> Result<(
             host_installation_id: "hosted-preview-1".to_owned(),
             reservation_reference: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
         },
+        house_runner_assignments: vec![],
         frozen_launch_request: source_value(&launch)?,
         frozen_roster: source_value(&roster)?,
         frozen_room_setup_specification: source_value(&setup)?,

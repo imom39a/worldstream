@@ -16,8 +16,10 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    HostedCapacityAuthorizationV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStageV1, HostedLaunchStatusV1,
+    HostedCapacityAuthorizationV1, HostedHouseRunnerReservationOutcomeV1,
+    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
+    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStageV1,
+    HostedLaunchStatusV1,
 };
 use worldstream_hosted_gateway::{
     FixedHostAdapterBackend, HostedGatewayBackend, HostedGatewayConfig, HostedGatewayError,
@@ -31,6 +33,8 @@ const TOKEN: &str = "service-authority-that-never-leaves-fly";
 struct Backend {
     launches: Arc<Mutex<Vec<HostedLaunchRequestV1>>>,
     evidence_reads: Arc<Mutex<Vec<HostedLaunchEvidenceRequestV1>>>,
+    house_reservations: Arc<Mutex<Vec<HostedHouseRunnerReservationRequestV1>>>,
+    house_reads: Arc<Mutex<Vec<HostedHouseRunnerReservationRequestV1>>>,
     ready: bool,
 }
 
@@ -67,6 +71,28 @@ impl HostedGatewayBackend for Backend {
             &request.launch_request_digest,
             &request.room_setup_operation_id,
         ))
+    }
+
+    fn reserve_house_runner(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        self.house_reservations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(house_receipt(request))
+    }
+
+    fn read_house_runner(
+        &self,
+        request: &HostedHouseRunnerReservationRequestV1,
+    ) -> Result<HostedHouseRunnerReservationReceiptV1, HostedGatewayError> {
+        self.house_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(house_receipt(request))
     }
 }
 
@@ -188,6 +214,7 @@ fn launch_request(listing: &str) -> HostedLaunchRequestV1 {
             host_installation_id: "hosted-test".to_owned(),
             reservation_reference: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
         },
+        house_runner_assignments: vec![],
         frozen_launch_request: json!({}),
         frozen_roster: json!({}),
         frozen_room_setup_specification: json!({}),
@@ -201,6 +228,40 @@ fn evidence_request(listing: &str) -> HostedLaunchEvidenceRequestV1 {
         listing_revision_digest: launch.listing_revision_digest,
         launch_request_digest: launch.launch_request_digest,
         room_setup_operation_id: launch.room_setup_operation_id,
+    }
+}
+
+fn house_request(listing: &str) -> HostedHouseRunnerReservationRequestV1 {
+    HostedHouseRunnerReservationRequestV1 {
+        schema: "worldstream/house-runner-reservation-request/v1".to_owned(),
+        host_installation_id: "hosted-test".to_owned(),
+        reservation_operation_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        launch_request_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+        listing_revision_digest: listing.to_owned(),
+        seat_id: "navigator".to_owned(),
+        house_agent_revision_digest:
+            "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned(),
+    }
+}
+
+fn house_receipt(
+    request: &HostedHouseRunnerReservationRequestV1,
+) -> HostedHouseRunnerReservationReceiptV1 {
+    HostedHouseRunnerReservationReceiptV1 {
+        schema: "worldstream/house-runner-reservation-receipt/v1".to_owned(),
+        host_installation_id: request.host_installation_id.clone(),
+        reservation_operation_id: request.reservation_operation_id.clone(),
+        launch_request_id: request.launch_request_id.clone(),
+        listing_revision_digest: request.listing_revision_digest.clone(),
+        seat_id: request.seat_id.clone(),
+        house_agent_revision_digest: request.house_agent_revision_digest.clone(),
+        outcome: HostedHouseRunnerReservationOutcomeV1::Succeeded,
+        runner_unit_id: Some("house-runner-01".to_owned()),
+        failure_code: None,
+        binding_digest: "blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            .to_owned(),
+        authentication_tag: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            .to_owned(),
     }
 }
 
@@ -341,6 +402,59 @@ async fn accepted_service_calls_are_typed_and_globally_rate_bounded() {
 }
 
 #[tokio::test]
+async fn house_reservation_routes_are_service_only_typed_and_allowlisted() {
+    let backend = Backend::default();
+    let app = hosted_gateway_router(config(8), backend.clone());
+    for path in [
+        "/v1/hosted/house-runners/reserve",
+        "/v1/hosted/house-runners/read",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(service_request(path, TOKEN, &house_request(LISTING)))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), 200, "{path}");
+        let receipt: HostedHouseRunnerReservationReceiptV1 = serde_json::from_slice(
+            &response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes(),
+        )
+        .expect("typed receipt");
+        assert_eq!(receipt.seat_id, "navigator");
+    }
+    assert_eq!(
+        backend
+            .house_reservations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
+    );
+    assert_eq!(
+        backend
+            .house_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
+    );
+
+    let unauthorized = app
+        .oneshot(service_request(
+            "/v1/hosted/house-runners/reserve",
+            "wrong-authority-value-long-enough",
+            &house_request(LISTING),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(unauthorized.status(), 401);
+}
+
+#[tokio::test]
 async fn browser_and_public_seams_reject_header_smuggling_without_internal_calls() {
     let backend = Backend::default();
     let app = hosted_gateway_router(config(8), backend.clone());
@@ -451,7 +565,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     let address = listener.local_addr().expect("fixture address");
     let (sender, receiver) = mpsc::channel();
     let server = thread::spawn(move || {
-        for index in 0..3 {
+        for index in 0..5 {
             let (stream, _) = listener.accept().expect("fixture connection");
             let (request_line, authorization, body, mut stream) = read_request(stream);
             sender
@@ -463,6 +577,9 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
                     "ready": true
                 }))
                 .expect("readiness response")
+            } else if index >= 3 {
+                serde_json::to_vec(&house_receipt(&house_request(LISTING)))
+                    .expect("House receipt response")
             } else {
                 serde_json::to_vec(&status(
                     LISTING,
@@ -489,10 +606,16 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     assert!(backend.ready());
     assert!(backend.launch(&launch_request(LISTING)).is_ok());
     assert!(backend.evidence(&evidence_request(LISTING)).is_ok());
+    assert!(
+        backend
+            .reserve_house_runner(&house_request(LISTING))
+            .is_ok()
+    );
+    assert!(backend.read_house_runner(&house_request(LISTING)).is_ok());
     server.join().expect("fixture server");
 
     let observations = receiver.try_iter().collect::<Vec<_>>();
-    assert_eq!(observations.len(), 3);
+    assert_eq!(observations.len(), 5);
     assert_eq!(
         observations[0].0,
         "GET /api/v1/hosted-launches/ready HTTP/1.1"
@@ -505,6 +628,14 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
         observations[2].0,
         "POST /api/v1/hosted-launches:read HTTP/1.1"
     );
+    assert_eq!(
+        observations[3].0,
+        "POST /api/v1/hosted-house-runners:reserve HTTP/1.1"
+    );
+    assert_eq!(
+        observations[4].0,
+        "POST /api/v1/hosted-house-runners:read HTTP/1.1"
+    );
     assert!(
         observations
             .iter()
@@ -513,6 +644,8 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     assert!(observations[0].2.is_empty());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[1].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[2].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[3].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[4].2).is_ok());
 }
 
 fn read_request(stream: TcpStream) -> (String, String, Vec<u8>, TcpStream) {

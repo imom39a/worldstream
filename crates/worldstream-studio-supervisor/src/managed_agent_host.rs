@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{RwLock, RwLockWriteGuard};
 use thiserror::Error;
+use worldstream_hosted_contract::HouseAgentRevision;
 use worldstream_protocol::UlidString;
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
@@ -220,6 +221,14 @@ pub struct ManagedAgentHostLaunchPlanV1 {
     provider: String,
     provider_address: SocketAddr,
     model: String,
+    house: Option<HouseAgentHostLaunchV1>,
+}
+
+struct HouseAgentHostLaunchV1 {
+    working_directory: PathBuf,
+    runner_unit_id: String,
+    revision_digest: String,
+    revision_bytes: Vec<u8>,
 }
 
 impl ManagedAgentHostLaunchPlanV1 {
@@ -237,6 +246,9 @@ impl ManagedAgentHostLaunchPlanV1 {
         provider_address: SocketAddr,
         model: &str,
     ) -> Result<Self, ManagedAgentHostErrorV1> {
+        if provider != ManagedReferenceProviderV1::OpenAiCompatible {
+            return Err(ManagedAgentHostErrorV1::InvalidInput);
+        }
         Self::new(
             helper_executable,
             state_dir,
@@ -272,7 +284,7 @@ impl ManagedAgentHostLaunchPlanV1 {
             || !is_secret_reference(launch_reference)
             || !bounded(provider)
             || !provider_address.ip().is_loopback()
-            || !bounded(model)
+            || !bounded_model(model)
         {
             return Err(ManagedAgentHostErrorV1::InvalidInput);
         }
@@ -284,6 +296,51 @@ impl ManagedAgentHostLaunchPlanV1 {
             provider: provider.to_owned(),
             provider_address,
             model: model.to_owned(),
+            house: None,
+        })
+    }
+
+    /// Constructs the fixed, authority-free `OpenRouter` House host topology.
+    ///
+    /// The model host receives no Controller path or assignment launch
+    /// reference. Its private working directory is selected by the Supervisor,
+    /// and the exact House revision is delivered through private stdin.
+    pub(crate) fn new_house(
+        helper_executable: &Path,
+        state_dir: &Path,
+        launch_reference: &str,
+        host_executable: &Path,
+        working_directory: &Path,
+        runner_unit_id: &str,
+        revision: &HouseAgentRevision,
+    ) -> Result<Self, ManagedAgentHostErrorV1> {
+        let helper_name = helper_executable
+            .file_stem()
+            .and_then(|value| value.to_str());
+        if helper_name != Some("worldstream-assignment-mcp")
+            || !helper_executable.is_absolute()
+            || !state_dir.is_absolute()
+            || !host_executable.is_absolute()
+            || !working_directory.is_absolute()
+            || !is_secret_reference(launch_reference)
+            || !bounded_runner_unit(runner_unit_id)
+        {
+            return Err(ManagedAgentHostErrorV1::InvalidInput);
+        }
+        Ok(Self {
+            helper_executable: helper_executable.to_owned(),
+            helper_state_dir: state_dir.to_owned(),
+            launch_reference: launch_reference.to_owned(),
+            host_executable: host_executable.to_owned(),
+            provider: "openrouter-house".to_owned(),
+            provider_address: SocketAddr::from(([127, 0, 0, 1], 1)),
+            model: revision.model_slug().to_owned(),
+            house: Some(HouseAgentHostLaunchV1 {
+                working_directory: working_directory.to_owned(),
+                runner_unit_id: runner_unit_id.to_owned(),
+                revision_digest: revision.digest().to_owned(),
+                revision_bytes: revision.canonical_bytes().to_vec(),
+            }),
         })
     }
 
@@ -306,6 +363,14 @@ impl ManagedAgentHostLaunchPlanV1 {
     }
     #[must_use]
     pub fn host_arguments(&self) -> Vec<String> {
+        if self.house.is_some() {
+            return vec![
+                "--transport".to_owned(),
+                "stdio".to_owned(),
+                "--provider".to_owned(),
+                "openrouter-house".to_owned(),
+            ];
+        }
         vec![
             "--transport".to_owned(),
             "stdio".to_owned(),
@@ -320,6 +385,50 @@ impl ManagedAgentHostLaunchPlanV1 {
     #[must_use]
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    fn host_working_directory(&self) -> Option<&Path> {
+        self.house
+            .as_ref()
+            .map(|house| house.working_directory.as_path())
+    }
+
+    fn startup_frame(
+        &self,
+        model_credential: &Zeroizing<Vec<u8>>,
+    ) -> Result<Zeroizing<Vec<u8>>, ManagedAgentHostErrorV1> {
+        if let Some(house) = &self.house {
+            if !(32..=512).contains(&model_credential.len())
+                || house.revision_bytes.is_empty()
+                || house.revision_bytes.len() > 262_144
+            {
+                return Err(ManagedAgentHostErrorV1::InvalidInput);
+            }
+            let header = format!(
+                "WSMHOUSE1 {} {} {}\n",
+                house.runner_unit_id,
+                house.revision_bytes.len(),
+                model_credential.len()
+            );
+            let mut frame = Zeroizing::new(Vec::with_capacity(
+                header.len() + house.revision_bytes.len() + model_credential.len(),
+            ));
+            frame.extend_from_slice(header.as_bytes());
+            frame.extend_from_slice(&house.revision_bytes);
+            frame.extend_from_slice(model_credential);
+            return Ok(frame);
+        }
+        if model_credential.is_empty() || model_credential.len() > 16 * 1024 {
+            return Err(ManagedAgentHostErrorV1::InvalidInput);
+        }
+        let mut frame = Zeroizing::new(Vec::with_capacity(10 + model_credential.len() * 2));
+        frame.extend_from_slice(b"WSMCRED1 ");
+        for byte in model_credential.iter() {
+            frame.push(b"0123456789abcdef"[usize::from(byte >> 4)]);
+            frame.push(b"0123456789abcdef"[usize::from(byte & 0x0f)]);
+        }
+        frame.push(b'\n');
+        Ok(frame)
     }
 }
 
@@ -343,6 +452,31 @@ impl ManagedAgentHostPreparedLaunchV1 {
             plan,
             credential,
         }
+    }
+
+    pub(crate) fn new_house(
+        assignment_id: &str,
+        host_contract_revision: &str,
+        credential_reference: &str,
+        plan: ManagedAgentHostLaunchPlanV1,
+        credential: Zeroizing<Vec<u8>>,
+    ) -> Result<Self, ManagedAgentHostErrorV1> {
+        let profile = ManagedAgentHostProfileV1::new(
+            assignment_id,
+            "openrouter-house",
+            host_contract_revision,
+            "openrouter_house",
+            SocketAddr::from(([127, 0, 0, 1], 1)),
+            plan.model(),
+            credential_reference,
+            4,
+            Duration::from_secs(30),
+        )?;
+        Ok(Self {
+            profile,
+            plan,
+            credential,
+        })
     }
 }
 
@@ -490,6 +624,9 @@ where
             &host_contract_revision,
             match provider {
                 ManagedReferenceProviderV1::OpenAiCompatible => "openai_compatible",
+                ManagedReferenceProviderV1::Openrouter => {
+                    return Err(ManagedAgentHostErrorV1::Corrupt);
+                }
             },
             provider_address,
             &model_id,
@@ -519,6 +656,7 @@ const fn managed_reference_provider_cli_argument(
 ) -> &'static str {
     match provider {
         ManagedReferenceProviderV1::OpenAiCompatible => "openai-compatible",
+        ManagedReferenceProviderV1::Openrouter => "unsupported-openrouter",
     }
 }
 
@@ -614,17 +752,31 @@ impl ManagedAgentHostOperationsV1 {
         &self,
         assignment_id: &str,
     ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
-        let _admission = {
-            let admission = self
-                .starts_paused
-                .try_read()
-                .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
-            if *admission {
-                return Err(ManagedAgentHostErrorV1::Unavailable);
-            }
-            admission
-        };
+        let _admission = self.admit_start()?;
         self.start_permitted(assignment_id)
+    }
+
+    /// Starts or resumes one exact House process pair prepared by the hosted
+    /// lifecycle coordinator. The retained binding is checked before an
+    /// existing live child can be treated as the requested unit.
+    pub(crate) fn start_house(
+        &self,
+        assignment_id: &str,
+        prepared: &ManagedAgentHostPreparedLaunchV1,
+    ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
+        let _admission = self.admit_start()?;
+        self.start_prepared(assignment_id, prepared)
+    }
+
+    fn admit_start(&self) -> Result<std::sync::RwLockReadGuard<'_, bool>, ManagedAgentHostErrorV1> {
+        let admission = self
+            .starts_paused
+            .try_read()
+            .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
+        if *admission {
+            return Err(ManagedAgentHostErrorV1::Unavailable);
+        }
+        Ok(admission)
     }
 
     // The lifecycle coordinator holds the exclusive start gate while restoring.
@@ -633,24 +785,41 @@ impl ManagedAgentHostOperationsV1 {
         &self,
         assignment_id: &str,
     ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
+        let prepared = self.source.prepare(assignment_id)?;
+        self.start_prepared(assignment_id, &prepared)
+    }
+
+    fn start_prepared(
+        &self,
+        assignment_id: &str,
+        prepared: &ManagedAgentHostPreparedLaunchV1,
+    ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
         if assignment_id.parse::<UlidString>().is_err() {
             return Err(ManagedAgentHostErrorV1::InvalidInput);
         }
+        if prepared.profile.assignment_id != assignment_id {
+            return Err(ManagedAgentHostErrorV1::ImmutableProfileConflict);
+        }
         let _guard = self.mutation.lock().unwrap_or_else(PoisonError::into_inner);
+        self.profiles.publish_profile(&prepared.profile)?;
+        let binding_hash = launch_binding_hash(prepared)?;
         if self
             .processes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains_key(assignment_id)
         {
+            let operation = self
+                .load_operation(assignment_id)?
+                .ok_or(ManagedAgentHostErrorV1::Corrupt)?;
+            if operation.binding_hash != binding_hash {
+                return Err(ManagedAgentHostErrorV1::ImmutableProfileConflict);
+            }
             return self.status_locked(assignment_id);
         }
-        let prepared = self.source.prepare(assignment_id)?;
-        self.profiles.publish_profile(&prepared.profile)?;
         if self.active_for_host(&prepared.profile.host_id)? >= prepared.profile.capacity {
             return Err(ManagedAgentHostErrorV1::AtCapacity);
         }
-        let binding_hash = launch_binding_hash(&prepared)?;
         let mut operation =
             self.load_operation(assignment_id)?
                 .unwrap_or_else(|| ManagedAgentHostOperationV1 {
@@ -677,12 +846,20 @@ impl ManagedAgentHostOperationsV1 {
             .launch_bridged(&prepared.plan, &prepared.credential)
         {
             Ok(process) => {
+                let observed_at_ms = if prepared.plan.house.is_some() {
+                    // A House unit is ready only after the model host has
+                    // parsed its startup frame, opened the allowance ledger,
+                    // and completed the MCP initialization exchange.
+                    process.last_activity_at_ms()
+                } else {
+                    Some(now_ms()?)
+                };
                 self.processes
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .insert(assignment_id.to_owned(), process);
                 operation.state = ManagedAgentHostStateV1::Running;
-                operation.observed_at_ms = Some(now_ms()?);
+                operation.observed_at_ms = observed_at_ms;
                 self.persist_operation(&operation)?;
                 let active = self.active_for_host(&prepared.profile.host_id)?;
                 let mut status = operation.status(&prepared.profile, active);
@@ -996,6 +1173,13 @@ impl ManagedAgentHostOperationV1 {
 fn launch_binding_hash(
     prepared: &ManagedAgentHostPreparedLaunchV1,
 ) -> Result<String, ManagedAgentHostErrorV1> {
+    let house = prepared.plan.house.as_ref().map(|house| {
+        serde_json::json!({
+            "runner_unit_id": house.runner_unit_id,
+            "revision_digest": house.revision_digest,
+            "working_directory": house.working_directory,
+        })
+    });
     canonical_hash(&serde_json::json!({
         "assignment_id": prepared.profile.assignment_id,
         "host_id": prepared.profile.host_id,
@@ -1006,6 +1190,7 @@ fn launch_binding_hash(
         "capacity": prepared.profile.capacity,
         "helper": prepared.plan.helper_program(),
         "host": prepared.plan.host_program(),
+        "house": house,
         "launch_reference_hash": blake3::hash(prepared.plan.launch_reference.as_bytes()).to_hex().to_string(),
     }))
 }
@@ -1168,8 +1353,10 @@ impl ManagedAgentHostProcessLauncherV1 for OsManagedAgentHostProcessLauncherV1 {
         plan: &ManagedAgentHostLaunchPlanV1,
         model_credential: &Zeroizing<Vec<u8>>,
     ) -> Result<Box<dyn ManagedAgentHostProcessV1>, ManagedAgentHostErrorV1> {
-        if model_credential.is_empty() || model_credential.len() > 16 * 1024 {
-            return Err(ManagedAgentHostErrorV1::InvalidInput);
+        let startup_frame = plan.startup_frame(model_credential)?;
+        if let Some(working_directory) = plan.host_working_directory() {
+            worldstream_runtime::validate_data_directory(working_directory)
+                .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
         }
         let mut helper = Command::new(plan.helper_program())
             .args(plan.helper_arguments())
@@ -1179,14 +1366,17 @@ impl ManagedAgentHostProcessLauncherV1 for OsManagedAgentHostProcessLauncherV1 {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
-        let Ok(mut host) = Command::new(plan.host_program())
+        let mut host_command = Command::new(plan.host_program());
+        host_command
             .args(plan.host_arguments())
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
+            .stderr(Stdio::null());
+        if let Some(working_directory) = plan.host_working_directory() {
+            host_command.current_dir(working_directory);
+        }
+        let Ok(mut host) = host_command.spawn() else {
             kill_and_wait(&mut helper);
             return Err(ManagedAgentHostErrorV1::Unavailable);
         };
@@ -1203,18 +1393,8 @@ impl ManagedAgentHostProcessLauncherV1 for OsManagedAgentHostProcessLauncherV1 {
             kill_and_wait(&mut host);
             return Err(ManagedAgentHostErrorV1::Unavailable);
         };
-        let mut credential_frame = Zeroizing::new(String::from("WSMCRED1 "));
-        for byte in model_credential.iter() {
-            use fmt::Write as _;
-            if write!(credential_frame, "{byte:02x}").is_err() {
-                kill_and_wait(&mut helper);
-                kill_and_wait(&mut host);
-                return Err(ManagedAgentHostErrorV1::Unavailable);
-            }
-        }
-        credential_frame.push('\n');
         if host_in
-            .write_all(credential_frame.as_bytes())
+            .write_all(&startup_frame)
             .and_then(|()| host_in.flush())
             .is_err()
         {
@@ -1222,18 +1402,36 @@ impl ManagedAgentHostProcessLauncherV1 for OsManagedAgentHostProcessLauncherV1 {
             kill_and_wait(&mut host);
             return Err(ManagedAgentHostErrorV1::Unavailable);
         }
+        let house_startup = plan.house.is_some();
         let helper_to_host = std::thread::spawn(move || {
             let _ = std::io::copy(&mut helper_out, &mut host_in);
         });
-        let activity_at_ms = Arc::new(AtomicU64::new(now_ms().unwrap_or(0)));
+        let activity_at_ms = Arc::new(AtomicU64::new(if house_startup {
+            0
+        } else {
+            now_ms().unwrap_or(0)
+        }));
         let activity_for_bridge = Arc::clone(&activity_at_ms);
         let host_to_helper = std::thread::spawn(move || {
             let mut buffer = [0_u8; 8192];
+            let mut protocol_lines = 0_usize;
             while let Ok(read) = host_out.read(&mut buffer) {
                 if read == 0 || helper_in.write_all(&buffer[..read]).is_err() {
                     break;
                 }
-                if buffer[..read].contains(&b'\n') {
+                for byte in &buffer[..read] {
+                    if *byte == b'\n' {
+                        protocol_lines = protocol_lines.saturating_add(1);
+                    }
+                    if protocol_lines >= 2 {
+                        break;
+                    }
+                }
+                // For House hosts, line one is `initialize` and line two is the
+                // initialized notification. The second line proves the helper
+                // response was accepted; a mere child spawn cannot open Lobby.
+                if (!house_startup && protocol_lines >= 1) || (house_startup && protocol_lines >= 2)
+                {
                     activity_for_bridge.store(now_ms().unwrap_or(0), Ordering::Release);
                 }
             }
@@ -1392,7 +1590,7 @@ fn validate_profile(value: &ManagedAgentHostProfileV1) -> Result<(), ManagedAgen
         || !bounded(&value.host_revision)
         || !bounded(&value.provider)
         || !value.provider_address.ip().is_loopback()
-        || !bounded(&value.model)
+        || !bounded_model(&value.model)
         || !is_secret_reference(&value.credential_reference)
         || value.capacity == 0
         || value.capacity > 64
@@ -1421,6 +1619,22 @@ fn bounded(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+fn bounded_runner_unit(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+fn bounded_model(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TEXT_BYTES
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        })
 }
 fn is_secret_reference(value: &str) -> bool {
     value.len() == 64
@@ -1521,9 +1735,82 @@ fn sync_directory(_path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{
+        path::Path,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
+    };
 
-    use super::{ManagedAgentHostLaunchPlanV1, ManagedReferenceProviderV1};
+    use tempfile::tempdir;
+    use worldstream_core::CanonicalJsonV1;
+    use worldstream_hosted_contract::HouseAgentRevision;
+    use zeroize::Zeroizing;
+
+    use super::{
+        ManagedAgentHostErrorV1, ManagedAgentHostLaunchPlanV1, ManagedAgentHostOperationsV1,
+        ManagedAgentHostPreparedLaunchV1, ManagedAgentHostProcessLauncherV1,
+        ManagedAgentHostProcessV1, ManagedAgentHostStartSourceV1, ManagedReferenceProviderV1,
+        now_ms,
+    };
+
+    const HOUSE_REVISION: &[u8] =
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json");
+    const ASSIGNMENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const SECRET_REFERENCE: &str =
+        "abababababababababababababababababababababababababababababababab";
+
+    #[derive(Clone, Copy)]
+    struct UnusedStartSource;
+
+    impl ManagedAgentHostStartSourceV1 for UnusedStartSource {
+        fn prepare(
+            &self,
+            _assignment_id: &str,
+        ) -> Result<ManagedAgentHostPreparedLaunchV1, ManagedAgentHostErrorV1> {
+            Err(ManagedAgentHostErrorV1::Unavailable)
+        }
+    }
+
+    #[derive(Clone)]
+    struct HandshakeProcessLauncher {
+        activity_at_ms: Arc<AtomicU64>,
+        launches: Arc<AtomicUsize>,
+    }
+
+    impl ManagedAgentHostProcessLauncherV1 for HandshakeProcessLauncher {
+        fn launch_bridged(
+            &self,
+            _plan: &ManagedAgentHostLaunchPlanV1,
+            credential: &Zeroizing<Vec<u8>>,
+        ) -> Result<Box<dyn ManagedAgentHostProcessV1>, ManagedAgentHostErrorV1> {
+            assert_eq!(credential.as_slice(), &[0xab; 32]);
+            self.launches.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(HandshakeProcess {
+                activity_at_ms: Arc::clone(&self.activity_at_ms),
+            }))
+        }
+    }
+
+    struct HandshakeProcess {
+        activity_at_ms: Arc<AtomicU64>,
+    }
+
+    impl ManagedAgentHostProcessV1 for HandshakeProcess {
+        fn try_wait(&mut self) -> Result<Option<i32>, ManagedAgentHostErrorV1> {
+            Ok(None)
+        }
+
+        fn last_activity_at_ms(&self) -> Option<u64> {
+            let value = self.activity_at_ms.load(Ordering::Acquire);
+            (value != 0).then_some(value)
+        }
+
+        fn stop(&mut self) -> Result<(), ManagedAgentHostErrorV1> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn typed_managed_reference_plan_uses_the_host_cli_value() {
@@ -1540,5 +1827,100 @@ mod tests {
         )
         .unwrap_or_else(|error| unreachable!("managed reference plan: {error:?}"));
         assert_eq!(plan.host_arguments()[3], "openai-compatible");
+    }
+
+    #[test]
+    fn house_plan_seals_exact_revision_and_credential_in_private_stdin() {
+        let bytes = CanonicalJsonV1::parse(HOUSE_REVISION)
+            .and_then(|value| value.to_bytes())
+            .unwrap_or_else(|error| unreachable!("House revision fixture: {error}"));
+        let revision = HouseAgentRevision::from_canonical_bytes(&bytes)
+            .unwrap_or_else(|error| unreachable!("House revision fixture: {error}"));
+        let plan = ManagedAgentHostLaunchPlanV1::new_house(
+            Path::new("/approved/worldstream-assignment-mcp"),
+            Path::new("/owner/worldstream-state"),
+            "abababababababababababababababababababababababababababababababab",
+            Path::new("/approved/worldstream-managed-agent-host"),
+            Path::new("/owner/house-unit"),
+            "house-unit-01",
+            &revision,
+        )
+        .unwrap_or_else(|error| unreachable!("House plan: {error:?}"));
+        let credential = Zeroizing::new(vec![0xab; 32]);
+        let frame = plan
+            .startup_frame(&credential)
+            .unwrap_or_else(|error| unreachable!("House startup frame: {error:?}"));
+        let header = format!("WSMHOUSE1 house-unit-01 {} 32\n", bytes.len());
+        assert!(frame.starts_with(header.as_bytes()));
+        assert_eq!(
+            &frame[header.len()..header.len() + bytes.len()],
+            bytes.as_slice()
+        );
+        assert_eq!(&frame[header.len() + bytes.len()..], credential.as_slice());
+        assert_eq!(
+            plan.host_arguments(),
+            ["--transport", "stdio", "--provider", "openrouter-house"]
+        );
+        assert!(!frame.windows(7).any(|window| window == b"room_id"));
+        assert!(!frame.windows(9).any(|window| window == b"member_id"));
+    }
+
+    #[test]
+    fn house_start_waits_for_handshake_and_retry_does_not_launch_again() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|error| unreachable!("canonical root: {error}"));
+        let bytes = CanonicalJsonV1::parse(HOUSE_REVISION)
+            .and_then(|value| value.to_bytes())
+            .unwrap_or_else(|error| unreachable!("House revision fixture: {error}"));
+        let revision = HouseAgentRevision::from_canonical_bytes(&bytes)
+            .unwrap_or_else(|error| unreachable!("House revision fixture: {error}"));
+        let plan = ManagedAgentHostLaunchPlanV1::new_house(
+            Path::new("/approved/worldstream-assignment-mcp"),
+            Path::new("/owner/worldstream-state"),
+            SECRET_REFERENCE,
+            Path::new("/approved/worldstream-managed-agent-host"),
+            &root,
+            "house-unit-01",
+            &revision,
+        )
+        .unwrap_or_else(|error| unreachable!("House plan: {error:?}"));
+        let prepared = ManagedAgentHostPreparedLaunchV1::new_house(
+            ASSIGNMENT,
+            revision.digest(),
+            SECRET_REFERENCE,
+            plan,
+            Zeroizing::new(vec![0xab; 32]),
+        )
+        .unwrap_or_else(|error| unreachable!("prepared House launch: {error:?}"));
+        let activity_at_ms = Arc::new(AtomicU64::new(0));
+        let launches = Arc::new(AtomicUsize::new(0));
+        let operations = ManagedAgentHostOperationsV1::open_with(
+            &root.join("operations"),
+            UnusedStartSource,
+            HandshakeProcessLauncher {
+                activity_at_ms: Arc::clone(&activity_at_ms),
+                launches: Arc::clone(&launches),
+            },
+        )
+        .unwrap_or_else(|error| unreachable!("House operations: {error:?}"));
+
+        let spawned = operations
+            .start_house(ASSIGNMENT, &prepared)
+            .unwrap_or_else(|error| unreachable!("spawn House host: {error:?}"));
+        assert!(!spawned.ready);
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
+
+        activity_at_ms.store(
+            now_ms().unwrap_or_else(|error| unreachable!("current time: {error:?}")),
+            Ordering::Release,
+        );
+        let handshaken = operations
+            .start_house(ASSIGNMENT, &prepared)
+            .unwrap_or_else(|error| unreachable!("observe House handshake: {error:?}"));
+        assert!(handshaken.ready);
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
     }
 }

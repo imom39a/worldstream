@@ -7,11 +7,21 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 use serde_json::{Value, json};
+use worldstream_hosted_contract::HouseAgentRevision;
+use worldstream_studio_supervisor::house_model::{
+    FileHouseAllowanceLedgerV1, HouseAllowancePeriodV1, HouseInvocationIdentityV1,
+    HouseModelExecutorV1, HouseProviderCredentialV1, HouseSpendLimitsV1, OpenRouterProviderPortV1,
+};
 use zeroize::Zeroizing;
 
 const MAX_MCP_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
+const MAX_HOUSE_REVISION_BYTES: usize = 256 * 1024;
+// Every House host starts in `<house-root>/units/<stable-unit>`. This fixed
+// sibling path preserves a private per-unit working directory while all units
+// share the one process-locked deployment spend ledger.
+const HOUSE_ALLOWANCE_LEDGER_DIRECTORY: &str = "../allowance";
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
 const NO_WORK_BACKOFF: Duration = Duration::from_millis(250);
 
@@ -20,41 +30,83 @@ const NO_WORK_BACKOFF: Duration = Duration::from_millis(250);
 struct Args {
     #[arg(long, value_parser = ["stdio"])]
     transport: String,
-    #[arg(long, value_parser = ["openai-compatible"])]
+    #[arg(long, value_parser = ["openai-compatible", "openrouter-house"])]
     provider: String,
     #[arg(long)]
-    provider_address: SocketAddr,
+    provider_address: Option<SocketAddr>,
     #[arg(long)]
-    model: String,
+    model: Option<String>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if !args.provider_address.ip().is_loopback()
-        || args.model.is_empty()
-        || args.model.len() > 256
-        || !args.model.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
-        })
-    {
-        bail!("managed Agent Host configuration is invalid");
-    }
-
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = BufReader::new(stdin.lock());
-    let credential = read_credential(&mut input).context("model credential delivery failed")?;
     let mut output = stdout.lock();
-    let mut client = McpClient::initialize(&mut input, &mut output)
-        .context("assignment MCP initialization failed")?;
-    loop {
-        match run_one_turn(&mut client, &args, &credential)
-            .context("managed Activity turn failed")?
-        {
-            TurnOutcomeV1::Completed => {}
-            TurnOutcomeV1::NoWork => std::thread::sleep(NO_WORK_BACKOFF),
+    match args.provider.as_str() {
+        "openai-compatible" => {
+            let provider_address = args
+                .provider_address
+                .filter(|address| address.ip().is_loopback())
+                .context("managed Agent Host configuration is invalid")?;
+            let model = args
+                .model
+                .filter(|model| valid_model(model))
+                .context("managed Agent Host configuration is invalid")?;
+            let credential =
+                read_credential(&mut input).context("model credential delivery failed")?;
+            let mut client = McpClient::initialize(&mut input, &mut output)
+                .context("assignment MCP initialization failed")?;
+            loop {
+                match run_one_reference_turn(&mut client, provider_address, &model, &credential)
+                    .context("managed Activity turn failed")?
+                {
+                    TurnOutcomeV1::Completed => {}
+                    TurnOutcomeV1::NoWork => std::thread::sleep(NO_WORK_BACKOFF),
+                }
+            }
         }
+        "openrouter-house" => {
+            if args.provider_address.is_some() || args.model.is_some() {
+                bail!("managed Agent Host configuration is invalid");
+            }
+            let startup =
+                read_house_startup(&mut input).context("House configuration delivery failed")?;
+            let ledger = FileHouseAllowanceLedgerV1::open_for_assignment(
+                HOUSE_ALLOWANCE_LEDGER_DIRECTORY,
+                HouseSpendLimitsV1::hobby_preview(),
+                &startup.runner_unit_id,
+            )
+            .context("House allowance ledger is unavailable")?;
+            let executor = HouseModelExecutorV1::new(OpenRouterProviderPortV1::new(), ledger);
+            let mut client = McpClient::initialize(&mut input, &mut output)
+                .context("assignment MCP initialization failed")?;
+            loop {
+                match run_one_house_turn(
+                    &mut client,
+                    &startup.runner_unit_id,
+                    &startup.revision,
+                    &startup.credential,
+                    &executor,
+                )
+                .context("managed House turn failed")?
+                {
+                    TurnOutcomeV1::Completed => {}
+                    TurnOutcomeV1::NoWork => std::thread::sleep(NO_WORK_BACKOFF),
+                }
+            }
+        }
+        _ => bail!("managed Agent Host configuration is invalid"),
     }
+}
+
+fn valid_model(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 256
+        && model.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,9 +143,65 @@ fn read_credential(input: &mut impl BufRead) -> Result<Zeroizing<Vec<u8>>> {
     Ok(credential)
 }
 
-fn run_one_turn(
+struct HouseStartupV1 {
+    runner_unit_id: String,
+    revision: HouseAgentRevision,
+    credential: HouseProviderCredentialV1,
+}
+
+fn read_house_startup(input: &mut impl BufRead) -> Result<HouseStartupV1> {
+    let line = read_bounded_line(input, 512)?;
+    let header = std::str::from_utf8(&line)?
+        .strip_suffix('\n')
+        .context("House startup frame is invalid")?;
+    let mut fields = header.split_ascii_whitespace();
+    if fields.next() != Some("WSMHOUSE1") {
+        bail!("House startup frame is invalid");
+    }
+    let runner_unit_id = fields
+        .next()
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value.as_bytes()[0].is_ascii_alphanumeric()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+        .context("House startup frame is invalid")?
+        .to_owned();
+    let revision_length = fields
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=MAX_HOUSE_REVISION_BYTES).contains(value))
+        .context("House startup frame is invalid")?;
+    let credential_length = fields
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (32..=512).contains(value))
+        .context("House startup frame is invalid")?;
+    if fields.next().is_some() {
+        bail!("House startup frame is invalid");
+    }
+    let mut revision_bytes = Zeroizing::new(vec![0_u8; revision_length]);
+    input.read_exact(&mut revision_bytes)?;
+    let revision = HouseAgentRevision::from_canonical_bytes(&revision_bytes)
+        .context("House startup revision is invalid")?;
+    let mut credential = Zeroizing::new(vec![0_u8; credential_length]);
+    input.read_exact(&mut credential)?;
+    let credential = HouseProviderCredentialV1::new(credential)
+        .context("House provider credential is invalid")?;
+    Ok(HouseStartupV1 {
+        runner_unit_id,
+        revision,
+        credential,
+    })
+}
+
+fn run_one_reference_turn(
     client: &mut McpClient<'_, impl BufRead, impl Write>,
-    args: &Args,
+    provider_address: SocketAddr,
+    model: &str,
     credential: &[u8],
 ) -> Result<TurnOutcomeV1> {
     let prepared = match client.prepare_managed_turn()? {
@@ -114,7 +222,7 @@ fn run_one_turn(
         .get("observation")
         .context("managed turn is invalid")?;
     let offers = prepared.get("offers").context("managed turn is invalid")?;
-    let choice = request_model(args, credential, observation, offers)?;
+    let choice = request_model(provider_address, model, credential, observation, offers)?;
     let offer_id = required_string(&choice, &["offer_id"])?;
     let payload = choice.get("payload").context("model choice is invalid")?;
     if !offers
@@ -131,6 +239,80 @@ fn run_one_turn(
     let action_result = match client.submit_managed_turn_action(&json!({
         "offer_id": offer_id,
         "payload": payload,
+    }))? {
+        ManagedTurnActionSubmissionV1::Completed(result) => result,
+        ManagedTurnActionSubmissionV1::RetryAfterTerminalLease => {
+            return recover_terminal_submission(client);
+        }
+    };
+    if action_result
+        .get("action")
+        .and_then(|action| action.get("status"))
+        .and_then(Value::as_str)
+        != Some("accepted")
+    {
+        bail!("assignment MCP Action was not accepted");
+    }
+    Ok(TurnOutcomeV1::Completed)
+}
+
+fn run_one_house_turn<P>(
+    client: &mut McpClient<'_, impl BufRead, impl Write>,
+    runner_unit_id: &str,
+    revision: &HouseAgentRevision,
+    credential: &HouseProviderCredentialV1,
+    executor: &HouseModelExecutorV1<P>,
+) -> Result<TurnOutcomeV1>
+where
+    P: worldstream_studio_supervisor::house_model::HouseProviderPortV1,
+{
+    let prepared = match client.prepare_managed_turn()? {
+        ManagedTurnPreparationV1::Prepared(prepared) => prepared,
+        ManagedTurnPreparationV1::NoWork => return Ok(TurnOutcomeV1::NoWork),
+        ManagedTurnPreparationV1::RetryAfterTerminalLease => match client.prepare_managed_turn()? {
+            ManagedTurnPreparationV1::Prepared(prepared) => prepared,
+            ManagedTurnPreparationV1::NoWork => return Ok(TurnOutcomeV1::NoWork),
+            ManagedTurnPreparationV1::RetryAfterTerminalLease => {
+                bail!("assignment MCP repeated a terminal Activation lease failure")
+            }
+        },
+    };
+    if prepared.get("state").and_then(Value::as_str) == Some("reconciled") {
+        return Ok(TurnOutcomeV1::Completed);
+    }
+    let provider_attempt = prepared
+        .get("provider_attempt")
+        .context("managed House turn is invalid")?;
+    if provider_attempt.get("schema").and_then(Value::as_str)
+        != Some("worldstream/house-provider-attempt/v1")
+    {
+        bail!("managed House turn is invalid");
+    }
+    let identity = HouseInvocationIdentityV1::from_sealed_attempt(
+        runner_unit_id,
+        required_string(provider_attempt, &["digest"])?,
+    )
+    .context("managed House turn is invalid")?;
+    let observation = prepared
+        .get("observation")
+        .context("managed House turn is invalid")?;
+    let offers = prepared
+        .get("offers")
+        .context("managed House turn is invalid")?;
+    let period = HouseAllowancePeriodV1::now().context("House allowance clock is unavailable")?;
+    let completion =
+        match executor.execute(credential, revision, &identity, observation, offers, period) {
+            Ok(completion) => completion,
+            Err(_closed_failure) => {
+                client
+                    .fail_managed_turn()
+                    .context("assignment MCP could not close the failed House turn")?;
+                return Ok(TurnOutcomeV1::Completed);
+            }
+        };
+    let action_result = match client.submit_managed_turn_action(&json!({
+        "offer_id": completion.action.offer_id,
+        "payload": completion.action.payload,
     }))? {
         ManagedTurnActionSubmissionV1::Completed(result) => result,
         ManagedTurnActionSubmissionV1::RetryAfterTerminalLease => {
@@ -173,13 +355,14 @@ fn recover_terminal_submission(
 }
 
 fn request_model(
-    args: &Args,
+    provider_address: SocketAddr,
+    model: &str,
     credential: &[u8],
     observation: &Value,
     offers: &Value,
 ) -> Result<Value> {
     let body = serde_json::to_vec(&json!({
-        "model": args.model,
+        "model": model,
         "response_format": {"type": "json_object"},
         "messages": [{
             "role": "user",
@@ -203,12 +386,12 @@ fn request_model(
     }
     let mut request = Zeroizing::new(format!(
         "POST /v1/chat/completions HTTP/1.1\r\nHost: {}\r\nAuthorization: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        args.provider_address,
+        provider_address,
         authorization.as_str(),
         body.len()
     ));
     request.push_str(std::str::from_utf8(&body)?);
-    let mut stream = TcpStream::connect_timeout(&args.provider_address, PROVIDER_TIMEOUT)
+    let mut stream = TcpStream::connect_timeout(&provider_address, PROVIDER_TIMEOUT)
         .context("model provider is unavailable")?;
     stream.set_read_timeout(Some(PROVIDER_TIMEOUT))?;
     stream.set_write_timeout(Some(PROVIDER_TIMEOUT))?;
@@ -339,6 +522,29 @@ impl<'a, R: BufRead, W: Write> McpClient<'a, R, W> {
             .context("assignment MCP response is invalid")?;
         if terminal_lease_retry(content) {
             return Ok(ManagedTurnActionSubmissionV1::RetryAfterTerminalLease);
+        }
+        bail!("assignment MCP tool returned a closed failure")
+    }
+
+    fn fail_managed_turn(&mut self) -> Result<Value> {
+        let result = self.request(
+            "tools/call",
+            &json!({
+                "name": "worldstream.fail_managed_turn",
+                "arguments": {},
+            }),
+        )?;
+        if result.get("isError").and_then(Value::as_bool) == Some(false) {
+            let content = result
+                .get("structuredContent")
+                .cloned()
+                .context("assignment MCP response is invalid")?;
+            if content.get("schema").and_then(Value::as_str)
+                == Some("worldstream/managed-turn-failure/v1")
+                && content.get("action_submitted").and_then(Value::as_bool) == Some(false)
+            {
+                return Ok(content);
+            }
         }
         bail!("assignment MCP tool returned a closed failure")
     }

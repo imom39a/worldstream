@@ -44,6 +44,7 @@ use worldstream_studio_supervisor::{
 use worldstream_studio_supervisor::{
     control_access::ControlAccess,
     control_admission::protect_operator_routes,
+    hosted_house_runners::HostedHouseRunnerOperationsV1,
     hosted_launch::{HostedLaunchAccessV1, HostedLaunchOperationsV1, hosted_launch_router},
     local_initialization::validate_initialized,
     managed_controller::{
@@ -513,7 +514,7 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         task_setup.clone(),
         activity_packs.clone(),
         agent_profiles.clone(),
-        runner_registry,
+        runner_registry.clone(),
     );
     let hosted_launch = match (
         env::var("WORLDSTREAM_HOSTED_INSTALLATION_ID").ok(),
@@ -522,6 +523,22 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         (None, None) => None,
         (Some(installation_id), Some(authority)) => {
             let (listings, house_agents) = reviewed_hosted_artifacts()?;
+            let house_runners = HostedHouseRunnerOperationsV1::open_production(
+                &args.state_dir.join("hosted-house-runners"),
+                &canonical_state_dir,
+                &assignment_mcp_executable,
+                &installation_id,
+                listings.clone(),
+                house_agents.clone(),
+                agent_profiles.clone(),
+                runner_registry.clone(),
+                runners.clone(),
+                assignment_mcp_launches.clone(),
+                vault.clone(),
+                task_setup.clone(),
+                managed_agent_hosts.clone(),
+            )
+            .map_err(|_| anyhow::anyhow!("hosted House Runner adapter is unavailable"))?;
             let operations = HostedLaunchOperationsV1::open(
                 &args.state_dir.join("hosted-launches"),
                 &installation_id,
@@ -530,7 +547,8 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 room_operations.clone(),
                 task_setup.clone(),
             )
-            .map_err(|_| anyhow::anyhow!("hosted launch adapter is unavailable"))?;
+            .map_err(|_| anyhow::anyhow!("hosted launch adapter is unavailable"))?
+            .with_house_runners(house_runners);
             let access = HostedLaunchAccessV1::new(&authority)
                 .map_err(|_| anyhow::anyhow!("hosted launch authority is invalid"))?;
             drop(authority);

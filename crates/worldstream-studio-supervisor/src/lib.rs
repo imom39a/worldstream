@@ -17,6 +17,7 @@ pub mod configuration_resolution;
 mod configuration_safety;
 pub mod control_access;
 pub mod control_admission;
+pub mod hosted_house_runners;
 pub mod hosted_launch;
 pub mod house_model;
 pub mod initialization_imports;

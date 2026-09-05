@@ -364,6 +364,25 @@ impl RunnerTemplateRegistryV1 {
         self.templates.values().cloned().collect()
     }
 
+    /// Resolves one exact installed approval and rechecks its executable bytes.
+    ///
+    /// This internal boundary is used before a hosted House capacity receipt is
+    /// issued. A stale path or changed executable is therefore a failed exact
+    /// dependency, never something discovered only after Room creation.
+    pub(crate) fn approved_manifest(
+        &self,
+        template_id: &str,
+        revision: &str,
+    ) -> Option<RunnerTemplateManifestV1> {
+        let manifest = self
+            .templates
+            .get(&(template_id.to_owned(), revision.to_owned()))?;
+        if executable_digest(&manifest.executable.path).ok()? != manifest.executable.blake3 {
+            return None;
+        }
+        Some(manifest.clone())
+    }
+
     /// Checks one exact Activity Pack revision against an installed revision.
     #[must_use]
     pub fn compatibility(

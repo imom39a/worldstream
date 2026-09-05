@@ -127,9 +127,7 @@ impl HouseAllowancePeriodV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HouseInvocationIdentityV1 {
     assignment_id: String,
-    activation_id: String,
-    lease_generation: u64,
-    context_digest: String,
+    attempt_digest: String,
 }
 
 impl HouseInvocationIdentityV1 {
@@ -153,9 +151,31 @@ impl HouseInvocationIdentityV1 {
         }
         Ok(Self {
             assignment_id: assignment_id.to_owned(),
-            activation_id: activation_id.to_owned(),
-            lease_generation,
-            context_digest: context_digest.to_owned(),
+            attempt_digest: house_provider_attempt_digest(
+                assignment_id,
+                activation_id,
+                lease_generation,
+                context_digest,
+            ),
+        })
+    }
+
+    /// Constructs the same ledger identity from the opaque digest emitted by
+    /// the authority-holding assignment helper. This keeps Activation,
+    /// Membership, and Room identifiers out of the model-host process.
+    ///
+    /// # Errors
+    /// Rejects an invalid unit scope or digest.
+    pub fn from_sealed_attempt(
+        assignment_scope: &str,
+        attempt_digest: &str,
+    ) -> Result<Self, HouseAllowanceErrorV1> {
+        if !bounded_identity(assignment_scope) || !valid_blake3_digest(attempt_digest) {
+            return Err(HouseAllowanceErrorV1::InvalidInput);
+        }
+        Ok(Self {
+            assignment_id: assignment_scope.to_owned(),
+            attempt_digest: attempt_digest.to_owned(),
         })
     }
 
@@ -166,14 +186,26 @@ impl HouseInvocationIdentityV1 {
 
     #[must_use]
     pub fn attempt_digest(&self) -> String {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"worldstream/house-provider-attempt/v1\0");
-        hash_field(&mut hasher, self.assignment_id.as_bytes());
-        hash_field(&mut hasher, self.activation_id.as_bytes());
-        hash_field(&mut hasher, &self.lease_generation.to_be_bytes());
-        hash_field(&mut hasher, self.context_digest.as_bytes());
-        format!("blake3:{}", hasher.finalize().to_hex())
+        self.attempt_digest.clone()
     }
+}
+
+/// Derives the opaque provider-attempt identity inside the authority-holding
+/// helper before any data crosses into the model host.
+#[must_use]
+pub(crate) fn house_provider_attempt_digest(
+    assignment_id: &str,
+    activation_id: &str,
+    lease_generation: u64,
+    context_digest: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/house-provider-attempt/v1\0");
+    hash_field(&mut hasher, assignment_id.as_bytes());
+    hash_field(&mut hasher, activation_id.as_bytes());
+    hash_field(&mut hasher, &lease_generation.to_be_bytes());
+    hash_field(&mut hasher, context_digest.as_bytes());
+    format!("blake3:{}", hasher.finalize().to_hex())
 }
 
 /// Closed durable-admission failures. They contain no prompt or provider text.
@@ -301,7 +333,34 @@ impl FileHouseAllowanceLedgerV1 {
         root: impl AsRef<Path>,
         limits: HouseSpendLimitsV1,
     ) -> Result<Self, HouseAllowanceErrorV1> {
-        Self::open_at(root, limits, HouseAllowancePeriodV1::now()?)
+        Self::open_at_scope(root, limits, HouseAllowancePeriodV1::now()?, None)
+    }
+
+    /// Opens the shared production ledger while recovering only one exact
+    /// House Runner unit's interrupted reservation.
+    ///
+    /// Other units can still have provider calls in flight when a new or
+    /// restarted unit opens the same aggregate ledger. Their reservations
+    /// therefore remain untouched.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe assignment scope, unsafe storage, corrupt retained
+    /// data, and invalid limits.
+    pub fn open_for_assignment(
+        root: impl AsRef<Path>,
+        limits: HouseSpendLimitsV1,
+        assignment_scope: &str,
+    ) -> Result<Self, HouseAllowanceErrorV1> {
+        if !bounded_identity(assignment_scope) {
+            return Err(HouseAllowanceErrorV1::InvalidInput);
+        }
+        Self::open_at_scope(
+            root,
+            limits,
+            HouseAllowancePeriodV1::now()?,
+            Some(assignment_scope),
+        )
     }
 
     /// Opens the ledger at an explicit UTC period for deterministic recovery.
@@ -313,6 +372,15 @@ impl FileHouseAllowanceLedgerV1 {
         root: impl AsRef<Path>,
         limits: HouseSpendLimitsV1,
         period: HouseAllowancePeriodV1,
+    ) -> Result<Self, HouseAllowanceErrorV1> {
+        Self::open_at_scope(root, limits, period, None)
+    }
+
+    fn open_at_scope(
+        root: impl AsRef<Path>,
+        limits: HouseSpendLimitsV1,
+        period: HouseAllowancePeriodV1,
+        assignment_scope: Option<&str>,
     ) -> Result<Self, HouseAllowanceErrorV1> {
         if !limits.valid() {
             return Err(HouseAllowanceErrorV1::InvalidInput);
@@ -342,11 +410,13 @@ impl FileHouseAllowanceLedgerV1 {
         ledger.remove_stale_temporaries()?;
         let mut record = ledger.load_or_empty(period)?;
         let mut changed = roll_period(&mut record, period)?;
-        for assignment in record.assignments.values_mut() {
-            for attempt in assignment.attempts.values_mut() {
-                if attempt.state == AttemptStateV1::Reserved {
-                    attempt.state = AttemptStateV1::Ambiguous;
-                    changed = true;
+        for (assignment_id, assignment) in &mut record.assignments {
+            if assignment_scope.is_none_or(|scope| scope == assignment_id) {
+                for attempt in assignment.attempts.values_mut() {
+                    if attempt.state == AttemptStateV1::Reserved {
+                        attempt.state = AttemptStateV1::Ambiguous;
+                        changed = true;
+                    }
                 }
             }
         }
@@ -2340,6 +2410,50 @@ mod tests {
                 .reserve(&exact_identity, &revision, 100, period()?)
                 .err(),
             Some(HouseAllowanceErrorV1::AttemptConsumed)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_restart_does_not_reconcile_another_units_inflight_call() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempdir()?;
+        let root = directory.path().join("ledger");
+        let first = identity("house-unit-first", "activation-first")?;
+        let second = identity("house-unit-second", "activation-second")?;
+        let revision = revision()?;
+        {
+            let ledger = FileHouseAllowanceLedgerV1::open_at(
+                &root,
+                HouseSpendLimitsV1::hobby_preview(),
+                period()?,
+            )?;
+            let _first_reservation = ledger.reserve(&first, &revision, 100, period()?)?;
+            let _second_reservation = ledger.reserve(&second, &revision, 100, period()?)?;
+        }
+
+        let recovered = FileHouseAllowanceLedgerV1::open_at_scope(
+            &root,
+            HouseSpendLimitsV1::hobby_preview(),
+            period()?,
+            Some("house-unit-first"),
+        )?;
+        assert_eq!(recovered.usage("house-unit-first")?.active_calls, 0);
+        assert_eq!(recovered.usage("house-unit-second")?.active_calls, 1);
+        assert_eq!(
+            recovered.reserve(&first, &revision, 100, period()?).err(),
+            Some(HouseAllowanceErrorV1::AttemptConsumed)
+        );
+        assert_eq!(
+            recovered
+                .reserve(
+                    &identity("house-unit-second", "activation-new")?,
+                    &revision,
+                    100,
+                    period()?
+                )
+                .err(),
+            Some(HouseAllowanceErrorV1::ConcurrentCall)
         );
         Ok(())
     }

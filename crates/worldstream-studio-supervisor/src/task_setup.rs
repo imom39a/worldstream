@@ -1932,6 +1932,9 @@ impl TaskSetupSupervisorV1 {
                         match profile.host_contract {
                             AgentHostContractV1::ManagedReference {
                                 runner_template, ..
+                            }
+                            | AgentHostContractV1::ManagedHouseOpenrouter {
+                                runner_template, ..
                             } => Some(runner_template),
                             AgentHostContractV1::GenericMcp => None,
                         }
@@ -2188,6 +2191,10 @@ impl TaskSetupSupervisorV1 {
                                 }
                                 AgentHostContractV1::ManagedReference {
                                     runner_template, ..
+                                }
+                                | AgentHostContractV1::ManagedHouseOpenrouter {
+                                    runner_template,
+                                    ..
                                 } => {
                                     if runner_template.template_id != managed.template_id
                                         || runner_template.revision != managed.template_revision

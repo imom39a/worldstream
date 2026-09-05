@@ -2674,6 +2674,12 @@ impl AssignmentMcpServerV1 {
         let activation_cursor = activation.activation_cursor;
         let lease_generation = activation.activation.lease_generation();
         let context_hash = activation.activation.context_hash().to_owned();
+        let provider_attempt_digest = crate::house_model::house_provider_attempt_digest(
+            self.context.authority.assignment_id(),
+            &operation_id,
+            lease_generation,
+            &context_hash,
+        );
         let has_pending_completion = self.require_pending_managed_activation(&operation_id)?;
         let reserved_action = {
             let tools = self
@@ -2767,8 +2773,45 @@ impl AssignmentMcpServerV1 {
         Ok(serde_json::json!({
             "schema": "worldstream/managed-turn-preparation/v1",
             "instruction": "Select exactly one listed offer and return its offer_id and payload.",
+            "provider_attempt": {
+                "schema": "worldstream/house-provider-attempt/v1",
+                "digest": provider_attempt_digest,
+            },
             "observation": observation,
             "offers": offers,
+        }))
+    }
+
+    /// Completes the prepared Activation as a typed Runner failure without
+    /// submitting or inventing an Activity Action.
+    ///
+    /// # Errors
+    /// Returns only closed assignment, lease, and completion failures.
+    pub fn fail_managed_turn(&mut self, arguments: Value) -> Result<Value, AssignmentMcpErrorV1> {
+        decode_empty(arguments)?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        let turn = self
+            .managed_turn
+            .as_ref()
+            .ok_or(AssignmentMcpErrorV1::ActionObservationRequired)?;
+        let operation_id = turn.operation_id.clone();
+        let activation_cursor = turn.activation_cursor;
+        let lease_generation = turn.lease_generation;
+        let context_hash = turn.context_hash.clone();
+        self.begin_managed_completion(&operation_id, ManagedAgentActivationDispositionV1::Failed)?;
+        let completion = self.complete_activation(serde_json::json!({
+            "activation_cursor": activation_cursor,
+            "lease_generation": lease_generation,
+            "context_hash": context_hash,
+            "disposition": "failed",
+        }))?;
+        self.context.lease.validate().map_err(map_source_error)?;
+        self.note_managed_completion(&operation_id, ManagedAgentActivationDispositionV1::Failed)?;
+        self.managed_turn = None;
+        Ok(serde_json::json!({
+            "schema": "worldstream/managed-turn-failure/v1",
+            "action_submitted": false,
+            "completion": completion,
         }))
     }
 
@@ -3236,6 +3279,7 @@ fn call_tool(server: &mut AssignmentMcpServerV1, id: &Value, params: Value) -> V
         "worldstream.submit_managed_turn_action" => {
             server.submit_managed_turn_action(params.arguments)
         }
+        "worldstream.fail_managed_turn" => server.fail_managed_turn(params.arguments),
         _ => Err(AssignmentMcpErrorV1::InvalidInput),
     };
     match result {
@@ -3256,8 +3300,9 @@ fn tool_definitions() -> Value {
         {"name":"worldstream.submit_action","description":"Submit one exact currently offered Action using a stable operation identity.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string"},"offer_id":{"type":"string"},"precondition":{"type":"object","properties":{"room_seq":{"type":"integer","minimum":0},"head_hash":{"type":"string"}},"required":["room_seq","head_hash"],"additionalProperties":false},"payload":{}},"required":["operation_id","offer_id","precondition","payload"],"additionalProperties":false}},
         {"name":"worldstream.next_activation","description":"Acquire or resume the next Activation in this assignment's sealed Runner scope.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"worldstream.complete_activation","description":"Complete the exact currently leased Activation with its safe preconditions.","inputSchema":{"type":"object","properties":{"activation_cursor":{"type":"integer","minimum":1},"lease_generation":{"type":"integer","minimum":1},"context_hash":{"type":"string"},"disposition":{"type":"string","enum":["handled","declined","failed"]}},"required":["activation_cursor","lease_generation","context_hash","disposition"],"additionalProperties":false}},
-        {"name":"worldstream.prepare_managed_turn","description":"Prepare one managed Agent turn from the sealed assignment without exposing authority or Activation identity.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"worldstream.submit_managed_turn_action","description":"Submit the one Action selected for the prepared managed turn and durably complete its Activation.","inputSchema":{"type":"object","properties":{"offer_id":{"type":"string"},"payload":{}},"required":["offer_id","payload"],"additionalProperties":false}}
+        {"name":"worldstream.prepare_managed_turn","description":"Prepare one managed Agent turn and an opaque provider-attempt digest without exposing authority or Activation identity.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"worldstream.submit_managed_turn_action","description":"Submit the one Action selected for the prepared managed turn and durably complete its Activation.","inputSchema":{"type":"object","properties":{"offer_id":{"type":"string"},"payload":{}},"required":["offer_id","payload"],"additionalProperties":false}},
+        {"name":"worldstream.fail_managed_turn","description":"Complete the prepared Activation as failed without submitting an Activity Action.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}
     ])
 }
 

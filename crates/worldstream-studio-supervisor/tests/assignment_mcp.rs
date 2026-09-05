@@ -318,6 +318,7 @@ fn stdio_exposes_generic_and_managed_turn_tools_without_authority_disclosure() {
     assert!(output.contains("worldstream.complete_activation"));
     assert!(output.contains("worldstream.prepare_managed_turn"));
     assert!(output.contains("worldstream.submit_managed_turn_action"));
+    assert!(output.contains("worldstream.fail_managed_turn"));
     assert!(!output.contains(ROOM));
     assert!(!output.contains(MEMBER));
     assert!(!output.contains(BEARER));

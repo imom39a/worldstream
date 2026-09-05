@@ -80,6 +80,13 @@ pub enum AgentHostContractV1 {
         provider_address: std::net::SocketAddr,
         model_id: String,
     },
+    /// Narrow hosted House contract. The immutable House Agent Revision owns
+    /// model, route, policy, tokenizer, and allowance selection; the Profile
+    /// can only pin the approved process contract and Runner Template.
+    ManagedHouseOpenrouter {
+        host_contract_revision: String,
+        runner_template: RunnerTemplateRevisionReferenceV1,
+    },
 }
 
 /// Closed provider adapter supported by the post-MVP reference host.
@@ -87,6 +94,7 @@ pub enum AgentHostContractV1 {
 #[serde(rename_all = "snake_case")]
 pub enum ManagedReferenceProviderV1 {
     OpenAiCompatible,
+    Openrouter,
 }
 
 /// Browser-safe state of one required secret setting.
@@ -264,7 +272,11 @@ impl AgentProfileStoreV1 {
         let mut revision = named_import_descriptor(input);
         revision.secret_settings = match (&input.host_contract, reference) {
             (AgentHostContractV1::GenericMcp, None) => Vec::new(),
-            (AgentHostContractV1::ManagedReference { .. }, Some(reference)) => {
+            (
+                AgentHostContractV1::ManagedReference { .. }
+                | AgentHostContractV1::ManagedHouseOpenrouter { .. },
+                Some(reference),
+            ) => {
                 vec![AgentProfileSecretSettingV1 {
                     key: "MODEL_PROVIDER_TOKEN".to_owned(),
                     kind: SecretKindV1::ModelProvider,
@@ -698,6 +710,15 @@ async fn profile_publish_with_credentials(
                     .map_err(map_credential_error)?,
             }]
         }
+        (AgentHostContractV1::ManagedHouseOpenrouter { .. }, Some(id)) => {
+            vec![AgentProfileSecretSettingV1 {
+                key: "MODEL_PROVIDER_TOKEN".to_owned(),
+                kind: SecretKindV1::ModelProvider,
+                reference: credentials
+                    .resolve(&id, ManagedReferenceProviderV1::Openrouter)
+                    .map_err(map_credential_error)?,
+            }]
+        }
         _ => return Err(AgentProfileErrorV1::InvalidProfile),
     };
     let revision = AgentProfileRevisionV1 {
@@ -821,20 +842,36 @@ fn validate_profile_metadata(revision: &AgentProfileRevisionV1) -> Result<(), Ag
             return Err(AgentProfileErrorV1::InvalidProfile);
         }
     }
-    if let AgentHostContractV1::ManagedReference {
-        host_contract_revision,
-        runner_template,
-        provider_address,
-        model_id,
-        ..
-    } = &revision.host_contract
-        && (!valid_revision(host_contract_revision)
-            || !valid_id(&runner_template.template_id)
-            || !valid_revision(&runner_template.revision)
-            || !provider_address.ip().is_loopback()
-            || !bounded(model_id, MAX_TEXT_BYTES))
-    {
-        return Err(AgentProfileErrorV1::InvalidProfile);
+    match &revision.host_contract {
+        AgentHostContractV1::GenericMcp => {}
+        AgentHostContractV1::ManagedReference {
+            host_contract_revision,
+            runner_template,
+            provider,
+            provider_address,
+            model_id,
+        } => {
+            if !valid_revision(host_contract_revision)
+                || !valid_id(&runner_template.template_id)
+                || !valid_revision(&runner_template.revision)
+                || *provider != ManagedReferenceProviderV1::OpenAiCompatible
+                || !provider_address.ip().is_loopback()
+                || !bounded(model_id, MAX_TEXT_BYTES)
+            {
+                return Err(AgentProfileErrorV1::InvalidProfile);
+            }
+        }
+        AgentHostContractV1::ManagedHouseOpenrouter {
+            host_contract_revision,
+            runner_template,
+        } => {
+            if !valid_revision(host_contract_revision)
+                || !valid_id(&runner_template.template_id)
+                || !valid_revision(&runner_template.revision)
+            {
+                return Err(AgentProfileErrorV1::InvalidProfile);
+            }
+        }
     }
     Ok(())
 }
@@ -861,6 +898,7 @@ fn validate_revision(revision: &AgentProfileRevisionV1) -> Result<(), AgentProfi
     if matches!(
         revision.host_contract,
         AgentHostContractV1::ManagedReference { .. }
+            | AgentHostContractV1::ManagedHouseOpenrouter { .. }
     ) && (revision.secret_settings.len() != 1
         || revision.secret_settings[0].kind != SecretKindV1::ModelProvider
         || revision.secret_settings[0].key != "MODEL_PROVIDER_TOKEN")
