@@ -9,6 +9,7 @@
 /web/console/dist/
 /web/demos/node_modules/
 /web/demos/dist/
+/web/platform/dist/
 /web/demos/.vercel/
 /web/studio/node_modules/
 /web/studio/dist/

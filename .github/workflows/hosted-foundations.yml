@@ -41,6 +41,8 @@ jobs:
           cargo test --locked -p worldstream-server hosted_room_creation_is_atomic_restartable_and_non_playing --lib
       - name: Test the platform BFF
         run: pnpm hosted-platform:check
+      - name: Test local-development fail-closed controls
+        run: pnpm hosted:dev:test
 
   database-boundary:
     name: Supabase private identity boundary

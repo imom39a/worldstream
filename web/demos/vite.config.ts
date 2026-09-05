@@ -8,6 +8,7 @@ const sourceRevision = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], 
   cwd: repositoryRoot,
   encoding: "utf8",
 }).trim();
+const platformBffTarget = localPlatformBffTarget(process.env.WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET);
 
 export default defineConfig({
   define: {
@@ -22,4 +23,35 @@ export default defineConfig({
       },
     },
   },
+  server: {
+    host: "127.0.0.1",
+    port: 5180,
+    ...(platformBffTarget === undefined
+      ? {}
+      : {
+          proxy: {
+            "/api": {
+              target: platformBffTarget,
+              changeOrigin: false,
+            },
+          },
+        }),
+  },
 });
+
+function localPlatformBffTarget(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const url = new URL(value);
+  if (
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error("invalid local Platform BFF target");
+  }
+  return url.origin;
+}

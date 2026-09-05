@@ -7,6 +7,8 @@
     "node": "24.18.1"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "node dist/dev-server.js",
     "lint": "tsc --noEmit",
     "test": "vitest run --environment node"
   },

@@ -153,6 +153,41 @@ impl HostedGatewayBackend for UnavailableHostedGatewayBackend {
     }
 }
 
+/// Explicit process mode for the gateway's backend seam. The development
+/// substitute is selected only by the binary after this fail-closed check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostedGatewayBackendMode {
+    Unavailable,
+    DevelopmentSubstitute,
+}
+
+/// Exact opt-in value for the deterministic local backend.
+pub const DEVELOPMENT_GATEWAY_BACKEND_MODE: &str = "visible-local-only";
+
+/// Validates the process-level development substitute boundary.
+///
+/// # Errors
+/// The substitute is rejected by release builds, non-development
+/// environments, non-loopback listeners, and unknown mode values.
+pub fn select_hosted_gateway_backend_mode(
+    requested_mode: Option<&str>,
+    deployment_environment: Option<&str>,
+    bind: SocketAddr,
+    release_build: bool,
+) -> Result<HostedGatewayBackendMode, HostedGatewayError> {
+    match requested_mode {
+        None => Ok(HostedGatewayBackendMode::Unavailable),
+        Some(DEVELOPMENT_GATEWAY_BACKEND_MODE)
+            if deployment_environment == Some("development")
+                && bind.ip().is_loopback()
+                && !release_build =>
+        {
+            Ok(HostedGatewayBackendMode::DevelopmentSubstitute)
+        }
+        Some(_) => Err(HostedGatewayError::InvalidConfiguration),
+    }
+}
+
 struct RateWindow {
     started: Instant,
     accepted: u32,

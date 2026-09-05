@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "vitest";
 
 import {
+  createDevelopmentPlatformBff,
   createPlatformBff,
   createVercelPlatformBff,
   type AuthSession,
@@ -885,4 +886,97 @@ test("OAuth starts and mutations share durable limits across BFF instances", asy
   assert.equal(accepted.status, 200);
   assert.equal(limited.status, 429);
   assert.equal(auth.userCalls, 3);
+});
+
+test("development identity substitute is explicit and preserves the production session contract", async () => {
+  const data = new FakeData();
+  const origin = "http://127.0.0.1:5180";
+  const bff = createDevelopmentPlatformBff(
+    {
+      canonicalOrigin: origin,
+      allowedReturnTargets: ["/"],
+      sessionKey: Buffer.alloc(32, 7),
+      oauthKey: Buffer.alloc(32, 9),
+      developmentMode: "visible-local-only",
+      deploymentEnvironment: "development",
+      identity: {
+        authUserId: USER.id,
+        providerSubject: USER.identities[0]?.subject ?? "",
+        githubLogin: "worldstream-local-developer",
+        avatarUrl: null,
+      },
+    },
+    data,
+  );
+
+  const status = await bff.fetch(new Request(`${origin}/api/dev/status`));
+  assert.equal(status.status, 200);
+  assert.equal(status.headers.get("x-worldstream-development-substitute"), "identity-bypass");
+
+  const missingAcknowledgement = await bff.fetch(
+    new Request(`${origin}/api/dev/sign-in`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: "{}",
+    }),
+  );
+  assert.equal(missingAcknowledgement.status, 400);
+
+  const signedIn = await bff.fetch(
+    new Request(`${origin}/api/dev/sign-in`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: '{"mode":"visible-local-only"}',
+    }),
+  );
+  assert.equal(signedIn.status, 200);
+  const sessionCookie = cookieValue(signedIn, "__Host-worldstream-session");
+  assert.ok(sessionCookie);
+  assert.match(signedIn.headers.getSetCookie().join("\n"), /Secure; HttpOnly; SameSite=Lax/u);
+  assert.deepEqual(data.syncs, [USER.id]);
+
+  const session = await bff.fetch(
+    new Request(`${origin}/api/auth/session`, {
+      headers: { cookie: `__Host-worldstream-session=${sessionCookie}` },
+    }),
+  );
+  assert.equal(session.status, 200);
+  assert.equal(
+    ((await session.json()) as { authenticated: boolean }).authenticated,
+    true,
+  );
+});
+
+test("development identity substitute fails closed outside loopback development", () => {
+  const data = new FakeData();
+  const common = {
+    allowedReturnTargets: ["/"],
+    sessionKey: Buffer.alloc(32, 7),
+    oauthKey: Buffer.alloc(32, 9),
+    developmentMode: "visible-local-only",
+    deploymentEnvironment: "development",
+    identity: {
+      authUserId: USER.id,
+      providerSubject: USER.identities[0]?.subject ?? "",
+      githubLogin: "worldstream-local-developer",
+      avatarUrl: null,
+    },
+  } as const;
+  assert.throws(() =>
+    createDevelopmentPlatformBff({ ...common, canonicalOrigin: "https://arena.example" }, data),
+  );
+
+  const priorNodeEnvironment = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = "production";
+    assert.throws(() =>
+      createDevelopmentPlatformBff(
+        { ...common, canonicalOrigin: "http://127.0.0.1:5180" },
+        data,
+      ),
+    );
+  } finally {
+    if (priorNodeEnvironment === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = priorNodeEnvironment;
+  }
 });

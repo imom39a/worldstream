@@ -12,8 +12,9 @@ use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use worldstream_hosted_gateway::{
-    HostedGatewayBackend, HostedGatewayConfig, HostedGatewayError, HostedServiceRequestV1,
-    hosted_gateway_router,
+    DEVELOPMENT_GATEWAY_BACKEND_MODE, HostedGatewayBackend, HostedGatewayBackendMode,
+    HostedGatewayConfig, HostedGatewayError, HostedServiceRequestV1, hosted_gateway_router,
+    select_hosted_gateway_backend_mode,
 };
 
 const LISTING: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -56,6 +57,53 @@ fn config(max_requests: u32) -> HostedGatewayConfig {
         Duration::from_mins(1),
     )
     .expect("gateway fixture")
+}
+
+#[test]
+fn development_backend_is_loopback_debug_and_explicit_only() {
+    let loopback = "127.0.0.1:8080"
+        .parse::<SocketAddr>()
+        .expect("loopback fixture");
+    assert_eq!(
+        select_hosted_gateway_backend_mode(None, None, loopback, false),
+        Ok(HostedGatewayBackendMode::Unavailable)
+    );
+    assert_eq!(
+        select_hosted_gateway_backend_mode(
+            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
+            Some("development"),
+            loopback,
+            false,
+        ),
+        Ok(HostedGatewayBackendMode::DevelopmentSubstitute)
+    );
+    assert_eq!(
+        select_hosted_gateway_backend_mode(
+            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
+            Some("development"),
+            loopback,
+            true,
+        ),
+        Err(HostedGatewayError::InvalidConfiguration)
+    );
+    assert_eq!(
+        select_hosted_gateway_backend_mode(
+            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
+            Some("production"),
+            loopback,
+            false,
+        ),
+        Err(HostedGatewayError::InvalidConfiguration)
+    );
+    assert_eq!(
+        select_hosted_gateway_backend_mode(
+            Some(DEVELOPMENT_GATEWAY_BACKEND_MODE),
+            Some("development"),
+            "0.0.0.0:8080".parse().expect("public fixture"),
+            false,
+        ),
+        Err(HostedGatewayError::InvalidConfiguration)
+    );
 }
 
 #[test]

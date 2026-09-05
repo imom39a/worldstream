@@ -4,8 +4,33 @@ use std::{
 };
 
 use worldstream_hosted_gateway::{
-    HostedGatewayConfig, UnavailableHostedGatewayBackend, hosted_gateway_router,
+    DEVELOPMENT_GATEWAY_BACKEND_MODE, HostedGatewayBackend, HostedGatewayBackendMode,
+    HostedGatewayConfig, HostedGatewayError, HostedServiceRequestV1, hosted_gateway_router,
+    select_hosted_gateway_backend_mode,
 };
+
+#[derive(Clone, Copy, Debug)]
+enum ProcessBackend {
+    Unavailable,
+    DevelopmentSubstitute,
+}
+
+impl HostedGatewayBackend for ProcessBackend {
+    fn ready(&self) -> bool {
+        matches!(self, Self::DevelopmentSubstitute)
+    }
+
+    fn launch(&self, _request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError> {
+        match self {
+            Self::Unavailable => Err(HostedGatewayError::Unavailable),
+            Self::DevelopmentSubstitute => Ok(()),
+        }
+    }
+
+    fn evidence(&self, request: &HostedServiceRequestV1) -> Result<(), HostedGatewayError> {
+        self.launch(request)
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -20,6 +45,27 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let bind = env::var("HOSTED_GATEWAY_BIND")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
         .parse::<SocketAddr>()?;
+    let backend_mode = select_hosted_gateway_backend_mode(
+        env::var("WORLDSTREAM_DEVELOPMENT_GATEWAY_BACKEND")
+            .ok()
+            .as_deref(),
+        env::var("WORLDSTREAM_DEPLOYMENT_ENVIRONMENT")
+            .ok()
+            .as_deref(),
+        bind,
+        !cfg!(debug_assertions),
+    )?;
+    let backend = match backend_mode {
+        HostedGatewayBackendMode::Unavailable => ProcessBackend::Unavailable,
+        HostedGatewayBackendMode::DevelopmentSubstitute => {
+            tracing::warn!(
+                target: "worldstream.hosted_gateway",
+                mode = DEVELOPMENT_GATEWAY_BACKEND_MODE,
+                "VISIBLE DEVELOPMENT GATEWAY BACKEND ENABLED"
+            );
+            ProcessBackend::DevelopmentSubstitute
+        }
+    };
     let upstream = required("WORLDSTREAM_RUNTIME_UPSTREAM")?.parse::<SocketAddr>()?;
     let public_authority = required("WORLDSTREAM_PUBLIC_AUTHORITY")?;
     let service_authority = required("WORLDSTREAM_VERCEL_SERVICE_AUTHORITY")?;
@@ -43,14 +89,11 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
-    let server = axum::serve(
-        listener,
-        hosted_gateway_router(config, UnavailableHostedGatewayBackend),
-    )
-    .with_graceful_shutdown(async move {
-        let _ = shutdown_receiver.await;
-    })
-    .into_future();
+    let server = axum::serve(listener, hosted_gateway_router(config, backend))
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_receiver.await;
+        })
+        .into_future();
     tokio::pin!(server);
     tokio::select! {
         result = &mut server => result?,

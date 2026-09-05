@@ -13,6 +13,7 @@ const OAUTH_MAX_AGE = 600;
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_RETURN_TARGETS = 32;
+export const DEVELOPMENT_IDENTITY_MODE = "visible-local-only" as const;
 const VERCEL_FORWARDING_HEADERS = new Set([
   "x-forwarded-host",
   "x-forwarded-proto",
@@ -117,6 +118,19 @@ export interface PlatformBffConfig {
   readonly oauthKey: Uint8Array;
 }
 
+export interface DevelopmentPlatformIdentity {
+  readonly authUserId: string;
+  readonly providerSubject: string;
+  readonly githubLogin: string;
+  readonly avatarUrl: string | null;
+}
+
+export interface DevelopmentPlatformBffConfig extends PlatformBffConfig {
+  readonly developmentMode: typeof DEVELOPMENT_IDENTITY_MODE;
+  readonly deploymentEnvironment: "development";
+  readonly identity: DevelopmentPlatformIdentity;
+}
+
 interface SessionPayload {
   readonly schema: "worldstream/platform-session/v1";
   readonly authUserId: string;
@@ -212,6 +226,190 @@ export function createPlatformBff(
       return safeJson(404, "route_not_found");
     },
   };
+}
+
+/**
+ * Adds one conspicuous loopback-only identity substitute around the production
+ * BFF. Supabase remains authoritative for the Platform Account; only the
+ * external GitHub OAuth exchange is replaced.
+ */
+export function createDevelopmentPlatformBff(
+  config: DevelopmentPlatformBffConfig,
+  dataClient: PlatformDataClient,
+): PlatformBff {
+  const origin = validateDevelopmentConfiguration(config);
+  const user = developmentUser(config.identity);
+  const auth = new DevelopmentPlatformAuthClient(user);
+  const inner = createPlatformBff(config, {
+    authClient: () => auth,
+    dataClient,
+  });
+
+  return {
+    async fetch(request: Request): Promise<Response> {
+      const url = new URL(request.url);
+      let response: Response;
+      if (url.origin !== origin) {
+        response = safeJson(404, "route_not_found");
+      } else if (request.method === "GET" && url.pathname === "/api/dev/status") {
+        response = readRequestIsSafe(request, origin)
+          ? privateJson(200, {
+              version: "platform_development_substitutes.v1",
+              identity_bypass: DEVELOPMENT_IDENTITY_MODE,
+              warning: "Development substitute. Never enable in production.",
+            })
+          : privateError(403, "request_rejected");
+      } else if (request.method === "POST" && url.pathname === "/api/dev/sign-in") {
+        response = await developmentSignIn(
+          request,
+          origin,
+          validateKey(config.sessionKey),
+          user,
+          dataClient,
+        );
+      } else if (url.pathname.startsWith("/api/auth/github/")) {
+        response = privateError(409, "development_identity_bypass_active");
+      } else {
+        response = await inner.fetch(request);
+      }
+      response.headers.set("x-worldstream-development-substitute", "identity-bypass");
+      return response;
+    },
+  };
+}
+
+async function developmentSignIn(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  user: AuthUser,
+  dataClient: PlatformDataClient,
+): Promise<Response> {
+  if (!mutationHeadersAreSafe(request, origin)) return privateError(403, "request_rejected");
+  const body = await boundedJson(request);
+  if (
+    body === null ||
+    Object.keys(body).length !== 1 ||
+    body.mode !== DEVELOPMENT_IDENTITY_MODE
+  ) {
+    return privateError(400, "development_acknowledgement_required");
+  }
+  const github = exactGithubIdentity(user);
+  try {
+    await dataClient.syncGithubIdentity({
+      authUserId: user.id,
+      providerSubject: github.subject,
+      githubLogin: github.login,
+      avatarUrl: github.avatarUrl,
+    });
+    const payload = newSessionPayload(developmentSession(), user.id, github);
+    const response = privateJson(200, {
+      version: "platform_development_session.v1",
+      authenticated: true,
+      csrf: payload.csrf,
+      identity: { github_login: github.login },
+      warning: "Development substitute. Never enable in production.",
+    });
+    response.headers.append(
+      "set-cookie",
+      sessionCookie(sealJson(sessionKey, "platform-session-v1", payload), SESSION_MAX_AGE),
+    );
+    return response;
+  } catch {
+    return temporarilyUnavailable();
+  }
+}
+
+function validateDevelopmentConfiguration(config: DevelopmentPlatformBffConfig): string {
+  const origin = validateOrigin(config.canonicalOrigin);
+  const url = new URL(origin);
+  if (
+    config.developmentMode !== DEVELOPMENT_IDENTITY_MODE ||
+    config.deploymentEnvironment !== "development" ||
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production"
+  ) {
+    throw new Error("development_identity_bypass_forbidden");
+  }
+  return origin;
+}
+
+function developmentUser(identity: DevelopmentPlatformIdentity): AuthUser {
+  if (
+    !safeSubject(identity.authUserId) ||
+    !safeSubject(identity.providerSubject) ||
+    identity.githubLogin.length < 1 ||
+    identity.githubLogin.length > 128 ||
+    /[\u0000-\u001f\u007f]/u.test(identity.githubLogin) ||
+    (identity.avatarUrl !== null &&
+      (identity.avatarUrl.length > 2048 || !identity.avatarUrl.startsWith("https://")))
+  ) {
+    throw new Error("invalid_development_identity");
+  }
+  return {
+    id: identity.authUserId,
+    identities: [
+      {
+        provider: "github",
+        subject: identity.providerSubject,
+        login: identity.githubLogin,
+        avatarUrl: identity.avatarUrl,
+      },
+    ],
+  };
+}
+
+function developmentSession(): AuthSession {
+  return {
+    accessToken: "worldstream-development-access-token",
+    refreshToken: "worldstream-development-refresh-token",
+    expiresAt: Math.floor(Date.now() / 1000) + SESSION_MAX_AGE,
+  };
+}
+
+class DevelopmentPlatformAuthClient implements PlatformAuthClient {
+  readonly #user: AuthUser;
+
+  constructor(user: AuthUser) {
+    this.#user = user;
+  }
+
+  githubAuthorizeUrl(): string {
+    throw new PlatformCredentialRejectedError();
+  }
+
+  async exchangeCodeForSession(): Promise<AuthSession> {
+    throw new PlatformCredentialRejectedError();
+  }
+
+  async getClaims(accessToken: string): Promise<{ subject: string }> {
+    this.#requireAccess(accessToken);
+    return { subject: this.#user.id };
+  }
+
+  async getUser(accessToken: string): Promise<AuthUser> {
+    this.#requireAccess(accessToken);
+    return this.#user;
+  }
+
+  async refreshSession(refreshToken: string): Promise<RefreshedAuthSession> {
+    if (refreshToken !== "worldstream-development-refresh-token") {
+      throw new PlatformCredentialRejectedError();
+    }
+    return { ...developmentSession(), user: this.#user };
+  }
+
+  async signOut(accessToken: string): Promise<void> {
+    this.#requireAccess(accessToken);
+  }
+
+  #requireAccess(accessToken: string): void {
+    if (accessToken !== "worldstream-development-access-token") {
+      throw new PlatformCredentialRejectedError();
+    }
+  }
 }
 
 /**
