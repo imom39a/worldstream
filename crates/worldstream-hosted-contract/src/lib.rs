@@ -426,6 +426,21 @@ struct LaunchRequest {
     schema: String,
     listing_revision_digest: String,
     inputs: BTreeMap<String, Value>,
+    creator: FrozenCreatorElection,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CreatorParticipation {
+    Seat,
+    Spectator,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrozenCreatorElection {
+    participation: CreatorParticipation,
+    principal_reference: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -471,7 +486,14 @@ struct RoomSetupSpecification {
     pack: PackReference,
     configuration: Value,
     seats: Vec<SetupSeat>,
+    spectators: Vec<SetupSpectator>,
     operator_view: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SetupSpectator {
+    purpose: &'static str,
+    principal: SetupPrincipal,
 }
 
 #[derive(Debug, Serialize)]
@@ -506,7 +528,7 @@ struct SetupAssignment {
 pub struct DerivedRoomSetup(Vec<u8>);
 
 impl DerivedRoomSetup {
-    /// Returns the retained canonical `worldstream/room-setup/v1` bytes.
+    /// Returns the retained canonical `worldstream/room-setup/v2` bytes.
     ///
     /// # Errors
     /// Returns [`ContractError::InvalidShape`] if retained bytes cannot be decoded.
@@ -529,7 +551,7 @@ pub fn derive_room_setup(
 ) -> Result<DerivedRoomSetup, ContractError> {
     let (launch, _) = decode_canonical::<LaunchRequest>(launch_bytes, 16_384)?;
     let (roster, _) = decode_canonical::<FrozenRoster>(roster_bytes, 65_536)?;
-    if launch.schema != "worldstream/launch-request/v1"
+    if launch.schema != "worldstream/launch-request/v2"
         || roster.schema != "worldstream/frozen-roster/v1"
     {
         return Err(ContractError::Unsupported);
@@ -542,19 +564,14 @@ pub fn derive_room_setup(
     if !launch.inputs.is_empty() || roster.members.len() > listing.document.seats.len() {
         return Err(ContractError::InvalidShape);
     }
-    let mut members = BTreeMap::new();
-    let mut principal_references = BTreeSet::new();
-    for member in roster.members {
-        validate_seat_label(&member.seat_id)?;
-        validate_public_reference(&member.principal_reference, 128)?;
-        validate_text(&member.display_name, 128)?;
-        validate_member_references(&member)?;
-        if !principal_references.insert(member.principal_reference.clone())
-            || members.insert(member.seat_id.clone(), member).is_some()
-        {
-            return Err(ContractError::InvalidShape);
-        }
-    }
+    validate_public_reference(&launch.creator.principal_reference, 128)?;
+    let (mut members, mut principal_references) = index_frozen_members(roster.members)?;
+    let creator_spectator_reference = resolve_creator_spectator(
+        listing.document.creator_access,
+        launch.creator,
+        &members,
+        &principal_references,
+    )?;
 
     let mut seats = Vec::with_capacity(listing.document.seats.len());
     for listed in &listing.document.seats {
@@ -583,11 +600,41 @@ pub fn derive_room_setup(
     if !members.is_empty() {
         return Err(ContractError::InvalidShape);
     }
+    let mut spectators = Vec::with_capacity(3);
+    append_setup_spectator(
+        &mut spectators,
+        &mut principal_references,
+        "result_indexer",
+        "worldstream:result-indexer",
+        "agent",
+    )?;
+    if let Some(reference) = creator_spectator_reference {
+        append_setup_spectator(
+            &mut spectators,
+            &mut principal_references,
+            "creator",
+            &reference,
+            "human",
+        )?;
+    }
+    if matches!(
+        listing.document.public_viewing_policy,
+        PublicViewingPolicy::AnonymousByLink
+    ) {
+        append_setup_spectator(
+            &mut spectators,
+            &mut principal_references,
+            "public_relay",
+            "worldstream:public-relay",
+            "agent",
+        )?;
+    }
     let setup = RoomSetupSpecification {
-        schema: "worldstream/room-setup/v1",
+        schema: "worldstream/room-setup/v2",
         pack: listing.document.pack.clone(),
         configuration: listing.document.room_setup.configuration.clone(),
         seats,
+        spectators,
         operator_view: false,
     };
     let bytes = canonicalize(&setup)?;
@@ -595,6 +642,72 @@ pub fn derive_room_setup(
         return Err(ContractError::OutputTooLarge);
     }
     Ok(DerivedRoomSetup(bytes))
+}
+
+fn index_frozen_members(
+    frozen: Vec<FrozenMember>,
+) -> Result<(BTreeMap<String, FrozenMember>, BTreeSet<String>), ContractError> {
+    let mut members = BTreeMap::new();
+    let mut principal_references = BTreeSet::new();
+    for member in frozen {
+        validate_seat_label(&member.seat_id)?;
+        validate_public_reference(&member.principal_reference, 128)?;
+        validate_text(&member.display_name, 128)?;
+        validate_member_references(&member)?;
+        if !principal_references.insert(member.principal_reference.clone())
+            || members.insert(member.seat_id.clone(), member).is_some()
+        {
+            return Err(ContractError::InvalidShape);
+        }
+    }
+    Ok((members, principal_references))
+}
+
+fn resolve_creator_spectator(
+    access: CreatorAccess,
+    creator: FrozenCreatorElection,
+    members: &BTreeMap<String, FrozenMember>,
+    principal_references: &BTreeSet<String>,
+) -> Result<Option<String>, ContractError> {
+    match creator.participation {
+        CreatorParticipation::Seat => members
+            .values()
+            .any(|member| {
+                member.principal_reference == creator.principal_reference
+                    && matches!(member.participation, ParticipationKind::AccountHuman)
+            })
+            .then_some(None)
+            .ok_or(ContractError::InvalidShape),
+        CreatorParticipation::Spectator => {
+            if !matches!(access, CreatorAccess::MaySpectate)
+                || creator.principal_reference != "worldstream:creator-spectator"
+                || principal_references.contains(&creator.principal_reference)
+            {
+                return Err(ContractError::InvalidShape);
+            }
+            Ok(Some(creator.principal_reference))
+        }
+    }
+}
+
+fn append_setup_spectator(
+    spectators: &mut Vec<SetupSpectator>,
+    principal_references: &mut BTreeSet<String>,
+    purpose: &'static str,
+    reference: &str,
+    kind: &'static str,
+) -> Result<(), ContractError> {
+    if !principal_references.insert(reference.to_owned()) {
+        return Err(ContractError::InvalidShape);
+    }
+    spectators.push(SetupSpectator {
+        purpose,
+        principal: SetupPrincipal {
+            reference: reference.to_owned(),
+            kind,
+        },
+    });
+    Ok(())
 }
 
 type SetupParticipation = (String, Option<SetupPrincipal>, Option<SetupAssignment>);

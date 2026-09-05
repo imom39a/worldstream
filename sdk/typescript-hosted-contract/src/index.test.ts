@@ -173,7 +173,16 @@ test("derives exact downstream setup without operator privilege", () => {
     canonical("fixtures/hosted-contract/valid/agent-heist-frozen-roster.json"),
   );
   assert.deepEqual(setup, canonical("fixtures/hosted-contract/expected/agent-heist-room-setup.json"));
-  assert.equal((JSON.parse(new TextDecoder().decode(setup)) as { operator_view: boolean }).operator_view, false);
+  const value = JSON.parse(new TextDecoder().decode(setup)) as {
+    operator_view: boolean;
+    schema: string;
+    spectators: Array<{ purpose: string; role?: string; scopes?: string[] }>;
+  };
+  assert.equal(value.schema, "worldstream/room-setup/v2");
+  assert.equal(value.operator_view, false);
+  assert.deepEqual(value.spectators.map(({ purpose }) => purpose), ["result_indexer", "public_relay"]);
+  assert.equal(value.spectators[0]?.role, undefined);
+  assert.equal(value.spectators[0]?.scopes, undefined);
 });
 
 test("setup rejects duplicate or invalid public principals", () => {
@@ -185,6 +194,9 @@ test("setup rejects duplicate or invalid public principals", () => {
   assert.throws(() => deriveRoomSetup(listing, launch, encodeCanonical(roster)), /invalid_shape/);
   members[1]!.principal_reference = "agent/invalid";
   assert.throws(() => deriveRoomSetup(listing, launch, encodeCanonical(roster)), /invalid_shape/);
+  const reserved = mutable("fixtures/hosted-contract/valid/agent-heist-frozen-roster.json");
+  array(reserved.members).map(record)[0]!.principal_reference = "worldstream:result-indexer";
+  assert.throws(() => deriveRoomSetup(listing, launch, encodeCanonical(reserved)), /invalid_shape/);
 });
 
 test("browser launch DTO cannot select server-owned contracts", () => {
@@ -195,6 +207,60 @@ test("browser launch DTO cannot select server-owned contracts", () => {
     launch[field] = "not-browser-owned";
     assert.throws(() => deriveRoomSetup(listing, encodeCanonical(launch), roster), /invalid_shape/);
   }
+});
+
+test("creator participation is frozen and mutually exclusive", () => {
+  const { listing: mustClaimListing } = contracts();
+  const rosterBytes = canonical("fixtures/hosted-contract/valid/agent-heist-frozen-roster.json");
+  const invalidSeatLaunch = mutable("fixtures/hosted-contract/valid/agent-heist-launch-request.json");
+  record(invalidSeatLaunch.creator).principal_reference = "github:not-in-roster";
+  assert.throws(
+    () => deriveRoomSetup(mustClaimListing, encodeCanonical(invalidSeatLaunch), rosterBytes),
+    /invalid_shape/,
+  );
+
+  const listingValue = mutable("config/hosted/listings/agent-heist-0.2.0.json");
+  listingValue.creator_access = "may_spectate";
+  const listing = readListingRevision(encodeCanonical(listingValue));
+  const launch = mutable("fixtures/hosted-contract/valid/agent-heist-launch-request.json");
+  launch.listing_revision_digest = listing.digest;
+  const roster = mutable("fixtures/hosted-contract/valid/agent-heist-frozen-roster.json");
+  roster.listing_revision_digest = listing.digest;
+
+  const seated = JSON.parse(new TextDecoder().decode(deriveRoomSetup(
+    listing,
+    encodeCanonical(launch),
+    encodeCanonical(roster),
+  ))) as { spectators: Array<{ purpose: string }> };
+  assert.equal(seated.spectators.some(({ purpose }) => purpose === "creator"), false);
+
+  launch.creator = {
+    participation: "spectator",
+    principal_reference: "worldstream:creator-spectator",
+  };
+  record(array(roster.members)[0]).principal_reference = "github:2002";
+  const spectating = JSON.parse(new TextDecoder().decode(deriveRoomSetup(
+    listing,
+    encodeCanonical(launch),
+    encodeCanonical(roster),
+  ))) as { spectators: Array<{ purpose: string; principal: { reference: string; kind: string } }> };
+  assert.ok(spectating.spectators.some(({ purpose, principal }) =>
+    purpose === "creator"
+    && principal.reference === "worldstream:creator-spectator"
+    && principal.kind === "human"
+  ));
+
+  const forbiddenLaunch = mutable("fixtures/hosted-contract/valid/agent-heist-launch-request.json");
+  forbiddenLaunch.creator = launch.creator;
+  assert.throws(
+    () => deriveRoomSetup(mustClaimListing, encodeCanonical(forbiddenLaunch), rosterBytes),
+    /invalid_shape/,
+  );
+  record(array(roster.members)[0]).principal_reference = "worldstream:creator-spectator";
+  assert.throws(
+    () => deriveRoomSetup(listing, encodeCanonical(launch), encodeCanonical(roster)),
+    /invalid_shape/,
+  );
 });
 
 test("reviewed house fill uses the existing managed assignment shape", () => {

@@ -20,15 +20,16 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use worldstream_core::{
     AccessModeV1, ActionOfferWitnessV1, ActivationIntentStateV1, ActivationOperationRequestV1,
     ActivationResultCodeV1, AdmissionLaneErrorV1, AuthorityChangeId, AuthorityChangeV1,
-    AuthorityCheckedAt, AuthorityErrorV1, AuthorityStoreV1, AuthorityV1, AuthorizedRunnerControlV1,
-    AuthorizedTimerFiredV1, CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1, CapabilityBearerV1,
-    CapabilityExpiresAt, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
-    CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1, ExternalInputRecordedAt,
-    ExternalInputV1, HistoricalReplayErrorV1, HostClockErrorV1, HostClockSampleV1, HostClockV1,
-    InitialMembershipProposalV1, InputId, MemberReadOperationV1, MembershipStandingV1,
-    MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackDigestV1, PackGenesisRequestV1,
-    PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1, ParticipantActionIngressV1,
-    ParticipantActionRequestV1, PreparedRoomCreationV1, PresentedCapabilityV1, PrincipalKindV1,
+    AuthorityCheckedAt, AuthorityErrorV1, AuthoritySnapshotQueryV1, AuthorityStoreV1, AuthorityV1,
+    AuthorizedRunnerControlV1, AuthorizedTimerFiredV1, CREATE_ROOM_OPERATION_KIND, CanonicalJsonV1,
+    CapabilityBearerV1, CapabilityExpiresAt, CapabilityId, CapabilityProfileV1,
+    CapabilityScopeSetV1, CreationRecordedAt, DiagnosticOperationV1, DiagnosticTargetV1,
+    ExternalInputRecordedAt, ExternalInputV1, HistoricalReplayErrorV1, HostClockErrorV1,
+    HostClockSampleV1, HostClockV1, InitialMembershipProposalV1, InputId, MemberReadOperationV1,
+    MembershipStandingV1, MembershipV1, MonotonicHostClockV1, NewCapabilityV1, PackDigestV1,
+    PackGenesisRequestV1, PackRegistryV1, PackViewerV1, ParticipantActionIngressErrorV1,
+    ParticipantActionIngressV1, ParticipantActionRequestV1, PreparedRoomCreationV1,
+    PreparedRoomWriteV1, PresentedCapabilityV1, PrincipalAuthorityStatusV1, PrincipalKindV1,
     ReceiptSemanticInputV1, ReceiptSemanticTimeV1, ReplayProjectionKindV1, RoomAdmissionLanesV1,
     RoomCommitResolutionV1, RoomCommitStorageV1, RoomCreationIngressV1, RoomCreationRequestV1,
     RoomId, RoomMembershipKeyV1, RoomSeedV1, RoomSequenceV1, RunnerControlOperationV1, RunnerId,
@@ -42,17 +43,20 @@ use worldstream_protocol::{
     ActivationDelivery, ActivationFrame, ActivationIntentState, ActivationLeaseOperation,
     ActivationOffer, ActivationOfferRequest, ActivationOffers, ActivationOperationReply,
     ActivationResultCode, BearerWireV1, ClientHello, CreateRoomRequest, CreateRoomResponse,
-    LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES, MemberCapabilityProvisionRequestV1,
-    MemberCapabilityProvisionResponseV1, OPERATOR_ACTIVATION_STATUS_VERSION, ObservationAck,
-    ObservationDeliver, OperatorActivationStatusV1, OperatorActivityPhase,
-    OperatorBackupProfileStatus, OperatorBackupStorageHealth, OperatorBackupStorageProfile,
-    OperatorBackupVerification, OperatorDataFreshness, OperatorLiveBackupArtifactSummary,
-    OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomIntegrity,
-    OperatorRoomIntegrityStatus, OperatorRoomInventoryPage, OperatorRoomInventoryRequest,
-    OperatorRoomSummary, PROTOCOL_VERSION, PackReference, Principal, PrincipalKind, Projection,
-    ProjectionReset, ProjectionResponse, ReplayResponse, RoomAttach, RoomAttached, RoomHead,
-    RoomSyncAck, RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1,
-    RunnerHello, RunnerReady, ServerWelcome, SyncBranch, TimerFireRequest, TimerFireResponse,
+    HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2, HOSTED_ROOM_CREATION_SCHEMA_V2,
+    HostedRoomCreationRequestV2, HostedRoomCreationResponseV2, HostedSpectatorCredentialReceiptV2,
+    HostedSpectatorPurposeV2, LobbyLaunchRequest, LobbyLaunchResponse, MAX_MESSAGE_BYTES,
+    MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
+    OPERATOR_ACTIVATION_STATUS_VERSION, ObservationAck, ObservationDeliver,
+    OperatorActivationStatusV1, OperatorActivityPhase, OperatorBackupProfileStatus,
+    OperatorBackupStorageHealth, OperatorBackupStorageProfile, OperatorBackupVerification,
+    OperatorDataFreshness, OperatorLiveBackupArtifactSummary, OperatorLiveBackupPrepareRequest,
+    OperatorLiveBackupStatus, OperatorRoomIntegrity, OperatorRoomIntegrityStatus,
+    OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary, PROTOCOL_VERSION,
+    PackReference, Principal, PrincipalKind, Projection, ProjectionReset, ProjectionResponse,
+    ReplayResponse, RoomAttach, RoomAttached, RoomHead, RoomSyncAck,
+    RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
+    RunnerReady, ServerWelcome, SyncBranch, TimerFireRequest, TimerFireResponse,
 };
 use worldstream_runtime::prepare_data_directory;
 use worldstream_sqlite::{
@@ -1579,6 +1583,244 @@ impl SqliteGatewayBackend {
         )?;
         Ok(token)
     }
+
+    #[allow(clippy::too_many_lines)]
+    fn create_hosted_room_attempt(
+        &self,
+        session: &GatewaySession,
+        request: &HostedRoomCreationRequestV2,
+    ) -> Result<HostedCreateAttempt, BackendError> {
+        let spectators = validate_hosted_room_request(request)?;
+        let authenticated = self.authenticate(session)?;
+        let (core_request, identity) = creation_request(&authenticated, &request.room)?;
+        let presented = authenticated.into_presented();
+        let ingress = authorize_room_creation_operation(
+            &self.authority(),
+            &self.store,
+            &presented,
+            &identity,
+            &core_request,
+            Self::checked_at()?,
+        )
+        .map_err(map_room_operation_error)?;
+        let grant = match ingress {
+            RoomCreationIngressV1::Existing(result) => {
+                let room = create_response_from_result(&result)?;
+                let response = self.verify_hosted_authority(request, &spectators, room)?;
+                return Ok(HostedCreateAttempt::Response(Box::new(response)));
+            }
+            RoomCreationIngressV1::Conflict { .. } => return Err(BackendError::Conflict),
+            RoomCreationIngressV1::Authorized(grant) => *grant,
+        };
+
+        let selected = self
+            .registry
+            .select_for_new_room(core_request.pack_digest())
+            .map_err(|_| BackendError::Rejected)?;
+        if selected.descriptor().pack_id != request.room.pack.id
+            || selected.descriptor().explanatory_version != request.room.pack.version
+        {
+            return Err(BackendError::Rejected);
+        }
+        let room_id = next_core_id::<RoomId>()?;
+        let seed = random_room_seed()?;
+        let created_at = creation_time()?;
+        let memberships = request
+            .room
+            .members
+            .iter()
+            .map(|member| {
+                let principal_id = member
+                    .principal_id
+                    .parse()
+                    .map_err(|_| BackendError::Rejected)?;
+                MembershipV1::new(
+                    next_core_id::<worldstream_core::MemberId>()?,
+                    principal_id,
+                    core_principal_kind(member.principal_kind),
+                    MembershipStandingV1::Enabled,
+                    core_access_mode(member.access_mode),
+                    member.role.clone(),
+                )
+                .map_err(|_| BackendError::Rejected)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let member_ids = memberships
+            .iter()
+            .map(|membership| membership.member_id().clone())
+            .collect::<Vec<_>>();
+        let genesis = self
+            .registry
+            .prepare_genesis_for_new_room(&PackGenesisRequestV1 {
+                room_id: room_id.clone(),
+                pack_digest: core_request.pack_digest().clone(),
+                configuration: core_request.configuration().clone(),
+                room_seed: seed,
+                created_at,
+                initial_core_state: worldstream_core::CoreRoomStateV1::active(memberships)
+                    .map_err(|_| BackendError::Rejected)?,
+            })
+            .map_err(|_| BackendError::Rejected)?;
+        let prepared =
+            PreparedRoomCreationV1::from_registry_genesis(identity, &core_request, grant, genesis)
+                .map_err(|_| BackendError::InvalidResult)?;
+
+        let authority = self.authority();
+        let checked_at = Self::checked_at()?;
+        let mut changes = Vec::with_capacity(spectators.len() * 2);
+        for spectator in &spectators {
+            changes.push(
+                authority
+                    .prepare_change(
+                        &presented,
+                        AuthorityChangeV1::CreatePrincipal {
+                            change_id: AuthorityChangeId::from_str(spectator.principal_id.as_str())
+                                .map_err(|_| BackendError::Rejected)?,
+                            principal_id: spectator.principal_id.clone(),
+                            kind: core_principal_kind(spectator.purpose.principal_kind()),
+                        },
+                        checked_at.clone(),
+                    )
+                    .map_err(map_authority_error)?,
+            );
+            let input = request
+                .spectators
+                .get(spectator.input_index)
+                .ok_or(BackendError::Rejected)?;
+            let bearer = input
+                .capability
+                .bearer
+                .wire()
+                .map_err(|_| BackendError::Rejected)?;
+            let capability = NewCapabilityV1::new(
+                spectator.capability_id.clone(),
+                CapabilityBearerV1::from_bytes(bearer.into_bytes()).token_hash(),
+                spectator.principal_id.clone(),
+                CapabilityProfileV1::RoomMember {
+                    room_id: room_id.clone(),
+                    member_id: member_ids
+                        .get(spectator.member_index)
+                        .ok_or(BackendError::InvalidResult)?
+                        .clone(),
+                },
+                spectator.scopes.clone(),
+                None,
+            )
+            .map_err(|_| BackendError::Rejected)?;
+            changes.push(
+                authority
+                    .prepare_change(
+                        &presented,
+                        AuthorityChangeV1::RegisterCapability {
+                            change_id: spectator.capability_change_id.clone(),
+                            capability,
+                        },
+                        checked_at.clone(),
+                    )
+                    .map_err(map_authority_error)?,
+            );
+        }
+
+        let write = PreparedRoomWriteV1::from(prepared);
+        let resolution = self.store.commit_creation_with_authority(&write, changes);
+        match resolution {
+            RoomCommitResolutionV1::GenesisCreated { result, .. } => {
+                let room = create_response_from_result(&result)?;
+                let response = self.verify_hosted_authority(request, &spectators, room)?;
+                Ok(HostedCreateAttempt::Response(Box::new(response)))
+            }
+            RoomCommitResolutionV1::Reprepare | RoomCommitResolutionV1::RetryableKnownAbsent => {
+                Ok(HostedCreateAttempt::Retry)
+            }
+            RoomCommitResolutionV1::Indeterminate => Err(BackendError::Indeterminate),
+            RoomCommitResolutionV1::Conflict { .. } => Err(BackendError::Conflict),
+            RoomCommitResolutionV1::Fenced => Err(BackendError::Busy),
+            RoomCommitResolutionV1::Fault
+            | RoomCommitResolutionV1::NotApplicable
+            | RoomCommitResolutionV1::TransitionCommitted { .. }
+            | RoomCommitResolutionV1::RejectionRecorded { .. }
+            | RoomCommitResolutionV1::NoChangeRecorded { .. } => Err(BackendError::InvalidResult),
+        }
+    }
+
+    fn verify_hosted_authority(
+        &self,
+        request: &HostedRoomCreationRequestV2,
+        spectators: &[ValidatedHostedSpectatorV2],
+        room: CreateRoomResponse,
+    ) -> Result<HostedRoomCreationResponseV2, BackendError> {
+        let room_id = RoomId::from_str(&room.room_id).map_err(|_| BackendError::InvalidResult)?;
+        let authority = self.authority();
+        let mut receipts = Vec::with_capacity(spectators.len());
+        for spectator in spectators {
+            let input = request
+                .spectators
+                .get(spectator.input_index)
+                .ok_or(BackendError::InvalidResult)?;
+            let bearer = input
+                .capability
+                .bearer
+                .wire()
+                .map_err(|_| BackendError::Rejected)?;
+            let authenticated = self
+                .store
+                .authenticate_bearer(CapabilityBearerV1::from_bytes(bearer.into_bytes()))
+                .map_err(|_| BackendError::InvalidResult)?;
+            if authenticated.presented().capability_id() != &spectator.capability_id
+                || authenticated.principal_id() != &spectator.principal_id
+                || authenticated.principal_kind()
+                    != core_principal_kind(spectator.purpose.principal_kind())
+            {
+                return Err(BackendError::InvalidResult);
+            }
+            let member_id = room
+                .member_ids
+                .get(spectator.member_index)
+                .ok_or(BackendError::InvalidResult)?
+                .parse::<worldstream_core::MemberId>()
+                .map_err(|_| BackendError::InvalidResult)?;
+            authority
+                .authorize_member_read(
+                    authenticated.presented(),
+                    room_id.clone(),
+                    member_id.clone(),
+                    MemberReadOperationV1::Attach,
+                    Self::checked_at()?,
+                )
+                .map_err(|_| BackendError::InvalidResult)?;
+            let snapshot = self
+                .store
+                .snapshot(&AuthoritySnapshotQueryV1::for_capability(
+                    spectator.capability_id.clone(),
+                ))
+                .map_err(|_| BackendError::StorageUnavailable)?
+                .ok_or(BackendError::InvalidResult)?;
+            if snapshot.principal().status() != PrincipalAuthorityStatusV1::Enabled
+                || snapshot.capability().scopes() != &spectator.scopes
+                || snapshot.capability().profile()
+                    != &(CapabilityProfileV1::RoomMember {
+                        room_id: room_id.clone(),
+                        member_id: member_id.clone(),
+                    })
+            {
+                return Err(BackendError::InvalidResult);
+            }
+            receipts.push(HostedSpectatorCredentialReceiptV2 {
+                purpose: spectator.purpose,
+                room_id: room.room_id.clone(),
+                member_id: member_id.to_string(),
+                principal_id: spectator.principal_id.to_string(),
+                capability_id: spectator.capability_id.to_string(),
+                scopes: crate::scope_names(&spectator.scopes),
+            });
+        }
+        Ok(HostedRoomCreationResponseV2 {
+            schema: HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2.to_owned(),
+            room,
+            spectators: receipts,
+        })
+    }
+
     fn create_room_attempt(
         &self,
         session: &GatewaySession,
@@ -1728,6 +1970,126 @@ impl SqliteGatewayBackend {
 enum CreateAttempt {
     Response(Box<CreateRoomResponse>),
     Retry,
+}
+
+enum HostedCreateAttempt {
+    Response(Box<HostedRoomCreationResponseV2>),
+    Retry,
+}
+
+struct ValidatedHostedSpectatorV2 {
+    input_index: usize,
+    member_index: usize,
+    purpose: HostedSpectatorPurposeV2,
+    principal_id: worldstream_core::PrincipalId,
+    capability_id: CapabilityId,
+    capability_change_id: AuthorityChangeId,
+    scopes: CapabilityScopeSetV1,
+}
+
+fn validate_hosted_room_request(
+    request: &HostedRoomCreationRequestV2,
+) -> Result<Vec<ValidatedHostedSpectatorV2>, BackendError> {
+    if request.schema != HOSTED_ROOM_CREATION_SCHEMA_V2
+        || request.spectators.is_empty()
+        || request.spectators.len() > 3
+        || request.room.members.is_empty()
+        || request
+            .room
+            .members
+            .iter()
+            .any(|member| member.access_mode == AccessMode::Operator)
+    {
+        return Err(BackendError::Rejected);
+    }
+    let spectator_member_count = request
+        .room
+        .members
+        .iter()
+        .filter(|member| member.access_mode == AccessMode::Spectator)
+        .count();
+    if spectator_member_count != request.spectators.len() {
+        return Err(BackendError::Rejected);
+    }
+    let mut purposes = std::collections::BTreeSet::new();
+    let mut member_indexes = std::collections::BTreeSet::new();
+    let mut principals = std::collections::BTreeSet::new();
+    let mut capabilities = std::collections::BTreeSet::new();
+    let mut authority_changes = std::collections::BTreeSet::new();
+    for member in &request.room.members {
+        if !principals.insert(member.principal_id.as_str())
+            || (member.access_mode == AccessMode::Participant
+                && member.role.as_deref().is_none_or(str::is_empty))
+            || (member.access_mode == AccessMode::Spectator && member.role.is_some())
+        {
+            return Err(BackendError::Rejected);
+        }
+    }
+    let mut validated = Vec::with_capacity(request.spectators.len());
+    for (input_index, spectator) in request.spectators.iter().enumerate() {
+        let member_index = usize::from(spectator.member_index);
+        let member = request
+            .room
+            .members
+            .get(member_index)
+            .ok_or(BackendError::Rejected)?;
+        if member.access_mode != AccessMode::Spectator
+            || member.role.is_some()
+            || member.principal_id != spectator.principal_id
+            || member.principal_kind != spectator.principal_kind
+            || spectator.principal_kind != spectator.purpose.principal_kind()
+            || !purposes.insert(spectator.purpose)
+            || !member_indexes.insert(member_index)
+        {
+            return Err(BackendError::Rejected);
+        }
+        let principal_id = spectator
+            .principal_id
+            .parse::<worldstream_core::PrincipalId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let capability_id = spectator
+            .capability
+            .capability_id
+            .parse::<CapabilityId>()
+            .map_err(|_| BackendError::Rejected)?;
+        let capability_change_id = spectator
+            .capability
+            .capability_idempotency_key
+            .parse::<AuthorityChangeId>()
+            .map_err(|_| BackendError::Rejected)?;
+        spectator
+            .capability
+            .bearer
+            .wire()
+            .map_err(|_| BackendError::Rejected)?;
+        if !capabilities.insert(capability_id.to_string())
+            || !authority_changes.insert(principal_id.to_string())
+            || !authority_changes.insert(capability_change_id.to_string())
+        {
+            return Err(BackendError::Rejected);
+        }
+        let scopes = crate::provisioned_scopes(
+            spectator
+                .purpose
+                .capability_scopes()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        )?;
+        validated.push(ValidatedHostedSpectatorV2 {
+            input_index,
+            member_index,
+            purpose: spectator.purpose,
+            principal_id,
+            capability_id,
+            capability_change_id,
+            scopes,
+        });
+    }
+    if !purposes.contains(&HostedSpectatorPurposeV2::ResultIndexer) {
+        return Err(BackendError::Rejected);
+    }
+    Ok(validated)
 }
 
 fn creation_request(
@@ -2223,6 +2585,20 @@ impl GatewayBackend for SqliteGatewayBackend {
             match self.create_room_attempt(session, &request)? {
                 CreateAttempt::Response(response) => return Ok(*response),
                 CreateAttempt::Retry => {}
+            }
+        }
+        Err(BackendError::Busy)
+    }
+
+    fn create_hosted_room(
+        &self,
+        session: &GatewaySession,
+        request: HostedRoomCreationRequestV2,
+    ) -> Result<HostedRoomCreationResponseV2, BackendError> {
+        for _ in 0..3 {
+            match self.create_hosted_room_attempt(session, &request)? {
+                HostedCreateAttempt::Response(response) => return Ok(*response),
+                HostedCreateAttempt::Retry => {}
             }
         }
         Err(BackendError::Busy)
@@ -3758,8 +4134,9 @@ mod tests {
         counter_v2_digest, counter_v3_digest, counter_v4_digest,
     };
     use worldstream_protocol::{
-        AccessMode, BearerWireV1, CreateMember, MemberCapabilityProvisionRequestV1, PackReference,
-        PrincipalKind, RunnerCapabilityProvisionRequestV1, RunnerMembershipProvisionTargetV1,
+        AccessMode, BearerWireV1, CreateMember, HostedSpectatorCredentialInputV2,
+        MemberCapabilityProvisionRequestV1, PackReference, PrincipalKind,
+        RunnerCapabilityProvisionRequestV1, RunnerMembershipProvisionTargetV1,
         SealedCapabilityBearerV1, SealedCapabilityInputV1,
     };
 
@@ -3980,6 +4357,182 @@ mod tests {
             },
             expires_at: None,
         }
+    }
+
+    fn hosted_counter_request(
+        result_bearer_byte: u8,
+        creator_bearer_byte: u8,
+    ) -> HostedRoomCreationRequestV2 {
+        HostedRoomCreationRequestV2 {
+            schema: HOSTED_ROOM_CREATION_SCHEMA_V2.to_owned(),
+            room: CreateRoomRequest {
+                pack: PackReference {
+                    id: "worldstream.counter".to_owned(),
+                    version: "2.0.0".to_owned(),
+                    digest: counter_v2_digest().to_string(),
+                },
+                configuration: json!({"initial_value": 0, "maximum_value": 16}),
+                members: vec![
+                    CreateMember {
+                        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FC2".to_owned(),
+                        principal_kind: PrincipalKind::Human,
+                        role: Some("counter".to_owned()),
+                        access_mode: AccessMode::Participant,
+                    },
+                    CreateMember {
+                        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FD2".to_owned(),
+                        principal_kind: PrincipalKind::Agent,
+                        role: None,
+                        access_mode: AccessMode::Spectator,
+                    },
+                    CreateMember {
+                        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FD5".to_owned(),
+                        principal_kind: PrincipalKind::Human,
+                        role: None,
+                        access_mode: AccessMode::Spectator,
+                    },
+                ],
+                idempotency_key: "hosted-counter-room".to_owned(),
+            },
+            spectators: vec![
+                HostedSpectatorCredentialInputV2 {
+                    purpose: HostedSpectatorPurposeV2::ResultIndexer,
+                    member_index: 1,
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FD2".to_owned(),
+                    principal_kind: PrincipalKind::Agent,
+                    capability: SealedCapabilityInputV1 {
+                        capability_id: "01ARZ3NDEKTSV4RRFFQ69G5FD3".to_owned(),
+                        capability_idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FD4".to_owned(),
+                        bearer: SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(
+                            [result_bearer_byte; 32],
+                        )),
+                    },
+                },
+                HostedSpectatorCredentialInputV2 {
+                    purpose: HostedSpectatorPurposeV2::Creator,
+                    member_index: 2,
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FD5".to_owned(),
+                    principal_kind: PrincipalKind::Human,
+                    capability: SealedCapabilityInputV1 {
+                        capability_id: "01ARZ3NDEKTSV4RRFFQ69G5FD6".to_owned(),
+                        capability_idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FD7".to_owned(),
+                        bearer: SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(
+                            [creator_bearer_byte; 32],
+                        )),
+                    },
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn hosted_room_creation_is_atomic_restartable_and_non_playing() {
+        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
+        let host_bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
+        AuthorityV1::new(Arc::new(store.clone()))
+            .bootstrap(
+                AuthorityBootstrapV1::new(
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC4"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("bootstrap change")),
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC2"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("host principal")),
+                    PrincipalKindV1::Human,
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC3"
+                        .parse()
+                        .unwrap_or_else(|_| panic!("host capability")),
+                    host_bearer.token_hash(),
+                    None,
+                )
+                .unwrap_or_else(|_| panic!("bootstrap request")),
+                "2026-08-15T12:00:00Z"
+                    .parse::<AuthorityCheckedAt>()
+                    .unwrap_or_else(|_| panic!("bootstrap time")),
+            )
+            .unwrap_or_else(|_| panic!("bootstrap authority"));
+        let registry =
+            Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
+        let host = session(0xa9, "01ARZ3NDEKTSV4RRFFQ69G5FC5");
+        let backend = SqliteGatewayBackend::new(store.clone(), Arc::clone(&registry));
+
+        let failed = backend.create_hosted_room(&host, hosted_counter_request(0xc1, 0xc1));
+        assert!(
+            matches!(failed, Err(BackendError::InvalidResult)),
+            "unexpected hosted failure: {failed:?}"
+        );
+        let empty = backend
+            .operator_room_inventory(
+                &host,
+                OperatorRoomInventoryRequest {
+                    after_room_id: None,
+                    limit: 50,
+                },
+            )
+            .unwrap_or_else(|error| panic!("inventory after rollback: {error:?}"));
+        assert!(
+            empty.rooms.is_empty(),
+            "authority failure must roll Genesis back"
+        );
+
+        let first = backend
+            .create_hosted_room(&host, hosted_counter_request(0xc1, 0xc2))
+            .unwrap_or_else(|error| panic!("hosted create: {error:?}"));
+        assert_eq!(first.schema, HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2);
+        assert_eq!(first.spectators.len(), 2);
+        assert_eq!(
+            first.spectators[0].scopes,
+            ["room:attach", "room:observe_public", "room:replay"]
+        );
+        assert_eq!(
+            first.spectators[1].scopes,
+            ["room:attach", "room:observe_public"]
+        );
+        assert!(first.spectators.iter().all(|receipt| {
+            receipt.room_id == first.room.room_id
+                && !receipt.scopes.iter().any(|scope| scope == "room:act")
+        }));
+
+        let restarted = SqliteGatewayBackend::new(
+            SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("restart db")),
+            registry,
+        );
+        let duplicate = restarted
+            .create_hosted_room(&host, hosted_counter_request(0xc1, 0xc2))
+            .unwrap_or_else(|error| panic!("hosted retry: {error:?}"));
+        assert_eq!(duplicate, first);
+
+        let result_indexer = session(0xc1, "01ARZ3NDEKTSV4RRFFQ69G5FE0");
+        let attached = restarted
+            .attach(
+                &result_indexer,
+                RoomAttach {
+                    room_id: first.room.room_id.clone(),
+                    member_id: first.spectators[0].member_id.clone(),
+                    after_frame_seq: None,
+                },
+            )
+            .unwrap_or_else(|error| panic!("spectator attach: {error:?}"));
+        assert_eq!(attached.attached.access_mode, AccessMode::Spectator);
+        assert_eq!(attached.attached.role, None);
+        restarted
+            .replay(&result_indexer, &first.room.room_id, 0)
+            .unwrap_or_else(|error| panic!("result-indexer replay: {error:?}"));
+        assert!(matches!(
+            restarted.action(
+                &result_indexer,
+                ActionSubmit {
+                    room_id: first.room.room_id,
+                    member_id: first.spectators[0].member_id.clone(),
+                    action_id: "01ARZ3NDEKTSV4RRFFQ69G5FE1".to_owned(),
+                    based_on_room_seq: 0,
+                    action_type: "increment".to_owned(),
+                    payload: json!({"amount": 1}),
+                },
+            ),
+            Err(BackendError::Forbidden)
+        ));
     }
 
     fn sealed_runner_request(

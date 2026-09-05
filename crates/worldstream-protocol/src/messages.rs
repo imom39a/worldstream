@@ -639,6 +639,80 @@ pub struct CreateRoomResponse {
     pub room_head: RoomHead,
 }
 
+pub const HOSTED_ROOM_CREATION_SCHEMA_V2: &str = "worldstream/hosted-room-creation/v2";
+pub const HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2: &str =
+    "worldstream/hosted-room-creation-response/v2";
+
+/// Closed non-playing purpose accepted by the hosted pre-Genesis operation.
+/// The Runtime derives authority from this value; callers cannot submit scopes.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedSpectatorPurposeV2 {
+    ResultIndexer,
+    Creator,
+    PublicRelay,
+}
+
+impl HostedSpectatorPurposeV2 {
+    #[must_use]
+    pub const fn principal_kind(self) -> PrincipalKind {
+        match self {
+            Self::Creator => PrincipalKind::Human,
+            Self::ResultIndexer | Self::PublicRelay => PrincipalKind::Agent,
+        }
+    }
+
+    #[must_use]
+    pub const fn capability_scopes(self) -> &'static [&'static str] {
+        match self {
+            Self::ResultIndexer => &["room:attach", "room:observe_public", "room:replay"],
+            Self::Creator | Self::PublicRelay => &["room:attach", "room:observe_public"],
+        }
+    }
+}
+
+/// One caller-sealed spectator credential installed in the Room-Genesis
+/// transaction. Scope, Access Mode, and Role are derived by the Runtime.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedSpectatorCredentialInputV2 {
+    pub purpose: HostedSpectatorPurposeV2,
+    pub member_index: u16,
+    pub principal_id: String,
+    pub principal_kind: PrincipalKind,
+    pub capability: SealedCapabilityInputV1,
+}
+
+/// Narrow all-or-nothing hosted Room setup request.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedRoomCreationRequestV2 {
+    pub schema: String,
+    pub room: CreateRoomRequest,
+    pub spectators: Vec<HostedSpectatorCredentialInputV2>,
+}
+
+/// Secret-free proof of one spectator capability committed with Genesis.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedSpectatorCredentialReceiptV2 {
+    pub purpose: HostedSpectatorPurposeV2,
+    pub room_id: String,
+    pub member_id: String,
+    pub principal_id: String,
+    pub capability_id: String,
+    pub scopes: Vec<String>,
+}
+
+/// Atomic Room-Genesis and spectator-credential receipt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedRoomCreationResponseV2 {
+    pub schema: String,
+    pub room: CreateRoomResponse,
+    pub spectators: Vec<HostedSpectatorCredentialReceiptV2>,
+}
+
 /// Caller-sealed input for an idempotently registered Capability.
 ///
 /// The bearer is delivered to the daemon only over the authenticated local

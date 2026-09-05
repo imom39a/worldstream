@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorldStream Room Setup Specification v2",
+  "description": "Non-authoritative Room creation intent with bounded, non-seat hosted spectators. The Host derives all spectator authority from purpose.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "pack",
+    "configuration",
+    "seats",
+    "spectators"
+  ],
+  "properties": {
+    "schema": {
+      "const": "worldstream/room-setup/v2"
+    },
+    "pack": {
+      "$ref": "./room-setup-v1.schema.json#/$defs/pack"
+    },
+    "configuration": {
+      "description": "Resolved against the exact installed Pack schema; semantic acceptance remains the Pack's responsibility."
+    },
+    "seats": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "./room-setup-v1.schema.json#/$defs/seat"
+      }
+    },
+    "spectators": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["purpose"],
+            "properties": {
+              "purpose": { "const": "result_indexer" }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["purpose"],
+            "properties": {
+              "purpose": { "const": "creator" }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["purpose"],
+            "properties": {
+              "purpose": { "const": "public_relay" }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 1
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/spectator"
+      }
+    },
+    "operator_view": {
+      "const": false,
+      "default": false
+    }
+  },
+  "$defs": {
+    "spectator": {
+      "type": "object",
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "purpose": {
+            "const": "creator"
+          }
+        },
+        "required": ["purpose"]
+      },
+      "then": {
+        "properties": {
+          "principal": {
+            "allOf": [
+              { "$ref": "./room-setup-v1.schema.json#/$defs/principal" },
+              { "properties": { "kind": { "const": "human" } } }
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "principal": {
+            "allOf": [
+              { "$ref": "./room-setup-v1.schema.json#/$defs/principal" },
+              { "properties": { "kind": { "const": "agent" } } }
+            ]
+          }
+        }
+      },
+      "required": [
+        "purpose",
+        "principal"
+      ],
+      "properties": {
+        "purpose": {
+          "enum": [
+            "result_indexer",
+            "creator",
+            "public_relay"
+          ]
+        },
+        "principal": {
+          "$ref": "./room-setup-v1.schema.json#/$defs/principal"
+        }
+      }
+    }
+  }
+}

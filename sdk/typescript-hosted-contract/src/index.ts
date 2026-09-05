@@ -283,15 +283,18 @@ export function deriveRoomSetup(
   rosterBytes: Uint8Array,
 ): Uint8Array {
   requireValidatedListing(listing);
-  const launch = closedRecord(readCanonical(launchBytes, 16_384), ["schema", "listing_revision_digest", "inputs"]);
+  const launch = closedRecord(readCanonical(launchBytes, 16_384), ["schema", "listing_revision_digest", "inputs", "creator"]);
   const roster = closedRecord(readCanonical(rosterBytes, 65_536), ["schema", "listing_revision_digest", "members"]);
-  if (launch.schema !== "worldstream/launch-request/v1" || roster.schema !== "worldstream/frozen-roster/v1") {
+  if (launch.schema !== "worldstream/launch-request/v2" || roster.schema !== "worldstream/frozen-roster/v1") {
     throw new ContractViolation("unsupported");
   }
   if (launch.listing_revision_digest !== listing.digest || roster.listing_revision_digest !== listing.digest) {
     throw new ContractViolation("reference_mismatch");
   }
   closedRecord(launch.inputs, []);
+  const creator = closedRecord(launch.creator, ["participation", "principal_reference"]);
+  const creatorParticipation = enumValue(creator.participation, ["seat", "spectator"]);
+  const creatorPrincipalReference = publicReference(creator.principal_reference, 128);
   const memberValues = array(roster.members);
   if (memberValues.length > listing.value.seats.length) throw new ContractViolation("invalid_shape");
 
@@ -304,6 +307,24 @@ export function deriveRoomSetup(
     }
     members.set(member.seat_id, member);
     principalReferences.add(member.principal_reference);
+  }
+  let creatorSpectatorReference: string | undefined;
+  if (creatorParticipation === "seat") {
+    if (![...members.values()].some((member) =>
+      member.principal_reference === creatorPrincipalReference
+      && member.participation === "account_human"
+    )) {
+      throw new ContractViolation("invalid_shape");
+    }
+  } else {
+    if (
+      listing.value.creator_access !== "may_spectate"
+      || creatorPrincipalReference !== "worldstream:creator-spectator"
+      || principalReferences.has(creatorPrincipalReference)
+    ) {
+      throw new ContractViolation("invalid_shape");
+    }
+    creatorSpectatorReference = creatorPrincipalReference;
   }
   const seats: CanonicalJson[] = [];
   for (const listed of listing.value.seats) {
@@ -320,15 +341,54 @@ export function deriveRoomSetup(
     seats.push(seat);
   }
   if (members.size !== 0) throw new ContractViolation("invalid_shape");
+  const spectators: CanonicalJson[] = [];
+  appendSetupSpectator(
+    spectators,
+    principalReferences,
+    "result_indexer",
+    "worldstream:result-indexer",
+    "agent",
+  );
+  if (creatorSpectatorReference !== undefined) {
+    appendSetupSpectator(
+      spectators,
+      principalReferences,
+      "creator",
+      creatorSpectatorReference,
+      "human",
+    );
+  }
+  if (listing.value.public_viewing_policy === "anonymous_by_link") {
+    appendSetupSpectator(
+      spectators,
+      principalReferences,
+      "public_relay",
+      "worldstream:public-relay",
+      "agent",
+    );
+  }
   const bytes = encodeCanonical({
-    schema: "worldstream/room-setup/v1",
+    schema: "worldstream/room-setup/v2",
     pack: listing.value.pack as unknown as CanonicalObject,
     configuration: listing.value.room_setup.configuration,
     seats,
+    spectators,
     operator_view: false,
   });
   if (bytes.byteLength > MAX_REVISION_BYTES) throw new ContractViolation("output_too_large");
   return bytes;
+}
+
+function appendSetupSpectator(
+  spectators: CanonicalJson[],
+  principalReferences: Set<string>,
+  purpose: "result_indexer" | "creator" | "public_relay",
+  reference: string,
+  kind: "human" | "agent",
+): void {
+  if (principalReferences.has(reference)) throw new ContractViolation("invalid_shape");
+  principalReferences.add(reference);
+  spectators.push({ purpose, principal: { reference, kind } });
 }
 
 interface FrozenMember {

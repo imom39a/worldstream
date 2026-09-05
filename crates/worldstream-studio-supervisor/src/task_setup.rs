@@ -47,11 +47,15 @@ use crate::{
         ParticipantConsoleSessionHealthV1, ParticipantHandoffAuthorityErrorV1,
         ParticipantHandoffAuthoritySourceV1,
     },
-    room_creation::{RoomCreationStateV1, RoomCreationSupervisorV1},
+    room_creation::{
+        HostedSpectatorCredentialReceiptV2, ReviewedSpectatorV2, RoomCreationOperationV1,
+        RoomCreationStateV1, RoomCreationSupervisorV1,
+    },
     room_drafts::{
         AgentAssignmentModeV1, AgentProfileRevisionReferenceV1, RoomDraftSeatV1,
         RunnerTemplateRevisionReferenceV1,
     },
+    room_setup_spec::SetupSpectatorPurposeV2,
     runner_templates::{
         ManagedRunnerBindingErrorV1, RunnerFreshnessV1, RunnerInstanceHealthV1,
         RunnerInstanceStateV1, RunnerInstanceStatusV1, RunnerSupervisorV1,
@@ -223,6 +227,19 @@ struct SetupSeatIntentV1 {
     runner: Option<RunnerIntentV1>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SetupSpectatorIntentV2 {
+    purpose: SetupSpectatorPurposeV2,
+    principal_id: String,
+    principal_kind: PrincipalKind,
+    member_id: String,
+    capability_id: String,
+    capability_idempotency_key: String,
+    secret_reference: SecretReferenceV1,
+    scopes: Vec<String>,
+}
+
 /// Owner-only durable intent. Secret references never enter its browser view.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -236,6 +253,8 @@ struct TaskSetupOperationV1 {
     setup_intent_hash: String,
     checkpoint_hash: String,
     seats: Vec<SetupSeatIntentV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    spectators: Vec<SetupSpectatorIntentV2>,
     state: TaskSetupStateV1,
     attempts: u32,
     active_stage: Option<TaskSetupStageV1>,
@@ -243,6 +262,55 @@ struct TaskSetupOperationV1 {
     #[serde(default, skip_serializing_if = "launch_applicability_is_unknown")]
     launch_applicability: TaskLaunchApplicabilityV1,
     launch: Option<TaskLaunchIntentV1>,
+}
+
+#[derive(Serialize)]
+struct SetupHashIntentV1<'a> {
+    draft_id: &'a str,
+    operation_id: &'a str,
+    room_id: &'a str,
+    pack: &'a PackReference,
+    creation_intent_hash: &'a str,
+    seats: Vec<SetupHashSeatV1<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    spectators: Vec<SetupHashSpectatorV2<'a>>,
+}
+
+#[derive(Serialize)]
+struct SetupHashSeatV1<'a> {
+    seat_id: &'a str,
+    role: &'a str,
+    required: bool,
+    display_name: &'a str,
+    principal_id: Option<&'a str>,
+    principal_kind: Option<PrincipalKind>,
+    agent_assignment: Option<AgentAssignmentModeV1>,
+    agent_profile: Option<&'a AgentProfileRevisionReferenceV1>,
+    member_id: Option<&'a str>,
+    member_capability_id: Option<&'a str>,
+    member_change_id: Option<&'a str>,
+    member_secret_reference: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member_scopes: Option<&'a Vec<String>>,
+    runner_id: Option<&'a str>,
+    runner_principal_change_id: Option<&'a str>,
+    runner_change_id: Option<&'a str>,
+    managed_assignment: Option<&'a ManagedRunnerAssignmentV1>,
+    runner_capability_id: Option<&'a str>,
+    runner_capability_change_id: Option<&'a str>,
+    runner_secret_reference: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct SetupHashSpectatorV2<'a> {
+    purpose: SetupSpectatorPurposeV2,
+    principal_id: &'a str,
+    principal_kind: PrincipalKind,
+    member_id: &'a str,
+    capability_id: &'a str,
+    capability_idempotency_key: &'a str,
+    secret_reference: &'a str,
+    scopes: &'a Vec<String>,
 }
 
 /// Closed browser-safe reason why one seat is or is not live-ready.
@@ -334,6 +402,17 @@ pub struct TaskSetupSeatStatusV1 {
     pub runner_authority: String,
 }
 
+/// Browser-safe progress for one v2 non-seat spectator.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSetupSpectatorStatusV2 {
+    pub purpose: SetupSpectatorPurposeV2,
+    pub principal_id: String,
+    pub principal_kind: PrincipalKind,
+    pub member_id: String,
+    pub member_authority: String,
+}
+
 /// Complete browser-safe status. It contains no bearer, hash, secret
 /// reference, local path, daemon request, or raw daemon receipt.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -350,6 +429,8 @@ pub struct TaskSetupStatusV1 {
     pub active_stage: Option<TaskSetupStageV1>,
     pub attention: Option<TaskSetupAttentionV1>,
     pub seats: Vec<TaskSetupSeatStatusV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spectators: Vec<TaskSetupSpectatorStatusV2>,
     pub readiness: TaskReadinessV1,
     pub launch_applicability: TaskLaunchApplicabilityV1,
     pub launch: Option<TaskLaunchStatusV1>,
@@ -383,7 +464,8 @@ impl TaskSetupStatusV1 {
             .map(|seat| {
                 u32::from(seat.member_capability.is_some()) + u32::from(seat.runner.is_some())
             })
-            .sum();
+            .sum::<u32>()
+            + u32::try_from(operation.spectators.len()).unwrap_or(u32::MAX);
         let completed_stages = operation
             .seats
             .iter()
@@ -398,7 +480,19 @@ impl TaskSetupStatusV1 {
                         .is_some_and(|value| value.capability.provisioned),
                 )
             })
-            .sum();
+            .sum::<u32>()
+            + u32::try_from(operation.spectators.len()).unwrap_or(u32::MAX);
+        let spectators = operation
+            .spectators
+            .iter()
+            .map(|spectator| TaskSetupSpectatorStatusV2 {
+                purpose: spectator.purpose,
+                principal_id: spectator.principal_id.clone(),
+                principal_kind: spectator.principal_kind,
+                member_id: spectator.member_id.clone(),
+                member_authority: "provisioned".to_owned(),
+            })
+            .collect();
         let seats = operation
             .seats
             .into_iter()
@@ -435,6 +529,7 @@ impl TaskSetupStatusV1 {
             active_stage: operation.active_stage,
             attention: operation.attention,
             seats,
+            spectators,
             readiness,
             launch_applicability: operation.launch_applicability,
             launch: operation.launch.map(|launch| TaskLaunchStatusV1 {
@@ -905,15 +1000,8 @@ impl TaskRunnerReadinessSourceV1 for LiveTaskRunnerReadinessSourceV1 {
         match self.managed_reason(assignment, pack) {
             TaskSeatReadinessReasonV1::Ready => {}
             TaskSeatReadinessReasonV1::ParticipantUnsynchronized
-            | TaskSeatReadinessReasonV1::ParticipantUnavailable => {
-                return Err(TaskSetupAttemptErrorV1::Rejected);
-            }
-            TaskSeatReadinessReasonV1::RunnerStale
-            | TaskSeatReadinessReasonV1::RunnerDisconnected
-            | TaskSeatReadinessReasonV1::RunnerOverCapacity => {
-                return Err(TaskSetupAttemptErrorV1::Ambiguous);
-            }
-            TaskSeatReadinessReasonV1::RunnerAssignmentMissing
+            | TaskSeatReadinessReasonV1::ParticipantUnavailable
+            | TaskSeatReadinessReasonV1::RunnerAssignmentMissing
             | TaskSeatReadinessReasonV1::RunnerIncompatible
             | TaskSeatReadinessReasonV1::OptionalUnfilled
             | TaskSeatReadinessReasonV1::SetupIncomplete
@@ -923,6 +1011,11 @@ impl TaskRunnerReadinessSourceV1 for LiveTaskRunnerReadinessSourceV1 {
             | TaskSeatReadinessReasonV1::ConsoleDisconnected
             | TaskSeatReadinessReasonV1::RunnerMissing => {
                 return Err(TaskSetupAttemptErrorV1::Rejected);
+            }
+            TaskSeatReadinessReasonV1::RunnerStale
+            | TaskSeatReadinessReasonV1::RunnerDisconnected
+            | TaskSeatReadinessReasonV1::RunnerOverCapacity => {
+                return Err(TaskSetupAttemptErrorV1::Ambiguous);
             }
         }
         self.managed
@@ -1693,7 +1786,8 @@ impl TaskSetupSupervisorV1 {
             .iter()
             .filter(|seat| seat.principal_id.is_some())
             .collect::<Vec<_>>();
-        let expected_member_count = filled.len() + usize::from(creation.review.operator_view);
+        let expected_member_count =
+            filled.len() + creation.spectators.len() + usize::from(creation.review.operator_view);
         if expected_member_count != response.member_ids.len() {
             return Err(TaskSetupErrorV1::InvalidCreation);
         }
@@ -1729,6 +1823,7 @@ impl TaskSetupSupervisorV1 {
                 }
             });
         }
+        let spectators = Self::prepare_spectators(&creation, &mut member_ids)?;
         if creation.review.operator_view && member_ids.next().is_none() {
             return Err(TaskSetupErrorV1::InvalidCreation);
         }
@@ -1746,6 +1841,7 @@ impl TaskSetupSupervisorV1 {
             setup_intent_hash: String::new(),
             checkpoint_hash: String::new(),
             seats,
+            spectators,
             state: TaskSetupStateV1::Waiting,
             attempts: 0,
             active_stage: None,
@@ -1757,6 +1853,51 @@ impl TaskSetupSupervisorV1 {
         operation.checkpoint_hash = checkpoint_hash(&operation)?;
         validate_operation(&operation, draft_id)?;
         Ok(operation)
+    }
+
+    fn prepare_spectators(
+        creation: &RoomCreationOperationV1,
+        member_ids: &mut std::slice::Iter<'_, String>,
+    ) -> Result<Vec<SetupSpectatorIntentV2>, TaskSetupErrorV1> {
+        let spectators: &[ReviewedSpectatorV2] = &creation.spectators;
+        let receipts: &[HostedSpectatorCredentialReceiptV2] = &creation.spectator_credentials;
+        if spectators.len() != receipts.len() {
+            return Err(TaskSetupErrorV1::InvalidCreation);
+        }
+        spectators
+            .iter()
+            .zip(receipts)
+            .map(|(spectator, receipt)| {
+                let member_id = member_ids
+                    .next()
+                    .ok_or(TaskSetupErrorV1::InvalidCreation)?
+                    .clone();
+                let scopes = spectator
+                    .purpose
+                    .capability_scopes()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                if receipt.purpose != spectator.purpose
+                    || receipt.principal_id != spectator.principal_id
+                    || receipt.member_id != member_id
+                    || receipt.capability_id != spectator.capability_id
+                    || receipt.scopes != scopes
+                {
+                    return Err(TaskSetupErrorV1::InvalidCreation);
+                }
+                Ok(SetupSpectatorIntentV2 {
+                    purpose: spectator.purpose,
+                    principal_id: spectator.principal_id.clone(),
+                    principal_kind: spectator.principal_kind,
+                    member_id,
+                    capability_id: spectator.capability_id.clone(),
+                    capability_idempotency_key: spectator.capability_idempotency_key.clone(),
+                    secret_reference: spectator.secret_reference.clone(),
+                    scopes,
+                })
+            })
+            .collect()
     }
 
     fn prepare_filled_seat(
@@ -1916,9 +2057,10 @@ impl TaskSetupSupervisorV1 {
         operation: &TaskSetupOperationV1,
         stage: &TaskSetupStageV1,
     ) -> Result<(), TaskSetupAttemptErrorV1> {
-        let seat = seat_for_stage(operation, stage).ok_or(TaskSetupAttemptErrorV1::Rejected)?;
         match stage {
             TaskSetupStageV1::MemberCapability { .. } => {
+                let seat =
+                    seat_for_stage(operation, stage).ok_or(TaskSetupAttemptErrorV1::Rejected)?;
                 let intent = seat
                     .member_capability
                     .as_ref()
@@ -1958,6 +2100,8 @@ impl TaskSetupSupervisorV1 {
                 }
             }
             TaskSetupStageV1::RunnerCapability { .. } => {
+                let seat =
+                    seat_for_stage(operation, stage).ok_or(TaskSetupAttemptErrorV1::Rejected)?;
                 let runner = seat
                     .runner
                     .as_ref()
@@ -2917,6 +3061,7 @@ fn validate_operation(
         || setup_intent_hash(operation)? != operation.setup_intent_hash
         || checkpoint_hash(operation)? != operation.checkpoint_hash
         || operation.seats.len() > 64
+        || !setup_spectators_are_valid(operation)
         || !state_is_coherent(operation)
         || !progress_is_a_prefix(operation)
         || !launch_is_coherent(operation)
@@ -2981,6 +3126,43 @@ fn validate_operation(
         }
     }
     Ok(())
+}
+
+fn setup_spectators_are_valid(operation: &TaskSetupOperationV1) -> bool {
+    if operation.spectators.len() > 3 {
+        return false;
+    }
+    let mut purposes = std::collections::BTreeSet::new();
+    let mut principals = operation
+        .seats
+        .iter()
+        .filter_map(|seat| seat.principal_id.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut members = operation
+        .seats
+        .iter()
+        .filter_map(|seat| seat.member_id.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    let all_valid = operation.spectators.iter().all(|spectator| {
+        let expected_kind = spectator.purpose.principal_kind();
+        spectator.principal_kind == expected_kind
+            && is_ulid(&spectator.principal_id)
+            && is_ulid(&spectator.member_id)
+            && is_ulid(&spectator.capability_id)
+            && is_ulid(&spectator.capability_idempotency_key)
+            && !spectator.secret_reference.as_str().is_empty()
+            && spectator.scopes.iter().map(String::as_str).eq(spectator
+                .purpose
+                .capability_scopes()
+                .iter()
+                .copied())
+            && purposes.insert(spectator.purpose)
+            && principals.insert(&spectator.principal_id)
+            && members.insert(&spectator.member_id)
+    });
+    all_valid
+        && (operation.spectators.is_empty()
+            || purposes.contains(&SetupSpectatorPurposeV2::ResultIndexer))
 }
 
 fn launch_is_coherent(operation: &TaskSetupOperationV1) -> bool {
@@ -3073,43 +3255,10 @@ fn progress_is_a_prefix(operation: &TaskSetupOperationV1) -> bool {
 }
 
 fn setup_intent_hash(operation: &TaskSetupOperationV1) -> Result<String, TaskSetupErrorV1> {
-    #[derive(Serialize)]
-    struct Intent<'a> {
-        draft_id: &'a str,
-        operation_id: &'a str,
-        room_id: &'a str,
-        pack: &'a PackReference,
-        creation_intent_hash: &'a str,
-        seats: Vec<IntentSeat<'a>>,
-    }
-    #[derive(Serialize)]
-    struct IntentSeat<'a> {
-        seat_id: &'a str,
-        role: &'a str,
-        required: bool,
-        display_name: &'a str,
-        principal_id: Option<&'a str>,
-        principal_kind: Option<PrincipalKind>,
-        agent_assignment: Option<AgentAssignmentModeV1>,
-        agent_profile: Option<&'a AgentProfileRevisionReferenceV1>,
-        member_id: Option<&'a str>,
-        member_capability_id: Option<&'a str>,
-        member_change_id: Option<&'a str>,
-        member_secret_reference: Option<&'a str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        member_scopes: Option<&'a Vec<String>>,
-        runner_id: Option<&'a str>,
-        runner_principal_change_id: Option<&'a str>,
-        runner_change_id: Option<&'a str>,
-        managed_assignment: Option<&'a ManagedRunnerAssignmentV1>,
-        runner_capability_id: Option<&'a str>,
-        runner_capability_change_id: Option<&'a str>,
-        runner_secret_reference: Option<&'a str>,
-    }
     let seats = operation
         .seats
         .iter()
-        .map(|seat| IntentSeat {
+        .map(|seat| SetupHashSeatV1 {
             seat_id: &seat.seat_id,
             role: &seat.role,
             required: seat.required,
@@ -3159,13 +3308,28 @@ fn setup_intent_hash(operation: &TaskSetupOperationV1) -> Result<String, TaskSet
                 .map(|value| value.capability.secret_reference.as_str()),
         })
         .collect();
-    let bytes = serde_json::to_vec(&Intent {
+    let spectators = operation
+        .spectators
+        .iter()
+        .map(|spectator| SetupHashSpectatorV2 {
+            purpose: spectator.purpose,
+            principal_id: &spectator.principal_id,
+            principal_kind: spectator.principal_kind,
+            member_id: &spectator.member_id,
+            capability_id: &spectator.capability_id,
+            capability_idempotency_key: &spectator.capability_idempotency_key,
+            secret_reference: spectator.secret_reference.as_str(),
+            scopes: &spectator.scopes,
+        })
+        .collect();
+    let bytes = serde_json::to_vec(&SetupHashIntentV1 {
         draft_id: &operation.draft_id,
         operation_id: &operation.operation_id,
         room_id: &operation.room_id,
         pack: &operation.pack,
         creation_intent_hash: &operation.creation_intent_hash,
         seats,
+        spectators,
     })
     .map_err(|_| TaskSetupErrorV1::Unavailable)?;
     Ok(format!("blake3:{}", blake3::hash(&bytes).to_hex()))
@@ -3291,6 +3455,7 @@ mod readiness_selection_tests {
             setup_intent_hash: String::new(),
             checkpoint_hash: String::new(),
             seats: vec![seat],
+            spectators: Vec::new(),
             state: TaskSetupStateV1::Waiting,
             attempts: 0,
             active_stage: None,

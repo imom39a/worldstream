@@ -26,7 +26,10 @@ use worldstream_studio_supervisor::{
         ParticipantConsoleObservationV1, ParticipantHandoffBrokerV1,
         operator_client_handoff_router, participant_handoff_router,
     },
-    room_creation::{DaemonRoomCreatorV1, RoomCreationAttemptErrorV1, RoomCreationSupervisorV1},
+    room_creation::{
+        DaemonRoomCreatorV1, HostedRoomCreationResponseV2, HostedSpectatorCredentialReceiptV2,
+        RetainedHostedRoomCreationIntentV2, RoomCreationAttemptErrorV1, RoomCreationSupervisorV1,
+    },
     room_drafts::{ExactActivityPackDraftValidatorV1, RoomDraftStoreV1},
     room_setup_operations::{
         RoomSetupCreateRequestV1, RoomSetupOperationStageV1, RoomSetupOperationsV1,
@@ -136,11 +139,19 @@ impl DaemonRoomCreatorV1 for Daemon {
         &self,
         request: &CreateRoomRequest,
     ) -> Result<CreateRoomResponse, RoomCreationAttemptErrorV1> {
-        if request.members.len() != 2 {
+        if !matches!(request.members.len(), 2 | 5) {
             return Err(RoomCreationAttemptErrorV1::Rejected);
         }
+        let mut member_ids = vec!["01ARZ3NDEKTSV4RRFFQ69G5FAY", "01ARZ3NDEKTSV4RRFFQ69G5FAZ"];
+        if request.members.len() == 5 {
+            member_ids.extend([
+                "01ARZ3NDEKTSV4RRFFQ69G5FB0",
+                "01ARZ3NDEKTSV4RRFFQ69G5FB1",
+                "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+            ]);
+        }
         serde_json::from_value(json!({"room_id":ROOM,
-            "member_ids":["01ARZ3NDEKTSV4RRFFQ69G5FAY","01ARZ3NDEKTSV4RRFFQ69G5FAZ"],
+            "member_ids":member_ids,
             "room_head":{"room_id":ROOM,"room_seq":0,"genesis_or_transition_hash":format!("blake3:{}","b".repeat(64)),
                 "core_schema_version":"worldstream/core-room-state/v1","pack_digest":request.pack.digest,
                 "core_state_hash":format!("blake3:{}","c".repeat(64)),"activity_state_hash":format!("blake3:{}","d".repeat(64)),
@@ -359,11 +370,15 @@ async fn reviewed_negotiate_setup_validates_and_creates_with_domain_identifiers_
 #[derive(Default)]
 struct DaemonLedger {
     creations: Vec<CreateRoomRequest>,
+    hosted_creations: Vec<RetainedHostedRoomCreationIntentV2>,
+    hosted_responses: BTreeMap<String, HostedRoomCreationResponseV2>,
     members: BTreeMap<String, MemberCapabilityProvisionResponseV1>,
     member_requests: Vec<Value>,
     runners: BTreeMap<String, RunnerCapabilityProvisionResponseV1>,
     runner_requests: Vec<Value>,
     lose_runner_reply: bool,
+    lose_hosted_reply: bool,
+    reject_hosted: bool,
 }
 
 #[derive(Clone, Default)]
@@ -380,6 +395,62 @@ impl DaemonRoomCreatorV1 for RetainedDaemon {
             .creations
             .push(request.clone());
         Daemon.create(request)
+    }
+
+    fn create_hosted(
+        &self,
+        request: &RetainedHostedRoomCreationIntentV2,
+    ) -> Result<HostedRoomCreationResponseV2, RoomCreationAttemptErrorV1> {
+        let mut ledger = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        ledger.hosted_creations.push(request.clone());
+        if ledger.reject_hosted {
+            return Err(RoomCreationAttemptErrorV1::Rejected);
+        }
+        if let Some(response) = ledger
+            .hosted_responses
+            .get(&request.room.idempotency_key)
+            .cloned()
+        {
+            return Ok(response);
+        }
+        let room = Daemon.create(&request.room)?;
+        let spectators = request
+            .spectators
+            .iter()
+            .map(|intent| {
+                let member_id = room
+                    .member_ids
+                    .get(usize::from(intent.member_index))
+                    .ok_or(RoomCreationAttemptErrorV1::Rejected)?;
+                Ok(HostedSpectatorCredentialReceiptV2 {
+                    purpose: intent.purpose,
+                    room_id: room.room_id.clone(),
+                    member_id: member_id.clone(),
+                    principal_id: intent.principal_id.clone(),
+                    capability_id: intent.capability_id.clone(),
+                    scopes: intent
+                        .purpose
+                        .capability_scopes()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, RoomCreationAttemptErrorV1>>()?;
+        let response = HostedRoomCreationResponseV2 {
+            schema: "worldstream/hosted-room-creation-response/v2".to_owned(),
+            room,
+            spectators,
+        };
+        ledger
+            .hosted_responses
+            .insert(request.room.idempotency_key.clone(), response.clone());
+        if ledger.lose_hosted_reply {
+            ledger.lose_hosted_reply = false;
+            Err(RoomCreationAttemptErrorV1::Ambiguous)
+        } else {
+            Ok(response)
+        }
     }
 }
 
@@ -460,6 +531,125 @@ fn heist_request() -> TestResult<RoomSetupCreateRequestV1> {
         ))?,
         acknowledge_start: false,
     })
+}
+
+fn hosted_heist_request() -> TestResult<RoomSetupCreateRequestV1> {
+    let mut request = heist_request()?;
+    "worldstream/room-setup/v2".clone_into(&mut request.specification.schema);
+    request.specification.spectators = serde_json::from_value(json!([
+        {
+            "purpose": "result_indexer",
+            "principal": {"reference": "result-indexer", "kind": "agent"}
+        },
+        {
+            "purpose": "creator",
+            "principal": {"reference": "creator-view", "kind": "human"}
+        },
+        {
+            "purpose": "public_relay",
+            "principal": {"reference": "public-relay", "kind": "agent"}
+        }
+    ]))?;
+    Ok(request)
+}
+
+#[test]
+fn hosted_spectators_are_non_seat_scoped_and_retry_the_same_authority() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let daemon = RetainedDaemon::default();
+    daemon
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .lose_hosted_reply = true;
+    let (operations, creation, setup) = open_retained_operations(temp.path(), &daemon)?;
+    let partial = operations.create("hosted-spectators", &hosted_heist_request()?)?;
+    assert!(!partial.complete);
+    let retained_creation = creation.status("hosted-spectators")?;
+    assert_eq!(retained_creation.request.members.len(), 5);
+    assert_eq!(retained_creation.spectators.len(), 3);
+    assert!(retained_creation.room_id.is_none());
+    for member in retained_creation.request.members.iter().skip(2) {
+        assert_eq!(
+            member.access_mode,
+            worldstream_protocol::AccessMode::Spectator
+        );
+        assert_eq!(member.role, None);
+    }
+    assert!(setup.status("hosted-spectators").is_err());
+    drop((operations, creation, setup));
+
+    let (reopened, creation, setup) = open_retained_operations(temp.path(), &daemon)?;
+    assert!(reopened.resume("hosted-spectators")?.complete);
+    let committed = creation.status("hosted-spectators")?;
+    let after = setup.status("hosted-spectators")?;
+    assert_eq!(after.spectators.len(), 3);
+    for ((reviewed, receipt), status) in committed
+        .spectators
+        .iter()
+        .zip(&committed.spectator_credentials)
+        .zip(&after.spectators)
+    {
+        assert_eq!(status.purpose, reviewed.purpose);
+        assert_eq!(status.principal_id, reviewed.principal_id);
+        assert_eq!(status.principal_kind, reviewed.principal_kind);
+        assert_eq!(status.member_id, receipt.member_id);
+        assert_eq!(status.member_authority, "provisioned");
+        assert_eq!(receipt.capability_id, reviewed.capability_id);
+    }
+
+    let ledger = daemon.0.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(ledger.hosted_creations.len(), 2);
+    assert_eq!(ledger.hosted_creations[0], ledger.hosted_creations[1]);
+    let spectator_requests = &ledger.hosted_creations[0].spectators;
+    assert_eq!(spectator_requests.len(), 3);
+    assert_eq!(
+        spectator_requests[0].purpose.capability_scopes(),
+        ["room:attach", "room:observe_public", "room:replay"]
+    );
+    for request in spectator_requests.iter().skip(1) {
+        assert_eq!(
+            request.purpose.capability_scopes(),
+            ["room:attach", "room:observe_public"]
+        );
+    }
+    assert!(
+        ledger
+            .member_requests
+            .iter()
+            .all(|request| request["access_mode"] != "spectator")
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_atomic_spectator_provisioning_prevents_genesis() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let daemon = RetainedDaemon::default();
+    daemon
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .reject_hosted = true;
+    let (operations, creation, setup) = open_retained_operations(temp.path(), &daemon)?;
+
+    let status = operations.create("hosted-rejected", &hosted_heist_request()?)?;
+    assert!(!status.complete);
+    assert_eq!(status.stage, RoomSetupOperationStageV1::Creation);
+    let retained = creation.status("hosted-rejected")?;
+    assert_eq!(
+        retained.state,
+        worldstream_studio_supervisor::room_creation::RoomCreationStateV1::NeedsAttention
+    );
+    assert!(retained.room_id.is_none());
+    assert!(retained.response.is_none());
+    assert!(retained.spectator_credentials.is_empty());
+    assert!(setup.status("hosted-rejected").is_err());
+
+    let ledger = daemon.0.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(ledger.hosted_creations.len(), 1);
+    assert!(ledger.creations.is_empty());
+    Ok(())
 }
 
 #[tokio::test]

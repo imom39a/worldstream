@@ -10,6 +10,10 @@ mod secrets {
     pub use worldstream_studio_supervisor::secrets::*;
 }
 
+mod room_setup_spec {
+    pub use worldstream_studio_supervisor::room_setup_spec::*;
+}
+
 #[path = "../src/configuration_safety.rs"]
 mod configuration_safety;
 #[path = "../src/room_creation.rs"]
@@ -728,5 +732,220 @@ fn tampered_terminal_room_or_member_receipt_fails_closed() {
             .requests
             .len(),
         1
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one contiguous transport capture proves authority separation and retry identity"
+)]
+fn production_http_creator_reuses_one_sealed_spectator_bearer_on_retry() {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use worldstream_protocol::{
+        AccessMode, BearerWireV1, CreateMember, PackReference, PrincipalKind,
+    };
+    use worldstream_studio_supervisor::{
+        room_creation::{
+            DaemonRoomCreatorV1 as LiveDaemonRoomCreatorV1, HostedSpectatorCredentialIntentV2,
+            HttpDaemonRoomCreatorV1, RetainedHostedRoomCreationIntentV2,
+        },
+        room_setup_spec::SetupSpectatorPurposeV2,
+        secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1},
+    };
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| unreachable!("bind test daemon: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| unreachable!("test daemon address: {error}"));
+    let response_body = serde_json::to_vec(&json!({
+        "schema": "worldstream/hosted-room-creation-response/v2",
+        "room": {
+            "room_id": ROOM,
+            "member_ids": [
+                "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                "01ARZ3NDEKTSV4RRFFQ69G5FB0"
+            ],
+            "room_head": {
+                "room_id": ROOM,
+                "room_seq": 0,
+                "genesis_or_transition_hash": format!("blake3:{}", "b".repeat(64)),
+                "core_schema_version": "worldstream/core-room-state/v1",
+                "pack_digest": DIGEST,
+                "core_state_hash": format!("blake3:{}", "c".repeat(64)),
+                "activity_state_hash": format!("blake3:{}", "d".repeat(64)),
+                "authoritative_state_hash": format!("blake3:{}", "e".repeat(64))
+            }
+        },
+        "spectators": [{
+            "purpose": "result_indexer",
+            "room_id": ROOM,
+            "member_id": "01ARZ3NDEKTSV4RRFFQ69G5FB0",
+            "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FB1",
+            "capability_id": "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+            "scopes": ["room:attach", "room:observe_public", "room:replay"]
+        }]
+    }))
+    .unwrap_or_else(|error| unreachable!("response JSON: {error}"));
+    let server = std::thread::spawn(move || {
+        let mut captured = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener
+                .accept()
+                .unwrap_or_else(|error| unreachable!("accept request: {error}"));
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap_or_else(|error| unreachable!("request timeout: {error}"));
+            let mut reader = BufReader::new(
+                stream
+                    .try_clone()
+                    .unwrap_or_else(|error| unreachable!("clone request stream: {error}")),
+            );
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .unwrap_or_else(|error| unreachable!("request line: {error}"));
+            assert_eq!(request_line, "POST /v1/operator/hosted-rooms HTTP/1.1\r\n");
+            let mut content_length = None;
+            let mut authorization = None;
+            loop {
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .unwrap_or_else(|error| unreachable!("request header: {error}"));
+                if line == "\r\n" {
+                    break;
+                }
+                let (name, value) = line
+                    .trim_end()
+                    .split_once(':')
+                    .unwrap_or_else(|| unreachable!("shaped request header"));
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = Some(
+                        value
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap_or_else(|_| unreachable!("content length")),
+                    );
+                }
+                if name.eq_ignore_ascii_case("authorization") {
+                    authorization = Some(value.trim().to_owned());
+                }
+            }
+            let mut body = vec![0_u8; content_length.unwrap_or_else(|| unreachable!("body size"))];
+            reader
+                .read_exact(&mut body)
+                .unwrap_or_else(|error| unreachable!("request body: {error}"));
+            let body: serde_json::Value = serde_json::from_slice(&body)
+                .unwrap_or_else(|error| unreachable!("request JSON: {error}"));
+            captured.push((
+                authorization.unwrap_or_else(|| unreachable!("host authority")),
+                body,
+            ));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            )
+            .and_then(|()| stream.write_all(&response_body))
+            .unwrap_or_else(|error| unreachable!("write response: {error}"));
+        }
+        captured
+    });
+
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary vault: {error}"));
+    let vault = FileSecretVaultV1::open(&directory.path().join("vault"))
+        .unwrap_or_else(|error| unreachable!("open vault: {error}"));
+    let host_bytes = [0xa9; 32];
+    let host_reference = vault
+        .store(SecretKindV1::HostAuthority, &host_bytes)
+        .unwrap_or_else(|error| unreachable!("store host authority: {error}"));
+    let membership_reference = SecretReferenceV1::parse("1".repeat(64))
+        .unwrap_or_else(|error| unreachable!("membership reference: {error}"));
+    let creator = HttpDaemonRoomCreatorV1::new(
+        address,
+        std::time::Duration::from_secs(5),
+        vault.clone(),
+        Some(host_reference),
+    );
+    let request = RetainedHostedRoomCreationIntentV2 {
+        schema: "worldstream/hosted-room-creation/v2".to_owned(),
+        room: CreateRoomRequest {
+            pack: PackReference {
+                id: "worldstream.counter".to_owned(),
+                version: "2.0.0".to_owned(),
+                digest: DIGEST.to_owned(),
+            },
+            configuration: json!({"initial_value": 0, "maximum_value": 8}),
+            members: vec![
+                CreateMember {
+                    principal_id: PRINCIPAL.to_owned(),
+                    principal_kind: PrincipalKind::Human,
+                    role: Some("counter".to_owned()),
+                    access_mode: AccessMode::Participant,
+                },
+                CreateMember {
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+                    principal_kind: PrincipalKind::Agent,
+                    role: None,
+                    access_mode: AccessMode::Spectator,
+                },
+            ],
+            idempotency_key: "hosted-create-operation".to_owned(),
+        },
+        spectators: vec![HostedSpectatorCredentialIntentV2 {
+            purpose: SetupSpectatorPurposeV2::ResultIndexer,
+            member_index: 1,
+            principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+            principal_kind: PrincipalKind::Agent,
+            capability_id: "01ARZ3NDEKTSV4RRFFQ69G5FB2".to_owned(),
+            capability_idempotency_key: "01ARZ3NDEKTSV4RRFFQ69G5FB3".to_owned(),
+            secret_reference: membership_reference.clone(),
+        }],
+    };
+
+    let first = LiveDaemonRoomCreatorV1::create_hosted(&creator, &request)
+        .unwrap_or_else(|error| unreachable!("first hosted request: {error:?}"));
+    let duplicate = LiveDaemonRoomCreatorV1::create_hosted(&creator, &request)
+        .unwrap_or_else(|error| unreachable!("retried hosted request: {error:?}"));
+    assert_eq!(duplicate, first);
+    let captured = server
+        .join()
+        .unwrap_or_else(|_| unreachable!("test daemon join"));
+    assert_eq!(captured.len(), 2);
+    assert!(
+        captured[0] == captured[1],
+        "retry must reuse the exact sealed request"
+    );
+    let host_wire = BearerWireV1::from_bytes(host_bytes).to_wire();
+    assert!(
+        captured[0].0 == format!("Bearer {host_wire}"),
+        "request must use only the retained Host authority"
+    );
+    let body = &captured[0].1;
+    assert!(body["spectators"][0].get("scopes").is_none());
+    let spectator_wire = body["spectators"][0]["capability"]["bearer"]
+        .as_str()
+        .unwrap_or_else(|| unreachable!("sealed spectator bearer"));
+    assert!(
+        spectator_wire != host_wire,
+        "spectator authority must differ from Host authority"
+    );
+    let retained = vault
+        .resolve(SecretKindV1::MembershipAuthority, &membership_reference)
+        .unwrap_or_else(|error| unreachable!("retained membership authority: {error}"));
+    assert!(
+        BearerWireV1::parse(spectator_wire)
+            .unwrap_or_else(|error| unreachable!("spectator bearer: {error}"))
+            .into_bytes()
+            .as_slice()
+            == retained.as_bytes(),
+        "sealed request must use the retained Membership authority"
+    );
+    assert!(
+        !serde_json::to_string(&first)
+            .unwrap_or_else(|error| unreachable!("receipt JSON: {error}"))
+            .contains("bearer")
     );
 }

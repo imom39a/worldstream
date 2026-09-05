@@ -37,15 +37,24 @@ The launch request is intentionally small:
 
 ```json
 {
-  "schema": "worldstream/launch-request/v1",
+  "schema": "worldstream/launch-request/v2",
   "listing_revision_digest": "blake3:<listing revision>",
-  "inputs": {}
+  "inputs": {},
+  "creator": {
+    "participation": "seat",
+    "principal_reference": "<server-derived run-scoped principal>"
+  }
 }
 ```
 
 It cannot select a Pack, role, seat, client, projector, or complete Room Setup
 Spec. The server combines it with a frozen roster and the reviewed listing to
-derive `worldstream/room-setup/v1` deterministically.
+derive `worldstream/room-setup/v2` deterministically, including the required
+result-indexer and any elected, listing-authorized creator or public-relay
+spectators. The server freezes exactly one creator participation mode. A `seat`
+election must reference the creator's claimed human seat; a `spectator` election
+is accepted only when the Listing permits it and uses the reserved
+`worldstream:creator-spectator` reference.
 
 Result projection accepts the exact Listing Revision, Result Projector Revision,
 Pack, privacy-reviewed Public Projection schema, and eight-field Complete Head.

@@ -672,6 +672,18 @@ pub struct AuthoritySnapshotQueryV1 {
 }
 
 impl AuthoritySnapshotQueryV1 {
+    /// Selects one Capability and its owning Principal without a Room or
+    /// Runner target. This is used by trusted adapters when verifying an
+    /// already committed, caller-sealed authority bundle.
+    #[must_use]
+    pub const fn for_capability(capability_id: CapabilityId) -> Self {
+        Self {
+            capability_id,
+            membership: None,
+            runner_id: None,
+        }
+    }
+
     #[must_use]
     pub const fn capability_id(&self) -> &CapabilityId {
         &self.capability_id
@@ -3711,6 +3723,25 @@ impl AuthorityV1 {
         command: AuthorityChangeV1,
         authorized_at: AuthorityCheckedAt,
     ) -> Result<AuthorityChangeReceiptV1, AuthorityErrorV1> {
+        let prepared = self.prepare_change(presented, command, authorized_at)?;
+        self.store.apply_change(&prepared).map_err(map_store_error)
+    }
+
+    /// Seals one host-authorized authority mutation without applying it.
+    /// Trusted Adapters use this only to combine several changes with another
+    /// durable operation in one transaction; every actor fence and target is
+    /// still revalidated by that transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe denial when the presented Host authority is not current
+    /// or the requested change cannot be represented canonically.
+    pub fn prepare_change(
+        &self,
+        presented: &PresentedCapabilityV1,
+        command: AuthorityChangeV1,
+        authorized_at: AuthorityCheckedAt,
+    ) -> Result<PreparedAuthorityChangeV1, AuthorityErrorV1> {
         let query = AuthoritySnapshotQueryV1 {
             capability_id: presented.capability_id.clone(),
             membership: None,
@@ -3726,13 +3757,12 @@ impl AuthorityV1 {
             request_hash.as_bytes(),
             authorized_at.clone(),
         )?;
-        let prepared = PreparedAuthorityChangeV1 {
+        Ok(PreparedAuthorityChangeV1 {
             actor_fence: fence,
             request_hash,
             command,
             authorized_at,
-        };
-        self.store.apply_change(&prepared).map_err(map_store_error)
+        })
     }
 
     fn authenticate(

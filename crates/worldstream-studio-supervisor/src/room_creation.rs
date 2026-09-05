@@ -23,15 +23,20 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use worldstream_protocol::{
     AccessMode, BearerWireV1, CreateMember, CreateRoomRequest, CreateRoomResponse,
-    MAX_MESSAGE_BYTES, PrincipalKind, UlidString,
+    HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2, HOSTED_ROOM_CREATION_SCHEMA_V2,
+    HostedRoomCreationRequestV2 as RuntimeHostedRoomCreationRequestV2,
+    HostedSpectatorCredentialInputV2, MAX_MESSAGE_BYTES, PrincipalKind, SealedCapabilityBearerV1,
+    SealedCapabilityInputV1, UlidString,
 };
+pub use worldstream_protocol::{HostedRoomCreationResponseV2, HostedSpectatorCredentialReceiptV2};
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
 };
 use zeroize::Zeroizing;
 
 use crate::room_drafts::{RoomDraftReviewV1, RoomDraftStepV1, RoomDraftStoreV1, RoomDraftV1};
-use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1};
+use crate::room_setup_spec::{SetupSpectatorPurposeV2, SetupSpectatorV2};
+use crate::secrets::{FileSecretVaultV1, SecretKindV1, SecretReferenceV1, SecretVaultErrorV1};
 
 const OPERATION_SCHEMA_V1: &str = "worldstream/studio-room-creation-operation/v1";
 const RESPONSE_BINDING_DOMAIN_V1: &str = "worldstream/studio-room-creation-response/v1";
@@ -69,17 +74,62 @@ pub struct RoomCreationOperationV1 {
     pub review_hash: String,
     pub intent_hash: String,
     pub review: RoomDraftReviewV1,
+    /// Immutable non-seat v2 setup intent. Principal identities are allocated
+    /// once before the first daemon mutation and survive every retry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spectators: Vec<ReviewedSpectatorV2>,
     pub request: CreateRoomRequest,
     pub state: RoomCreationStateV1,
     pub attempts: u32,
     pub room_id: Option<String>,
     pub response: Option<CreateRoomResponse>,
+    /// Secret-free proof that the hosted creator provisioned every required
+    /// spectator credential in the same pre-Genesis operation as the Room.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spectator_credentials: Vec<HostedSpectatorCredentialReceiptV2>,
     pub response_hash: Option<String>,
     pub attention: Option<RoomCreationAttentionV1>,
     /// CLI preparation guard. None is the retained pre-CLI shape; it cannot
     /// authorize recreating a missing provisioning operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_preparation_started: Option<bool>,
+}
+
+/// Retained Host interpretation of one bounded v2 non-seat spectator.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewedSpectatorV2 {
+    pub purpose: SetupSpectatorPurposeV2,
+    pub principal_id: String,
+    pub principal_kind: PrincipalKind,
+    pub capability_id: String,
+    pub capability_idempotency_key: String,
+    pub secret_reference: SecretReferenceV1,
+}
+
+/// One immutable server-owned credential requested as part of hosted Genesis.
+/// The hosted creator generates and retains the bearer; this boundary carries
+/// only stable identities and the exact non-action scopes it must bind.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedSpectatorCredentialIntentV2 {
+    pub purpose: SetupSpectatorPurposeV2,
+    pub member_index: u16,
+    pub principal_id: String,
+    pub principal_kind: PrincipalKind,
+    pub capability_id: String,
+    pub capability_idempotency_key: String,
+    pub secret_reference: SecretReferenceV1,
+}
+
+/// Narrow all-or-nothing hosted Room creation request. Implementations must
+/// persist the Room, Memberships, bearer hashes, and receipts atomically.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedHostedRoomCreationIntentV2 {
+    pub schema: String,
+    pub room: CreateRoomRequest,
+    pub spectators: Vec<HostedSpectatorCredentialIntentV2>,
 }
 
 /// Browser-safe durable status. Exact intent and daemon receipt remain inside
@@ -151,6 +201,20 @@ pub trait DaemonRoomCreatorV1: Send + Sync + 'static {
         &self,
         request: &CreateRoomRequest,
     ) -> Result<CreateRoomResponse, RoomCreationAttemptErrorV1>;
+
+    /// Commits hosted Room Genesis and every required server-owned spectator
+    /// credential atomically. The default deliberately refuses the operation:
+    /// hosted v2 intent must never downgrade to ordinary Room creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns only ambiguous, operator-fix, or permanent rejection classes.
+    fn create_hosted(
+        &self,
+        _request: &RetainedHostedRoomCreationIntentV2,
+    ) -> Result<HostedRoomCreationResponseV2, RoomCreationAttemptErrorV1> {
+        Err(RoomCreationAttemptErrorV1::Rejected)
+    }
 }
 
 /// Fixed-address HTTP creator using one exact retained Host authority.
@@ -200,6 +264,159 @@ impl HttpDaemonRoomCreatorV1 {
                     ownership, address, timeout,
                 ),
             ),
+        }
+    }
+
+    fn hosted_runtime_request(
+        &self,
+        request: &RetainedHostedRoomCreationIntentV2,
+    ) -> Result<RuntimeHostedRoomCreationRequestV2, RoomCreationAttemptErrorV1> {
+        let spectators = request
+            .spectators
+            .iter()
+            .map(|spectator| {
+                let bearer = match self.vault.resolve(
+                    SecretKindV1::MembershipAuthority,
+                    &spectator.secret_reference,
+                ) {
+                    Ok(secret) => {
+                        let bytes: [u8; 32] = secret
+                            .as_bytes()
+                            .try_into()
+                            .map_err(|_| RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+                        SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes))
+                    }
+                    Err(SecretVaultErrorV1::Missing) => {
+                        let mut bytes = Zeroizing::new([0_u8; 32]);
+                        getrandom::fill(bytes.as_mut())
+                            .map_err(|_| RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+                        self.vault
+                            .publish_at_reference(
+                                SecretKindV1::MembershipAuthority,
+                                &spectator.secret_reference,
+                                bytes.as_ref(),
+                            )
+                            .map_err(|_| RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+                        SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(*bytes))
+                    }
+                    Err(
+                        SecretVaultErrorV1::InvalidMaterial
+                        | SecretVaultErrorV1::InvalidReference
+                        | SecretVaultErrorV1::Unavailable,
+                    ) => return Err(RoomCreationAttemptErrorV1::OperatorFixRequired),
+                };
+                Ok(HostedSpectatorCredentialInputV2 {
+                    purpose: spectator.purpose,
+                    member_index: spectator.member_index,
+                    principal_id: spectator.principal_id.clone(),
+                    principal_kind: spectator.principal_kind,
+                    capability: SealedCapabilityInputV1 {
+                        capability_id: spectator.capability_id.clone(),
+                        capability_idempotency_key: spectator.capability_idempotency_key.clone(),
+                        bearer,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, RoomCreationAttemptErrorV1>>()?;
+        Ok(RuntimeHostedRoomCreationRequestV2 {
+            schema: HOSTED_ROOM_CREATION_SCHEMA_V2.to_owned(),
+            room: request.room.clone(),
+            spectators,
+        })
+    }
+
+    fn create_hosted_over_http(
+        &self,
+        request: &RuntimeHostedRoomCreationRequestV2,
+    ) -> Result<HostedRoomCreationResponseV2, RoomCreationAttemptErrorV1> {
+        let reference = self
+            .host_authority
+            .as_ref()
+            .ok_or(RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+        let body = Zeroizing::new(
+            serde_json::to_vec(request).map_err(|_| RoomCreationAttemptErrorV1::Rejected)?,
+        );
+        if let Some(transport) = &self.managed {
+            let mut authority_unavailable = false;
+            let response = transport
+                .request(
+                    "POST",
+                    "/v1/operator/hosted-rooms",
+                    body.as_ref(),
+                    MAX_MESSAGE_BYTES,
+                    || {
+                        let resolved = (|| {
+                            let secret = self
+                                .vault
+                                .resolve(SecretKindV1::HostAuthority, reference)
+                                .map_err(|_| ())?;
+                            let bytes: [u8; 32] = secret.as_bytes().try_into().map_err(|_| ())?;
+                            let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+                            let token = Zeroizing::new(format!("Bearer {}", bearer.as_str()));
+                            let mut header =
+                                axum::http::HeaderValue::from_str(&token).map_err(|_| ())?;
+                            header.set_sensitive(true);
+                            Ok::<_, ()>(header)
+                        })();
+                        authority_unavailable = resolved.is_err();
+                        resolved
+                    },
+                )
+                .map_err(|_| {
+                    if authority_unavailable {
+                        RoomCreationAttemptErrorV1::OperatorFixRequired
+                    } else {
+                        RoomCreationAttemptErrorV1::Ambiguous
+                    }
+                })?;
+            return match response.status {
+                200 => serde_json::from_slice(&response.body)
+                    .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous),
+                401 | 403 => Err(RoomCreationAttemptErrorV1::OperatorFixRequired),
+                400 | 404 | 409 | 422 => Err(RoomCreationAttemptErrorV1::Rejected),
+                _ => Err(RoomCreationAttemptErrorV1::Ambiguous),
+            };
+        }
+
+        let secret = self
+            .vault
+            .resolve(SecretKindV1::HostAuthority, reference)
+            .map_err(|_| RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+        let bytes: [u8; 32] = secret
+            .as_bytes()
+            .try_into()
+            .map_err(|_| RoomCreationAttemptErrorV1::OperatorFixRequired)?;
+        let bearer = Zeroizing::new(BearerWireV1::from_bytes(bytes).to_wire());
+        let header = Zeroizing::new(format!(
+            "POST /v1/operator/hosted-rooms HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            self.address,
+            bearer.as_str(),
+            body.len(),
+        ));
+        let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        stream
+            .write_all(header.as_bytes())
+            .and_then(|()| stream.write_all(body.as_ref()))
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        let mut response = Vec::new();
+        stream
+            .take(u64::try_from(MAX_MESSAGE_BYTES).unwrap_or(u64::MAX) + 1)
+            .read_to_end(&mut response)
+            .map_err(|_| RoomCreationAttemptErrorV1::Ambiguous)?;
+        if response.len() > MAX_MESSAGE_BYTES {
+            return Err(RoomCreationAttemptErrorV1::Ambiguous);
+        }
+        let (status, body) = parse_http_response(&response)?;
+        match status {
+            200 => serde_json::from_slice(body).map_err(|_| RoomCreationAttemptErrorV1::Ambiguous),
+            401 | 403 => Err(RoomCreationAttemptErrorV1::OperatorFixRequired),
+            400 | 404 | 409 | 422 => Err(RoomCreationAttemptErrorV1::Rejected),
+            _ => Err(RoomCreationAttemptErrorV1::Ambiguous),
         }
     }
 }
@@ -293,6 +510,13 @@ impl DaemonRoomCreatorV1 for HttpDaemonRoomCreatorV1 {
             _ => Err(RoomCreationAttemptErrorV1::Ambiguous),
         }
     }
+
+    fn create_hosted(
+        &self,
+        request: &RetainedHostedRoomCreationIntentV2,
+    ) -> Result<HostedRoomCreationResponseV2, RoomCreationAttemptErrorV1> {
+        self.create_hosted_over_http(&self.hosted_runtime_request(request)?)
+    }
 }
 
 /// Closed local orchestration failures.
@@ -380,6 +604,16 @@ impl RoomCreationSupervisorV1 {
     /// Retains a freshly resolved CLI review without reading an editable draft
     /// or calling the daemon. Existing operation identities are never replaced.
     pub(crate) fn prepare_reviewed(&self, draft: &RoomDraftV1) -> Result<(), RoomCreationErrorV1> {
+        self.prepare_reviewed_with_spectators(draft, &[])
+    }
+
+    /// Retains one reviewed v2 Host setup including bounded non-seat
+    /// spectators. This is the only path that can add them to Genesis.
+    pub(crate) fn prepare_reviewed_with_spectators(
+        &self,
+        draft: &RoomDraftV1,
+        spectators: &[SetupSpectatorV2],
+    ) -> Result<(), RoomCreationErrorV1> {
         crate::room_drafts::validate_draft(draft).map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
         let _guard = self.lock();
         match self.load_unlocked(&draft.draft_id) {
@@ -387,7 +621,7 @@ impl RoomCreationSupervisorV1 {
             Err(RoomCreationErrorV1::NotFound) => {}
             Err(error) => return Err(error),
         }
-        let mut operation = prepare_operation(draft)?;
+        let mut operation = prepare_operation_with_spectators(draft, spectators)?;
         operation.setup_preparation_started = Some(false);
         self.persist_new(&operation)
     }
@@ -568,8 +802,24 @@ impl RoomCreationSupervisorV1 {
         operation.state = RoomCreationStateV1::Waiting;
         operation.attention = None;
         self.persist(&operation)?;
-        match self.creator.create(&operation.request) {
-            Ok(response) if response_is_bound(&operation.request, &response) => {
+        let attempt = if operation.spectators.is_empty() {
+            self.creator
+                .create(&operation.request)
+                .and_then(|response| {
+                    response_is_bound(&operation.request, &response)
+                        .then_some((response, Vec::new()))
+                        .ok_or(RoomCreationAttemptErrorV1::Ambiguous)
+                })
+        } else {
+            let request = hosted_creation_request(&operation)?;
+            self.creator.create_hosted(&request).and_then(|response| {
+                hosted_response_is_bound(&request, &response)
+                    .then_some((response.room, response.spectators))
+                    .ok_or(RoomCreationAttemptErrorV1::Ambiguous)
+            })
+        };
+        match attempt {
+            Ok((response, spectator_credentials)) => {
                 #[cfg(test)]
                 if self.fail_before_receipt_once.swap(false, Ordering::SeqCst) {
                     operation.state = RoomCreationStateV1::Retrying;
@@ -579,13 +829,18 @@ impl RoomCreationSupervisorV1 {
                 }
                 operation.state = RoomCreationStateV1::Succeeded;
                 operation.room_id = Some(response.room_id.clone());
-                operation.response_hash = Some(response_hash(&operation.intent_hash, &response)?);
+                operation.response_hash = Some(response_hash(
+                    &operation.intent_hash,
+                    &response,
+                    &spectator_credentials,
+                )?);
                 operation.response = Some(response);
+                operation.spectator_credentials = spectator_credentials;
                 operation.attention = None;
                 self.persist(&operation)?;
                 Ok(operation)
             }
-            Ok(_) | Err(RoomCreationAttemptErrorV1::Ambiguous) => {
+            Err(RoomCreationAttemptErrorV1::Ambiguous) => {
                 operation.state = RoomCreationStateV1::Retrying;
                 operation.attention = Some(ambiguous_attention());
                 self.persist(&operation)?;
@@ -766,6 +1021,13 @@ impl IntoResponse for RoomCreationErrorV1 {
 }
 
 fn prepare_operation(draft: &RoomDraftV1) -> Result<RoomCreationOperationV1, RoomCreationErrorV1> {
+    prepare_operation_with_spectators(draft, &[])
+}
+
+fn prepare_operation_with_spectators(
+    draft: &RoomDraftV1,
+    requested_spectators: &[SetupSpectatorV2],
+) -> Result<RoomCreationOperationV1, RoomCreationErrorV1> {
     if draft.last_valid_step != Some(RoomDraftStepV1::Review) {
         return Err(RoomCreationErrorV1::InvalidDraft);
     }
@@ -790,6 +1052,26 @@ fn prepare_operation(draft: &RoomDraftV1) -> Result<RoomCreationOperationV1, Roo
             })
         })
         .collect::<Result<Vec<_>, RoomCreationErrorV1>>()?;
+    let spectators = requested_spectators
+        .iter()
+        .map(|spectator| {
+            let capability_id = next_ulid()?;
+            Ok(ReviewedSpectatorV2 {
+                purpose: spectator.purpose,
+                principal_id: next_ulid()?,
+                principal_kind: spectator.principal.kind,
+                secret_reference: spectator_secret_reference(&capability_id)?,
+                capability_id,
+                capability_idempotency_key: next_ulid()?,
+            })
+        })
+        .collect::<Result<Vec<_>, RoomCreationErrorV1>>()?;
+    members.extend(spectators.iter().map(|spectator| CreateMember {
+        principal_id: spectator.principal_id.clone(),
+        principal_kind: spectator.principal_kind,
+        role: None,
+        access_mode: AccessMode::Spectator,
+    }));
     if draft.operator_view {
         members.push(CreateMember {
             principal_id: next_ulid()?,
@@ -816,22 +1098,23 @@ fn prepare_operation(draft: &RoomDraftV1) -> Result<RoomCreationOperationV1, Roo
         readiness: draft.readiness.clone(),
         operator_view: draft.operator_view,
     };
-    let review_bytes =
-        serde_json::to_vec(&review).map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
-    let intent = serde_json::to_vec(&request).map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
+    let intent = creation_intent_bytes(&request, &spectators)
+        .map_err(|_| RoomCreationErrorV1::InvalidDraft)?;
     Ok(RoomCreationOperationV1 {
         schema: OPERATION_SCHEMA_V1.to_owned(),
         draft_id: draft.draft_id.clone(),
         operation_id,
         idempotency_key,
-        review_hash: digest(&review_bytes),
+        review_hash: reviewed_intent_hash(&review, &spectators)?,
         intent_hash: digest(&intent),
         review,
+        spectators,
         request,
         state: RoomCreationStateV1::Waiting,
         attempts: 0,
         room_id: None,
         response: None,
+        spectator_credentials: Vec::new(),
         response_hash: None,
         attention: None,
         setup_preparation_started: None,
@@ -847,16 +1130,15 @@ fn validate_operation(
         || operation.operation_id.is_empty()
         || operation.idempotency_key.is_empty()
         || operation.request.idempotency_key != operation.idempotency_key
-        || digest(
-            &serde_json::to_vec(&operation.request)
-                .map_err(|_| RoomCreationErrorV1::Unavailable)?,
-        ) != operation.intent_hash
-        || digest(
-            &serde_json::to_vec(&operation.review).map_err(|_| RoomCreationErrorV1::Unavailable)?,
-        ) != operation.review_hash
+        || digest(&creation_intent_bytes(
+            &operation.request,
+            &operation.spectators,
+        )?) != operation.intent_hash
+        || reviewed_intent_hash(&operation.review, &operation.spectators)? != operation.review_hash
         || operation.intent_hash.len() != 71
-        || !request_matches_review(&operation.request, &operation.review)
+        || !request_matches_review(&operation.request, &operation.review, &operation.spectators)
         || !operation_state_is_consistent(operation)
+        || !spectators_are_valid(&operation.spectators)
         || (operation.setup_preparation_started == Some(true)
             && operation.state != RoomCreationStateV1::Succeeded)
     {
@@ -865,7 +1147,53 @@ fn validate_operation(
     Ok(())
 }
 
-fn request_matches_review(request: &CreateRoomRequest, review: &RoomDraftReviewV1) -> bool {
+fn reviewed_intent_hash(
+    review: &RoomDraftReviewV1,
+    spectators: &[ReviewedSpectatorV2],
+) -> Result<String, RoomCreationErrorV1> {
+    let bytes = if spectators.is_empty() {
+        serde_json::to_vec(review)
+    } else {
+        serde_json::to_vec(&(review, spectators))
+    }
+    .map_err(|_| RoomCreationErrorV1::Unavailable)?;
+    Ok(digest(&bytes))
+}
+
+fn spectators_are_valid(spectators: &[ReviewedSpectatorV2]) -> bool {
+    if spectators.len() > 3 {
+        return false;
+    }
+    let mut purposes = std::collections::BTreeSet::new();
+    let mut principals = std::collections::BTreeSet::new();
+    let mut capabilities = std::collections::BTreeSet::new();
+    let mut capability_changes = std::collections::BTreeSet::new();
+    let all_valid = spectators.iter().all(|spectator| {
+        let expected_kind = spectator.purpose.principal_kind();
+        spectator.principal_kind == expected_kind
+            && spectator.principal_id.parse::<UlidString>().is_ok()
+            && spectator.capability_id.parse::<UlidString>().is_ok()
+            && spectator
+                .capability_idempotency_key
+                .parse::<UlidString>()
+                .is_ok()
+            && spectator.capability_id != spectator.capability_idempotency_key
+            && spectator_secret_reference(&spectator.capability_id)
+                .is_ok_and(|expected| expected == spectator.secret_reference)
+            && purposes.insert(spectator.purpose)
+            && principals.insert(spectator.principal_id.as_str())
+            && capabilities.insert(spectator.capability_id.as_str())
+            && capability_changes.insert(spectator.capability_idempotency_key.as_str())
+    });
+    all_valid
+        && (spectators.is_empty() || purposes.contains(&SetupSpectatorPurposeV2::ResultIndexer))
+}
+
+fn request_matches_review(
+    request: &CreateRoomRequest,
+    review: &RoomDraftReviewV1,
+    spectators: &[ReviewedSpectatorV2],
+) -> bool {
     let mut expected_members = review
         .seats
         .iter()
@@ -880,6 +1208,12 @@ fn request_matches_review(request: &CreateRoomRequest, review: &RoomDraftReviewV
             })
         })
         .collect::<Vec<_>>();
+    expected_members.extend(spectators.iter().map(|spectator| CreateMember {
+        principal_id: spectator.principal_id.clone(),
+        principal_kind: spectator.principal_kind,
+        role: None,
+        access_mode: AccessMode::Spectator,
+    }));
     if review.operator_view {
         let Some(operator) = request.members.last() else {
             return false;
@@ -898,6 +1232,120 @@ fn request_matches_review(request: &CreateRoomRequest, review: &RoomDraftReviewV
         && expected_members == request.members
 }
 
+fn creation_intent_bytes(
+    request: &CreateRoomRequest,
+    spectators: &[ReviewedSpectatorV2],
+) -> Result<Vec<u8>, RoomCreationErrorV1> {
+    if spectators.is_empty() {
+        serde_json::to_vec(request).map_err(|_| RoomCreationErrorV1::Unavailable)
+    } else {
+        serde_json::to_vec(&hosted_creation_request_parts(request, spectators)?)
+            .map_err(|_| RoomCreationErrorV1::Unavailable)
+    }
+}
+
+fn hosted_creation_request(
+    operation: &RoomCreationOperationV1,
+) -> Result<RetainedHostedRoomCreationIntentV2, RoomCreationErrorV1> {
+    hosted_creation_request_parts(&operation.request, &operation.spectators)
+}
+
+fn hosted_creation_request_parts(
+    request: &CreateRoomRequest,
+    spectators: &[ReviewedSpectatorV2],
+) -> Result<RetainedHostedRoomCreationIntentV2, RoomCreationErrorV1> {
+    let intents = spectators
+        .iter()
+        .map(|spectator| {
+            let member_index = request
+                .members
+                .iter()
+                .position(|member| {
+                    member.principal_id == spectator.principal_id
+                        && member.principal_kind == spectator.principal_kind
+                        && member.access_mode == AccessMode::Spectator
+                        && member.role.is_none()
+                })
+                .and_then(|index| u16::try_from(index).ok())
+                .ok_or(RoomCreationErrorV1::Unavailable)?;
+            Ok(HostedSpectatorCredentialIntentV2 {
+                purpose: spectator.purpose,
+                member_index,
+                principal_id: spectator.principal_id.clone(),
+                principal_kind: spectator.principal_kind,
+                capability_id: spectator.capability_id.clone(),
+                capability_idempotency_key: spectator.capability_idempotency_key.clone(),
+                secret_reference: spectator.secret_reference.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, RoomCreationErrorV1>>()?;
+    Ok(RetainedHostedRoomCreationIntentV2 {
+        schema: HOSTED_ROOM_CREATION_SCHEMA_V2.to_owned(),
+        room: request.clone(),
+        spectators: intents,
+    })
+}
+
+fn hosted_response_is_bound(
+    request: &RetainedHostedRoomCreationIntentV2,
+    response: &HostedRoomCreationResponseV2,
+) -> bool {
+    request.schema == HOSTED_ROOM_CREATION_SCHEMA_V2
+        && response.schema == HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2
+        && response_is_bound(&request.room, &response.room)
+        && request.spectators.len() == response.spectators.len()
+        && request
+            .spectators
+            .iter()
+            .zip(&response.spectators)
+            .all(|(intent, receipt)| {
+                response
+                    .room
+                    .member_ids
+                    .get(usize::from(intent.member_index))
+                    == Some(&receipt.member_id)
+                    && receipt.purpose == intent.purpose
+                    && receipt.room_id == response.room.room_id
+                    && receipt.principal_id == intent.principal_id
+                    && receipt.capability_id == intent.capability_id
+                    && receipt.scopes.iter().map(String::as_str).eq(intent
+                        .purpose
+                        .capability_scopes()
+                        .iter()
+                        .copied())
+            })
+}
+
+fn spectator_secret_reference(
+    capability_id: &str,
+) -> Result<SecretReferenceV1, RoomCreationErrorV1> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worldstream/hosted-spectator-secret-reference/v2\0");
+    hasher.update(capability_id.as_bytes());
+    SecretReferenceV1::parse(hasher.finalize().to_hex().to_string())
+        .map_err(|_| RoomCreationErrorV1::Unavailable)
+}
+
+fn hosted_receipts_match_operation(operation: &RoomCreationOperationV1) -> bool {
+    if operation.spectators.is_empty() {
+        return operation.spectator_credentials.is_empty();
+    }
+    let (Ok(request), Some(room)) = (
+        hosted_creation_request(operation),
+        operation.response.clone(),
+    ) else {
+        return false;
+    };
+    hosted_response_is_bound(
+        &request,
+        &HostedRoomCreationResponseV2 {
+            schema: HOSTED_ROOM_CREATION_RESPONSE_SCHEMA_V2.to_owned(),
+            room,
+            spectators: operation.spectator_credentials.clone(),
+        },
+    )
+}
+
 fn operation_state_is_consistent(operation: &RoomCreationOperationV1) -> bool {
     match operation.state {
         RoomCreationStateV1::Succeeded => {
@@ -910,25 +1358,33 @@ fn operation_state_is_consistent(operation: &RoomCreationOperationV1) -> bool {
                     .is_some_and(|((room_id, response), stored_hash)| {
                         room_id == &response.room_id
                             && response_is_bound(&operation.request, response)
-                            && response_hash(&operation.intent_hash, response)
-                                .is_ok_and(|expected| &expected == stored_hash)
+                            && hosted_receipts_match_operation(operation)
+                            && response_hash(
+                                &operation.intent_hash,
+                                response,
+                                &operation.spectator_credentials,
+                            )
+                            .is_ok_and(|expected| &expected == stored_hash)
                     })
         }
         RoomCreationStateV1::Waiting => {
             operation.room_id.is_none()
                 && operation.response.is_none()
+                && operation.spectator_credentials.is_empty()
                 && operation.response_hash.is_none()
                 && operation.attention.is_none()
         }
         RoomCreationStateV1::Retrying => {
             operation.room_id.is_none()
                 && operation.response.is_none()
+                && operation.spectator_credentials.is_empty()
                 && operation.response_hash.is_none()
                 && operation.attention.as_ref() == Some(&ambiguous_attention())
         }
         RoomCreationStateV1::NeedsAttention => {
             operation.room_id.is_none()
                 && operation.response.is_none()
+                && operation.spectator_credentials.is_empty()
                 && operation.response_hash.is_none()
                 && operation.attention.as_ref().is_some_and(|attention| {
                     attention == &operator_fix_attention() || attention == &rejected_attention()
@@ -946,9 +1402,19 @@ fn response_is_bound(request: &CreateRoomRequest, response: &CreateRoomResponse)
 fn response_hash(
     intent_hash: &str,
     response: &CreateRoomResponse,
+    spectator_credentials: &[HostedSpectatorCredentialReceiptV2],
 ) -> Result<String, RoomCreationErrorV1> {
-    let binding = serde_json::to_vec(&(RESPONSE_BINDING_DOMAIN_V1, intent_hash, response))
-        .map_err(|_| RoomCreationErrorV1::Unavailable)?;
+    let binding = if spectator_credentials.is_empty() {
+        serde_json::to_vec(&(RESPONSE_BINDING_DOMAIN_V1, intent_hash, response))
+    } else {
+        serde_json::to_vec(&(
+            RESPONSE_BINDING_DOMAIN_V1,
+            intent_hash,
+            response,
+            spectator_credentials,
+        ))
+    }
+    .map_err(|_| RoomCreationErrorV1::Unavailable)?;
     Ok(digest(&binding))
 }
 

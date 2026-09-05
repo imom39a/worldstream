@@ -55,15 +55,16 @@ use worldstream_protocol::{
     ActivityPackCatalogRole, ActivityPackCatalogSchema, ActivityPackLobbyCompatibility,
     BROWSER_WS_TICKET_VERSION, BearerWireV1, BrowserWebSocketTicketIssueResponse, ClientHello,
     ClientMode, CreateRoomRequest, CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
-    LobbyLaunchRequest, LobbyLaunchResponse, MemberCapabilityProvisionRequestV1,
-    MemberCapabilityProvisionResponseV1, ObservationAck, ObservationDeliver,
-    OperatorActivationStatusV1, OperatorBackupProfileStatus, OperatorLiveBackupPrepareRequest,
-    OperatorLiveBackupStatus, OperatorRoomInventoryPage, OperatorRoomInventoryRequest,
-    OperatorRoomSummary, OperatorRunnerConnectionV1, OperatorRunnerFreshnessV1,
-    OperatorRunnerPresenceV1, PackReference, ProjectionReset, ProjectionResponse, ProtocolEnvelope,
-    ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck, RunnerCapabilityProvisionRequestV1,
-    RunnerCapabilityProvisionResponseV1, RunnerHello, RunnerReady, ServerWelcome, TimerFireRequest,
-    TimerFireResponse, UlidString, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL, decode_envelope,
+    HostedRoomCreationRequestV2, HostedRoomCreationResponseV2, LobbyLaunchRequest,
+    LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
+    ObservationAck, ObservationDeliver, OperatorActivationStatusV1, OperatorBackupProfileStatus,
+    OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomInventoryPage,
+    OperatorRoomInventoryRequest, OperatorRoomSummary, OperatorRunnerConnectionV1,
+    OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference, ProjectionReset,
+    ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck,
+    RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
+    RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope,
+    WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 use worldstream_runtime::{
     CompatibilitySummary, EffectiveConfig, ManifestError, StorageProfile, embedded_manifest,
@@ -519,6 +520,7 @@ const POST_WELCOME_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const OPERATOR_ROOM_CREATE: &str = "room-create";
 const OPERATOR_MEMBER_CAPABILITY: &str = "member-capability-issue";
 const OPERATOR_RUNNER_CAPABILITY: &str = "runner-capability-issue";
+const OPERATOR_HOSTED_ROOM_CREATE: &str = "hosted-room-create";
 
 fn provisioned_scopes(values: Vec<String>) -> Result<CapabilityScopeSetV1, BackendError> {
     let scopes = values
@@ -875,6 +877,20 @@ pub trait GatewayBackend: Send + Sync + 'static {
         session: &GatewaySession,
         request: CreateRoomRequest,
     ) -> Result<CreateRoomResponse, BackendError>;
+    /// Atomically creates one hosted Room and its fixed non-playing
+    /// spectator authorities. Implementations that cannot provide a single
+    /// durable transaction must reject this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed backend error without committing partial Genesis.
+    fn create_hosted_room(
+        &self,
+        _session: &GatewaySession,
+        _request: HostedRoomCreationRequestV2,
+    ) -> Result<HostedRoomCreationResponseV2, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
     /// Authenticates and records one fixed host Lobby launch `ExternalInput`.
     ///
     /// # Errors
@@ -1829,6 +1845,7 @@ pub fn operator_router(state: OperatorState) -> Router {
             get(activity_pack_revision),
         )
         .route("/v1/rooms", post(create_room))
+        .route("/v1/operator/hosted-rooms", post(create_hosted_room))
         .route(
             "/v1/operator/member-capabilities",
             post(issue_member_capability),
@@ -2177,6 +2194,78 @@ async fn create_room(
             // narrower contract explicitly instead of claiming a live frame.
             pause_for_process_crash_evidence(
                 "room_create",
+                "after_publication_before_reply",
+                &crash_match_id,
+            );
+            Ok(Json(response))
+        }
+        Err(error) => {
+            let reason = reason_for_backend_error(&error);
+            record_admission_with_correlation(state.telemetry.as_ref(), reason, correlation);
+            record_commit_with_correlation(state.telemetry.as_ref(), reason, correlation);
+            Err(ResponseError::from(error))
+        }
+    }
+}
+
+async fn create_hosted_room(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ResponseResult<HostedRoomCreationResponseV2> {
+    let correlation = traceparent_correlation(&headers);
+    let session = match authenticated_session(&headers) {
+        Ok(session) => Arc::new(session),
+        Err(error) => {
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Unauthorized,
+                correlation,
+            );
+            return Err(error);
+        }
+    };
+    let request = strict_json::<HostedRoomCreationRequestV2>(&body).inspect_err(|_| {
+        record_admission_with_correlation(
+            state.telemetry.as_ref(),
+            telemetry::ReasonCodeV1::Invalid,
+            correlation,
+        );
+    })?;
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[],
+        Some(OPERATOR_HOSTED_ROOM_CREATE),
+        correlation,
+    )
+    .await?;
+    let crash_match_id = request.room.idempotency_key.clone();
+    pause_for_process_crash_evidence("hosted_room_create", "before_commit", &crash_match_id);
+    let backend = Arc::clone(&state.backend);
+    match backend_call(backend, move |backend| {
+        backend.create_hosted_room(&session, request)
+    })
+    .await
+    {
+        Ok(response) => {
+            pause_for_process_crash_evidence(
+                "hosted_room_create",
+                "after_commit_before_publication",
+                &crash_match_id,
+            );
+            record_admission_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            record_commit_with_correlation(
+                state.telemetry.as_ref(),
+                telemetry::ReasonCodeV1::Accepted,
+                correlation,
+            );
+            pause_for_process_crash_evidence(
+                "hosted_room_create",
                 "after_publication_before_reply",
                 &crash_match_id,
             );

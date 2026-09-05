@@ -210,6 +210,68 @@ impl FileSecretVaultV1 {
         Ok(reference)
     }
 
+    /// Publishes one exact, kind-bound reference without rotating it. This is
+    /// used only when a durable operation derives the reference before it
+    /// creates secret material, so a crash retry resolves the same bearer.
+    #[doc(hidden)]
+    pub fn publish_at_reference(
+        &self,
+        kind: SecretKindV1,
+        reference: &SecretReferenceV1,
+        secret: &[u8],
+    ) -> Result<(), SecretVaultErrorV1> {
+        if secret.is_empty() || u64::try_from(secret.len()).unwrap_or(u64::MAX) > MAX_SECRET_BYTES {
+            return Err(SecretVaultErrorV1::InvalidMaterial);
+        }
+        let path = self.secret_path(kind, reference);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let existing = self.resolve(kind, reference)?;
+                let matches = existing.as_bytes().len() == secret.len()
+                    && existing
+                        .as_bytes()
+                        .iter()
+                        .zip(secret)
+                        .fold(0_u8, |diff, (left, right)| diff | (left ^ right))
+                        == 0;
+                return if matches {
+                    Ok(())
+                } else {
+                    Err(SecretVaultErrorV1::InvalidMaterial)
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(SecretVaultErrorV1::Unavailable),
+        }
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| SecretVaultErrorV1::Unavailable)?;
+        let temporary = self.root.join(format!(
+            ".fixed-secret-{}.tmp",
+            blake3::hash(&nonce).to_hex()
+        ));
+        let result = (|| {
+            let mut file = worldstream_runtime::create_owner_only_renameable_file(&temporary)
+                .map_err(|_| SecretVaultErrorV1::Unavailable)?;
+            file.write_all(secret)
+                .map_err(|_| SecretVaultErrorV1::Unavailable)?;
+            crate::protected_publication::publish(
+                file,
+                &temporary,
+                &path,
+                crate::protected_publication::PublicationMode::CreateNew,
+            )
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    SecretVaultErrorV1::InvalidMaterial
+                } else {
+                    SecretVaultErrorV1::Unavailable
+                }
+            })
+        })();
+        let _ = fs::remove_file(temporary);
+        result
+    }
+
     /// Publishes one pending provider import's chosen reference without rotation.
     pub(crate) fn publish_imported_provider(
         &self,

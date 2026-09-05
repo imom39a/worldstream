@@ -1,5 +1,5 @@
 {
-  "schema": "worldstream/room-setup/v1",
+  "schema": "worldstream/room-setup/v2",
   "pack": {
     "id": "worldstream.agent-heist",
     "version": "0.2.0",
@@ -37,6 +37,22 @@
       "role": "broker",
       "required": false,
       "display_name": "Broker"
+    }
+  ],
+  "spectators": [
+    {
+      "purpose": "result_indexer",
+      "principal": {
+        "reference": "worldstream:result-indexer",
+        "kind": "agent"
+      }
+    },
+    {
+      "purpose": "public_relay",
+      "principal": {
+        "reference": "worldstream:public-relay",
+        "kind": "agent"
+      }
     }
   ],
   "operator_view": false

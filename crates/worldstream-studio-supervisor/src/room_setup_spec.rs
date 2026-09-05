@@ -5,7 +5,9 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use worldstream_core::CanonicalJsonV1;
-use worldstream_protocol::{ActivityPackCatalogRevisionResponse, PackReference, PrincipalKind};
+use worldstream_protocol::{
+    ActivityPackCatalogRevisionResponse, HostedSpectatorPurposeV2, PackReference, PrincipalKind,
+};
 
 use crate::{
     configuration_resolution::{ConfigurationResolutionError, resolve_configuration},
@@ -16,11 +18,24 @@ use crate::{
 
 /// A reference identifies a new Principal within this specification only.
 /// Creation resolves each reference once per setup operation; it is not an ID lookup.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetupPrincipalV1 {
     pub reference: String,
     pub kind: PrincipalKind,
+}
+
+/// Closed non-seat purpose supported by Room Setup Specification v2.
+/// Each purpose derives its access mode, Role absence, and capability scopes
+/// inside the Host; callers cannot widen them in setup input.
+pub type SetupSpectatorPurposeV2 = HostedSpectatorPurposeV2;
+
+/// One required, run-scoped non-seat Principal requested before Genesis.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetupSpectatorV2 {
+    pub purpose: SetupSpectatorPurposeV2,
+    pub principal: SetupPrincipalV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -54,6 +69,9 @@ pub struct RoomSetupSpecificationV1 {
     pub pack: PackReference,
     pub configuration: Value,
     pub seats: Vec<SetupSeatV1>,
+    /// v2-only non-seat spectators. v1 documents must omit this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spectators: Vec<SetupSpectatorV2>,
     #[serde(default)]
     pub operator_view: bool,
 }
@@ -129,11 +147,18 @@ pub fn parse_setup_specification(bytes: &[u8]) -> Result<RoomSetupSpecificationV
     if !safe_payload(&input, 0, &mut 4096) {
         return Err(invalid());
     }
+    let spectators_were_supplied = input
+        .as_object()
+        .is_some_and(|object| object.contains_key("spectators"));
     let specification: RoomSetupSpecificationV1 =
         serde_json::from_value(input).map_err(|_| invalid())?;
-    if specification.schema != "worldstream/room-setup/v1" {
+    if !matches!(
+        specification.schema.as_str(),
+        "worldstream/room-setup/v1" | "worldstream/room-setup/v2"
+    ) {
         return Err(invalid());
     }
+    validate_spectators(&specification, spectators_were_supplied)?;
     Ok(specification)
 }
 
@@ -246,6 +271,54 @@ fn validate_seats(
                 code: RoomSetupIssueCode::SeatIntent,
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_spectators(
+    specification: &RoomSetupSpecificationV1,
+    spectators_were_supplied: bool,
+) -> Result<(), RoomSetupError> {
+    let invalid = |path: String| RoomSetupError::Specification {
+        path,
+        code: RoomSetupIssueCode::InvalidSpecification,
+    };
+    if specification.schema == "worldstream/room-setup/v1" {
+        return if spectators_were_supplied {
+            Err(invalid("/spectators".to_owned()))
+        } else {
+            Ok(())
+        };
+    }
+    if specification.operator_view {
+        return Err(invalid("/operator_view".to_owned()));
+    }
+    if specification.spectators.is_empty() || specification.spectators.len() > 3 {
+        return Err(invalid("/spectators".to_owned()));
+    }
+    let mut purposes = BTreeSet::new();
+    let mut references = specification
+        .seats
+        .iter()
+        .filter_map(|seat| seat.principal.as_ref())
+        .map(|principal| principal.reference.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, spectator) in specification.spectators.iter().enumerate() {
+        let path = format!("/spectators/{index}");
+        let expected_kind = spectator.purpose.principal_kind();
+        if spectator.principal.kind != expected_kind
+            || !public_reference(&spectator.principal.reference)
+            || !purposes.insert(spectator.purpose)
+            || !references.insert(&spectator.principal.reference)
+        {
+            return Err(invalid(path));
+        }
+    }
+    if !purposes.contains(&SetupSpectatorPurposeV2::ResultIndexer) {
+        return Err(RoomSetupError::Specification {
+            path: "/spectators".to_owned(),
+            code: RoomSetupIssueCode::Required,
+        });
     }
     Ok(())
 }

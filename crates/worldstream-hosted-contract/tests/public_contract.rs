@@ -124,7 +124,12 @@ fn derives_exact_downstream_setup_without_operator_privilege() -> Result<(), Box
     let value: Value = serde_json::from_slice(&bytes)?;
     assert_eq!(bytes, second.canonical_bytes()?);
     assert_eq!(bytes, canonical(EXPECTED_SETUP)?);
+    assert_eq!(value["schema"], "worldstream/room-setup/v2");
     assert_eq!(value["operator_view"], false);
+    assert_eq!(value["spectators"][0]["purpose"], "result_indexer");
+    assert_eq!(value["spectators"][1]["purpose"], "public_relay");
+    assert!(value["spectators"][0].get("role").is_none());
+    assert!(value["spectators"][0].get("scopes").is_none());
     assert_eq!(value["seats"][0]["role"], "navigator");
     assert_eq!(value["seats"][1]["assignment"]["mode"], "external");
     Ok(())
@@ -141,6 +146,12 @@ fn setup_rejects_duplicate_or_invalid_public_principals() -> Result<(), Box<dyn 
         Err(ContractError::InvalidShape)
     );
     roster["members"][1]["principal_reference"] = json!("agent/invalid");
+    assert_eq!(
+        derive_room_setup(&listing, &canonical(LAUNCH)?, &canonical_value(&roster)?),
+        Err(ContractError::InvalidShape)
+    );
+    let mut roster = source_value(ROSTER)?;
+    roster["members"][0]["principal_reference"] = json!("worldstream:result-indexer");
     assert_eq!(
         derive_room_setup(&listing, &canonical(LAUNCH)?, &canonical_value(&roster)?),
         Err(ContractError::InvalidShape)
@@ -167,6 +178,85 @@ fn browser_launch_request_cannot_select_server_owned_fields() -> Result<(), Box<
             Err(ContractError::InvalidShape)
         );
     }
+    Ok(())
+}
+
+#[test]
+fn creator_participation_is_frozen_and_mutually_exclusive() -> Result<(), Box<dyn Error>> {
+    let (must_claim_listing, _) = contracts()?;
+    let mut invalid_seat_launch = source_value(LAUNCH)?;
+    invalid_seat_launch["creator"]["principal_reference"] = json!("github:not-in-roster");
+    assert_eq!(
+        derive_room_setup(
+            &must_claim_listing,
+            &canonical_value(&invalid_seat_launch)?,
+            &canonical(ROSTER)?
+        ),
+        Err(ContractError::InvalidShape)
+    );
+
+    let mut listing_value = source_value(LISTING)?;
+    listing_value["creator_access"] = json!("may_spectate");
+    let listing = ListingRevision::from_canonical_bytes(&canonical_value(&listing_value)?)?;
+    let mut launch = source_value(LAUNCH)?;
+    launch["listing_revision_digest"] = json!(listing.digest());
+    let mut roster = source_value(ROSTER)?;
+    roster["listing_revision_digest"] = json!(listing.digest());
+
+    let seated = derive_room_setup(
+        &listing,
+        &canonical_value(&launch)?,
+        &canonical_value(&roster)?,
+    )?;
+    let seated_value: Value = serde_json::from_slice(&seated.canonical_bytes()?)?;
+    assert!(
+        seated_value["spectators"]
+            .as_array()
+            .is_some_and(|spectators| spectators.iter().all(|item| item["purpose"] != "creator"))
+    );
+
+    launch["creator"] = json!({
+        "participation": "spectator",
+        "principal_reference": "worldstream:creator-spectator"
+    });
+    roster["members"][0]["principal_reference"] = json!("github:2002");
+    let spectating = derive_room_setup(
+        &listing,
+        &canonical_value(&launch)?,
+        &canonical_value(&roster)?,
+    )?;
+    let spectating_value: Value = serde_json::from_slice(&spectating.canonical_bytes()?)?;
+    assert!(
+        spectating_value["spectators"]
+            .as_array()
+            .is_some_and(|spectators| {
+                spectators.iter().any(|item| {
+                    item["purpose"] == "creator"
+                        && item["principal"]["reference"] == "worldstream:creator-spectator"
+                        && item["principal"]["kind"] == "human"
+                })
+            })
+    );
+
+    let mut forbidden_launch = source_value(LAUNCH)?;
+    forbidden_launch["creator"] = launch["creator"].clone();
+    assert_eq!(
+        derive_room_setup(
+            &must_claim_listing,
+            &canonical_value(&forbidden_launch)?,
+            &canonical(ROSTER)?
+        ),
+        Err(ContractError::InvalidShape)
+    );
+    roster["members"][0]["principal_reference"] = json!("worldstream:creator-spectator");
+    assert_eq!(
+        derive_room_setup(
+            &listing,
+            &canonical_value(&launch)?,
+            &canonical_value(&roster)?
+        ),
+        Err(ContractError::InvalidShape)
+    );
     Ok(())
 }
 

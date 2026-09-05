@@ -218,8 +218,14 @@ impl RoomSetupOperationsV1 {
         if catalog.revision.lobby_compatibility.is_none() && !request.acknowledge_start {
             return Err(RoomSetupOperationErrorV1::AcknowledgementRequired);
         }
+        let spectators = resolved.spectators.clone();
         let draft = resolved_draft(operation, resolved)?;
-        self.creation.prepare_reviewed(&draft)?;
+        if spectators.is_empty() {
+            self.creation.prepare_reviewed(&draft)?;
+        } else {
+            self.creation
+                .prepare_reviewed_with_spectators(&draft, &spectators)?;
+        }
         self.resume(operation)
     }
 

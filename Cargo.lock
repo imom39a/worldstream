@@ -3202,6 +3202,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "worldstream-hosted-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "worldstream-negotiate-evidence"
 version = "0.1.0"
 dependencies = [

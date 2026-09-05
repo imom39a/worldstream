@@ -214,3 +214,100 @@ fn reviewed_examples_resolve_through_the_same_exact_catalog_path()
     assert!(!heist.operator_view && !negotiate.operator_view);
     Ok(())
 }
+
+#[test]
+fn v2_setup_accepts_only_the_bounded_non_seat_spectator_contract()
+-> Result<(), Box<dyn std::error::Error>> {
+    let catalog = heist_catalog()?;
+    let mut input = setup_input(&catalog);
+    input["schema"] = json!("worldstream/room-setup/v2");
+    input["spectators"] = json!([
+        {
+            "purpose": "result_indexer",
+            "principal": {"reference": "result-indexer", "kind": "agent"}
+        },
+        {
+            "purpose": "creator",
+            "principal": {"reference": "creator-view", "kind": "human"}
+        },
+        {
+            "purpose": "public_relay",
+            "principal": {"reference": "public-relay", "kind": "agent"}
+        }
+    ]);
+
+    let resolved = resolve_setup_specification(&serde_json::to_vec(&input)?, &catalog)?;
+    assert_eq!(resolved.spectators.len(), 3);
+    assert_eq!(resolved.seats.len(), 3);
+
+    for pointer in ["/spectators/1", "/spectators/2"] {
+        let mut optional_removed = input.clone();
+        let index = pointer
+            .rsplit_once('/')
+            .and_then(|(_, value)| value.parse::<usize>().ok())
+            .ok_or("fixture spectator index")?;
+        optional_removed["spectators"]
+            .as_array_mut()
+            .ok_or("fixture spectators")?
+            .remove(index);
+        assert!(
+            resolve_setup_specification(&serde_json::to_vec(&optional_removed)?, &catalog).is_ok()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn v2_setup_rejects_missing_or_ambiguous_spectator_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    let catalog = heist_catalog()?;
+    let mut input = setup_input(&catalog);
+    input["schema"] = json!("worldstream/room-setup/v2");
+    input["spectators"] = json!([{
+        "purpose": "result_indexer",
+        "principal": {"reference": "result-indexer", "kind": "agent"}
+    }]);
+
+    let mut missing_indexer = input.clone();
+    missing_indexer["spectators"] = json!([]);
+    assert!(resolve_setup_specification(&serde_json::to_vec(&missing_indexer)?, &catalog).is_err());
+
+    let mut duplicate = input.clone();
+    duplicate["spectators"]
+        .as_array_mut()
+        .ok_or("fixture")?
+        .push(json!({
+            "purpose": "result_indexer",
+            "principal": {"reference": "second-indexer", "kind": "agent"}
+        }));
+    assert!(resolve_setup_specification(&serde_json::to_vec(&duplicate)?, &catalog).is_err());
+
+    let mut wrong_kind = input.clone();
+    wrong_kind["spectators"][0]["principal"]["kind"] = json!("human");
+    assert!(resolve_setup_specification(&serde_json::to_vec(&wrong_kind)?, &catalog).is_err());
+
+    let mut v1_with_spectator = input;
+    v1_with_spectator["schema"] = json!("worldstream/room-setup/v1");
+    assert!(
+        resolve_setup_specification(&serde_json::to_vec(&v1_with_spectator)?, &catalog).is_err()
+    );
+
+    let mut v1_with_empty_spectators = setup_input(&catalog);
+    v1_with_empty_spectators["spectators"] = json!([]);
+    assert!(
+        resolve_setup_specification(&serde_json::to_vec(&v1_with_empty_spectators)?, &catalog)
+            .is_err()
+    );
+
+    let mut v2_with_operator = setup_input(&catalog);
+    v2_with_operator["schema"] = json!("worldstream/room-setup/v2");
+    v2_with_operator["operator_view"] = json!(true);
+    v2_with_operator["spectators"] = json!([{
+        "purpose": "result_indexer",
+        "principal": {"reference": "result-indexer", "kind": "agent"}
+    }]);
+    assert!(
+        resolve_setup_specification(&serde_json::to_vec(&v2_with_operator)?, &catalog).is_err()
+    );
+    Ok(())
+}

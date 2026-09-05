@@ -2951,6 +2951,11 @@ enum WriterCommand {
         Box<PreparedAuthorityChangeV1>,
         mpsc::Sender<Result<AuthorityChangeReceiptV1, AuthorityStoreErrorV1>>,
     ),
+    CommitCreationWithAuthority {
+        prepared: Box<SqlitePreparedWrite>,
+        changes: Vec<PreparedAuthorityChangeV1>,
+        reply: mpsc::Sender<RoomCommitResolutionV1>,
+    },
     Commit(
         Box<SqlitePreparedWrite>,
         mpsc::Sender<RoomCommitResolutionV1>,
@@ -3858,6 +3863,36 @@ fn durable_transfer_point_digest(
 }
 
 impl SqliteRoomStore {
+    /// Commits one Room Genesis and its pre-authorized authority changes in
+    /// the same `SQLite` transaction. An existing exact Room receipt is usable
+    /// only when every bundled authority receipt is also present and bound.
+    #[must_use]
+    pub fn commit_creation_with_authority(
+        &self,
+        prepared: &PreparedRoomWriteV1,
+        changes: Vec<PreparedAuthorityChangeV1>,
+    ) -> RoomCommitResolutionV1 {
+        let Ok(prepared) = SqlitePreparedWrite::from_core(prepared) else {
+            return RoomCommitResolutionV1::Fault;
+        };
+        let (reply, receive) = mpsc::channel();
+        if self
+            .writer
+            .commands
+            .send(WriterCommand::CommitCreationWithAuthority {
+                prepared: Box::new(prepared),
+                changes,
+                reply,
+            })
+            .is_err()
+        {
+            return RoomCommitResolutionV1::Indeterminate;
+        }
+        receive
+            .recv()
+            .unwrap_or(RoomCommitResolutionV1::Indeterminate)
+    }
+
     fn emit_telemetry(&self, event: SqliteTelemetryEventV1) {
         emit_sqlite_telemetry(self.writer.telemetry.as_deref(), event);
     }
@@ -9670,6 +9705,15 @@ fn writer_main(
                 let result = apply_authority_change(&mut connection, &change, clock);
                 reply_after_namespace_check!(reply, result);
             }
+            WriterCommand::CommitCreationWithAuthority {
+                prepared,
+                changes,
+                reply,
+            } => {
+                let resolution =
+                    commit_creation_with_authority(&mut connection, *prepared, &changes, clock);
+                reply_after_namespace_check!(reply, resolution);
+            }
             WriterCommand::Commit(prepared, reply) => {
                 #[cfg(test)]
                 let resolution = commit_prepared(&mut connection, *prepared, clock, failpoint);
@@ -14671,6 +14715,105 @@ fn commit_prepared_inner(
     } else {
         RoomCommitResolutionV1::resolved(ResolutionStatusV1::New, prepared.receipt.stored_result)
     }
+}
+
+fn commit_creation_with_authority(
+    connection: &mut Connection,
+    prepared: SqlitePreparedWrite,
+    changes: &[PreparedAuthorityChangeV1],
+    clock: &dyn TrustedAuthorityClock,
+) -> RoomCommitResolutionV1 {
+    if changes.is_empty() || !matches!(&prepared.branch, PreparedSqliteBranch::Create(_)) {
+        return RoomCommitResolutionV1::Fault;
+    }
+    let Ok(transaction) = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+    else {
+        return RoomCommitResolutionV1::Indeterminate;
+    };
+    match lookup_receipt(&transaction, &prepared.identity, &prepared.identity_bytes) {
+        Ok(Some(stored)) => {
+            if stored.canonical_request_hash() != &prepared.request_hash {
+                let existing_request_hash = stored.canonical_request_hash().clone();
+                let _ = transaction.rollback();
+                return RoomCommitResolutionV1::Conflict {
+                    existing_request_hash,
+                };
+            }
+            for change in changes {
+                match lookup_authority_change_receipt(&transaction, change) {
+                    Ok(Some(_)) => {}
+                    Ok(None)
+                    | Err(
+                        AuthorityStoreErrorV1::Conflict
+                        | AuthorityStoreErrorV1::Corrupt
+                        | AuthorityStoreErrorV1::InvalidChange,
+                    ) => {
+                        let _ = transaction.rollback();
+                        return RoomCommitResolutionV1::Fault;
+                    }
+                    Err(AuthorityStoreErrorV1::StaleGeneration) => {
+                        let _ = transaction.rollback();
+                        return RoomCommitResolutionV1::Fenced;
+                    }
+                    Err(AuthorityStoreErrorV1::Unavailable) => {
+                        let _ = transaction.rollback();
+                        return RoomCommitResolutionV1::Indeterminate;
+                    }
+                }
+            }
+            let resolution = RoomCommitResolutionV1::resolved(ResolutionStatusV1::Existing, stored);
+            if transaction.commit().is_err() {
+                return RoomCommitResolutionV1::Indeterminate;
+            }
+            if let Some(snapshot) = prepared.post_commit_snapshot() {
+                let _ = persist_post_commit_snapshot(connection, &snapshot);
+            }
+            return resolution;
+        }
+        Ok(None) => {}
+        Err(ReceiptLookupError::Database) => {
+            let _ = transaction.rollback();
+            return RoomCommitResolutionV1::Indeterminate;
+        }
+        Err(ReceiptLookupError::Corrupt) => {
+            let _ = transaction.rollback();
+            return RoomCommitResolutionV1::Fault;
+        }
+    }
+    let PreparedSqliteBranch::Create(persistence) = &prepared.branch else {
+        let _ = transaction.rollback();
+        return RoomCommitResolutionV1::Fault;
+    };
+    if let Err(resolution) = commit_create(&transaction, &prepared, persistence, clock, None) {
+        return if transaction.rollback().is_ok() {
+            resolution
+        } else {
+            RoomCommitResolutionV1::Indeterminate
+        };
+    }
+    for change in changes {
+        if let Err(error) = apply_authority_change_in_transaction(&transaction, change, clock) {
+            let resolution = match error {
+                AuthorityStoreErrorV1::StaleGeneration => RoomCommitResolutionV1::Fenced,
+                AuthorityStoreErrorV1::Unavailable => RoomCommitResolutionV1::Indeterminate,
+                AuthorityStoreErrorV1::Conflict
+                | AuthorityStoreErrorV1::Corrupt
+                | AuthorityStoreErrorV1::InvalidChange => RoomCommitResolutionV1::Fault,
+            };
+            return if transaction.rollback().is_ok() {
+                resolution
+            } else {
+                RoomCommitResolutionV1::Indeterminate
+            };
+        }
+    }
+    if transaction.commit().is_err() {
+        return RoomCommitResolutionV1::Indeterminate;
+    }
+    if let Some(snapshot) = prepared.post_commit_snapshot() {
+        let _ = persist_post_commit_snapshot(connection, &snapshot);
+    }
+    RoomCommitResolutionV1::resolved(ResolutionStatusV1::New, prepared.receipt.stored_result)
 }
 
 #[allow(clippy::too_many_lines)]
