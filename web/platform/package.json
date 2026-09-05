@@ -13,6 +13,8 @@
     "test": "vitest run --environment node"
   },
   "dependencies": {
+    "@worldstream/hosted-contract": "workspace:*",
+    "@worldstream/pack-sdk": "workspace:*",
     "@supabase/supabase-js": "2.115.0"
   },
   "devDependencies": {

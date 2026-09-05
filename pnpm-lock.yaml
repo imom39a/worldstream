@@ -241,6 +241,12 @@ importers:
       '@supabase/supabase-js':
         specifier: 2.115.0
         version: 2.115.0
+      '@worldstream/hosted-contract':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-hosted-contract
+      '@worldstream/pack-sdk':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-pack/packages/pack-sdk
     devDependencies:
       '@types/node':
         specifier: 24.13.3

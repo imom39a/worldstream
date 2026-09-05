@@ -9,6 +9,7 @@ import {
 import {
   createSupabaseAuthAdminClient,
   createSupabaseBffDependencies,
+  createSupabaseResultReconciliationData,
 } from "./supabase.js";
 
 const URL = "https://project.supabase.co";
@@ -62,6 +63,69 @@ test("legacy Supabase role keys retain the same separation", () => {
       dataSecretKey: legacyKey("anon"),
     }),
   );
+});
+
+test("result reconciliation uses only typed server RPCs and exact bytea inputs", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  try {
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const body = JSON.parse(await request.clone().text()) as Record<string, unknown>;
+      calls.push({ url: request.url, body });
+      if (request.url.endsWith("/list_reconciliation_candidates_v1")) {
+        return Response.json([{
+          candidate_kind: "result_source",
+          launch_request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          activity_run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          listing_revision_digest: `blake3:${"1".repeat(64)}`,
+          launch_request_digest: `blake3:${"2".repeat(64)}`,
+          host_installation_id: "hosted-test",
+          room_setup_operation_id: "hosted-result-01",
+        }]);
+      }
+      if (request.url.endsWith("/read_terminal_reconciliation_v1")) {
+        return Response.json({
+          terminal_recorded: true,
+          projector_status: "summary",
+          reconciliation_state: "terminal",
+        });
+      }
+      if (request.url.endsWith("/read_result_reconciliation_v1")) {
+        return Response.json({
+          result_recorded: false,
+          result_payload_digest: null,
+          integrity_status: "healthy",
+          integrity_generation: 3,
+          publishable: false,
+        });
+      }
+      return Response.json({ disposition: "applied", safe_code: "result_recorded" });
+    };
+    const data = createSupabaseResultReconciliationData(URL, SECRET);
+    const candidates = await data.listCandidates(10);
+    assert.equal(candidates[0]?.candidateKind, "result_source");
+    assert.equal((await data.readTerminal("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))?.projectorStatus, "summary");
+    assert.equal((await data.readResult("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))?.integrityGeneration, 3);
+    const bytes = Uint8Array.of(1, 2, 3);
+    await data.recordResult(
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      bytes,
+      bytes,
+      bytes,
+      bytes,
+    );
+    assert.match(calls[0]?.url ?? "", /\/rpc\/list_reconciliation_candidates_v1$/u);
+    assert.deepEqual(calls.at(-1)?.body, {
+      p_activity_run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      p_canonical_result_evidence: "\\x010203",
+      p_result_evidence_digest: "\\x010203",
+      p_canonical_result_payload: "\\x010203",
+      p_result_payload_digest: "\\x010203",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("Supabase Auth distinguishes rejected credentials from dependency failure", async () => {

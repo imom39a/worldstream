@@ -13,7 +13,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use worldstream_activity_client::ActivityClientReleaseV1;
-use worldstream_core::CanonicalJsonV1;
+use worldstream_core::{CanonicalJsonV1, projection_hash_for_canonical_bytes};
 
 const MAX_REVISION_BYTES: usize = 262_144;
 const MAX_JSON_NODES: usize = 4_096;
@@ -269,6 +269,12 @@ impl ListingRevision {
     #[must_use]
     pub fn pack(&self) -> &PackReference {
         &self.document.pack
+    }
+
+    /// Returns the exact public Projection schema accepted by the pinned projector.
+    #[must_use]
+    pub fn public_projection_schema(&self) -> &str {
+        &self.document.result.projection.schema
     }
 
     /// Verifies that one exact seat permits one reviewed House Agent Revision.
@@ -1197,6 +1203,184 @@ pub struct HostedGenesisEvidenceV1 {
     pub pack: PackReference,
     pub genesis_head: HostedGenesisHeadV1,
     pub memberships: Vec<HostedGenesisMembershipV1>,
+}
+
+/// Exact Run-bound request for the dedicated result-indexer evidence pull.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedResultSourceRequestV1 {
+    pub schema: String,
+    pub run_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+}
+
+/// Complete Head observed through the result-indexer Membership.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedResultSourceHeadV1 {
+    pub room_id: String,
+    pub room_seq: u64,
+    pub genesis_or_transition_hash: String,
+    pub core_schema_version: String,
+    pub pack_digest: String,
+    pub core_state_hash: String,
+    pub activity_state_hash: String,
+    pub authoritative_state_hash: String,
+}
+
+/// Durable Room-integrity status kept separate from Pack Activity Phase.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedResultIntegrityStatusV1 {
+    Healthy,
+    Faulted,
+    Quarantined,
+}
+
+/// The complete authorized Public Projection whose frozen hash is verified.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedAuthorizedPublicProjectionV1 {
+    pub projection_schema: String,
+    pub authorized_core: Value,
+    pub projection: Value,
+    pub action_offers: Vec<Value>,
+}
+
+/// Optional authorized Replay proof through the exact observed Head.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedResultReplayEvidenceV1 {
+    pub verifier_revision: String,
+    pub verified_head: HostedResultSourceHeadV1,
+    pub projection_hash: String,
+    pub verification_receipt_digest: String,
+}
+
+/// Private service-only evidence pulled with the result-indexer Membership.
+///
+/// It contains no credential, private Projection, Outcome, or Replay events.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedResultSourceEvidenceV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub launch_request_id: String,
+    pub run_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+    pub room_id: String,
+    pub pack: PackReference,
+    pub result_indexer_membership_id: String,
+    pub access_mode: HostedGenesisAccessModeV1,
+    pub source_head: HostedResultSourceHeadV1,
+    pub integrity_status: HostedResultIntegrityStatusV1,
+    pub integrity_generation: u64,
+    pub projection_schema: String,
+    pub public_projection: HostedAuthorizedPublicProjectionV1,
+    pub projection_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<HostedResultReplayEvidenceV1>,
+}
+
+/// Validates the exact identifiers accepted by the result-source pull.
+///
+/// # Errors
+/// Returns a closed contract error for widened, malformed, or unbounded input.
+pub fn validate_hosted_result_source_request(
+    request: &HostedResultSourceRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-result-source-request/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_uuid_reference(&request.run_id)?;
+    validate_digest(&request.listing_revision_digest, "blake3")?;
+    validate_digest(&request.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&request.room_setup_operation_id)
+}
+
+/// Validates Pack-neutral result-source evidence and its frozen projection hash.
+///
+/// # Errors
+/// Returns a closed contract error when identity, Head, integrity, projection,
+/// or Replay evidence is malformed or internally inconsistent.
+pub fn validate_hosted_result_source_evidence(
+    evidence: &HostedResultSourceEvidenceV1,
+) -> Result<(), ContractError> {
+    if evidence.schema != "worldstream/hosted-result-source-evidence/v1"
+        || evidence.access_mode != HostedGenesisAccessModeV1::Spectator
+    {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&evidence.host_installation_id)?;
+    validate_uuid_reference(&evidence.launch_request_id)?;
+    validate_uuid_reference(&evidence.run_id)?;
+    validate_digest(&evidence.listing_revision_digest, "blake3")?;
+    validate_digest(&evidence.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&evidence.room_setup_operation_id)?;
+    validate_ulid_reference(&evidence.room_id)?;
+    validate_pack(&evidence.pack)?;
+    validate_ulid_reference(&evidence.result_indexer_membership_id)?;
+    validate_hosted_result_source_head(&evidence.source_head)?;
+    validate_identifier(&evidence.projection_schema, 128)?;
+    validate_digest(&evidence.projection_hash, "blake3")?;
+    if evidence.source_head.room_id != evidence.room_id
+        || evidence.source_head.pack_digest != evidence.pack.digest
+        || evidence.public_projection.projection_schema != evidence.projection_schema
+        || evidence.integrity_generation > 9_007_199_254_740_991
+    {
+        return Err(ContractError::ReferenceMismatch);
+    }
+    let projection_value = serde_json::to_value(&evidence.public_projection)
+        .map_err(|_| ContractError::InvalidShape)?;
+    validate_json(&projection_value)?;
+    let projection_bytes = canonicalize(&evidence.public_projection)?;
+    if projection_bytes.len() > MAX_REVISION_BYTES
+        || projection_hash_for_canonical_bytes(&projection_bytes)
+            .map_err(|_| ContractError::InvalidShape)?
+            .to_string()
+            != evidence.projection_hash
+    {
+        return Err(ContractError::ReferenceMismatch);
+    }
+    if let Some(replay) = &evidence.replay {
+        validate_identifier(&replay.verifier_revision, 128)?;
+        validate_hosted_result_source_head(&replay.verified_head)?;
+        validate_digest(&replay.projection_hash, "blake3")?;
+        validate_digest(&replay.verification_receipt_digest, "sha256")?;
+        if replay.verifier_revision != "worldstream.authorized-replay/v1"
+            || replay.verified_head != evidence.source_head
+            || replay.projection_hash != evidence.projection_hash
+        {
+            return Err(ContractError::ReferenceMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn validate_hosted_result_source_head(
+    head: &HostedResultSourceHeadV1,
+) -> Result<(), ContractError> {
+    validate_ulid_reference(&head.room_id)?;
+    validate_identifier(&head.core_schema_version, 128)?;
+    for digest in [
+        &head.genesis_or_transition_hash,
+        &head.pack_digest,
+        &head.core_state_hash,
+        &head.activity_state_hash,
+        &head.authoritative_state_hash,
+    ] {
+        validate_digest(digest, "blake3")?;
+    }
+    if head.core_schema_version != "worldstream.core-room-state.v1"
+        || head.room_seq > 9_007_199_254_740_991
+    {
+        return Err(ContractError::Unsupported);
+    }
+    Ok(())
 }
 
 /// Validates the closed secret-free Genesis evidence shape.

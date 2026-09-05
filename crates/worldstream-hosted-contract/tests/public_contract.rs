@@ -4,16 +4,19 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use worldstream_activity_client::read_activity_client_release;
-use worldstream_core::CanonicalJsonV1;
+use worldstream_core::{CanonicalJsonV1, projection_hash_for_canonical_bytes};
 use worldstream_hosted_contract::{
-    ContractError, HostedCapacityAuthorizationV1, HostedGenesisAccessModeV1,
-    HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedGenesisMembershipPurposeV1,
-    HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerAssignmentV1,
-    HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
-    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HouseAgentRevision, ListingRevision,
+    ContractError, HostedAuthorizedPublicProjectionV1, HostedCapacityAuthorizationV1,
+    HostedGenesisAccessModeV1, HostedGenesisEvidenceV1, HostedGenesisHeadV1,
+    HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1,
+    HostedHouseRunnerAssignmentV1, HostedHouseRunnerReservationOutcomeV1,
+    HostedHouseRunnerReservationReceiptV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1,
+    HostedResultSourceHeadV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
     PackReference, ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
     derive_room_setup_with_house_agents, project_result, validate_hosted_genesis_evidence,
     validate_hosted_launch_evidence_request, validate_hosted_launch_request,
+    validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
 
 const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
@@ -623,6 +626,85 @@ fn genesis_evidence_is_sequence_zero_duplicate_free_and_scope_closed() {
         validate_hosted_genesis_evidence(&widened),
         Err(ContractError::InvalidShape)
     );
+}
+
+fn result_source_evidence() -> Result<HostedResultSourceEvidenceV1, Box<dyn Error>> {
+    let input = source_value(TERMINAL)?;
+    let source_head =
+        serde_json::from_value::<HostedResultSourceHeadV1>(input["source_head"].clone())?;
+    let public_projection = HostedAuthorizedPublicProjectionV1 {
+        projection_schema: "agent-heist/projection/v1".to_owned(),
+        authorized_core: json!({"access_mode": "spectator"}),
+        projection: input["public_projection"].clone(),
+        action_offers: vec![],
+    };
+    let projection_bytes = canonical_value(&serde_json::to_value(&public_projection)?)?;
+    let projection_hash = projection_hash_for_canonical_bytes(&projection_bytes)?.to_string();
+    Ok(HostedResultSourceEvidenceV1 {
+        schema: "worldstream/hosted-result-source-evidence/v1".to_owned(),
+        host_installation_id: "fly-primary".to_owned(),
+        launch_request_id: "00000000-0000-4000-8000-000000000001".to_owned(),
+        run_id: "00000000-0000-4000-8000-000000000002".to_owned(),
+        listing_revision_digest:
+            "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b".to_owned(),
+        launch_request_digest: format!("blake3:{}", "1".repeat(64)),
+        room_setup_operation_id: "launch-result-source".to_owned(),
+        room_id: source_head.room_id.clone(),
+        pack: serde_json::from_value(input["pack"].clone())?,
+        result_indexer_membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAZ".to_owned(),
+        access_mode: HostedGenesisAccessModeV1::Spectator,
+        source_head: source_head.clone(),
+        integrity_status: HostedResultIntegrityStatusV1::Healthy,
+        integrity_generation: 7,
+        projection_schema: "agent-heist/projection/v1".to_owned(),
+        public_projection,
+        projection_hash: projection_hash.clone(),
+        replay: Some(HostedResultReplayEvidenceV1 {
+            verifier_revision: "worldstream.authorized-replay/v1".to_owned(),
+            verified_head: source_head,
+            projection_hash,
+            verification_receipt_digest: format!("sha256:{}", "2".repeat(64)),
+        }),
+    })
+}
+
+#[test]
+fn result_source_pull_is_run_bound_hash_verified_and_replay_exact() -> Result<(), Box<dyn Error>> {
+    let request = HostedResultSourceRequestV1 {
+        schema: "worldstream/hosted-result-source-request/v1".to_owned(),
+        run_id: "00000000-0000-4000-8000-000000000002".to_owned(),
+        listing_revision_digest:
+            "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b".to_owned(),
+        launch_request_digest: format!("blake3:{}", "1".repeat(64)),
+        room_setup_operation_id: "launch-result-source".to_owned(),
+    };
+    assert!(validate_hosted_result_source_request(&request).is_ok());
+
+    let evidence = result_source_evidence()?;
+    assert_eq!(validate_hosted_result_source_evidence(&evidence), Ok(()));
+    let mut observation_only = evidence.clone();
+    observation_only.replay = None;
+    assert!(validate_hosted_result_source_evidence(&observation_only).is_ok());
+
+    let mut changed_projection = evidence.clone();
+    changed_projection.public_projection.projection["fixture"] = json!(true);
+    assert_eq!(
+        validate_hosted_result_source_evidence(&changed_projection),
+        Err(ContractError::ReferenceMismatch)
+    );
+
+    let mut changed_replay = evidence;
+    changed_replay
+        .replay
+        .as_mut()
+        .ok_or("missing replay")?
+        .verified_head
+        .room_seq += 1;
+    assert_eq!(
+        validate_hosted_result_source_evidence(&changed_replay),
+        Err(ContractError::ReferenceMismatch)
+    );
+    Ok(())
 }
 
 #[test]

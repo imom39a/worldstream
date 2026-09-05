@@ -28,9 +28,11 @@ use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
     HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedHouseRunnerReservationReceiptV1,
     HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStageV1, HostedLaunchStatusV1, HouseAgentRevision, ListingRevision,
+    HostedLaunchStageV1, HostedLaunchStatusV1, HostedResultSourceEvidenceV1,
+    HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
     PackReference as HostedPackReference, validate_hosted_genesis_evidence,
     validate_hosted_launch_evidence_request, validate_hosted_launch_request,
+    validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
@@ -40,9 +42,12 @@ use crate::{
     hosted_house_runners::{
         HostedHouseRunnerErrorV1, HostedHouseRunnerGateV1, HostedHouseRunnerOperationsV1,
     },
+    hosted_result_source::{
+        HostedResultObservationV1, HostedResultSourceErrorV1, HttpHostedResultSourceV1,
+    },
     room_setup_operations::{
         RoomSetupCreateRequestV1, RoomSetupGenesisEvidenceV1, RoomSetupOperationErrorV1,
-        RoomSetupOperationStatusV1, RoomSetupOperationsV1,
+        RoomSetupOperationStatusV1, RoomSetupOperationsV1, RoomSetupResultIndexerBindingV1,
     },
     room_setup_spec::RoomSetupSpecificationV1,
     task_setup::{TaskLaunchStateV1, TaskSetupErrorV1, TaskSetupSupervisorV1},
@@ -92,6 +97,27 @@ trait HostedRoomOperationBackendV1: Send + Sync + 'static {
         &self,
         operation: &str,
     ) -> Result<RoomSetupGenesisEvidenceV1, HostedLaunchErrorV1>;
+
+    fn result_indexer_binding(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupResultIndexerBindingV1, HostedLaunchErrorV1>;
+}
+
+trait HostedResultSourceBackendV1: Send + Sync + 'static {
+    fn read(
+        &self,
+        binding: &RoomSetupResultIndexerBindingV1,
+    ) -> Result<HostedResultObservationV1, HostedResultSourceErrorV1>;
+}
+
+impl HostedResultSourceBackendV1 for HttpHostedResultSourceV1 {
+    fn read(
+        &self,
+        binding: &RoomSetupResultIndexerBindingV1,
+    ) -> Result<HostedResultObservationV1, HostedResultSourceErrorV1> {
+        HttpHostedResultSourceV1::read(self, binding)
+    }
 }
 
 trait HostedHouseRunnerBackendV1: Send + Sync + 'static {
@@ -196,6 +222,15 @@ impl HostedRoomOperationBackendV1 for LiveHostedRoomOperationBackendV1 {
             .genesis_evidence(operation)
             .map_err(|error| map_room_error(&error))
     }
+
+    fn result_indexer_binding(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupResultIndexerBindingV1, HostedLaunchErrorV1> {
+        self.rooms
+            .result_indexer_binding(operation)
+            .map_err(|error| map_room_error(&error))
+    }
 }
 
 fn map_room_error(error: &RoomSetupOperationErrorV1) -> HostedLaunchErrorV1 {
@@ -218,6 +253,7 @@ pub struct HostedLaunchOperationsV1 {
     house_agents: Arc<Vec<HouseAgentRevision>>,
     backend: Arc<dyn HostedRoomOperationBackendV1>,
     house_runners: Option<Arc<dyn HostedHouseRunnerBackendV1>>,
+    result_source: Option<Arc<dyn HostedResultSourceBackendV1>>,
     mutation: Arc<Mutex<()>>,
 }
 
@@ -283,6 +319,7 @@ impl HostedLaunchOperationsV1 {
             house_agents: Arc::new(house_agents),
             backend: Arc::new(backend),
             house_runners: None,
+            result_source: None,
             mutation: Arc::new(Mutex::new(())),
         })
     }
@@ -291,6 +328,19 @@ impl HostedLaunchOperationsV1 {
     #[must_use]
     pub fn with_house_runners(mut self, house_runners: HostedHouseRunnerOperationsV1) -> Self {
         self.house_runners = Some(Arc::new(house_runners));
+        self
+    }
+
+    /// Adds the fixed Runtime result-indexer transport.
+    #[must_use]
+    pub fn with_result_source(mut self, source: HttpHostedResultSourceV1) -> Self {
+        self.result_source = Some(Arc::new(source));
+        self
+    }
+
+    #[cfg(test)]
+    fn with_result_source_backend(mut self, source: impl HostedResultSourceBackendV1) -> Self {
+        self.result_source = Some(Arc::new(source));
         self
     }
 
@@ -461,6 +511,78 @@ impl HostedLaunchOperationsV1 {
             memberships: genesis.memberships,
         };
         validate_hosted_genesis_evidence(&evidence)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        Ok(evidence)
+    }
+
+    /// Pulls the latest authorized Public Projection and optional Replay proof
+    /// through the dedicated result-indexer Membership.
+    ///
+    /// # Errors
+    /// Rejects a changed Run/launch identity, unavailable retained authority,
+    /// or evidence that does not match the exact reviewed Listing and Room.
+    pub fn result_source_evidence(
+        &self,
+        request: &HostedResultSourceRequestV1,
+    ) -> Result<HostedResultSourceEvidenceV1, HostedLaunchErrorV1> {
+        validate_hosted_result_source_request(request).map_err(|_| HostedLaunchErrorV1::Invalid)?;
+        let binding = {
+            let _guard = self.lock();
+            self.load_unlocked(&request.room_setup_operation_id)?
+        };
+        if binding.listing_revision_digest != request.listing_revision_digest
+            || binding.launch_request_digest != request.launch_request_digest
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        let listing = self
+            .listings
+            .get(&binding.listing_revision_digest)
+            .ok_or(HostedLaunchErrorV1::Unavailable)?;
+        let indexer = self
+            .backend
+            .result_indexer_binding(&binding.room_setup_operation_id)?;
+        let observation = self
+            .result_source
+            .as_ref()
+            .ok_or(HostedLaunchErrorV1::Unavailable)?
+            .read(&indexer)
+            .map_err(map_result_source_error)?;
+        if observation.room_id != indexer.room_id
+            || observation.member_id != indexer.member_id
+            || observation.projection_schema != listing.public_projection_schema()
+        {
+            return Err(HostedLaunchErrorV1::Unavailable);
+        }
+        let pack = HostedPackReference {
+            id: observation.pack.id,
+            version: observation.pack.version,
+            digest: observation.pack.digest,
+        };
+        listing
+            .verify_pack(&pack)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let evidence = HostedResultSourceEvidenceV1 {
+            schema: "worldstream/hosted-result-source-evidence/v1".to_owned(),
+            host_installation_id: self.host_installation_id.to_string(),
+            launch_request_id: binding.capacity_reservation_reference,
+            run_id: request.run_id.clone(),
+            listing_revision_digest: binding.listing_revision_digest,
+            launch_request_digest: binding.launch_request_digest,
+            room_setup_operation_id: binding.room_setup_operation_id,
+            room_id: observation.room_id,
+            pack,
+            result_indexer_membership_id: observation.member_id,
+            access_mode: worldstream_hosted_contract::HostedGenesisAccessModeV1::Spectator,
+            source_head: observation.source_head,
+            integrity_status: observation.integrity_status,
+            integrity_generation: observation.integrity_generation,
+            projection_schema: observation.projection_schema,
+            public_projection: observation.public_projection,
+            projection_hash: observation.projection_hash,
+            replay: observation.replay,
+        };
+        validate_hosted_result_source_evidence(&evidence)
             .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
         Ok(evidence)
     }
@@ -715,6 +837,14 @@ const fn map_house_error(error: HostedHouseRunnerErrorV1) -> HostedLaunchErrorV1
     }
 }
 
+const fn map_result_source_error(error: HostedResultSourceErrorV1) -> HostedLaunchErrorV1 {
+    match error {
+        HostedResultSourceErrorV1::Invalid => HostedLaunchErrorV1::Invalid,
+        HostedResultSourceErrorV1::AuthorityUnavailable
+        | HostedResultSourceErrorV1::Unavailable => HostedLaunchErrorV1::Unavailable,
+    }
+}
+
 fn valid_binding(
     binding: &RetainedHostedLaunchBindingV1,
     operation: &str,
@@ -831,6 +961,7 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
                 "/api/v1/hosted-launches:submit"
                     | "/api/v1/hosted-launches:read"
                     | "/api/v1/hosted-launches:read-genesis"
+                    | "/api/v1/hosted-launches:read-result-source"
                     | "/api/v1/hosted-house-runners:reserve"
                     | "/api/v1/hosted-house-runners:read"
             )
@@ -849,6 +980,10 @@ pub fn hosted_launch_router(
         .route(
             "/api/v1/hosted-launches:read-genesis",
             post(hosted_read_genesis),
+        )
+        .route(
+            "/api/v1/hosted-launches:read-result-source",
+            post(hosted_read_result_source),
         )
         .route(
             "/api/v1/hosted-house-runners:reserve",
@@ -900,6 +1035,17 @@ async fn hosted_read_genesis(
 ) -> Result<Json<HostedGenesisEvidenceV1>, HostedLaunchErrorV1> {
     let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
     tokio::task::spawn_blocking(move || operations.genesis_evidence(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_read_result_source(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedResultSourceEvidenceV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedResultSourceRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.result_source_evidence(&request))
         .await
         .map_err(|_| HostedLaunchErrorV1::Unavailable)?
         .map(Json)
@@ -982,10 +1128,13 @@ mod tests {
     use tempfile::tempdir;
     use tower::ServiceExt as _;
     use worldstream_hosted_contract::{
-        HostedCapacityAuthorizationV1, HostedGenesisAccessModeV1, HostedGenesisMembershipPurposeV1,
-        HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerAssignmentV1,
+        HostedAuthorizedPublicProjectionV1, HostedCapacityAuthorizationV1,
+        HostedGenesisAccessModeV1, HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1,
+        HostedGenesisPrincipalKindV1, HostedHouseRunnerAssignmentV1,
         HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
-        HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, derive_room_setup_with_house_agents,
+        HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedResultIntegrityStatusV1,
+        HostedResultReplayEvidenceV1, HostedResultSourceHeadV1,
+        derive_room_setup_with_house_agents,
     };
 
     use super::*;
@@ -1083,6 +1232,25 @@ mod tests {
                 .clone()
                 .ok_or(HostedLaunchErrorV1::Unavailable)
         }
+
+        fn result_indexer_binding(
+            &self,
+            _operation: &str,
+        ) -> Result<RoomSetupResultIndexerBindingV1, HostedLaunchErrorV1> {
+            let pack = listing().pack().clone();
+            Ok(RoomSetupResultIndexerBindingV1 {
+                room_id: "01JY0000000000000000000000".to_owned(),
+                member_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+                principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FB0".to_owned(),
+                pack: worldstream_protocol::PackReference {
+                    id: pack.id,
+                    version: pack.version,
+                    digest: pack.digest,
+                },
+                secret_reference: crate::secrets::SecretReferenceV1::parse("a".repeat(64))
+                    .unwrap_or_else(|error| unreachable!("valid secret reference: {error:?}")),
+            })
+        }
     }
 
     #[derive(Clone)]
@@ -1138,6 +1306,20 @@ mod tests {
             let mut starts = self.starts.lock().unwrap_or_else(PoisonError::into_inner);
             *starts = starts.saturating_add(1);
             *self.gate.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeResultSource {
+        observation: HostedResultObservationV1,
+    }
+
+    impl HostedResultSourceBackendV1 for FakeResultSource {
+        fn read(
+            &self,
+            _binding: &RoomSetupResultIndexerBindingV1,
+        ) -> Result<HostedResultObservationV1, HostedResultSourceErrorV1> {
+            Ok(self.observation.clone())
         }
     }
 
@@ -1202,6 +1384,59 @@ mod tests {
     fn listing() -> ListingRevision {
         ListingRevision::from_canonical_bytes(&canonical(LISTING))
             .unwrap_or_else(|error| unreachable!("valid fixture: {error}"))
+    }
+
+    fn result_observation() -> HostedResultObservationV1 {
+        let listing = listing();
+        let projection = HostedAuthorizedPublicProjectionV1 {
+            projection_schema: "agent-heist/projection/v1".to_owned(),
+            authorized_core: serde_json::json!({"access_mode": "spectator"}),
+            projection: value(include_bytes!(
+                "../../../fixtures/hosted-contract/valid/agent-heist-terminal-input.json"
+            ))["public_projection"]
+                .clone(),
+            action_offers: vec![],
+        };
+        let bytes = CanonicalJsonV1::parse(
+            &serde_json::to_vec(&projection)
+                .unwrap_or_else(|error| unreachable!("serialize projection: {error}")),
+        )
+        .and_then(|value| value.to_bytes())
+        .unwrap_or_else(|error| unreachable!("canonical projection: {error}"));
+        let projection_hash = worldstream_core::projection_hash_for_canonical_bytes(&bytes)
+            .unwrap_or_else(|error| unreachable!("projection hash: {error}"))
+            .to_string();
+        let head = HostedResultSourceHeadV1 {
+            room_id: "01JY0000000000000000000000".to_owned(),
+            room_seq: 15,
+            genesis_or_transition_hash: format!("blake3:{}", "1".repeat(64)),
+            core_schema_version: "worldstream.core-room-state.v1".to_owned(),
+            pack_digest: listing.pack().digest.clone(),
+            core_state_hash: format!("blake3:{}", "2".repeat(64)),
+            activity_state_hash: format!("blake3:{}", "3".repeat(64)),
+            authoritative_state_hash: format!("blake3:{}", "4".repeat(64)),
+        };
+        HostedResultObservationV1 {
+            room_id: head.room_id.clone(),
+            member_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+            pack: worldstream_protocol::PackReference {
+                id: listing.pack().id.clone(),
+                version: listing.pack().version.clone(),
+                digest: listing.pack().digest.clone(),
+            },
+            source_head: head.clone(),
+            integrity_status: HostedResultIntegrityStatusV1::Healthy,
+            integrity_generation: 7,
+            projection_schema: "agent-heist/projection/v1".to_owned(),
+            public_projection: projection,
+            projection_hash: projection_hash.clone(),
+            replay: Some(HostedResultReplayEvidenceV1 {
+                verifier_revision: "worldstream.authorized-replay/v1".to_owned(),
+                verified_head: head,
+                projection_hash,
+                verification_receipt_digest: format!("sha256:{}", "5".repeat(64)),
+            }),
+        }
     }
 
     fn house_request(
@@ -1411,6 +1646,51 @@ mod tests {
             HostedGenesisMembershipPurposeV1::ResultIndexer
         );
         assert!(validate_hosted_genesis_evidence(&result).is_ok());
+    }
+
+    #[test]
+    fn result_source_is_run_bound_and_exposes_no_retained_authority() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend,
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"))
+        .with_result_source_backend(FakeResultSource {
+            observation: result_observation(),
+        });
+        let launch = request("hosted-result-source-01");
+        assert!(operations.submit(&launch).is_ok());
+
+        let evidence = operations
+            .result_source_evidence(&HostedResultSourceRequestV1 {
+                schema: "worldstream/hosted-result-source-request/v1".to_owned(),
+                run_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned(),
+                listing_revision_digest: launch.listing_revision_digest,
+                launch_request_digest: launch.launch_request_digest,
+                room_setup_operation_id: launch.room_setup_operation_id,
+            })
+            .unwrap_or_else(|error| unreachable!("valid result evidence: {error:?}"));
+
+        assert_eq!(evidence.run_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        assert_eq!(evidence.room_id, "01JY0000000000000000000000");
+        assert_eq!(
+            evidence.result_indexer_membership_id,
+            "01ARZ3NDEKTSV4RRFFQ69G5FB1"
+        );
+        assert!(evidence.replay.is_some());
+        validate_hosted_result_source_evidence(&evidence)
+            .unwrap_or_else(|error| unreachable!("validated result evidence: {error:?}"));
+        let serialized = serde_json::to_string(&evidence)
+            .unwrap_or_else(|error| unreachable!("serialize evidence: {error}"));
+        assert!(!serialized.contains("principal_id"));
+        assert!(!serialized.contains("secret_reference"));
+        assert!(!serialized.contains("Bearer "));
     }
 
     #[test]

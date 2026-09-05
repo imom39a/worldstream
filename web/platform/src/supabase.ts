@@ -17,6 +17,14 @@ import type {
   RefreshedAuthSession,
   SessionRefreshAdmission,
 } from "./bff.js";
+import type {
+  ReconciliationWriteReceipt,
+  ResultIntegrityStatus,
+  ResultReconciliationCandidate,
+  ResultReconciliationData,
+  ResultReconciliationState,
+  TerminalReconciliationState,
+} from "./result-reconciliation.js";
 
 interface RpcResult {
   readonly data: unknown;
@@ -70,6 +78,22 @@ export function createSupabaseAuthAdminClient(
       if (error !== null) throw new PlatformDependencyUnavailableError();
     },
   };
+}
+
+/** Builds the server-only RPC adapter for terminal and result reconciliation. */
+export function createSupabaseResultReconciliationData(
+  url: string,
+  dataSecretKey: string,
+): ResultReconciliationData {
+  validateSupabaseUrl(url);
+  validateSupabaseKey(dataSecretKey, "secret");
+  const client = createClient(url, dataSecretKey, {
+    ...serverClientOptions(),
+    db: { schema: "platform_api" },
+  });
+  return new SupabaseResultReconciliationDataClient(
+    client.schema("platform_api") as unknown as RpcClient,
+  );
 }
 
 class SupabasePlatformAuthClient implements PlatformAuthClient {
@@ -324,6 +348,132 @@ class SupabasePlatformDataClient implements PlatformDataClient {
   }
 }
 
+class SupabaseResultReconciliationDataClient implements ResultReconciliationData {
+  constructor(private readonly rpc: RpcClient) {}
+
+  async listCandidates(limit: number): Promise<readonly ResultReconciliationCandidate[]> {
+    const data = await requiredRpc(this.rpc, "list_reconciliation_candidates_v1", {
+      p_limit: limit,
+    });
+    return readRows(data).map((row): ResultReconciliationCandidate => ({
+      candidateKind: requiredEnum(row.candidate_kind, ["genesis", "result_source"]),
+      launchRequestId: requiredString(row.launch_request_id),
+      runId: nullableString(row.activity_run_id),
+      listingRevisionDigest: requiredString(row.listing_revision_digest),
+      launchRequestDigest: nullableString(row.launch_request_digest),
+      hostInstallationId: requiredString(row.host_installation_id),
+      roomSetupOperationId: requiredString(row.room_setup_operation_id),
+    }));
+  }
+
+  async readTerminal(runId: string): Promise<TerminalReconciliationState | null> {
+    const data = await requiredRpc(this.rpc, "read_terminal_reconciliation_v1", {
+      p_activity_run_id: runId,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    return {
+      terminalRecorded: requiredBoolean(value.terminal_recorded),
+      projectorStatus: nullableEnum(value.projector_status, [
+        "terminal_without_outcome",
+        "summary",
+      ]),
+      reconciliationState: requiredEnum(value.reconciliation_state, [
+        "pending",
+        "terminal",
+        "quarantined",
+      ]),
+    };
+  }
+
+  async readResult(runId: string): Promise<ResultReconciliationState | null> {
+    const data = await requiredRpc(this.rpc, "read_result_reconciliation_v1", {
+      p_activity_run_id: runId,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    return {
+      resultRecorded: requiredBoolean(value.result_recorded),
+      resultPayloadDigest: nullableString(value.result_payload_digest),
+      integrityStatus: nullableEnum(value.integrity_status, [
+        "healthy",
+        "faulted",
+        "quarantined",
+      ]) as ResultIntegrityStatus | null,
+      integrityGeneration: nullableSafeInteger(value.integrity_generation),
+      publishable: requiredBoolean(value.publishable),
+    };
+  }
+
+  async recordTerminal(
+    runId: string,
+    evidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<ReconciliationWriteReceipt> {
+    return this.write("record_run_terminal_v1", {
+      p_activity_run_id: runId,
+      p_canonical_terminal_evidence: bytea(evidence),
+      p_terminal_evidence_digest: bytea(evidenceDigest),
+    });
+  }
+
+  async recordTerminalConflict(
+    runId: string,
+    evidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<ReconciliationWriteReceipt> {
+    return this.write("record_terminal_conflict_v1", {
+      p_activity_run_id: runId,
+      p_canonical_conflict_evidence: bytea(evidence),
+      p_conflict_evidence_digest: bytea(evidenceDigest),
+    });
+  }
+
+  async recordResult(
+    runId: string,
+    evidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+    payload: Uint8Array,
+    payloadDigest: Uint8Array,
+  ): Promise<ReconciliationWriteReceipt> {
+    return this.write("record_result_v1", {
+      p_activity_run_id: runId,
+      p_canonical_result_evidence: bytea(evidence),
+      p_result_evidence_digest: bytea(evidenceDigest),
+      p_canonical_result_payload: bytea(payload),
+      p_result_payload_digest: bytea(payloadDigest),
+    });
+  }
+
+  async recordIntegrity(
+    runId: string,
+    evidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<ReconciliationWriteReceipt> {
+    return this.write("record_integrity_observation_v1", {
+      p_activity_run_id: runId,
+      p_canonical_integrity_evidence: bytea(evidence),
+      p_integrity_evidence_digest: bytea(evidenceDigest),
+    });
+  }
+
+  private async write(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ReconciliationWriteReceipt> {
+    const value = requiredRecord(await requiredRpc(this.rpc, name, args));
+    return {
+      disposition: requiredEnum(value.disposition, [
+        "applied",
+        "duplicate",
+        "conflict",
+        "blocked",
+      ]),
+      safeCode: requiredString(value.safe_code),
+    };
+  }
+}
+
 function serverClientOptions() {
   return {
     auth: {
@@ -441,11 +591,41 @@ function requiredBoolean(value: unknown): boolean {
   return value;
 }
 
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : requiredString(value);
+}
+
+function nullableSafeInteger(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new PlatformDependencyUnavailableError();
+  }
+  return value;
+}
+
+function requiredEnum<const T extends string>(value: unknown, values: readonly T[]): T {
+  if (typeof value !== "string" || !values.includes(value as T)) {
+    throw new PlatformDependencyUnavailableError();
+  }
+  return value as T;
+}
+
+function nullableEnum<const T extends string>(
+  value: unknown,
+  values: readonly T[],
+): T | null {
+  return value === null || value === undefined ? null : requiredEnum(value, values);
+}
+
 function requiredExpiry(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {
     throw new PlatformDependencyUnavailableError();
   }
   return value;
+}
+
+function bytea(value: Uint8Array): string {
+  return `\\x${Buffer.from(value).toString("hex")}`;
 }
 
 function validateSupabaseUrl(url: string): void {

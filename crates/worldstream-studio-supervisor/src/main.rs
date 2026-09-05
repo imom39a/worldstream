@@ -46,6 +46,7 @@ use worldstream_studio_supervisor::{
     control_admission::protect_operator_routes,
     hosted_house_runners::HostedHouseRunnerOperationsV1,
     hosted_launch::{HostedLaunchAccessV1, HostedLaunchOperationsV1, hosted_launch_router},
+    hosted_result_source::HttpHostedResultSourceV1,
     local_initialization::validate_initialized,
     managed_controller::{
         ControllerLifecycle, managed_controller_router, managed_lifecycle_router,
@@ -523,6 +524,17 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         (None, None) => None,
         (Some(installation_id), Some(authority)) => {
             let (listings, house_agents) = reviewed_hosted_artifacts()?;
+            let result_source = if let Some(ownership) = &managed_transport_ownership {
+                HttpHostedResultSourceV1::new_managed(
+                    args.daemon,
+                    daemon_timeout,
+                    vault.clone(),
+                    ownership.clone(),
+                )
+            } else {
+                HttpHostedResultSourceV1::new(args.daemon, daemon_timeout, vault.clone())
+            }
+            .map_err(|_| anyhow::anyhow!("hosted result-source adapter is unavailable"))?;
             let house_runners = HostedHouseRunnerOperationsV1::open_production(
                 &args.state_dir.join("hosted-house-runners"),
                 &canonical_state_dir,
@@ -548,7 +560,8 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 task_setup.clone(),
             )
             .map_err(|_| anyhow::anyhow!("hosted launch adapter is unavailable"))?
-            .with_house_runners(house_runners);
+            .with_house_runners(house_runners)
+            .with_result_source(result_source);
             let access = HostedLaunchAccessV1::new(&authority)
                 .map_err(|_| anyhow::anyhow!("hosted launch authority is invalid"))?;
             drop(authority);
