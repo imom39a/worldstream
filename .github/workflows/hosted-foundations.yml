@@ -35,6 +35,7 @@ jobs:
           cargo test --locked -p worldstream-hosted-contract
           pnpm --filter @worldstream/hosted-contract lint
           pnpm --filter @worldstream/hosted-contract test
+          cargo test --locked -p worldstream-studio-supervisor --lib hosted_launch
           cargo test --locked -p worldstream-studio-supervisor --test room_setup_spec
           cargo test --locked -p worldstream-studio-supervisor --test room_setup_operations
           cargo test --locked -p worldstream-studio-supervisor --test room_creation production_http_creator_reuses_one_sealed_spectator_bearer_on_retry

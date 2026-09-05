@@ -1120,6 +1120,208 @@ pub struct HostedLaunchStatusV1 {
     pub terminal_before_genesis: bool,
 }
 
+/// Closed access mode observed in the Room-Genesis membership set.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedGenesisAccessModeV1 {
+    Participant,
+    Spectator,
+}
+
+/// Platform purpose for one exact Room-Genesis Membership.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedGenesisMembershipPurposeV1 {
+    Participant,
+    CreatorSpectator,
+    ResultIndexer,
+    PublicProjectionRelay,
+}
+
+/// Closed Principal kind observed in the Room-Genesis membership set.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedGenesisPrincipalKindV1 {
+    Human,
+    Agent,
+}
+
+/// One private, secret-free correspondence proved by the retained Host.
+///
+/// `scopes` is empty for participant Memberships. For hosted spectators it is
+/// the exact closed scope set committed atomically with Genesis.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedGenesisMembershipV1 {
+    pub access_mode: HostedGenesisAccessModeV1,
+    pub purpose: HostedGenesisMembershipPurposeV1,
+    pub seat_id: Option<String>,
+    pub role: Option<String>,
+    pub principal_kind: HostedGenesisPrincipalKindV1,
+    pub principal_id: String,
+    pub membership_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
+/// The immutable sequence-zero Room Head retained by the Host.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedGenesisHeadV1 {
+    pub room_id: String,
+    pub room_seq: u64,
+    pub genesis_or_transition_hash: String,
+    pub core_schema_version: String,
+    pub pack_digest: String,
+    pub core_state_hash: String,
+    pub activity_state_hash: String,
+    pub authoritative_state_hash: String,
+}
+
+/// Private service-only Genesis evidence returned from the retained Fly Host.
+///
+/// This document intentionally contains Principal and Membership identifiers.
+/// It must never be returned by a browser-facing route or public projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedGenesisEvidenceV1 {
+    pub schema: String,
+    pub host_installation_id: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub frozen_roster_digest: String,
+    pub room_setup_specification_digest: String,
+    pub room_setup_operation_id: String,
+    pub room_id: String,
+    pub pack: PackReference,
+    pub genesis_head: HostedGenesisHeadV1,
+    pub memberships: Vec<HostedGenesisMembershipV1>,
+}
+
+/// Validates the closed secret-free Genesis evidence shape.
+///
+/// # Errors
+/// Returns a closed contract error for malformed identities, non-Genesis
+/// heads, duplicate correspondence, or widened spectator authority.
+pub fn validate_hosted_genesis_evidence(
+    evidence: &HostedGenesisEvidenceV1,
+) -> Result<(), ContractError> {
+    if evidence.schema != "worldstream/hosted-genesis-evidence/v1" {
+        return Err(ContractError::Unsupported);
+    }
+    validate_host_installation_reference(&evidence.host_installation_id)?;
+    validate_uuid_reference(&evidence.launch_request_id)?;
+    validate_digest(&evidence.listing_revision_digest, "blake3")?;
+    validate_digest(&evidence.launch_request_digest, "blake3")?;
+    validate_digest(&evidence.frozen_roster_digest, "sha256")?;
+    validate_digest(&evidence.room_setup_specification_digest, "blake3")?;
+    validate_hosted_operation_reference(&evidence.room_setup_operation_id)?;
+    validate_ulid_reference(&evidence.room_id)?;
+    validate_pack(&evidence.pack)?;
+    validate_hosted_genesis_head(evidence)?;
+    validate_hosted_genesis_memberships(&evidence.memberships)
+}
+
+fn validate_hosted_genesis_head(evidence: &HostedGenesisEvidenceV1) -> Result<(), ContractError> {
+    let head = &evidence.genesis_head;
+    validate_ulid_reference(&head.room_id)?;
+    validate_identifier(&head.core_schema_version, 128)?;
+    for digest in [
+        &head.genesis_or_transition_hash,
+        &head.pack_digest,
+        &head.core_state_hash,
+        &head.activity_state_hash,
+        &head.authoritative_state_hash,
+    ] {
+        validate_digest(digest, "blake3")?;
+    }
+    if head.room_seq != 0
+        || head.room_id != evidence.room_id
+        || head.pack_digest != evidence.pack.digest
+        || evidence.memberships.is_empty()
+        || evidence.memberships.len() > MAX_SEATS + 3
+    {
+        return Err(ContractError::ReferenceMismatch);
+    }
+    Ok(())
+}
+
+fn validate_hosted_genesis_memberships(
+    genesis_memberships: &[HostedGenesisMembershipV1],
+) -> Result<(), ContractError> {
+    let mut seats = BTreeSet::new();
+    let mut principals = BTreeSet::new();
+    let mut memberships = BTreeSet::new();
+    let mut spectator_purposes = BTreeSet::new();
+    for membership in genesis_memberships {
+        validate_ulid_reference(&membership.principal_id)?;
+        validate_ulid_reference(&membership.membership_id)?;
+        if !principals.insert(membership.principal_id.as_str())
+            || !memberships.insert(membership.membership_id.as_str())
+        {
+            return Err(ContractError::InvalidShape);
+        }
+        match membership.purpose {
+            HostedGenesisMembershipPurposeV1::Participant => {
+                let seat = membership
+                    .seat_id
+                    .as_deref()
+                    .ok_or(ContractError::InvalidShape)?;
+                let role = membership
+                    .role
+                    .as_deref()
+                    .ok_or(ContractError::InvalidShape)?;
+                validate_seat_label(seat)?;
+                validate_public_reference(role, 128)?;
+                if membership.access_mode != HostedGenesisAccessModeV1::Participant
+                    || !membership.scopes.is_empty()
+                    || !seats.insert(seat)
+                {
+                    return Err(ContractError::InvalidShape);
+                }
+            }
+            purpose => {
+                if membership.access_mode != HostedGenesisAccessModeV1::Spectator
+                    || membership.seat_id.is_some()
+                    || membership.role.is_some()
+                    || !spectator_purposes.insert(purpose)
+                {
+                    return Err(ContractError::InvalidShape);
+                }
+                let (kind, scopes): (_, &[&str]) = match purpose {
+                    HostedGenesisMembershipPurposeV1::CreatorSpectator => (
+                        HostedGenesisPrincipalKindV1::Human,
+                        &["room:attach", "room:observe_public"],
+                    ),
+                    HostedGenesisMembershipPurposeV1::ResultIndexer => (
+                        HostedGenesisPrincipalKindV1::Agent,
+                        &["room:attach", "room:observe_public", "room:replay"],
+                    ),
+                    HostedGenesisMembershipPurposeV1::PublicProjectionRelay => (
+                        HostedGenesisPrincipalKindV1::Agent,
+                        &["room:attach", "room:observe_public"],
+                    ),
+                    HostedGenesisMembershipPurposeV1::Participant => unreachable!(),
+                };
+                if membership.principal_kind != kind
+                    || !membership
+                        .scopes
+                        .iter()
+                        .map(String::as_str)
+                        .eq(scopes.iter().copied())
+                {
+                    return Err(ContractError::InvalidShape);
+                }
+            }
+        }
+    }
+    if !spectator_purposes.contains(&HostedGenesisMembershipPurposeV1::ResultIndexer) {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
 /// Validates every digest and independently re-derives the supplied Room Setup.
 ///
 /// # Errors
@@ -1428,6 +1630,22 @@ fn validate_uuid_reference(value: &str) -> Result<(), ContractError> {
         return Err(ContractError::InvalidShape);
     }
     Ok(())
+}
+
+fn validate_ulid_reference(value: &str) -> Result<(), ContractError> {
+    if value.len() == 26
+        && value.bytes().all(|byte| {
+            byte.is_ascii_digit()
+                || matches!(
+                    byte,
+                    b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'T' | b'V'..=b'Z'
+                )
+        })
+    {
+        Ok(())
+    } else {
+        Err(ContractError::InvalidShape)
+    }
 }
 
 fn index_frozen_members(

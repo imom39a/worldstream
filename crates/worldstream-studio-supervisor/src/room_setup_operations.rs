@@ -15,7 +15,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use worldstream_core::CanonicalJsonV1;
-use worldstream_protocol::PackReference;
+use worldstream_hosted_contract::{
+    HostedGenesisAccessModeV1, HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1,
+    HostedGenesisPrincipalKindV1,
+};
+use worldstream_protocol::{AccessMode, PackReference, PrincipalKind, RoomHead};
 
 use crate::{
     activity_packs::DaemonActivityPackSource,
@@ -78,6 +82,15 @@ pub struct RoomSetupOperationStatusV1 {
 pub struct RoomSetupOperationListV1 {
     pub version: String,
     pub operations: Vec<RoomSetupOperationStatusV1>,
+}
+
+/// Private sequence-zero evidence assembled only from the retained creation
+/// intent and its atomically committed response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RoomSetupGenesisEvidenceV1 {
+    pub pack: PackReference,
+    pub room_head: RoomHead,
+    pub memberships: Vec<HostedGenesisMembershipV1>,
 }
 
 /// Shared metadata-only compatibility result for validation and creation.
@@ -331,6 +344,100 @@ impl RoomSetupOperationsV1 {
             Err(_) => return Err(RoomSetupOperationErrorV1::Unavailable),
         }
         Ok(status)
+    }
+
+    /// Reads exact secret-free Genesis correspondence without issuing effects.
+    ///
+    /// The Room creation receipt is the authority for sequence zero. Later
+    /// task-setup or Lobby progress cannot alter these identities.
+    pub(crate) fn genesis_evidence(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupGenesisEvidenceV1, RoomSetupOperationErrorV1> {
+        validate_operation_reference(operation)?;
+        let creation = self.creation.status(operation)?;
+        if creation.state != RoomCreationStateV1::Succeeded {
+            return Err(RoomSetupOperationErrorV1::Unavailable);
+        }
+        let response = creation
+            .response
+            .as_ref()
+            .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
+        if response.room_head.room_seq != 0
+            || response.room_id != response.room_head.room_id
+            || response.member_ids.len() != creation.request.members.len()
+        {
+            return Err(RoomSetupOperationErrorV1::Unavailable);
+        }
+
+        let mut memberships = Vec::with_capacity(response.member_ids.len());
+        for (member, membership_id) in creation.request.members.iter().zip(&response.member_ids) {
+            let principal_kind = match member.principal_kind {
+                PrincipalKind::Human => HostedGenesisPrincipalKindV1::Human,
+                PrincipalKind::Agent => HostedGenesisPrincipalKindV1::Agent,
+            };
+            let evidence = match member.access_mode {
+                AccessMode::Participant => {
+                    let seat = creation
+                        .review
+                        .seats
+                        .iter()
+                        .find(|seat| seat.principal_id.as_deref() == Some(&member.principal_id))
+                        .filter(|seat| member.role.as_deref() == Some(seat.role.as_str()))
+                        .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
+                    HostedGenesisMembershipV1 {
+                        access_mode: HostedGenesisAccessModeV1::Participant,
+                        purpose: HostedGenesisMembershipPurposeV1::Participant,
+                        seat_id: Some(seat.seat_id.clone()),
+                        role: Some(seat.role.clone()),
+                        principal_kind,
+                        principal_id: member.principal_id.clone(),
+                        membership_id: membership_id.clone(),
+                        scopes: vec![],
+                    }
+                }
+                AccessMode::Spectator => {
+                    let receipt = creation
+                        .spectator_credentials
+                        .iter()
+                        .find(|receipt| {
+                            receipt.principal_id == member.principal_id
+                                && receipt.member_id == *membership_id
+                                && receipt.room_id == response.room_id
+                        })
+                        .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
+                    let purpose = match receipt.purpose {
+                        crate::room_setup_spec::SetupSpectatorPurposeV2::Creator => {
+                            HostedGenesisMembershipPurposeV1::CreatorSpectator
+                        }
+                        crate::room_setup_spec::SetupSpectatorPurposeV2::ResultIndexer => {
+                            HostedGenesisMembershipPurposeV1::ResultIndexer
+                        }
+                        crate::room_setup_spec::SetupSpectatorPurposeV2::PublicRelay => {
+                            HostedGenesisMembershipPurposeV1::PublicProjectionRelay
+                        }
+                    };
+                    HostedGenesisMembershipV1 {
+                        access_mode: HostedGenesisAccessModeV1::Spectator,
+                        purpose,
+                        seat_id: None,
+                        role: None,
+                        principal_kind,
+                        principal_id: member.principal_id.clone(),
+                        membership_id: membership_id.clone(),
+                        scopes: receipt.scopes.clone(),
+                    }
+                }
+                AccessMode::Operator => return Err(RoomSetupOperationErrorV1::Unavailable),
+            };
+            memberships.push(evidence);
+        }
+
+        Ok(RoomSetupGenesisEvidenceV1 {
+            pack: creation.request.pack,
+            room_head: response.room_head.clone(),
+            memberships,
+        })
     }
 
     /// Lists unfinished operations, including creation-only partial attempts.

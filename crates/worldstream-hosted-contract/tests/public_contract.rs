@@ -6,12 +6,14 @@ use sha2::{Digest as _, Sha256};
 use worldstream_activity_client::read_activity_client_release;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    ContractError, HostedCapacityAuthorizationV1, HostedHouseRunnerAssignmentV1,
+    ContractError, HostedCapacityAuthorizationV1, HostedGenesisAccessModeV1,
+    HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedGenesisMembershipPurposeV1,
+    HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerAssignmentV1,
     HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
     HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HouseAgentRevision, ListingRevision,
     PackReference, ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
-    derive_room_setup_with_house_agents, project_result, validate_hosted_launch_evidence_request,
-    validate_hosted_launch_request,
+    derive_room_setup_with_house_agents, project_result, validate_hosted_genesis_evidence,
+    validate_hosted_launch_evidence_request, validate_hosted_launch_request,
 };
 
 const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
@@ -537,6 +539,90 @@ fn hosted_launch_rederives_every_frozen_value_and_capacity_binding() -> Result<(
         Err(ContractError::InvalidShape)
     );
     Ok(())
+}
+
+fn genesis_evidence() -> HostedGenesisEvidenceV1 {
+    let digest = |value: char| format!("blake3:{}", value.to_string().repeat(64));
+    let room_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned();
+    HostedGenesisEvidenceV1 {
+        schema: "worldstream/hosted-genesis-evidence/v1".to_owned(),
+        host_installation_id: "hosted-preview-1".to_owned(),
+        launch_request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+        listing_revision_digest: digest('1'),
+        launch_request_digest: digest('2'),
+        frozen_roster_digest: format!("sha256:{}", "3".repeat(64)),
+        room_setup_specification_digest: digest('4'),
+        room_setup_operation_id: "hosted-launch-01".to_owned(),
+        room_id: room_id.clone(),
+        pack: PackReference {
+            id: "worldstream.test".to_owned(),
+            version: "1.0.0".to_owned(),
+            digest: digest('5'),
+        },
+        genesis_head: HostedGenesisHeadV1 {
+            room_id,
+            room_seq: 0,
+            genesis_or_transition_hash: digest('6'),
+            core_schema_version: "worldstream/core-room-state/v1".to_owned(),
+            pack_digest: digest('5'),
+            core_state_hash: digest('7'),
+            activity_state_hash: digest('8'),
+            authoritative_state_hash: digest('9'),
+        },
+        memberships: vec![
+            HostedGenesisMembershipV1 {
+                access_mode: HostedGenesisAccessModeV1::Participant,
+                purpose: HostedGenesisMembershipPurposeV1::Participant,
+                seat_id: Some("navigator".to_owned()),
+                role: Some("navigator".to_owned()),
+                principal_kind: HostedGenesisPrincipalKindV1::Human,
+                principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+                membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+                scopes: vec![],
+            },
+            HostedGenesisMembershipV1 {
+                access_mode: HostedGenesisAccessModeV1::Spectator,
+                purpose: HostedGenesisMembershipPurposeV1::ResultIndexer,
+                seat_id: None,
+                role: None,
+                principal_kind: HostedGenesisPrincipalKindV1::Agent,
+                principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY".to_owned(),
+                membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAZ".to_owned(),
+                scopes: vec![
+                    "room:attach".to_owned(),
+                    "room:observe_public".to_owned(),
+                    "room:replay".to_owned(),
+                ],
+            },
+        ],
+    }
+}
+
+#[test]
+fn genesis_evidence_is_sequence_zero_duplicate_free_and_scope_closed() {
+    let evidence = genesis_evidence();
+    assert!(validate_hosted_genesis_evidence(&evidence).is_ok());
+
+    let mut transitioned = evidence.clone();
+    transitioned.genesis_head.room_seq = 1;
+    assert_eq!(
+        validate_hosted_genesis_evidence(&transitioned),
+        Err(ContractError::ReferenceMismatch)
+    );
+
+    let mut duplicate = evidence.clone();
+    duplicate.memberships[1].principal_id = duplicate.memberships[0].principal_id.clone();
+    assert_eq!(
+        validate_hosted_genesis_evidence(&duplicate),
+        Err(ContractError::InvalidShape)
+    );
+
+    let mut widened = evidence;
+    widened.memberships[1].scopes.push("room:act".to_owned());
+    assert_eq!(
+        validate_hosted_genesis_evidence(&widened),
+        Err(ContractError::InvalidShape)
+    );
 }
 
 #[test]

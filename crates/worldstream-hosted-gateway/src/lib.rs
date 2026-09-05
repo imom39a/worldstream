@@ -24,8 +24,9 @@ use serde_json::json;
 use thiserror::Error;
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
-    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStatusV1,
+    HostedGenesisEvidenceV1, HostedHouseRunnerReservationReceiptV1,
+    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStatusV1, validate_hosted_genesis_evidence,
     validate_hosted_house_runner_reservation_receipt, validate_hosted_launch_evidence_request,
 };
 use zeroize::Zeroizing;
@@ -138,6 +139,15 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
         &self,
         request: &HostedLaunchEvidenceRequestV1,
     ) -> Result<HostedLaunchStatusV1, HostedGatewayError>;
+
+    /// Reads private sequence-zero correspondence for platform reconciliation.
+    ///
+    /// # Errors
+    /// Returns only a closed rejection or availability class.
+    fn genesis_evidence(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedGenesisEvidenceV1, HostedGatewayError>;
 
     /// Reserves one exact Host-local House Runner before Room creation.
     ///
@@ -275,6 +285,20 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
         Ok(response)
     }
 
+    fn genesis_evidence(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedGenesisEvidenceV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-launches:read-genesis", request)?;
+        if status != 200 {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedGenesisEvidenceV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_genesis_response(&response, request)?;
+        Ok(response)
+    }
+
     fn reserve_house_runner(
         &self,
         request: &HostedHouseRunnerReservationRequestV1,
@@ -346,6 +370,7 @@ pub fn hosted_gateway_router(
         .route("/version", get(version))
         .route("/v1/hosted/launch", post(launch))
         .route("/v1/hosted/evidence", post(evidence))
+        .route("/v1/hosted/genesis-evidence", post(genesis_evidence))
         .route(
             "/v1/hosted/house-runners/reserve",
             post(reserve_house_runner),
@@ -412,6 +437,17 @@ async fn evidence(
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
     evidence_operation(&state, &headers, &body).await
+}
+
+async fn genesis_evidence(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    genesis_evidence_operation(&state, &headers, &body).await
 }
 
 async fn reserve_house_runner(
@@ -489,6 +525,35 @@ async fn evidence_operation(state: &GatewayState, headers: &HeaderMap, body: &[u
         .map_err(|_| HostedGatewayError::Unavailable)
         .and_then(|result| result);
     service_result("evidence", &listing_revision_digest, result, StatusCode::OK)
+}
+
+async fn genesis_evidence_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedLaunchEvidenceRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_launch_evidence_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let listing_revision_digest = request.listing_revision_digest.clone();
+    let result = tokio::task::spawn_blocking(move || backend.genesis_evidence(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    genesis_result(&listing_revision_digest, result)
 }
 
 async fn house_runner_operation(
@@ -625,6 +690,30 @@ fn house_runner_result(
     }
 }
 
+fn genesis_result(
+    listing_revision_digest: &str,
+    result: Result<HostedGenesisEvidenceV1, HostedGatewayError>,
+) -> Response {
+    match result {
+        Ok(evidence) => {
+            tracing::info!(
+                target: "worldstream.hosted_gateway",
+                operation = "genesis_evidence",
+                listing_revision_digest,
+                outcome = "accepted",
+                "hosted gateway operation"
+            );
+            no_store((StatusCode::OK, Json(evidence)).into_response())
+        }
+        Err(HostedGatewayError::Rejected | HostedGatewayError::InvalidConfiguration) => {
+            safe_error(StatusCode::CONFLICT, "operation_rejected")
+        }
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
+}
+
 fn fixed_http_request(
     upstream: SocketAddr,
     timeout: Duration,
@@ -641,6 +730,7 @@ fn fixed_http_request(
                     "POST",
                     "/api/v1/hosted-launches:submit"
                         | "/api/v1/hosted-launches:read"
+                        | "/api/v1/hosted-launches:read-genesis"
                         | "/api/v1/hosted-house-runners:reserve"
                         | "/api/v1/hosted-house-runners:read"
                 )
@@ -766,6 +856,20 @@ fn validate_launch_response(
                 || response.retryable
                 || response.stage
                     != worldstream_hosted_contract::HostedLaunchStageV1::NeedsAttention))
+    {
+        return Err(HostedGatewayError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_genesis_response(
+    response: &HostedGenesisEvidenceV1,
+    request: &HostedLaunchEvidenceRequestV1,
+) -> Result<(), HostedGatewayError> {
+    validate_hosted_genesis_evidence(response).map_err(|_| HostedGatewayError::Unavailable)?;
+    if response.listing_revision_digest != request.listing_revision_digest
+        || response.launch_request_digest != request.launch_request_digest
+        || response.room_setup_operation_id != request.room_setup_operation_id
     {
         return Err(HostedGatewayError::Unavailable);
     }

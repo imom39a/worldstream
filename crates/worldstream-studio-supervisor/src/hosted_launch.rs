@@ -26,9 +26,10 @@ use ring::hmac;
 use serde::{Deserialize, Serialize};
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
-    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
-    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStageV1,
-    HostedLaunchStatusV1, HouseAgentRevision, ListingRevision,
+    HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedHouseRunnerReservationReceiptV1,
+    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStageV1, HostedLaunchStatusV1, HouseAgentRevision, ListingRevision,
+    PackReference as HostedPackReference, validate_hosted_genesis_evidence,
     validate_hosted_launch_evidence_request, validate_hosted_launch_request,
 };
 use worldstream_runtime::{
@@ -40,8 +41,8 @@ use crate::{
         HostedHouseRunnerErrorV1, HostedHouseRunnerGateV1, HostedHouseRunnerOperationsV1,
     },
     room_setup_operations::{
-        RoomSetupCreateRequestV1, RoomSetupOperationErrorV1, RoomSetupOperationStatusV1,
-        RoomSetupOperationsV1,
+        RoomSetupCreateRequestV1, RoomSetupGenesisEvidenceV1, RoomSetupOperationErrorV1,
+        RoomSetupOperationStatusV1, RoomSetupOperationsV1,
     },
     room_setup_spec::RoomSetupSpecificationV1,
     task_setup::{TaskLaunchStateV1, TaskSetupErrorV1, TaskSetupSupervisorV1},
@@ -86,6 +87,11 @@ trait HostedRoomOperationBackendV1: Send + Sync + 'static {
     fn inspect(&self, operation: &str) -> Result<RoomSetupOperationStatusV1, HostedLaunchErrorV1>;
 
     fn launch(&self, operation: &str) -> Result<(), HostedLaunchErrorV1>;
+
+    fn genesis_evidence(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupGenesisEvidenceV1, HostedLaunchErrorV1>;
 }
 
 trait HostedHouseRunnerBackendV1: Send + Sync + 'static {
@@ -180,6 +186,15 @@ impl HostedRoomOperationBackendV1 for LiveHostedRoomOperationBackendV1 {
             }
             Err(TaskSetupErrorV1::Unavailable) => Err(HostedLaunchErrorV1::Unavailable),
         }
+    }
+
+    fn genesis_evidence(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupGenesisEvidenceV1, HostedLaunchErrorV1> {
+        self.rooms
+            .genesis_evidence(operation)
+            .map_err(|error| map_room_error(&error))
     }
 }
 
@@ -385,6 +400,69 @@ impl HostedLaunchOperationsV1 {
             Err(error) => return Err(error),
         };
         Ok(public_status(&binding, room, None))
+    }
+
+    /// Reads the exact sequence-zero Room and Membership correspondence for
+    /// the previously retained launch.
+    ///
+    /// # Errors
+    /// Returns not-found for an absent binding, conflict for a changed launch
+    /// identity, and unavailable until a valid Genesis receipt exists.
+    pub fn genesis_evidence(
+        &self,
+        request: &HostedLaunchEvidenceRequestV1,
+    ) -> Result<HostedGenesisEvidenceV1, HostedLaunchErrorV1> {
+        validate_hosted_launch_evidence_request(request)
+            .map_err(|_| HostedLaunchErrorV1::Invalid)?;
+        let _guard = self.lock();
+        let binding = self.load_unlocked(&request.room_setup_operation_id)?;
+        if binding.listing_revision_digest != request.listing_revision_digest
+            || binding.launch_request_digest != request.launch_request_digest
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        let listing = self
+            .listings
+            .get(&binding.listing_revision_digest)
+            .ok_or(HostedLaunchErrorV1::Unavailable)?;
+        let genesis = self
+            .backend
+            .genesis_evidence(&binding.room_setup_operation_id)?;
+        let pack = HostedPackReference {
+            id: genesis.pack.id,
+            version: genesis.pack.version,
+            digest: genesis.pack.digest,
+        };
+        listing
+            .verify_pack(&pack)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        let head = genesis.room_head;
+        let evidence = HostedGenesisEvidenceV1 {
+            schema: "worldstream/hosted-genesis-evidence/v1".to_owned(),
+            host_installation_id: self.host_installation_id.to_string(),
+            launch_request_id: binding.capacity_reservation_reference,
+            listing_revision_digest: binding.listing_revision_digest,
+            launch_request_digest: binding.launch_request_digest,
+            frozen_roster_digest: binding.frozen_roster_digest,
+            room_setup_specification_digest: binding.room_setup_specification_digest,
+            room_setup_operation_id: binding.room_setup_operation_id,
+            room_id: head.room_id.clone(),
+            pack,
+            genesis_head: HostedGenesisHeadV1 {
+                room_id: head.room_id,
+                room_seq: head.room_seq,
+                genesis_or_transition_hash: head.genesis_or_transition_hash,
+                core_schema_version: head.core_schema_version,
+                pack_digest: head.pack_digest,
+                core_state_hash: head.core_state_hash,
+                activity_state_hash: head.activity_state_hash,
+                authoritative_state_hash: head.authoritative_state_hash,
+            },
+            memberships: genesis.memberships,
+        };
+        validate_hosted_genesis_evidence(&evidence)
+            .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
+        Ok(evidence)
     }
 
     /// Retains one stable pre-Genesis House Runner capacity operation.
@@ -752,6 +830,7 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
                 "POST",
                 "/api/v1/hosted-launches:submit"
                     | "/api/v1/hosted-launches:read"
+                    | "/api/v1/hosted-launches:read-genesis"
                     | "/api/v1/hosted-house-runners:reserve"
                     | "/api/v1/hosted-house-runners:read"
             )
@@ -767,6 +846,10 @@ pub fn hosted_launch_router(
         .route("/api/v1/hosted-launches/ready", get(hosted_ready))
         .route("/api/v1/hosted-launches:submit", post(hosted_submit))
         .route("/api/v1/hosted-launches:read", post(hosted_read))
+        .route(
+            "/api/v1/hosted-launches:read-genesis",
+            post(hosted_read_genesis),
+        )
         .route(
             "/api/v1/hosted-house-runners:reserve",
             post(hosted_house_reserve),
@@ -806,6 +889,17 @@ async fn hosted_read(
 ) -> Result<Json<HostedLaunchStatusV1>, HostedLaunchErrorV1> {
     let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
     tokio::task::spawn_blocking(move || operations.read(&request))
+        .await
+        .map_err(|_| HostedLaunchErrorV1::Unavailable)?
+        .map(Json)
+}
+
+async fn hosted_read_genesis(
+    State(operations): State<HostedLaunchOperationsV1>,
+    body: Bytes,
+) -> Result<Json<HostedGenesisEvidenceV1>, HostedLaunchErrorV1> {
+    let request = decode_request::<HostedLaunchEvidenceRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || operations.genesis_evidence(&request))
         .await
         .map_err(|_| HostedLaunchErrorV1::Unavailable)?
         .map(Json)
@@ -888,7 +982,8 @@ mod tests {
     use tempfile::tempdir;
     use tower::ServiceExt as _;
     use worldstream_hosted_contract::{
-        HostedCapacityAuthorizationV1, HostedHouseRunnerAssignmentV1,
+        HostedCapacityAuthorizationV1, HostedGenesisAccessModeV1, HostedGenesisMembershipPurposeV1,
+        HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerAssignmentV1,
         HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
         HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, derive_room_setup_with_house_agents,
     };
@@ -914,6 +1009,7 @@ mod tests {
         advances: Arc<Mutex<Vec<String>>>,
         launches: Arc<Mutex<Vec<String>>>,
         complete_on_advance: Arc<Mutex<bool>>,
+        genesis: Arc<Mutex<Option<RoomSetupGenesisEvidenceV1>>>,
     }
 
     impl FakeBackend {
@@ -922,6 +1018,10 @@ mod tests {
                 .complete_on_advance
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = true;
+        }
+
+        fn set_genesis(&self, evidence: RoomSetupGenesisEvidenceV1) {
+            *self.genesis.lock().unwrap_or_else(PoisonError::into_inner) = Some(evidence);
         }
     }
 
@@ -971,6 +1071,17 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(operation.to_owned());
             Ok(())
+        }
+
+        fn genesis_evidence(
+            &self,
+            _operation: &str,
+        ) -> Result<RoomSetupGenesisEvidenceV1, HostedLaunchErrorV1> {
+            self.genesis
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .ok_or(HostedLaunchErrorV1::Unavailable)
         }
     }
 
@@ -1217,6 +1328,89 @@ mod tests {
                 .unwrap_or_else(|error| unreachable!("retained read: {error:?}")),
             first
         );
+    }
+
+    #[test]
+    fn retained_binding_exposes_only_exact_sequence_zero_genesis_evidence() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let listing = listing();
+        let expected_pack = listing.pack().clone();
+        backend.set_genesis(RoomSetupGenesisEvidenceV1 {
+            pack: worldstream_protocol::PackReference {
+                id: expected_pack.id,
+                version: expected_pack.version,
+                digest: expected_pack.digest.clone(),
+            },
+            room_head: worldstream_protocol::RoomHead {
+                room_id: "01JY0000000000000000000000".to_owned(),
+                room_seq: 0,
+                genesis_or_transition_hash: format!("blake3:{}", "1".repeat(64)),
+                core_schema_version: "worldstream/core-room-state/v1".to_owned(),
+                pack_digest: expected_pack.digest,
+                core_state_hash: format!("blake3:{}", "2".repeat(64)),
+                activity_state_hash: format!("blake3:{}", "3".repeat(64)),
+                authoritative_state_hash: format!("blake3:{}", "4".repeat(64)),
+            },
+            memberships: vec![
+                HostedGenesisMembershipV1 {
+                    access_mode: HostedGenesisAccessModeV1::Participant,
+                    purpose: HostedGenesisMembershipPurposeV1::Participant,
+                    seat_id: Some("navigator".to_owned()),
+                    role: Some("navigator".to_owned()),
+                    principal_kind: HostedGenesisPrincipalKindV1::Human,
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY".to_owned(),
+                    membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAZ".to_owned(),
+                    scopes: vec![],
+                },
+                HostedGenesisMembershipV1 {
+                    access_mode: HostedGenesisAccessModeV1::Spectator,
+                    purpose: HostedGenesisMembershipPurposeV1::ResultIndexer,
+                    seat_id: None,
+                    role: None,
+                    principal_kind: HostedGenesisPrincipalKindV1::Agent,
+                    principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FB0".to_owned(),
+                    membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".to_owned(),
+                    scopes: vec![
+                        "room:attach".to_owned(),
+                        "room:observe_public".to_owned(),
+                        "room:replay".to_owned(),
+                    ],
+                },
+            ],
+        });
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing],
+            Vec::new(),
+            backend,
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+        let launch = request("hosted-genesis-01");
+        assert!(operations.submit(&launch).is_ok());
+        let result = operations
+            .genesis_evidence(&HostedLaunchEvidenceRequestV1 {
+                schema: "worldstream/hosted-launch-evidence-request/v1".to_owned(),
+                listing_revision_digest: launch.listing_revision_digest.clone(),
+                launch_request_digest: launch.launch_request_digest.clone(),
+                room_setup_operation_id: launch.room_setup_operation_id.clone(),
+            })
+            .unwrap_or_else(|error| unreachable!("valid Genesis evidence: {error:?}"));
+
+        assert_eq!(
+            result.launch_request_id,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        );
+        assert_eq!(result.room_id, "01JY0000000000000000000000");
+        assert_eq!(result.genesis_head.room_seq, 0);
+        assert_eq!(result.memberships.len(), 2);
+        assert_eq!(
+            result.memberships[1].purpose,
+            HostedGenesisMembershipPurposeV1::ResultIndexer
+        );
+        assert!(validate_hosted_genesis_evidence(&result).is_ok());
     }
 
     #[test]
