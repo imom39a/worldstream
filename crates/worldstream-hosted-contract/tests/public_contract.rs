@@ -9,19 +9,21 @@ use worldstream_hosted_contract::{
     ContractError, HostedAuthorizedPublicProjectionV1, HostedBrowserHandoffRedeemRequestV1,
     HostedBrowserHandoffRedeemResponseV1, HostedBrowserHandoffRequestV1,
     HostedBrowserHandoffResponseV1, HostedBrowserSessionLogoutV1, HostedBrowserSessionRequestV1,
-    HostedBrowserSessionStateV1, HostedBrowserSessionStatusV1, HostedCapacityAuthorizationV1,
-    HostedGenesisAccessModeV1, HostedGenesisEvidenceV1, HostedGenesisHeadV1,
-    HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1,
-    HostedHouseRunnerAssignmentV1, HostedHouseRunnerReservationOutcomeV1,
-    HostedHouseRunnerReservationReceiptV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1,
-    HostedResultSourceHeadV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
-    PackReference, ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
+    HostedBrowserSessionStateV1, HostedBrowserSessionStatusV1, HostedBrowserStreamTicketRequestV1,
+    HostedBrowserStreamTicketResponseV1, HostedCapacityAuthorizationV1, HostedGenesisAccessModeV1,
+    HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedGenesisMembershipPurposeV1,
+    HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerAssignmentV1,
+    HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
+    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedResultIntegrityStatusV1,
+    HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1, HostedResultSourceHeadV1,
+    HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision, PackReference,
+    ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
     derive_room_setup_with_house_agents, project_result,
     validate_hosted_browser_handoff_redeem_request,
     validate_hosted_browser_handoff_redeem_response, validate_hosted_browser_handoff_request,
     validate_hosted_browser_handoff_response, validate_hosted_browser_session_logout,
     validate_hosted_browser_session_request, validate_hosted_browser_session_status,
+    validate_hosted_browser_stream_ticket_request, validate_hosted_browser_stream_ticket_response,
     validate_hosted_genesis_evidence, validate_hosted_launch_evidence_request,
     validate_hosted_launch_request, validate_hosted_result_source_evidence,
     validate_hosted_result_source_request,
@@ -200,6 +202,25 @@ fn hosted_browser_contract_keeps_handoffs_and_sessions_opaque_and_bounded() {
         }),
         Ok(())
     );
+    let ticket = format!("wst1:{}", "c".repeat(64));
+    assert_eq!(
+        validate_hosted_browser_stream_ticket_request(&HostedBrowserStreamTicketRequestV1 {
+            schema: "worldstream/hosted-browser-stream-ticket-request/v1".to_owned(),
+            session: session.clone(),
+            after_frame_seq: Some(41),
+        }),
+        Ok(())
+    );
+    let response = HostedBrowserStreamTicketResponseV1 {
+        schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
+        ticket: ticket.clone(),
+        expires_in_ms: 15_000,
+    };
+    assert_eq!(
+        validate_hosted_browser_stream_ticket_response(&response),
+        Ok(())
+    );
+    assert!(!format!("{response:?}").contains(&ticket));
 
     assert!(
         validate_hosted_browser_handoff_response(&HostedBrowserHandoffResponseV1 {
@@ -215,6 +236,14 @@ fn hosted_browser_contract_keeps_handoffs_and_sessions_opaque_and_bounded() {
         validate_hosted_browser_session_request(&HostedBrowserSessionRequestV1 {
             schema: "worldstream/hosted-browser-session-request/v1".to_owned(),
             session: session.to_uppercase(),
+        })
+        .is_err()
+    );
+    assert!(
+        validate_hosted_browser_stream_ticket_response(&HostedBrowserStreamTicketResponseV1 {
+            schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
+            ticket,
+            expires_in_ms: 15_001,
         })
         .is_err()
     );

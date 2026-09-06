@@ -8,6 +8,7 @@ const SAFE_REFERENCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const SAFE_OPERATION_PATTERN = /^[a-z][a-z0-9-]{0,63}$/u;
 const HANDOFF_PATTERN = /^wsh1:[0-9a-f]{64}$/u;
 const SESSION_PATTERN = /^wss1:[0-9a-f]{64}$/u;
+const TICKET_PATTERN = /^wst1:[0-9a-f]{64}$/u;
 
 /** Private server-only result of resolving an account, Run, and entry selector. */
 export interface OwnedRunMembershipCorrespondence {
@@ -40,6 +41,11 @@ export interface HostedBrowserSessionStatus {
   readonly state: "usable" | "disconnected";
 }
 
+export interface HostedBrowserStreamTicket {
+  readonly ticket: string;
+  readonly expiresInMs: number;
+}
+
 /** Narrow service client used by the Vercel BFF. */
 export interface HostedBrowserSessionClient {
   issueHandoff(
@@ -52,6 +58,10 @@ export interface HostedBrowserSessionClient {
     priorSession: string | null,
   ): Promise<string>;
   sessionStatus(session: string): Promise<HostedBrowserSessionStatus>;
+  issueStreamTicket(
+    session: string,
+    afterFrameSeq: number | null,
+  ): Promise<HostedBrowserStreamTicket>;
   logoutSession(session: string): Promise<void>;
 }
 
@@ -199,6 +209,42 @@ export class HttpHostedBrowserSessionClient implements HostedBrowserSessionClien
       throw invalidResponse();
     }
     return { state: value.state };
+  }
+
+  async issueStreamTicket(
+    session: string,
+    afterFrameSeq: number | null,
+  ): Promise<HostedBrowserStreamTicket> {
+    if (
+      !SESSION_PATTERN.test(session) ||
+      (afterFrameSeq !== null &&
+        (!Number.isSafeInteger(afterFrameSeq) || afterFrameSeq < 0))
+    ) {
+      throw new HostedBrowserSessionRejectedError();
+    }
+    const value = await this.#call(
+      "/v1/hosted/browser-sessions/stream-ticket",
+      {
+        schema: "worldstream/hosted-browser-stream-ticket-request/v1",
+        session,
+        after_frame_seq: afterFrameSeq,
+      },
+    );
+    if (!isExactRecord(value, ["schema", "ticket", "expires_in_ms"])) {
+      throw invalidResponse();
+    }
+    if (
+      value.schema !== "worldstream/hosted-browser-stream-ticket-response/v1" ||
+      typeof value.ticket !== "string" ||
+      !TICKET_PATTERN.test(value.ticket) ||
+      typeof value.expires_in_ms !== "number" ||
+      !Number.isSafeInteger(value.expires_in_ms) ||
+      value.expires_in_ms <= 0 ||
+      value.expires_in_ms > 15_000
+    ) {
+      throw invalidResponse();
+    }
+    return { ticket: value.ticket, expiresInMs: value.expires_in_ms };
   }
 
   async logoutSession(session: string): Promise<void> {

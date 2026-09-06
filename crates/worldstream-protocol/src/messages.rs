@@ -9,6 +9,12 @@ use crate::{UlidString, envelope::MAX_ACTION_PAYLOAD_BYTES};
 /// Version of the short-lived browser WebSocket admission response.
 pub const BROWSER_WS_TICKET_VERSION: &str = "browser_ws_ticket.v1";
 
+/// Version of the Host-internal target-bound browser ticket request.
+pub const HOSTED_BROWSER_WS_TICKET_VERSION: &str = "hosted_browser_ws_ticket.v1";
+
+/// Version of the Host-internal Browser Activity Session revocation request.
+pub const HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION: &str = "hosted_browser_ws_session_revoke.v1";
+
 /// One-time browser WebSocket admission response.
 ///
 /// The ticket is an in-memory transport admission value, not a capability
@@ -31,6 +37,30 @@ impl std::fmt::Debug for BrowserWebSocketTicketIssueResponse {
             .field("expires_in_ms", &self.expires_in_ms)
             .finish()
     }
+}
+
+/// Host-internal request that binds a one-use browser ticket to one exact
+/// Membership. This value is never accepted from browser JavaScript.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserWebSocketTicketIssueRequest {
+    pub version: String,
+    pub room_id: String,
+    pub member_id: String,
+    pub mode: ClientMode,
+    pub after_frame_seq: Option<u64>,
+    pub browser_session_digest: String,
+    pub client_release_digest: String,
+    pub client_surface_id: String,
+}
+
+/// Host-internal request that retires pending tickets and an active stream for
+/// one Browser Activity Session without carrying the session secret.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserWebSocketSessionRevokeRequest {
+    pub version: String,
+    pub browser_session_digest: String,
 }
 
 /// Capabilities required before a client can cross the attach/sync barrier.

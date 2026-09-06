@@ -55,6 +55,8 @@ use worldstream_protocol::{
     ActivityPackCatalogRole, ActivityPackCatalogSchema, ActivityPackLobbyCompatibility,
     BROWSER_WS_TICKET_VERSION, BearerWireV1, BrowserWebSocketTicketIssueResponse, ClientHello,
     ClientMode, CreateRoomRequest, CreateRoomResponse, ErrorBody, ErrorCode, ErrorEnvelope,
+    HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION, HOSTED_BROWSER_WS_TICKET_VERSION,
+    HostedBrowserWebSocketSessionRevokeRequest, HostedBrowserWebSocketTicketIssueRequest,
     HostedRoomCreationRequestV2, HostedRoomCreationResponseV2, LobbyLaunchRequest,
     LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
     ObservationAck, ObservationDeliver, OperatorActivationStatusV1, OperatorBackupProfileStatus,
@@ -630,8 +632,26 @@ enum BrowserTicketError {
 
 struct BrowserTicketEntry {
     origin: String,
+    subprotocol: &'static str,
+    issued_at: std::time::Instant,
     expires_at: std::time::Instant,
     session: GatewaySession,
+    target: BrowserTicketTarget,
+}
+
+enum BrowserTicketTarget {
+    Selectable,
+    Hosted(HostedBrowserStreamTarget),
+}
+
+struct HostedBrowserStreamTarget {
+    room_id: String,
+    member_id: String,
+    mode: ClientMode,
+    after_frame_seq: Option<u64>,
+    browser_session_digest: String,
+    client_release_digest: String,
+    client_surface_id: String,
 }
 
 /// In-memory, origin-bound admission tickets for native browser `WebSockets`.
@@ -689,8 +709,56 @@ impl BrowserTicketStore {
             digest,
             BrowserTicketEntry {
                 origin,
+                subprotocol: WEBSOCKET_SUBPROTOCOL,
+                issued_at: now,
                 expires_at: now + self.ttl,
                 session,
+                target: BrowserTicketTarget::Selectable,
+            },
+        );
+        Ok(ticket)
+    }
+
+    fn issue_hosted(
+        &self,
+        session: GatewaySession,
+        origin: String,
+        target: HostedBrowserStreamTarget,
+    ) -> Result<String, BrowserTicketError> {
+        self.issue_hosted_at(session, origin, target, std::time::Instant::now())
+    }
+
+    fn issue_hosted_at(
+        &self,
+        session: GatewaySession,
+        origin: String,
+        target: HostedBrowserStreamTarget,
+        now: std::time::Instant,
+    ) -> Result<String, BrowserTicketError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|_, entry| entry.expires_at > now);
+        if entries.len() >= self.capacity {
+            return Err(BrowserTicketError::Capacity);
+        }
+        let mut bytes = [0_u8; BROWSER_TICKET_BYTES];
+        fill_random_bytes(&mut bytes).map_err(|_| BrowserTicketError::RandomnessUnavailable)?;
+        let ticket = browser_ticket_wire(bytes);
+        let digest = *Blake3DigestV1::hash(ticket.as_bytes()).as_bytes();
+        if entries.contains_key(&digest) {
+            return Err(BrowserTicketError::RandomnessUnavailable);
+        }
+        entries.insert(
+            digest,
+            BrowserTicketEntry {
+                origin,
+                subprotocol: WEBSOCKET_SUBPROTOCOL,
+                issued_at: now,
+                expires_at: now + self.ttl,
+                session,
+                target: BrowserTicketTarget::Hosted(target),
             },
         );
         Ok(ticket)
@@ -720,10 +788,69 @@ impl BrowserTicketStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = entries.remove(&digest)?;
-        if entry.expires_at <= now || entry.origin != origin {
+        if entry.expires_at <= now
+            || entry.issued_at > now
+            || entry.origin != origin
+            || entry.subprotocol != WEBSOCKET_SUBPROTOCOL
+            || !matches!(entry.target, BrowserTicketTarget::Selectable)
+        {
             return None;
         }
         Some(entry.session)
+    }
+
+    fn consume_hosted(
+        &self,
+        ticket: &str,
+        origin: &str,
+    ) -> Option<(GatewaySession, HostedBrowserStreamTarget)> {
+        self.consume_hosted_at(ticket, origin, std::time::Instant::now())
+    }
+
+    fn consume_hosted_at(
+        &self,
+        ticket: &str,
+        origin: &str,
+        now: std::time::Instant,
+    ) -> Option<(GatewaySession, HostedBrowserStreamTarget)> {
+        if ticket.len() != BROWSER_TICKET_WIRE_LENGTH
+            || !ticket.starts_with(BROWSER_TICKET_PREFIX)
+            || !ticket.as_bytes()[BROWSER_TICKET_PREFIX.len()..]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        {
+            return None;
+        }
+        let digest = *Blake3DigestV1::hash(ticket.as_bytes()).as_bytes();
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.remove(&digest)?;
+        if entry.expires_at <= now
+            || entry.issued_at > now
+            || entry.origin != origin
+            || entry.subprotocol != WEBSOCKET_SUBPROTOCOL
+        {
+            return None;
+        }
+        let BrowserTicketTarget::Hosted(target) = entry.target else {
+            return None;
+        };
+        Some((entry.session, target))
+    }
+
+    fn revoke_hosted_session(&self, browser_session_digest: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, entry| {
+                !matches!(
+                    &entry.target,
+                    BrowserTicketTarget::Hosted(target)
+                        if target.browser_session_digest == browser_session_digest
+                )
+            });
     }
 }
 
@@ -1498,6 +1625,7 @@ pub struct OperatorState {
     readiness: RuntimeReadiness,
     engine: EngineVersion,
     live_streams: LiveStreamRegistry,
+    hosted_browser_streams: HostedBrowserStreamRegistry,
     runner_presence: RunnerPresenceRegistry,
     rate_limiter: GatewayRateLimiter,
 }
@@ -1751,6 +1879,7 @@ impl OperatorState {
             readiness: RuntimeReadiness::not_initialized(),
             engine: EngineVersion::not_initialized(profile),
             live_streams: LiveStreamRegistry::default(),
+            hosted_browser_streams: HostedBrowserStreamRegistry::default(),
             runner_presence: RunnerPresenceRegistry::default(),
             rate_limiter: GatewayRateLimiter::new()
                 .map_err(|_| ServerError::RateLimiterInitialization)?,
@@ -1889,6 +2018,15 @@ pub fn operator_router(state: OperatorState) -> Router {
             "/v1/stream/ticket",
             options(browser_ticket_preflight).post(issue_browser_ticket),
         )
+        .route(
+            "/v1/hosted/browser-stream-ticket",
+            post(issue_hosted_browser_ticket),
+        )
+        .route(
+            "/v1/hosted/browser-stream-session:revoke",
+            post(revoke_hosted_browser_stream_session),
+        )
+        .route("/v1/hosted/browser-stream", get(hosted_browser_stream))
         .route("/v1/stream", get(room_stream))
         .route("/v1/runner/stream", get(runner_stream))
         .with_state(state)
@@ -3106,6 +3244,127 @@ async fn issue_browser_ticket(
     ))
 }
 
+/// Issues one target-bound ticket from a Host-held Membership bearer. The
+/// Runtime listener is loopback-only in the hosted profile; browser code can
+/// neither call this route nor choose its Room or Membership target.
+async fn issue_hosted_browser_ticket(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ResponseError> {
+    let correlation = traceparent_correlation(&headers);
+    let origin = hosted_browser_origin(&headers)?;
+    let request: HostedBrowserWebSocketTicketIssueRequest =
+        serde_json::from_slice(&body).map_err(|_| ResponseError::from(BackendError::Rejected))?;
+    validate_hosted_browser_ticket_request(&request)?;
+    let session = Arc::new(authenticated_session(&headers)?);
+    let target = AdmissionTarget {
+        room_id: &request.room_id,
+        member_id: Some(&request.member_id),
+    };
+    admit_authenticated_http(&state, &session, &[target], None, correlation).await?;
+    let session = Arc::try_unwrap(session)
+        .map_err(|_| ResponseError::from(BackendError::StorageUnavailable))?;
+    let target = HostedBrowserStreamTarget {
+        room_id: request.room_id,
+        member_id: request.member_id,
+        mode: request.mode,
+        after_frame_seq: request.after_frame_seq,
+        browser_session_digest: request.browser_session_digest,
+        client_release_digest: request.client_release_digest,
+        client_surface_id: request.client_surface_id,
+    };
+    let ticket = state
+        .browser_tickets
+        .issue_hosted(session, origin, target)
+        .map_err(|error| match error {
+            BrowserTicketError::Capacity => ResponseError::from(BackendError::Busy),
+            BrowserTicketError::RandomnessUnavailable => {
+                ResponseError::from(BackendError::StorageUnavailable)
+            }
+        })?;
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response_headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    Ok((
+        StatusCode::CREATED,
+        response_headers,
+        Json(BrowserWebSocketTicketIssueResponse {
+            version: BROWSER_WS_TICKET_VERSION.to_owned(),
+            ticket,
+            expires_in_ms: BROWSER_TICKET_TTL_MS,
+        }),
+    ))
+}
+
+async fn revoke_hosted_browser_stream_session(
+    State(state): State<OperatorState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ResponseError> {
+    let correlation = traceparent_correlation(&headers);
+    let request: HostedBrowserWebSocketSessionRevokeRequest =
+        serde_json::from_slice(&body).map_err(|_| ResponseError::from(BackendError::Rejected))?;
+    if request.version != HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION
+        || !hosted_binding_digest(&request.browser_session_digest)
+    {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    let session = Arc::new(authenticated_session(&headers)?);
+    admit_authenticated_http(&state, &session, &[], None, correlation).await?;
+    state
+        .browser_tickets
+        .revoke_hosted_session(&request.browser_session_digest);
+    state
+        .hosted_browser_streams
+        .revoke(&request.browser_session_digest, &state.live_streams);
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok((
+        response_headers,
+        Json(json!({
+            "version": HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION,
+            "revoked": true,
+        })),
+    ))
+}
+
+fn validate_hosted_browser_ticket_request(
+    request: &HostedBrowserWebSocketTicketIssueRequest,
+) -> Result<(), ResponseError> {
+    if request.version != HOSTED_BROWSER_WS_TICKET_VERSION
+        || request.room_id.parse::<UlidString>().is_err()
+        || request.member_id.parse::<UlidString>().is_err()
+        || !matches!(
+            request.mode,
+            ClientMode::Participant | ClientMode::Spectator
+        )
+        || !hosted_binding_digest(&request.browser_session_digest)
+        || !hosted_binding_digest(&request.client_release_digest)
+        || !hosted_public_reference(&request.client_surface_id)
+    {
+        return Err(ResponseError::from(BackendError::Rejected));
+    }
+    Ok(())
+}
+
+fn hosted_binding_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("blake3:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn hosted_public_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 async fn browser_ticket_preflight(headers: HeaderMap) -> Result<impl IntoResponse, ResponseError> {
     let origin = browser_origin(&headers)?;
     let mut response_headers = browser_cors_headers(&origin);
@@ -3144,6 +3403,53 @@ fn browser_origin(headers: &HeaderMap) -> Result<String, ResponseError> {
         .and_then(|value| value.strip_suffix(']'))
         .unwrap_or(host);
     if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return Err(ResponseError::from(BackendError::Forbidden));
+    }
+    Ok(raw.to_owned())
+}
+
+fn hosted_browser_origin(headers: &HeaderMap) -> Result<String, ResponseError> {
+    let Some(raw) = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(ResponseError::from(BackendError::Forbidden));
+    };
+    if raw.len() > 256 || raw.contains('@') {
+        return Err(ResponseError::from(BackendError::Forbidden));
+    }
+    if browser_origin(headers).is_ok() {
+        return Ok(raw.to_owned());
+    }
+    let uri = raw
+        .parse::<axum::http::Uri>()
+        .map_err(|_| ResponseError::from(BackendError::Forbidden))?;
+    let Some(authority) = uri.authority() else {
+        return Err(ResponseError::from(BackendError::Forbidden));
+    };
+    let host = authority.host();
+    if uri.scheme_str() != Some("https")
+        || (uri.path() != "" && uri.path() != "/")
+        || uri.query().is_some()
+        || host.len() > 253
+        || !host.contains('.')
+        || host.split('.').any(|label| {
+            label.is_empty()
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+        || host != host.to_ascii_lowercase()
+    {
+        return Err(ResponseError::from(BackendError::Forbidden));
+    }
+    let canonical = match authority.port_u16() {
+        Some(443) | None => format!("https://{host}"),
+        Some(port) => format!("https://{host}:{port}"),
+    };
+    if canonical != raw {
         return Err(ResponseError::from(BackendError::Forbidden));
     }
     Ok(raw.to_owned())
@@ -3361,6 +3667,44 @@ impl StreamAdmission {
     }
 }
 
+async fn hosted_browser_stream(
+    State(state): State<OperatorState>,
+    TransportPeer(peer): TransportPeer,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Result<impl IntoResponse, ResponseError> {
+    if query.is_some()
+        || headers.contains_key(header::AUTHORIZATION)
+        || headers.contains_key(header::COOKIE)
+    {
+        return Err(ResponseError::from(BackendError::Forbidden));
+    }
+    let correlation = traceparent_correlation(&headers);
+    let origin = hosted_browser_origin(&headers)?;
+    let upgrade = require_websocket_subprotocol(upgrade)?;
+    let pending = state
+        .rate_limiter
+        .reserve_websocket()
+        .map_err(|_| rate_limited_response())?;
+    Ok(upgrade.on_upgrade(move |socket| {
+        hosted_browser_stream_loop(
+            socket,
+            state.backend,
+            state.live_streams,
+            state.hosted_browser_streams,
+            state.runner_presence,
+            state.browser_tickets,
+            origin,
+            peer,
+            state.rate_limiter,
+            pending,
+            state.telemetry,
+            correlation,
+        )
+    }))
+}
+
 async fn room_stream(
     State(state): State<OperatorState>,
     TransportPeer(peer): TransportPeer,
@@ -3401,6 +3745,8 @@ async fn room_stream(
                 StreamEndpoint::Room,
                 correlation,
                 active,
+                StreamBootstrap::ClientSelected,
+                None,
             )
         }));
     }
@@ -3466,6 +3812,8 @@ async fn runner_stream(
                 StreamEndpoint::Runner,
                 correlation,
                 active,
+                StreamBootstrap::ClientSelected,
+                None,
             )
         }));
     }
@@ -3596,6 +3944,110 @@ async fn browser_stream_loop(
         endpoint,
         correlation,
         active,
+        StreamBootstrap::ClientSelected,
+        None,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn hosted_browser_stream_loop(
+    mut socket: WebSocket,
+    backend: Arc<dyn GatewayBackend>,
+    live_streams: LiveStreamRegistry,
+    hosted_streams: HostedBrowserStreamRegistry,
+    runner_presence: RunnerPresenceRegistry,
+    tickets: Arc<BrowserTicketStore>,
+    origin: String,
+    peer: PeerIdentity,
+    rate_limiter: GatewayRateLimiter,
+    pending: PendingWebSocketPermit,
+    telemetry: Option<telemetry::TelemetryHandle>,
+    correlation: telemetry::CorrelationV1,
+) {
+    if rate_limiter
+        .admit(GatewayAdmission {
+            peer: Some(peer),
+            ..GatewayAdmission::default()
+        })
+        .is_err()
+    {
+        let _ = send_error(&mut socket, None, ErrorCode::RateLimited, true).await;
+        return;
+    }
+    let Some(ticket) = receive_browser_ticket(socket.recv(), BROWSER_TICKET_TTL).await else {
+        close_browser_admission(&mut socket).await;
+        return;
+    };
+    let Some((session, target)) = tickets.consume_hosted(ticket.as_ref(), &origin) else {
+        close_browser_admission(&mut socket).await;
+        record_admission_with_correlation(
+            telemetry.as_ref(),
+            telemetry::ReasonCodeV1::Unauthorized,
+            correlation,
+        );
+        return;
+    };
+    if !hosted_binding_digest(&target.client_release_digest)
+        || !hosted_public_reference(&target.client_surface_id)
+    {
+        close_browser_admission(&mut socket).await;
+        return;
+    }
+    let session = Arc::new(session);
+    let authentication_session = Arc::clone(&session);
+    let Ok(principal_id) = backend_call(Arc::clone(&backend), move |backend| {
+        backend.admission_principal(&authentication_session)
+    })
+    .await
+    else {
+        close_browser_admission(&mut socket).await;
+        return;
+    };
+    let admission = StreamAdmission {
+        limiter: rate_limiter,
+        peer,
+        principal_id,
+    };
+    let target_scope = AdmissionTarget {
+        room_id: &target.room_id,
+        member_id: Some(&target.member_id),
+    };
+    if admission
+        .admit_message(
+            &session,
+            WebSocketAdmissionScope {
+                target: Some(target_scope),
+                activation_operation: None,
+            },
+        )
+        .is_err()
+    {
+        let _ = send_error(&mut socket, None, ErrorCode::RateLimited, true).await;
+        return;
+    }
+    let Ok(active) = pending.activate(&admission.principal_id) else {
+        let _ = send_error(&mut socket, None, ErrorCode::RateLimited, true).await;
+        return;
+    };
+    let hosted_stream = hosted_streams.activate(
+        target.browser_session_digest.clone(),
+        session.session_id().clone(),
+        &live_streams,
+    );
+    stream_loop(
+        socket,
+        backend,
+        live_streams,
+        runner_presence,
+        session,
+        admission,
+        telemetry,
+        StreamEndpoint::Room,
+        correlation,
+        active,
+        StreamBootstrap::Hosted(target),
+        Some(hosted_stream),
     )
     .await;
 }
@@ -3635,6 +4087,11 @@ fn browser_admission_close_message() -> Message {
     }))
 }
 
+enum StreamBootstrap {
+    ClientSelected,
+    Hosted(HostedBrowserStreamTarget),
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn stream_loop(
     mut socket: WebSocket,
@@ -3647,6 +4104,8 @@ async fn stream_loop(
     endpoint: StreamEndpoint,
     correlation: telemetry::CorrelationV1,
     _connection_permit: ActiveWebSocketPermit,
+    bootstrap: StreamBootstrap,
+    hosted_activation: Option<ActiveHostedBrowserStream>,
 ) {
     let Some(_active_session) = ActiveGatewaySession::reserve(
         Arc::clone(&backend),
@@ -3656,65 +4115,98 @@ async fn stream_loop(
         let _ = send_error(&mut socket, None, ErrorCode::Internal, false).await;
         return;
     };
-    let Some(message) = receive_websocket_message(socket.recv(), FIRST_CLIENT_HELLO_TIMEOUT).await
-    else {
-        return;
-    };
-    if admission.admit_base(&session).is_err() {
-        let _ = send_error(&mut socket, None, ErrorCode::RateLimited, true).await;
+    let (close_sender, mut close_receiver) = watch::channel(None);
+    live_streams.register_connection(session.session_id(), close_sender.clone());
+    if hosted_activation
+        .as_ref()
+        .is_some_and(|activation| !activation.is_current())
+    {
+        close_browser_admission(&mut socket).await;
         return;
     }
-    let Message::Text(text) = message else {
-        return;
-    };
-    let raw = text.as_bytes();
-    let hello = match decode_envelope::<ClientHello>(raw) {
-        Ok(envelope) if envelope.message_type == "client.hello" => envelope,
-        _ => {
-            let _ = send_error(&mut socket, None, ErrorCode::InvalidEnvelope, false).await;
-            record_admission_with_correlation(
-                telemetry.as_ref(),
-                telemetry::ReasonCodeV1::Invalid,
-                correlation,
-            );
-            return;
+    let (hello_body, hello_request_id, hosted_target) = match bootstrap {
+        StreamBootstrap::ClientSelected => {
+            let Some(message) =
+                receive_websocket_message(socket.recv(), FIRST_CLIENT_HELLO_TIMEOUT).await
+            else {
+                return;
+            };
+            if admission.admit_base(&session).is_err() {
+                let _ = send_error(&mut socket, None, ErrorCode::RateLimited, true).await;
+                return;
+            }
+            let Message::Text(text) = message else {
+                return;
+            };
+            let hello = match decode_envelope::<ClientHello>(text.as_bytes()) {
+                Ok(envelope) if envelope.message_type == "client.hello" => envelope,
+                _ => {
+                    let _ = send_error(&mut socket, None, ErrorCode::InvalidEnvelope, false).await;
+                    record_admission_with_correlation(
+                        telemetry.as_ref(),
+                        telemetry::ReasonCodeV1::Invalid,
+                        correlation,
+                    );
+                    return;
+                }
+            };
+            if let Some(missing) = hello.body.missing_required_capability() {
+                let _ = send_error(
+                    &mut socket,
+                    Some(&hello.message_id),
+                    ErrorCode::InvalidPayload,
+                    false,
+                )
+                .await;
+                tracing::debug!(
+                    capability = missing,
+                    "client hello is missing a required capability"
+                );
+                record_admission_with_correlation(
+                    telemetry.as_ref(),
+                    telemetry::ReasonCodeV1::Invalid,
+                    correlation,
+                );
+                return;
+            }
+            if (endpoint == StreamEndpoint::Runner) != (hello.body.mode == ClientMode::Runner) {
+                let _ = send_error(
+                    &mut socket,
+                    Some(&hello.message_id),
+                    ErrorCode::InvalidPayload,
+                    false,
+                )
+                .await;
+                record_admission_with_correlation(
+                    telemetry.as_ref(),
+                    telemetry::ReasonCodeV1::Invalid,
+                    correlation,
+                );
+                return;
+            }
+            (hello.body, Some(hello.message_id), None)
+        }
+        StreamBootstrap::Hosted(target) => {
+            if endpoint != StreamEndpoint::Room
+                || !matches!(target.mode, ClientMode::Participant | ClientMode::Spectator)
+            {
+                close_browser_admission(&mut socket).await;
+                return;
+            }
+            let hello = ClientHello {
+                client_name: "worldstream-hosted-browser".to_owned(),
+                client_version: env!("CARGO_PKG_VERSION").to_owned(),
+                mode: target.mode,
+                supported_protocols: vec![worldstream_protocol::PROTOCOL_VERSION.to_owned()],
+                capabilities: worldstream_protocol::REQUIRED_CLIENT_CAPABILITIES
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            };
+            (hello, None, Some(target))
         }
     };
-    if let Some(missing) = hello.body.missing_required_capability() {
-        let _ = send_error(
-            &mut socket,
-            Some(&hello.message_id),
-            ErrorCode::InvalidPayload,
-            false,
-        )
-        .await;
-        tracing::debug!(
-            capability = missing,
-            "client hello is missing a required capability"
-        );
-        record_admission_with_correlation(
-            telemetry.as_ref(),
-            telemetry::ReasonCodeV1::Invalid,
-            correlation,
-        );
-        return;
-    }
-    if (endpoint == StreamEndpoint::Runner) != (hello.body.mode == ClientMode::Runner) {
-        let _ = send_error(
-            &mut socket,
-            Some(&hello.message_id),
-            ErrorCode::InvalidPayload,
-            false,
-        )
-        .await;
-        record_admission_with_correlation(
-            telemetry.as_ref(),
-            telemetry::ReasonCodeV1::Invalid,
-            correlation,
-        );
-        return;
-    }
-    let hello_body = hello.body.clone();
+    let stream_mode = hello_body.mode;
     let hello_session = Arc::clone(&session);
     let welcome = match backend_call(Arc::clone(&backend), move |backend| {
         backend.hello(&hello_session, &hello_body)
@@ -3725,7 +4217,7 @@ async fn stream_loop(
         Err(error) => {
             let _ = send_error(
                 &mut socket,
-                Some(&hello.message_id),
+                hello_request_id.as_ref(),
                 error.code(),
                 matches!(
                     error,
@@ -3748,7 +4240,7 @@ async fn stream_loop(
     if !welcome_matches_session(&welcome, &session) {
         let _ = send_error(
             &mut socket,
-            Some(&hello.message_id),
+            hello_request_id.as_ref(),
             ErrorCode::Internal,
             false,
         )
@@ -3765,7 +4257,7 @@ async fn stream_loop(
     if send_body(
         &mut socket,
         "server.welcome",
-        Some(&hello.message_id),
+        hello_request_id.as_ref(),
         welcome,
     )
     .await
@@ -3786,14 +4278,51 @@ async fn stream_loop(
     );
     let mut live = false;
     let (push_sender, mut push_receiver) = mpsc::channel(LIVE_PUSH_CAPACITY);
-    let (close_sender, mut close_receiver) = watch::channel(None);
     let mut attached_stream = None;
     let mut runner = RunnerConnectionState {
-        mode: hello.body.mode,
+        mode: stream_mode,
         ready: false,
         runner_id: None,
     };
     let mut active_runner_presence = None;
+    if let Some(target) = hosted_target.as_ref() {
+        let Some(message_id) = next_ulid() else {
+            let _ = send_error(&mut socket, None, ErrorCode::Internal, false).await;
+            return;
+        };
+        let attach = VersionedEnvelope {
+            protocol: worldstream_protocol::PROTOCOL_VERSION.to_owned(),
+            message_type: "room.attach".to_owned(),
+            message_id,
+            request_id: None,
+            body: json!({
+                "room_id": target.room_id,
+                "member_id": target.member_id,
+                "after_frame_seq": target.after_frame_seq,
+            }),
+        };
+        if dispatch_message(
+            &mut socket,
+            Arc::clone(&backend),
+            &live_streams,
+            &push_sender,
+            &close_sender,
+            &session,
+            attach,
+            &mut live,
+            &mut attached_stream,
+            &mut runner,
+            &runner_presence,
+            &mut active_runner_presence,
+            telemetry.as_ref(),
+            correlation,
+        )
+        .await
+        .is_err()
+        {
+            return;
+        }
+    }
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // `interval` ticks immediately once; the welcome itself is the initial
@@ -3819,7 +4348,7 @@ async fn stream_loop(
                     continue;
                 };
                 let raw = text.as_bytes();
-                let value: VersionedEnvelope<Value> = match decode_envelope(raw) {
+                let mut value: VersionedEnvelope<Value> = match decode_envelope(raw) {
                     Ok(value) => value,
                     Err(error) => {
                         if admission.admit_base(&session).is_err() {
@@ -3835,6 +4364,25 @@ async fn stream_loop(
                         continue;
                     }
                 };
+                if let Some(target) = hosted_target.as_ref() {
+                    if matches!(value.message_type.as_str(), "client.hello" | "room.attach") {
+                        continue;
+                    }
+                    if bind_hosted_browser_target(&mut value, target).is_err() {
+                        let request_id = reply_request_id(
+                            value.request_id.as_ref(),
+                            &value.message_id,
+                        );
+                        let _ = send_error(
+                            &mut socket,
+                            request_id,
+                            ErrorCode::InvalidPayload,
+                            false,
+                        )
+                        .await;
+                        continue;
+                    }
+                }
                 if admission
                     .admit_message(&session, websocket_admission_scope(&value))
                     .is_err()
@@ -4069,12 +4617,88 @@ struct AttachedStream {
     member_id: String,
 }
 
+#[derive(Clone, Default)]
+struct HostedBrowserStreamRegistry {
+    sessions: Arc<Mutex<HashMap<String, UlidString>>>,
+}
+
+impl HostedBrowserStreamRegistry {
+    fn activate(
+        &self,
+        browser_session_digest: String,
+        gateway_session_id: UlidString,
+        live_streams: &LiveStreamRegistry,
+    ) -> ActiveHostedBrowserStream {
+        let prior = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(browser_session_digest.clone(), gateway_session_id.clone());
+        if let Some(prior) = prior
+            && prior != gateway_session_id
+        {
+            live_streams.close(prior.as_str(), ErrorCode::Forbidden);
+        }
+        ActiveHostedBrowserStream {
+            registry: self.clone(),
+            browser_session_digest,
+            gateway_session_id,
+        }
+    }
+
+    fn revoke(&self, browser_session_digest: &str, live_streams: &LiveStreamRegistry) {
+        if let Some(session_id) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(browser_session_digest)
+        {
+            live_streams.close(session_id.as_str(), ErrorCode::Forbidden);
+        }
+    }
+
+    fn release(&self, browser_session_digest: &str, gateway_session_id: &UlidString) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sessions.get(browser_session_digest) == Some(gateway_session_id) {
+            sessions.remove(browser_session_digest);
+        }
+    }
+}
+
+struct ActiveHostedBrowserStream {
+    registry: HostedBrowserStreamRegistry,
+    browser_session_digest: String,
+    gateway_session_id: UlidString,
+}
+
+impl ActiveHostedBrowserStream {
+    fn is_current(&self) -> bool {
+        self.registry
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.browser_session_digest)
+            == Some(&self.gateway_session_id)
+    }
+}
+
+impl Drop for ActiveHostedBrowserStream {
+    fn drop(&mut self) {
+        self.registry
+            .release(&self.browser_session_digest, &self.gateway_session_id);
+    }
+}
+
 const LIVE_PUSH_CAPACITY: usize = MAX_OUTBOUND_FRAME_BURST;
 
 #[derive(Clone, Default)]
 struct LiveStreamRegistry {
     sessions: Arc<Mutex<HashMap<String, LiveStreamRegistration>>>,
     active_session_ids: Arc<Mutex<HashSet<UlidString>>>,
+    connection_closers: Arc<Mutex<HashMap<String, watch::Sender<Option<ErrorCode>>>>>,
     publication_lock: Arc<AsyncMutex<()>>,
     queue_metrics: Arc<LiveStreamQueueMetrics>,
 }
@@ -4105,6 +4729,8 @@ impl ActiveGatewaySession {
 impl Drop for ActiveGatewaySession {
     fn drop(&mut self) {
         self.registry.unregister(self.session_id.as_str());
+        self.registry
+            .unregister_connection(self.session_id.as_str());
         self.registry.release_session(&self.session_id);
         self.backend.retire_session(&self.session_id);
     }
@@ -4330,6 +4956,24 @@ impl LiveStreamRegistry {
             .remove(session_id);
     }
 
+    fn register_connection(
+        &self,
+        session_id: &UlidString,
+        close: watch::Sender<Option<ErrorCode>>,
+    ) {
+        self.connection_closers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id.to_string(), close);
+    }
+
+    fn unregister_connection(&self, session_id: &str) {
+        self.connection_closers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
+    }
+
     fn snapshots_for_room(&self, room_id: &str) -> Vec<LiveStreamSnapshot> {
         self.sessions
             .lock()
@@ -4361,13 +5005,20 @@ impl LiveStreamRegistry {
     }
 
     fn close(&self, session_id: &str, code: ErrorCode) {
-        if let Some(registration) = self
+        let stream_close = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id)
-        {
-            let _ = registration.close.send(Some(code));
+            .map(|registration| registration.close);
+        let connection_close = self
+            .connection_closers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .cloned();
+        if let Some(close) = stream_close.or(connection_close) {
+            let _ = close.send(Some(code));
         }
     }
 
@@ -4562,6 +5213,30 @@ fn websocket_admission_scope(envelope: &VersionedEnvelope<Value>) -> WebSocketAd
         target,
         activation_operation,
     }
+}
+
+fn bind_hosted_browser_target(
+    envelope: &mut VersionedEnvelope<Value>,
+    target: &HostedBrowserStreamTarget,
+) -> Result<(), ()> {
+    let body = envelope.body.as_object_mut().ok_or(())?;
+    if body.contains_key("principal_id") || body.contains_key("membership_id") {
+        return Err(());
+    }
+    if envelope.message_type == "action.submit" && target.mode != ClientMode::Participant {
+        return Err(());
+    }
+    if matches!(
+        envelope.message_type.as_str(),
+        "room.sync_ack" | "observation.ack" | "action.submit"
+    ) {
+        body.insert("room_id".to_owned(), Value::String(target.room_id.clone()));
+        body.insert(
+            "member_id".to_owned(),
+            Value::String(target.member_id.clone()),
+        );
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -5557,11 +6232,11 @@ mod tests {
     };
     use worldstream_protocol::{
         AccessMode, ActionSubmit, BEARER_WIRE_PREFIX, BearerWireV1,
-        BrowserWebSocketTicketIssueResponse, ClientHello, CreateMember, CreateRoomRequest,
-        CreateRoomResponse, ErrorCode, ErrorEnvelope, LobbyLaunchResponse, ObservationAck,
-        ObservationDeliver, OperatorRunnerConnectionV1, OperatorRunnerPresenceV1, PackReference,
-        PrincipalKind, Projection, ProjectionResponse, ReplayResponse, RoomAttach, RoomHead,
-        RoomSyncAck, RunnerHello, ServerWelcome, TimerFireResponse, UlidString,
+        BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode, CreateMember,
+        CreateRoomRequest, CreateRoomResponse, ErrorCode, ErrorEnvelope, LobbyLaunchResponse,
+        ObservationAck, ObservationDeliver, OperatorRunnerConnectionV1, OperatorRunnerPresenceV1,
+        PackReference, PrincipalKind, Projection, ProjectionResponse, ReplayResponse, RoomAttach,
+        RoomHead, RoomSyncAck, RunnerHello, ServerWelcome, TimerFireResponse, UlidString,
     };
     use worldstream_runtime::{EffectiveConfig, StorageProfile};
     use worldstream_sqlite::SqliteRoomStore;
@@ -5796,9 +6471,10 @@ mod tests {
     use super::{
         BROWSER_ADMISSION_CLOSE_REASON, BROWSER_TICKET_PREFIX, BROWSER_TICKET_TTL,
         BROWSER_TICKET_WIRE_LENGTH, BUILD_REVISION, BrowserTicketError, BrowserTicketStore,
-        GatewayBackend, GatewaySession, MemberCapabilityIssueResponse, OperatorState,
-        RunnerCapabilityIssueResponse, RuntimeReadiness, SqliteGatewayBackend, VersionResponse,
-        authenticated_session, bearer, browser_admission_close_message, browser_origin, next_ulid,
+        GatewayBackend, GatewaySession, HostedBrowserStreamTarget, MemberCapabilityIssueResponse,
+        OperatorState, RunnerCapabilityIssueResponse, RuntimeReadiness, SqliteGatewayBackend,
+        VersionResponse, authenticated_session, bearer, bind_hosted_browser_target,
+        browser_admission_close_message, browser_origin, hosted_browser_origin, next_ulid,
         operator_router, receive_browser_ticket, record_activation_with_correlation,
         record_timer_with_correlation, telemetry, websocket_origin, welcome_matches_session,
     };
@@ -9147,6 +9823,21 @@ mod tests {
         )
     }
 
+    fn hosted_browser_test_target(
+        mode: ClientMode,
+        session_byte: char,
+    ) -> HostedBrowserStreamTarget {
+        HostedBrowserStreamTarget {
+            room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+            member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+            mode,
+            after_frame_seq: Some(7),
+            browser_session_digest: format!("blake3:{}", session_byte.to_string().repeat(64)),
+            client_release_digest: format!("blake3:{}", "d".repeat(64)),
+            client_surface_id: "participant".to_owned(),
+        }
+    }
+
     #[test]
     fn browser_ticket_is_origin_bound_single_use_and_never_retained_as_plaintext() {
         let store = BrowserTicketStore::with_limits(4, Duration::from_secs(15));
@@ -9201,6 +9892,125 @@ mod tests {
     }
 
     #[test]
+    fn hosted_browser_ticket_is_target_bound_single_use_revocable_and_endpoint_scoped() {
+        let store = BrowserTicketStore::with_limits(8, Duration::from_secs(5));
+        let now = std::time::Instant::now();
+        let origin = "https://arena.example";
+
+        let wrong_endpoint = store
+            .issue_hosted_at(
+                browser_test_session(0x41),
+                origin.to_owned(),
+                hosted_browser_test_target(ClientMode::Participant, '1'),
+                now,
+            )
+            .unwrap_or_else(|error| unreachable!("hosted ticket issue: {error:?}"));
+        assert!(store.consume_at(&wrong_endpoint, origin, now).is_none());
+        assert!(
+            store
+                .consume_hosted_at(&wrong_endpoint, origin, now)
+                .is_none()
+        );
+
+        let wrong_origin = store
+            .issue_hosted_at(
+                browser_test_session(0x42),
+                origin.to_owned(),
+                hosted_browser_test_target(ClientMode::Participant, '2'),
+                now,
+            )
+            .unwrap_or_else(|error| unreachable!("hosted ticket issue: {error:?}"));
+        assert!(
+            store
+                .consume_hosted_at(&wrong_origin, "https://other.example", now)
+                .is_none()
+        );
+        assert!(
+            store
+                .consume_hosted_at(&wrong_origin, origin, now)
+                .is_none()
+        );
+
+        let expired = store
+            .issue_hosted_at(
+                browser_test_session(0x43),
+                origin.to_owned(),
+                hosted_browser_test_target(ClientMode::Participant, '3'),
+                now,
+            )
+            .unwrap_or_else(|error| unreachable!("hosted ticket issue: {error:?}"));
+        assert!(
+            store
+                .consume_hosted_at(&expired, origin, now + Duration::from_secs(6))
+                .is_none()
+        );
+
+        let revoked_target = hosted_browser_test_target(ClientMode::Participant, '4');
+        let revoked_digest = revoked_target.browser_session_digest.clone();
+        let revoked = store
+            .issue_hosted_at(
+                browser_test_session(0x44),
+                origin.to_owned(),
+                revoked_target,
+                now,
+            )
+            .unwrap_or_else(|error| unreachable!("hosted ticket issue: {error:?}"));
+        store.revoke_hosted_session(&revoked_digest);
+        assert!(store.consume_hosted_at(&revoked, origin, now).is_none());
+
+        let accepted = store
+            .issue_hosted_at(
+                browser_test_session(0x45),
+                origin.to_owned(),
+                hosted_browser_test_target(ClientMode::Spectator, '5'),
+                now,
+            )
+            .unwrap_or_else(|error| unreachable!("hosted ticket issue: {error:?}"));
+        let (_, target) = store
+            .consume_hosted_at(&accepted, origin, now)
+            .unwrap_or_else(|| unreachable!("target-bound ticket"));
+        assert_eq!(target.room_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        assert_eq!(target.member_id, "01ARZ3NDEKTSV4RRFFQ69G5FAX");
+        assert_eq!(target.mode, ClientMode::Spectator);
+        assert_eq!(target.after_frame_seq, Some(7));
+        assert!(store.consume_hosted_at(&accepted, origin, now).is_none());
+    }
+
+    #[test]
+    fn hosted_browser_messages_cannot_retarget_or_submit_spectator_actions() {
+        let participant = hosted_browser_test_target(ClientMode::Participant, '6');
+        let mut action: worldstream_protocol::VersionedEnvelope<serde_json::Value> =
+            serde_json::from_value(serde_json::json!({
+                "protocol": "0.1",
+                "type": "action.submit",
+                "message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+                "body": {
+                    "room_id": "01ARZ3NDEKTSV4RRFFQ69G5FAA",
+                    "member_id": "01ARZ3NDEKTSV4RRFFQ69G5FAB",
+                    "action_id": "01ARZ3NDEKTSV4RRFFQ69G5FAC",
+                    "action_type": "move",
+                    "payload": {}
+                }
+            }))
+            .unwrap_or_else(|error| unreachable!("action envelope: {error}"));
+        bind_hosted_browser_target(&mut action, &participant)
+            .unwrap_or_else(|()| unreachable!("participant target binding"));
+        assert_eq!(
+            action.body["room_id"],
+            serde_json::Value::String(participant.room_id.clone())
+        );
+        assert_eq!(
+            action.body["member_id"],
+            serde_json::Value::String(participant.member_id.clone())
+        );
+
+        let spectator = hosted_browser_test_target(ClientMode::Spectator, '7');
+        assert!(bind_hosted_browser_target(&mut action, &spectator).is_err());
+        action.body["principal_id"] = serde_json::Value::String("forged".to_owned());
+        assert!(bind_hosted_browser_target(&mut action, &participant).is_err());
+    }
+
+    #[test]
     fn browser_origin_policy_accepts_loopback_origins_only() {
         for origin in [
             "http://127.0.0.1:5173",
@@ -9237,6 +10047,47 @@ mod tests {
                 .map(|error| error.status),
             Some(StatusCode::FORBIDDEN)
         );
+    }
+
+    #[test]
+    fn hosted_browser_origin_policy_accepts_only_canonical_https_or_loopback() {
+        for origin in [
+            "https://arena.example",
+            "https://arena.example:8443",
+            "http://127.0.0.1:5173",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ORIGIN,
+                HeaderValue::from_str(origin)
+                    .unwrap_or_else(|error| unreachable!("origin header: {error}")),
+            );
+            assert_eq!(
+                hosted_browser_origin(&headers).ok().as_deref(),
+                Some(origin)
+            );
+        }
+        for origin in [
+            "http://arena.example",
+            "https://Arena.example",
+            "https://arena.example:443",
+            "https://arena.example/private",
+            "https://arena..example",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ORIGIN,
+                HeaderValue::from_str(origin)
+                    .unwrap_or_else(|error| unreachable!("origin header: {error}")),
+            );
+            assert_eq!(
+                hosted_browser_origin(&headers)
+                    .err()
+                    .map(|error| error.status),
+                Some(StatusCode::FORBIDDEN),
+                "{origin}"
+            );
+        }
     }
 
     #[test]
@@ -9316,7 +10167,11 @@ mod tests {
                 worldstream_protocol::PROTOCOL_VERSION
             )
         );
-        for path in ["/v1/stream", "/v1/runner/stream"] {
+        for path in [
+            "/v1/stream",
+            "/v1/runner/stream",
+            "/v1/hosted/browser-stream",
+        ] {
             let accepted =
                 websocket_handshake(path, Some(worldstream_protocol::WEBSOCKET_SUBPROTOCOL)).await;
             assert!(accepted.starts_with("HTTP/1.1 101 "), "{accepted}");
@@ -9397,6 +10252,74 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("missing-origin body: {error}"))
             .to_bytes();
         assert!(!String::from_utf8_lossy(&body).contains("00010203"));
+    }
+
+    #[tokio::test]
+    async fn hosted_browser_ticket_route_accepts_only_exact_target_bindings() {
+        let app = operator_router(
+            OperatorState::new(EffectiveConfig::default())
+                .unwrap_or_else(|error| unreachable!("operator state: {error}"))
+                .with_backend(Arc::new(SuccessfulCreateBackend)),
+        );
+        let request = worldstream_protocol::HostedBrowserWebSocketTicketIssueRequest {
+            version: worldstream_protocol::HOSTED_BROWSER_WS_TICKET_VERSION.to_owned(),
+            room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+            member_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+            mode: ClientMode::Participant,
+            after_frame_seq: Some(11),
+            browser_session_digest: format!("blake3:{}", "a".repeat(64)),
+            client_release_digest: format!("blake3:{}", "b".repeat(64)),
+            client_surface_id: "participant".to_owned(),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/hosted/browser-stream-ticket")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::ORIGIN, "https://arena.example")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap_or_else(
+                        |error| unreachable!("ticket request body: {error}"),
+                    )))
+                    .unwrap_or_else(|error| unreachable!("ticket request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("ticket response: {error}"));
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()[header::PRAGMA], "no-cache");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap_or_else(|error| unreachable!("ticket body: {error}"))
+            .to_bytes();
+        let issued: BrowserWebSocketTicketIssueResponse = serde_json::from_slice(&body)
+            .unwrap_or_else(|error| unreachable!("ticket JSON: {error}"));
+        assert!(issued.ticket.starts_with(BROWSER_TICKET_PREFIX));
+        assert!(!String::from_utf8_lossy(&body).contains(&request.room_id));
+        assert!(!String::from_utf8_lossy(&body).contains(&request.member_id));
+
+        let mut runner = request;
+        runner.mode = ClientMode::Runner;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/hosted/browser-stream-ticket")
+                    .header(header::AUTHORIZATION, auth_header())
+                    .header(header::ORIGIN, "https://arena.example")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&runner).unwrap_or_else(
+                        |error| unreachable!("invalid request body: {error}"),
+                    )))
+                    .unwrap_or_else(|error| unreachable!("invalid ticket request: {error}")),
+            )
+            .await
+            .unwrap_or_else(|error| unreachable!("invalid ticket response: {error}"));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

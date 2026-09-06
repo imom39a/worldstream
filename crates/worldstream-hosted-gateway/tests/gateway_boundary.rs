@@ -10,23 +10,33 @@ use std::{
 };
 
 use axum::{body::Body, http::Request};
+use futures_util::{SinkExt as _, StreamExt as _};
 use http_body_util::BodyExt as _;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio_tungstenite::{
+    accept_hdr_async,
+    tungstenite::{
+        Message as TungsteniteMessage,
+        client::IntoClientRequest as _,
+        handshake::server::{Request as WebSocketRequest, Response as WebSocketResponse},
+    },
+};
 use tower::ServiceExt as _;
 use worldstream_core::{CanonicalJsonV1, projection_hash_for_canonical_bytes};
 use worldstream_hosted_contract::{
     HostedAuthorizedPublicProjectionV1, HostedBrowserHandoffRedeemRequestV1,
     HostedBrowserHandoffRedeemResponseV1, HostedBrowserHandoffRequestV1,
     HostedBrowserHandoffResponseV1, HostedBrowserSessionLogoutV1, HostedBrowserSessionRequestV1,
-    HostedBrowserSessionStateV1, HostedBrowserSessionStatusV1, HostedCapacityAuthorizationV1,
-    HostedGenesisAccessModeV1, HostedGenesisEvidenceV1, HostedGenesisHeadV1,
-    HostedGenesisMembershipPurposeV1, HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1,
-    HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
-    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStageV1, HostedLaunchStatusV1, HostedResultIntegrityStatusV1,
-    HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1, HostedResultSourceHeadV1,
-    HostedResultSourceRequestV1, PackReference,
+    HostedBrowserSessionStateV1, HostedBrowserSessionStatusV1, HostedBrowserStreamTicketRequestV1,
+    HostedBrowserStreamTicketResponseV1, HostedCapacityAuthorizationV1, HostedGenesisAccessModeV1,
+    HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedGenesisMembershipPurposeV1,
+    HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerReservationOutcomeV1,
+    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
+    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStageV1,
+    HostedLaunchStatusV1, HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1,
+    HostedResultSourceEvidenceV1, HostedResultSourceHeadV1, HostedResultSourceRequestV1,
+    PackReference,
 };
 use worldstream_hosted_gateway::{
     FixedHostAdapterBackend, HostedGatewayBackend, HostedGatewayConfig, HostedGatewayError,
@@ -48,6 +58,7 @@ struct Backend {
     browser_redemptions: Arc<Mutex<Vec<HostedBrowserHandoffRedeemRequestV1>>>,
     browser_status_reads: Arc<Mutex<Vec<HostedBrowserSessionRequestV1>>>,
     browser_logouts: Arc<Mutex<Vec<HostedBrowserSessionRequestV1>>>,
+    browser_stream_tickets: Arc<Mutex<Vec<HostedBrowserStreamTicketRequestV1>>>,
     ready: bool,
 }
 
@@ -188,6 +199,21 @@ impl HostedGatewayBackend for Backend {
             logged_out: true,
         })
     }
+
+    fn issue_browser_stream_ticket(
+        &self,
+        request: &HostedBrowserStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
+        self.browser_stream_tickets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(HostedBrowserStreamTicketResponseV1 {
+            schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
+            ticket: format!("wst1:{}", "c".repeat(64)),
+            expires_in_ms: 15_000,
+        })
+    }
 }
 
 fn status(listing: &str, launch: &str, operation: &str) -> HostedLaunchStatusV1 {
@@ -275,6 +301,20 @@ fn config(max_requests: u32) -> HostedGatewayConfig {
         Duration::from_mins(1),
     )
     .expect("gateway fixture")
+}
+
+fn browser_stream_config() -> HostedGatewayConfig {
+    browser_stream_config_with_runtime(
+        "127.0.0.1:9"
+            .parse::<SocketAddr>()
+            .expect("loopback discard fixture"),
+    )
+}
+
+fn browser_stream_config_with_runtime(runtime_upstream: SocketAddr) -> HostedGatewayConfig {
+    config(64)
+        .with_browser_stream(runtime_upstream, "https://arena.example")
+        .expect("browser stream fixture")
 }
 
 #[test]
@@ -527,6 +567,14 @@ fn browser_session_request() -> HostedBrowserSessionRequestV1 {
     }
 }
 
+fn browser_stream_ticket_request() -> HostedBrowserStreamTicketRequestV1 {
+    HostedBrowserStreamTicketRequestV1 {
+        schema: "worldstream/hosted-browser-stream-ticket-request/v1".to_owned(),
+        session: format!("wss1:{}", "b".repeat(64)),
+        after_frame_seq: Some(17),
+    }
+}
+
 fn service_request(path: &str, token: &str, body: &impl Serialize) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -537,6 +585,57 @@ fn service_request(path: &str, token: &str, body: &impl Serialize) -> Request<Bo
             serde_json::to_vec(body).expect("request fixture"),
         ))
         .expect("request")
+}
+
+async fn browser_stream_handshake(
+    path: &'static str,
+    origin: &'static str,
+    protocol: Option<&'static str>,
+    extra_header: Option<&'static str>,
+) -> String {
+    let app = hosted_gateway_router(browser_stream_config(), Backend::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gateway listener");
+    let address = listener.local_addr().expect("gateway address");
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+    let response = tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(address).expect("gateway connection");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("gateway read timeout");
+        let protocol_header = protocol
+            .map(|value| format!("Sec-WebSocket-Protocol: {value}\r\n"))
+            .unwrap_or_default();
+        let extra_header = extra_header
+            .map(|value| format!("{value}\r\n"))
+            .unwrap_or_default();
+        let nonce = ["dGhlIHNhbXBsZSBu", "b25jZQ=="].concat();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: arena.example\r\nOrigin: {origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {nonce}\r\n{protocol_header}{extra_header}\r\n"
+        );
+        stream.write_all(request.as_bytes()).expect("gateway request");
+        let mut response = Vec::with_capacity(2048);
+        let mut chunk = [0_u8; 1024];
+        while !response.windows(4).any(|value| value == b"\r\n\r\n") {
+            assert!(response.len() <= 16 * 1024, "bounded gateway response");
+            let count = stream.read(&mut chunk).expect("gateway response");
+            assert!(count > 0, "gateway response ended before headers");
+            response.extend_from_slice(&chunk[..count]);
+        }
+        String::from_utf8(response).expect("gateway response encoding")
+    })
+    .await
+    .expect("gateway handshake task");
+    server.abort();
+    let _ = server.await;
+    response
 }
 
 #[tokio::test]
@@ -592,6 +691,197 @@ async fn generic_worldstream_and_arbitrary_proxy_routes_are_absent() {
             .expect("response");
         assert_eq!(response.status(), 404, "{path}");
     }
+}
+
+#[tokio::test]
+async fn public_browser_stream_requires_exact_origin_subprotocol_and_credential_free_upgrade() {
+    let accepted = browser_stream_handshake(
+        "/v1/hosted/browser-stream",
+        "https://arena.example",
+        Some("worldstream.json.v0.1"),
+        None,
+    )
+    .await;
+    assert!(accepted.starts_with("HTTP/1.1 101 "), "{accepted}");
+    assert!(
+        accepted.contains("\r\nsec-websocket-protocol: worldstream.json.v0.1\r\n"),
+        "{accepted}"
+    );
+
+    for (path, origin, protocol, extra) in [
+        (
+            "/v1/hosted/browser-stream?ticket=secret",
+            "https://arena.example",
+            Some("worldstream.json.v0.1"),
+            None,
+        ),
+        (
+            "/v1/hosted/browser-stream",
+            "https://other.example",
+            Some("worldstream.json.v0.1"),
+            None,
+        ),
+        (
+            "/v1/hosted/browser-stream",
+            "https://arena.example",
+            None,
+            None,
+        ),
+        (
+            "/v1/hosted/browser-stream",
+            "https://arena.example",
+            Some("worldstream.json.v9.9"),
+            None,
+        ),
+        (
+            "/v1/hosted/browser-stream",
+            "https://arena.example",
+            Some("worldstream.json.v0.1"),
+            Some("Authorization: Bearer must-not-cross"),
+        ),
+        (
+            "/v1/hosted/browser-stream",
+            "https://arena.example",
+            Some("worldstream.json.v0.1"),
+            Some("Cookie: ticket=must-not-cross"),
+        ),
+        (
+            "/v1/hosted/browser-stream",
+            "https://arena.example",
+            Some("worldstream.json.v0.1"),
+            Some("X-Forwarded-Host: internal.example"),
+        ),
+    ] {
+        let rejected = browser_stream_handshake(path, origin, protocol, extra).await;
+        assert!(
+            rejected.starts_with("HTTP/1.1 400 ") || rejected.starts_with("HTTP/1.1 403 "),
+            "{rejected}"
+        );
+        assert!(!rejected.contains("must-not-cross"));
+        assert!(!rejected.contains("ticket=secret"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::result_large_err, clippy::too_many_lines)]
+async fn public_browser_stream_proxies_first_frame_ticket_and_live_frames_only_to_runtime() {
+    let runtime_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("runtime listener");
+    let runtime_address = runtime_listener.local_addr().expect("runtime address");
+    let runtime = tokio::spawn(async move {
+        let (stream, _) = runtime_listener.accept().await.expect("runtime connection");
+        let mut socket = accept_hdr_async(
+            stream,
+            |request: &WebSocketRequest, mut response: WebSocketResponse| {
+                assert_eq!(request.uri().path(), "/v1/hosted/browser-stream");
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("origin")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("https://arena.example")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("sec-websocket-protocol")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("worldstream.json.v0.1")
+                );
+                assert!(request.headers().get("authorization").is_none());
+                assert!(request.headers().get("cookie").is_none());
+                response.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    "worldstream.json.v0.1".parse().expect("protocol header"),
+                );
+                Ok(response)
+            },
+        )
+        .await
+        .expect("runtime handshake");
+        let ticket = socket
+            .next()
+            .await
+            .expect("ticket frame")
+            .expect("valid ticket frame");
+        assert_eq!(
+            ticket,
+            TungsteniteMessage::Text(format!("wst1:{}", "a".repeat(64)).into())
+        );
+        socket
+            .send(TungsteniteMessage::Text("runtime-frame".into()))
+            .await
+            .expect("runtime frame");
+        let browser_frame = socket
+            .next()
+            .await
+            .expect("browser frame")
+            .expect("valid browser frame");
+        assert_eq!(
+            browser_frame,
+            TungsteniteMessage::Text("browser-frame".into())
+        );
+    });
+
+    let app = hosted_gateway_router(
+        browser_stream_config_with_runtime(runtime_address),
+        Backend::default(),
+    );
+    let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gateway listener");
+    let gateway_address = gateway_listener.local_addr().expect("gateway address");
+    let gateway = tokio::spawn(async move {
+        axum::serve(
+            gateway_listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || {
+        let stream = TcpStream::connect(gateway_address).expect("browser connection");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("browser read timeout");
+        let mut request = "ws://arena.example/v1/hosted/browser-stream"
+            .into_client_request()
+            .expect("browser request");
+        request
+            .headers_mut()
+            .insert("origin", "https://arena.example".parse().expect("origin"));
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            "worldstream.json.v0.1".parse().expect("protocol"),
+        );
+        let (mut socket, response) =
+            tokio_tungstenite::tungstenite::client(request, stream).expect("gateway handshake");
+        assert_eq!(
+            response
+                .headers()
+                .get("sec-websocket-protocol")
+                .and_then(|value| value.to_str().ok()),
+            Some("worldstream.json.v0.1")
+        );
+        socket
+            .send(TungsteniteMessage::Text(
+                format!("wst1:{}", "a".repeat(64)).into(),
+            ))
+            .expect("browser ticket");
+        assert_eq!(
+            socket.read().expect("runtime frame"),
+            TungsteniteMessage::Text("runtime-frame".into())
+        );
+        socket
+            .send(TungsteniteMessage::Text("browser-frame".into()))
+            .expect("browser frame");
+    })
+    .await
+    .expect("browser task");
+    runtime.await.expect("runtime task");
+    gateway.abort();
+    let _ = gateway.await;
 }
 
 #[tokio::test]
@@ -826,6 +1116,7 @@ async fn browser_session_routes_are_service_only_and_public_stream_stays_browser
         "/v1/hosted/browser-sessions/admit",
         "/v1/hosted/browser-sessions/status",
         "/v1/hosted/browser-sessions/logout",
+        "/v1/hosted/browser-sessions/stream-ticket",
     ] {
         let response = app
             .clone()
@@ -885,34 +1176,50 @@ async fn hosted_browser_session_service_calls_are_typed_no_store_and_rate_bounde
     let backend = Backend::default();
     let app = hosted_gateway_router(config(8), backend.clone());
     let calls = [
-        service_request(
-            "/v1/hosted/browser-handoffs/issue",
-            TOKEN,
-            &browser_handoff_request(LISTING),
+        (
+            service_request(
+                "/v1/hosted/browser-handoffs/issue",
+                TOKEN,
+                &browser_handoff_request(LISTING),
+            ),
+            201,
         ),
-        service_request(
-            "/v1/hosted/browser-sessions/admit",
-            TOKEN,
-            &browser_redeem_request(),
+        (
+            service_request(
+                "/v1/hosted/browser-sessions/admit",
+                TOKEN,
+                &browser_redeem_request(),
+            ),
+            201,
         ),
-        service_request(
-            "/v1/hosted/browser-sessions/status",
-            TOKEN,
-            &browser_session_request(),
+        (
+            service_request(
+                "/v1/hosted/browser-sessions/status",
+                TOKEN,
+                &browser_session_request(),
+            ),
+            200,
         ),
-        service_request(
-            "/v1/hosted/browser-sessions/logout",
-            TOKEN,
-            &browser_session_request(),
+        (
+            service_request(
+                "/v1/hosted/browser-sessions/logout",
+                TOKEN,
+                &browser_session_request(),
+            ),
+            200,
+        ),
+        (
+            service_request(
+                "/v1/hosted/browser-sessions/stream-ticket",
+                TOKEN,
+                &browser_stream_ticket_request(),
+            ),
+            201,
         ),
     ];
-    for (index, request) in calls.into_iter().enumerate() {
+    for (index, (request, expected_status)) in calls.into_iter().enumerate() {
         let response = app.clone().oneshot(request).await.expect("response");
-        assert_eq!(
-            response.status(),
-            if index < 2 { 201 } else { 200 },
-            "call {index}"
-        );
+        assert_eq!(response.status(), expected_status, "call {index}");
         assert_eq!(
             response
                 .headers()
@@ -952,6 +1259,14 @@ async fn hosted_browser_session_service_calls_are_typed_no_store_and_rate_bounde
             .unwrap_or_else(PoisonError::into_inner)
             .len(),
         1
+    );
+    assert_eq!(
+        backend
+            .browser_stream_tickets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        &[browser_stream_ticket_request()]
     );
 }
 
@@ -995,7 +1310,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     let address = listener.local_addr().expect("fixture address");
     let (sender, receiver) = mpsc::channel();
     let server = thread::spawn(move || {
-        for index in 0..11 {
+        for index in 0..12 {
             let (stream, _) = listener.accept().expect("fixture connection");
             let (request_line, authorization, body, mut stream) = read_request(stream);
             sender
@@ -1036,6 +1351,12 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
                     logged_out: true,
                 })
                 .expect("browser logout response"),
+                11 => serde_json::to_vec(&HostedBrowserStreamTicketResponseV1 {
+                    schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
+                    ticket: format!("wst1:{}", "c".repeat(64)),
+                    expires_in_ms: 15_000,
+                })
+                .expect("browser stream ticket response"),
                 _ => serde_json::to_vec(&status(
                     LISTING,
                     "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -1045,7 +1366,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
             };
             let status_code = if index == 1 {
                 202
-            } else if matches!(index, 7 | 8) {
+            } else if matches!(index, 7 | 8 | 11) {
                 201
             } else {
                 200
@@ -1099,6 +1420,17 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
             .logout_browser_session(&browser_session_request())
             .is_ok()
     );
+    let stream_ticket_request = browser_stream_ticket_request();
+    let stream_ticket_json = serde_json::to_vec(&stream_ticket_request).expect("ticket JSON");
+    assert!(
+        CanonicalJsonV1::parse(&stream_ticket_json)
+            .and_then(|value| value.to_bytes())
+            .is_ok(),
+        "{}",
+        String::from_utf8_lossy(&stream_ticket_json)
+    );
+    let stream_ticket = backend.issue_browser_stream_ticket(&stream_ticket_request);
+    assert!(stream_ticket.is_ok(), "{stream_ticket:?}");
     server.join().expect("fixture server");
 
     let observations = receiver.try_iter().collect::<Vec<_>>();
@@ -1106,7 +1438,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
 }
 
 fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)]) {
-    assert_eq!(observations.len(), 11);
+    assert_eq!(observations.len(), 12);
     assert_eq!(
         observations[0].0,
         "GET /api/v1/hosted-launches/ready HTTP/1.1"
@@ -1151,6 +1483,10 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
         observations[10].0,
         "POST /api/v1/hosted-browser-sessions:logout HTTP/1.1"
     );
+    assert_eq!(
+        observations[11].0,
+        "POST /api/v1/hosted-browser-sessions:stream-ticket HTTP/1.1"
+    );
     assert!(
         observations
             .iter()
@@ -1167,6 +1503,7 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[8].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[9].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[10].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[11].2).is_ok());
 }
 
 fn read_request(stream: TcpStream) -> (String, String, Vec<u8>, TcpStream) {

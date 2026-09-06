@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
         .parse::<SocketAddr>()?;
     let upstream = required("WORLDSTREAM_HOST_ADAPTER_UPSTREAM")?.parse::<SocketAddr>()?;
+    let runtime_upstream = required("WORLDSTREAM_RUNTIME_UPSTREAM")?.parse::<SocketAddr>()?;
     let controller_authority = required("WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY")?;
     let backend =
         FixedHostAdapterBackend::new(upstream, controller_authority, Duration::from_secs(5))?;
@@ -41,16 +42,23 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         upstream,
         120,
         Duration::from_mins(1),
+    )?
+    .with_browser_stream(
+        runtime_upstream,
+        required("WORLDSTREAM_HOSTED_CLIENT_ORIGIN")?,
     )?;
     drop(service_authority);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
-    let server = axum::serve(listener, hosted_gateway_router(config, backend))
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_receiver.await;
-        })
-        .into_future();
+    let server = axum::serve(
+        listener,
+        hosted_gateway_router(config, backend).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_receiver.await;
+    })
+    .into_future();
     tokio::pin!(server);
     tokio::select! {
         result = &mut server => result?,

@@ -12,6 +12,7 @@ import {
 const ACCOUNT = "10000000-0000-4000-8000-000000000001";
 const HANDOFF = `wsh1:${"a".repeat(64)}`;
 const SESSION = `wss1:${"b".repeat(64)}`;
+const TICKET = `wst1:${"c".repeat(64)}`;
 const SERVICE_AUTHORITY = `service-${"s".repeat(40)}`;
 
 function correspondence(): OwnedRunMembershipCorrespondence {
@@ -75,6 +76,12 @@ describe("hosted Browser Activity Session service client", () => {
             schema: "worldstream/hosted-browser-session-status/v1",
             state: "usable",
           });
+        case "/v1/hosted/browser-sessions/stream-ticket":
+          return Response.json({
+            schema: "worldstream/hosted-browser-stream-ticket-response/v1",
+            ticket: TICKET,
+            expires_in_ms: 15_000,
+          }, { status: 201 });
         case "/v1/hosted/browser-sessions/logout":
           return Response.json({
             schema: "worldstream/hosted-browser-session-logout/v1",
@@ -90,13 +97,18 @@ describe("hosted Browser Activity Session service client", () => {
     });
     assert.equal(await hosted.redeemHandoff(ACCOUNT, HANDOFF, null), SESSION);
     assert.deepEqual(await hosted.sessionStatus(SESSION), { state: "usable" });
+    assert.deepEqual(await hosted.issueStreamTicket(SESSION, 37), {
+      ticket: TICKET,
+      expiresInMs: 15_000,
+    });
     await hosted.logoutSession(SESSION);
 
-    assert.equal(fetchImplementation.mock.calls.length, 4);
+    assert.equal(fetchImplementation.mock.calls.length, 5);
     assert.deepEqual(observations.map(({ path }) => path), [
       "/v1/hosted/browser-handoffs/issue",
       "/v1/hosted/browser-sessions/admit",
       "/v1/hosted/browser-sessions/status",
+      "/v1/hosted/browser-sessions/stream-ticket",
       "/v1/hosted/browser-sessions/logout",
     ]);
     assert.deepEqual(observations[1]?.body, {
@@ -108,6 +120,11 @@ describe("hosted Browser Activity Session service client", () => {
     assert.deepEqual(observations[2]?.body, {
       schema: "worldstream/hosted-browser-session-request/v1",
       session: SESSION,
+    });
+    assert.deepEqual(observations[3]?.body, {
+      schema: "worldstream/hosted-browser-stream-ticket-request/v1",
+      session: SESSION,
+      after_frame_seq: 37,
     });
   });
 

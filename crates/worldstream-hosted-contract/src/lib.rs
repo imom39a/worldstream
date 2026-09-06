@@ -1235,6 +1235,39 @@ pub struct HostedBrowserSessionRequestV1 {
     pub session: String,
 }
 
+/// Service-only request to turn one current Browser Activity Session into a
+/// short-lived, target-bound stream admission ticket. The optional Cursor is
+/// the only browser-selected synchronization input; Room and Membership stay
+/// server-owned.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserStreamTicketRequestV1 {
+    pub schema: String,
+    pub session: String,
+    pub after_frame_seq: Option<u64>,
+}
+
+/// Browser-safe one-use admission material. The Activity Client obtains the
+/// immutable Fly stream URL from its reviewed Deployment, never this response.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedBrowserStreamTicketResponseV1 {
+    pub schema: String,
+    pub ticket: String,
+    pub expires_in_ms: u64,
+}
+
+impl std::fmt::Debug for HostedBrowserStreamTicketResponseV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostedBrowserStreamTicketResponseV1")
+            .field("schema", &self.schema)
+            .field("ticket", &"[REDACTED]")
+            .field("expires_in_ms", &self.expires_in_ms)
+            .finish()
+    }
+}
+
 /// Browser-safe state after Fly has revalidated the exact Membership and
 /// retained Activity Client selection.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1505,6 +1538,39 @@ pub fn validate_hosted_browser_session_request(
 ) -> Result<(), ContractError> {
     if request.schema != "worldstream/hosted-browser-session-request/v1"
         || !valid_opaque_token(&request.session, "wss1:")
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates a Browser Activity Session stream-ticket request.
+///
+/// # Errors
+/// Returns a closed error for a malformed schema or opaque session.
+pub fn validate_hosted_browser_stream_ticket_request(
+    request: &HostedBrowserStreamTicketRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-browser-stream-ticket-request/v1"
+        || !valid_opaque_token(&request.session, "wss1:")
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates browser-safe target-bound stream admission material.
+///
+/// # Errors
+/// Returns a closed error for a malformed ticket, unsupported schema, or a
+/// lifetime outside the frozen fifteen-second maximum.
+pub fn validate_hosted_browser_stream_ticket_response(
+    response: &HostedBrowserStreamTicketResponseV1,
+) -> Result<(), ContractError> {
+    if response.schema != "worldstream/hosted-browser-stream-ticket-response/v1"
+        || !valid_opaque_token(&response.ticket, "wst1:")
+        || response.expires_in_ms == 0
+        || response.expires_in_ms > 15_000
     {
         return Err(ContractError::InvalidShape);
     }

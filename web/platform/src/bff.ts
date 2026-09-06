@@ -263,6 +263,12 @@ export function createPlatformBff(
       }
       if (
         request.method === "POST" &&
+        url.pathname === "/api/v1/participant-console/session:stream-ticket"
+      ) {
+        return issueHostedStreamTicket(request, origin, sessionKey, dependencies);
+      }
+      if (
+        request.method === "POST" &&
         url.pathname === "/api/v1/participant-console/session:logout"
       ) {
         return logoutHostedSession(request, origin, sessionKey, dependencies);
@@ -880,6 +886,49 @@ async function logoutHostedSession(
       error instanceof HostedBrowserSessionRejectedError
     ) {
       return clearActivitySessionError(401, "participant_session_missing");
+    }
+    return participantUnavailable();
+  }
+}
+
+async function issueHostedStreamTicket(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+): Promise<Response> {
+  const admitted = await admitMutation(request, origin, sessionKey);
+  if (admitted instanceof Response) return admitted;
+  if (
+    !isExactObject(admitted.body, ["after_frame_seq"]) ||
+    (admitted.body.after_frame_seq !== null &&
+      (typeof admitted.body.after_frame_seq !== "number" ||
+        !Number.isSafeInteger(admitted.body.after_frame_seq) ||
+        admitted.body.after_frame_seq < 0))
+  ) {
+    return participantError(400, "participant_request_invalid");
+  }
+  const hosted = dependencies.hostedBrowserSessions;
+  const session = readCookie(request, ACTIVITY_SESSION_COOKIE);
+  if (hosted === undefined || session === null) {
+    return clearActivitySessionError(401, "participant_session_missing");
+  }
+  try {
+    const ticket = await hosted.issueStreamTicket(
+      session,
+      admitted.body.after_frame_seq as number | null,
+    );
+    return privateJson(201, {
+      version: "participant_console_stream_ticket.v1",
+      ticket: ticket.ticket,
+      expires_in_ms: ticket.expiresInMs,
+    });
+  } catch (error) {
+    if (
+      error instanceof HostedBrowserSessionMissingError ||
+      error instanceof HostedBrowserSessionRejectedError
+    ) {
+      return clearActivitySessionError(401, "participant_session_authority_invalid");
     }
     return participantUnavailable();
   }

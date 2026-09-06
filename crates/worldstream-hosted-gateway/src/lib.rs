@@ -3,7 +3,8 @@
 //! cannot become reachable through this listener.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
+    convert::Infallible,
     io::{BufRead as _, BufReader, Read as _, Write as _},
     net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex, PoisonError},
@@ -13,27 +14,40 @@ use std::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, State, rejection::BytesRejection},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, RawQuery, State, WebSocketUpgrade,
+        rejection::BytesRejection,
+        ws::{CloseFrame, Message, WebSocket},
+    },
+    http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::{SinkExt as _, StreamExt as _};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
+use tokio_tungstenite::{
+    client_async,
+    tungstenite::{
+        Message as UpstreamMessage, handshake::client::generate_key, http as upstream_http,
+    },
+};
 use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
     HostedBrowserHandoffRedeemRequestV1, HostedBrowserHandoffRedeemResponseV1,
     HostedBrowserHandoffRequestV1, HostedBrowserHandoffResponseV1, HostedBrowserSessionLogoutV1,
-    HostedBrowserSessionRequestV1, HostedBrowserSessionStatusV1, HostedGenesisEvidenceV1,
-    HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
-    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStatusV1,
-    HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
+    HostedBrowserSessionRequestV1, HostedBrowserSessionStatusV1,
+    HostedBrowserStreamTicketRequestV1, HostedBrowserStreamTicketResponseV1,
+    HostedGenesisEvidenceV1, HostedHouseRunnerReservationReceiptV1,
+    HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
+    HostedLaunchStatusV1, HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
     validate_hosted_browser_handoff_redeem_request,
     validate_hosted_browser_handoff_redeem_response, validate_hosted_browser_handoff_request,
     validate_hosted_browser_handoff_response, validate_hosted_browser_session_logout,
     validate_hosted_browser_session_request, validate_hosted_browser_session_status,
+    validate_hosted_browser_stream_ticket_request, validate_hosted_browser_stream_ticket_response,
     validate_hosted_genesis_evidence, validate_hosted_house_runner_reservation_receipt,
     validate_hosted_launch_evidence_request, validate_hosted_result_source_evidence,
     validate_hosted_result_source_request,
@@ -45,6 +59,14 @@ const MAX_UPSTREAM_RESPONSE_BYTES: usize = 384 * 1024;
 const MAX_UPSTREAM_HEADERS_BYTES: usize = 16 * 1024;
 const MAX_LISTINGS: usize = 64;
 const SERVICE_AUTHORITY_TAG_KEY: &[u8] = b"worldstream/hosted-service-authority/v1";
+const WORLDSTREAM_WEBSOCKET_SUBPROTOCOL: &str = "worldstream.json.v0.1";
+const MAX_BROWSER_MESSAGE_BYTES: usize = 512 * 1024;
+const BROWSER_TICKET_FRAME_BYTES: usize = 69;
+const BROWSER_TICKET_TIMEOUT: Duration = Duration::from_secs(15);
+const BROWSER_PROXY_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_BROWSER_CONNECTIONS: usize = 256;
+const MAX_BROWSER_CONNECTIONS_PER_PEER: usize = 8;
+const BROWSER_ADMISSION_CLOSE_REASON: &str = "browser authorization failed";
 
 /// Closed gateway failure classes. No variant carries credentials, private
 /// Projection bytes, upstream responses, or internal addresses.
@@ -69,8 +91,15 @@ pub struct HostedGatewayConfig {
     listing_allowlist: Arc<BTreeSet<String>>,
     public_authority: Arc<str>,
     _fixed_upstream: SocketAddr,
+    browser_stream: Option<BrowserStreamProxyConfig>,
     max_requests_per_window: u32,
     rate_window: Duration,
+}
+
+#[derive(Clone)]
+struct BrowserStreamProxyConfig {
+    runtime_upstream: SocketAddr,
+    client_origin: Arc<str>,
 }
 
 impl HostedGatewayConfig {
@@ -123,9 +152,31 @@ impl HostedGatewayConfig {
             listing_allowlist: Arc::new(listing_allowlist),
             public_authority: Arc::from(public_authority),
             _fixed_upstream: fixed_upstream,
+            browser_stream: None,
             max_requests_per_window,
             rate_window,
         })
+    }
+
+    /// Installs the one loopback Runtime target used by the dedicated public
+    /// browser stream path.
+    ///
+    /// # Errors
+    /// Rejects remote Runtime targets and non-canonical Activity Client origins.
+    pub fn with_browser_stream(
+        mut self,
+        runtime_upstream: SocketAddr,
+        client_origin: impl Into<String>,
+    ) -> Result<Self, HostedGatewayError> {
+        let client_origin = client_origin.into();
+        if !runtime_upstream.ip().is_loopback() || !valid_client_origin(&client_origin) {
+            return Err(HostedGatewayError::InvalidConfiguration);
+        }
+        self.browser_stream = Some(BrowserStreamProxyConfig {
+            runtime_upstream,
+            client_origin: Arc::from(client_origin),
+        });
+        Ok(self)
     }
 }
 
@@ -232,6 +283,18 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
         &self,
         _request: &HostedBrowserSessionRequestV1,
     ) -> Result<HostedBrowserSessionLogoutV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Issues one target-bound Runtime ticket from a current Browser Activity
+    /// Session. The backend must not return Room or Membership identifiers.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, missing-session, or availability failure.
+    fn issue_browser_stream_ticket(
+        &self,
+        _request: &HostedBrowserStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
         Err(HostedGatewayError::Rejected)
     }
 }
@@ -450,6 +513,21 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
             .map_err(|_| HostedGatewayError::Unavailable)?;
         Ok(response)
     }
+
+    fn issue_browser_stream_ticket(
+        &self,
+        request: &HostedBrowserStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-browser-sessions:stream-ticket", request)?;
+        if status != 201 {
+            return Err(classify_browser_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedBrowserStreamTicketResponseV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_hosted_browser_stream_ticket_response(&response)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        Ok(response)
+    }
 }
 
 impl FixedHostAdapterBackend {
@@ -481,11 +559,83 @@ struct RateWindow {
     accepted: u32,
 }
 
+#[derive(Default)]
+struct BrowserConnectionState {
+    total: usize,
+    peers: HashMap<String, usize>,
+}
+
+#[derive(Clone, Default)]
+struct BrowserConnectionLimiter {
+    state: Arc<Mutex<BrowserConnectionState>>,
+}
+
+impl BrowserConnectionLimiter {
+    fn reserve(&self, peer: String) -> Option<BrowserConnectionPermit> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let peer_count = state.peers.get(&peer).copied().unwrap_or(0);
+        if state.total >= MAX_BROWSER_CONNECTIONS || peer_count >= MAX_BROWSER_CONNECTIONS_PER_PEER
+        {
+            return None;
+        }
+        state.total += 1;
+        state.peers.insert(peer.clone(), peer_count + 1);
+        Some(BrowserConnectionPermit {
+            limiter: self.clone(),
+            peer,
+        })
+    }
+
+    fn release(&self, peer: &str) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.total = state.total.saturating_sub(1);
+        if let Some(count) = state.peers.get_mut(peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                state.peers.remove(peer);
+            }
+        }
+    }
+}
+
+struct BrowserConnectionPermit {
+    limiter: BrowserConnectionLimiter,
+    peer: String,
+}
+
+struct GatewayPeer(String);
+
+impl<S> FromRequestParts<S> for GatewayPeer
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map_or_else(
+                    || "unknown".to_owned(),
+                    |ConnectInfo(address)| address.ip().to_string(),
+                ),
+        ))
+    }
+}
+
+impl Drop for BrowserConnectionPermit {
+    fn drop(&mut self) {
+        self.limiter.release(&self.peer);
+    }
+}
+
 #[derive(Clone)]
 struct GatewayState {
     config: HostedGatewayConfig,
     backend: Arc<dyn HostedGatewayBackend>,
     rate: Arc<Mutex<RateWindow>>,
+    browser_connections: BrowserConnectionLimiter,
 }
 
 /// Builds the complete public Fly surface. No generic `WorldStream` router is
@@ -501,6 +651,7 @@ pub fn hosted_gateway_router(
             started: Instant::now(),
             accepted: 0,
         })),
+        browser_connections: BrowserConnectionLimiter::default(),
     };
     Router::new()
         .route("/healthz", get(health))
@@ -534,6 +685,11 @@ pub fn hosted_gateway_router(
             "/v1/hosted/browser-sessions/logout",
             post(logout_browser_session),
         )
+        .route(
+            "/v1/hosted/browser-sessions/stream-ticket",
+            post(issue_browser_stream_ticket),
+        )
+        .route("/v1/hosted/browser-stream", get(browser_stream))
         .route(
             "/v1/hosted/public-runs/{public_run_id}/stream",
             get(public_stream_seam),
@@ -679,6 +835,17 @@ async fn logout_browser_session(
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
     browser_session_operation(&state, &headers, &body, true).await
+}
+
+async fn issue_browser_stream_ticket(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    browser_stream_ticket_operation(&state, &headers, &body).await
 }
 
 async fn launch_operation(state: &GatewayState, headers: &HeaderMap, body: &[u8]) -> Response {
@@ -922,6 +1089,31 @@ async fn browser_session_operation(
     }
 }
 
+async fn browser_stream_ticket_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedBrowserStreamTicketRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_browser_stream_ticket_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || backend.issue_browser_stream_ticket(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    browser_service_result(result, StatusCode::CREATED)
+}
+
 fn browser_service_result<T: Serialize>(
     result: Result<T, HostedGatewayError>,
     status: StatusCode,
@@ -1116,6 +1308,7 @@ fn fixed_http_request(
                         | "/api/v1/hosted-browser-handoffs:redeem"
                         | "/api/v1/hosted-browser-sessions:status"
                         | "/api/v1/hosted-browser-sessions:logout"
+                        | "/api/v1/hosted-browser-sessions:stream-ticket"
                 )
         )
         || body.len() > MAX_SERVICE_BODY_BYTES
@@ -1314,6 +1507,182 @@ async fn public_stream_seam(
     safe_error(StatusCode::NOT_IMPLEMENTED, "public_stream_not_implemented")
 }
 
+async fn browser_stream(
+    State(state): State<GatewayState>,
+    RawQuery(query): RawQuery,
+    GatewayPeer(peer): GatewayPeer,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let Some(proxy) = state.config.browser_stream.clone() else {
+        return safe_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "browser_stream_unavailable",
+        );
+    };
+    if query.is_some()
+        || !browser_stream_headers_are_safe(
+            &headers,
+            &state.config.public_authority,
+            &proxy.client_origin,
+        )
+        || !admit_rate(&state)
+    {
+        return safe_error(StatusCode::FORBIDDEN, "browser_stream_rejected");
+    }
+    let protocols = upgrade.requested_protocols().collect::<Vec<_>>();
+    if protocols.len() != 1
+        || protocols[0].as_bytes() != WORLDSTREAM_WEBSOCKET_SUBPROTOCOL.as_bytes()
+    {
+        return safe_error(StatusCode::BAD_REQUEST, "browser_stream_rejected");
+    }
+    let Some(permit) = state.browser_connections.reserve(peer) else {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "browser_stream_capacity");
+    };
+    let origin = proxy.client_origin.to_string();
+    upgrade
+        .max_message_size(MAX_BROWSER_MESSAGE_BYTES)
+        .max_frame_size(MAX_BROWSER_MESSAGE_BYTES)
+        .protocols([WORLDSTREAM_WEBSOCKET_SUBPROTOCOL])
+        .on_upgrade(move |socket| {
+            proxy_browser_stream(socket, proxy.runtime_upstream, origin, permit)
+        })
+        .into_response()
+}
+
+async fn proxy_browser_stream(
+    mut browser: WebSocket,
+    runtime_upstream: SocketAddr,
+    origin: String,
+    _permit: BrowserConnectionPermit,
+) {
+    let Ok(stream) = tokio::net::TcpStream::connect(runtime_upstream).await else {
+        close_browser_proxy(&mut browser).await;
+        return;
+    };
+    let Ok(request) = upstream_http::Request::builder()
+        .method("GET")
+        .uri(format!("ws://{runtime_upstream}/v1/hosted/browser-stream"))
+        .header("Host", runtime_upstream.to_string())
+        .header("Origin", origin)
+        .header("Sec-WebSocket-Protocol", WORLDSTREAM_WEBSOCKET_SUBPROTOCOL)
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", generate_key())
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .body(())
+    else {
+        close_browser_proxy(&mut browser).await;
+        return;
+    };
+    let Ok((mut runtime, response)) = client_async(request, stream).await else {
+        close_browser_proxy(&mut browser).await;
+        return;
+    };
+    let selected = response
+        .headers()
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok());
+    if selected != Some(WORLDSTREAM_WEBSOCKET_SUBPROTOCOL) {
+        close_browser_proxy(&mut browser).await;
+        return;
+    }
+    let first = tokio::time::timeout(BROWSER_TICKET_TIMEOUT, browser.recv()).await;
+    let ticket = match first {
+        Ok(Some(Ok(Message::Text(ticket)))) if ticket.len() == BROWSER_TICKET_FRAME_BYTES => ticket,
+        _ => {
+            close_browser_proxy(&mut browser).await;
+            return;
+        }
+    };
+    if !matches!(
+        tokio::time::timeout(
+            BROWSER_PROXY_SEND_TIMEOUT,
+            runtime.send(UpstreamMessage::Text(ticket.to_string().into())),
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        close_browser_proxy(&mut browser).await;
+        return;
+    }
+    loop {
+        tokio::select! {
+            message = browser.recv() => {
+                let Some(Ok(message)) = message else { break; };
+                let Some(message) = browser_to_upstream(message) else { break; };
+                if !matches!(
+                    tokio::time::timeout(BROWSER_PROXY_SEND_TIMEOUT, runtime.send(message)).await,
+                    Ok(Ok(()))
+                )
+                {
+                    break;
+                }
+            }
+            message = runtime.next() => {
+                let Some(Ok(message)) = message else { break; };
+                let Some(message) = upstream_to_browser(message) else { break; };
+                if !matches!(
+                    tokio::time::timeout(BROWSER_PROXY_SEND_TIMEOUT, browser.send(message)).await,
+                    Ok(Ok(()))
+                )
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn browser_to_upstream(message: Message) -> Option<UpstreamMessage> {
+    match message {
+        Message::Text(text) if text.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(UpstreamMessage::Text(text.to_string().into()))
+        }
+        Message::Binary(bytes) if bytes.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(UpstreamMessage::Binary(bytes))
+        }
+        Message::Ping(bytes) if bytes.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(UpstreamMessage::Ping(bytes))
+        }
+        Message::Pong(bytes) if bytes.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(UpstreamMessage::Pong(bytes))
+        }
+        Message::Close(_) => Some(UpstreamMessage::Close(None)),
+        _ => None,
+    }
+}
+
+fn upstream_to_browser(message: UpstreamMessage) -> Option<Message> {
+    match message {
+        UpstreamMessage::Text(text) if text.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(Message::Text(text.to_string().into()))
+        }
+        UpstreamMessage::Binary(bytes) if bytes.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(Message::Binary(bytes))
+        }
+        UpstreamMessage::Ping(bytes) if bytes.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(Message::Ping(bytes))
+        }
+        UpstreamMessage::Pong(bytes) if bytes.len() <= MAX_BROWSER_MESSAGE_BYTES => {
+            Some(Message::Pong(bytes))
+        }
+        UpstreamMessage::Close(_) => Some(Message::Close(None)),
+        _ => None,
+    }
+}
+
+async fn close_browser_proxy(browser: &mut WebSocket) {
+    let _ = tokio::time::timeout(
+        BROWSER_PROXY_SEND_TIMEOUT,
+        browser.send(Message::Close(Some(CloseFrame {
+            code: 1008,
+            reason: BROWSER_ADMISSION_CLOSE_REASON.into(),
+        }))),
+    )
+    .await;
+}
+
 async fn not_found() -> Response {
     safe_error(StatusCode::NOT_FOUND, "route_not_found")
 }
@@ -1381,6 +1750,35 @@ fn browser_headers_are_safe(headers: &HeaderMap, public_authority: &str) -> bool
     host_matches && !contains_smuggled_browser_header(headers)
 }
 
+fn browser_stream_headers_are_safe(
+    headers: &HeaderMap,
+    public_authority: &str,
+    client_origin: &str,
+) -> bool {
+    let mut hosts = headers.get_all(header::HOST).iter();
+    let host_matches = hosts
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == public_authority)
+        && hosts.next().is_none();
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let origin_matches = origins
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == client_origin)
+        && origins.next().is_none();
+    host_matches
+        && origin_matches
+        && !headers.contains_key(header::AUTHORIZATION)
+        && !headers.contains_key(header::COOKIE)
+        && !headers.contains_key("forwarded")
+        && !headers.contains_key("proxy-authorization")
+        && !headers.keys().any(|name| {
+            let name = name.as_str();
+            name.starts_with("x-forwarded-") || name.starts_with("x-original-")
+        })
+}
+
 fn valid_public_authority(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 255
@@ -1391,6 +1789,47 @@ fn valid_public_authority(value: &str) -> bool {
         && value
             .parse::<axum::http::uri::Authority>()
             .is_ok_and(|authority| !authority.host().is_empty() && authority.as_str() == value)
+}
+
+fn valid_client_origin(value: &str) -> bool {
+    let Ok(uri) = value.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let host = authority.host();
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1");
+    let scheme_valid = if loopback {
+        matches!(uri.scheme_str(), Some("http" | "https"))
+    } else {
+        uri.scheme_str() == Some("https")
+    };
+    if !scheme_valid
+        || (uri.path() != "" && uri.path() != "/")
+        || uri.query().is_some()
+        || value.contains('@')
+        || (!loopback
+            && (host != host.to_ascii_lowercase()
+                || !host.contains('.')
+                || host.split('.').any(|label| {
+                    label.is_empty()
+                        || label.starts_with('-')
+                        || label.ends_with('-')
+                        || !label
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                })))
+    {
+        return false;
+    }
+    let canonical = match (uri.scheme_str(), authority.port_u16()) {
+        (Some("https"), Some(443) | None) => format!("https://{host}"),
+        (Some(scheme), Some(port)) => format!("{scheme}://{host}:{port}"),
+        (Some(scheme), None) => format!("{scheme}://{host}"),
+        _ => return false,
+    };
+    canonical == value
 }
 
 fn is_digest(value: &str) -> bool {

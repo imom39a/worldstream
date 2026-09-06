@@ -23,10 +23,15 @@ use serde_json::Value;
 use tungstenite::handshake::client::generate_key;
 use tungstenite::{Message, WebSocket, client, http};
 use worldstream_activity_client::ExactPackReferenceV1;
+use worldstream_core::CanonicalJsonV1;
 use worldstream_protocol::{
-    AccessMode, ActionAccepted, ActionRejected, ClientHello, ClientMode, ObservationDeliver,
-    PROTOCOL_VERSION, PackReference, ProjectionReset, REQUIRED_CLIENT_CAPABILITIES, ReplayResponse,
-    RoomAttached, RoomHead, SealedCapabilityBearerV1, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
+    AccessMode, ActionAccepted, ActionRejected, BROWSER_WS_TICKET_VERSION,
+    BrowserWebSocketTicketIssueResponse, ClientHello, ClientMode,
+    HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION, HOSTED_BROWSER_WS_TICKET_VERSION,
+    HostedBrowserWebSocketSessionRevokeRequest, HostedBrowserWebSocketTicketIssueRequest,
+    ObservationDeliver, PROTOCOL_VERSION, PackReference, ProjectionReset,
+    REQUIRED_CLIENT_CAPABILITIES, ReplayResponse, RoomAttached, RoomHead, SealedCapabilityBearerV1,
+    VersionedEnvelope, WEBSOCKET_SUBPROTOCOL,
 };
 use worldstream_runtime::is_exact_loopback_origin;
 use zeroize::Zeroizing;
@@ -50,6 +55,7 @@ const MAX_ACTION_TYPE_BYTES: usize = 128;
 const MAX_OFFER_ID_BYTES: usize = 256;
 const MAX_ACTION_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_REPLAY_RESPONSE_BYTES: u64 = 256 * 1024;
+const MAX_TICKET_RESPONSE_BYTES: u64 = 16 * 1024;
 
 /// Exact, non-serializable authority for one provisioned human participant seat.
 pub struct HumanSeatAuthorityV1 {
@@ -277,6 +283,33 @@ pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
     ) -> Result<ParticipantConsoleSessionHealthV1, ParticipantConsoleGatewayErrorV1> {
         Ok(ParticipantConsoleSessionHealthV1::Usable)
     }
+
+    /// Issues one Runtime-owned target-bound ticket after the hosted broker
+    /// has revalidated the Browser Activity Session and exact client release.
+    ///
+    /// # Errors
+    /// Returns a closed transport, authorization, or availability failure.
+    fn issue_hosted_browser_stream_ticket(
+        &self,
+        _authority: &HumanSeatAuthorityV1,
+        _request: &HostedBrowserWebSocketTicketIssueRequest,
+        _origin: &str,
+    ) -> Result<BrowserWebSocketTicketIssueResponse, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+
+    /// Retires all pending admission tickets and the active stream for one
+    /// Browser Activity Session digest.
+    ///
+    /// # Errors
+    /// Returns a closed transport, authorization, or availability failure.
+    fn revoke_hosted_browser_stream_session(
+        &self,
+        _authority: &HumanSeatAuthorityV1,
+        _request: &HostedBrowserWebSocketSessionRevokeRequest,
+    ) -> Result<(), ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
 }
 
 /// Fixed-address participant protocol gateway; exact routing and authority stay server-side.
@@ -345,6 +378,48 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         )?;
         Self::read_type(&mut socket, "server.welcome")?;
         Ok(socket)
+    }
+
+    fn authenticated_json_call<T: Serialize>(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        path: &'static str,
+        origin: Option<&str>,
+        body: &T,
+    ) -> Result<(u16, Vec<u8>), ParticipantConsoleGatewayErrorV1> {
+        let encoded =
+            serde_json::to_vec(body).map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+        let canonical = CanonicalJsonV1::parse(&encoded)
+            .and_then(|value| value.to_bytes())
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+        let origin_header = origin.map_or_else(String::new, |value| format!("Origin: {value}\r\n"));
+        let request = Zeroizing::new(format!(
+            "POST {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\n{origin_header}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            self.address,
+            authority.bearer().as_str(),
+            canonical.len(),
+            std::str::from_utf8(&canonical)
+                .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?,
+        ));
+        let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        let mut response = Vec::new();
+        stream
+            .take(MAX_TICKET_RESPONSE_BYTES + 1)
+            .read_to_end(&mut response)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        if u64::try_from(response.len()).unwrap_or(u64::MAX) > MAX_TICKET_RESPONSE_BYTES {
+            return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+        }
+        let (status, body) = parse_http_response(&response)?;
+        Ok((status, body.to_vec()))
     }
 
     fn attach(
@@ -669,6 +744,77 @@ impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
             "enabled" | "suspended" | "departed" => Ok(ParticipantConsoleSessionHealthV1::Invalid),
             _ => Err(ParticipantConsoleGatewayErrorV1::Rejected),
         }
+    }
+
+    fn issue_hosted_browser_stream_ticket(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        request: &HostedBrowserWebSocketTicketIssueRequest,
+        origin: &str,
+    ) -> Result<BrowserWebSocketTicketIssueResponse, ParticipantConsoleGatewayErrorV1> {
+        if request.version != HOSTED_BROWSER_WS_TICKET_VERSION
+            || request.room_id != authority.room_id()
+            || request.member_id != authority.member_id()
+        {
+            return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+        }
+        let (status, body) = self.authenticated_json_call(
+            authority,
+            "/v1/hosted/browser-stream-ticket",
+            Some(origin),
+            request,
+        )?;
+        if status != 201 {
+            return Err(if matches!(status, 400 | 401 | 403 | 404 | 409 | 422) {
+                ParticipantConsoleGatewayErrorV1::Rejected
+            } else {
+                ParticipantConsoleGatewayErrorV1::Unavailable
+            });
+        }
+        let response: BrowserWebSocketTicketIssueResponse = serde_json::from_slice(&body)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+        if response.version != BROWSER_WS_TICKET_VERSION
+            || response.expires_in_ms == 0
+            || response.expires_in_ms > 15_000
+            || !is_token(&response.ticket, "wst1:")
+        {
+            return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+        }
+        Ok(response)
+    }
+
+    fn revoke_hosted_browser_stream_session(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+        request: &HostedBrowserWebSocketSessionRevokeRequest,
+    ) -> Result<(), ParticipantConsoleGatewayErrorV1> {
+        if request.version != HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION {
+            return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+        }
+        let (status, body) = self.authenticated_json_call(
+            authority,
+            "/v1/hosted/browser-stream-session:revoke",
+            None,
+            request,
+        )?;
+        if status != 200 {
+            return Err(if matches!(status, 400 | 401 | 403 | 404 | 409 | 422) {
+                ParticipantConsoleGatewayErrorV1::Rejected
+            } else {
+                ParticipantConsoleGatewayErrorV1::Unavailable
+            });
+        }
+        let value: Value = serde_json::from_slice(&body)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+        if value
+            != serde_json::json!({
+                "revoked": true,
+                "version": HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION,
+            })
+        {
+            return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+        }
+        Ok(())
     }
 }
 

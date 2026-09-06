@@ -24,10 +24,15 @@ use worldstream_hosted_contract::{
     HostedBrowserHandoffRedeemRequestV1, HostedBrowserHandoffRedeemResponseV1,
     HostedBrowserHandoffRequestV1, HostedBrowserHandoffResponseV1, HostedBrowserSessionLogoutV1,
     HostedBrowserSessionRequestV1, HostedBrowserSessionStateV1, HostedBrowserSessionStatusV1,
+    HostedBrowserStreamTicketRequestV1, HostedBrowserStreamTicketResponseV1,
     validate_hosted_browser_handoff_redeem_request, validate_hosted_browser_handoff_request,
-    validate_hosted_browser_session_request,
+    validate_hosted_browser_session_request, validate_hosted_browser_stream_ticket_request,
 };
-use worldstream_protocol::AccessMode;
+use worldstream_protocol::{
+    AccessMode, ClientMode, HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION,
+    HOSTED_BROWSER_WS_TICKET_VERSION, HostedBrowserWebSocketSessionRevokeRequest,
+    HostedBrowserWebSocketTicketIssueRequest,
+};
 use worldstream_runtime::is_exact_loopback_origin;
 
 use crate::{
@@ -62,7 +67,7 @@ pub trait HostedBrowserMembershipAuthoritySourceV1: Send + Sync + 'static {
     ) -> Result<HumanSeatAuthorityV1, ParticipantHandoffAuthorityErrorV1>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 struct RetainedHostedTargetV1 {
     binding: HostedBrowserHandoffRequestV1,
     candidate: ClientCandidateV1,
@@ -73,7 +78,7 @@ struct HostedHandoffRecordV1 {
     expires_at: Instant,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 struct HostedSessionRecordV1 {
     target: RetainedHostedTargetV1,
     expires_at: Instant,
@@ -238,9 +243,12 @@ impl HostedBrowserSessionBrokerV1 {
         self.revalidate_target(&record.target)?;
         let mut state = self.lock();
         prune_expired(&mut state);
+        drop(state);
         if let Some(prior) = &request.prior_session {
-            state.sessions.remove(prior);
+            self.retire_session(prior, true)?;
         }
+        let mut state = self.lock();
+        prune_expired(&mut state);
         if retained_len(&state) >= self.inner.maximum_retained {
             return Err(HostedBrowserSessionErrorV1::Capacity);
         }
@@ -282,7 +290,7 @@ impl HostedBrowserSessionBrokerV1 {
             Ok(authority) => authority,
             Err(error) => {
                 if error.invalidates_session() {
-                    self.invalidate(&request.session);
+                    let _ = self.retire_session(&request.session, false);
                 }
                 return Err(error);
             }
@@ -301,7 +309,7 @@ impl HostedBrowserSessionBrokerV1 {
                 | ParticipantConsoleSessionHealthV1::Invalid,
             )
             | Err(ParticipantConsoleGatewayErrorV1::Rejected) => {
-                self.invalidate(&request.session);
+                let _ = self.retire_session(&request.session, false);
                 return Err(HostedBrowserSessionErrorV1::Rejected);
             }
             Err(ParticipantConsoleGatewayErrorV1::Unavailable) => {
@@ -325,10 +333,86 @@ impl HostedBrowserSessionBrokerV1 {
     ) -> Result<HostedBrowserSessionLogoutV1, HostedBrowserSessionErrorV1> {
         validate_hosted_browser_session_request(request)
             .map_err(|_| HostedBrowserSessionErrorV1::Invalid)?;
-        self.invalidate(&request.session);
+        self.retire_session(&request.session, false)?;
         Ok(HostedBrowserSessionLogoutV1 {
             schema: "worldstream/hosted-browser-session-logout/v1".to_owned(),
             logged_out: true,
+        })
+    }
+
+    /// Revalidates the Browser Activity Session and exact client Deployment,
+    /// then asks the Runtime to retain one digest-only, target-bound ticket.
+    ///
+    /// # Errors
+    /// Missing, expired, revoked, changed, or capacity-limited sessions fail
+    /// closed without exposing any retained target or Membership credential.
+    pub fn stream_ticket(
+        &self,
+        request: &HostedBrowserStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedBrowserSessionErrorV1> {
+        validate_hosted_browser_stream_ticket_request(request)
+            .map_err(|_| HostedBrowserSessionErrorV1::Invalid)?;
+        let record = {
+            let mut state = self.lock();
+            prune_expired(&mut state);
+            state
+                .sessions
+                .get(&request.session)
+                .cloned()
+                .ok_or(HostedBrowserSessionErrorV1::Missing)?
+        };
+        let authority = match self.revalidate_target(&record.target) {
+            Ok(authority) => authority,
+            Err(error) => {
+                if error.invalidates_session() {
+                    let _ = self.retire_session(&request.session, false);
+                }
+                return Err(error);
+            }
+        };
+        let runtime_request = HostedBrowserWebSocketTicketIssueRequest {
+            version: HOSTED_BROWSER_WS_TICKET_VERSION.to_owned(),
+            room_id: authority.room_id().to_owned(),
+            member_id: authority.member_id().to_owned(),
+            mode: match authority.access_mode() {
+                AccessMode::Participant => ClientMode::Participant,
+                AccessMode::Spectator => ClientMode::Spectator,
+                AccessMode::Operator => return Err(HostedBrowserSessionErrorV1::Rejected),
+            },
+            after_frame_seq: request.after_frame_seq,
+            browser_session_digest: session_digest(&request.session),
+            client_release_digest: record.target.candidate.release_digest.clone(),
+            client_surface_id: record.target.candidate.surface_id.clone(),
+        };
+        let response = self
+            .inner
+            .gateway
+            .issue_hosted_browser_stream_ticket(
+                &authority,
+                &runtime_request,
+                &self.inner.client_origin,
+            )
+            .map_err(map_gateway_error)?;
+        let still_current = {
+            let mut state = self.lock();
+            prune_expired(&mut state);
+            state.sessions.get(&request.session) == Some(&record)
+        };
+        if !still_current {
+            let revoke = HostedBrowserWebSocketSessionRevokeRequest {
+                version: HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION.to_owned(),
+                browser_session_digest: session_digest(&request.session),
+            };
+            let _ = self
+                .inner
+                .gateway
+                .revoke_hosted_browser_stream_session(&authority, &revoke);
+            return Err(HostedBrowserSessionErrorV1::Missing);
+        }
+        Ok(HostedBrowserStreamTicketResponseV1 {
+            schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
+            ticket: response.ticket,
+            expires_in_ms: response.expires_in_ms,
         })
     }
 
@@ -422,8 +506,33 @@ impl HostedBrowserSessionBrokerV1 {
         Ok(candidate)
     }
 
-    fn invalidate(&self, token: &str) {
-        self.lock().sessions.remove(token);
+    fn retire_session(
+        &self,
+        token: &str,
+        require_runtime_revoke: bool,
+    ) -> Result<(), HostedBrowserSessionErrorV1> {
+        let record = self.lock().sessions.remove(token);
+        let Some(record) = record else {
+            return Ok(());
+        };
+        let authority = match self.resolve_authority(&record.target.binding) {
+            Ok(authority) => authority,
+            Err(_) if !require_runtime_revoke => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let request = HostedBrowserWebSocketSessionRevokeRequest {
+            version: HOSTED_BROWSER_WS_SESSION_REVOKE_VERSION.to_owned(),
+            browser_session_digest: session_digest(token),
+        };
+        match self
+            .inner
+            .gateway
+            .revoke_hosted_browser_stream_session(&authority, &request)
+        {
+            Ok(()) => Ok(()),
+            Err(_) if !require_runtime_revoke => Ok(()),
+            Err(error) => Err(map_gateway_error(error)),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, HostedBrokerStateV1> {
@@ -463,6 +572,10 @@ pub fn hosted_browser_session_router(
         .route(
             "/api/v1/hosted-browser-sessions:logout",
             post(hosted_logout),
+        )
+        .route(
+            "/api/v1/hosted-browser-sessions:stream-ticket",
+            post(hosted_stream_ticket),
         )
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(from_fn_with_state(
@@ -514,6 +627,17 @@ async fn hosted_logout(
         .await
         .map_err(|_| HostedBrowserSessionErrorV1::Unavailable)?
         .map(Json)
+}
+
+async fn hosted_stream_ticket(
+    State(broker): State<HostedBrowserSessionBrokerV1>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<HostedBrowserStreamTicketResponseV1>), HostedBrowserSessionErrorV1> {
+    let request = decode_request::<HostedBrowserStreamTicketRequestV1>(&body)?;
+    tokio::task::spawn_blocking(move || broker.stream_ticket(&request))
+        .await
+        .map_err(|_| HostedBrowserSessionErrorV1::Unavailable)?
+        .map(|response| (StatusCode::CREATED, Json(response)))
 }
 
 fn decode_request<T: DeserializeOwned>(body: &[u8]) -> Result<T, HostedBrowserSessionErrorV1> {
@@ -732,6 +856,10 @@ fn encode_hex(bytes: &[u8]) -> String {
     encoded
 }
 
+fn session_digest(session: &str) -> String {
+    format!("blake3:{}", blake3::hash(session.as_bytes()).to_hex())
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -796,6 +924,8 @@ mod tests {
     struct FakeGateway {
         current: Arc<Mutex<Option<CurrentMembershipSnapshotV1>>>,
         health: Arc<Mutex<ParticipantConsoleSessionHealthV1>>,
+        stream_requests: Arc<Mutex<Vec<HostedBrowserWebSocketTicketIssueRequest>>>,
+        revoked_sessions: Arc<Mutex<Vec<String>>>,
     }
 
     impl ParticipantConsoleGatewayV1 for FakeGateway {
@@ -834,6 +964,41 @@ mod tests {
             _durable_cursor: Option<u64>,
         ) -> Result<ParticipantConsoleSessionHealthV1, ParticipantConsoleGatewayErrorV1> {
             Ok(*self.health.lock().unwrap_or_else(PoisonError::into_inner))
+        }
+
+        fn issue_hosted_browser_stream_ticket(
+            &self,
+            _authority: &HumanSeatAuthorityV1,
+            request: &HostedBrowserWebSocketTicketIssueRequest,
+            origin: &str,
+        ) -> Result<
+            worldstream_protocol::BrowserWebSocketTicketIssueResponse,
+            ParticipantConsoleGatewayErrorV1,
+        > {
+            if origin != CLIENT_ORIGIN {
+                return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+            }
+            self.stream_requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request.clone());
+            Ok(worldstream_protocol::BrowserWebSocketTicketIssueResponse {
+                version: worldstream_protocol::BROWSER_WS_TICKET_VERSION.to_owned(),
+                ticket: format!("wst1:{}", "c".repeat(64)),
+                expires_in_ms: 15_000,
+            })
+        }
+
+        fn revoke_hosted_browser_stream_session(
+            &self,
+            _authority: &HumanSeatAuthorityV1,
+            request: &HostedBrowserWebSocketSessionRevokeRequest,
+        ) -> Result<(), ParticipantConsoleGatewayErrorV1> {
+            self.revoked_sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request.browser_session_digest.clone());
+            Ok(())
         }
     }
 
@@ -925,6 +1090,8 @@ mod tests {
                 role: binding.role.clone(),
             }))),
             health: Arc::new(Mutex::new(ParticipantConsoleSessionHealthV1::Usable)),
+            stream_requests: Arc::new(Mutex::new(Vec::new())),
+            revoked_sessions: Arc::new(Mutex::new(Vec::new())),
         };
         let clients = FakeClients {
             candidate: Arc::new(Mutex::new(Some(ClientCandidateV1 {
@@ -1040,6 +1207,15 @@ mod tests {
             fixture.broker.status(&session_request(&second)),
             Err(HostedBrowserSessionErrorV1::Missing)
         );
+        assert_eq!(
+            fixture
+                .gateway
+                .revoked_sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            &[session_digest(&first), session_digest(&second)]
+        );
     }
 
     #[test]
@@ -1100,6 +1276,88 @@ mod tests {
         assert_eq!(
             fixture.broker.issue(request()),
             Err(HostedBrowserSessionErrorV1::Rejected)
+        );
+    }
+
+    #[test]
+    fn stream_ticket_is_bound_to_the_retained_session_membership_and_client() {
+        let fixture = fixture(Duration::from_mins(1), Duration::from_mins(1));
+        let session =
+            redeem(&fixture.broker, &issue(&fixture.broker), ACCOUNT, None).expect("session");
+        let expected_session_digest = session_digest(&session);
+        let response = fixture
+            .broker
+            .stream_ticket(&HostedBrowserStreamTicketRequestV1 {
+                schema: "worldstream/hosted-browser-stream-ticket-request/v1".to_owned(),
+                session: session.clone(),
+                after_frame_seq: Some(19),
+            })
+            .expect("stream ticket");
+        assert_eq!(response.ticket, format!("wst1:{}", "c".repeat(64)));
+        assert!(!format!("{response:?}").contains(&response.ticket));
+        let requests = fixture
+            .gateway
+            .stream_requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].room_id, ROOM);
+        assert_eq!(requests[0].member_id, MEMBER);
+        assert_eq!(requests[0].mode, ClientMode::Participant);
+        assert_eq!(requests[0].after_frame_seq, Some(19));
+        assert_eq!(requests[0].browser_session_digest, expected_session_digest);
+        assert_eq!(
+            requests[0].client_release_digest,
+            request().client_release_digest
+        );
+        assert_eq!(requests[0].client_surface_id, "participant");
+        drop(requests);
+
+        fixture
+            .gateway
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .expect("current membership")
+            .access_mode = AccessMode::Spectator;
+        assert_eq!(
+            fixture
+                .broker
+                .stream_ticket(&HostedBrowserStreamTicketRequestV1 {
+                    schema: "worldstream/hosted-browser-stream-ticket-request/v1".to_owned(),
+                    session: session.clone(),
+                    after_frame_seq: None,
+                }),
+            Err(HostedBrowserSessionErrorV1::Rejected)
+        );
+        assert_eq!(
+            fixture
+                .broker
+                .stream_ticket(&HostedBrowserStreamTicketRequestV1 {
+                    schema: "worldstream/hosted-browser-stream-ticket-request/v1".to_owned(),
+                    session,
+                    after_frame_seq: None,
+                }),
+            Err(HostedBrowserSessionErrorV1::Missing)
+        );
+        assert_eq!(
+            fixture
+                .gateway
+                .stream_requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1
+        );
+        assert_eq!(
+            fixture
+                .gateway
+                .revoked_sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            &[expected_session_digest]
         );
     }
 

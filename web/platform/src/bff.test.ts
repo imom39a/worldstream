@@ -160,6 +160,7 @@ class FakeHostedBrowserSessions implements HostedBrowserSessionClient {
     priorSession: string | null;
   }> = [];
   readonly statusReads: string[] = [];
+  readonly streamTickets: Array<{ session: string; afterFrameSeq: number | null }> = [];
   readonly logouts: string[] = [];
   redeemError: Error | null = null;
   nextSession = `wss1:${"b".repeat(64)}`;
@@ -187,6 +188,14 @@ class FakeHostedBrowserSessions implements HostedBrowserSessionClient {
   async sessionStatus(session: string): Promise<HostedBrowserSessionStatus> {
     this.statusReads.push(session);
     return { state: "usable" };
+  }
+
+  async issueStreamTicket(
+    session: string,
+    afterFrameSeq: number | null,
+  ): Promise<{ ticket: string; expiresInMs: number }> {
+    this.streamTickets.push({ session, afterFrameSeq });
+    return { ticket: `wst1:${"c".repeat(64)}`, expiresInMs: 15_000 };
   }
 
   async logoutSession(session: string): Promise<void> {
@@ -1109,6 +1118,27 @@ test("hosted status and logout use only the opaque session and fail closed", asy
   ));
   assert.equal(status.status, 200);
   assert.deepEqual(hosted.statusReads, [activitySession]);
+
+  const streamTicket = mutation(
+    "/api/v1/participant-console/session:stream-ticket",
+    signedIn.sessionCookie,
+    csrfValue,
+    JSON.stringify({ after_frame_seq: 29 }),
+  );
+  streamTicket.headers.set(
+    "cookie",
+    `__Host-worldstream-session=${signedIn.sessionCookie}; ws_participant_session=${activitySession}`,
+  );
+  const issued = await bff.fetch(streamTicket);
+  assert.equal(issued.status, 201);
+  assert.deepEqual(await issued.json(), {
+    version: "participant_console_stream_ticket.v1",
+    ticket: `wst1:${"c".repeat(64)}`,
+    expires_in_ms: 15_000,
+  });
+  assert.deepEqual(hosted.streamTickets, [
+    { session: activitySession, afterFrameSeq: 29 },
+  ]);
 
   const logout = mutation(
     "/api/v1/participant-console/session:logout",
