@@ -5,5 +5,7 @@
  * public FR-10 Application SDK and does not claim a general realtime Room API.
  */
 export * from "./browserHandoff";
+export * from "./hostedLiveSession";
 export * from "./retainedRoomSession";
 export * from "./serialRequestQueue";
+export * from "./transport";

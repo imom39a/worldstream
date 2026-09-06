@@ -10,8 +10,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./browser-handoff": "./src/browserHandoff.ts",
+    "./hosted-live-session": "./src/hostedLiveSession.ts",
     "./retained-session": "./src/retainedRoomSession.ts",
-    "./request-queue": "./src/serialRequestQueue.ts"
+    "./request-queue": "./src/serialRequestQueue.ts",
+    "./transport": "./src/transport.ts"
   },
   "scripts": {
     "lint": "tsc --noEmit",

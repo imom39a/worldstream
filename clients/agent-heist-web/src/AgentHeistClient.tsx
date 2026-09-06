@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  ActivityClientRequestQueue,
-  ActivityClientSession,
   type ActivityClientAction,
-  type ActivityClientActionReceipt,
-  type ActivityClientHandoffClient,
-  type ActivityClientSessionState,
   type ActivityClientStartup,
+  type HostedLiveSessionController,
+  type HostedLiveSessionSnapshot,
+  type JsonValue,
 } from "@worldstream/client";
 
-import { AgentHeistClientView } from "./AgentHeistClientView";
+import {
+  AgentHeistClientView,
+  type AgentHeistClientConnection,
+} from "./AgentHeistClientView";
 import {
   initialAgentHeistLiveState,
   reduceAgentHeistObservation,
@@ -19,99 +20,89 @@ import {
 
 export interface AgentHeistClientProps {
   readonly startup: ActivityClientStartup;
-  readonly client: ActivityClientHandoffClient;
-  readonly pollIntervalMs?: number;
+  readonly controller: HostedLiveSessionController;
 }
 
 /**
- * Mountable Agent Heist participant client. It only renders state installed by
- * the retained, cookie-backed Activity Client session.
+ * Mountable Agent Heist participant client. The React surface interprets Pack
+ * data; the shared controller owns only the direct-stream session mechanics.
  */
 export function AgentHeistClient({
   startup,
-  client,
-  pollIntervalMs = 1_000,
+  controller,
 }: AgentHeistClientProps) {
-  const sessionRef = useRef<ActivityClientSession | null>(null);
-  if (sessionRef.current === null) sessionRef.current = new ActivityClientSession(client);
-  const session = sessionRef.current;
+  const [sessionState, setSessionState] = useState<HostedLiveSessionSnapshot>(
+    controller.state,
+  );
+  const [liveState, setLiveState] = useState<AgentHeistLiveState>(
+    initialAgentHeistLiveState,
+  );
+  const installedDelivery = useRef<
+    HostedLiveSessionSnapshot["deliveryBatch"]
+  >(null);
 
-  const queueRef = useRef<ActivityClientRequestQueue | null>(null);
-  if (queueRef.current === null) queueRef.current = new ActivityClientRequestQueue();
-  const queue = queueRef.current;
-
-  const [sessionState, setSessionState] = useState<ActivityClientSessionState>(session.state);
-  const [liveState, setLiveState] = useState<AgentHeistLiveState>(initialAgentHeistLiveState);
-  const mounted = useRef(false);
-
-  const install = useCallback((next: ActivityClientSessionState) => {
-    if (!mounted.current) return;
+  const install = useCallback((next: HostedLiveSessionSnapshot) => {
     setSessionState(next);
-    if (next.state === "live") {
-      setLiveState((current) => reduceAgentHeistObservation(current, next.deliveryBatch));
+    if (
+      next.deliveryBatch !== null &&
+      next.deliveryBatch !== installedDelivery.current
+    ) {
+      installedDelivery.current = next.deliveryBatch;
+      const delivery = next.deliveryBatch;
+      setLiveState((current) => reduceAgentHeistObservation(current, delivery));
     }
   }, []);
 
   useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    void session.start(startup).then((next) => {
-      if (!disposed) install(next);
-    });
-    return () => { disposed = true; };
-  }, [install, session, startup]);
-
-  useEffect(() => {
-    if (sessionState.state !== "live") return undefined;
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      if (disposed) return;
-      try {
-        const next = await queue.run(() => session.refresh());
-        if (!disposed) install(next);
-      } finally {
-        if (!disposed) timer = setTimeout(poll, pollIntervalMs);
-      }
-    };
-    timer = setTimeout(poll, pollIntervalMs);
-    return () => {
-      disposed = true;
-      if (timer !== undefined) clearTimeout(timer);
-    };
-  }, [install, pollIntervalMs, queue, session, sessionState.state]);
+    const unsubscribe = controller.subscribe(install);
+    install(controller.state);
+    void controller.start(startup).then(install);
+    return unsubscribe;
+  }, [controller, install, startup]);
 
   const submit = async (action: ActivityClientAction) => {
-    await queue.run(async () => {
-      let receipt: ActivityClientActionReceipt;
-      try {
-        receipt = await session.act(action);
-      } catch (error) {
-        install(session.fail(error));
-        throw error;
-      }
-      install(await session.refresh());
-      if (receipt.state === "rejected") {
-        throw new Error("The authoritative Room rejected this Action.");
-      }
+    const current = liveState;
+    if (current.kind !== "ready") {
+      throw new Error("Agent Heist has no authorized Action Offer.");
+    }
+    const offer = current.offers.find(
+      (candidate) => candidate.offerId === action.offerId,
+    );
+    if (
+      offer === undefined ||
+      offer.actionType !== action.actionType ||
+      offer.schemaDigest !== action.schemaDigest ||
+      action.basedOnRoomSeq !== current.roomSequence
+    ) {
+      throw new Error("Agent Heist Action Offer is no longer current.");
+    }
+    const receipt = await controller.submitAction({
+      actionId: action.actionId,
+      basedOnRoomSeq: action.basedOnRoomSeq,
+      actionType: action.actionType,
+      payload: action.payload as JsonValue,
     });
-  };
-
-  const reconnect = async () => {
-    await queue.run(async () => install(await session.reconnect()));
+    if (receipt.state === "rejected") {
+      throw new Error(`The authoritative Room rejected this Action (${receipt.code}).`);
+    }
   };
 
   return (
     <AgentHeistClientView
       state={liveState}
-      connection={sessionState.state}
+      connection={connectionFor(sessionState.status)}
       message={sessionState.message}
       onAct={submit}
-      onReconnect={reconnect}
+      onReconnect={() => controller.reconnect().then(() => undefined)}
     />
   );
+}
+
+export function connectionFor(
+  status: HostedLiveSessionSnapshot["status"],
+): AgentHeistClientConnection {
+  if (status === "live") return "live";
+  if (status === "setup_required") return "setup_required";
+  if (status === "disconnected" || status === "closed") return "disconnected";
+  return "connecting";
 }

@@ -1,7 +1,10 @@
 export const PARTICIPANT_HANDOFF_VERSION = "participant_handoff.v1" as const;
 export const PARTICIPANT_SESSION_VERSION = "participant_console_session.v1" as const;
+export const PARTICIPANT_STREAM_TICKET_VERSION =
+  "participant_console_stream_ticket.v1" as const;
 
 const HANDOFF_PATTERN = /^wsh1:[0-9a-f]{64}$/;
+const STREAM_TICKET_PATTERN = /^wst1:[0-9a-f]{64}$/;
 const PROHIBITED_KEYS = new Set([
   "bearer",
   "token_hash",
@@ -44,6 +47,13 @@ export interface ActivityClientSessionStatus {
   version: typeof PARTICIPANT_SESSION_VERSION;
   state: "usable" | "disconnected";
   nextAction: "continue" | "reconnect";
+}
+
+/** One browser-safe, single-use admission value for the direct Fly stream. */
+export interface ActivityClientStreamTicket {
+  readonly version: typeof PARTICIPANT_STREAM_TICKET_VERSION;
+  readonly ticket: string;
+  readonly expiresInMs: number;
 }
 
 export class ActivityClientHandoffError extends Error {
@@ -198,6 +208,55 @@ export class ActivityClientHandoffClient {
     });
   }
 
+  /**
+   * Mints one short-lived ticket from the retained hosted session. The Cursor
+   * is the only browser-selected synchronization value; no Room or Membership
+   * identifier crosses this request.
+   */
+  async issueStreamTicket(
+    afterFrameSeq: number | null,
+  ): Promise<ActivityClientStreamTicket> {
+    if (
+      this.hostedCsrf === null ||
+      (afterFrameSeq !== null &&
+        (!Number.isSafeInteger(afterFrameSeq) || afterFrameSeq < 0))
+    ) {
+      throw new ActivityClientHandoffError(
+        "participant_stream_ticket_unavailable",
+        "Hosted realtime admission is not configured.",
+        "return_to_task_setup",
+        false,
+      );
+    }
+    const value = await this.jsonRequest(
+      "/api/v1/participant-console/session:stream-ticket",
+      {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          "X-WorldStream-CSRF": this.hostedCsrf,
+        },
+        body: JSON.stringify({ after_frame_seq: afterFrameSeq }),
+      },
+      true,
+    );
+    if (!isRawStreamTicketResponse(value)) {
+      throw new ActivityClientHandoffError(
+        "participant_session_invalid_response",
+        "Activity Client received invalid realtime admission material.",
+        "return_to_task_setup",
+        false,
+      );
+    }
+    return {
+      version: value.version,
+      ticket: value.ticket,
+      expiresInMs: value.expires_in_ms,
+    };
+  }
+
   /** Retires the hosted Browser Activity Session and clears its HttpOnly cookie. */
   async logout(): Promise<void> {
     if (this.hostedCsrf === null) {
@@ -340,11 +399,19 @@ export class ActivityClientHandoffClient {
     };
   }
 
-  private async jsonRequest(path: string, init: RequestInit): Promise<unknown> {
-    return (await this.jsonResponse(path, init)).value;
+  private async jsonRequest(
+    path: string,
+    init: RequestInit,
+    allowExactStreamTicket = false,
+  ): Promise<unknown> {
+    return (await this.jsonResponse(path, init, allowExactStreamTicket)).value;
   }
 
-  private async jsonResponse(path: string, init: RequestInit): Promise<{ value: unknown; headers: Headers }> {
+  private async jsonResponse(
+    path: string,
+    init: RequestInit,
+    allowExactStreamTicket = false,
+  ): Promise<{ value: unknown; headers: Headers }> {
     let response: Response;
     try {
       response = await this.fetch(`${this.endpoint}${path}`, init);
@@ -368,7 +435,10 @@ export class ActivityClientHandoffClient {
       );
     }
     if (!response.ok) throw readSafeError(value);
-    if (containsProhibitedMaterial(value)) {
+    if (
+      containsProhibitedMaterial(value) &&
+      !(allowExactStreamTicket && isRawStreamTicketResponse(value))
+    ) {
       throw new ActivityClientHandoffError(
         "participant_session_invalid_response",
         "Activity Client received unsafe routing or authority material.",
@@ -444,6 +514,21 @@ function isActivityClientSessionStatus(value: unknown): value is {
   if (value.version !== PARTICIPANT_SESSION_VERSION) return false;
   return (value.state === "usable" && value.next_action === "continue")
     || (value.state === "disconnected" && value.next_action === "reconnect");
+}
+
+function isRawStreamTicketResponse(value: unknown): value is {
+  version: typeof PARTICIPANT_STREAM_TICKET_VERSION;
+  ticket: string;
+  expires_in_ms: number;
+} {
+  return isExactObject(value, ["version", "ticket", "expires_in_ms"])
+    && value.version === PARTICIPANT_STREAM_TICKET_VERSION
+    && typeof value.ticket === "string"
+    && STREAM_TICKET_PATTERN.test(value.ticket)
+    && typeof value.expires_in_ms === "number"
+    && Number.isSafeInteger(value.expires_in_ms)
+    && value.expires_in_ms > 0
+    && value.expires_in_ms <= 15_000;
 }
 
 function isAuthorizedRoomDeliveryBatch(value: unknown): value is AuthorizedRoomDeliveryBatch {

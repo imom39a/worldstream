@@ -344,4 +344,67 @@ describe("Activity Client opaque handoff", () => {
     ).logout()).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("mints a hosted stream ticket with only the retained cookie and Cursor", async () => {
+    const csrf = "e".repeat(43);
+    const ticket = `wst1:${"ef".repeat(32)}`;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        "https://arena.example/api/v1/participant-console/session:stream-ticket",
+      );
+      expect(init).toMatchObject({
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        body: '{"after_frame_seq":37}',
+      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-worldstream-csrf")).toBe(csrf);
+      expect(headers.has("authorization")).toBe(false);
+      return Response.json({
+        version: "participant_console_stream_ticket.v1",
+        ticket,
+        expires_in_ms: 15_000,
+      });
+    });
+    const client = new ActivityClientHandoffClient(
+      "https://arena.example",
+      fetch,
+      { browserOrigin: "https://arena.example", csrf },
+    );
+
+    await expect(client.issueStreamTicket(37)).resolves.toEqual({
+      version: "participant_console_stream_ticket.v1",
+      ticket,
+      expiresInMs: 15_000,
+    });
+    expect(JSON.stringify(fetch.mock.calls)).not.toMatch(
+      /room_id|member_id|membership_id|principal_id|wsb1:/u,
+    );
+  });
+
+  it("rejects widened, long-lived, or non-hosted stream admission", async () => {
+    const csrf = "f".repeat(43);
+    const widened = new ActivityClientHandoffClient(
+      "https://arena.example",
+      vi.fn().mockResolvedValue(Response.json({
+        version: "participant_console_stream_ticket.v1",
+        ticket: `wst1:${"ab".repeat(32)}`,
+        expires_in_ms: 15_001,
+        room_id: ROOM_ID,
+      })),
+      { browserOrigin: "https://arena.example", csrf },
+    );
+    await expect(widened.issueStreamTicket(null)).rejects.toMatchObject({
+      code: "participant_session_invalid_response",
+    });
+
+    const local = new ActivityClientHandoffClient(
+      "http://127.0.0.1:9420",
+      vi.fn(),
+    );
+    await expect(local.issueStreamTicket(null)).rejects.toMatchObject({
+      code: "participant_stream_ticket_unavailable",
+    });
+  });
 });
