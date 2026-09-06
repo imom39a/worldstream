@@ -8,6 +8,7 @@ import {
   usePlatformSession,
   type HostedActivitySummary,
 } from "./hostedApi";
+import { RecentResultsPanel } from "./RecentResults";
 import { SiteFooter, SiteHeader, type Navigate } from "./siteChrome";
 
 export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
@@ -78,6 +79,8 @@ export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
             session={session}
           />
         ) : null}
+
+        <RecentResultsPanel onNavigate={onNavigate} />
 
         <section className="boundary-note" aria-label="Platform boundary">
           <div>

@@ -8,6 +8,7 @@ import { LaunchPage } from "./LaunchPage";
 import { demos, getDemoById } from "./catalog";
 import { NotFoundPage } from "./NotFoundPage";
 import { usePageMetadata, type PageKind } from "./pageMetadata";
+import { RunPage } from "./RunPage";
 import type { Navigate } from "./siteChrome";
 
 function usePathname(): [string, Navigate] {
@@ -33,10 +34,13 @@ export function App() {
   const demoId = pathname.match(/^\/demos\/([^/]+)\/?$/)?.[1];
   const documentationId = pathname.match(/^\/docs\/([^/]+)\/?$/)?.[1];
   const launchId = pathname.match(/^\/launches\/([0-9a-f-]+)\/?$/)?.[1];
+  const publicRunId = pathname.match(/^\/runs\/([0-9a-f]{32})\/?$/)?.[1];
   const page: PageKind = pathname === "/"
     ? "catalog"
     : pathname === "/join"
       ? "join"
+      : publicRunId !== undefined
+        ? "run"
       : launchId !== undefined
         ? "formation"
         : demoId === "agent-heist"
@@ -48,6 +52,7 @@ export function App() {
   usePageMetadata(page);
 
   if (pathname === "/join") return <JoinPage onNavigate={navigate} />;
+  if (publicRunId !== undefined) return <RunPage publicId={publicRunId} onNavigate={navigate} />;
   if (launchId !== undefined) return <LaunchPage launchId={launchId} onNavigate={navigate} />;
 
   if (documentationId !== undefined) {

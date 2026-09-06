@@ -65,6 +65,41 @@ test("legacy Supabase role keys retain the same separation", () => {
   );
 });
 
+test("public Run reads use only the server-secret DTO RPCs", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ readonly url: string; readonly body: unknown }> = [];
+  try {
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      calls.push({ url: request.url, body: JSON.parse(await request.clone().text()) });
+      if (request.url.endsWith("/read_public_run_v1")) {
+        return Response.json({ version: "public_run.v1", state: "unavailable" });
+      }
+      return Response.json({
+        version: "recent_results.v1",
+        activity: "agent-heist",
+        order: "newest_first",
+        maximum: 20,
+        results: [],
+      });
+    };
+    const data = createSupabaseBffDependencies({
+      url: URL,
+      publishableKey: PUBLISHABLE,
+      dataSecretKey: SECRET,
+    }).publicRunData;
+    assert.ok(data);
+    assert.equal((await data.readPublicRun("a".repeat(32))).state, "unavailable");
+    assert.equal((await data.listRecentResults(20)).results.length, 0);
+    assert.match(calls[0]?.url ?? "", /\/rest\/v1\/rpc\/read_public_run_v1$/u);
+    assert.deepEqual(calls[0]?.body, { p_public_id: "a".repeat(32) });
+    assert.match(calls[1]?.url ?? "", /\/rest\/v1\/rpc\/list_recent_results_v1$/u);
+    assert.deepEqual(calls[1]?.body, { p_limit: 20 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("result reconciliation uses only typed server RPCs and exact bytea inputs", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; body: Record<string, unknown> }> = [];

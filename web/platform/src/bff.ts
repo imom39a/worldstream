@@ -33,6 +33,7 @@ import {
   reviewedSeatId,
   reviewedSeatKey,
 } from "./hosted-catalog.js";
+import type { PublicRunData } from "./public-runs.js";
 import { encodeCanonical } from "@worldstream/pack-sdk";
 
 const OAUTH_COOKIE = "__Host-worldstream-oauth";
@@ -147,6 +148,8 @@ export interface BffDependencies {
   readonly authClient: () => PlatformAuthClient;
   /** A standalone server-secret data client with no user session installed. */
   readonly dataClient: PlatformDataClient;
+  /** Server-secret reads that emit only the reviewed public Run DTO. */
+  readonly publicRunData?: PublicRunData;
   /** Fixed service-only client for the Fly hosted browser-session boundary. */
   readonly hostedBrowserSessions?: HostedBrowserSessionClient;
   /** Server-secret Supabase formation RPCs; never installed in browser code. */
@@ -241,6 +244,16 @@ export function createPlatformBff(
       if (request.method === "GET" && url.pathname === "/api/catalog") {
         return publicCatalog(formation !== null && dependencies.hostedBrowserSessions !== undefined);
       }
+      const publicRunId = publicRunRoute(url.pathname);
+      if (request.method === "GET" && publicRunId !== null) {
+        return readPublicRun(publicRunId, dependencies.publicRunData);
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/results/agent-heist/recent"
+      ) {
+        return readRecentAgentHeistResults(dependencies.publicRunData);
+      }
       if (request.method === "GET" && url.pathname === "/api/auth/github/start") {
         return startGithub(
           request,
@@ -329,6 +342,33 @@ export function createPlatformBff(
       return safeJson(404, "route_not_found");
     },
   };
+}
+
+function publicRunRoute(pathname: string): string | null {
+  return pathname.match(/^\/api\/runs\/([0-9a-f]{32})$/u)?.[1] ?? null;
+}
+
+async function readPublicRun(
+  publicId: string,
+  data: PublicRunData | undefined,
+): Promise<Response> {
+  if (data === undefined) return temporarilyUnavailable();
+  try {
+    return publicNoStoreJson(200, await data.readPublicRun(publicId));
+  } catch {
+    return temporarilyUnavailable();
+  }
+}
+
+async function readRecentAgentHeistResults(
+  data: PublicRunData | undefined,
+): Promise<Response> {
+  if (data === undefined) return temporarilyUnavailable();
+  try {
+    return publicNoStoreJson(200, await data.listRecentResults(20));
+  } catch {
+    return temporarilyUnavailable();
+  }
 }
 
 type HostedLaunchRoute =
@@ -746,6 +786,7 @@ export function createDevelopmentPlatformBff(
   const inner = createPlatformBff(config, {
     authClient: () => auth,
     dataClient,
+    ...(supportsPublicRuns(dataClient) ? { publicRunData: dataClient } : {}),
     ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
     ...(hostedFormation === undefined
       ? {}
@@ -787,6 +828,14 @@ export function createDevelopmentPlatformBff(
       return response;
     },
   };
+}
+
+function supportsPublicRuns(
+  dataClient: PlatformDataClient,
+): dataClient is PlatformDataClient & PublicRunData {
+  const candidate = dataClient as PlatformDataClient & Partial<PublicRunData>;
+  return typeof candidate.readPublicRun === "function" &&
+    typeof candidate.listRecentResults === "function";
 }
 
 async function developmentSignIn(
@@ -1800,6 +1849,14 @@ function redirect(location: string): Response {
 function privateJson(status: number, body: unknown): Response {
   const response = Response.json(body, { status });
   response.headers.set("cache-control", "private, no-store, max-age=0");
+  return response;
+}
+
+function publicNoStoreJson(status: number, body: unknown): Response {
+  const response = Response.json(body, { status });
+  // A later integrity, privacy, or purge event must take effect without a
+  // previously cached public summary surviving at a browser or shared edge.
+  response.headers.set("cache-control", "no-store, max-age=0");
   return response;
 }
 

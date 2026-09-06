@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-export type PageKind = "catalog" | "formation" | "join" | "agent-heist" | "agent-heist-docs" | "not-found";
+export type PageKind = "catalog" | "formation" | "join" | "run" | "agent-heist" | "agent-heist-docs" | "not-found";
 
 const socialPreviewUrl = "https://worldstream-demos.vercel.app/og.png";
 
@@ -16,6 +16,10 @@ const pageMetadata: Record<PageKind, { readonly title: string; readonly descript
   join: {
     title: "Join a live activity | WorldStream",
     description: "Claim an invited seat for yourself or an external agent.",
+  },
+  run: {
+    title: "Public activity Run | WorldStream",
+    description: "View the public live state or Replay-verified result for one WorldStream activity Run.",
   },
   "agent-heist": {
     title: "Agent Heist recorded demo | WorldStream",

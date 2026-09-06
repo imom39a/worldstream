@@ -24,6 +24,7 @@ import {
   type HostedBrowserSessionStatus,
   type OwnedRunMembershipCorrespondence,
 } from "./browser-sessions.js";
+import type { PublicRunData } from "./public-runs.js";
 
 const ORIGIN = "https://arena.example";
 
@@ -282,13 +283,17 @@ function session(
   return { accessToken, refreshToken, expiresAt };
 }
 
-function harness(hostedBrowserSessions?: HostedBrowserSessionClient) {
+function harness(
+  hostedBrowserSessions?: HostedBrowserSessionClient,
+  publicRunData?: PublicRunData,
+) {
   const auth = new FakeAuth();
   const data = new FakeData();
   const dependencies: BffDependencies = {
     authClient: () => auth,
     dataClient: data,
     ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
+    ...(publicRunData === undefined ? {} : { publicRunData }),
   };
   const bff = createPlatformBff(
     {
@@ -411,6 +416,40 @@ test("OAuth start retains protected PKCE state and emits the frozen cookie", asy
   const authorize = new URL(response.headers.get("location") ?? "");
   assert.equal(authorize.searchParams.has("state"), false);
   assert.match(authorize.searchParams.get("redirect_to") ?? "", /[?&]state=/u);
+});
+
+test("anonymous public Run and Recent Results routes expose only no-store DTOs", async () => {
+  const calls: string[] = [];
+  const publicRuns: PublicRunData = {
+    async readPublicRun(publicId) {
+      calls.push(`run:${publicId}`);
+      return { version: "public_run.v1", state: "unavailable" };
+    },
+    async listRecentResults(limit) {
+      calls.push(`recent:${limit}`);
+      return {
+        version: "recent_results.v1",
+        activity: "agent-heist",
+        order: "newest_first",
+        maximum: 20,
+        results: [],
+      };
+    },
+  };
+  const { bff } = harness(undefined, publicRuns);
+  const run = await bff.fetch(new Request(`${ORIGIN}/api/runs/${"a".repeat(32)}`));
+  assert.equal(run.status, 200);
+  assert.equal(run.headers.get("cache-control"), "no-store, max-age=0");
+  assert.deepEqual(await run.json(), { version: "public_run.v1", state: "unavailable" });
+
+  const recent = await bff.fetch(new Request(`${ORIGIN}/api/results/agent-heist/recent`));
+  assert.equal(recent.status, 200);
+  assert.equal(recent.headers.get("cache-control"), "no-store, max-age=0");
+  assert.equal(((await recent.json()) as { results: unknown[] }).results.length, 0);
+  assert.deepEqual(calls, [`run:${"a".repeat(32)}`, "recent:20"]);
+
+  const malformed = await bff.fetch(new Request(`${ORIGIN}/api/runs/not-a-public-id`));
+  assert.equal(malformed.status, 404);
 });
 
 test("OAuth start accepts only immutable configured return targets", async () => {

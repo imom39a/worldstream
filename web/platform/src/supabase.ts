@@ -37,6 +37,13 @@ import type {
   LaunchCreationResult,
   OwnedRunRecord,
 } from "./hosted-formation.js";
+import {
+  readPublicRunDto,
+  readRecentResultsDto,
+  type PublicRun,
+  type PublicRunData,
+  type RecentResults,
+} from "./public-runs.js";
 
 interface RpcResult {
   readonly data: unknown;
@@ -74,6 +81,7 @@ export function createSupabaseBffDependencies(
   return {
     authClient: () => new SupabasePlatformAuthClient(config.url, config.publishableKey),
     dataClient,
+    publicRunData: dataClient,
     hostedFormationData: dataClient,
   };
 }
@@ -222,7 +230,7 @@ class SupabasePlatformAuthClient implements PlatformAuthClient {
   }
 }
 
-class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationData {
+class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationData, PublicRunData {
   readonly #rpc: RpcClient;
 
   constructor(url: string, secretKey: string) {
@@ -243,6 +251,18 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
     const rows = readRows(data);
     if (rows.length > 1) throw new Error("oauth_attempt_ambiguous");
     return rows.length === 1;
+  }
+
+  async readPublicRun(publicId: string): Promise<PublicRun> {
+    return readPublicRunDto(await requiredRpc(this.#rpc, "read_public_run_v1", {
+      p_public_id: publicId,
+    }));
+  }
+
+  async listRecentResults(limit: number): Promise<RecentResults> {
+    return readRecentResultsDto(await requiredRpc(this.#rpc, "list_recent_results_v1", {
+      p_limit: limit,
+    }));
   }
 
   async consumeGithubOAuth(input: {

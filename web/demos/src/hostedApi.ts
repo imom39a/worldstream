@@ -60,6 +60,73 @@ export interface HostedLaunch {
   readonly retry_after_seconds?: number | null;
 }
 
+export type PublicJson = null | boolean | number | string | readonly PublicJson[] | {
+  readonly [key: string]: PublicJson;
+};
+
+export interface PublicRunParticipant {
+  readonly seat_label: string;
+  readonly role: string;
+  readonly kind: "human" | "external_agent" | "house_agent";
+  readonly identity?:
+    | { readonly kind: "pseudonym"; readonly label: string }
+    | {
+        readonly kind: "github";
+        readonly login: string;
+        readonly avatar_url?: string;
+        readonly fallback_label: string;
+      };
+  readonly notice?: string;
+  readonly house_agent?: {
+    readonly display_name: string;
+    readonly revision_digest: string;
+    readonly route: {
+      readonly gateway: "openrouter";
+      readonly provider_slug: string;
+      readonly model_slug: string;
+    };
+    readonly allowance: Readonly<Record<string, number>>;
+  };
+}
+
+interface PublicRunBase {
+  readonly version: "public_run.v1";
+  readonly public_id: string;
+  readonly activity: {
+    readonly listing_key: string;
+    readonly title: string;
+    readonly description: string;
+    readonly listing_revision: string;
+    readonly pack: { readonly id: string; readonly version: string; readonly revision: string };
+  };
+  readonly started_at: string;
+  readonly evidence: {
+    readonly class: "unranked" | "exhibition_platform_house_agents";
+    readonly label: string;
+  };
+  readonly participants: readonly PublicRunParticipant[];
+}
+
+export type PublicRun =
+  | { readonly version: "public_run.v1"; readonly state: "unavailable" }
+  | PublicRunBase & {
+      readonly state: "live";
+      readonly live: { readonly available: false };
+    }
+  | PublicRunBase & {
+      readonly state: "result";
+      readonly completed_at: string;
+      readonly result: Readonly<Record<string, PublicJson>>;
+    };
+
+export interface RecentResults {
+  readonly version: "recent_results.v1";
+  readonly activity: "agent-heist";
+  readonly order: "newest_first";
+  readonly maximum: 20;
+  readonly results: readonly Extract<PublicRun, { readonly state: "result" }>[];
+}
+
 export type PlatformSession =
   | { readonly state: "loading" | "guest" | "unavailable"; readonly csrf: null }
   | { readonly state: "authenticated"; readonly csrf: string };
@@ -118,6 +185,27 @@ export async function readCatalog(): Promise<readonly HostedActivitySummary[]> {
   const value = await safeJson(response);
   if (!response.ok || !Array.isArray(value.activities)) throw new Error("catalog_unavailable");
   return value.activities as unknown as readonly HostedActivitySummary[];
+}
+
+export async function readPublicRun(publicId: string): Promise<PublicRun> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(publicId)}`);
+  const value = await safeJson(response);
+  if (!response.ok || value.version !== "public_run.v1") {
+    throw new Error("public_run_unavailable");
+  }
+  return value as unknown as PublicRun;
+}
+
+export async function readRecentResults(): Promise<RecentResults> {
+  const response = await fetch("/api/results/agent-heist/recent");
+  const value = await safeJson(response);
+  if (
+    !response.ok || value.version !== "recent_results.v1" ||
+    value.activity !== "agent-heist" || !Array.isArray(value.results)
+  ) {
+    throw new Error("recent_results_unavailable");
+  }
+  return value as unknown as RecentResults;
 }
 
 export async function readLaunch(launchId: string): Promise<HostedLaunch> {
