@@ -17,6 +17,10 @@ import {
   reduceAgentHeistObservation,
   type AgentHeistLiveState,
 } from "./liveAdapter";
+import {
+  AgentHeistWebMcpBridge,
+  registerAgentHeistWebMcp,
+} from "./webmcp";
 
 export interface AgentHeistClientProps {
   readonly startup: ActivityClientStartup;
@@ -37,19 +41,36 @@ export function AgentHeistClient({
   const [liveState, setLiveState] = useState<AgentHeistLiveState>(
     initialAgentHeistLiveState,
   );
+  const liveStateRef = useRef(liveState);
   const installedDelivery = useRef<
     HostedLiveSessionSnapshot["deliveryBatch"]
   >(null);
+  const [webMcp, setWebMcp] = useState<
+    "checking" | "available" | "unsupported" | "unavailable"
+  >("checking");
+  const [webMcpBridge] = useState(() => new AgentHeistWebMcpBridge({
+    controller,
+    readLiveState: () => liveStateRef.current,
+  }));
 
   const install = useCallback((next: HostedLiveSessionSnapshot) => {
     setSessionState(next);
+    if (next.status === "setup_required" || next.status === "closed") {
+      installedDelivery.current = null;
+      const empty = initialAgentHeistLiveState();
+      liveStateRef.current = empty;
+      setLiveState(empty);
+      return;
+    }
     if (
       next.deliveryBatch !== null &&
       next.deliveryBatch !== installedDelivery.current
     ) {
       installedDelivery.current = next.deliveryBatch;
       const delivery = next.deliveryBatch;
-      setLiveState((current) => reduceAgentHeistObservation(current, delivery));
+      const reduced = reduceAgentHeistObservation(liveStateRef.current, delivery);
+      liveStateRef.current = reduced;
+      setLiveState(reduced);
     }
   }, []);
 
@@ -59,6 +80,33 @@ export function AgentHeistClient({
     void controller.start(startup).then(install);
     return unsubscribe;
   }, [controller, install, startup]);
+
+  const accessMode = liveState.kind === "ready"
+    ? liveState.authorization.accessMode
+    : null;
+  useEffect(() => {
+    if (accessMode === null) {
+      setWebMcp("checking");
+      return undefined;
+    }
+    const registration = registerAgentHeistWebMcp(
+      document as unknown as Parameters<typeof registerAgentHeistWebMcp>[0],
+      webMcpBridge,
+      accessMode,
+    );
+    if (!registration.supported) {
+      setWebMcp("unsupported");
+      return registration.dispose;
+    }
+    let disposed = false;
+    void registration.ready.then((ready) => {
+      if (!disposed) setWebMcp(ready ? "available" : "unavailable");
+    });
+    return () => {
+      disposed = true;
+      registration.dispose();
+    };
+  }, [accessMode, webMcpBridge]);
 
   const submit = async (action: ActivityClientAction) => {
     const current = liveState;
@@ -92,6 +140,8 @@ export function AgentHeistClient({
       state={liveState}
       connection={connectionFor(sessionState.status)}
       message={sessionState.message}
+      actionsEnabled={sessionState.canAct}
+      agentAssist={webMcp}
       onAct={submit}
       onReconnect={() => controller.reconnect().then(() => undefined)}
     />

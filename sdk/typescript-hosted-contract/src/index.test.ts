@@ -89,7 +89,7 @@ test("validates the exact two-revision House Agent pool", () => {
   );
   assert.equal(
     listing.digest,
-    "blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447",
+    "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956",
   );
   assert.notEqual(cooperative.value.route.model_slug, skeptical.value.route.model_slug);
   assert.equal(cooperative.value.allowance.model_call_attempts, 10);

@@ -30,6 +30,7 @@ const expectedChecks = new Map([
     "live-adapter-starts-empty",
     "projection-reset-replaces-authorized-state",
     "participant-and-spectator-access-mode-gating",
+    "webmcp-authorized-read-wait-and-semantic-action-boundaries",
     "recorded-gallery-cannot-consume-live-state",
   ]],
   ["worldstream.inspector.web", [
@@ -271,6 +272,14 @@ async function verifySourceBoundaries() {
   check(
     !/@worldstream\/(?:agent-heist|negotiate)-client|clientSurface === "(?:agent-heist|negotiate)"|NegotiateLiveApp|consumeNegotiateConsoleBootstrap|consumeLiveSessionBootstrap/.test(clientHostMain),
     "Inspector/recorded-gallery artifact still embeds a Pack-specific live client",
+  );
+  const heistWebMcp = await readFile(resolve(workspace, "clients/agent-heist-web/src/webmcp.ts"), "utf8");
+  check(
+    /heist_read_state/.test(heistWebMcp)
+      && /heist_wait_for_update/.test(heistWebMcp)
+      && /heist_commit_plan/.test(heistWebMcp)
+      && /MAX_TOOL_RESULT_CHARACTERS\s*=\s*1_500/.test(heistWebMcp),
+    "Agent Heist WebMCP surface is missing its bounded reviewed tools",
   );
   for (const [prefix, root] of [
     ["/agent-heist/", "clients/agent-heist-web/dist"],

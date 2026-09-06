@@ -2,8 +2,8 @@
   "schema": "worldstream/client-conformance-evidence/v1",
   "subject": {
     "client_id": "worldstream.negotiate.web",
-    "artifact_digest": "sha256:0578e42178c8a43471126b0f5a4ad1bd74af293b5a18f3cc960789b83d14c42f",
-    "release_claims_digest": "sha256:f6fb0987e6c697c1420354abfec298eb1b032e227932de754ce68ee9f56161ed",
+    "artifact_digest": "sha256:dac43a302f0e953f1139a83b2dc68add33215ae2599c57c64cfaedecf4239d93",
+    "release_claims_digest": "sha256:b59541d3c8a2eeba05a5dbb5ac8300960cb4672da93de660f31ded23b9af3b9e",
     "client_contract": "worldstream/activity-client-protocol/v1"
   },
   "checks": [

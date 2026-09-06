@@ -6,7 +6,7 @@
       "schema": "worldstream/client-deployment/v1",
       "deployment_id": "first-party-inspector-web",
       "client_id": "worldstream.inspector.web",
-      "release_digest": "sha256:4a5d7860dbf1d13c023d16ef21668973ce0088ba31ac972055275d9b3cca07bc",
+      "release_digest": "sha256:0ed0ae226c780c1542c74c70fae78a6fa55fbfe46b4c3f0ca0b1888e667aabb5",
       "trust_level": "externally_trusted",
       "surfaces": [
         {
@@ -19,7 +19,7 @@
       "schema": "worldstream/client-deployment/v1",
       "deployment_id": "first-party-agent-heist-web",
       "client_id": "worldstream.agent-heist.web",
-      "release_digest": "sha256:b6e5501bb98dc2ab300439bf9dafc2978cfc784741668fecb3c15b7c8f5be156",
+      "release_digest": "sha256:88f76571d3d5736f0ca52740d619761f9ad6dcb9112792e806d8072c2a983148",
       "trust_level": "externally_trusted",
       "surfaces": [
         {
@@ -45,7 +45,7 @@
       "schema": "worldstream/client-deployment/v1",
       "deployment_id": "first-party-negotiate-web-v2",
       "client_id": "worldstream.negotiate.web",
-      "release_digest": "sha256:febbfd4f6545704479460c7b81408402a22e1175174bb96f14347d2ead571bf1",
+      "release_digest": "sha256:bdb99ac4fd2c914995ffe8c546708081281ffaaeebf01b6c1b1a8f0124ca8011",
       "trust_level": "externally_trusted",
       "surfaces": [
         {

@@ -47,6 +47,14 @@ async function verifySurface(label, path, expectedTitle, assertPage) {
       failures.push(`${label} console error: ${message.text()}`);
     }
   });
+  await page.route(`${host.origin}/api/auth/session`, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      authenticated: true,
+      csrf: "browser_acceptance_csrf_token_000000000000000000000000",
+    }),
+  }));
   await page.route("http://127.0.0.1:9420/**", (route) => route.fulfill({
       status: 401,
       contentType: "application/json",

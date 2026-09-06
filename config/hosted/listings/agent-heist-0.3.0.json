@@ -15,7 +15,7 @@
   },
   "client": {
     "client_id": "worldstream.agent-heist.web",
-    "release_digest": "sha256:b6e5501bb98dc2ab300439bf9dafc2978cfc784741668fecb3c15b7c8f5be156",
+    "release_digest": "sha256:88f76571d3d5736f0ca52740d619761f9ad6dcb9112792e806d8072c2a983148",
     "client_contract": "worldstream/activity-client-protocol/v1",
     "surface_id": "heist-web"
   },

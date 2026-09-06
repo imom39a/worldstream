@@ -120,7 +120,7 @@ set local role service_role;
 create temporary table house_launch as
 select * from platform_api.create_launch_request_v1(
   '20000000-0000-4000-8000-000000000001',
-  'blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447',
+  'blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956',
   'house-fill-test',
   decode(repeat('71', 32), 'hex'),
   convert_to('{}', 'utf8'),
@@ -331,7 +331,7 @@ with listing as (
     convert_from(listings.canonical_document, 'utf8')::jsonb as document
   from platform_store.activity_listing_revisions listings
   where listings.listing_revision_digest =
-    'blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447'
+    'blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956'
 ), ordered_members as (
   select
     seats.position,
@@ -536,7 +536,7 @@ set local role service_role;
 create temporary table failed_launch as
 select * from platform_api.create_launch_request_v1(
   '20000000-0000-4000-8000-000000000003',
-  'blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447',
+  'blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956',
   'house-fill-failure',
   decode(repeat('72', 32), 'hex'),
   convert_to('{}', 'utf8'),
@@ -612,7 +612,7 @@ select is(
 create temporary table insufficient_launch as
 select * from platform_api.create_launch_request_v1(
   '20000000-0000-4000-8000-000000000004',
-  'blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447',
+  'blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956',
   'house-fill-insufficient',
   decode(repeat('73', 32), 'hex'),
   convert_to('{}', 'utf8'),

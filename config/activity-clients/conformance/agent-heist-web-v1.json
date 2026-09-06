@@ -2,8 +2,8 @@
   "schema": "worldstream/client-conformance-evidence/v1",
   "subject": {
     "client_id": "worldstream.agent-heist.web",
-    "artifact_digest": "sha256:f0db0df556653fd880cd69eb4d4f1af9562665b69f96a249cc9f28d1b6c138cd",
-    "release_claims_digest": "sha256:1ba5a0050f3617eb7f75b95663f32cd6d92d5c72883ec70ddab0999d672b6fde",
+    "artifact_digest": "sha256:59e35288525f67ac81db6887d5f627e9c0242e1f7fc58b3b33d05cdb73dab5ee",
+    "release_claims_digest": "sha256:be62c305360077d7e335b00bb5951dc0f5af5035761fa08ba88b66ff95d1381d",
     "client_contract": "worldstream/activity-client-protocol/v1"
   },
   "checks": [
@@ -11,6 +11,7 @@
     "live-adapter-starts-empty",
     "projection-reset-replaces-authorized-state",
     "participant-and-spectator-access-mode-gating",
+    "webmcp-authorized-read-wait-and-semantic-action-boundaries",
     "recorded-gallery-cannot-consume-live-state"
   ],
   "reproduce": "pnpm activity-clients:verify",

@@ -1367,7 +1367,7 @@ mod tests {
         HostedLaunchRequestV1 {
             schema: "worldstream/hosted-launch-request/v1".to_owned(),
             listing_revision_digest:
-                "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b".to_owned(),
+                "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1".to_owned(),
             launch_request_digest: format!("blake3:{}", blake3::hash(&launch).to_hex()),
             launch_input_digest: sha256(b"{}"),
             frozen_roster_digest: sha256(&roster),

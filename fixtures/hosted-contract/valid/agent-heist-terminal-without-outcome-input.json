@@ -1,6 +1,6 @@
 {
   "schema": "worldstream/result-projector-input/v1",
-  "listing_revision_digest": "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b",
+  "listing_revision_digest": "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1",
   "projector_revision_digest": "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf",
   "pack": {"id": "worldstream.agent-heist", "version": "0.2.0", "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"},
   "projection_schema": "agent-heist/projection/v1",

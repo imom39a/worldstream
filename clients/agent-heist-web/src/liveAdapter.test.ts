@@ -125,6 +125,51 @@ describe("Agent Heist retained live adapter", () => {
     })]);
   });
 
+  it("preserves the consideration on an incoming exchange", () => {
+    const state = reduceAgentHeistObservation(
+      initialAgentHeistLiveState(),
+      observation({
+        delivery: [{
+          kind: "projection_reset",
+          body: {
+            projection: {
+              core: {
+                access_mode: "participant",
+                standing: "enabled",
+                role: "navigator",
+                room_status: "active",
+                viewer_class: "participant",
+              },
+              activity: activity({
+                addressed_offers: [{
+                  offer_id: "exchange-1",
+                  sender_role: "broker",
+                  recipient_role: "navigator",
+                  offered_clue_id: "route",
+                  consideration_kind: "plan_endorsement",
+                  consideration_id: "plan-a",
+                  status: "open",
+                }],
+              }),
+              action_offers: [],
+            },
+          },
+        }],
+      }),
+    );
+
+    expect(state.kind).toBe("ready");
+    if (state.kind !== "ready") throw new Error("expected ready state");
+    expect(state.projection.addressedOffers).toEqual([{
+      offerId: "exchange-1",
+      senderRole: "broker",
+      offeredClueId: "route",
+      considerationKind: "plan_endorsement",
+      considerationId: "plan-a",
+      status: "open",
+    }]);
+  });
+
   it("replaces every activity field on Reset instead of retaining a prior private value", () => {
     const first = reduceAgentHeistObservation(initialAgentHeistLiveState(), observation());
     const replacement = observation({

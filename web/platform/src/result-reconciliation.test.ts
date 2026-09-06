@@ -27,7 +27,7 @@ import {
   type TerminalReconciliationState,
 } from "./result-reconciliation.js";
 
-const LISTING = "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b";
+const LISTING = "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1";
 const LAUNCH = `blake3:${"7".repeat(64)}`;
 const RUN = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 

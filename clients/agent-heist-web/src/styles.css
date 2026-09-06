@@ -34,9 +34,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   background: var(--purple-700);
 }
 .live-client-header h1 { margin: 8px 0 0; font-size: clamp(40px, 6vw, 68px); line-height: 0.92; letter-spacing: -0.055em; }
+.live-client-badges { display: grid; justify-items: end; gap: 8px; }
 .live-mode { display: inline-flex; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.22); border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
 .live-mode i { width: 8px; height: 8px; border-radius: 50%; background: #ffc868; }
 .live-mode-live i { background: var(--turquoise-500); box-shadow: 0 0 0 4px rgba(0,207,197,0.16); }
+.agent-assist { color: #deddf8; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.agent-assist-available { color: #7ef0ca; }
+.agent-assist-unavailable { color: #ffd08a; }
 .live-client-notice { display: grid; grid-template-columns: minmax(190px, 0.28fr) 1fr; gap: 22px; padding: 17px max(28px, calc((100vw - 1180px) / 2)); color: #d8fffc; background: #087d79; font-size: 12px; line-height: 1.5; }
 .live-client-notice strong { color: var(--white); }
 
@@ -81,6 +85,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .reconnect-button { width: 100%; min-height: 40px; margin-top: 12px; border: 1px solid #756cf0; border-radius: 5px; color: var(--white); background: #403d87; cursor: pointer; font-size: 11px; font-weight: 800; }
 
 .live-board { display: grid; gap: 18px; padding-bottom: 18px; }
+.phase-window { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #2d4048; border-radius: 7px; background: #2d4048; }
+.phase-window > div { display: grid; gap: 7px; padding: 14px 17px; background: #142027; }
+.phase-window strong { color: #edf5f6; font-size: 12px; }
 .live-board-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .live-board-grid > section, .plan-board, .outcome-card { padding: 19px; border: 1px solid #2d4048; border-radius: 7px; background: #142027; }
 .live-panel-label { color: #79e9e1; font-size: 10px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; }
@@ -107,6 +114,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .private-clue-list span { color: #b8b5ea; font-size: 9px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
 .private-clue-list strong { color: #f0efff; font-size: 13px; text-transform: capitalize; }
 .private-clue-list code { color: #79e9e1; font-size: 10px; overflow-wrap: anywhere; }
+.own-commitment { display: grid; gap: 6px; margin-top: 10px; padding: 12px; border: 1px solid #39776b; border-radius: 6px; background: #15332f; }
+.own-commitment span, .incoming-exchanges small { color: #8eb0aa; font-size: 9px; text-transform: uppercase; }
+.own-commitment strong { color: #d8fff5; font-size: 12px; }
+.own-commitment small { color: #a8c9c2; font-size: 9px; }
+.incoming-exchanges { display: grid; gap: 8px; }
+.incoming-exchanges article { display: grid; gap: 5px; padding: 11px; border: 1px solid #544d85; border-radius: 5px; background: #211f43; }
+.incoming-exchanges span { color: #e7e5ff; font-size: 11px; }
+.incoming-exchanges strong { color: #89e8df; font-size: 10px; }
 .live-action-form { display: grid; gap: 9px; padding: 13px; border: 1px solid #2f424a; border-radius: 6px; background: #10191e; }
 .live-action-form > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .live-action-form > div strong { color: #edf3f5; font-size: 12px; text-transform: capitalize; }
@@ -133,6 +148,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 @media (max-width: 650px) {
   .live-client-header { align-items: flex-start; flex-direction: column; padding-inline: 18px; }
+  .live-client-badges { width: 100%; justify-items: start; }
   .live-client-notice { grid-template-columns: 1fr; gap: 4px; padding-inline: 18px; }
   .heist-status { grid-template-columns: 1fr 1fr; padding-inline: 12px; }
   .heist-status > div:last-child { grid-column: 1 / -1; }
@@ -140,7 +156,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .inspector-controls { border-right: 0; border-bottom: 1px solid #293941; }
   .record-panel { padding-inline: 12px; }
   .record-panel-heading { align-items: flex-start; flex-direction: column; }
-  .live-board-grid, .plan-grid, .record-detail { grid-template-columns: 1fr; }
+  .live-board-grid, .plan-grid, .record-detail, .phase-window { grid-template-columns: 1fr; }
   .record-detail { display: block; }
   .record-detail > .panel-heading:nth-of-type(2) { margin-top: 30px; }
   .record-footer { align-items: flex-start; flex-direction: column; padding-block: 12px; }

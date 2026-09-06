@@ -1,20 +1,20 @@
 {
   "schema": "worldstream/activity-client-release/v1",
   "client_id": "worldstream.negotiate.web",
-  "release_digest": "sha256:febbfd4f6545704479460c7b81408402a22e1175174bb96f14347d2ead571bf1",
+  "release_digest": "sha256:bdb99ac4fd2c914995ffe8c546708081281ffaaeebf01b6c1b1a8f0124ca8011",
   "client_contract": "worldstream/activity-client-protocol/v1",
   "artifacts": [
     {
       "artifact_id": "browser-dist",
       "media_type": "application/vnd.worldstream.activity-client.web.v1+directory",
-      "digest": "sha256:0578e42178c8a43471126b0f5a4ad1bd74af293b5a18f3cc960789b83d14c42f"
+      "digest": "sha256:dac43a302f0e953f1139a83b2dc68add33215ae2599c57c64cfaedecf4239d93"
     }
   ],
   "surfaces": [
     {
       "surface_id": "negotiate-web",
       "kind": "browser",
-      "artifact_digest": "sha256:0578e42178c8a43471126b0f5a4ad1bd74af293b5a18f3cc960789b83d14c42f",
+      "artifact_digest": "sha256:dac43a302f0e953f1139a83b2dc68add33215ae2599c57c64cfaedecf4239d93",
       "entrypoint": "/negotiate-v2/",
       "capabilities": [
         "observe",
@@ -26,7 +26,7 @@
   "conformance": [
     {
       "contract": "worldstream/activity-client-protocol/v1",
-      "evidence_digest": "sha256:cf35cce94397f4fc2bdde6cffe798d7c905a5f2c2a55e579d9faf43f79c3c62f"
+      "evidence_digest": "sha256:be81f4e354d79a0f8f9c7e6143c7a1a8c9e061767353231e92257422efc655be"
     }
   ]
 }

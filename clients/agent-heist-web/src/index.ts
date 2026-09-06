@@ -1,6 +1,7 @@
 export { AgentHeistClient, type AgentHeistClientProps } from "./AgentHeistClient";
 export {
   AgentHeistClientView,
+  type AgentHeistAgentAssist,
   type AgentHeistClientConnection,
 } from "./AgentHeistClientView";
 export {
@@ -19,6 +20,14 @@ export {
   type AgentHeistProjection,
   type AgentHeistReadyState,
 } from "./liveAdapter";
+export {
+  AgentHeistWebMcpBridge,
+  registerAgentHeistWebMcp,
+  type AgentHeistWebMcpBridgeOptions,
+  type AgentHeistWebMcpHost,
+  type AgentHeistWebMcpRegistration,
+  type AgentHeistWebMcpTool,
+} from "./webmcp";
 export {
   AgentHeistWorkspace,
   PanelHeading,

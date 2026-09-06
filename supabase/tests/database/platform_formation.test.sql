@@ -154,7 +154,7 @@ set local role service_role;
 create temporary table first_launch as
 select * from platform_api.create_launch_request_v1(
   '10000000-0000-4000-8000-000000000001',
-  'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+  'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
   'formation-test',
   decode(repeat('11', 32), 'hex'),
   convert_to('{}', 'utf8'),
@@ -198,7 +198,7 @@ select ok(
   (select not was_created
    from platform_api.create_launch_request_v1(
      '10000000-0000-4000-8000-000000000001',
-     'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+     'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
      'formation-test',
      decode(repeat('11', 32), 'hex'),
      convert_to('{}', 'utf8'),
@@ -214,7 +214,7 @@ select ok(
 select throws_ok(
   $$select * from platform_api.create_launch_request_v1(
     '10000000-0000-4000-8000-000000000001',
-    'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+    'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
     'formation-test', decode(repeat('11', 32), 'hex'), convert_to('{"changed":true}', 'utf8'),
     extensions.digest(convert_to('{"changed":true}', 'utf8'), 'sha256'),
     'worldstream/canonical-json/v1', 'disabled', 'seat', 'navigator', 'account_human')$$,
@@ -225,7 +225,7 @@ select throws_ok(
 select throws_ok(
   $$select * from platform_api.create_launch_request_v1(
     '10000000-0000-4000-8000-000000000001',
-    'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+    'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
     'another-key', decode(repeat('12', 32), 'hex'), convert_to('{}', 'utf8'),
     extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
     'worldstream/canonical-json/v1', 'disabled', 'seat', 'navigator', 'account_human')$$,
@@ -236,7 +236,7 @@ select throws_ok(
 select throws_ok(
   $$select * from platform_api.create_launch_request_v1(
     '10000000-0000-4000-8000-000000000002',
-    'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+    'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
     'bad-choice', decode(repeat('13', 32), 'hex'), convert_to('{}', 'utf8'),
     extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
     'worldstream/canonical-json/v1', 'disabled', 'spectator', null, 'account_human')$$,
@@ -247,7 +247,7 @@ select throws_ok(
 select throws_ok(
   $$select * from platform_api.create_launch_request_v1(
     '10000000-0000-4000-8000-000000000002',
-    'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+    'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
     'bad-seat', decode(repeat('14', 32), 'hex'), convert_to('{}', 'utf8'),
     extensions.digest(convert_to('{}', 'utf8'), 'sha256'),
     'worldstream/canonical-json/v1', 'disabled', 'seat', 'unlisted', 'account_human')$$,
@@ -284,7 +284,7 @@ create temporary table incomplete_roster as
 select
   convert_to(jsonb_build_object(
     'schema', 'worldstream/frozen-roster/v1',
-    'listing_revision_digest', 'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+    'listing_revision_digest', 'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
     'members', jsonb_build_array(jsonb_build_object(
       'seat_id', 'navigator',
       'participation', 'account_human',
@@ -491,7 +491,7 @@ create temporary table complete_frozen_payload as
 select
   convert_to(jsonb_build_object(
     'schema', 'worldstream/frozen-roster/v1',
-    'listing_revision_digest', 'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+    'listing_revision_digest', 'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
     'members', jsonb_build_array(
       jsonb_build_object(
         'seat_id', 'navigator',
@@ -620,7 +620,7 @@ select throws_ok(
 create temporary table cancelled_launch as
 select * from platform_api.create_launch_request_v1(
   '10000000-0000-4000-8000-000000000004',
-  'blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b',
+  'blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1',
   'cancel-test',
   decode(repeat('21', 32), 'hex'),
   convert_to('{}', 'utf8'),

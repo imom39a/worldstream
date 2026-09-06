@@ -265,7 +265,7 @@ fn validates_two_exact_bounded_house_agent_revisions() -> Result<(), Box<dyn Err
     );
     assert_eq!(
         listing.digest(),
-        "blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447"
+        "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956"
     );
     assert_ne!(cooperative.digest(), skeptical.digest());
     assert_ne!(cooperative.model_slug(), skeptical.model_slug());
@@ -814,7 +814,7 @@ fn result_source_evidence() -> Result<HostedResultSourceEvidenceV1, Box<dyn Erro
         launch_request_id: "00000000-0000-4000-8000-000000000001".to_owned(),
         run_id: "00000000-0000-4000-8000-000000000002".to_owned(),
         listing_revision_digest:
-            "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b".to_owned(),
+            "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1".to_owned(),
         launch_request_digest: format!("blake3:{}", "1".repeat(64)),
         room_setup_operation_id: "launch-result-source".to_owned(),
         room_id: source_head.room_id.clone(),
@@ -842,7 +842,7 @@ fn result_source_pull_is_run_bound_hash_verified_and_replay_exact() -> Result<()
         schema: "worldstream/hosted-result-source-request/v1".to_owned(),
         run_id: "00000000-0000-4000-8000-000000000002".to_owned(),
         listing_revision_digest:
-            "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b".to_owned(),
+            "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1".to_owned(),
         launch_request_digest: format!("blake3:{}", "1".repeat(64)),
         room_setup_operation_id: "launch-result-source".to_owned(),
     };

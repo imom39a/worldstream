@@ -3,8 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 
 const repository = new URL("..", import.meta.url).pathname;
 const runNamespace = `concurrency-${randomUUID()}`;
-const heistListing = "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b";
-const houseHeistListing = "blake3:66926f7d6c88d0799ec0671a4230141272843e98ed4297dabd0d18cb64ada447";
+const heistListing = "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1";
+const houseHeistListing = "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956";
 const singleListing = `blake3:${sha256(runNamespace)}`;
 const houseHost = `house-concurrency-${sha256(runNamespace).slice(0, 16)}`;
 const packDigest = `blake3:${"2".repeat(64)}`;

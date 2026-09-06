@@ -75,6 +75,8 @@ export interface AgentHeistProjection {
     offerId: string;
     senderRole: AgentHeistRole;
     offeredClueId: string;
+    considerationKind: "clue_disclosure" | "plan_endorsement";
+    considerationId: string;
     status: string;
   }[];
 }
@@ -334,10 +336,27 @@ function parseProjection(value: unknown): AgentHeistProjection | null {
     const offerId = boundedText(item.offer_id);
     const senderRole = parseRole(item.sender_role);
     const offeredClueId = boundedText(item.offered_clue_id);
+    const considerationKind: "clue_disclosure" | "plan_endorsement" | null = item.consideration_kind === "clue_disclosure"
+      || item.consideration_kind === "plan_endorsement"
+      ? item.consideration_kind
+      : null;
+    const considerationId = boundedText(item.consideration_id);
     const status = boundedText(item.status);
-    return offerId === null || senderRole === null || offeredClueId === null || status === null
+    return offerId === null
+      || senderRole === null
+      || offeredClueId === null
+      || considerationKind === null
+      || considerationId === null
+      || status === null
       ? null
-      : { offerId, senderRole, offeredClueId, status };
+      : {
+          offerId,
+          senderRole,
+          offeredClueId,
+          considerationKind,
+          considerationId,
+          status,
+        };
   });
   if (
     publicClaims === null

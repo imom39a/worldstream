@@ -15,17 +15,22 @@ import {
 } from "./presentation";
 
 export type AgentHeistClientConnection = "connecting" | "live" | "disconnected" | "setup_required";
+export type AgentHeistAgentAssist = "checking" | "available" | "unsupported" | "unavailable";
 
 export function AgentHeistClientView({
   state,
   connection,
   message,
+  actionsEnabled,
+  agentAssist = "checking",
   onAct,
   onReconnect,
 }: {
   readonly state: AgentHeistLiveState;
   readonly connection: AgentHeistClientConnection;
   readonly message?: string | null;
+  readonly actionsEnabled?: boolean;
+  readonly agentAssist?: AgentHeistAgentAssist;
   readonly onAct: (action: ActivityClientAction) => Promise<void>;
   readonly onReconnect?: () => Promise<void>;
 }) {
@@ -35,19 +40,31 @@ export function AgentHeistClientView({
   if (state.kind === "incompatible") {
     return <BoundarySurface title="Client incompatible" detail={state.reason} />;
   }
-  return <ReadyParticipant state={state} connection={connection} message={message} onAct={onAct} onReconnect={onReconnect} />;
+  return <ReadyParticipant
+    state={state}
+    connection={connection}
+    message={message}
+    actionsEnabled={actionsEnabled ?? connection === "live"}
+    agentAssist={agentAssist}
+    onAct={onAct}
+    onReconnect={onReconnect}
+  />;
 }
 
 function ReadyParticipant({
   state,
   connection,
   message,
+  actionsEnabled,
+  agentAssist,
   onAct,
   onReconnect,
 }: {
   readonly state: AgentHeistReadyState;
   readonly connection: AgentHeistClientConnection;
   readonly message?: string | null;
+  readonly actionsEnabled: boolean;
+  readonly agentAssist: AgentHeistAgentAssist;
   readonly onAct: (action: ActivityClientAction) => Promise<void>;
   readonly onReconnect?: () => Promise<void>;
 }) {
@@ -62,7 +79,10 @@ function ReadyParticipant({
     <main className="heist-live-shell">
       <header className="live-client-header">
         <div><span className="eyebrow">WorldStream Activity Client</span><h1>Agent Heist</h1></div>
-        <span className={`live-mode live-mode-${connection}`}><i /> Authorized {state.authorization.accessMode} surface</span>
+        <div className="live-client-badges">
+          <span className={`live-mode live-mode-${connection}`}><i /> Authorized {state.authorization.accessMode} surface</span>
+          <span className={`agent-assist agent-assist-${agentAssist}`}>{agentAssistLabel(agentAssist)}</span>
+        </div>
       </header>
       <div className="live-client-notice" role="status">
         <strong>{authorizationLabel(state)}</strong>
@@ -82,7 +102,7 @@ function ReadyParticipant({
           <span>Projection only</span>
         </>}
         right={state.authorization.accessMode === "participant"
-          ? <PrivateParticipantPanel state={state} connection={connection} onAct={onAct} />
+          ? <PrivateParticipantPanel state={state} actionsEnabled={actionsEnabled} onAct={onAct} />
           : <SpectatorPanel />}
       />
     </main>
@@ -124,6 +144,10 @@ function MembershipPanel({
 function PublicBoard({ state }: { readonly state: AgentHeistReadyState }) {
   const result = state.projection.outcome;
   return <div className="live-board">
+    <section className="phase-window">
+      <div><span className="live-panel-label">Current phase</span><strong>{capitalize(state.projection.phase)}</strong></div>
+      <div><span className="live-panel-label">Deadline</span><strong>{deadlineLabel(state.projection.phaseDeadline)}</strong></div>
+    </section>
     <div className="live-board-grid">
       <section><span className="live-panel-label">Published claims</span><h3>Clue board</h3>
         {state.projection.publicClaims.length === 0 ? <p className="empty-copy">No clue has been published.</p> : (
@@ -151,11 +175,11 @@ function PublicBoard({ state }: { readonly state: AgentHeistReadyState }) {
 
 function PrivateParticipantPanel({
   state,
-  connection,
+  actionsEnabled,
   onAct,
 }: {
   readonly state: AgentHeistReadyState;
-  readonly connection: AgentHeistClientConnection;
+  readonly actionsEnabled: boolean;
   readonly onAct: (action: ActivityClientAction) => Promise<void>;
 }) {
   return <>
@@ -165,13 +189,26 @@ function PrivateParticipantPanel({
         <span>Authorized private clue</span><strong>{humanize(clue.clueId)}</strong><code>{clue.claimCode}</code>
       </article>)}</div>
     )}
-    <PanelHeading number="04" title="Current Actions" />
+    {state.projection.ownCommitment === null ? null : <div className="own-commitment">
+      <span>Your sealed commitment</span>
+      <strong>{humanize(state.projection.ownCommitment.selectedPlanId)}</strong>
+      <small>{state.projection.ownCommitment.contributeRequiredResource ? "Required resource committed" : "No resource committed"}</small>
+    </div>}
+    <PanelHeading number="04" title="Incoming exchanges" />
+    {state.projection.addressedOffers.length === 0 ? <p className="private-empty">No exchange is addressed to this role.</p> : (
+      <div className="incoming-exchanges">{state.projection.addressedOffers.map((offer) => <article key={offer.offerId}>
+        <span>{capitalize(offer.senderRole)} offers {humanize(offer.offeredClueId)}</span>
+        <strong>For {humanize(offer.considerationKind)}: {humanize(offer.considerationId)}</strong>
+        <small>{humanize(offer.status)}</small>
+      </article>)}</div>
+    )}
+    <PanelHeading number="05" title="Current Actions" />
     {state.offers.length === 0 ? <p className="private-empty">No Action is offered at this synchronized Head.</p> : (
       <div className="live-offer-list">{state.offers.map((offer) => <ActionOfferForm
         key={offer.offerId}
         offer={offer}
         roomSequence={state.roomSequence}
-        enabled={connection === "live"}
+        enabled={actionsEnabled}
         onAct={onAct}
       />)}</div>
     )}
@@ -282,6 +319,26 @@ function connectionLabel(connection: AgentHeistClientConnection): string {
   if (connection === "connecting") return "Connecting";
   if (connection === "setup_required") return "Setup required";
   return "Disconnected";
+}
+
+function agentAssistLabel(status: AgentHeistAgentAssist): string {
+  if (status === "available") return "Agent tools ready";
+  if (status === "unsupported") return "Human controls";
+  if (status === "unavailable") return "Agent tools unavailable";
+  return "Checking agent tools";
+}
+
+function deadlineLabel(value: string | null): string {
+  if (value === null) return "No active deadline";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Authoritative deadline set";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 
 function capitalize(value: string): string { return value.charAt(0).toUpperCase() + value.slice(1); }

@@ -6,7 +6,7 @@
   "projection_schema_source": "config/hosted/schemas/agent-heist-public-projection-v1.schema.json",
   "result_schema_source": "config/hosted/schemas/result-summary-v1.schema.json",
   "client_release_source": "config/activity-clients/releases/agent-heist-web.json",
-  "listing_digest": "blake3:fdb9f9a4b72e83aefde1a98aca89a3c75a100fcddb7dcb29c9896228f6d28c1b",
+  "listing_digest": "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1",
   "projector_digest": "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf",
   "runtime_digest": "blake3:7278757ac8f047330292e399ac3c8f4ed49225b05ecb6b997b75500784b0526e",
   "expected_room_setup": "fixtures/hosted-contract/expected/agent-heist-room-setup.json",

@@ -15,13 +15,13 @@
   "clients": [
     {
       "client_id": "worldstream.negotiate.web",
-      "release_digest": "sha256:febbfd4f6545704479460c7b81408402a22e1175174bb96f14347d2ead571bf1"
+      "release_digest": "sha256:bdb99ac4fd2c914995ffe8c546708081281ffaaeebf01b6c1b1a8f0124ca8011"
     }
   ],
   "client_compatibility": [
     {
       "client_id": "worldstream.negotiate.web",
-      "release_digest": "sha256:febbfd4f6545704479460c7b81408402a22e1175174bb96f14347d2ead571bf1",
+      "release_digest": "sha256:bdb99ac4fd2c914995ffe8c546708081281ffaaeebf01b6c1b1a8f0124ca8011",
       "surface_id": "negotiate-web",
       "pack_revision_digest": "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c",
       "access_mode": "participant",
@@ -34,7 +34,7 @@
     },
     {
       "client_id": "worldstream.negotiate.web",
-      "release_digest": "sha256:febbfd4f6545704479460c7b81408402a22e1175174bb96f14347d2ead571bf1",
+      "release_digest": "sha256:bdb99ac4fd2c914995ffe8c546708081281ffaaeebf01b6c1b1a8f0124ca8011",
       "surface_id": "negotiate-web",
       "pack_revision_digest": "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c",
       "access_mode": "spectator",

@@ -47,7 +47,14 @@ function readyState(): AgentHeistReadyState {
       outcome: null,
       privateClues: [{ clueId: "route", ownerRole: "navigator", claimCode: "navigator-only-value" }],
       ownCommitment: null,
-      addressedOffers: [],
+      addressedOffers: [{
+        offerId: "exchange-1",
+        senderRole: "broker",
+        offeredClueId: "route",
+        considerationKind: "plan_endorsement",
+        considerationId: "plan-a",
+        status: "open",
+      }],
     },
     offers: [{
       offerId: "7:propose_plan:0",
@@ -68,6 +75,7 @@ describe("standalone Agent Heist live participant surface", () => {
     expect(markup).toContain("Navigator participant");
     expect(markup).toContain("navigator-only-value");
     expect(markup).toContain("propose_plan");
+    expect(markup).toContain("plan endorsement: plan-a");
     expect(markup).toContain("based_on_room_seq");
     expect(markup).toContain("7");
     expect(markup).not.toMatch(/Select Projection|Operator diagnostics|Public board|Recorded fixture|Fixture mode/);
@@ -106,6 +114,22 @@ describe("standalone Agent Heist live participant surface", () => {
       <AgentHeistClientView state={readyState()} connection="disconnected" onAct={vi.fn()} />,
     );
 
+    expect(markup).toContain("Reconnect before acting");
+    expect(markup).toContain("disabled");
+  });
+
+  it("keeps Actions disabled while a live transport has no current action grant", () => {
+    const markup = renderToStaticMarkup(
+      <AgentHeistClientView
+        state={readyState()}
+        connection="live"
+        actionsEnabled={false}
+        agentAssist="available"
+        onAct={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain("Agent tools ready");
     expect(markup).toContain("Reconnect before acting");
     expect(markup).toContain("disabled");
   });
