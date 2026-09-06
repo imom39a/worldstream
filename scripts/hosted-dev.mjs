@@ -2,14 +2,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
-const LISTING_DIGEST = "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1";
+const LISTING_DIGEST = "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956";
 const DEVELOPMENT_USER_ID = "00000000-0000-4000-8000-00000000d001";
 const DEVELOPMENT_PROVIDER_SUBJECT = "worldstream-development";
 const DEVELOPMENT_LOGIN = "worldstream-local-developer";
@@ -34,9 +34,9 @@ export function hostedDevelopmentPorts(environment = process.env) {
       "fake OpenRouter",
     ),
   };
-  if (ports.controller !== 9420 || ports.heist !== 5173) {
+  if (ports.controller !== 9420 || ports.product !== 5180 || ports.heist !== 5173) {
     throw new Error(
-      "Controller 9420 and Agent Heist 5173 are fixed by the reviewed local client declaration. " +
+      "Controller 9420, product 5180, and Agent Heist 5173 are fixed by the reviewed local client declaration. " +
         "Regenerate and review that declaration before changing them.",
     );
   }
@@ -74,6 +74,8 @@ async function main() {
   const checkOnly = parseArguments(process.argv.slice(2));
   assertHostedDevelopmentAllowed();
   const ports = hostedDevelopmentPorts();
+  const productOrigin = `http://127.0.0.1:${ports.product}`;
+  const heistOrigin = `http://127.0.0.1:${ports.heist}`;
   const stateRoot = join(REPOSITORY_ROOT, ".worldstream", "hosted-dev");
   // The retained kernel contract still names this sibling directory `studio`;
   // it contains Controller authority/state and does not start a Studio UI.
@@ -94,6 +96,7 @@ async function main() {
     WORLDSTREAM_DEPLOYMENT_ENVIRONMENT: "development",
     WORLDSTREAM_HOSTED_INSTALLATION_ID: HOST_INSTALLATION_ID,
     WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: CONTROLLER_AUTHORITY,
+    WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
   };
   const ctl = (command, options = {}) =>
     run(
@@ -179,13 +182,11 @@ async function main() {
       );
     }
     await assertPortsAvailable(ports, reuseHeist ? new Set(["heist"]) : new Set());
-    await importClientDeclarations(ctl);
+    await importClientDeclarations(ctl, stateDirectory, stateRoot);
 
-    const heistOrigin = `http://127.0.0.1:${ports.heist}`;
     await ctl(["server", "start", "--participant-console-origin", heistOrigin]);
     managedStarted = true;
 
-    const productOrigin = `http://127.0.0.1:${ports.product}`;
     const platformOrigin = `http://127.0.0.1:${ports.platform}`;
     const childEnvironment = {
       ...commonEnvironment,
@@ -208,6 +209,9 @@ async function main() {
       WORLDSTREAM_FAKE_OPENROUTER_PORT: String(ports.fakeOpenRouter),
       WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY: FAKE_OPENROUTER_KEY,
       WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET: platformOrigin,
+      WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET: heistOrigin,
+      WORLDSTREAM_HOSTED_GATEWAY_URL: `http://127.0.0.1:${ports.gateway}`,
+      WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
       VITE_WORLDSTREAM_SUPERVISOR_URL: `http://127.0.0.1:${ports.controller}`,
     };
 
@@ -250,7 +254,7 @@ async function main() {
           WORLDSTREAM_HOST_ADAPTER_UPSTREAM: `127.0.0.1:${ports.controller}`,
           WORLDSTREAM_RUNTIME_UPSTREAM: `127.0.0.1:${ports.runtime}`,
           WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: CONTROLLER_AUTHORITY,
-          WORLDSTREAM_HOSTED_CLIENT_ORIGIN: heistOrigin,
+          WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
           WORLDSTREAM_PUBLIC_AUTHORITY: `127.0.0.1:${ports.gateway}`,
           WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
           WORLDSTREAM_LISTING_ALLOWLIST: LISTING_DIGEST,
@@ -381,8 +385,8 @@ async function seedSupabase(supabase, environment) {
   if (verified.stdout.trim() !== "1|1") throw new Error("local Supabase seed verification failed");
 }
 
-async function importClientDeclarations(ctl) {
-  const declaration = join(REPOSITORY_ROOT, "config", "activity-clients", "cli-import.json");
+async function importClientDeclarations(ctl, stateDirectory, stateRoot) {
+  const declaration = await hostedClientDeclaration(stateDirectory, stateRoot);
   const preview = await ctl(["init", "--client-declaration", declaration, "--preview"], {
     capture: true,
   });
@@ -396,6 +400,97 @@ async function importClientDeclarations(ctl) {
     throw new Error("worldstreamctl client import review omitted its exact digest");
   }
   await ctl(["init", "--client-declaration", declaration, "--approve-imports", digest]);
+}
+
+async function hostedClientDeclaration(stateDirectory, stateRoot) {
+  const configuration = join(REPOSITORY_ROOT, "config", "activity-clients");
+  const checkedIn = join(configuration, "hosted-local-import.json");
+  const fallbackDirectory = join(stateDirectory, "client-bindings", "inspector-fallback");
+  let fallbackFiles;
+  try {
+    fallbackFiles = (await readdir(fallbackDirectory)).filter((name) => name.endsWith(".json"));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return checkedIn;
+    throw error;
+  }
+  if (fallbackFiles.length === 0) return checkedIn;
+  if (fallbackFiles.length !== 1) throw new Error("retained Inspector fallback inventory is ambiguous");
+
+  const fallback = await readRegularJson(join(fallbackDirectory, fallbackFiles[0]));
+  const deploymentId = requiredJsonString(fallback.deployment_id, "retained Inspector deployment");
+  const deployment = await readRegularJson(
+    join(stateDirectory, "client-bindings", "deployments", `${deploymentId}.json`),
+  );
+  const releaseDigest = requiredJsonString(deployment.release_digest, "retained Inspector release");
+  const clientId = requiredJsonString(deployment.client_id, "retained Inspector client");
+  const releasesDirectory = join(stateDirectory, "client-bindings", "releases");
+  const releaseFiles = (await readdir(releasesDirectory)).filter((name) => name.endsWith(".json"));
+  let retainedRelease = null;
+  for (const name of releaseFiles) {
+    const candidate = await readRegularJson(join(releasesDirectory, name));
+    if (candidate.client_id === clientId && candidate.release_digest === releaseDigest) {
+      if (retainedRelease !== null) throw new Error("retained Inspector release is ambiguous");
+      retainedRelease = candidate;
+    }
+  }
+  if (retainedRelease === null) throw new Error("retained Inspector release is unavailable");
+
+  const template = await readRegularJson(join(configuration, "hosted-local-bindings.json"));
+  const currentHeist = await readRegularJson(
+    join(configuration, "releases", "agent-heist-web.json"),
+  );
+  template.deployments = [
+    deployment,
+    ...template.deployments.filter((candidate) => candidate.client_id !== "worldstream.inspector.web"),
+  ];
+  template.inspector_fallback = fallback;
+  const generated = join(stateRoot, "generated-client-import");
+  await mkdir(generated, { recursive: true, mode: 0o700 });
+  await writeFile(
+    join(generated, "agent-heist-web.json"),
+    `${JSON.stringify(currentHeist)}\n`,
+    { mode: 0o600 },
+  );
+  await writeFile(
+    join(generated, "retained-inspector-web.json"),
+    `${JSON.stringify(retainedRelease)}\n`,
+    { mode: 0o600 },
+  );
+  await writeFile(
+    join(generated, "hosted-local-bindings.json"),
+    `${JSON.stringify(template)}\n`,
+    { mode: 0o600 },
+  );
+  const generatedDeclaration = join(generated, "hosted-local-import.json");
+  await writeFile(
+    generatedDeclaration,
+    `${JSON.stringify({
+      schema: "worldstream/client-declaration-import/v1",
+      release_files: ["./agent-heist-web.json", "./retained-inspector-web.json"],
+      bindings_file: "./hosted-local-bindings.json",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  return generatedDeclaration;
+}
+
+async function readRegularJson(path) {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 1_048_576) {
+    throw new Error("retained client record is not a bounded regular file");
+  }
+  const value = JSON.parse(await readFile(path, "utf8"));
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("retained client record is invalid");
+  }
+  return value;
+}
+
+function requiredJsonString(value, label) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
 }
 
 async function assertPortsAvailable(ports, reusableNames) {
@@ -474,7 +569,12 @@ async function readiness(ports, ctl, children) {
     waitForHttp("Platform BFF", `http://127.0.0.1:${ports.platform}/api/dev/status`, 200, children),
     waitForHttp("fake OpenRouter", `http://127.0.0.1:${ports.fakeOpenRouter}/healthz`, 200, children),
     waitForHttp("product", `http://127.0.0.1:${ports.product}/`, 200, children),
-    waitForHttp("Agent Heist", `http://127.0.0.1:${ports.heist}/agent-heist/`, 200, children),
+    waitForHttp(
+      "same-origin Agent Heist",
+      `http://127.0.0.1:${ports.product}/agent-heist/`,
+      200,
+      children,
+    ),
     waitForHttp("Hosted Gateway", `http://127.0.0.1:${ports.gateway}/readyz`, 200, children),
     waitForCommand(
       "Runtime and Controller",
@@ -534,6 +634,72 @@ async function verifyDevelopmentFlow(ports) {
   if (cookie === undefined) throw new Error("development identity cookie check failed");
   const session = await fetch(`${productOrigin}/api/auth/session`, { headers: { cookie } });
   if (session.status !== 200) throw new Error("development session round-trip check failed");
+  const sessionBody = await session.json();
+  if (typeof sessionBody.csrf !== "string") {
+    throw new Error("development session omitted CSRF authority");
+  }
+  const catalogResponse = await fetch(`${productOrigin}/api/catalog`);
+  const catalog = await catalogResponse.json();
+  const catalogBytes = JSON.stringify(catalog);
+  if (
+    catalogResponse.status !== 200 ||
+    catalog.activities?.[0]?.slug !== "agent-heist" ||
+    catalog.activities?.[0]?.availability !== "available" ||
+    catalogBytes.includes("worldstream.agent-heist") ||
+    catalogBytes.includes(LISTING_DIGEST)
+  ) {
+    throw new Error("hosted catalog boundary check failed");
+  }
+  const launchMutationHeaders = {
+    "content-type": "application/json",
+    cookie,
+    origin: productOrigin,
+    "sec-fetch-site": "same-origin",
+    "x-worldstream-csrf": sessionBody.csrf,
+  };
+  const launchBody = JSON.stringify({
+    listing_slug: "agent-heist",
+    creator_access: "seat",
+    creator_seat: "seat-1",
+    fill_mode: "house_agents",
+    idempotency_key: "hosted_local_acceptance_idempotency_key_0001",
+  });
+  const create = () => fetch(`${productOrigin}/api/launches`, {
+    method: "POST",
+    headers: launchMutationHeaders,
+    body: launchBody,
+  });
+  const firstLaunchResponse = await create();
+  const firstLaunch = await firstLaunchResponse.json();
+  const repeatedLaunchResponse = await create();
+  const repeatedLaunch = await repeatedLaunchResponse.json();
+  if (
+    ![200, 201].includes(firstLaunchResponse.status) ||
+    repeatedLaunchResponse.status !== 200 ||
+    typeof firstLaunch.launch_id !== "string" ||
+    firstLaunch.launch_id !== repeatedLaunch.launch_id
+  ) {
+    throw new Error("hosted launch idempotency check failed");
+  }
+  if (repeatedLaunch.state === "collecting") {
+    const invitation = await fetch(
+      `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/seats/seat-2/invitation`,
+      { method: "POST", headers: launchMutationHeaders, body: "{}" },
+    );
+    const invitationBody = await invitation.json();
+    if (
+      invitation.status !== 201 ||
+      typeof invitationBody.invitation_token !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(invitationBody.invitation_token)
+    ) {
+      throw new Error("hosted seat invitation check failed");
+    }
+    const cancellation = await fetch(
+      `${productOrigin}/api/launches/${repeatedLaunch.launch_id}/cancel`,
+      { method: "POST", headers: launchMutationHeaders, body: "{}" },
+    );
+    if (cancellation.status !== 200) throw new Error("hosted launch cancellation check failed");
+  }
 
   const provider = await fetch(
     `http://127.0.0.1:${ports.fakeOpenRouter}/api/v1/chat/completions`,
@@ -557,16 +723,34 @@ async function verifyDevelopmentFlow(ports) {
       join(REPOSITORY_ROOT, "sdk", "typescript-pack", "packages", "pack-sdk", "dist", "index.js"),
     ).href
   );
-  const [frozenLaunchRequest, frozenRoster, frozenRoomSetupSpecification] = await Promise.all(
+  const [sourceLaunchRequest, sourceRoster, listingValue] = await Promise.all(
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "fixtures/hosted-contract/expected/agent-heist-room-setup.json",
+      "config/hosted/listings/agent-heist-0.3.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
+  const frozenLaunchRequest = {
+    ...sourceLaunchRequest,
+    listing_revision_digest: LISTING_DIGEST,
+  };
+  const frozenRoster = {
+    ...sourceRoster,
+    listing_revision_digest: LISTING_DIGEST,
+  };
   const launchBytes = encodeCanonical(frozenLaunchRequest);
   const rosterBytes = encodeCanonical(frozenRoster);
-  const setupBytes = encodeCanonical(frozenRoomSetupSpecification);
+  const { deriveRoomSetup, readListingRevision } = await import(
+    pathToFileURL(
+      join(REPOSITORY_ROOT, "sdk", "typescript-hosted-contract", "dist", "index.js"),
+    ).href
+  );
+  const setupBytes = deriveRoomSetup(
+    readListingRevision(encodeCanonical(listingValue)),
+    launchBytes,
+    rosterBytes,
+  );
+  const frozenRoomSetupSpecification = JSON.parse(new TextDecoder().decode(setupBytes));
   const launchRequest = {
     schema: "worldstream/hosted-launch-request/v1",
     listing_revision_digest: LISTING_DIGEST,
@@ -574,11 +758,11 @@ async function verifyDevelopmentFlow(ports) {
     launch_input_digest: taggedSha256(encodeCanonical(frozenLaunchRequest.inputs)),
     frozen_roster_digest: taggedSha256(rosterBytes),
     room_setup_specification_digest: taggedBlake3(setupBytes),
-    room_setup_operation_id: "hosted-local-readiness",
+    room_setup_operation_id: "hosted-local-readiness-d3f2c557",
     capacity_authorization: {
       schema: "worldstream/platform-capacity-authorization/v1",
       host_installation_id: HOST_INSTALLATION_ID,
-      reservation_reference: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      reservation_reference: "d3f2c557-83a7-4154-8946-a58184b35866",
     },
     frozen_launch_request: frozenLaunchRequest,
     frozen_roster: frozenRoster,
@@ -592,7 +776,12 @@ async function verifyDevelopmentFlow(ports) {
     },
     body: encodeCanonical(launchRequest),
   });
-  if (gateway.status !== 202) throw new Error("development Hosted Gateway contract check failed");
+  if (gateway.status !== 202) {
+    const diagnostic = (await gateway.text()).slice(0, 512).replaceAll(/[\r\n]/gu, " ");
+    throw new Error(
+      `development Hosted Gateway contract check failed (${gateway.status}: ${diagnostic})`,
+    );
+  }
   const launchStatus = await gateway.json();
   if (
     launchStatus.schema !== "worldstream/hosted-launch-status/v1" ||
@@ -633,7 +822,7 @@ function printReady(ports, supabase) {
       "",
       "WorldStream hosted development stack is ready.",
       `Product:        http://127.0.0.1:${ports.product}/`,
-      `Agent Heist:    http://127.0.0.1:${ports.heist}/agent-heist/`,
+      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist/`,
       `Hosted Gateway: http://127.0.0.1:${ports.gateway}/`,
       `Supabase API:   ${requiredSupabase(supabase, "API_URL")}`,
       `Runtime:        127.0.0.1:${ports.runtime} (loopback only)`,

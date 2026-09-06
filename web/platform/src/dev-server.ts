@@ -9,6 +9,7 @@ import {
   type PlatformBff,
 } from "./bff.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
+import { HttpHostedFormationGateway } from "./hosted-formation.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
 
 const MAX_HTTP_BODY_BYTES = 32 * 1024;
@@ -24,10 +25,11 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     dataSecretKey: required(environment, "SUPABASE_DATA_SECRET_KEY"),
   });
   const hostedBrowserSessions = hostedBrowserSessionClient(environment, canonicalOrigin);
+  const hostedFormation = hostedFormationDependencies(environment, dependencies);
   const bff = createDevelopmentPlatformBff(
     {
       canonicalOrigin,
-      allowedReturnTargets: ["/"],
+      allowedReturnTargets: ["/", "/join"],
       sessionKey: base64Key(required(environment, "WORLDSTREAM_SESSION_KEY_BASE64")),
       oauthKey: base64Key(required(environment, "WORLDSTREAM_OAUTH_KEY_BASE64")),
       developmentMode: exactMode(environment.WORLDSTREAM_DEVELOPMENT_IDENTITY_BYPASS),
@@ -41,11 +43,37 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     },
     dependencies.dataClient,
     hostedBrowserSessions,
+    hostedFormation,
   );
   const server = createServer((request, response) => {
     void dispatch(bff, canonicalOrigin, request, response);
   });
   return { bind, port, server };
+}
+
+function hostedFormationDependencies(
+  environment: NodeJS.ProcessEnv,
+  dependencies: ReturnType<typeof createSupabaseBffDependencies>,
+) {
+  const baseUrl = environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
+  const serviceAuthority = environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
+  const hostInstallationId = environment.WORLDSTREAM_HOSTED_INSTALLATION_ID;
+  if (baseUrl === undefined && serviceAuthority === undefined && hostInstallationId === undefined) {
+    return undefined;
+  }
+  if (
+    baseUrl === undefined ||
+    serviceAuthority === undefined ||
+    hostInstallationId === undefined ||
+    dependencies.hostedFormationData === undefined
+  ) {
+    throw new Error("hosted_formation_configuration_incomplete");
+  }
+  return {
+    data: dependencies.hostedFormationData,
+    gateway: new HttpHostedFormationGateway({ baseUrl, serviceAuthority }),
+    hostInstallationId,
+  };
 }
 
 function hostedBrowserSessionClient(

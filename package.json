@@ -40,6 +40,8 @@
     "pack:lint": "pnpm --filter @worldstream/pack-sdk lint && pnpm --filter @worldstream/pack-cli lint",
     "pack:test": "pnpm --filter @worldstream/pack-sdk test && pnpm --filter @worldstream/pack-cli test",
     "hosted-contracts:check": "cargo fmt --all -- --check && cargo clippy -p worldstream-hosted-contract --all-targets -- -D warnings && cargo test -p worldstream-hosted-contract && pnpm --filter @worldstream/hosted-contract lint && pnpm --filter @worldstream/hosted-contract test",
+    "hosted-artifacts:generate": "node scripts/generate-hosted-platform-artifacts.mjs",
+    "hosted-artifacts:check": "node scripts/generate-hosted-platform-artifacts.mjs --check",
     "hosted:dev": "node scripts/hosted-dev.mjs",
     "hosted:dev:check": "node scripts/hosted-dev.mjs --check",
     "hosted:dev:test": "node --test scripts/hosted-dev.test.mjs scripts/hosted-fake-openrouter.test.mjs",

@@ -9,11 +9,11 @@ export function SiteHeader({ onNavigate }: { onNavigate: Navigate }) {
     <header className="site-header">
       <button className="brand" type="button" onClick={() => onNavigate("/")}>
         <span className="brand-mark" aria-hidden="true"><i /><b /><em /></span>
-        <span><strong>WorldStream</strong><small>Technical demos</small></span>
+        <span><strong>WorldStream</strong><small>Live activities</small></span>
       </button>
       <nav aria-label="Primary navigation">
-        <a href="/#demos">Demos</a>
-        <a href="/#capabilities">Capabilities</a>
+        <a href="/#activities-title">Activities</a>
+        <a href="/demos/agent-heist">Recorded demo</a>
         <a href={manualUrl}>Manual</a>
       </nav>
     </header>

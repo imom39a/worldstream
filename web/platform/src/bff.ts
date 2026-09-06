@@ -13,6 +13,27 @@ import {
   type HostedBrowserSessionClient,
   type OwnedRunMembershipCorrespondence,
 } from "./browser-sessions.js";
+import {
+  HostedFormationCoordinator,
+  HostedFormationRejectedError,
+  HostedFormationUnavailableError,
+  sha256 as formationSha256,
+  validLaunchIdentifier,
+  type AccountParticipation,
+  type FormationLaunchRecord,
+  type HostedFormationData,
+  type HostedFormationGateway,
+  type HouseFillRecord,
+  type OwnedRunRecord,
+} from "./hosted-formation.js";
+import {
+  listPublicHostedActivities,
+  reviewedActivityByDigest,
+  reviewedActivityBySlug,
+  reviewedSeatId,
+  reviewedSeatKey,
+} from "./hosted-catalog.js";
+import { encodeCanonical } from "@worldstream/pack-sdk";
 
 const OAUTH_COOKIE = "__Host-worldstream-oauth";
 const SESSION_COOKIE = "__Host-worldstream-session";
@@ -128,6 +149,12 @@ export interface BffDependencies {
   readonly dataClient: PlatformDataClient;
   /** Fixed service-only client for the Fly hosted browser-session boundary. */
   readonly hostedBrowserSessions?: HostedBrowserSessionClient;
+  /** Server-secret Supabase formation RPCs; never installed in browser code. */
+  readonly hostedFormationData?: HostedFormationData;
+  /** Fixed service-only Fly launch boundary. */
+  readonly hostedFormationGateway?: HostedFormationGateway;
+  /** Exact reviewed Host installation selected by deployment configuration. */
+  readonly hostedFormationHostInstallationId?: string;
 }
 
 export interface PlatformBffConfig {
@@ -206,10 +233,14 @@ export function createPlatformBff(
   const allowedReturnTargets = validateReturnTargets(config.allowedReturnTargets);
   const sessionKey = validateKey(config.sessionKey);
   const oauthKey = validateKey(config.oauthKey);
+  const formation = formationCoordinator(dependencies);
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
       if (url.origin !== origin) return safeJson(404, "route_not_found");
+      if (request.method === "GET" && url.pathname === "/api/catalog") {
+        return publicCatalog(formation !== null && dependencies.hostedBrowserSessions !== undefined);
+      }
       if (request.method === "GET" && url.pathname === "/api/auth/github/start") {
         return startGithub(
           request,
@@ -249,6 +280,28 @@ export function createPlatformBff(
       if (request.method === "POST" && url.pathname === "/api/runs/enter") {
         return enterRun(request, origin, sessionKey, dependencies);
       }
+      if (request.method === "POST" && url.pathname === "/api/launches") {
+        return createHostedLaunch(request, origin, sessionKey, dependencies, formation);
+      }
+      if (request.method === "POST" && url.pathname === "/api/invitations/claim") {
+        return claimHostedInvitation(request, origin, sessionKey, dependencies, formation);
+      }
+      const launchRoute = hostedLaunchRoute(url.pathname);
+      if (launchRoute !== null) {
+        if (request.method === "GET" && launchRoute.action === "read") {
+          return readHostedLaunch(request, origin, sessionKey, dependencies, formation, launchRoute.launchId);
+        }
+        if (request.method === "POST" && launchRoute.action !== "read") {
+          return mutateHostedLaunch(
+            request,
+            origin,
+            sessionKey,
+            dependencies,
+            formation,
+            launchRoute,
+          );
+        }
+      }
       if (
         request.method === "POST" &&
         url.pathname === "/api/v1/participant-console/handoffs:redeem"
@@ -278,6 +331,400 @@ export function createPlatformBff(
   };
 }
 
+type HostedLaunchRoute =
+  | { readonly launchId: string; readonly action: "read" }
+  | { readonly launchId: string; readonly action: "start" }
+  | { readonly launchId: string; readonly action: "cancel" }
+  | { readonly launchId: string; readonly action: "invite" | "release" | "reset"; readonly seatId: string };
+
+function formationCoordinator(dependencies: BffDependencies): HostedFormationCoordinator | null {
+  const configured = [
+    dependencies.hostedFormationData,
+    dependencies.hostedFormationGateway,
+    dependencies.hostedFormationHostInstallationId,
+  ].filter((value) => value !== undefined).length;
+  if (configured === 0) return null;
+  if (configured !== 3) throw new Error("hosted_formation_configuration_incomplete");
+  return new HostedFormationCoordinator(
+    dependencies.hostedFormationData!,
+    dependencies.hostedFormationGateway!,
+    dependencies.hostedFormationHostInstallationId!,
+  );
+}
+
+function publicCatalog(dependenciesAvailable: boolean): Response {
+  const response = Response.json({
+    version: "hosted_activity_catalog.v1",
+    activities: listPublicHostedActivities(dependenciesAvailable),
+  });
+  response.headers.set("cache-control", "public, max-age=30, stale-while-revalidate=60");
+  return response;
+}
+
+function hostedLaunchRoute(pathname: string): HostedLaunchRoute | null {
+  const read = pathname.match(/^\/api\/launches\/([0-9a-f-]+)$/u);
+  if (read?.[1] !== undefined && validLaunchIdentifier(read[1])) {
+    return { launchId: read[1], action: "read" };
+  }
+  const direct = pathname.match(/^\/api\/launches\/([0-9a-f-]+)\/(start|cancel)$/u);
+  if (direct?.[1] !== undefined && direct[2] !== undefined && validLaunchIdentifier(direct[1])) {
+    return { launchId: direct[1], action: direct[2] as "start" | "cancel" };
+  }
+  const seat = pathname.match(
+    /^\/api\/launches\/([0-9a-f-]+)\/seats\/([A-Za-z0-9._-]+)\/(invitation|release|reset)$/u,
+  );
+  if (
+    seat?.[1] !== undefined &&
+    seat[2] !== undefined &&
+    seat[3] !== undefined &&
+    validLaunchIdentifier(seat[1]) &&
+    seat[2].length <= 128
+  ) {
+    return {
+      launchId: seat[1],
+      seatId: seat[2],
+      action: seat[3] === "invitation" ? "invite" : seat[3] as "release" | "reset",
+    };
+  }
+  return null;
+}
+
+async function createHostedLaunch(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+  formation: HostedFormationCoordinator | null,
+): Promise<Response> {
+  const admitted = await verifiedMutation(request, origin, sessionKey, dependencies);
+  if (admitted instanceof Response) return admitted;
+  const data = dependencies.hostedFormationData;
+  if (formation === null || data === undefined) return temporarilyUnavailable();
+  if (
+    !isExactObject(admitted.body, [
+      "listing_slug",
+      "creator_access",
+      "creator_seat",
+      "fill_mode",
+      "idempotency_key",
+    ]) ||
+    typeof admitted.body.listing_slug !== "string" ||
+    typeof admitted.body.creator_access !== "string" ||
+    (admitted.body.creator_seat !== null && typeof admitted.body.creator_seat !== "string") ||
+    typeof admitted.body.fill_mode !== "string" ||
+    typeof admitted.body.idempotency_key !== "string" ||
+    !/^[A-Za-z0-9_-]{32,128}$/u.test(admitted.body.idempotency_key)
+  ) {
+    return privateError(400, "invalid_request");
+  }
+  const reviewed = reviewedActivityBySlug(admitted.body.listing_slug);
+  if (reviewed === null) return privateError(409, "activity_unavailable");
+  const creatorAccess = admitted.body.creator_access;
+  if (creatorAccess !== "seat" && creatorAccess !== "spectator") {
+    return privateError(400, "invalid_request");
+  }
+  const seatKey = admitted.body.creator_seat;
+  const seatId = typeof seatKey === "string" ? reviewedSeatId(reviewed, seatKey) : null;
+  if (
+    (creatorAccess === "seat" &&
+      seatId === null) ||
+    (creatorAccess === "spectator" &&
+      (seatKey !== null || reviewed.listing.value.creator_access !== "may_spectate"))
+  ) {
+    return privateError(400, "invalid_request");
+  }
+  const houseFillChoice = admitted.body.fill_mode === "house_agents"
+    ? "fill_unclaimed"
+    : admitted.body.fill_mode === "people_only"
+      ? "disabled"
+      : null;
+  if (houseFillChoice === null) return privateError(400, "invalid_request");
+  const launchInput = encodeCanonical({});
+  try {
+    const created = await data.createLaunchRequest({
+      accountId: admitted.account.accountId,
+      listingRevisionDigest: reviewed.listing.digest,
+      idempotencyNamespace: "hosted-shell-v1",
+      idempotencyKeyDigest: formationSha256(admitted.body.idempotency_key),
+      canonicalLaunchInput: launchInput,
+      launchInputDigest: formationSha256(launchInput),
+      houseFillChoice,
+      creatorAccessChoice: creatorAccess,
+      creatorSeatId: seatId,
+    });
+    const snapshot = await launchSnapshot(data, admitted.account.accountId, created.launchRequestId);
+    if (snapshot === null) return temporarilyUnavailable();
+    return privateJson(created.wasCreated ? 201 : 200, snapshot);
+  } catch (error) {
+    return formationError(error);
+  }
+}
+
+async function readHostedLaunch(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+  formation: HostedFormationCoordinator | null,
+  launchId: string,
+): Promise<Response> {
+  if (formation === null || dependencies.hostedFormationData === undefined) {
+    return temporarilyUnavailable();
+  }
+  const admitted = await verifiedRead(request, origin, sessionKey, dependencies);
+  if (admitted instanceof Response) return admitted;
+  try {
+    const snapshot = await launchSnapshot(
+      dependencies.hostedFormationData,
+      admitted.account.accountId,
+      launchId,
+    );
+    return snapshot === null
+      ? privateError(404, "launch_unavailable")
+      : privateJson(200, snapshot);
+  } catch (error) {
+    return formationError(error);
+  }
+}
+
+async function claimHostedInvitation(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+  formation: HostedFormationCoordinator | null,
+): Promise<Response> {
+  const admitted = await verifiedMutation(request, origin, sessionKey, dependencies);
+  if (admitted instanceof Response) return admitted;
+  const data = dependencies.hostedFormationData;
+  if (formation === null || data === undefined) return temporarilyUnavailable();
+  if (
+    !isExactObject(admitted.body, ["invitation_token", "participation"]) ||
+    typeof admitted.body.invitation_token !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(admitted.body.invitation_token) ||
+    (admitted.body.participation !== "human" && admitted.body.participation !== "external_agent")
+  ) {
+    return privateError(400, "invalid_request");
+  }
+  const participation: AccountParticipation = admitted.body.participation === "human"
+    ? "account_human"
+    : "account_external_agent";
+  try {
+    const claimed = await data.claimInvitedSeat(
+      admitted.account.accountId,
+      formationSha256(admitted.body.invitation_token),
+      participation,
+    );
+    if (claimed === null) return privateError(409, "invitation_unavailable");
+    const snapshot = await launchSnapshot(data, admitted.account.accountId, claimed.launchRequestId);
+    return snapshot === null
+      ? temporarilyUnavailable()
+      : privateJson(201, snapshot);
+  } catch (error) {
+    return formationError(error, "invitation_unavailable");
+  }
+}
+
+async function mutateHostedLaunch(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+  formation: HostedFormationCoordinator | null,
+  route: Exclude<HostedLaunchRoute, { readonly action: "read" }>,
+): Promise<Response> {
+  const admitted = await verifiedMutation(request, origin, sessionKey, dependencies);
+  if (admitted instanceof Response) return admitted;
+  const data = dependencies.hostedFormationData;
+  if (formation === null || data === undefined) return temporarilyUnavailable();
+  if (!isExactObject(admitted.body, [])) return privateError(400, "invalid_request");
+  try {
+    if (route.action === "start") {
+      const advanced = await formation.advance(admitted.account.accountId, route.launchId);
+      const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId);
+      if (snapshot === null) return temporarilyUnavailable();
+      return privateJson(advanced.state === "run_created" ? 200 : 202, {
+        ...snapshot,
+        retry_after_seconds: advanced.retryAfterSeconds,
+      });
+    }
+    if (route.action === "cancel") {
+      return (await data.cancelLaunchRequest(admitted.account.accountId, route.launchId))
+        ? privateJson(200, { version: "hosted_launch_cancelled.v1", cancelled: true })
+        : privateError(409, "launch_unavailable");
+    }
+    const launch = await data.readLaunchRequest(
+      admitted.account.accountId,
+      route.launchId,
+    );
+    const reviewed = launch === null
+      ? null
+      : reviewedActivityByDigest(launch.listingRevisionDigest);
+    const seatId = reviewed === null ? null : reviewedSeatId(reviewed, route.seatId);
+    if (seatId === null) return privateError(409, "seat_unavailable");
+    if (route.action === "invite") {
+      const invitation = await data.rotateSeatInvitation(
+        admitted.account.accountId,
+        route.launchId,
+        seatId,
+      );
+      return invitation === null
+        ? privateError(409, "seat_unavailable")
+        : privateJson(201, {
+            version: "hosted_seat_invitation.v1",
+            invitation_token: invitation.token,
+            expires_at: invitation.expiresAt,
+          });
+    }
+    const changed = route.action === "release"
+      ? await data.releaseSeatClaim(admitted.account.accountId, route.launchId, seatId)
+      : await data.resetSeatClaim(admitted.account.accountId, route.launchId, seatId);
+    if (!changed) return privateError(409, "seat_unavailable");
+    const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId);
+    return snapshot === null ? temporarilyUnavailable() : privateJson(200, snapshot);
+  } catch (error) {
+    return formationError(error);
+  }
+}
+
+async function launchSnapshot(
+  data: HostedFormationData,
+  accountId: string,
+  launchId: string,
+): Promise<Record<string, unknown> | null> {
+  const [launch, house] = await Promise.all([
+    data.readLaunchRequest(accountId, launchId),
+    data.readHouseFill(accountId, launchId),
+  ]);
+  if (launch === null) return null;
+  const reconciliation = launch.state === "collecting_roster"
+    ? null
+    : await data.readGenesisReconciliation(launchId);
+  const run = reconciliation?.runId === null || reconciliation?.runId === undefined
+    ? null
+    : await data.readOwnedRun(accountId, reconciliation.runId);
+  return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run);
+}
+
+function safeLaunchProjection(
+  launch: FormationLaunchRecord,
+  house: HouseFillRecord | null,
+  reconciling: boolean,
+  run: OwnedRunRecord | null,
+): Record<string, unknown> {
+  const reviewed = reviewedActivityByDigest(launch.listingRevisionDigest);
+  const state = launch.state === "collecting_roster"
+    ? "collecting"
+    : launch.state === "run_created"
+      ? "run_created"
+      : ["cancelled", "expired", "failed_pre_genesis"].includes(launch.state)
+        ? launch.state
+        : reconciling
+          ? "reconciling"
+          : "provisioning";
+  return {
+    version: "hosted_launch.v1",
+    launch_id: launch.launchRequestId,
+    activity_slug: reviewed?.slug ?? "unavailable",
+    activity_title: reviewed?.public.title ?? "Unavailable activity",
+    state,
+    expires_at: launch.expiresAt,
+    can_manage: launch.canManage,
+    fill_mode: launch.houseFillChoice === "fill_unclaimed" ? "house_agents" : "people_only",
+    house_fill: house === null
+      ? null
+      : {
+          state: house.state,
+          claim_window_closes_at: house.claimWindowClosesAt,
+          failure_code: house.failureCode,
+        },
+    seats: launch.seats.map((seat) => {
+      const houseAssignment = house?.assignments.find(
+        ({ seatId }) => seatId === seat.seatId,
+      );
+      return {
+        seat_key: reviewed === null
+          ? "unavailable"
+          : reviewedSeatKey(reviewed, seat.seatId) ?? "unavailable",
+        label: seat.displayName,
+        required: seat.required,
+        status: houseAssignment !== undefined
+          ? "house"
+          : seat.claimedByRequester
+            ? "yours"
+            : seat.claimed
+              ? "claimed"
+              : "open",
+        participation: houseAssignment !== undefined
+          ? "house_agent"
+          : seat.participationKind === "account_external_agent"
+            ? "external_agent"
+            : seat.participationKind === "account_human"
+              ? "human"
+              : null,
+        ...(houseAssignment === undefined
+          ? {}
+          : { house_display_name: houseAssignment.displayName }),
+      };
+    }),
+    run: run === null
+      ? null
+      : {
+          run_id: run.runId,
+          public_id: run.publicId,
+          can_enter: run.canEnter,
+          entries: run.memberships.map((membership) => ({
+            label: membership.purpose === "creator_spectator"
+              ? "Spectator view"
+              : launch.seats.find(({ seatId }) => seatId === membership.seatId)?.displayName ?? "Participant view",
+            entry_selector: membership.entrySelector,
+          })),
+        },
+  };
+}
+
+async function verifiedRead(
+  request: Request,
+  origin: string,
+  sessionKey: Buffer,
+  dependencies: BffDependencies,
+): Promise<{ readonly payload: SessionPayload; readonly account: PlatformAccount } | Response> {
+  if (!readRequestIsSafe(request, origin)) return privateError(403, "request_rejected");
+  const payload = readSessionCookie(request, sessionKey);
+  if (payload === null || payload.expiresAt <= Math.floor(Date.now() / 1_000)) {
+    return payload === null ? clearSessionError(401, "session_required") : refreshRequired(payload);
+  }
+  try {
+    const claims = await dependencies.authClient().getClaims(payload.accessToken);
+    if (claims.subject !== payload.authUserId) return clearSessionError(401, "session_invalid");
+    const account = await dependencies.dataClient.resolveGithubAccount({
+      authUserId: payload.authUserId,
+      providerSubject: payload.github.subject,
+    });
+    return account === null
+      ? clearSessionError(401, "session_invalid")
+      : { payload, account };
+  } catch (error) {
+    return credentialWasRejected(error) ? refreshRequired(payload) : temporarilyUnavailable();
+  }
+}
+
+function formationError(error: unknown, rejectedCode = "formation_unavailable"): Response {
+  if (
+    error instanceof HostedFormationRejectedError ||
+    error instanceof PlatformCredentialRejectedError
+  ) {
+    return privateError(409, rejectedCode);
+  }
+  if (
+    error instanceof HostedFormationUnavailableError ||
+    error instanceof PlatformDependencyUnavailableError
+  ) {
+    return temporarilyUnavailable();
+  }
+  return temporarilyUnavailable();
+}
+
 /**
  * Adds one conspicuous loopback-only identity substitute around the production
  * BFF. Supabase remains authoritative for the Platform Account; only the
@@ -287,6 +734,11 @@ export function createDevelopmentPlatformBff(
   config: DevelopmentPlatformBffConfig,
   dataClient: PlatformDataClient,
   hostedBrowserSessions?: HostedBrowserSessionClient,
+  hostedFormation?: {
+    readonly data: HostedFormationData;
+    readonly gateway: HostedFormationGateway;
+    readonly hostInstallationId: string;
+  },
 ): PlatformBff {
   const origin = validateDevelopmentConfiguration(config);
   const user = developmentUser(config.identity);
@@ -295,6 +747,13 @@ export function createDevelopmentPlatformBff(
     authClient: () => auth,
     dataClient,
     ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
+    ...(hostedFormation === undefined
+      ? {}
+      : {
+          hostedFormationData: hostedFormation.data,
+          hostedFormationGateway: hostedFormation.gateway,
+          hostedFormationHostInstallationId: hostedFormation.hostInstallationId,
+        }),
   });
 
   return {

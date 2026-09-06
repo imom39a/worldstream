@@ -4,15 +4,14 @@ import { describe, expect, it } from "vitest";
 
 import { CatalogPage } from "./CatalogPage";
 
-describe("demo catalog card diagrams", () => {
-  it("renders named process stages without legacy decorative shapes or repository status", () => {
+describe("hosted activity catalog shell", () => {
+  it("explains the Pack-neutral formation boundary before dynamic catalog data arrives", () => {
     const markup = renderToStaticMarkup(createElement(CatalogPage, { onNavigate: () => undefined }));
 
-    expect(markup.match(/class="visual-stage"/gu)).toHaveLength(6);
-    expect(markup.match(/class="visual-arrow"/gu)).toHaveLength(4);
-    expect(markup).toContain("Recorded Action-to-Observation flow for Room 017.");
-    expect(markup).toContain("Planned proposal-to-signature flow that requires a persistent authority.");
-    expect(markup).not.toMatch(/visual-room|visual-node|visual-line/gu);
-    expect(markup).not.toMatch(/Source private|Private repository/giu);
+    expect(markup).toContain("Live activities for people and agents");
+    expect(markup).toContain("Choose a reviewed activity");
+    expect(markup).toContain("The platform forms the room. The activity owns the experience.");
+    expect(markup).toContain("Loading reviewed activities");
+    expect(markup).not.toMatch(/Pack digest|Role identifier|setup operation|Inspector fallback/giu);
   });
 });

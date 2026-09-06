@@ -1,0 +1,70 @@
+{
+  "schema": "worldstream/client-binding-bootstrap/v1",
+  "deployment_trust_policy": "allow_externally_trusted",
+  "deployments": [
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "first-party-inspector-web",
+      "client_id": "worldstream.inspector.web",
+      "release_digest": "sha256:0ed0ae226c780c1542c74c70fae78a6fa55fbfe46b4c3f0ca0b1888e667aabb5",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "inspector-web",
+          "launch_url": "http://127.0.0.1:5180/inspector/"
+        }
+      ]
+    },
+    {
+      "schema": "worldstream/client-deployment/v1",
+      "deployment_id": "hosted-agent-heist-web-88f76571",
+      "client_id": "worldstream.agent-heist.web",
+      "release_digest": "sha256:88f76571d3d5736f0ca52740d619761f9ad6dcb9112792e806d8072c2a983148",
+      "trust_level": "externally_trusted",
+      "surfaces": [
+        {
+          "surface_id": "heist-web",
+          "launch_url": "http://127.0.0.1:5180/agent-heist/"
+        }
+      ]
+    }
+  ],
+  "bindings": [
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-2-88f76571-participant",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.2.0",
+        "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "participant",
+      "roles": ["navigator", "insider", "broker"],
+      "deployment_id": "hosted-agent-heist-web-88f76571",
+      "surface_id": "heist-web",
+      "preference": "default"
+    },
+    {
+      "schema": "worldstream/client-binding/v1",
+      "binding_id": "hosted-agent-heist-0-2-88f76571-spectator",
+      "pack": {
+        "id": "worldstream.agent-heist",
+        "version": "0.2.0",
+        "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+      },
+      "client_contract": "worldstream/activity-client-protocol/v1",
+      "access_mode": "spectator",
+      "roles": [],
+      "deployment_id": "hosted-agent-heist-web-88f76571",
+      "surface_id": "heist-web",
+      "preference": "default"
+    }
+  ],
+  "inspector_fallback": {
+    "schema": "worldstream/inspector-fallback/v1",
+    "fallback_id": "first-party-inspector-fallback",
+    "deployment_id": "first-party-inspector-web",
+    "surface_id": "inspector-web"
+  }
+}

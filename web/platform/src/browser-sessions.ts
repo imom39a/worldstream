@@ -2,6 +2,7 @@ import { encodeCanonical, type CanonicalObject } from "@worldstream/pack-sdk";
 
 const MAX_GATEWAY_RESPONSE_BYTES = 16 * 1024;
 const BLAKE3_PATTERN = /^blake3:[0-9a-f]{64}$/u;
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/u;
 const SAFE_REFERENCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
@@ -317,7 +318,7 @@ function validateCorrespondence(value: OwnedRunMembershipCorrespondence): void {
     !SAFE_REFERENCE_PATTERN.test(value.pack.id) ||
     !SAFE_REFERENCE_PATTERN.test(value.pack.version) ||
     !BLAKE3_PATTERN.test(value.pack.digest) ||
-    !BLAKE3_PATTERN.test(value.clientReleaseDigest) ||
+    !SHA256_PATTERN.test(value.clientReleaseDigest) ||
     !SAFE_REFERENCE_PATTERN.test(value.clientSurfaceId) ||
     value.principalKind !== "human" ||
     !ULID_PATTERN.test(value.principalId) ||

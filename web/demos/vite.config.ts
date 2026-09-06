@@ -9,6 +9,9 @@ const sourceRevision = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], 
   encoding: "utf8",
 }).trim();
 const platformBffTarget = localPlatformBffTarget(process.env.WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET);
+const activityClientTarget = localActivityClientTarget(
+  process.env.WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET,
+);
 
 export default defineConfig({
   define: {
@@ -34,6 +37,14 @@ export default defineConfig({
               target: platformBffTarget,
               changeOrigin: false,
             },
+            ...(activityClientTarget === undefined
+              ? {}
+              : {
+                  "/agent-heist": {
+                    target: activityClientTarget,
+                    changeOrigin: true,
+                  },
+                }),
           },
         }),
   },
@@ -52,6 +63,30 @@ function localPlatformBffTarget(value: string | undefined): string | undefined {
     url.hash !== ""
   ) {
     throw new Error("invalid local Platform BFF target");
+  }
+  return url.origin;
+}
+
+function localActivityClientTarget(value: string | undefined): string | undefined {
+  return localLoopbackTarget(value, "Activity Client");
+}
+
+function localLoopbackTarget(
+  value: string | undefined,
+  label: string,
+): string | undefined {
+  if (value === undefined) return undefined;
+  const url = new URL(value);
+  if (
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error(`invalid local ${label} target`);
   }
   return url.origin;
 }

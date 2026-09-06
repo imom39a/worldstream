@@ -26,6 +26,17 @@ import type {
   TerminalReconciliationState,
 } from "./result-reconciliation.js";
 import type { OwnedRunMembershipCorrespondence } from "./browser-sessions.js";
+import type {
+  AccountParticipation,
+  FormationLaunchRecord,
+  GenesisReconciliation,
+  HostedFormationData,
+  HostedLaunchMaterial,
+  HouseFillChoice,
+  HouseFillRecord,
+  LaunchCreationResult,
+  OwnedRunRecord,
+} from "./hosted-formation.js";
 
 interface RpcResult {
   readonly data: unknown;
@@ -59,9 +70,11 @@ export function createSupabaseBffDependencies(
   }
   validateSupabaseKey(config.publishableKey, "publishable");
   validateSupabaseKey(config.dataSecretKey, "secret");
+  const dataClient = new SupabasePlatformDataClient(config.url, config.dataSecretKey);
   return {
     authClient: () => new SupabasePlatformAuthClient(config.url, config.publishableKey),
-    dataClient: new SupabasePlatformDataClient(config.url, config.dataSecretKey),
+    dataClient,
+    hostedFormationData: dataClient,
   };
 }
 
@@ -209,7 +222,7 @@ class SupabasePlatformAuthClient implements PlatformAuthClient {
   }
 }
 
-class SupabasePlatformDataClient implements PlatformDataClient {
+class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationData {
   readonly #rpc: RpcClient;
 
   constructor(url: string, secretKey: string) {
@@ -388,6 +401,345 @@ class SupabasePlatformDataClient implements PlatformDataClient {
       principalKind: "human",
       principalId: requiredString(value.principal_id),
       membershipId: requiredString(value.membership_id),
+    };
+  }
+
+  async createLaunchRequest(input: {
+    accountId: string;
+    listingRevisionDigest: string;
+    idempotencyNamespace: string;
+    idempotencyKeyDigest: Uint8Array;
+    canonicalLaunchInput: Uint8Array;
+    launchInputDigest: Uint8Array;
+    houseFillChoice: HouseFillChoice;
+    creatorAccessChoice: "seat" | "spectator";
+    creatorSeatId: string | null;
+  }): Promise<LaunchCreationResult> {
+    const data = await requiredRpc(this.#rpc, "create_launch_request_v1", {
+      p_creator_account_id: input.accountId,
+      p_listing_revision_digest: input.listingRevisionDigest,
+      p_idempotency_namespace: input.idempotencyNamespace,
+      p_idempotency_key_digest: bytea(input.idempotencyKeyDigest),
+      p_canonical_launch_input: bytea(input.canonicalLaunchInput),
+      p_launch_input_digest: bytea(input.launchInputDigest),
+      p_canonicalizer_version: "worldstream/canonical-json/v1",
+      p_house_fill_choice: input.houseFillChoice,
+      p_creator_access_choice: input.creatorAccessChoice,
+      p_creator_seat_id: input.creatorSeatId,
+      p_creator_participation_kind: "account_human",
+    });
+    const row = singleRow(data);
+    return {
+      launchRequestId: requiredString(row.launch_request_id),
+      state: requiredString(row.launch_state),
+      expiresAt: requiredString(row.expires_at),
+      wasCreated: requiredBoolean(row.was_created),
+    };
+  }
+
+  async readLaunchRequest(
+    accountId: string,
+    launchRequestId: string,
+  ): Promise<FormationLaunchRecord | null> {
+    const data = await requiredRpc(this.#rpc, "read_launch_request_v1", {
+      p_requesting_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    if (value.version !== "platform_launch_request.v1") {
+      throw new PlatformDependencyUnavailableError();
+    }
+    return {
+      launchRequestId: requiredString(value.launch_request_id),
+      listingRevisionDigest: requiredString(value.listing_revision_digest),
+      state: requiredString(value.state),
+      expiresAt: requiredString(value.expires_at),
+      creatorAccessChoice: requiredEnum(value.creator_access_choice, ["seat", "spectator"]),
+      creatorSeatId: nullableString(value.creator_seat_id),
+      houseFillChoice: requiredEnum(value.house_fill_choice, ["disabled", "fill_unclaimed"]),
+      rosterFrozen: requiredBoolean(value.roster_frozen),
+      canManage: requiredBoolean(value.can_manage),
+      seats: requiredRecords(value.seats).map((seat) => ({
+        seatId: requiredString(seat.seat_id),
+        displayName: requiredString(seat.display_name),
+        required: requiredBoolean(seat.required),
+        claimed: requiredBoolean(seat.claimed),
+        claimedByRequester: requiredBoolean(seat.claimed_by_requester),
+        participationKind: nullableEnum(seat.participation_kind, [
+          "account_human",
+          "account_external_agent",
+        ]),
+      })),
+    };
+  }
+
+  async rotateSeatInvitation(
+    accountId: string,
+    launchRequestId: string,
+    seatId: string,
+  ): Promise<{ token: string; expiresAt: string } | null> {
+    const data = await requiredRpc(this.#rpc, "rotate_seat_invitation_v1", {
+      p_creator_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+      p_seat_id: seatId,
+    });
+    const rows = readRows(data);
+    if (rows.length === 0) return null;
+    const row = singleRow(data);
+    return {
+      token: requiredString(row.invitation_token),
+      expiresAt: requiredString(row.expires_at),
+    };
+  }
+
+  async claimInvitedSeat(
+    accountId: string,
+    tokenDigest: Uint8Array,
+    participation: AccountParticipation,
+  ): Promise<{ launchRequestId: string; seatId: string } | null> {
+    const data = await requiredRpc(this.#rpc, "claim_invited_seat_v1", {
+      p_claiming_account_id: accountId,
+      p_invitation_token_digest: bytea(tokenDigest),
+      p_participation_kind: participation,
+    });
+    const rows = readRows(data);
+    if (rows.length === 0) return null;
+    const row = singleRow(data);
+    return {
+      launchRequestId: requiredString(row.launch_request_id),
+      seatId: requiredString(row.seat_id),
+    };
+  }
+
+  async releaseSeatClaim(accountId: string, launchRequestId: string, seatId: string) {
+    return requiredBoolean(await requiredRpc(this.#rpc, "release_seat_claim_v1", {
+      p_claiming_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+      p_seat_id: seatId,
+    }));
+  }
+
+  async resetSeatClaim(accountId: string, launchRequestId: string, seatId: string) {
+    return requiredBoolean(await requiredRpc(this.#rpc, "reset_seat_claim_v1", {
+      p_creator_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+      p_seat_id: seatId,
+    }));
+  }
+
+  async cancelLaunchRequest(accountId: string, launchRequestId: string) {
+    return requiredBoolean(await requiredRpc(this.#rpc, "cancel_launch_request_v1", {
+      p_creator_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+    }));
+  }
+
+  async startHouseFill(accountId: string, launchRequestId: string) {
+    return parseHouseFill(await requiredRpc(this.#rpc, "start_house_fill_v1", {
+      p_creator_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+    }));
+  }
+
+  async readHouseFill(accountId: string, launchRequestId: string) {
+    return parseHouseFill(await requiredRpc(this.#rpc, "read_house_fill_v1", {
+      p_requesting_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+    }));
+  }
+
+  async retainHouseFillSelection(launchRequestId: string, hostInstallationId: string) {
+    return parseHouseFill(await requiredRpc(this.#rpc, "retain_house_fill_selection_v1", {
+      p_launch_request_id: launchRequestId,
+      p_host_installation_id: hostInstallationId,
+    }));
+  }
+
+  async recordHouseRunnerReservation(input: {
+    reservationOperationId: string;
+    outcome: "succeeded" | "terminal_failed";
+    runnerUnitId: string | null;
+    canonicalReceipt: Uint8Array;
+    receiptDigest: Uint8Array;
+    failureCode: string | null;
+  }) {
+    return parseHouseFill(await requiredRpc(this.#rpc, "record_house_runner_reservation_v1", {
+      p_reservation_operation_id: input.reservationOperationId,
+      p_outcome: input.outcome,
+      p_runner_unit_id: input.runnerUnitId,
+      p_reservation_receipt: bytea(input.canonicalReceipt),
+      p_reservation_receipt_digest: bytea(input.receiptDigest),
+      p_failure_code: input.failureCode,
+    }));
+  }
+
+  async completeHouseFill(launchRequestId: string) {
+    return parseHouseFill(await requiredRpc(this.#rpc, "complete_house_fill_v1", {
+      p_launch_request_id: launchRequestId,
+    }));
+  }
+
+  async readHostedLaunchMaterial(
+    accountId: string,
+    launchRequestId: string,
+  ): Promise<HostedLaunchMaterial | null> {
+    const data = await requiredRpc(this.#rpc, "read_hosted_launch_material_v1", {
+      p_creator_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    if (value.version !== "platform_hosted_launch_material.v1") {
+      throw new PlatformDependencyUnavailableError();
+    }
+    return {
+      launchRequestId: requiredString(value.launch_request_id),
+      listingRevisionDigest: requiredString(value.listing_revision_digest),
+      state: requiredString(value.state),
+      expiresAt: requiredString(value.expires_at),
+      launchInputs: requiredRecord(value.launch_inputs) as never,
+      houseFillChoice: requiredEnum(value.house_fill_choice, ["disabled", "fill_unclaimed"]),
+      creatorAccessChoice: requiredEnum(value.creator_access_choice, ["seat", "spectator"]),
+      creatorSeatId: nullableString(value.creator_seat_id),
+      hostInstallationId: nullableString(value.host_installation_id),
+      roomSetupOperationId: nullableString(value.room_setup_operation_id),
+      rosterFrozen: requiredBoolean(value.roster_frozen),
+      hostMutationStarted: requiredBoolean(value.host_mutation_started),
+      claims: requiredRecords(value.claims).map((claim) => ({
+        seatId: requiredString(claim.seat_id),
+        displayName: requiredString(claim.display_name),
+        participationKind: requiredEnum(claim.participation_kind, [
+          "account_human",
+          "account_external_agent",
+        ]),
+        principalReference: requiredString(claim.principal_reference),
+      })),
+      houseAssignments: requiredRecords(value.house_assignments).map((assignment) => {
+        const profile = requiredRecord(assignment.agent_profile);
+        const runner = requiredRecord(assignment.runner_template);
+        return {
+          assignmentId: requiredString(assignment.house_agent_assignment_id),
+          seatId: requiredString(assignment.seat_id),
+          displayName: requiredString(assignment.display_name),
+          principalReference: requiredString(assignment.principal_reference),
+          houseAgentRevisionDigest: requiredString(assignment.house_agent_revision_digest),
+          agentProfile: {
+            profileId: requiredString(profile.profile_id),
+            revision: requiredString(profile.revision),
+          },
+          runnerTemplate: {
+            templateId: requiredString(runner.template_id),
+            revision: requiredString(runner.revision),
+          },
+          reservationReceipt: requiredRecord(assignment.reservation_receipt) as never,
+        };
+      }),
+    };
+  }
+
+  async freezeLaunch(input: {
+    accountId: string;
+    launchRequestId: string;
+    frozenRoster: Uint8Array;
+    frozenRosterDigest: Uint8Array;
+    frozenRoomSetup: Uint8Array;
+    frozenRoomSetupDigest: string;
+    hostInstallationId: string;
+    roomSetupOperationId: string;
+  }) {
+    return requiredBoolean(await requiredRpc(this.#rpc, "freeze_launch_request_v1", {
+      p_creator_account_id: input.accountId,
+      p_launch_request_id: input.launchRequestId,
+      p_frozen_roster: bytea(input.frozenRoster),
+      p_frozen_roster_digest: bytea(input.frozenRosterDigest),
+      p_frozen_room_setup_specification: bytea(input.frozenRoomSetup),
+      p_frozen_room_setup_specification_digest: input.frozenRoomSetupDigest,
+      p_host_installation_id: input.hostInstallationId,
+      p_room_setup_operation_id: input.roomSetupOperationId,
+    }));
+  }
+
+  async authorizeHostMutation(
+    accountId: string,
+    launchRequestId: string,
+    hostInstallationId: string,
+    roomSetupOperationId: string,
+  ) {
+    return requiredBoolean(await requiredRpc(this.#rpc, "authorize_host_mutation_v1", {
+      p_creator_account_id: accountId,
+      p_launch_request_id: launchRequestId,
+      p_host_installation_id: hostInstallationId,
+      p_room_setup_operation_id: roomSetupOperationId,
+    }));
+  }
+
+  async readGenesisReconciliation(
+    launchRequestId: string,
+  ): Promise<GenesisReconciliation | null> {
+    const data = await requiredRpc(this.#rpc, "read_genesis_reconciliation_v1", {
+      p_launch_request_id: launchRequestId,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    if (value.version !== "platform_genesis_reconciliation.v1") {
+      throw new PlatformDependencyUnavailableError();
+    }
+    return {
+      launchState: requiredString(value.launch_state),
+      runId: nullableString(value.activity_run_id),
+      reconciliationState: requiredEnum(value.reconciliation_state, [
+        "pending",
+        "ready",
+        "quarantined",
+      ]),
+      needsGenesisPull: requiredBoolean(value.needs_genesis_pull),
+    };
+  }
+
+  async recordGenesis(
+    launchRequestId: string,
+    canonicalEvidence: Uint8Array,
+    evidenceDigest: Uint8Array,
+  ): Promise<{ runId: string; reconciliationState: "ready" | "quarantined" } | null> {
+    const data = await requiredRpc(this.#rpc, "record_genesis_v1", {
+      p_launch_request_id: launchRequestId,
+      p_canonical_genesis_evidence: bytea(canonicalEvidence),
+      p_genesis_evidence_digest: bytea(evidenceDigest),
+    });
+    const rows = readRows(data);
+    if (rows.length === 0) return null;
+    const row = singleRow(data);
+    return {
+      runId: requiredString(row.activity_run_id),
+      reconciliationState: requiredEnum(row.reconciliation_state, ["ready", "quarantined"]),
+    };
+  }
+
+  async readOwnedRun(accountId: string, runId: string): Promise<OwnedRunRecord | null> {
+    const data = await requiredRpc(this.#rpc, "read_owned_run_v1", {
+      p_requesting_account_id: accountId,
+      p_activity_run_id: runId,
+    });
+    if (data === null) return null;
+    const value = requiredRecord(data);
+    if (value.version !== "platform_owned_run.v1") {
+      throw new PlatformDependencyUnavailableError();
+    }
+    return {
+      runId: requiredString(value.run_id),
+      publicId: nullableString(value.public_id),
+      reconciliationState: requiredEnum(value.reconciliation_state, ["ready", "quarantined"]),
+      canEnter: requiredBoolean(value.can_enter),
+      memberships: requiredRecords(value.memberships)
+        .filter((membership) =>
+          membership.purpose === "participant" || membership.purpose === "creator_spectator",
+        )
+        .map((membership) => ({
+          purpose: requiredEnum(membership.purpose, ["participant", "creator_spectator"]),
+          seatId: nullableString(membership.seat_id),
+          entrySelector: nullableString(membership.entry_selector),
+        })),
     };
   }
 }
@@ -580,6 +932,54 @@ function readRows(value: unknown): Record<string, unknown>[] {
     throw new PlatformDependencyUnavailableError();
   }
   return value;
+}
+
+function singleRow(value: unknown): Record<string, unknown> {
+  const rows = readRows(value);
+  if (rows.length !== 1 || rows[0] === undefined) {
+    throw new PlatformDependencyUnavailableError();
+  }
+  return rows[0];
+}
+
+function requiredRecords(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value) || !value.every(isRecord)) {
+    throw new PlatformDependencyUnavailableError();
+  }
+  return value;
+}
+
+function parseHouseFill(value: unknown): HouseFillRecord | null {
+  if (value === null) return null;
+  const operation = requiredRecord(value);
+  if (operation.version !== "platform_house_fill_operation.v1") {
+    throw new PlatformDependencyUnavailableError();
+  }
+  return {
+    state: requiredEnum(operation.state, [
+      "claim_window_open",
+      "reserving",
+      "assignments_complete",
+      "failed_pre_genesis",
+    ]),
+    claimWindowClosesAt: requiredString(operation.claim_window_closes_at),
+    failureCode: nullableString(operation.failure_code),
+    reservations: requiredRecords(operation.reservations).map((reservation) => ({
+      reservationOperationId: requiredString(reservation.reservation_operation_id),
+      seatId: requiredString(reservation.seat_id),
+      houseAgentRevisionDigest: requiredString(reservation.house_agent_revision_digest),
+      state: requiredEnum(reservation.state, [
+        "pending",
+        "ambiguous",
+        "succeeded",
+        "terminal_failed",
+      ]),
+    })),
+    assignments: requiredRecords(operation.assignments).map((assignment) => ({
+      seatId: requiredString(assignment.seat_id),
+      displayName: requiredString(assignment.display_name),
+    })),
+  };
 }
 
 function throwForAuthError(error: unknown): never {

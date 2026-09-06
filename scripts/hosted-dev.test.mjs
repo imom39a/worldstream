@@ -25,6 +25,7 @@ test("review-bound ports cannot drift silently", () => {
   });
   assert.throws(() => hostedDevelopmentPorts({ WORLDSTREAM_HOSTED_CONTROLLER_PORT: "9999" }));
   assert.throws(() => hostedDevelopmentPorts({ WORLDSTREAM_HOSTED_HEIST_PORT: "9998" }));
+  assert.throws(() => hostedDevelopmentPorts({ WORLDSTREAM_HOSTED_PRODUCT_PORT: "5190" }));
   assert.throws(() =>
     hostedDevelopmentPorts({ WORLDSTREAM_HOSTED_PRODUCT_PORT: "8080" }),
   );

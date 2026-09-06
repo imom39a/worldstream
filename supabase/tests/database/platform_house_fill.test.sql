@@ -54,6 +54,29 @@ select has_function(
 );
 select has_function('platform_api', 'complete_house_fill_v1', array['uuid']);
 select has_function('platform_api', 'read_house_fill_v1', array['uuid', 'uuid']);
+select has_function(
+  'platform_api',
+  'read_hosted_launch_material_v1',
+  array['uuid', 'uuid']
+);
+select ok(
+  has_function_privilege(
+    'service_role',
+    'platform_api.read_hosted_launch_material_v1(uuid, uuid)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'authenticated',
+    'platform_api.read_hosted_launch_material_v1(uuid, uuid)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'anon',
+    'platform_api.read_hosted_launch_material_v1(uuid, uuid)',
+    'execute'
+  ),
+  'only the service role can read private hosted launch material'
+);
 select ok(
   not exists (
     select 1
@@ -502,6 +525,30 @@ select ok(
    from platform_store.house_agent_assignments assignments
    where assignments.launch_request_id = (select launch_request_id from house_launch)),
   'assignments copy the fixed allowance, receipt evidence, and server-derived Principal reference'
+);
+select is(
+  (platform_api.read_hosted_launch_material_v1(
+    '20000000-0000-4000-8000-000000000001',
+    (select launch_request_id from house_launch)
+  ) ->> 'version'),
+  'platform_hosted_launch_material.v1',
+  'the service coordinator receives the versioned launch material contract'
+);
+select is(
+  jsonb_array_length(platform_api.read_hosted_launch_material_v1(
+    '20000000-0000-4000-8000-000000000001',
+    (select launch_request_id from house_launch)
+  ) -> 'house_assignments'),
+  2,
+  'the coordinator receives every retained House assignment'
+);
+select is(
+  platform_api.read_hosted_launch_material_v1(
+    '20000000-0000-4000-8000-000000000002',
+    (select launch_request_id from house_launch)
+  ),
+  null,
+  'another account cannot resolve private launch material'
 );
 select lives_ok(
   format(

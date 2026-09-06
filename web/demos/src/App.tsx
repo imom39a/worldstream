@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { AgentHeistDocsPage } from "./AgentHeistDocsPage";
 import { AgentHeistPage } from "./AgentHeistPage";
 import { CatalogPage } from "./CatalogPage";
+import { JoinPage } from "./JoinPage";
+import { LaunchPage } from "./LaunchPage";
 import { demos, getDemoById } from "./catalog";
 import { NotFoundPage } from "./NotFoundPage";
 import { usePageMetadata, type PageKind } from "./pageMetadata";
@@ -30,15 +32,23 @@ export function App() {
   const [pathname, navigate] = usePathname();
   const demoId = pathname.match(/^\/demos\/([^/]+)\/?$/)?.[1];
   const documentationId = pathname.match(/^\/docs\/([^/]+)\/?$/)?.[1];
+  const launchId = pathname.match(/^\/launches\/([0-9a-f-]+)\/?$/)?.[1];
   const page: PageKind = pathname === "/"
     ? "catalog"
-    : demoId === "agent-heist"
-      ? "agent-heist"
-      : documentationId === "agent-heist"
-        ? "agent-heist-docs"
-        : "not-found";
+    : pathname === "/join"
+      ? "join"
+      : launchId !== undefined
+        ? "formation"
+        : demoId === "agent-heist"
+          ? "agent-heist"
+          : documentationId === "agent-heist"
+            ? "agent-heist-docs"
+            : "not-found";
 
   usePageMetadata(page);
+
+  if (pathname === "/join") return <JoinPage onNavigate={navigate} />;
+  if (launchId !== undefined) return <LaunchPage launchId={launchId} onNavigate={navigate} />;
 
   if (documentationId !== undefined) {
     return documentationId === "agent-heist"

@@ -245,7 +245,7 @@ test("owned Run entry resolves through the service-only immutable membership RPC
           version: "0.2.0",
           digest: `blake3:${"2".repeat(64)}`,
         },
-        client_release_digest: `blake3:${"3".repeat(64)}`,
+        client_release_digest: `sha256:${"3".repeat(64)}`,
         client_surface_id: "participant",
         access_mode: "participant",
         purpose: "participant",

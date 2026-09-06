@@ -1428,7 +1428,10 @@ pub fn validate_hosted_browser_handoff_request(
     validate_hosted_operation_reference(&request.room_setup_operation_id)?;
     validate_ulid_reference(&request.room_id)?;
     validate_pack(&request.pack)?;
-    validate_digest(&request.client_release_digest, "blake3")?;
+    // Activity Client releases are content-addressed release records. Reviewed
+    // browser releases currently use SHA-256; Pack and Listing identities stay
+    // BLAKE3-tagged and are validated independently above.
+    validate_digest(&request.client_release_digest, "sha256")?;
     validate_public_reference(&request.client_surface_id, 128)?;
     validate_ulid_reference(&request.principal_id)?;
     validate_ulid_reference(&request.membership_id)?;

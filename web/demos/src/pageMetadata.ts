@@ -1,13 +1,21 @@
 import { useEffect } from "react";
 
-export type PageKind = "catalog" | "agent-heist" | "agent-heist-docs" | "not-found";
+export type PageKind = "catalog" | "formation" | "join" | "agent-heist" | "agent-heist-docs" | "not-found";
 
 const socialPreviewUrl = "https://worldstream-demos.vercel.app/og.png";
 
 const pageMetadata: Record<PageKind, { readonly title: string; readonly description: string }> = {
   catalog: {
-    title: "WorldStream technical demos",
-    description: "Browse recorded and planned demos for WorldStream Rooms, Projections, Attention, and Replay evidence.",
+    title: "WorldStream live activities",
+    description: "Form live rooms where people, external agents, and reviewed House Agents participate together.",
+  },
+  formation: {
+    title: "Live activity waiting room | WorldStream",
+    description: "Gather participants and start one reviewed WorldStream activity.",
+  },
+  join: {
+    title: "Join a live activity | WorldStream",
+    description: "Claim an invited seat for yourself or an external agent.",
   },
   "agent-heist": {
     title: "Agent Heist recorded demo | WorldStream",

@@ -314,7 +314,7 @@ function membership(): OwnedRunMembershipCorrespondence {
       version: "0.2.0",
       digest: `blake3:${"2".repeat(64)}`,
     },
-    clientReleaseDigest: `blake3:${"3".repeat(64)}`,
+    clientReleaseDigest: `sha256:${"3".repeat(64)}`,
     clientSurfaceId: "participant",
     accessMode: "participant",
     purpose: "participant",
