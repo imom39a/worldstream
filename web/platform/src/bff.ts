@@ -33,7 +33,11 @@ import {
   reviewedSeatId,
   reviewedSeatKey,
 } from "./hosted-catalog.js";
-import type { PublicRunData } from "./public-runs.js";
+import {
+  presentPublicRun,
+  publicProjectionStreamBaseUrl,
+  type PublicRunData,
+} from "./public-runs.js";
 import { encodeCanonical } from "@worldstream/pack-sdk";
 
 const OAUTH_COOKIE = "__Host-worldstream-oauth";
@@ -150,6 +154,8 @@ export interface BffDependencies {
   readonly dataClient: PlatformDataClient;
   /** Server-secret reads that emit only the reviewed public Run DTO. */
   readonly publicRunData?: PublicRunData;
+  /** Direct Fly origin used only to decorate an already-public live Run. */
+  readonly hostedPublicStreamBaseUrl?: string;
   /** Fixed service-only client for the Fly hosted browser-session boundary. */
   readonly hostedBrowserSessions?: HostedBrowserSessionClient;
   /** Server-secret Supabase formation RPCs; never installed in browser code. */
@@ -237,6 +243,9 @@ export function createPlatformBff(
   const sessionKey = validateKey(config.sessionKey);
   const oauthKey = validateKey(config.oauthKey);
   const formation = formationCoordinator(dependencies);
+  const hostedPublicStreamBaseUrl = dependencies.hostedPublicStreamBaseUrl === undefined
+    ? null
+    : publicProjectionStreamBaseUrl(dependencies.hostedPublicStreamBaseUrl);
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
@@ -246,7 +255,11 @@ export function createPlatformBff(
       }
       const publicRunId = publicRunRoute(url.pathname);
       if (request.method === "GET" && publicRunId !== null) {
-        return readPublicRun(publicRunId, dependencies.publicRunData);
+        return readPublicRun(
+          publicRunId,
+          dependencies.publicRunData,
+          hostedPublicStreamBaseUrl,
+        );
       }
       if (
         request.method === "GET" &&
@@ -351,10 +364,14 @@ function publicRunRoute(pathname: string): string | null {
 async function readPublicRun(
   publicId: string,
   data: PublicRunData | undefined,
+  hostedPublicStreamBaseUrl: string | null,
 ): Promise<Response> {
   if (data === undefined) return temporarilyUnavailable();
   try {
-    return publicNoStoreJson(200, await data.readPublicRun(publicId));
+    return publicNoStoreJson(
+      200,
+      presentPublicRun(await data.readPublicRun(publicId), hostedPublicStreamBaseUrl),
+    );
   } catch {
     return temporarilyUnavailable();
   }
@@ -779,6 +796,7 @@ export function createDevelopmentPlatformBff(
     readonly gateway: HostedFormationGateway;
     readonly hostInstallationId: string;
   },
+  hostedPublicStreamBaseUrl?: string,
 ): PlatformBff {
   const origin = validateDevelopmentConfiguration(config);
   const user = developmentUser(config.identity);
@@ -787,6 +805,7 @@ export function createDevelopmentPlatformBff(
     authClient: () => auth,
     dataClient,
     ...(supportsPublicRuns(dataClient) ? { publicRunData: dataClient } : {}),
+    ...(hostedPublicStreamBaseUrl === undefined ? {} : { hostedPublicStreamBaseUrl }),
     ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
     ...(hostedFormation === undefined
       ? {}

@@ -11,6 +11,7 @@
     ".": "./src/index.ts",
     "./browser-handoff": "./src/browserHandoff.ts",
     "./hosted-live-session": "./src/hostedLiveSession.ts",
+    "./public-projection-session": "./src/publicProjectionSession.ts",
     "./retained-session": "./src/retainedRoomSession.ts",
     "./request-queue": "./src/serialRequestQueue.ts",
     "./transport": "./src/transport.ts"

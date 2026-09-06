@@ -286,6 +286,7 @@ function session(
 function harness(
   hostedBrowserSessions?: HostedBrowserSessionClient,
   publicRunData?: PublicRunData,
+  hostedPublicStreamBaseUrl?: string,
 ) {
   const auth = new FakeAuth();
   const data = new FakeData();
@@ -294,6 +295,7 @@ function harness(
     dataClient: data,
     ...(hostedBrowserSessions === undefined ? {} : { hostedBrowserSessions }),
     ...(publicRunData === undefined ? {} : { publicRunData }),
+    ...(hostedPublicStreamBaseUrl === undefined ? {} : { hostedPublicStreamBaseUrl }),
   };
   const bff = createPlatformBff(
     {
@@ -450,6 +452,52 @@ test("anonymous public Run and Recent Results routes expose only no-store DTOs",
 
   const malformed = await bff.fetch(new Request(`${ORIGIN}/api/runs/not-a-public-id`));
   assert.equal(malformed.status, 404);
+});
+
+test("a live public Run points directly to Fly and never carries a credential", async () => {
+  const source = {
+    version: "public_run.v1",
+    state: "live",
+    public_id: "b".repeat(32),
+    activity: {
+      listing_key: "worldstream.agent-heist.public-preview",
+      title: "Agent Heist",
+      description: "A live social strategy activity.",
+      listing_revision: `blake3:${"1".repeat(64)}`,
+      pack: {
+        id: "worldstream.agent-heist",
+        version: "0.2.0",
+        revision: `blake3:${"2".repeat(64)}`,
+      },
+    },
+    started_at: "2026-09-05T10:00:00.000Z",
+    evidence: { class: "unranked", label: "Unranked activity" },
+    participants: [],
+    live: { available: true },
+  } as const;
+  const publicRuns: PublicRunData = {
+    async readPublicRun() { return source; },
+    async listRecentResults() {
+      return {
+        version: "recent_results.v1",
+        activity: "agent-heist",
+        order: "newest_first",
+        maximum: 20,
+        results: [],
+      };
+    },
+  };
+  const { bff } = harness(undefined, publicRuns, "https://stream.arena.example");
+  const response = await bff.fetch(
+    new Request(`${ORIGIN}/api/runs/${"b".repeat(32)}`),
+  );
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.match(
+    text,
+    /"stream_url":"wss:\/\/stream\.arena\.example\/v1\/hosted\/public-runs\/b{32}\/stream"/u,
+  );
+  assert.doesNotMatch(text, /ticket|token|credential|membership|room_id/u);
 });
 
 test("OAuth start accepts only immutable configured return targets", async () => {

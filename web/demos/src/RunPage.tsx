@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+
+import { PublicProjectionSessionController } from "@worldstream/client";
 
 import {
   readPublicRun,
@@ -7,6 +9,12 @@ import {
   type PublicRunParticipant,
 } from "./hostedApi";
 import { SiteFooter, SiteHeader, type Navigate } from "./siteChrome";
+
+const AgentHeistClient = lazy(async () => {
+  const client = await import("@worldstream/agent-heist-client");
+  return { default: client.AgentHeistClient };
+});
+const PUBLIC_VIEWER_STARTUP = { kind: "direct" } as const;
 
 export function RunPage({ publicId, onNavigate }: { publicId: string; onNavigate: Navigate }) {
   const [run, setRun] = useState<PublicRun | null>(null);
@@ -47,12 +55,13 @@ export function RunPage({ publicId, onNavigate }: { publicId: string; onNavigate
 }
 
 function AvailableRun({ run }: { run: Exclude<PublicRun, { readonly state: "unavailable" }> }) {
+  if (run.state === "live") return <LiveRun key={run.public_id} run={run} />;
   return (
     <>
       <section className="public-run-hero">
         <div>
           <span className={`run-state-chip state-${run.state}`}>
-            {run.state === "live" ? "Live Run" : "Verified result"}
+            Verified result
           </span>
           <h1>{run.activity.title}</h1>
           <p>{run.activity.description}</p>
@@ -66,17 +75,7 @@ function AvailableRun({ run }: { run: Exclude<PublicRun, { readonly state: "unav
 
       <section className="public-run-grid">
         <article className="run-primary-card">
-          {run.state === "live" ? (
-            <div className="live-waiting">
-              <span aria-hidden="true"><i /><i /><i /></span>
-              <h2>The activity is in progress.</h2>
-              <p>
-                Anonymous live viewing is not connected for this Run. Return later to see a verified public result.
-              </p>
-            </div>
-          ) : (
-            <ResultSummary result={run.result} completedAt={run.completed_at} />
-          )}
+          <ResultSummary result={run.result} completedAt={run.completed_at} />
         </article>
 
         <aside className="run-roster-card" aria-labelledby="public-roster-title">
@@ -99,6 +98,67 @@ function AvailableRun({ run }: { run: Exclude<PublicRun, { readonly state: "unav
         <div><span>Started</span><strong>{formatDate(run.started_at)}</strong></div>
         <div><span>Pack</span><strong>{run.activity.pack.id} {run.activity.pack.version}</strong></div>
         <div><span>Evidence</span><strong>{run.evidence.label}</strong></div>
+      </section>
+    </>
+  );
+}
+
+function LiveRun({ run }: { run: Extract<PublicRun, { readonly state: "live" }> }) {
+  const [controller] = useState(() => new PublicProjectionSessionController({
+    streamUrl: run.live.stream_url,
+  }));
+  const delayedClose = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (delayedClose.current !== null) clearTimeout(delayedClose.current);
+    return () => {
+      delayedClose.current = setTimeout(() => controller.close(), 0);
+    };
+  }, [controller]);
+  if (run.activity.pack.id !== "worldstream.agent-heist") {
+    return (
+      <section className="public-run-unavailable">
+        <span className="run-state-chip state-live">Live Run</span>
+        <h1>{run.activity.title}</h1>
+        <p>The reviewed Activity Client for this Pack is not installed on this site.</p>
+      </section>
+    );
+  }
+  return (
+    <>
+      <section className="public-live-context" aria-label="Public Run context">
+        <div>
+          <span className="run-state-chip state-live">Live · read only</span>
+          <strong>{run.activity.title}</strong>
+          <span>{run.evidence.label}</span>
+        </div>
+        <div>
+          <span>Public Run</span>
+          <code>{run.public_id}</code>
+        </div>
+      </section>
+      <Suspense fallback={<RunStatus message="Loading the Agent Heist viewer…" />}>
+        <AgentHeistClient startup={PUBLIC_VIEWER_STARTUP} controller={controller} />
+      </Suspense>
+      <section className="public-live-details">
+        <div className="run-roster-card" aria-labelledby="public-live-roster-title">
+          <div>
+            <span className="section-label">Reviewed attribution</span>
+            <h2 id="public-live-roster-title">Participants</h2>
+          </div>
+          <div className="public-roster">
+            {run.participants.map((participant) => (
+              <PublicParticipantRow
+                key={`${participant.role}:${participant.seat_label}`}
+                participant={participant}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="run-live-provenance">
+          <span>Started</span><strong>{formatDate(run.started_at)}</strong>
+          <span>Pack</span><strong>{run.activity.pack.id} {run.activity.pack.version}</strong>
+          <span>Access</span><strong>Anonymous spectator projection</strong>
+        </div>
       </section>
     </>
   );

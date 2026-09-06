@@ -28,11 +28,12 @@ use worldstream_core::CanonicalJsonV1;
 use worldstream_hosted_contract::{
     HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedHouseRunnerReservationReceiptV1,
     HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStageV1, HostedLaunchStatusV1, HostedResultSourceEvidenceV1,
-    HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
+    HostedLaunchStageV1, HostedLaunchStatusV1, HostedPublicRelayBindRequestV1,
+    HostedResultSourceEvidenceV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
     PackReference as HostedPackReference, validate_hosted_genesis_evidence,
     validate_hosted_launch_evidence_request, validate_hosted_launch_request,
-    validate_hosted_result_source_evidence, validate_hosted_result_source_request,
+    validate_hosted_public_relay_bind_request, validate_hosted_result_source_evidence,
+    validate_hosted_result_source_request,
 };
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
@@ -47,7 +48,8 @@ use crate::{
     },
     room_setup_operations::{
         RoomSetupCreateRequestV1, RoomSetupGenesisEvidenceV1, RoomSetupOperationErrorV1,
-        RoomSetupOperationStatusV1, RoomSetupOperationsV1, RoomSetupResultIndexerBindingV1,
+        RoomSetupOperationStatusV1, RoomSetupOperationsV1, RoomSetupPublicRelayBindingV1,
+        RoomSetupResultIndexerBindingV1,
     },
     room_setup_spec::RoomSetupSpecificationV1,
     task_setup::{TaskLaunchStateV1, TaskSetupErrorV1, TaskSetupSupervisorV1},
@@ -102,6 +104,11 @@ trait HostedRoomOperationBackendV1: Send + Sync + 'static {
         &self,
         operation: &str,
     ) -> Result<RoomSetupResultIndexerBindingV1, HostedLaunchErrorV1>;
+
+    fn public_relay_binding(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupPublicRelayBindingV1, HostedLaunchErrorV1>;
 }
 
 trait HostedResultSourceBackendV1: Send + Sync + 'static {
@@ -229,6 +236,15 @@ impl HostedRoomOperationBackendV1 for LiveHostedRoomOperationBackendV1 {
     ) -> Result<RoomSetupResultIndexerBindingV1, HostedLaunchErrorV1> {
         self.rooms
             .result_indexer_binding(operation)
+            .map_err(|error| map_room_error(&error))
+    }
+
+    fn public_relay_binding(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupPublicRelayBindingV1, HostedLaunchErrorV1> {
+        self.rooms
+            .public_relay_binding(operation)
             .map_err(|error| map_room_error(&error))
     }
 }
@@ -585,6 +601,50 @@ impl HostedLaunchOperationsV1 {
         validate_hosted_result_source_evidence(&evidence)
             .map_err(|_| HostedLaunchErrorV1::Unavailable)?;
         Ok(evidence)
+    }
+
+    /// Revalidates one exact post-Genesis public relay correspondence against
+    /// the reviewed Listing, retained launch, and provisioned Membership.
+    pub(crate) fn resolve_public_relay(
+        &self,
+        request: &HostedPublicRelayBindRequestV1,
+    ) -> Result<RoomSetupPublicRelayBindingV1, HostedLaunchErrorV1> {
+        validate_hosted_public_relay_bind_request(request)
+            .map_err(|_| HostedLaunchErrorV1::Invalid)?;
+        if request.host_installation_id != self.host_installation_id.as_ref() {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        let binding = {
+            let _guard = self.lock();
+            self.load_unlocked(&request.room_setup_operation_id)?
+        };
+        if binding.listing_revision_digest != request.listing_revision_digest
+            || binding.launch_request_digest != request.launch_request_digest
+            || binding.capacity_reservation_reference != request.launch_request_id
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        let listing = self
+            .listings
+            .get(&binding.listing_revision_digest)
+            .filter(|listing| listing.allows_anonymous_viewing())
+            .ok_or(HostedLaunchErrorV1::Invalid)?;
+        listing
+            .verify_pack(&request.pack)
+            .map_err(|_| HostedLaunchErrorV1::Conflict)?;
+        let relay = self
+            .backend
+            .public_relay_binding(&binding.room_setup_operation_id)?;
+        if relay.room_id != request.room_id
+            || relay.member_id != request.relay_membership_id
+            || relay.principal_id != request.relay_principal_id
+            || relay.pack.id != request.pack.id
+            || relay.pack.version != request.pack.version
+            || relay.pack.digest != request.pack.digest
+        {
+            return Err(HostedLaunchErrorV1::Conflict);
+        }
+        Ok(relay)
     }
 
     /// Retains one stable pre-Genesis House Runner capacity operation.
@@ -968,6 +1028,8 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
                     | "/api/v1/hosted-browser-handoffs:redeem"
                     | "/api/v1/hosted-browser-sessions:status"
                     | "/api/v1/hosted-browser-sessions:logout"
+                    | "/api/v1/hosted-public-relays:bind"
+                    | "/api/v1/hosted-public-streams:ticket"
             )
     )
 }
@@ -1252,6 +1314,25 @@ mod tests {
                     digest: pack.digest,
                 },
                 secret_reference: crate::secrets::SecretReferenceV1::parse("a".repeat(64))
+                    .unwrap_or_else(|error| unreachable!("valid secret reference: {error:?}")),
+            })
+        }
+
+        fn public_relay_binding(
+            &self,
+            _operation: &str,
+        ) -> Result<RoomSetupPublicRelayBindingV1, HostedLaunchErrorV1> {
+            let pack = listing().pack().clone();
+            Ok(RoomSetupPublicRelayBindingV1 {
+                room_id: "01JY0000000000000000000000".to_owned(),
+                member_id: "01ARZ3NDEKTSV4RRFFQ69G5FB3".to_owned(),
+                principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FB2".to_owned(),
+                pack: worldstream_protocol::PackReference {
+                    id: pack.id,
+                    version: pack.version,
+                    digest: pack.digest,
+                },
+                secret_reference: crate::secrets::SecretReferenceV1::parse("b".repeat(64))
                     .unwrap_or_else(|error| unreachable!("valid secret reference: {error:?}")),
             })
         }

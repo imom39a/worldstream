@@ -1,10 +1,11 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
 
-import type { CanonicalObject } from "@worldstream/pack-sdk";
+import { encodeCanonical, type CanonicalObject } from "@worldstream/pack-sdk";
 
 import {
   HostedFormationCoordinator,
+  taggedSha256,
   type AccountParticipation,
   type FormationLaunchRecord,
   type GenesisReconciliation,
@@ -55,6 +56,8 @@ class HumanFormationData implements HostedFormationData {
   runId: string | null = null;
   freezeCalls = 0;
   authorizeCalls = 0;
+  publicBindingRequest: CanonicalObject | null = null;
+  publicBindingRecords = 0;
 
   async readHostedLaunchMaterial(accountId: string, launchRequestId: string) {
     return accountId === ACCOUNT_ID && launchRequestId === LAUNCH_ID ? this.material : null;
@@ -109,6 +112,25 @@ class HumanFormationData implements HostedFormationData {
     assert.equal(launchRequestId, LAUNCH_ID);
     assert.equal(evidenceDigest.byteLength, 32);
     assert.equal(JSON.parse(new TextDecoder().decode(canonicalEvidence)).schema, "worldstream/hosted-genesis-evidence/v1");
+    const evidence = JSON.parse(new TextDecoder().decode(canonicalEvidence)) as Record<string, unknown>;
+    this.publicBindingRequest = {
+      schema: "worldstream/hosted-public-relay-bind-request/v1",
+      public_run_id: "0123456789abcdef0123456789abcdef",
+      activity_run_id: RUN_ID,
+      host_installation_id: "hosted-preview-1",
+      launch_request_id: LAUNCH_ID,
+      listing_revision_digest: AGENT_HEIST_LISTING_DIGEST,
+      launch_request_digest: String(evidence.launch_request_digest),
+      room_setup_operation_id: String(evidence.room_setup_operation_id),
+      room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      pack: {
+        id: "worldstream.agent-heist",
+        version: "0.2.0",
+        digest: `blake3:${"d".repeat(64)}`,
+      },
+      relay_principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+      relay_membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+    };
     this.runId = RUN_ID;
     this.material = { ...this.material, state: "run_created" };
     return { runId: RUN_ID, reconciliationState: "ready" as const };
@@ -121,6 +143,33 @@ class HumanFormationData implements HostedFormationData {
       reconciliationState: "ready",
       needsGenesisPull: false,
     };
+  }
+
+  async readPublicRelayBindingCandidate(runId: string) {
+    assert.equal(runId, RUN_ID);
+    return this.publicBindingRequest;
+  }
+
+  async recordPublicRelayBinding(input: {
+    runId: string;
+    canonicalRequest: Uint8Array;
+    requestDigest: Uint8Array;
+    canonicalReceipt: Uint8Array;
+    receiptDigest: Uint8Array;
+  }) {
+    assert.equal(input.runId, RUN_ID);
+    assert.equal(input.requestDigest.byteLength, 32);
+    assert.equal(input.receiptDigest.byteLength, 32);
+    assert.deepEqual(
+      JSON.parse(new TextDecoder().decode(input.canonicalRequest)),
+      this.publicBindingRequest,
+    );
+    assert.equal(
+      JSON.parse(new TextDecoder().decode(input.canonicalReceipt)).bound,
+      true,
+    );
+    this.publicBindingRecords += 1;
+    return true;
   }
 
   async createLaunchRequest(_input: {
@@ -150,6 +199,7 @@ class HumanFormationData implements HostedFormationData {
 
 class RecordingGateway implements HostedFormationGateway {
   launches: CanonicalObject[] = [];
+  publicBindings: CanonicalObject[] = [];
 
   async reserveHouseRunner(_request: CanonicalObject): Promise<CanonicalObject> {
     throw new Error("unused");
@@ -168,6 +218,17 @@ class RecordingGateway implements HostedFormationGateway {
       room_setup_operation_id: String(request.room_setup_operation_id),
     };
   }
+
+  async bindPublicRelay(request: CanonicalObject): Promise<CanonicalObject> {
+    this.publicBindings.push(request);
+    return {
+      schema: "worldstream/hosted-public-relay-bind-receipt/v1",
+      public_run_id: String(request.public_run_id),
+      activity_run_id: String(request.activity_run_id),
+      binding_request_digest: taggedSha256(encodeCanonical(request)),
+      bound: true,
+    };
+  }
 }
 
 test("the stateless coordinator freezes one reviewed roster and resumes the same Run", async () => {
@@ -183,6 +244,8 @@ test("the stateless coordinator freezes one reviewed roster and resumes the same
   assert.equal(data.freezeCalls, 1);
   assert.equal(data.authorizeCalls, 1);
   assert.equal(gateway.launches.length, 1);
+  assert.equal(gateway.publicBindings.length, 1);
+  assert.equal(data.publicBindingRecords, 1);
   const request = gateway.launches[0];
   assert.equal(request?.schema, "worldstream/hosted-launch-request/v1");
   assert.equal(request?.listing_revision_digest, AGENT_HEIST_LISTING_DIGEST);
@@ -196,4 +259,6 @@ test("the stateless coordinator freezes one reviewed roster and resumes the same
   });
   assert.equal(data.freezeCalls, 1);
   assert.equal(gateway.launches.length, 1);
+  assert.equal(gateway.publicBindings.length, 2);
+  assert.equal(data.publicBindingRecords, 2);
 });

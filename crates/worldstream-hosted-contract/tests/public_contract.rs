@@ -14,10 +14,11 @@ use worldstream_hosted_contract::{
     HostedGenesisEvidenceV1, HostedGenesisHeadV1, HostedGenesisMembershipPurposeV1,
     HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerAssignmentV1,
     HostedHouseRunnerReservationOutcomeV1, HostedHouseRunnerReservationReceiptV1,
-    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedResultIntegrityStatusV1,
-    HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1, HostedResultSourceHeadV1,
-    HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision, PackReference,
-    ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
+    HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedPublicRelayBindReceiptV1,
+    HostedPublicRelayBindRequestV1, HostedPublicStreamTicketRequestV1,
+    HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1, HostedResultSourceEvidenceV1,
+    HostedResultSourceHeadV1, HostedResultSourceRequestV1, HouseAgentRevision, ListingRevision,
+    PackReference, ResolvedResultProjector, ResultProjectorRevision, derive_room_setup,
     derive_room_setup_with_house_agents, project_result,
     validate_hosted_browser_handoff_redeem_request,
     validate_hosted_browser_handoff_redeem_response, validate_hosted_browser_handoff_request,
@@ -25,8 +26,9 @@ use worldstream_hosted_contract::{
     validate_hosted_browser_session_request, validate_hosted_browser_session_status,
     validate_hosted_browser_stream_ticket_request, validate_hosted_browser_stream_ticket_response,
     validate_hosted_genesis_evidence, validate_hosted_launch_evidence_request,
-    validate_hosted_launch_request, validate_hosted_result_source_evidence,
-    validate_hosted_result_source_request,
+    validate_hosted_launch_request, validate_hosted_public_relay_bind_receipt,
+    validate_hosted_public_relay_bind_request, validate_hosted_public_stream_ticket_request,
+    validate_hosted_result_source_evidence, validate_hosted_result_source_request,
 };
 
 const LISTING: &[u8] = include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json");
@@ -114,6 +116,27 @@ fn hosted_browser_handoff_request() -> HostedBrowserHandoffRequestV1 {
         principal_kind: HostedGenesisPrincipalKindV1::Human,
         principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
         membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
+    }
+}
+
+fn hosted_public_relay_request() -> HostedPublicRelayBindRequestV1 {
+    HostedPublicRelayBindRequestV1 {
+        schema: "worldstream/hosted-public-relay-bind-request/v1".to_owned(),
+        public_run_id: "0123456789abcdef0123456789abcdef".to_owned(),
+        activity_run_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+        host_installation_id: "hosted-preview-1".to_owned(),
+        launch_request_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        listing_revision_digest: format!("blake3:{}", "1".repeat(64)),
+        launch_request_digest: format!("blake3:{}", "2".repeat(64)),
+        room_setup_operation_id: "hosted-launch-01".to_owned(),
+        room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        pack: PackReference {
+            id: "worldstream.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: format!("blake3:{}", "3".repeat(64)),
+        },
+        relay_principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned(),
+        relay_membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX".to_owned(),
     }
 }
 
@@ -247,6 +270,39 @@ fn hosted_browser_contract_keeps_handoffs_and_sessions_opaque_and_bounded() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn hosted_public_relay_contract_is_exact_and_secret_free() -> Result<(), Box<dyn Error>> {
+    let request = hosted_public_relay_request();
+    assert_eq!(validate_hosted_public_relay_bind_request(&request), Ok(()));
+    let request_json = serde_json::to_value(&request)?;
+    for forbidden in ["credential", "bearer", "secret_reference"] {
+        assert!(request_json.get(forbidden).is_none());
+    }
+    let receipt = HostedPublicRelayBindReceiptV1 {
+        schema: "worldstream/hosted-public-relay-bind-receipt/v1".to_owned(),
+        public_run_id: request.public_run_id.clone(),
+        activity_run_id: request.activity_run_id.clone(),
+        binding_request_digest: format!("sha256:{}", "4".repeat(64)),
+        bound: true,
+    };
+    assert_eq!(validate_hosted_public_relay_bind_receipt(&receipt), Ok(()));
+    assert_eq!(
+        validate_hosted_public_stream_ticket_request(&HostedPublicStreamTicketRequestV1 {
+            schema: "worldstream/hosted-public-stream-ticket-request/v1".to_owned(),
+            public_run_id: request.public_run_id.clone(),
+        }),
+        Ok(())
+    );
+
+    let mut result_only_style_id = request.clone();
+    result_only_style_id.public_run_id = "A".repeat(32);
+    assert!(validate_hosted_public_relay_bind_request(&result_only_style_id).is_err());
+    let mut widened = request;
+    widened.relay_membership_id = widened.relay_principal_id.clone();
+    assert!(validate_hosted_public_relay_bind_request(&widened).is_err());
+    Ok(())
 }
 
 #[test]

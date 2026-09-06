@@ -178,6 +178,14 @@ export interface HostedFormationData {
     readonly runId: string;
     readonly reconciliationState: "ready" | "quarantined";
   } | null>;
+  readPublicRelayBindingCandidate(runId: string): Promise<CanonicalObject | null>;
+  recordPublicRelayBinding(input: {
+    runId: string;
+    canonicalRequest: Uint8Array;
+    requestDigest: Uint8Array;
+    canonicalReceipt: Uint8Array;
+    receiptDigest: Uint8Array;
+  }): Promise<boolean>;
   readOwnedRun(accountId: string, runId: string): Promise<OwnedRunRecord | null>;
 }
 
@@ -189,6 +197,7 @@ export interface HostedFormationGateway {
   reserveHouseRunner(request: CanonicalObject): Promise<CanonicalObject>;
   launch(request: CanonicalObject): Promise<HostedLaunchStatus>;
   readGenesisEvidence(request: CanonicalObject): Promise<CanonicalObject>;
+  bindPublicRelay(request: CanonicalObject): Promise<CanonicalObject>;
 }
 
 export class HostedFormationRejectedError extends Error {
@@ -279,6 +288,7 @@ export class HostedFormationCoordinator {
         sha256(evidenceBytes),
       );
       if (recorded === null) throw new HostedFormationRejectedError();
+      await this.ensurePublicRelayBinding(recorded.runId);
       return {
         state: "run_created",
         retryAfterSeconds: null,
@@ -357,11 +367,31 @@ export class HostedFormationCoordinator {
     if (reconciliation?.runId === null || reconciliation?.runId === undefined) {
       throw new HostedFormationRejectedError();
     }
+    await this.ensurePublicRelayBinding(reconciliation.runId);
     return {
       state: "run_created",
       retryAfterSeconds: null,
       runId: reconciliation.runId,
     };
+  }
+
+  private async ensurePublicRelayBinding(runId: string): Promise<void> {
+    const request = await this.data.readPublicRelayBindingCandidate(runId);
+    if (request === null) return;
+    const requestBytes = encodeCanonical(request);
+    const requestDigest = sha256(requestBytes);
+    const receipt = await this.gateway.bindPublicRelay(request);
+    validatePublicRelayReceipt(receipt, request, requestDigest);
+    const receiptBytes = encodeCanonical(receipt);
+    if (!(await this.data.recordPublicRelayBinding({
+      runId,
+      canonicalRequest: requestBytes,
+      requestDigest,
+      canonicalReceipt: receiptBytes,
+      receiptDigest: sha256(receiptBytes),
+    }))) {
+      throw new HostedFormationRejectedError("public_relay_binding_rejected");
+    }
   }
 
   private async requiredMaterial(accountId: string, launchRequestId: string) {
@@ -418,6 +448,10 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
 
   async readGenesisEvidence(request: CanonicalObject): Promise<CanonicalObject> {
     return this.call("/v1/hosted/genesis-evidence", request, true);
+  }
+
+  async bindPublicRelay(request: CanonicalObject): Promise<CanonicalObject> {
+    return this.call("/v1/hosted/public-relays/bind", request, false);
   }
 
   private async call(path: string, body: CanonicalObject, pendingOnConflict: boolean): Promise<CanonicalObject> {
@@ -585,6 +619,24 @@ function validateHouseReceipt(receipt: CanonicalObject, request: CanonicalObject
       (!SAFE_REFERENCE_PATTERN.test(requiredString(receipt.runner_unit_id)) || receipt.failure_code !== null)) ||
     (receipt.outcome === "terminal_failed" &&
       (receipt.runner_unit_id !== null || !SAFE_REFERENCE_PATTERN.test(requiredString(receipt.failure_code))))
+  ) {
+    throw new HostedFormationUnavailableError("invalid_gateway_response");
+  }
+}
+
+function validatePublicRelayReceipt(
+  receipt: CanonicalObject,
+  request: CanonicalObject,
+  requestDigest: Uint8Array,
+): void {
+  if (
+    receipt.schema !== "worldstream/hosted-public-relay-bind-receipt/v1" ||
+    receipt.public_run_id !== request.public_run_id ||
+    receipt.activity_run_id !== request.activity_run_id ||
+    receipt.binding_request_digest !== `sha256:${Buffer.from(requestDigest).toString("hex")}` ||
+    receipt.bound !== true ||
+    Object.keys(receipt).sort().join(",") !==
+      "activity_run_id,binding_request_digest,bound,public_run_id,schema"
   ) {
     throw new HostedFormationUnavailableError("invalid_gateway_response");
   }

@@ -1,4 +1,8 @@
-export { AgentHeistClient, type AgentHeistClientProps } from "./AgentHeistClient";
+export {
+  AgentHeistClient,
+  type AgentHeistClientProps,
+  type AgentHeistSessionController,
+} from "./AgentHeistClient";
 export {
   AgentHeistClientView,
   type AgentHeistAgentAssist,

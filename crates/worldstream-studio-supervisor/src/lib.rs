@@ -20,6 +20,7 @@ pub mod control_admission;
 pub mod hosted_browser_sessions;
 pub mod hosted_house_runners;
 pub mod hosted_launch;
+pub mod hosted_public_streams;
 pub mod hosted_result_source;
 pub mod house_model;
 pub mod initialization_imports;

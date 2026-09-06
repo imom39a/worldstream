@@ -5,6 +5,16 @@ select no_plan();
 
 select has_function('platform_api', 'read_public_run_v1', array['text']);
 select has_function('platform_api', 'list_recent_results_v1', array['integer']);
+select has_function(
+  'platform_api',
+  'read_public_relay_binding_candidate_v1',
+  array['uuid']
+);
+select has_function(
+  'platform_api',
+  'record_public_relay_binding_v1',
+  array['uuid', 'bytea', 'bytea', 'bytea', 'bytea']
+);
 select ok(
   has_function_privilege(
     'service_role', 'platform_api.read_public_run_v1(text)', 'execute'
@@ -301,6 +311,27 @@ insert into platform_store.activity_run_memberships (
   extensions.digest(convert_to('result-indexer', 'utf8'), 'sha256')
 ),
 (
+  '84000000-0000-4000-8000-000000000001',
+  '01ARZ3NDEKTSV4RRFFQ69G5FB5',
+  'spectator',
+  'public_projection_relay',
+  null,
+  null,
+  null,
+  'agent',
+  null,
+  null,
+  '01ARZ3NDEKTSV4RRFFQ69G5FB6',
+  null,
+  extensions.digest(
+    convert_to(
+      '["room:attach", "room:observe_public"]'::jsonb::text,
+      'utf8'
+    ),
+    'sha256'
+  )
+),
+(
   '84000000-0000-4000-8000-000000000002',
   '01ARZ3NDEKTSV4RRFFQ69G5FB3',
   'participant',
@@ -315,6 +346,61 @@ insert into platform_store.activity_run_memberships (
   repeat('3', 32),
   null
 );
+
+set local role service_role;
+select is(
+  platform_api.read_public_run_v1(repeat('a', 32)),
+  '{"version":"public_run.v1","state":"unavailable"}'::jsonb,
+  'the public Run is not advertised before Fly accepts its exact relay binding'
+);
+select is(
+  platform_api.read_public_relay_binding_candidate_v1(
+    '84000000-0000-4000-8000-000000000001'
+  ) #>> '{relay_membership_id}',
+  '01ARZ3NDEKTSV4RRFFQ69G5FB5',
+  'the candidate selects only the dedicated public relay Membership'
+);
+with candidate as (
+  select platform_api.read_public_relay_binding_candidate_v1(
+    '84000000-0000-4000-8000-000000000001'
+  ) as value
+), request_bytes as (
+  select convert_to(candidate.value::text, 'utf8') as value
+  from candidate
+), receipt_value as (
+  select jsonb_build_object(
+    'schema', 'worldstream/hosted-public-relay-bind-receipt/v1',
+    'public_run_id', repeat('a', 32),
+    'activity_run_id', '84000000-0000-4000-8000-000000000001',
+    'binding_request_digest',
+      'sha256:' || encode(extensions.digest(request_bytes.value, 'sha256'), 'hex'),
+    'bound', true
+  ) as value,
+  request_bytes.value as request_value
+  from request_bytes
+), receipt_bytes as (
+  select
+    receipt_value.request_value,
+    convert_to(receipt_value.value::text, 'utf8') as receipt_value
+  from receipt_value
+)
+select ok(
+  platform_api.record_public_relay_binding_v1(
+    '84000000-0000-4000-8000-000000000001',
+    receipt_bytes.request_value,
+    extensions.digest(receipt_bytes.request_value, 'sha256'),
+    receipt_bytes.receipt_value,
+    extensions.digest(receipt_bytes.receipt_value, 'sha256')
+  ),
+  'the exact Fly binding receipt is committed once'
+)
+from receipt_bytes;
+select is(
+  platform_api.read_public_run_v1(repeat('a', 32)) #>> '{live,available}',
+  'true',
+  'live viewing is advertised only after the binding commit'
+);
+reset role;
 
 insert into platform_store.indexed_activity_results (
   activity_result_id,
@@ -429,8 +515,8 @@ select ok(
   'the public DTO contains no private correspondence or execution material'
 );
 select is(
-  platform_api.read_public_run_v1(repeat('b', 32)) #>> '{live,available}',
-  'false',
+  platform_api.read_public_run_v1(repeat('b', 32)),
+  '{"version":"public_run.v1","state":"unavailable"}'::jsonb,
   'a result-only public ID cannot resolve to live Fly viewing'
 );
 select is(

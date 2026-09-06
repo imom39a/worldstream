@@ -1,7 +1,12 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
 
-import { readPublicRunDto, readRecentResultsDto } from "./public-runs.js";
+import {
+  presentPublicRun,
+  publicProjectionStreamBaseUrl,
+  readPublicRunDto,
+  readRecentResultsDto,
+} from "./public-runs.js";
 
 const digest = `blake3:${"a".repeat(64)}`;
 
@@ -74,6 +79,44 @@ test("an unavailable Run cannot carry a stale summary or attribution", () => {
     participants: [],
     result: { status: "summary" },
   }), /public_run_dto_rejected/u);
+});
+
+test("a committed live DTO receives only a deployment-owned direct stream URL", () => {
+  const {
+    completed_at: _completedAt,
+    result: _result,
+    ...source
+  } = resultRun();
+  const live = readPublicRunDto({
+    ...source,
+    state: "live",
+    live: { available: true },
+  });
+  assert.equal(live.state, "live");
+  if (live.state !== "live") return;
+  assert.deepEqual(presentPublicRun(live, null), {
+    version: "public_run.v1",
+    state: "unavailable",
+  });
+  assert.deepEqual(presentPublicRun(live, "https://stream.arena.example"), {
+    ...live,
+    live: {
+      available: true,
+      stream_url: `wss://stream.arena.example/v1/hosted/public-runs/${"1".repeat(32)}/stream`,
+    },
+  });
+  assert.equal(
+    publicProjectionStreamBaseUrl("http://127.0.0.1:8080"),
+    "http://127.0.0.1:8080",
+  );
+  for (const rejected of [
+    "http://stream.arena.example",
+    "https://stream.arena.example/path",
+    "https://user:secret@stream.arena.example",
+    "https://stream.arena.example?ticket=secret",
+  ]) {
+    assert.throws(() => publicProjectionStreamBaseUrl(rejected), /public_run_dto_rejected/u);
+  }
 });
 
 test("rejects private correspondence and raw execution material at every result depth", () => {

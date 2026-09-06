@@ -34,7 +34,8 @@ use worldstream_hosted_contract::{
     HostedGenesisMembershipV1, HostedGenesisPrincipalKindV1, HostedHouseRunnerReservationOutcomeV1,
     HostedHouseRunnerReservationReceiptV1, HostedHouseRunnerReservationRequestV1,
     HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1, HostedLaunchStageV1,
-    HostedLaunchStatusV1, HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1,
+    HostedLaunchStatusV1, HostedPublicRelayBindReceiptV1, HostedPublicRelayBindRequestV1,
+    HostedPublicStreamTicketRequestV1, HostedResultIntegrityStatusV1, HostedResultReplayEvidenceV1,
     HostedResultSourceEvidenceV1, HostedResultSourceHeadV1, HostedResultSourceRequestV1,
     PackReference,
 };
@@ -59,6 +60,8 @@ struct Backend {
     browser_status_reads: Arc<Mutex<Vec<HostedBrowserSessionRequestV1>>>,
     browser_logouts: Arc<Mutex<Vec<HostedBrowserSessionRequestV1>>>,
     browser_stream_tickets: Arc<Mutex<Vec<HostedBrowserStreamTicketRequestV1>>>,
+    public_relay_binds: Arc<Mutex<Vec<HostedPublicRelayBindRequestV1>>>,
+    public_stream_lookups: Arc<Mutex<Vec<HostedPublicStreamTicketRequestV1>>>,
     ready: bool,
 }
 
@@ -205,6 +208,38 @@ impl HostedGatewayBackend for Backend {
         request: &HostedBrowserStreamTicketRequestV1,
     ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
         self.browser_stream_tickets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(HostedBrowserStreamTicketResponseV1 {
+            schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
+            ticket: format!("wst1:{}", "c".repeat(64)),
+            expires_in_ms: 15_000,
+        })
+    }
+
+    fn bind_public_relay(
+        &self,
+        request: &HostedPublicRelayBindRequestV1,
+    ) -> Result<HostedPublicRelayBindReceiptV1, HostedGatewayError> {
+        self.public_relay_binds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.clone());
+        Ok(HostedPublicRelayBindReceiptV1 {
+            schema: "worldstream/hosted-public-relay-bind-receipt/v1".to_owned(),
+            public_run_id: request.public_run_id.clone(),
+            activity_run_id: request.activity_run_id.clone(),
+            binding_request_digest: format!("sha256:{}", "d".repeat(64)),
+            bound: true,
+        })
+    }
+
+    fn issue_public_stream_ticket(
+        &self,
+        request: &HostedPublicStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
+        self.public_stream_lookups
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(request.clone());
@@ -575,6 +610,27 @@ fn browser_stream_ticket_request() -> HostedBrowserStreamTicketRequestV1 {
     }
 }
 
+fn public_relay_bind_request() -> HostedPublicRelayBindRequestV1 {
+    HostedPublicRelayBindRequestV1 {
+        schema: "worldstream/hosted-public-relay-bind-request/v1".to_owned(),
+        public_run_id: "0123456789abcdef0123456789abcdef".to_owned(),
+        activity_run_id: "20000000-0000-4000-8000-000000000001".to_owned(),
+        host_installation_id: "hosted-preview-1".to_owned(),
+        launch_request_id: "10000000-0000-4000-8000-000000000001".to_owned(),
+        listing_revision_digest: LISTING.to_owned(),
+        launch_request_digest: format!("blake3:{}", "b".repeat(64)),
+        room_setup_operation_id: "hosted-launch-01".to_owned(),
+        room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        pack: PackReference {
+            id: "worldstream.agent-heist".to_owned(),
+            version: "0.2.0".to_owned(),
+            digest: format!("blake3:{}", "d".repeat(64)),
+        },
+        relay_principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY".to_owned(),
+        relay_membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAZ".to_owned(),
+    }
+}
+
 fn service_request(path: &str, token: &str, body: &impl Serialize) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -588,10 +644,10 @@ fn service_request(path: &str, token: &str, body: &impl Serialize) -> Request<Bo
 }
 
 async fn browser_stream_handshake(
-    path: &'static str,
-    origin: &'static str,
-    protocol: Option<&'static str>,
-    extra_header: Option<&'static str>,
+    path: &str,
+    origin: &str,
+    protocol: Option<&str>,
+    extra_header: Option<&str>,
 ) -> String {
     let app = hosted_gateway_router(browser_stream_config(), Backend::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -605,15 +661,19 @@ async fn browser_stream_handshake(
         )
         .await
     });
+    let path = path.to_owned();
+    let origin = origin.to_owned();
+    let protocol = protocol.map(ToOwned::to_owned);
+    let extra_header = extra_header.map(ToOwned::to_owned);
     let response = tokio::task::spawn_blocking(move || {
         let mut stream = TcpStream::connect(address).expect("gateway connection");
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("gateway read timeout");
-        let protocol_header = protocol
+        let protocol_header = protocol.as_deref()
             .map(|value| format!("Sec-WebSocket-Protocol: {value}\r\n"))
             .unwrap_or_default();
-        let extra_header = extra_header
+        let extra_header = extra_header.as_deref()
             .map(|value| format!("{value}\r\n"))
             .unwrap_or_default();
         let nonce = ["dGhlIHNhbXBsZSBu", "b25jZQ=="].concat();
@@ -762,6 +822,45 @@ async fn public_browser_stream_requires_exact_origin_subprotocol_and_credential_
     }
 }
 
+#[tokio::test]
+async fn anonymous_public_stream_uses_a_separate_read_only_upgrade_contract() {
+    let public_id = "0123456789abcdef0123456789abcdef";
+    let public_path = format!("/v1/hosted/public-runs/{public_id}/stream");
+    let accepted = browser_stream_handshake(
+        &public_path,
+        "https://arena.example",
+        Some("worldstream.public-projection.v1"),
+        None,
+    )
+    .await;
+    assert!(accepted.starts_with("HTTP/1.1 101 "), "{accepted}");
+    assert!(
+        accepted.contains("\r\nsec-websocket-protocol: worldstream.public-projection.v1\r\n"),
+        "{accepted}"
+    );
+
+    for (origin, protocol, extra) in [
+        (
+            "https://other.example",
+            Some("worldstream.public-projection.v1"),
+            None,
+        ),
+        ("https://arena.example", Some("worldstream.json.v0.1"), None),
+        (
+            "https://arena.example",
+            Some("worldstream.public-projection.v1"),
+            Some("Authorization: Bearer must-not-cross"),
+        ),
+    ] {
+        let rejected = browser_stream_handshake(&public_path, origin, protocol, extra).await;
+        assert!(
+            rejected.starts_with("HTTP/1.1 400 ") || rejected.starts_with("HTTP/1.1 403 "),
+            "{rejected}"
+        );
+        assert!(!rejected.contains("must-not-cross"));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::result_large_err, clippy::too_many_lines)]
 async fn public_browser_stream_proxies_first_frame_ticket_and_live_frames_only_to_runtime() {
@@ -880,6 +979,284 @@ async fn public_browser_stream_proxies_first_frame_ticket_and_live_frames_only_t
     .await
     .expect("browser task");
     runtime.await.expect("runtime task");
+    gateway.abort();
+    let _ = gateway.await;
+}
+
+#[allow(clippy::result_large_err, clippy::too_many_lines)]
+async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
+    let mut socket = accept_hdr_async(
+        stream,
+        |request: &WebSocketRequest, mut response: WebSocketResponse| {
+            assert_eq!(request.uri().path(), "/v1/hosted/browser-stream");
+            response.headers_mut().insert(
+                "sec-websocket-protocol",
+                "worldstream.json.v0.1".parse().expect("protocol header"),
+            );
+            Ok(response)
+        },
+    )
+    .await
+    .expect("runtime handshake");
+    assert_eq!(
+        socket.next().await.expect("ticket").expect("ticket frame"),
+        TungsteniteMessage::Text(format!("wst1:{}", "c".repeat(64)).into())
+    );
+    let room_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let member_id = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    let digest = |value: char| format!("blake3:{}", value.to_string().repeat(64));
+    let head = json!({
+        "room_id": room_id,
+        "room_seq": 0,
+        "genesis_or_transition_hash": digest('1'),
+        "core_schema_version": "worldstream/core-room-state/v1",
+        "pack_digest": digest('2'),
+        "core_state_hash": digest('3'),
+        "activity_state_hash": digest('4'),
+        "authoritative_state_hash": digest('5')
+    });
+    let envelope = |message_type: &str, body: Value| {
+        TungsteniteMessage::Text(
+            json!({
+                "protocol": "0.1",
+                "type": message_type,
+                "message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+                "body": body
+            })
+            .to_string()
+            .into(),
+        )
+    };
+    socket
+        .send(envelope(
+            "server.welcome",
+            json!({
+                "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                "selected_protocol": "0.1",
+                "server_version": "fixture",
+                "heartbeat_interval_ms": 30000,
+                "maximum_message_bytes": 524_288,
+                "authenticated_principal": {
+                    "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                    "kind": "agent"
+                }
+            }),
+        ))
+        .await
+        .expect("welcome");
+    socket
+        .send(envelope(
+            "room.attached",
+            json!({
+                "room_id": room_id,
+                "member_id": member_id,
+                "principal_kind": "agent",
+                "access_mode": "spectator",
+                "role": null,
+                "membership_status": "enabled",
+                "room_status": "active",
+                "room_health": "healthy",
+                "integrity_generation": 0,
+                "room_head": head.clone(),
+                "cursor": null,
+                "frame_head": 0,
+                "retained_floor": 0,
+                "sync_token": "sync-public-1",
+                "sync": {
+                    "kind": "projection_reset",
+                    "baseline_frame_head": 0,
+                    "reason": "first_attach"
+                },
+                "pack": {
+                    "id": "worldstream.agent-heist",
+                    "version": "0.2.0",
+                    "digest": digest('2')
+                }
+            }),
+        ))
+        .await
+        .expect("attached");
+    socket
+        .send(envelope(
+            "projection.reset",
+            json!({
+                "room_id": room_id,
+                "member_id": member_id,
+                "room_head": head,
+                "room_health": "healthy",
+                "integrity_generation": 0,
+                "baseline_frame_head": 0,
+                "reset_reason": "first_attach",
+                "projection_schema": "agent-heist/projection/v1",
+                "projection": {
+                    "core": {
+                        "access_mode": "spectator",
+                        "standing": "enabled",
+                        "role": null,
+                        "room_status": "active",
+                        "viewer_class": "public"
+                    },
+                    "activity": {"phase": "lobby", "principal_id": "must-strip"},
+                    "action_offers": []
+                },
+                "projection_hash": digest('6')
+            }),
+        ))
+        .await
+        .expect("reset");
+    let sync_ack: Value = serde_json::from_str(
+        socket
+            .next()
+            .await
+            .expect("sync ack")
+            .expect("valid sync ack")
+            .into_text()
+            .expect("text ack")
+            .as_str(),
+    )
+    .expect("sync ack json");
+    assert_eq!(sync_ack["type"], "room.sync_ack");
+    assert!(sync_ack["body"].get("room_id").is_none());
+    socket
+        .send(envelope(
+            "room.sync_acked",
+            json!({"through_frame_head": 0}),
+        ))
+        .await
+        .expect("sync receipt");
+    socket
+        .send(envelope(
+            "observation.deliver",
+            json!({
+                "room_id": room_id,
+                "member_id": member_id,
+                "frame_seq": 1,
+                "cause_room_seq": 1,
+                "frame_kind": "activity",
+                "observation_schema": "agent-heist/observation/v1",
+                "observation": {"phase": "planning", "action_offers": []},
+                "frame_payload_hash": digest('7')
+            }),
+        ))
+        .await
+        .expect("observation");
+    let observation_ack: Value = serde_json::from_str(
+        socket
+            .next()
+            .await
+            .expect("observation ack")
+            .expect("valid observation ack")
+            .into_text()
+            .expect("text ack")
+            .as_str(),
+    )
+    .expect("observation ack json");
+    assert_eq!(observation_ack["type"], "observation.ack");
+}
+
+fn read_public_projection_fixture(gateway_address: SocketAddr) {
+    let stream = TcpStream::connect(gateway_address).expect("browser connection");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("browser read timeout");
+    let mut request =
+        "ws://arena.example/v1/hosted/public-runs/0123456789abcdef0123456789abcdef/stream"
+            .into_client_request()
+            .expect("browser request");
+    request
+        .headers_mut()
+        .insert("origin", "https://arena.example".parse().expect("origin"));
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        "worldstream.public-projection.v1"
+            .parse()
+            .expect("protocol"),
+    );
+    let (mut socket, response) =
+        tokio_tungstenite::tungstenite::client(request, stream).expect("gateway handshake");
+    assert_eq!(
+        response
+            .headers()
+            .get("sec-websocket-protocol")
+            .and_then(|value| value.to_str().ok()),
+        Some("worldstream.public-projection.v1")
+    );
+    for expected_kind in ["projection_reset", "observation"] {
+        let frame = socket.read().expect("public frame");
+        let text = frame.into_text().expect("public text frame");
+        let value: Value = serde_json::from_str(&text).expect("public frame json");
+        assert_eq!(value["version"], "worldstream/public-projection-stream/v1");
+        assert_eq!(value["batch"]["delivery"][0]["kind"], expected_kind);
+        for forbidden in [
+            "room_id",
+            "member_id",
+            "membership_id",
+            "principal_id",
+            "ticket",
+            "replay",
+            "final_reveal",
+        ] {
+            assert!(!text.contains(forbidden), "leaked {forbidden}: {text}");
+        }
+    }
+    socket.close(None).expect("close public stream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::result_large_err)]
+async fn two_anonymous_browsers_receive_only_pushed_authorized_projection_frames() {
+    let runtime_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("runtime listener");
+    let runtime_address = runtime_listener.local_addr().expect("runtime address");
+    let runtime = tokio::spawn(async move {
+        let (first, _) = runtime_listener
+            .accept()
+            .await
+            .expect("first runtime connection");
+        let (second, _) = runtime_listener
+            .accept()
+            .await
+            .expect("second runtime connection");
+        tokio::join!(
+            serve_public_projection_fixture(first),
+            serve_public_projection_fixture(second)
+        );
+    });
+
+    let backend = Backend::default();
+    let app = hosted_gateway_router(
+        browser_stream_config_with_runtime(runtime_address),
+        backend.clone(),
+    );
+    let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gateway listener");
+    let gateway_address = gateway_listener.local_addr().expect("gateway address");
+    let gateway = tokio::spawn(async move {
+        axum::serve(
+            gateway_listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+
+    let first =
+        tokio::task::spawn_blocking(move || read_public_projection_fixture(gateway_address));
+    let second =
+        tokio::task::spawn_blocking(move || read_public_projection_fixture(gateway_address));
+    let (first_result, second_result) = tokio::join!(first, second);
+    first_result.expect("first browser task");
+    second_result.expect("second browser task");
+    runtime.await.expect("runtime task");
+    assert_eq!(
+        backend
+            .public_stream_lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        2
+    );
     gateway.abort();
     let _ = gateway.await;
 }
@@ -1108,7 +1485,7 @@ async fn house_reservation_routes_are_service_only_typed_and_allowlisted() {
 }
 
 #[tokio::test]
-async fn browser_session_routes_are_service_only_and_public_stream_stays_browser_safe() {
+async fn browser_session_and_public_binding_routes_are_service_only() {
     let backend = Backend::default();
     let app = hosted_gateway_router(config(8), backend.clone());
     for path in [
@@ -1117,6 +1494,7 @@ async fn browser_session_routes_are_service_only_and_public_stream_stays_browser
         "/v1/hosted/browser-sessions/status",
         "/v1/hosted/browser-sessions/logout",
         "/v1/hosted/browser-sessions/stream-ticket",
+        "/v1/hosted/public-relays/bind",
     ] {
         let response = app
             .clone()
@@ -1140,14 +1518,14 @@ async fn browser_session_routes_are_service_only_and_public_stream_stays_browser
     let public = app
         .oneshot(
             Request::builder()
-                .uri("/v1/hosted/public-runs/public-01/stream")
+                .uri("/v1/hosted/public-runs/not-an-opaque-id/stream")
                 .header("host", "arena.example")
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
         .expect("response");
-    assert_eq!(public.status(), 501);
+    assert_eq!(public.status(), 400);
     assert!(
         backend
             .launches
@@ -1268,6 +1646,51 @@ async fn hosted_browser_session_service_calls_are_typed_no_store_and_rate_bounde
             .as_slice(),
         &[browser_stream_ticket_request()]
     );
+}
+
+#[tokio::test]
+async fn public_relay_binding_is_typed_allowlisted_and_service_only() {
+    let backend = Backend::default();
+    let app = hosted_gateway_router(config(8), backend.clone());
+    let request = public_relay_bind_request();
+    let response = app
+        .clone()
+        .oneshot(service_request(
+            "/v1/hosted/public-relays/bind",
+            TOKEN,
+            &request,
+        ))
+        .await
+        .expect("binding response");
+    assert_eq!(response.status(), 201);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("binding body")
+        .to_bytes();
+    let receipt: HostedPublicRelayBindReceiptV1 =
+        serde_json::from_slice(&bytes).expect("typed receipt");
+    assert_eq!(receipt.public_run_id, request.public_run_id);
+    assert!(!String::from_utf8_lossy(&bytes).contains("membership_id"));
+    assert_eq!(
+        backend
+            .public_relay_binds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_slice(),
+        &[request]
+    );
+
+    let unauthorized = app
+        .oneshot(service_request(
+            "/v1/hosted/public-relays/bind",
+            "wrong-authority-value-long-enough",
+            &public_relay_bind_request(),
+        ))
+        .await
+        .expect("unauthorized response");
+    assert_eq!(unauthorized.status(), 401);
 }
 
 #[tokio::test]

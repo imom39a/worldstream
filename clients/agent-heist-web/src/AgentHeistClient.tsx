@@ -24,8 +24,14 @@ import {
 
 export interface AgentHeistClientProps {
   readonly startup: ActivityClientStartup;
-  readonly controller: HostedLiveSessionController;
+  readonly controller: AgentHeistSessionController;
 }
+
+/** The Pack UI depends on behavior, never on one transport implementation. */
+export type AgentHeistSessionController = Pick<
+  HostedLiveSessionController,
+  "state" | "subscribe" | "start" | "reconnect" | "submitAction" | "waitFor"
+>;
 
 /**
  * Mountable Agent Heist participant client. The React surface interprets Pack

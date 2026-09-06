@@ -44,6 +44,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     dependencies.dataClient,
     hostedBrowserSessions,
     hostedFormation,
+    environment.WORLDSTREAM_HOSTED_GATEWAY_URL,
   );
   const server = createServer((request, response) => {
     void dispatch(bff, canonicalOrigin, request, response);

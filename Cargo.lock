@@ -3221,6 +3221,7 @@ dependencies = [
  "axum",
  "blake3",
  "futures-util",
+ "getrandom 0.4.3",
  "http-body-util",
  "ring",
  "serde",
@@ -3233,6 +3234,7 @@ dependencies = [
  "tracing-subscriber",
  "worldstream-core",
  "worldstream-hosted-contract",
+ "worldstream-protocol",
  "zeroize",
 ]
 

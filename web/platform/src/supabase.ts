@@ -40,8 +40,8 @@ import type {
 import {
   readPublicRunDto,
   readRecentResultsDto,
-  type PublicRun,
   type PublicRunData,
+  type PublicRunRecord,
   type RecentResults,
 } from "./public-runs.js";
 
@@ -253,7 +253,7 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
     return rows.length === 1;
   }
 
-  async readPublicRun(publicId: string): Promise<PublicRun> {
+  async readPublicRun(publicId: string): Promise<PublicRunRecord> {
     return readPublicRunDto(await requiredRpc(this.#rpc, "read_public_run_v1", {
       p_public_id: publicId,
     }));
@@ -734,6 +734,32 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
       runId: requiredString(row.activity_run_id),
       reconciliationState: requiredEnum(row.reconciliation_state, ["ready", "quarantined"]),
     };
+  }
+
+  async readPublicRelayBindingCandidate(runId: string) {
+    const data = await requiredRpc(
+      this.#rpc,
+      "read_public_relay_binding_candidate_v1",
+      { p_activity_run_id: runId },
+    );
+    if (data === null) return null;
+    return requiredRecord(data) as never;
+  }
+
+  async recordPublicRelayBinding(input: {
+    runId: string;
+    canonicalRequest: Uint8Array;
+    requestDigest: Uint8Array;
+    canonicalReceipt: Uint8Array;
+    receiptDigest: Uint8Array;
+  }) {
+    return requiredBoolean(await requiredRpc(this.#rpc, "record_public_relay_binding_v1", {
+      p_activity_run_id: input.runId,
+      p_canonical_binding_request: bytea(input.canonicalRequest),
+      p_binding_request_digest: bytea(input.requestDigest),
+      p_canonical_binding_receipt: bytea(input.canonicalReceipt),
+      p_binding_receipt_digest: bytea(input.receiptDigest),
+    }));
   }
 
   async readOwnedRun(accountId: string, runId: string): Promise<OwnedRunRecord | null> {

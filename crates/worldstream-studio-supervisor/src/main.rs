@@ -47,6 +47,7 @@ use worldstream_studio_supervisor::{
     hosted_browser_sessions::{HostedBrowserSessionBrokerV1, hosted_browser_session_router},
     hosted_house_runners::HostedHouseRunnerOperationsV1,
     hosted_launch::{HostedLaunchAccessV1, HostedLaunchOperationsV1, hosted_launch_router},
+    hosted_public_streams::{HostedPublicStreamBrokerV1, hosted_public_stream_router},
     hosted_result_source::HttpHostedResultSourceV1,
     local_initialization::validate_initialized,
     managed_controller::{
@@ -582,10 +583,22 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 client_bindings.clone(),
             )
             .map_err(|_| anyhow::anyhow!("hosted Browser Activity Sessions are unavailable"))?;
+            let public_streams = HostedPublicStreamBrokerV1::open(
+                &args.state_dir.join("hosted-public-relays"),
+                operations.clone(),
+                vault.clone(),
+                FixedDaemonParticipantConsoleGatewayV1::new(args.daemon, daemon_timeout),
+                &client_origin,
+            )
+            .map_err(|_| anyhow::anyhow!("hosted Public Projection relay is unavailable"))?;
             drop(authority);
             Some(
                 hosted_launch_router(operations, access.clone())
-                    .merge(hosted_browser_session_router(browser_sessions, access)),
+                    .merge(hosted_browser_session_router(
+                        browser_sessions,
+                        access.clone(),
+                    ))
+                    .merge(hosted_public_stream_router(public_streams, access)),
             )
         }
         _ => anyhow::bail!(

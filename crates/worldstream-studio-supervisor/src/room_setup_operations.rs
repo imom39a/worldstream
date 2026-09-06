@@ -104,6 +104,17 @@ pub(crate) struct RoomSetupResultIndexerBindingV1 {
     pub secret_reference: SecretReferenceV1,
 }
 
+/// Private retained binding for the dedicated anonymous Public Projection
+/// relay. The bearer remains referenced, never copied into hosted contracts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RoomSetupPublicRelayBindingV1 {
+    pub room_id: String,
+    pub member_id: String,
+    pub principal_id: String,
+    pub pack: PackReference,
+    pub secret_reference: SecretReferenceV1,
+}
+
 /// Shared metadata-only compatibility result for validation and creation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoomSetupDependencyError {
@@ -489,6 +500,48 @@ impl RoomSetupOperationsV1 {
             })
             .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
         Ok(RoomSetupResultIndexerBindingV1 {
+            room_id: response.room_id.clone(),
+            member_id: receipt.member_id.clone(),
+            principal_id: receipt.principal_id.clone(),
+            pack: creation.request.pack,
+            secret_reference: spectator.secret_reference.clone(),
+        })
+    }
+
+    /// Resolves only the dedicated public-relay Spectator Membership and its
+    /// retained bearer reference. It deliberately excludes replay authority.
+    pub(crate) fn public_relay_binding(
+        &self,
+        operation: &str,
+    ) -> Result<RoomSetupPublicRelayBindingV1, RoomSetupOperationErrorV1> {
+        validate_operation_reference(operation)?;
+        let creation = self.creation.status(operation)?;
+        if creation.state != RoomCreationStateV1::Succeeded {
+            return Err(RoomSetupOperationErrorV1::Unavailable);
+        }
+        let response = creation
+            .response
+            .as_ref()
+            .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
+        let spectator = creation
+            .spectators
+            .iter()
+            .find(|spectator| {
+                spectator.purpose == crate::room_setup_spec::SetupSpectatorPurposeV2::PublicRelay
+            })
+            .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
+        let receipt = creation
+            .spectator_credentials
+            .iter()
+            .find(|receipt| {
+                receipt.purpose == crate::room_setup_spec::SetupSpectatorPurposeV2::PublicRelay
+                    && receipt.room_id == response.room_id
+                    && receipt.principal_id == spectator.principal_id
+                    && receipt.capability_id == spectator.capability_id
+            })
+            .filter(|receipt| receipt.scopes == ["room:attach", "room:observe_public"])
+            .ok_or(RoomSetupOperationErrorV1::Unavailable)?;
+        Ok(RoomSetupPublicRelayBindingV1 {
             room_id: response.room_id.clone(),
             member_id: receipt.member_id.clone(),
             principal_id: receipt.principal_id.clone(),

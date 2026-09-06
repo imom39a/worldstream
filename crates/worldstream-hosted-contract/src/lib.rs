@@ -277,6 +277,16 @@ impl ListingRevision {
         &self.document.result.projection.schema
     }
 
+    /// Returns whether this reviewed revision explicitly permits an
+    /// anonymous, link-addressed Public Projection relay.
+    #[must_use]
+    pub const fn allows_anonymous_viewing(&self) -> bool {
+        matches!(
+            self.document.public_viewing_policy,
+            PublicViewingPolicy::AnonymousByLink
+        )
+    }
+
     /// Verifies that one exact seat permits one reviewed House Agent Revision.
     ///
     /// # Errors
@@ -1257,6 +1267,50 @@ pub struct HostedBrowserStreamTicketResponseV1 {
     pub expires_in_ms: u64,
 }
 
+/// Exact post-Genesis request which binds one opaque public Run identifier to
+/// the retained public-relay Spectator Membership on the operated Host.
+///
+/// This is a private service document. It carries correspondence identifiers
+/// but never carries the public-relay bearer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedPublicRelayBindRequestV1 {
+    pub schema: String,
+    pub public_run_id: String,
+    pub activity_run_id: String,
+    pub host_installation_id: String,
+    pub launch_request_id: String,
+    pub listing_revision_digest: String,
+    pub launch_request_digest: String,
+    pub room_setup_operation_id: String,
+    pub room_id: String,
+    pub pack: PackReference,
+    pub relay_principal_id: String,
+    pub relay_membership_id: String,
+}
+
+/// Deterministic acknowledgement for one exact retained public-relay binding.
+/// The request digest lets the platform persist proof that Fly accepted the
+/// same canonical request it derived from Genesis correspondence.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedPublicRelayBindReceiptV1 {
+    pub schema: String,
+    pub public_run_id: String,
+    pub activity_run_id: String,
+    pub binding_request_digest: String,
+    pub bound: bool,
+}
+
+/// Internal Gateway-to-Controller lookup for a fresh, one-use Runtime ticket.
+/// Anonymous browser code never sees this request or its response.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedPublicStreamTicketRequestV1 {
+    pub schema: String,
+    pub public_run_id: String,
+}
+
 impl std::fmt::Debug for HostedBrowserStreamTicketResponseV1 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1574,6 +1628,69 @@ pub fn validate_hosted_browser_stream_ticket_response(
         || !valid_opaque_token(&response.ticket, "wst1:")
         || response.expires_in_ms == 0
         || response.expires_in_ms > 15_000
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates the complete private public-relay correspondence supplied by the
+/// platform after it has recorded Genesis.
+///
+/// # Errors
+/// Returns a closed contract error for malformed, widened, or unsupported
+/// binding material.
+pub fn validate_hosted_public_relay_bind_request(
+    request: &HostedPublicRelayBindRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-public-relay-bind-request/v1"
+        || !valid_public_run_id(&request.public_run_id)
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    validate_uuid_reference(&request.activity_run_id)?;
+    validate_host_installation_reference(&request.host_installation_id)?;
+    validate_uuid_reference(&request.launch_request_id)?;
+    validate_digest(&request.listing_revision_digest, "blake3")?;
+    validate_digest(&request.launch_request_digest, "blake3")?;
+    validate_hosted_operation_reference(&request.room_setup_operation_id)?;
+    validate_ulid_reference(&request.room_id)?;
+    validate_pack(&request.pack)?;
+    validate_ulid_reference(&request.relay_principal_id)?;
+    validate_ulid_reference(&request.relay_membership_id)?;
+    if request.relay_principal_id == request.relay_membership_id {
+        return Err(ContractError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Validates Fly's deterministic acknowledgement for one public binding.
+///
+/// # Errors
+/// Returns a closed contract error for malformed identifiers, digest, or a
+/// negative acknowledgement.
+pub fn validate_hosted_public_relay_bind_receipt(
+    receipt: &HostedPublicRelayBindReceiptV1,
+) -> Result<(), ContractError> {
+    if receipt.schema != "worldstream/hosted-public-relay-bind-receipt/v1"
+        || !valid_public_run_id(&receipt.public_run_id)
+        || !receipt.bound
+    {
+        return Err(ContractError::InvalidShape);
+    }
+    validate_uuid_reference(&receipt.activity_run_id)?;
+    validate_digest(&receipt.binding_request_digest, "sha256")
+}
+
+/// Validates the narrow internal public-stream ticket lookup.
+///
+/// # Errors
+/// Returns a closed contract error for unsupported or malformed input.
+pub fn validate_hosted_public_stream_ticket_request(
+    request: &HostedPublicStreamTicketRequestV1,
+) -> Result<(), ContractError> {
+    if request.schema != "worldstream/hosted-public-stream-ticket-request/v1"
+        || !valid_public_run_id(&request.public_run_id)
     {
         return Err(ContractError::InvalidShape);
     }
@@ -2142,6 +2259,13 @@ fn validate_uuid_reference(value: &str) -> Result<(), ContractError> {
         return Err(ContractError::InvalidShape);
     }
     Ok(())
+}
+
+fn valid_public_run_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_ulid_reference(value: &str) -> Result<(), ContractError> {

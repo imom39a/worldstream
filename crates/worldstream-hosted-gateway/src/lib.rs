@@ -42,15 +42,21 @@ use worldstream_hosted_contract::{
     HostedBrowserStreamTicketRequestV1, HostedBrowserStreamTicketResponseV1,
     HostedGenesisEvidenceV1, HostedHouseRunnerReservationReceiptV1,
     HostedHouseRunnerReservationRequestV1, HostedLaunchEvidenceRequestV1, HostedLaunchRequestV1,
-    HostedLaunchStatusV1, HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
+    HostedLaunchStatusV1, HostedPublicRelayBindReceiptV1, HostedPublicRelayBindRequestV1,
+    HostedPublicStreamTicketRequestV1, HostedResultSourceEvidenceV1, HostedResultSourceRequestV1,
     validate_hosted_browser_handoff_redeem_request,
     validate_hosted_browser_handoff_redeem_response, validate_hosted_browser_handoff_request,
     validate_hosted_browser_handoff_response, validate_hosted_browser_session_logout,
     validate_hosted_browser_session_request, validate_hosted_browser_session_status,
     validate_hosted_browser_stream_ticket_request, validate_hosted_browser_stream_ticket_response,
     validate_hosted_genesis_evidence, validate_hosted_house_runner_reservation_receipt,
-    validate_hosted_launch_evidence_request, validate_hosted_result_source_evidence,
-    validate_hosted_result_source_request,
+    validate_hosted_launch_evidence_request, validate_hosted_public_relay_bind_receipt,
+    validate_hosted_public_relay_bind_request, validate_hosted_public_stream_ticket_request,
+    validate_hosted_result_source_evidence, validate_hosted_result_source_request,
+};
+use worldstream_protocol::{
+    AccessMode, ObservationDeliver, PROTOCOL_VERSION, PackReference, PrincipalKind,
+    ProjectionReset, RoomAttached, RoomHead, ServerWelcome, SyncBranch, VersionedEnvelope,
 };
 use zeroize::Zeroizing;
 
@@ -60,6 +66,8 @@ const MAX_UPSTREAM_HEADERS_BYTES: usize = 16 * 1024;
 const MAX_LISTINGS: usize = 64;
 const SERVICE_AUTHORITY_TAG_KEY: &[u8] = b"worldstream/hosted-service-authority/v1";
 const WORLDSTREAM_WEBSOCKET_SUBPROTOCOL: &str = "worldstream.json.v0.1";
+const PUBLIC_PROJECTION_WEBSOCKET_SUBPROTOCOL: &str = "worldstream.public-projection.v1";
+const PUBLIC_PROJECTION_STREAM_VERSION: &str = "worldstream/public-projection-stream/v1";
 const MAX_BROWSER_MESSAGE_BYTES: usize = 512 * 1024;
 const BROWSER_TICKET_FRAME_BYTES: usize = 69;
 const BROWSER_TICKET_TIMEOUT: Duration = Duration::from_secs(15);
@@ -67,6 +75,9 @@ const BROWSER_PROXY_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BROWSER_CONNECTIONS: usize = 256;
 const MAX_BROWSER_CONNECTIONS_PER_PEER: usize = 8;
 const BROWSER_ADMISSION_CLOSE_REASON: &str = "browser authorization failed";
+const PUBLIC_STREAM_CLOSE_REASON: &str = "public stream unavailable";
+const PUBLIC_STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
+const PUBLIC_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Closed gateway failure classes. No variant carries credentials, private
 /// Projection bytes, upstream responses, or internal addresses.
@@ -80,6 +91,49 @@ pub enum HostedGatewayError {
     Missing,
     #[error("hosted operation is unavailable")]
     Unavailable,
+}
+
+/// Browser-safe public stream envelope. It contains authorized Public
+/// Projection data but deliberately has no Room, Membership, principal,
+/// credential, ticket, replay, or Action endpoint identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicProjectionStreamFrameV1 {
+    pub version: String,
+    pub batch: PublicProjectionBatchV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicProjectionBatchV1 {
+    pub pack: PackReference,
+    pub room_head: PublicRoomHeadV1,
+    pub frame_head: u64,
+    pub delivery: Vec<PublicProjectionDeliveryV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicRoomHeadV1 {
+    pub room_seq: u64,
+    pub genesis_or_transition_hash: String,
+    pub core_schema_version: String,
+    pub pack_digest: String,
+    pub core_state_hash: String,
+    pub activity_state_hash: String,
+    pub authoritative_state_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    tag = "kind",
+    content = "body",
+    rename_all = "snake_case"
+)]
+pub enum PublicProjectionDeliveryV1 {
+    ProjectionReset(serde_json::Value),
+    Observation(serde_json::Value),
 }
 
 /// Validated immutable process configuration. The service authority is reduced
@@ -294,6 +348,30 @@ pub trait HostedGatewayBackend: Send + Sync + 'static {
     fn issue_browser_stream_ticket(
         &self,
         _request: &HostedBrowserStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Binds a platform-generated opaque public Run ID to one exact retained
+    /// public-relay Membership after Genesis.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, missing binding, or availability failure.
+    fn bind_public_relay(
+        &self,
+        _request: &HostedPublicRelayBindRequestV1,
+    ) -> Result<HostedPublicRelayBindReceiptV1, HostedGatewayError> {
+        Err(HostedGatewayError::Rejected)
+    }
+
+    /// Resolves one opaque public Run ID to a fresh internal Runtime ticket.
+    /// The ticket never crosses the anonymous browser boundary.
+    ///
+    /// # Errors
+    /// Returns a closed rejection, missing binding, or availability failure.
+    fn issue_public_stream_ticket(
+        &self,
+        _request: &HostedPublicStreamTicketRequestV1,
     ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
         Err(HostedGatewayError::Rejected)
     }
@@ -528,6 +606,43 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
             .map_err(|_| HostedGatewayError::Unavailable)?;
         Ok(response)
     }
+
+    fn bind_public_relay(
+        &self,
+        request: &HostedPublicRelayBindRequestV1,
+    ) -> Result<HostedPublicRelayBindReceiptV1, HostedGatewayError> {
+        let (status, body) = self.call("/api/v1/hosted-public-relays:bind", request)?;
+        if !matches!(status, 200 | 201) {
+            return Err(classify_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedPublicRelayBindReceiptV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_hosted_public_relay_bind_receipt(&response)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        if response.public_run_id != request.public_run_id
+            || response.activity_run_id != request.activity_run_id
+        {
+            return Err(HostedGatewayError::Unavailable);
+        }
+        Ok(response)
+    }
+
+    fn issue_public_stream_ticket(
+        &self,
+        request: &HostedPublicStreamTicketRequestV1,
+    ) -> Result<HostedBrowserStreamTicketResponseV1, HostedGatewayError> {
+        validate_hosted_public_stream_ticket_request(request)
+            .map_err(|_| HostedGatewayError::Rejected)?;
+        let (status, body) = self.call("/api/v1/hosted-public-streams:ticket", request)?;
+        if status != 201 {
+            return Err(classify_browser_upstream_status(status));
+        }
+        let response = serde_json::from_slice::<HostedBrowserStreamTicketResponseV1>(&body)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        validate_hosted_browser_stream_ticket_response(&response)
+            .map_err(|_| HostedGatewayError::Unavailable)?;
+        Ok(response)
+    }
 }
 
 impl FixedHostAdapterBackend {
@@ -689,10 +804,11 @@ pub fn hosted_gateway_router(
             "/v1/hosted/browser-sessions/stream-ticket",
             post(issue_browser_stream_ticket),
         )
+        .route("/v1/hosted/public-relays/bind", post(bind_public_relay))
         .route("/v1/hosted/browser-stream", get(browser_stream))
         .route(
             "/v1/hosted/public-runs/{public_run_id}/stream",
-            get(public_stream_seam),
+            get(public_stream),
         )
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(MAX_SERVICE_BODY_BYTES))
@@ -846,6 +962,17 @@ async fn issue_browser_stream_ticket(
         return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
     };
     browser_stream_ticket_operation(&state, &headers, &body).await
+}
+
+async fn bind_public_relay(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(body) = body else {
+        return safe_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    };
+    public_relay_bind_operation(&state, &headers, &body).await
 }
 
 async fn launch_operation(state: &GatewayState, headers: &HeaderMap, body: &[u8]) -> Response {
@@ -1112,6 +1239,45 @@ async fn browser_stream_ticket_operation(
         .map_err(|_| HostedGatewayError::Unavailable)
         .and_then(|result| result);
     browser_service_result(result, StatusCode::CREATED)
+}
+
+async fn public_relay_bind_operation(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if let Some(response) = reject_service_envelope(state, headers) {
+        return response;
+    }
+    let Ok(request) = serde_json::from_slice::<HostedPublicRelayBindRequestV1>(body) else {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if validate_hosted_public_relay_bind_request(&request).is_err() {
+        return safe_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if !listing_allowed(state, &request.listing_revision_digest) {
+        return safe_error(StatusCode::FORBIDDEN, "listing_not_allowed");
+    }
+    if !admit_rate(state) {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || backend.bind_public_relay(&request))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    match result {
+        Ok(receipt) => no_store((StatusCode::CREATED, Json(receipt)).into_response()),
+        Err(HostedGatewayError::Rejected | HostedGatewayError::Missing) => {
+            safe_error(StatusCode::CONFLICT, "operation_rejected")
+        }
+        Err(HostedGatewayError::InvalidConfiguration) => {
+            safe_error(StatusCode::BAD_REQUEST, "invalid_request")
+        }
+        Err(HostedGatewayError::Unavailable) => {
+            safe_error(StatusCode::SERVICE_UNAVAILABLE, "operation_unavailable")
+        }
+    }
 }
 
 fn browser_service_result<T: Serialize>(
@@ -1494,17 +1660,420 @@ fn validate_house_runner_response(
     Ok(())
 }
 
-async fn public_stream_seam(
+async fn public_stream(
     State(state): State<GatewayState>,
     Path(public_run_id): Path<String>,
+    RawQuery(query): RawQuery,
+    GatewayPeer(peer): GatewayPeer,
     headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
 ) -> Response {
-    if !safe_reference(&public_run_id)
-        || !browser_headers_are_safe(&headers, &state.config.public_authority)
+    let Some(proxy) = state.config.browser_stream.clone() else {
+        return safe_error(StatusCode::SERVICE_UNAVAILABLE, "public_stream_unavailable");
+    };
+    if query.is_some()
+        || !valid_public_run_id(&public_run_id)
+        || !browser_stream_headers_are_safe(
+            &headers,
+            &state.config.public_authority,
+            &proxy.client_origin,
+        )
+        || !admit_rate(&state)
     {
-        return safe_error(StatusCode::BAD_REQUEST, "invalid_public_stream_request");
+        return safe_error(StatusCode::FORBIDDEN, "public_stream_rejected");
     }
-    safe_error(StatusCode::NOT_IMPLEMENTED, "public_stream_not_implemented")
+    let protocols = upgrade.requested_protocols().collect::<Vec<_>>();
+    if protocols.len() != 1
+        || protocols[0].as_bytes() != PUBLIC_PROJECTION_WEBSOCKET_SUBPROTOCOL.as_bytes()
+    {
+        return safe_error(StatusCode::BAD_REQUEST, "public_stream_rejected");
+    }
+    let Some(permit) = state.browser_connections.reserve(peer) else {
+        return safe_error(StatusCode::TOO_MANY_REQUESTS, "public_stream_capacity");
+    };
+    let backend = Arc::clone(&state.backend);
+    let lookup = HostedPublicStreamTicketRequestV1 {
+        schema: "worldstream/hosted-public-stream-ticket-request/v1".to_owned(),
+        public_run_id,
+    };
+    let ticket = tokio::task::spawn_blocking(move || backend.issue_public_stream_ticket(&lookup))
+        .await
+        .map_err(|_| HostedGatewayError::Unavailable)
+        .and_then(|result| result);
+    let Ok(ticket) = ticket else {
+        return safe_error(StatusCode::NOT_FOUND, "public_stream_unavailable");
+    };
+    let ticket = Zeroizing::new(ticket.ticket);
+    let origin = proxy.client_origin.to_string();
+    upgrade
+        .max_message_size(MAX_BROWSER_MESSAGE_BYTES)
+        .max_frame_size(MAX_BROWSER_MESSAGE_BYTES)
+        .protocols([PUBLIC_PROJECTION_WEBSOCKET_SUBPROTOCOL])
+        .on_upgrade(move |socket| {
+            relay_public_projection_stream(socket, proxy.runtime_upstream, origin, ticket, permit)
+        })
+        .into_response()
+}
+
+async fn relay_public_projection_stream(
+    mut browser: WebSocket,
+    runtime_upstream: SocketAddr,
+    origin: String,
+    ticket: Zeroizing<String>,
+    _permit: BrowserConnectionPermit,
+) {
+    if relay_public_projection_stream_inner(&mut browser, runtime_upstream, origin, ticket)
+        .await
+        .is_err()
+    {
+        close_public_stream(&mut browser).await;
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn relay_public_projection_stream_inner(
+    browser: &mut WebSocket,
+    runtime_upstream: SocketAddr,
+    origin: String,
+    ticket: Zeroizing<String>,
+) -> Result<(), ()> {
+    let stream = tokio::net::TcpStream::connect(runtime_upstream)
+        .await
+        .map_err(|_| ())?;
+    let request = upstream_http::Request::builder()
+        .method("GET")
+        .uri(format!("ws://{runtime_upstream}/v1/hosted/browser-stream"))
+        .header("Host", runtime_upstream.to_string())
+        .header("Origin", origin)
+        .header("Sec-WebSocket-Protocol", WORLDSTREAM_WEBSOCKET_SUBPROTOCOL)
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", generate_key())
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .body(())
+        .map_err(|_| ())?;
+    let (mut runtime, response) = client_async(request, stream).await.map_err(|_| ())?;
+    let selected = response
+        .headers()
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok());
+    if selected != Some(WORLDSTREAM_WEBSOCKET_SUBPROTOCOL) {
+        return Err(());
+    }
+    tokio::time::timeout(
+        BROWSER_PROXY_SEND_TIMEOUT,
+        runtime.send(UpstreamMessage::Text(ticket.to_string().into())),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    drop(ticket);
+
+    let welcome = read_runtime_body::<ServerWelcome>(&mut runtime, "server.welcome").await?;
+    if welcome.selected_protocol != PROTOCOL_VERSION
+        || welcome.maximum_message_bytes == 0
+        || welcome.maximum_message_bytes > MAX_BROWSER_MESSAGE_BYTES
+        || welcome.authenticated_principal.kind != PrincipalKind::Agent
+    {
+        return Err(());
+    }
+    let attached = read_runtime_body::<RoomAttached>(&mut runtime, "room.attached").await?;
+    let (baseline_frame_head, sync_token) = match &attached.sync {
+        SyncBranch::ProjectionReset {
+            baseline_frame_head,
+            ..
+        } if *baseline_frame_head == attached.frame_head => {
+            (*baseline_frame_head, attached.sync_token.clone())
+        }
+        _ => return Err(()),
+    };
+    if attached.principal_kind != PrincipalKind::Agent
+        || attached.access_mode != AccessMode::Spectator
+        || attached.role.is_some()
+        || attached.membership_status != "enabled"
+        || attached.room_id != attached.room_head.room_id
+        || attached.pack.digest != attached.room_head.pack_digest
+    {
+        return Err(());
+    }
+    let reset = read_runtime_body::<ProjectionReset>(&mut runtime, "projection.reset").await?;
+    if reset.room_id != attached.room_id
+        || reset.member_id != attached.member_id
+        || reset.room_head.room_id != attached.room_id
+        || reset.room_head.pack_digest != attached.pack.digest
+        || reset.baseline_frame_head != baseline_frame_head
+        || !reset.projection.action_offers.is_empty()
+        || !authorized_public_core(&reset.projection.core)
+    {
+        return Err(());
+    }
+    let frame = projection_reset_frame(&attached.pack, &reset)?;
+    send_public_frame(browser, &frame).await?;
+    send_runtime_request(
+        &mut runtime,
+        "room.sync_ack",
+        json!({
+            "through_frame_head": baseline_frame_head,
+            "sync_token": sync_token,
+        }),
+    )
+    .await?;
+
+    let mut public_head = public_head(&reset.room_head);
+    let mut last_frame_seq = baseline_frame_head;
+    let mut heartbeat = tokio::time::interval(PUBLIC_STREAM_HEARTBEAT);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+    let idle = tokio::time::sleep(PUBLIC_STREAM_IDLE_TIMEOUT);
+    tokio::pin!(idle);
+    loop {
+        tokio::select! {
+            () = &mut idle => return Err(()),
+            _ = heartbeat.tick() => {
+                send_browser_message(browser, Message::Ping(Vec::new().into())).await?;
+            }
+            inbound = browser.recv() => {
+                match inbound {
+                    Some(Ok(Message::Pong(_) | Message::Ping(_))) => {
+                        idle.as_mut().reset(tokio::time::Instant::now() + PUBLIC_STREAM_IDLE_TIMEOUT);
+                    }
+                    Some(Ok(Message::Close(_))) | None => return Ok(()),
+                    Some(Ok(Message::Text(_) | Message::Binary(_)) | Err(_)) => return Err(()),
+                }
+            }
+            inbound = runtime.next() => {
+                let Some(Ok(message)) = inbound else { return Err(()); };
+                let envelope = decode_runtime_message(message)?;
+                match envelope.message_type.as_str() {
+                    "observation.deliver" => {
+                        let observation = serde_json::from_value::<ObservationDeliver>(envelope.body)
+                            .map_err(|_| ())?;
+                        if observation.room_id != attached.room_id
+                            || observation.member_id != attached.member_id
+                            || observation.frame_seq != last_frame_seq.saturating_add(1)
+                            || observation.cause_room_seq < public_head.room_seq
+                            || observation
+                                .observation
+                                .get("action_offers")
+                                .is_some_and(|offers| offers.as_array().is_none_or(|offers| !offers.is_empty()))
+                        {
+                            return Err(());
+                        }
+                        last_frame_seq = observation.frame_seq;
+                        public_head.room_seq = observation.cause_room_seq;
+                        let frame = observation_frame(&attached.pack, &public_head, &observation)?;
+                        send_public_frame(browser, &frame).await?;
+                        send_runtime_request(
+                            &mut runtime,
+                            "observation.ack",
+                            json!({"through_frame_seq": observation.frame_seq}),
+                        )
+                        .await?;
+                    }
+                    "server.ping" => {
+                        send_runtime_request(&mut runtime, "client.pong", json!({})).await?;
+                    }
+                    "room.sync_acked" | "observation.acked" => {}
+                    _ => return Err(()),
+                }
+            }
+        }
+    }
+}
+
+async fn read_runtime_body<T: serde::de::DeserializeOwned>(
+    runtime: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    expected_type: &str,
+) -> Result<T, ()> {
+    let message = tokio::time::timeout(BROWSER_TICKET_TIMEOUT, runtime.next())
+        .await
+        .map_err(|_| ())?
+        .ok_or(())?
+        .map_err(|_| ())?;
+    let envelope = decode_runtime_message(message)?;
+    if envelope.message_type != expected_type {
+        return Err(());
+    }
+    serde_json::from_value(envelope.body).map_err(|_| ())
+}
+
+fn decode_runtime_message(
+    message: UpstreamMessage,
+) -> Result<VersionedEnvelope<serde_json::Value>, ()> {
+    let UpstreamMessage::Text(text) = message else {
+        return Err(());
+    };
+    if text.len() > MAX_BROWSER_MESSAGE_BYTES {
+        return Err(());
+    }
+    worldstream_protocol::decode_envelope(text.as_bytes()).map_err(|_| ())
+}
+
+async fn send_runtime_request(
+    runtime: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    message_type: &str,
+    body: serde_json::Value,
+) -> Result<(), ()> {
+    let message_id = next_protocol_ulid()?;
+    let envelope = VersionedEnvelope {
+        protocol: PROTOCOL_VERSION.to_owned(),
+        message_type: message_type.to_owned(),
+        message_id: message_id.clone(),
+        request_id: Some(message_id),
+        body,
+    };
+    let encoded = serde_json::to_string(&envelope).map_err(|_| ())?;
+    if encoded.len() > MAX_BROWSER_MESSAGE_BYTES {
+        return Err(());
+    }
+    tokio::time::timeout(
+        BROWSER_PROXY_SEND_TIMEOUT,
+        runtime.send(UpstreamMessage::Text(encoded.into())),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())
+}
+
+fn projection_reset_frame(
+    pack: &PackReference,
+    reset: &ProjectionReset,
+) -> Result<PublicProjectionStreamFrameV1, ()> {
+    let body = serde_json::to_value(reset).map_err(|_| ())?;
+    Ok(PublicProjectionStreamFrameV1 {
+        version: PUBLIC_PROJECTION_STREAM_VERSION.to_owned(),
+        batch: PublicProjectionBatchV1 {
+            pack: pack.clone(),
+            room_head: public_head(&reset.room_head),
+            frame_head: reset.baseline_frame_head,
+            delivery: vec![PublicProjectionDeliveryV1::ProjectionReset(
+                strip_public_routing(body),
+            )],
+        },
+    })
+}
+
+fn observation_frame(
+    pack: &PackReference,
+    head: &PublicRoomHeadV1,
+    observation: &ObservationDeliver,
+) -> Result<PublicProjectionStreamFrameV1, ()> {
+    let body = serde_json::to_value(observation).map_err(|_| ())?;
+    Ok(PublicProjectionStreamFrameV1 {
+        version: PUBLIC_PROJECTION_STREAM_VERSION.to_owned(),
+        batch: PublicProjectionBatchV1 {
+            pack: pack.clone(),
+            room_head: head.clone(),
+            frame_head: observation.frame_seq,
+            delivery: vec![PublicProjectionDeliveryV1::Observation(
+                strip_public_routing(body),
+            )],
+        },
+    })
+}
+
+fn public_head(head: &RoomHead) -> PublicRoomHeadV1 {
+    PublicRoomHeadV1 {
+        room_seq: head.room_seq,
+        genesis_or_transition_hash: head.genesis_or_transition_hash.clone(),
+        core_schema_version: head.core_schema_version.clone(),
+        pack_digest: head.pack_digest.clone(),
+        core_state_hash: head.core_state_hash.clone(),
+        activity_state_hash: head.activity_state_hash.clone(),
+        authoritative_state_hash: head.authoritative_state_hash.clone(),
+    }
+}
+
+fn authorized_public_core(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|core| {
+        core.get("access_mode").and_then(serde_json::Value::as_str) == Some("spectator")
+            && core.get("viewer_class").and_then(serde_json::Value::as_str) == Some("public")
+            && core.get("standing").and_then(serde_json::Value::as_str) == Some("enabled")
+            && core.get("role").is_some_and(serde_json::Value::is_null)
+    })
+}
+
+fn strip_public_routing(mut value: serde_json::Value) -> serde_json::Value {
+    match &mut value {
+        serde_json::Value::Object(object) => {
+            for key in [
+                "room_id",
+                "member_id",
+                "membership_id",
+                "principal_id",
+                "credential",
+                "bearer",
+                "ticket",
+                "replay",
+                "final_reveal",
+            ] {
+                object.remove(key);
+            }
+            for child in object.values_mut() {
+                *child = strip_public_routing(std::mem::take(child));
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                *child = strip_public_routing(std::mem::take(child));
+            }
+        }
+        _ => {}
+    }
+    value
+}
+
+async fn send_public_frame(
+    browser: &mut WebSocket,
+    frame: &PublicProjectionStreamFrameV1,
+) -> Result<(), ()> {
+    let encoded = serde_json::to_string(frame).map_err(|_| ())?;
+    if encoded.len() > MAX_BROWSER_MESSAGE_BYTES {
+        return Err(());
+    }
+    send_browser_message(browser, Message::Text(encoded.into())).await
+}
+
+async fn send_browser_message(browser: &mut WebSocket, message: Message) -> Result<(), ()> {
+    tokio::time::timeout(BROWSER_PROXY_SEND_TIMEOUT, browser.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
+}
+
+async fn close_public_stream(browser: &mut WebSocket) {
+    let _ = send_browser_message(
+        browser,
+        Message::Close(Some(CloseFrame {
+            code: 1008,
+            reason: PUBLIC_STREAM_CLOSE_REASON.into(),
+        })),
+    )
+    .await;
+}
+
+fn next_protocol_ulid() -> Result<worldstream_protocol::UlidString, ()> {
+    const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| ())?;
+    bytes[0] &= 0x3f;
+    let mut value = u128::from_be_bytes(bytes);
+    let mut encoded = [b'0'; 26];
+    for character in encoded.iter_mut().rev() {
+        *character = CROCKFORD[(value & 0x1f) as usize];
+        value >>= 5;
+    }
+    std::str::from_utf8(&encoded)
+        .map_err(|_| ())?
+        .parse()
+        .map_err(|_| ())
+}
+
+fn valid_public_run_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 async fn browser_stream(
@@ -1729,27 +2298,6 @@ fn is_json(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
 }
 
-fn contains_smuggled_browser_header(headers: &HeaderMap) -> bool {
-    headers.keys().any(|name| {
-        let name = name.as_str();
-        matches!(
-            name,
-            "authorization" | "cookie" | "forwarded" | "upgrade" | "proxy-authorization"
-        ) || name.starts_with("x-forwarded-")
-            || name.starts_with("x-original-")
-    })
-}
-
-fn browser_headers_are_safe(headers: &HeaderMap, public_authority: &str) -> bool {
-    let mut hosts = headers.get_all(header::HOST).iter();
-    let host_matches = hosts
-        .next()
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value == public_authority)
-        && hosts.next().is_none();
-    host_matches && !contains_smuggled_browser_header(headers)
-}
-
 fn browser_stream_headers_are_safe(
     headers: &HeaderMap,
     public_authority: &str,
@@ -1865,4 +2413,32 @@ fn no_store(mut response: Response) -> Response {
         HeaderValue::from_static("private, no-store, max-age=0"),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BrowserConnectionLimiter, MAX_BROWSER_CONNECTIONS, MAX_BROWSER_CONNECTIONS_PER_PEER,
+    };
+
+    #[test]
+    fn browser_connection_capacity_is_bounded_and_released() {
+        let limiter = BrowserConnectionLimiter::default();
+        let mut one_peer = (0..MAX_BROWSER_CONNECTIONS_PER_PEER)
+            .filter_map(|_| limiter.reserve("one-peer".to_owned()))
+            .collect::<Vec<_>>();
+        assert_eq!(one_peer.len(), MAX_BROWSER_CONNECTIONS_PER_PEER);
+        assert!(limiter.reserve("one-peer".to_owned()).is_none());
+        one_peer.pop();
+        assert!(limiter.reserve("one-peer".to_owned()).is_some());
+
+        let global = BrowserConnectionLimiter::default();
+        let permits = (0..MAX_BROWSER_CONNECTIONS)
+            .filter_map(|index| global.reserve(format!("peer-{index}")))
+            .collect::<Vec<_>>();
+        assert_eq!(permits.len(), MAX_BROWSER_CONNECTIONS);
+        assert!(global.reserve("over-capacity".to_owned()).is_none());
+        drop(permits);
+        assert!(global.reserve("after-release".to_owned()).is_some());
+    }
 }

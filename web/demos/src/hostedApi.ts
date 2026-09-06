@@ -111,7 +111,7 @@ export type PublicRun =
   | { readonly version: "public_run.v1"; readonly state: "unavailable" }
   | PublicRunBase & {
       readonly state: "live";
-      readonly live: { readonly available: false };
+      readonly live: { readonly available: true; readonly stream_url: string };
     }
   | PublicRunBase & {
       readonly state: "result";

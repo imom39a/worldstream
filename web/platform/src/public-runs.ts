@@ -80,15 +80,29 @@ interface PublicRunBase {
   readonly participants: readonly PublicParticipant[];
 }
 
-export interface PublicLiveRun extends PublicRunBase {
+export interface PublicLiveRunRecord extends PublicRunBase {
   readonly state: "live";
-  readonly live: { readonly available: false };
+  readonly live: { readonly available: true };
 }
 
 export interface PublicResultRun extends PublicRunBase {
   readonly state: "result";
   readonly completed_at: string;
   readonly result: { readonly [key: string]: PublicJson };
+}
+
+export type PublicRunRecord =
+  | { readonly version: "public_run.v1"; readonly state: "unavailable" }
+  | PublicLiveRunRecord
+  | PublicResultRun;
+
+export interface PublicLiveRun extends PublicRunBase {
+  readonly state: "live";
+  readonly live: {
+    readonly available: true;
+    /** Direct, anonymous Fly WebSocket. It never targets the Vercel BFF. */
+    readonly stream_url: string;
+  };
 }
 
 export type PublicRun =
@@ -105,7 +119,7 @@ export interface RecentResults {
 }
 
 export interface PublicRunData {
-  readPublicRun(publicId: string): Promise<PublicRun>;
+  readPublicRun(publicId: string): Promise<PublicRunRecord>;
   listRecentResults(limit: number): Promise<RecentResults>;
 }
 
@@ -136,7 +150,7 @@ const FORBIDDEN_PUBLIC_KEYS = new Set([
 ]);
 
 /** Validates the complete server-produced DTO before it crosses the BFF. */
-export function readPublicRunDto(value: unknown): PublicRun {
+export function readPublicRunDto(value: unknown): PublicRunRecord {
   const record = recordValue(value);
   if (record.version !== "public_run.v1") return invalid();
   if (record.state === "unavailable") {
@@ -149,7 +163,7 @@ export function readPublicRunDto(value: unknown): PublicRun {
       "participants", "live",
     ]);
     const liveState = exactRecord(live.live, ["available"]);
-    if (liveState.available !== false) return invalid();
+    if (liveState.available !== true) return invalid();
     return {
       version: "public_run.v1",
       state: "live",
@@ -158,7 +172,7 @@ export function readPublicRunDto(value: unknown): PublicRun {
       started_at: dateTime(live.started_at),
       evidence: evidence(live.evidence),
       participants: participants(live.participants),
-      live: { available: false },
+      live: { available: true },
     };
   }
   if (record.state === "result") {
@@ -179,6 +193,51 @@ export function readPublicRunDto(value: unknown): PublicRun {
     };
   }
   return invalid();
+}
+
+/**
+ * Adds only deployment-owned routing to an already reviewed database DTO.
+ * A live Run fails closed when no direct Fly stream boundary is configured.
+ */
+export function presentPublicRun(
+  run: PublicRunRecord,
+  publicStreamBaseUrl: string | null,
+): PublicRun {
+  if (run.state !== "live") return run;
+  if (publicStreamBaseUrl === null) {
+    return { version: "public_run.v1", state: "unavailable" };
+  }
+  return {
+    ...run,
+    live: {
+      available: true,
+      stream_url: publicProjectionStreamUrl(publicStreamBaseUrl, run.public_id),
+    },
+  };
+}
+
+/** Validates one credential-free direct gateway origin at process startup. */
+export function publicProjectionStreamBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return invalid();
+  }
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  if (
+    url.username !== "" || url.password !== "" || url.pathname !== "/" ||
+    url.search !== "" || url.hash !== "" || value !== url.origin ||
+    (loopback ? url.protocol !== "http:" && url.protocol !== "https:" : url.protocol !== "https:")
+  ) return invalid();
+  return url.origin;
+}
+
+function publicProjectionStreamUrl(baseUrl: string, publicIdValue: string): string {
+  const url = new URL(publicProjectionStreamBaseUrl(baseUrl));
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `/v1/hosted/public-runs/${publicId(publicIdValue)}/stream`;
+  return url.toString();
 }
 
 /** Validates the bounded, Agent-Heist-only chronological result envelope. */
