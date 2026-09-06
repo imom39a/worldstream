@@ -3219,6 +3219,7 @@ name = "worldstream-hosted-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "blake3",
  "futures-util",
  "http-body-util",
  "ring",

@@ -1,11 +1,12 @@
 use std::{
-    collections::BTreeSet, env, error::Error, future::IntoFuture as _, io, net::SocketAddr,
-    time::Duration,
+    collections::BTreeSet, env, error::Error, fs, future::IntoFuture as _, io, net::SocketAddr,
+    path::Path, time::Duration,
 };
 
 use worldstream_hosted_gateway::{
     FixedHostAdapterBackend, HostedGatewayConfig, hosted_gateway_router,
 };
+use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -22,11 +23,14 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .parse::<SocketAddr>()?;
     let upstream = required("WORLDSTREAM_HOST_ADAPTER_UPSTREAM")?.parse::<SocketAddr>()?;
     let runtime_upstream = required("WORLDSTREAM_RUNTIME_UPSTREAM")?.parse::<SocketAddr>()?;
-    let controller_authority = required("WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY")?;
-    let backend =
-        FixedHostAdapterBackend::new(upstream, controller_authority, Duration::from_secs(5))?;
+    let controller_authority = required_secret("WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY")?;
+    let backend = FixedHostAdapterBackend::new(
+        upstream,
+        controller_authority.to_string(),
+        Duration::from_secs(5),
+    )?;
     let public_authority = required("WORLDSTREAM_PUBLIC_AUTHORITY")?;
-    let service_authority = required("WORLDSTREAM_VERCEL_SERVICE_AUTHORITY")?;
+    let service_authority = required_secret("WORLDSTREAM_VERCEL_SERVICE_AUTHORITY")?;
     let listings = required("WORLDSTREAM_LISTING_ALLOWLIST")?
         .split(',')
         .map(str::trim)
@@ -36,7 +40,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
     let config = HostedGatewayConfig::new(
         deployment,
-        &service_authority,
+        service_authority.as_str(),
         listings,
         public_authority,
         upstream,
@@ -76,6 +80,51 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 fn required(name: &str) -> Result<String, io::Error> {
     env::var(name)
         .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("{name} is required")))
+}
+
+fn required_secret(name: &str) -> Result<Zeroizing<String>, io::Error> {
+    let direct = env::var(name).ok();
+    let file_name = format!("{name}_FILE");
+    let file = env::var(&file_name).ok();
+    if direct.is_some() == file.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("exactly one of {name} or {file_name} is required"),
+        ));
+    }
+    let value = match (direct, file) {
+        (Some(value), None) => value,
+        (None, Some(path)) => read_owner_only_secret(Path::new(&path))?,
+        _ => unreachable!("exclusive secret source checked above"),
+    };
+    if value.len() < 32 || value.len() > 512 || !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} is invalid"),
+        ));
+    }
+    Ok(Zeroizing::new(value))
+}
+
+fn read_owner_only_secret(path: &Path) -> Result<String, io::Error> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 512 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secret file is invalid",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "secret file permissions are invalid",
+            ));
+        }
+    }
+    fs::read_to_string(path)
 }
 
 async fn shutdown_signal() -> io::Result<()> {

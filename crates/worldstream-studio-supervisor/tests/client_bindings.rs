@@ -92,7 +92,7 @@ fn bootstrap(second_candidate: bool) -> Vec<u8> {
             "trust_level": "externally_trusted",
             "surfaces": [{
                 "surface_id": "participant-web",
-                "launch_url": "http://localhost:5173/heist/"
+                "launch_url": "https://clients.worldstream.example/heist/"
             }]
         }));
         bindings.push(json!({
@@ -214,6 +214,37 @@ fn host_trust_policy_filters_externally_trusted_deployments() {
         ),
         Err(worldstream_studio_supervisor::client_bindings::ClientBindingStoreErrorV1::InvalidChoice)
     ));
+}
+
+#[test]
+fn externally_trusted_deployments_require_exact_safe_https_urls() {
+    let release = release("example.heist.web", "participant-web");
+    for invalid in [
+        "http://clients.worldstream.example/heist/",
+        "https://localhost/heist/",
+        "https://127.0.0.1/heist/",
+        "https://CLIENTS.worldstream.example/heist/",
+        "https://clients.worldstream.example:443/heist/",
+        "https://user@clients.worldstream.example/heist/",
+        "https://clients.worldstream.example/heist/?token=secret",
+        "https://clients.worldstream.example/other/",
+    ] {
+        let state = TempDir::new().unwrap_or_else(|error| unreachable!("state: {error}"));
+        let mut candidate: serde_json::Value = serde_json::from_slice(&bootstrap(true))
+            .unwrap_or_else(|error| unreachable!("bootstrap fixture: {error}"));
+        candidate["deployments"][2]["surfaces"][0]["launch_url"] = json!(invalid);
+        let candidate = serde_json::to_vec(&candidate)
+            .unwrap_or_else(|error| unreachable!("bootstrap bytes: {error}"));
+        assert!(
+            ClientBindingStoreV1::open(
+                &state.path().join("client-bindings"),
+                &[release.as_slice()],
+                &candidate,
+            )
+            .is_err(),
+            "{invalid}"
+        );
+    }
 }
 
 #[test]

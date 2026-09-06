@@ -1,0 +1,47 @@
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = 120
+
+[build]
+  dockerfile = "packaging/hosted/Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  WORLDSTREAM_DEPLOYMENT_ENVIRONMENT = "production"
+  WORLDSTREAM_HOSTED_INSTALLATION_ID = "fly-primary"
+  WORLDSTREAM_LISTING_ALLOWLIST = "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956"
+
+[mounts]
+  source = "worldstream_data"
+  destination = "/var/lib/worldstream"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 100
+    hard_limit = 256
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "15s"
+    method = "GET"
+    timeout = "3s"
+    path = "/readyz"
+
+[[restart]]
+  policy = "on-failure"
+  retries = 10
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["app"]

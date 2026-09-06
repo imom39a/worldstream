@@ -575,7 +575,7 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
             let browser_sessions = HostedBrowserSessionBrokerV1::new(
                 &installation_id,
                 &client_origin,
-                Duration::from_secs(60),
+                Duration::from_mins(1),
                 512,
                 task_setup.clone(),
                 participant_gateway,

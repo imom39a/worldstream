@@ -539,7 +539,7 @@ fn browser_handoff_request(listing: &str) -> HostedBrowserHandoffRequestV1 {
             version: "0.2.0".to_owned(),
             digest: format!("blake3:{}", "d".repeat(64)),
         },
-        client_release_digest: format!("blake3:{}", "e".repeat(64)),
+        client_release_digest: format!("sha256:{}", "e".repeat(64)),
         client_surface_id: "participant".to_owned(),
         access_mode: HostedGenesisAccessModeV1::Participant,
         purpose: HostedGenesisMembershipPurposeV1::Participant,

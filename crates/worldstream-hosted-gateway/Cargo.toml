@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 axum.workspace = true
+blake3.workspace = true
 futures-util.workspace = true
 ring.workspace = true
 serde.workspace = true
@@ -32,4 +33,9 @@ workspace = true
 [[bin]]
 name = "worldstream-hosted-gateway"
 path = "src/main.rs"
+test = false
+
+[[bin]]
+name = "worldstream-hosted-artifact-digest"
+path = "src/bin/artifact_digest.rs"
 test = false

@@ -1300,7 +1300,7 @@ fn validate_deployment(
             .iter()
             .find(|declared| declared.surface_id == surface.surface_id);
         if !is_identifier(&surface.surface_id)
-            || !is_loopback_launch_url(&surface.launch_url)
+            || !is_admitted_launch_url(&surface.launch_url, deployment.trust_level)
             || !surface_ids.insert(surface.surface_id.as_str())
             || declared.is_none_or(|declared| {
                 !launch_url_matches_entrypoint(&surface.launch_url, &declared.entrypoint)
@@ -1697,8 +1697,58 @@ fn is_loopback_launch_url(value: &str) -> bool {
         && path.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
+fn is_admitted_launch_url(value: &str, trust_level: DeploymentTrustLevelV1) -> bool {
+    is_loopback_launch_url(value)
+        || (matches!(trust_level, DeploymentTrustLevelV1::ExternallyTrusted)
+            && is_exact_https_launch_url(value))
+}
+
+fn is_exact_https_launch_url(value: &str) -> bool {
+    if value.len() > MAX_LAUNCH_URL_BYTES || value.contains(['?', '#', '\\', '\r', '\n']) {
+        return false;
+    }
+    let Ok(uri) = value.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    let path = uri.path();
+    if uri.scheme_str() != Some("https")
+        || uri.query().is_some()
+        || authority.as_str().contains('@')
+        || host.len() > 253
+        || !host.contains('.')
+        || host.parse::<std::net::IpAddr>().is_ok()
+        || host.split('.').any(|label| {
+            label.is_empty()
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+        || !safe_launch_path(path)
+    {
+        return false;
+    }
+    let canonical_authority = match uri.port_u16() {
+        Some(443) => return false,
+        Some(port) if port != 0 => format!("{host}:{port}"),
+        Some(_) => return false,
+        None => host.to_owned(),
+    };
+    value == format!("https://{canonical_authority}{path}")
+}
+
 fn launch_url_matches_entrypoint(launch_url: &str, entrypoint: &str) -> bool {
-    let Some(rest) = launch_url.strip_prefix("http://") else {
+    let Some(rest) = launch_url
+        .strip_prefix("http://")
+        .or_else(|| launch_url.strip_prefix("https://"))
+    else {
         return false;
     };
     let Some((_, path)) = rest.split_once('/') else {
@@ -1707,6 +1757,15 @@ fn launch_url_matches_entrypoint(launch_url: &str, entrypoint: &str) -> bool {
     entrypoint
         .strip_prefix('/')
         .is_some_and(|entrypoint| path == entrypoint)
+}
+
+fn safe_launch_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path.ends_with('/')
+        && !path.split('/').any(|segment| matches!(segment, "." | ".."))
+        && path.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-' | b'~')
+        })
 }
 
 fn valid_port(value: &str) -> bool {

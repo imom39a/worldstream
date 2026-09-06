@@ -44,6 +44,10 @@ jobs:
         run: pnpm hosted-platform:check
       - name: Test local-development fail-closed controls
         run: pnpm hosted:dev:test
+      - name: Test the single-authority Fly appliance and same-volume restart
+        run: |
+          pnpm hosted:package:test
+          pnpm hosted:package:smoke
 
   database-boundary:
     name: Supabase private identity boundary
@@ -85,3 +89,4 @@ jobs:
         run: |
           supabase db lint --local --schema platform_store,platform_api --level warning --fail-on error
           supabase db advisors --local --type security --level warn --fail-on error
+          supabase db advisors --local --type performance --level warn --fail-on error
