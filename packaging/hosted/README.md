@@ -44,11 +44,14 @@ backup contract derives that exact path from the Runtime directory.
    origin.
 6. Confirm `/healthz`, `/readyz`, and `/version`. Confirm ports 9410 and 9420
    have no Fly service.
-7. Deploy the product UI and BFF. The BFF uses HTTPS requests to Fly; browser
+7. [Prepare and review the actual House Agent approvals](../../docs/hosted-house-approval.md).
+   The initial database records stay disabled. Do not use development approval
+   hashes or activate model calls before the credential and budget checks pass.
+8. Deploy the product UI and BFF. The BFF uses HTTPS requests to Fly; browser
    WebSockets connect directly to Fly.
-8. Create and record `hosted-deployment.json` with
+9. Create and record `hosted-deployment.json` with
    `scripts/hosted-checkpoint.mjs deployment create` and `deployment record`.
-9. Run the local and deployed acceptance story before advertising the preview.
+10. Run the local and deployed acceptance story before advertising the preview.
 
 Validate the reusable Fly configuration without binding it to a real app:
 
@@ -82,11 +85,21 @@ authority and does not reopen the platform until all required services agree.
 3. Wait until loopback ports 9410 and 9420 are closed.
 4. Run the image's `/opt/worldstream/hosted/hosted-volume-capture.mjs`. It writes
    two no-clobber archives and `capture.json` below `checkpoints/{uuid}`.
-5. Download that complete directory with `fly sftp get`.
+5. Download that complete directory with `fly sftp get`. Use a private directory
+   outside Git. Set the directory to mode 0700 and its downloaded files to 0600;
+   SFTP may not preserve the source permissions.
 6. On the operator machine, run `checkpoint pair`. It uses PostgreSQL 17.11,
    an owner-only `PGSERVICEFILE`, and distinct source and disposable-restore
-   service names. The command dumps `platform_store`, restores both sides in
-   isolation, and records `created` plus `isolated_restore_verified` events.
+   service names. Pass `--worldstreamctl` the CLI from the captured source
+   revision (or a reviewed wrapper for that exact image). The command checks
+   `worldstreamctl version`, dumps `platform_store`, restores both sides in
+   isolation, and runs `pack restart-readiness` against the extracted Runtime.
+   It records `created` before the drill and `isolated_restore_verified` only
+   after the drill completes. The currently supported qualification is an
+   empty prelaunch installation, not populated recovery. The evidence identifies
+   `worldstream/hosted-prelaunch-zero-history/v1` and
+   retains the actual Pack/Replay readiness receipt, not a native-envelope
+   semantic-verifier claim.
 7. Apply a backward-compatible Supabase migration, deploy Fly, then deploy the
    UI/BFF.
 8. Remove only the `closed` marker. Wait for `/readyz` to return 200.
@@ -100,9 +113,73 @@ authority and does not reopen the platform until all required services agree.
 ```
 
 The restore service must identify a disposable database that already has the
-same migration set. The command truncates `platform_store` there. It refuses to
+same migration set. The command checks the complete ordered migration versions
+and exact deployed head before truncating `platform_store`, then checks again
+after restore. It refuses to
 use the source service as the restore service. Credentials stay in the
 owner-only service file; password and DSN command options are not accepted.
+
+The disposable restore connection must be a PostgreSQL superuser because
+`pg_restore --disable-triggers` must suspend system foreign-key triggers during
+the data-only restore. This privilege is required only on the isolated test
+database. Never grant it to the application or change the production role to
+make a drill pass. The command checks the restore role before dumping or
+truncating data and checks again immediately before the isolated drill.
+
+If pairing retained a complete manifest and archives but the drill failed,
+correct the isolated environment and rerun the same immutable checkpoint:
+
+```text
+node scripts/hosted-checkpoint.mjs checkpoint drill \
+  --directory /private/operator-backups/checkpoint-id \
+  --source-service worldstream_source \
+  --restore-service worldstream_disposable_restore \
+  --worldstreamctl /private/operator-tools/worldstreamctl \
+  --confirm-disposable-restore worldstream-disposable-restore-target
+```
+
+This command checks all retained hashes, the deployment document, verifier
+revision, migration versions, and restore privileges. It does not make another
+capture or dump, change `paired_at`, or create a different checkpoint identity.
+It records the same idempotent verified event before publishing the no-clobber
+`verification-prelaunch-v1.json`; if that event request fails, repeat the
+command. An existing prelaunch verification file is never overwritten.
+An older `verification.json` is retained unchanged and does not prevent the
+stronger drill. That old v2 proof and any prior verified event do not establish
+cross-store correspondence; only the new digest-bound prelaunch receipt
+qualifies this narrower profile. Provider calls are not started by the drill.
+
+The gate checks that all retained Room, launch, setup, assignment, runner,
+reconciliation, and result history is empty. It also checks protected Controller
+initialization metadata, proves its Host credential matches the enabled Runtime
+Host capability, and requires closed Controller and platform admission. It
+does not boot the Controller or claim that ordinary maintenance is restored
+Assignment recovery fencing. Use Node 24 and the installed, lockfile-pinned
+Pack SDK dependencies for the operator check; no secret bytes enter its output.
+
+After the first retained activity, pairing/drilling fails with
+`populated_checkpoint_correspondence_required`. Preserve the resulting
+archives, but do not label them verified or use them for a recovery cutover.
+A populated cross-store correspondence verifier with restored House Assignment
+provider fencing remains required. Until implemented, a recovery incident
+requires the disclosed fresh-preview reset path. The first empty checkpoint
+is not evidence that user history can already be recovered.
+
+This verifies a stopped operational volume clone, not the portable SQLite
+backup/envelope format. Do not run `sqlite verify` directly on the captured WAL
+database, change its journal mode, or replace the archive to obtain a passing
+receipt. `pack restart-readiness` supports the real WAL Runtime and creates its
+own bounded, source-verified snapshot on the disposable copy. An absent Runtime
+database fails the drill instead of being counted as an empty installation.
+
+The cloud acceptance drill must also run the exact image with `--network none`
+and no provider credentials. Extract the read-only captured archive onto
+Linux-local container storage, not a writable Docker Desktop shared filesystem
+mount. Native identity/durability checks can correctly refuse shared mounts.
+Keep the image digest, `worldstreamctl version` receipt, Pack restart-readiness
+receipt, restored platform/Controller correspondence, and ordinary retained
+Room restart/re-entry proof with the deployment evidence. A directory checksum
+check alone is not a new isolated restore drill.
 
 ## Recovery and rollback
 

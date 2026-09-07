@@ -8,11 +8,15 @@ const host = await startActivityClientHost({ port: 0 });
 const browser = await chromium.launch({ headless: true, ...await localBrowserOptions() });
 
 try {
-  await verifySurface("Agent Heist", "/agent-heist/", "Agent Heist · WorldStream Activity Client", async (page) => {
+  if ((await fetch(`${host.origin}/agent-heist/`)).status !== 404) throw new Error("unavailable retained Heist path must not serve replacement bytes");
+  await verifySurface("Agent Heist local", "/agent-heist-v2/", "Agent Heist · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
   });
+  await verifySurface("Agent Heist hosted", "/agent-heist-v2/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
+    await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
+  }, true);
   await verifySurface("Negotiate 0.1", "/negotiate/", "Negotiate · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
@@ -36,9 +40,17 @@ try {
   await host.close();
 }
 
-async function verifySurface(label, path, expectedTitle, assertPage) {
+async function verifySurface(label, path, expectedTitle, assertPage, hosted = false) {
   const page = await browser.newPage();
   const failures = [];
+  page.on("request", (request) => {
+    if (!hosted && request.url() === `${host.origin}/api/auth/session`) {
+      failures.push(`${label} unexpectedly requested platform authentication`);
+    }
+    if (hosted && request.url().startsWith("http://127.0.0.1:9420/")) {
+      failures.push(`${label} fell back to local Controller authority`);
+    }
+  });
   page.on("pageerror", (error) => failures.push(`${label} page error: ${error.message}`));
   page.on("console", (message) => {
     const expectedExpiredSessionFetch = message.text()
@@ -47,12 +59,11 @@ async function verifySurface(label, path, expectedTitle, assertPage) {
       failures.push(`${label} console error: ${message.text()}`);
     }
   });
-  await page.route(`${host.origin}/api/auth/session`, (route) => route.fulfill({
-    status: 200,
+  if (hosted) await page.route(`${host.origin}/api/auth/session`, (route) => route.fulfill({
+    status: 401,
     contentType: "application/json",
     body: JSON.stringify({
-      authenticated: true,
-      csrf: "browser_acceptance_csrf_token_000000000000000000000000",
+      authenticated: false,
     }),
   }));
   await page.route("http://127.0.0.1:9420/**", (route) => route.fulfill({

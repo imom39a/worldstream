@@ -2,6 +2,7 @@
   "schema": "worldstream/client-declaration-import/v1",
   "release_files": [
     "./releases/agent-heist-web.json",
+    "./releases/agent-heist-web-v2.json",
     "./releases/negotiate-web.json",
     "./releases/negotiate-web-v2.json",
     "./releases/inspector-web.json"

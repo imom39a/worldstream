@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -109,6 +112,8 @@ test("Fly package exposes only the Gateway and forbids automatic stop", async ()
   assert.match(fly, /kill_timeout = 120/u);
   assert.match(entrypoint, /--reuid=65532/u);
   assert.match(entrypoint, /chmod 0600/u);
+  assert.match(entrypoint, /chmod 0700 "\$volume_root"/u);
+  assert.match(entrypoint, /printf '%s' "\$WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET" \| wc -c\)" -ne 32/u);
   assert.match(ignored, /\.worldstream\*\//u);
   assert.doesNotMatch(
     `${dockerfile}\n${fly}`,
@@ -122,4 +127,93 @@ test("Fly builder passes the declared source revision to the gitless Rust build"
   assert.match(builder, /FROM \$\{WORLDSTREAM_RUST_BUILDER_IMAGE\} AS builder\s+ARG SOURCE_REVISION/u);
   assert.match(builder, /RUN WORLDSTREAM_BUILD_REVISION="\$\{SOURCE_REVISION\}" cargo build --locked --release/u);
   assert.match(dockerfile, /org\.opencontainers\.image\.revision="\$\{SOURCE_REVISION\}"/u);
+});
+
+// Use a locally built hosted image to exercise Linux mount and privilege behavior.
+// The source entrypoint replaces the image's copy; no rebuild, network, provider,
+// persistent volume, or real credential is used by this regression.
+const entrypointImage = process.env.WORLDSTREAM_HOSTED_ENTRYPOINT_TEST_IMAGE;
+const entrypointSkip = entrypointImage === undefined
+  ? "set WORLDSTREAM_HOSTED_ENTRYPOINT_TEST_IMAGE to a locally built hosted image"
+  : false;
+
+async function runEntrypoint(bootstrapSecret) {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "worldstream-entrypoint-test-"));
+  const runtime = join(fixtureRoot, "runtime.mjs");
+  try {
+    await writeFile(runtime, `
+import { strict as assert } from "node:assert";
+import { readFile, stat } from "node:fs/promises";
+assert.equal(process.getuid(), 65532);
+assert.equal(process.getgid(), 65532);
+const volume = await stat("/var/lib/worldstream");
+assert.equal(volume.mode & 0o777, 0o700, "mounted volume root must be owner-only");
+assert.equal(volume.uid, 65532);
+assert.equal(volume.gid, 65532);
+for (const [variable, name] of [
+  ["WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET", "authority-bootstrap"],
+  ["WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY", "controller-authority"],
+  ["WORLDSTREAM_VERCEL_SERVICE_AUTHORITY", "vercel-service-authority"],
+  ["OPENROUTER_API_KEY", "openrouter-api-key"],
+]) {
+  assert.equal(process.env[variable], undefined, "credential must not reach the child environment");
+  const path = "/run/worldstream/secrets/" + name;
+  const info = await stat(path);
+  assert.equal(info.mode & 0o777, 0o600);
+  assert.equal(info.uid, 65532);
+  assert.equal(info.gid, 65532);
+  if (name === "authority-bootstrap") {
+    assert.equal((await readFile(path)).length, 32, "kernel bootstrap file must contain exactly 32 bytes");
+  }
+}
+console.log("hosted_entrypoint_contract_verified");
+`, { mode: 0o644 });
+    return spawnSync("docker", [
+      "run", "--rm", "--pull=never", "--platform=linux/amd64", "--network=none", "--read-only", "--user=0:0",
+      "--tmpfs", "/var/lib/worldstream:rw,mode=0755,uid=0,gid=0",
+      "--tmpfs", "/run/worldstream:rw,mode=0755,uid=0,gid=0",
+      "--mount", `type=bind,src=${resolve("packaging/hosted/entrypoint.sh")},dst=/test-entrypoint.sh,readonly`,
+      "--mount", `type=bind,src=${runtime},dst=/opt/worldstream/hosted/hosted-runtime.mjs,readonly`,
+      "--env", "WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET",
+      "--env", "WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY",
+      "--env", "WORLDSTREAM_VERCEL_SERVICE_AUTHORITY",
+      "--env", "OPENROUTER_API_KEY",
+      "--entrypoint", "/bin/sh", entrypointImage, "/test-entrypoint.sh",
+    ], {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET: bootstrapSecret,
+        WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: "controller-fixture-".padEnd(32, "x"),
+        WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: "vercel-fixture-".padEnd(32, "x"),
+        OPENROUTER_API_KEY: "openrouter-fixture-".padEnd(32, "x"),
+      },
+    });
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+test("hosted entrypoint repairs mounted root mode and materializes exact private bytes", {
+  skip: entrypointSkip,
+}, async () => {
+  // The second value has 16 characters but exactly 32 UTF-8 bytes.
+  for (const secret of ["bootstrap-fixture-".padEnd(32, "x"), "é".repeat(16)]) {
+    const result = await runEntrypoint(secret);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "hosted_entrypoint_contract_verified");
+  }
+});
+
+test("hosted entrypoint rejects wrong bootstrap byte counts before Runtime startup", {
+  skip: entrypointSkip,
+}, async () => {
+  for (const secret of ["x".repeat(64), "x".repeat(31), "x".repeat(33), "é".repeat(32)]) {
+    const result = await runEntrypoint(secret);
+    assert.equal(result.status, 78, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Runtime bootstrap secret must contain exactly 32 bytes/u);
+    assert.equal(result.stderr.includes(secret), false, "failure must not disclose credential bytes");
+  }
 });

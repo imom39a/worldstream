@@ -35,6 +35,20 @@ adds `house_agent_fill` and allowlists only the exact two reviewed House Agent
 Revision digests. Existing Launch Requests remain pinned to the revision they
 selected.
 
+Listing `0.4.0` keeps the same Pack and House pool and pins Client Release v2.
+The hosted surface at `/agent-heist-v2/hosted/` reads the exact deployment-owned
+stream URL from the authenticated Platform session. The same artifact contains
+the distinct local kernel surface at `/agent-heist-v2/`; an authentication
+failure never switches between them. Neither the user nor the handoff URL
+chooses a Room, Membership, or upstream.
+
+The prior Listing and Client Release documents remain immutable for retained
+Runs. Their original `/agent-heist/` artifact is not shipped by this build:
+that path returns 404, and the Platform rejects their live start/re-entry.
+Public history and reconciliation still resolve the old exact Listing and
+projector. Supporting old live entry again requires the original verified
+artifact at its original approved deployment, not new bytes behind its URL.
+
 Catalog review and Host execution authority are separate controls. A checked-in
 listing is review evidence; it is not a Room Host allowlist. The Host must still
 allowlist the exact Listing Revision, Pack, client surface, and projector identities.

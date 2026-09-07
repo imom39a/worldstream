@@ -112,7 +112,7 @@ The normal participant flow is:
    selected Client Binding, and Client Deployment before using the sealed
    server-side Membership bearer to issue a Stream Admission Ticket.
 7. Vercel returns only an opaque `wst1` ticket and its lifetime. The browser
-   opens the one compiled `wss://` Fly endpoint with the exact WorldStream
+   opens the one deployment-configured `wss://` Fly endpoint with the exact WorldStream
    subprotocol and sends `wst1` as its first text frame. Fly atomically consumes
    the ticket and binds the connection to the ticket's exact Membership and
    Client Selection. Browser-provided identifiers never select a different
@@ -184,10 +184,25 @@ host, path, or query destination.
 
 ### Direct Fly stream contract
 
-The browser stream URL and path are immutable deployment configuration and are
-allowed by an exact Content Security Policy `connect-src`. A Fly URL is public
-routing information, not a secret. The browser sends no Vercel or Supabase
-cookie to Fly.
+The browser stream URL and path are deployment configuration and are allowed
+by an exact Content Security Policy `connect-src`. The authenticated,
+same-origin platform-session response supplies `browser_stream_url`, derived
+only from the BFF's configured Hosted Gateway origin and the fixed
+`/v1/hosted/browser-stream` path. The client accepts no routing override from
+query parameters, fragments, local storage, or participant input. It requires
+`wss:` in production, or explicit loopback `ws:` in local development, and
+rejects credentials, queries, fragments, and other paths. Missing or invalid
+configuration fails closed rather than trying a Vercel WebSocket.
+
+This deployment correction was recorded on 2026-09-07 during live acceptance.
+The earlier compiled-endpoint wording would require different browser bytes
+and Release identities for local and cloud tests. Server-owned configuration
+lets both use one exact Activity Client Release without giving the client
+authority over routing or Room admission. The deployed acceptance evidence
+records the actual configured endpoint alongside the source and deployment
+identities; the five-field Hosted Deployment Revision does not include a URL.
+A Fly URL is public routing
+information, not a secret. The browser sends no Vercel or Supabase cookie to Fly.
 
 Fly admits a participant browser WebSocket only when all of these checks pass:
 

@@ -6,10 +6,10 @@ import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const source = resolve(repository, "clients/agent-heist-web/dist");
-const destination = resolve(repository, "web/demos/dist/agent-heist");
+const destination = resolve(repository, "web/demos/dist/agent-heist-v2");
 const release = JSON.parse(
   await readFile(
-    resolve(repository, "config/activity-clients/releases/agent-heist-web.json"),
+    resolve(repository, "config/activity-clients/releases/agent-heist-web-v2.json"),
     "utf8",
   ),
 );
@@ -28,4 +28,4 @@ if (await activityClientBuildDigest(destination) !== expected) {
   throw new Error("installed Agent Heist artifact differs from its reviewed release");
 }
 
-process.stdout.write(`Installed reviewed Agent Heist Activity Client at /agent-heist/ (${expected}).\n`);
+process.stdout.write(`Installed reviewed Agent Heist Activity Client at /agent-heist-v2/ (${expected}).\n`);

@@ -792,6 +792,7 @@ fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAgentRe
     const LISTINGS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/listings/agent-heist-0.2.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.3.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),

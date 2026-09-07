@@ -3,9 +3,10 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { hostedDevelopmentListingAllowlist } from "./hosted-dev.mjs";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const LISTING_DIGEST = "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956";
+const LISTING_DIGEST = "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80";
 const CONTROLLER_AUTHORITY = "hosted-smoke-controller-authority-000000000000";
 const SERVICE_AUTHORITY = "hosted-smoke-service-authority-000000000000000";
 
@@ -34,7 +35,7 @@ async function main() {
   ]);
   await Promise.all([
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v2.json"),
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(
@@ -71,7 +72,7 @@ async function main() {
     WORLDSTREAM_DEPLOYMENT_ENVIRONMENT: "production",
     WORLDSTREAM_HOSTED_INSTALLATION_ID: "hosted-smoke",
     WORLDSTREAM_DEPLOYMENT_VERSION: "a".repeat(40),
-    WORLDSTREAM_LISTING_ALLOWLIST: LISTING_DIGEST,
+    WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(),
     WORLDSTREAM_PUBLIC_AUTHORITY: "127.0.0.1:8080",
     WORLDSTREAM_HOSTED_CLIENT_ORIGIN: "https://worldstream.example",
     WORLDSTREAM_HOSTED_VOLUME_ROOT: volumeRoot,

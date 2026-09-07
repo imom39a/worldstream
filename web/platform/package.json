@@ -13,6 +13,7 @@
     "node": "24.18.1"
   },
   "scripts": {
+    "prebuild": "pnpm --filter @worldstream/hosted-contract build",
     "build": "tsc -p tsconfig.build.json",
     "dev": "node dist/dev-server.js",
     "lint": "tsc --noEmit && tsc -p tsconfig.acceptance.json",

@@ -17,6 +17,7 @@ import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { validateCaptureReceipt } from "./hosted-volume-capture.mjs";
+import { EMPTY_PLATFORM_TABLES, verifyPrelaunchController, validatePrelaunchPlatform } from "./hosted-prelaunch-recovery.mjs";
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 const BLAKE3 = /^blake3:[0-9a-f]{64}$/u;
@@ -24,6 +25,7 @@ const SOURCE_REVISION = /^[0-9a-f]{40}([0-9a-f]{24})?$/u;
 const MIGRATION_HEAD = /^[0-9]{14}$/u;
 const SERVICE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,62}$/u;
 const CHECKPOINT_CONFIRMATION = "worldstream-disposable-restore-target";
+const VERIFICATION_FILE = "verification-prelaunch-v1.json";
 
 export function createDeploymentRevision({
   sourceRevision,
@@ -161,13 +163,17 @@ async function main() {
     await pairCheckpointCommand(options);
     return;
   }
+  if (group === "checkpoint" && action === "drill") {
+    await drillCheckpointCommand(options);
+    return;
+  }
   if (group === "checkpoint" && action === "verify") {
     await verifyCheckpointDirectory(requiredOption(options, "directory"));
     process.stdout.write('{"status":"verified"}\n');
     return;
   }
   throw new Error(
-    "usage: hosted-checkpoint deployment create|record, maintenance enter|open|recovery-fence|recovery-release, checkpoint pair|verify",
+    "usage: hosted-checkpoint deployment create|record, maintenance enter|open|recovery-fence|recovery-release, checkpoint pair|drill|verify",
   );
 }
 
@@ -232,6 +238,7 @@ async function pairCheckpointCommand(options) {
   const worldstreamctl = resolve(requiredOption(options, "worldstreamctl"));
   await requireDatabaseTooling();
   await requireProtectedServiceFile();
+  await verifyDisposableRestorePrivileges({ service: restoreService });
 
   const capture = validateCaptureReceipt(
     JSON.parse((await readProtectedFile(join(captureDirectory, "capture.json"), 65_536)).toString("utf8")),
@@ -253,6 +260,18 @@ async function pairCheckpointCommand(options) {
 
   const deploymentBytes = await readProtectedFile(deploymentPath, 65_536);
   const deployment = parseDeploymentRevision(deploymentBytes);
+  if (capture.deployment_version !== deployment.source_revision) {
+    throw new Error("capture_deployment_revision_mismatch");
+  }
+  const sourceMigrations = await verifyDatabaseMigrationHead({
+    service: sourceService,
+    expectedHead: deployment.supabase_migration_head,
+  });
+  await verifyDatabaseMigrationHead({
+    service: restoreService,
+    expectedHead: deployment.supabase_migration_head,
+    expectedMigrations: sourceMigrations,
+  });
   const deploymentDigest = digestBytes(deploymentBytes);
   await recordDeployment(deployment, deploymentBytes);
 
@@ -277,6 +296,11 @@ async function pairCheckpointCommand(options) {
     `--file=${dump}`,
   ]);
   await chmod(dump, 0o600);
+  await verifyDatabaseMigrationHead({
+    service: sourceService,
+    expectedHead: deployment.supabase_migration_head,
+    expectedMigrations: sourceMigrations,
+  });
   const dumpDigest = await sha256File(dump);
   const manifest = createCheckpointManifest({
     checkpointId: capture.checkpoint_id,
@@ -296,9 +320,11 @@ async function pairCheckpointCommand(options) {
     manifest,
     restoreService,
     worldstreamctl,
+    sourceRevision: deployment.source_revision,
+    sourceMigrations,
   });
   await recordCheckpointEvent(manifest, manifestDigest, "isolated_restore_verified");
-  await writeExclusiveJson(join(outputDirectory, "verification.json"), evidence);
+  await writeExclusiveJson(join(outputDirectory, VERIFICATION_FILE), evidence);
   process.stdout.write(`${JSON.stringify({
     status: "verified",
     checkpoint_id: manifest.checkpoint_id,
@@ -312,10 +338,13 @@ async function isolatedRestoreDrill({
   manifest,
   restoreService,
   worldstreamctl,
+  sourceRevision,
+  sourceMigrations,
 }) {
   const isolated = await mkdtemp(join(tmpdir(), "worldstream-hosted-restore-"));
   await chmod(isolated, 0o700);
   try {
+    await verifyDisposableRestorePrivileges({ service: restoreService });
     await run("tar", [
       "--extract",
       "--file",
@@ -330,11 +359,21 @@ async function isolatedRestoreDrill({
       "--directory",
       isolated,
     ]);
-    const database = join(isolated, "runtime", "worldstream.sqlite3");
-    await validateProtectedFile(database, 16 * 1024 * 1024 * 1024);
-    await run(worldstreamctl, ["sqlite", "verify", "--database", database]);
+    const runtimeReadiness = await verifyIsolatedRuntime({
+      runtimeDirectory: join(isolated, "runtime"),
+      worldstreamctl,
+      sourceRevision,
+    });
+    const controllerCorrespondence = await verifyPrelaunchController({
+      isolatedDirectory: isolated, runtimeReadiness,
+    });
 
     const psql = pgTool("WORLDSTREAM_PSQL", "psql");
+    await verifyDatabaseMigrationHead({
+      service: restoreService,
+      expectedHead: sourceMigrations.at(-1),
+      expectedMigrations: sourceMigrations,
+    });
     await runDatabaseTool(psql, [
       `service=${restoreService}`,
       "-X",
@@ -362,13 +401,27 @@ async function isolatedRestoreDrill({
       `select count(*) from platform_store.hosted_deployment_revisions where encode(deployment_revision_digest, 'hex') = '${manifest.deployment_revision_digest.slice(7)}';`,
     ], true);
     if (restored.stdout.trim() !== "1") throw new Error("isolated_supabase_restore_incomplete");
+    await verifyDatabaseMigrationHead({
+      service: restoreService,
+      expectedHead: sourceMigrations.at(-1),
+      expectedMigrations: sourceMigrations,
+    });
+    const platformCorrespondence = await verifyPrelaunchPlatform({ service: restoreService });
     return {
-      schema: "worldstream/hosted-recovery-verification/v1",
+      schema: "worldstream/hosted-recovery-verification/v3",
+      recovery_profile: "worldstream/hosted-prelaunch-zero-history/v1",
       checkpoint_id: manifest.checkpoint_id,
-      worldstream_sqlite: "verified",
-      controller_state: "restored_in_isolation",
-      supabase_platform_store: "restored_in_isolation",
-      provider_calls: "fenced_until_explicit_recovery_release",
+      source_revision: sourceRevision,
+      deployment_revision_digest: manifest.deployment_revision_digest,
+      runtime_archive_digest: manifest.runtime_archive_digest,
+      controller_archive_digest: manifest.controller_archive_digest,
+      supabase_dump_digest: manifest.supabase_dump_digest,
+      worldstream_restart_readiness: runtimeReadiness,
+      native_envelope_semantic_verifier: "not_invoked",
+      prelaunch_correspondence: { ...controllerCorrespondence, ...platformCorrespondence },
+      supabase_migration_versions: sourceMigrations,
+      provider_calls: "not_started_offline_verification_only",
+      populated_recovery: "not_verified_requires_complete_correspondence_verifier",
       verified_at: new Date().toISOString(),
     };
   } finally {
@@ -376,14 +429,159 @@ async function isolatedRestoreDrill({
   }
 }
 
+async function drillCheckpointCommand(options) {
+  if (requiredOption(options, "confirm-disposable-restore") !== CHECKPOINT_CONFIRMATION) {
+    throw new Error("disposable_restore_confirmation_required");
+  }
+  const directory = resolve(requiredOption(options, "directory"));
+  const verificationPath = join(directory, VERIFICATION_FILE);
+  try {
+    await lstat(verificationPath);
+    throw new Error("checkpoint_verification_already_exists");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const sourceService = databaseService(requiredOption(options, "source-service"));
+  const restoreService = databaseService(requiredOption(options, "restore-service"));
+  if (sourceService === restoreService) throw new Error("restore_service_must_be_isolated");
+  const worldstreamctl = resolve(requiredOption(options, "worldstreamctl"));
+  await requireDatabaseTooling();
+  await requireProtectedServiceFile();
+  const { manifest, deployment, manifestDigest } = await verifyCheckpointDirectory(directory);
+  await verifyDisposableRestorePrivileges({ service: restoreService });
+  const sourceMigrations = await verifyDatabaseMigrationHead({
+    service: sourceService, expectedHead: deployment.supabase_migration_head,
+  });
+  await verifyDatabaseMigrationHead({
+    service: restoreService, expectedHead: deployment.supabase_migration_head,
+    expectedMigrations: sourceMigrations,
+  });
+  const evidence = await isolatedRestoreDrill({
+    outputDirectory: directory, manifest, restoreService, worldstreamctl,
+    sourceRevision: deployment.source_revision, sourceMigrations,
+  });
+  // Re-admit the original files after the drill. A retry never mints a new
+  // checkpoint identity, timestamp, dump, or manifest to disguise a failure.
+  const after = await verifyCheckpointDirectory(directory);
+  if (after.manifestDigest !== manifestDigest) throw new Error("checkpoint_digest_mismatch");
+  await recordCheckpointEvent(manifest, manifestDigest, "isolated_restore_verified");
+  await writeExclusiveJson(verificationPath, evidence);
+  process.stdout.write(`${JSON.stringify({
+    status: "verified", checkpoint_id: manifest.checkpoint_id,
+    manifest_digest: manifestDigest, directory,
+  })}\n`);
+}
+
+export async function verifyPrelaunchPlatform({ service, psql = pgTool("WORLDSTREAM_PSQL", "psql") }) {
+  const installationId = hostedInstallationId();
+  // Both identifiers and table names come from closed, validated vocabularies.
+  const counts = EMPTY_PLATFORM_TABLES.map((table) => `'${table}', (select count(*) from platform_store.${table})`).join(", ");
+  const result = await runDatabaseTool(psql, [
+    `service=${databaseService(service)}`, "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c",
+    `select json_build_object('installation_id', installation_id, 'launches_open', launches_open, 'house_fill_open', house_fill_open, 'maintenance_mode', maintenance_mode, 'recovery_fenced', recovery_fenced, 'counts', json_build_object(${counts})) from platform_store.hosted_operating_state where installation_id = '${installationId}';`,
+  ], true);
+  return validatePrelaunchPlatform(JSON.parse(result.stdout), installationId);
+}
+
+export async function verifyDisposableRestorePrivileges({ service, psql = pgTool("WORLDSTREAM_PSQL", "psql") }) {
+  const result = await runDatabaseTool(psql, [
+    `service=${databaseService(service)}`, "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c",
+    "select rolsuper from pg_roles where rolname = current_user;",
+  ], true);
+  if (result.stdout.trim() !== "t") throw new Error("disposable_restore_superuser_required");
+}
+
+export async function verifyDatabaseMigrationHead({
+  service,
+  expectedHead,
+  expectedMigrations,
+  psql = pgTool("WORLDSTREAM_PSQL", "psql"),
+}) {
+  const result = await runDatabaseTool(psql, [
+    `service=${databaseService(service)}`, "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c",
+    "select coalesce(json_agg(version order by version), '[]'::json) from supabase_migrations.schema_migrations;",
+  ], true);
+  const versions = JSON.parse(result.stdout);
+  if (
+    !MIGRATION_HEAD.test(expectedHead) || !Array.isArray(versions) ||
+    versions.length < 1 || versions.length > 4096 ||
+    versions.some((version, index) => typeof version !== "string" || !MIGRATION_HEAD.test(version) ||
+      (index > 0 && versions[index - 1] >= version)) ||
+    versions.at(-1) !== expectedHead
+  ) {
+    throw new Error("checkpoint_migration_head_mismatch");
+  }
+  if (expectedMigrations !== undefined && JSON.stringify(versions) !== JSON.stringify(expectedMigrations)) {
+    throw new Error("checkpoint_migration_set_mismatch");
+  }
+  return versions;
+}
+
+// This is the production offline restart verifier, not the sealed native
+// envelope verifier. It makes its own source-bound SQLite snapshot, verifies
+// all durable table bytes, and replays every healthy Room with retained Pack
+// executors. Only this disposable extraction is opened; capture archives are
+// never changed. The CLI starts no daemon, Controller, Runner, or provider call.
+export async function verifyIsolatedRuntime({ runtimeDirectory, worldstreamctl, sourceRevision }) {
+  await validateProtectedFile(join(runtimeDirectory, "worldstream.sqlite3"), 16 * 1024 * 1024 * 1024);
+  const environment = Object.fromEntries(
+    ["PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP", "TMP"]
+      .filter((name) => process.env[name] !== undefined)
+      .map((name) => [name, process.env[name]]),
+  );
+  const version = JSON.parse((await run(worldstreamctl, ["version"], true, environment)).stdout);
+  if (
+    !SOURCE_REVISION.test(sourceRevision) ||
+    version?.product_build?.binary !== "worldstreamctl" ||
+    version.product_build.source_revision !== sourceRevision
+  ) {
+    throw new Error("checkpoint_verifier_revision_mismatch");
+  }
+  const result = await run(worldstreamctl, [
+    "pack", "restart-readiness",
+    "--storage-profile", "sqlite-bundled",
+    "--data-dir", runtimeDirectory,
+  ], true, environment);
+  return validateRestartReadinessReceipt(JSON.parse(result.stdout));
+}
+
+export function validateRestartReadinessReceipt(value) {
+  const counts = [
+    "embedded_revisions", "installed_bundles", "installed_selectable",
+    "installed_retained_only", "total_revisions", "rooms_replayed", "isolated_rooms_skipped",
+  ];
+  if (
+    value?.schema !== "worldstream/pack-operator-receipt/v1" ||
+    value.status !== "ready" || value.operation !== "restart_readiness" ||
+    value.storage_profile !== "sqlite-bundled" ||
+    value.original_bytes_reverified !== true ||
+    value.production_component_host_admission !== true ||
+    value.room_replay_checked !== true ||
+    !BLAKE3.test(value.deployment_binding) || !BLAKE3.test(value.inventory_digest) ||
+    counts.some((name) => !Number.isSafeInteger(value[name]) || value[name] < 0)
+  ) {
+    throw new Error("hosted_runtime_restart_verification_incomplete");
+  }
+  return value;
+}
+
 async function verifyCheckpointDirectory(directoryValue) {
   const directory = resolve(directoryValue);
-  const manifest = JSON.parse(
-    (await readProtectedFile(join(directory, "manifest.json"), 65_536)).toString("utf8"),
-  );
-  if (manifest?.schema !== "worldstream/hosted-recovery-checkpoint/v1") {
+  const manifestBytes = await readProtectedFile(join(directory, "manifest.json"), 65_536);
+  const manifest = JSON.parse(manifestBytes.toString("utf8"));
+  if (manifest?.schema !== "worldstream/hosted-recovery-checkpoint/v1" ||
+    !/^[0-9a-f-]{36}$/u.test(manifest.checkpoint_id) ||
+    manifest.runtime_archive !== "worldstream-runtime.tar" ||
+    manifest.controller_archive !== "worldstream-controller.tar" ||
+    manifest.supabase_dump !== "supabase-platform.dump" ||
+    !SHA256.test(manifest.deployment_revision_digest)) {
     throw new Error("invalid_hosted_checkpoint_manifest");
   }
+  const deploymentBytes = await readProtectedFile(join(directory, "hosted-deployment.json"), 65_536);
+  if (digestBytes(deploymentBytes) !== manifest.deployment_revision_digest) {
+    throw new Error("checkpoint_deployment_digest_mismatch");
+  }
+  const deployment = parseDeploymentRevision(deploymentBytes);
   const checks = [
     [manifest.runtime_archive, manifest.runtime_archive_digest, ["runtime"]],
     [manifest.controller_archive, manifest.controller_archive_digest, ["studio", "maintenance"]],
@@ -401,6 +599,7 @@ async function verifyCheckpointDirectory(directoryValue) {
     "--list",
     join(directory, manifest.supabase_dump),
   ]);
+  return { manifest, deployment, manifestDigest: digestBytes(manifestBytes) };
 }
 
 async function recordDeployment(revision, bytes) {

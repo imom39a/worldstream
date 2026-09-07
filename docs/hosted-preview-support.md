@@ -3,6 +3,22 @@
 This document defines what the first hosted WorldStream preview supports. It
 also defines the evidence required before the preview is called ready.
 
+## Deployment addresses
+
+The operator has provisioned these MVP endpoints:
+
+| Service | Address | Purpose |
+| --- | --- | --- |
+| Activity site | <https://worldstream-demos.vercel.app> | Catalog, sign-in, clients, and platform HTTP API |
+| Fly authority | <https://worldstream-preview.fly.dev> | Health checks, protected gateway, and direct browser WebSockets |
+| Supabase | `grbuawkxcyyubzbzoeux` | WorldStream Free-plan project for Auth and platform data |
+
+These addresses are not an acceptance result. The operator must check the
+deployed source identities and complete the tests below before inviting users.
+A maintenance response or an older demo gallery does not mean that live match
+formation is available. Do not put service keys in links, browser settings, or
+support reports.
+
 ## Supported product path
 
 The preview has one public activity catalog. Agent Heist is the first activity.
@@ -62,6 +78,47 @@ A retained House Agent restarts with the same Assignment, reviewed revision,
 working directory, and allowance ledger. Restart does not reserve a new House
 Agent or refill its budget. If its retained binding, executable, or credential
 cannot be verified, restoration stays incomplete instead of replacing it.
+
+### Hosting costs are separate from model limits
+
+Keep the preview on Vercel Hobby and a Supabase Free organization. Do not
+enable paid plans, paid add-ons, automatic credit purchases, or extra Fly
+Machines without explicit operator approval. Free-plan limits can make the
+site unavailable; they are not permission to upgrade the account.
+
+Fly bills resource usage automatically when a payment method is attached.
+It does not provide a hard spending cap or billing alerts. Use one shared-CPU
+Machine with 512 MB of memory and one 1 GB volume for the initial preview.
+Deploy with `--ha=false` so the deployment does not create another Machine.
+Do not configure a metrics-based autoscaler, a dedicated paid IPv4 address,
+or automatic volume expansion. These resource choices limit the normal
+baseline, not the total bill: outbound traffic can still add cost.
+
+When the preview is not in use, an operator can close launches, drain work,
+enter maintenance, and stop the Machine. Keep automatic start disabled so
+an incoming request cannot start it again. This is planned downtime, not
+automatic idle stopping of live Rooms. The volume and stopped Machine root
+filesystem still incur storage charges. Do not delete recovery data to save
+this small storage cost.
+
+OpenRouter Auto Top-Up must stay off. Use a dedicated expiring key with a
+USD 2 lifetime limit for initial acceptance, in addition to the retained
+per-assignment token ledger and daily/monthly limits. Never use an unlimited
+personal key. An exhausted or expired key makes House Agents unavailable;
+the platform must not buy credit or switch credentials automatically.
+
+House Agents also need [operator approvals for the actual installed
+records and executable](hosted-house-approval.md). Registering an approval
+does not enable it. Review and activate the exact records only after the
+deployment, provider privacy, credential, and budget checks pass.
+
+These provider policies were checked on 2026-09-07. Check them again before
+changing the deployment:
+
+- [Vercel Hobby limits](https://vercel.com/docs/plans/hobby)
+- [Supabase Free-plan cost control](https://supabase.com/docs/guides/platform/cost-control)
+- [Fly cost management](https://fly.io/docs/about/cost-management/)
+- [Fly storage and usage billing](https://fly.io/docs/about/billing/)
 
 ## Not supported
 

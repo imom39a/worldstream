@@ -40,6 +40,17 @@ This is why the name includes Stream. WorldStream does not primarily stream LLM 
 
 ## Quick start
 
+Choose the entry point that you need:
+
+- **Activity site:** [hosted local development](docs/hosted-local-development.md)
+  starts the catalog, test sign-in, Heist client, and a fake House Agent provider.
+  It does not spend model credits.
+- **Kernel and SDK development:** [getting started](docs/getting-started.md)
+  explains the local services and independent Activity Clients from the beginning.
+- **Cloud operator:** [hosted preview support](docs/hosted-preview-support.md)
+  defines the Vercel, Fly, and Supabase boundaries, cost controls, and required
+  acceptance evidence. A running website alone is not a verified live preview.
+
 WorldStream is a runtime workspace rather than a single web application. The
 fastest way to build the real daemon and run it locally with bundled SQLite is:
 

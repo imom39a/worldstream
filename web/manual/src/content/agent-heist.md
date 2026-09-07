@@ -45,7 +45,7 @@ For the visual version of the recorded story, run `pnpm demos:dev` and open
 Client's presentation through a recorded adapter, but it has no Room authority
 or network connection. A live CLI/Controller handoff instead opens the exact approved
 `0.1.0` or `0.2.0` revision at
-`http://127.0.0.1:5173/agent-heist/`.
+`http://127.0.0.1:5173/agent-heist-v2/`.
 
 ## Complete local MVP gate
 

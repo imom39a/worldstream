@@ -17,7 +17,15 @@ import {
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
-const LISTING_DIGEST = "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956";
+const LISTING_DIGEST = "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80";
+const RETAINED_LISTING_DIGESTS = [
+  "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1",
+  "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956",
+];
+
+export function hostedDevelopmentListingAllowlist() {
+  return [LISTING_DIGEST, ...RETAINED_LISTING_DIGESTS].join(",");
+}
 const DEVELOPMENT_USER_ID = "00000000-0000-4000-8000-00000000d001";
 const DEVELOPMENT_PROVIDER_SUBJECT = "worldstream-development";
 const DEVELOPMENT_LOGIN = "worldstream-local-developer";
@@ -308,7 +316,7 @@ async function main() {
           WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
           WORLDSTREAM_PUBLIC_AUTHORITY: `127.0.0.1:${ports.gateway}`,
           WORLDSTREAM_VERCEL_SERVICE_AUTHORITY: SERVICE_AUTHORITY,
-          WORLDSTREAM_LISTING_ALLOWLIST: LISTING_DIGEST,
+          WORLDSTREAM_LISTING_ALLOWLIST: hostedDevelopmentListingAllowlist(),
           WORLDSTREAM_DEPLOYMENT_VERSION: "hosted-local-development",
           RUST_LOG: "worldstream_hosted_gateway=info",
         },
@@ -607,7 +615,7 @@ async function hostedClientDeclaration(stateDirectory, stateRoot) {
 
   const template = await readRegularJson(join(configuration, "hosted-local-bindings.json"));
   const currentHeist = await readRegularJson(
-    join(configuration, "releases", "agent-heist-web.json"),
+    join(configuration, "releases", "agent-heist-web-v2.json"),
   );
   template.deployments = [
     deployment,
@@ -683,7 +691,7 @@ async function assertPortsAvailable(ports, reusableNames) {
 
 async function compatibleAgentHeistAlreadyRunning(portNumber) {
   try {
-    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist/`, {
+    const response = await fetch(`http://127.0.0.1:${portNumber}/agent-heist-v2/hosted/`, {
       signal: AbortSignal.timeout(1_000),
     });
     if (response.status !== 200) return false;
@@ -741,7 +749,7 @@ async function readiness(ports, ctl, children) {
     waitForHttp("product", `http://127.0.0.1:${ports.product}/`, 200, children),
     waitForHttp(
       "same-origin Agent Heist",
-      `http://127.0.0.1:${ports.product}/agent-heist/`,
+      `http://127.0.0.1:${ports.product}/agent-heist-v2/hosted/`,
       200,
       children,
     ),
@@ -897,7 +905,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.3.0.json",
+      "config/hosted/listings/agent-heist-0.4.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {
@@ -928,11 +936,11 @@ async function verifyDevelopmentFlow(ports) {
     launch_input_digest: taggedSha256(encodeCanonical(frozenLaunchRequest.inputs)),
     frozen_roster_digest: taggedSha256(rosterBytes),
     room_setup_specification_digest: taggedBlake3(setupBytes),
-    room_setup_operation_id: "hosted-local-readiness-d3f2c557",
+    room_setup_operation_id: "hosted-local-readiness-04edc964",
     capacity_authorization: {
       schema: "worldstream/platform-capacity-authorization/v1",
       host_installation_id: HOST_INSTALLATION_ID,
-      reservation_reference: "d3f2c557-83a7-4154-8946-a58184b35866",
+      reservation_reference: "04edc964-d5cb-41bc-aefa-422ac856305d",
     },
     frozen_launch_request: frozenLaunchRequest,
     frozen_roster: frozenRoster,
@@ -1092,7 +1100,7 @@ async function verifyCanonicalLocalCandidate({
       listing_revision_digest: LISTING_DIGEST,
       pack_digest: "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820",
       client_release_digest:
-        "sha256:88f76571d3d5736f0ca52740d619761f9ad6dcb9112792e806d8072c2a983148",
+        "sha256:493260d162be2bdfda28e71b6e4f94d5ef5c11e7f03adfbee3ab9295bdf4594b",
       projector_digest:
         "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf",
     },
@@ -1134,7 +1142,7 @@ function printReady(ports, supabase) {
       "",
       "WorldStream hosted development stack is ready.",
       `Product:        http://127.0.0.1:${ports.product}/`,
-      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist/`,
+      `Agent Heist:    http://127.0.0.1:${ports.product}/agent-heist-v2/hosted/`,
       `Hosted Gateway: http://127.0.0.1:${ports.gateway}/`,
       `Supabase API:   ${requiredSupabase(supabase, "API_URL")}`,
       `Runtime:        127.0.0.1:${ports.runtime} (loopback only)`,

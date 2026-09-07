@@ -42,6 +42,11 @@ fn exact_client_retry_completes_orphan_status_but_never_recreates_lost_status() 
                 .as_slice(),
         ),
         (
+            "releases/agent-heist-web-v2.json",
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v2.json")
+                .as_slice(),
+        ),
+        (
             "releases/negotiate-web.json",
             include_bytes!("../../../config/activity-clients/releases/negotiate-web.json")
                 .as_slice(),
@@ -78,7 +83,7 @@ fn exact_client_retry_completes_orphan_status_but_never_recreates_lost_status() 
         ClientBindingStoreV1::installed_policy(&root)?,
     )?;
     store.disable_binding("negotiate-0-1-spectator-web")?;
-    store.revoke_deployment("first-party-agent-heist-web")?;
+    store.revoke_deployment("first-party-agent-heist-web-v2")?;
     // Owned filesystem fault: publication stopped with a retained status but
     // without its immutable binding. Existing status must not be reset on retry.
     fs::remove_file(root.join("bindings/negotiate-0-1-spectator-web.json"))?;

@@ -1,13 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vite";
+import { resolveBuildRevision } from "./buildRevision.ts";
 
-const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-const sourceRevision = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
-  cwd: repositoryRoot,
-  encoding: "utf8",
-}).trim();
+const sourceRevision = resolveBuildRevision();
 const platformBffTarget = localPlatformBffTarget(process.env.WORLDSTREAM_LOCAL_PLATFORM_BFF_TARGET);
 const activityClientTarget = localActivityClientTarget(
   process.env.WORLDSTREAM_LOCAL_ACTIVITY_CLIENT_TARGET,
@@ -40,7 +36,7 @@ export default defineConfig({
             ...(activityClientTarget === undefined
               ? {}
               : {
-                  "/agent-heist": {
+                  "/agent-heist-v2": {
                     target: activityClientTarget,
                     changeOrigin: true,
                   },

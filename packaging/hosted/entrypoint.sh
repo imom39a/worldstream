@@ -30,7 +30,12 @@ validate_secret_length() {
     exit 78
   fi
 }
-validate_secret_length WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET "$WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET"
+# The kernel reads this file as 32 raw bytes, not a hex/base64-encoded key.
+# Count the bytes that printf will write rather than locale-dependent characters.
+if [ "$(printf '%s' "$WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET" | wc -c)" -ne 32 ]; then
+  echo 'Runtime bootstrap secret must contain exactly 32 bytes.' >&2
+  exit 78
+fi
 validate_secret_length WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY "$WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY"
 validate_secret_length WORLDSTREAM_VERCEL_SERVICE_AUTHORITY "$WORLDSTREAM_VERCEL_SERVICE_AUTHORITY"
 validate_secret_length OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
@@ -51,6 +56,7 @@ printf '%s' "$WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY" > "$secret_root/controlle
 printf '%s' "$WORLDSTREAM_VERCEL_SERVICE_AUTHORITY" > "$secret_root/vercel-service-authority"
 printf '%s' "$OPENROUTER_API_KEY" > "$secret_root/openrouter-api-key"
 chown 65532:65532 "$secret_root"/* "$volume_root"
+chmod 0700 "$volume_root"
 chmod 0600 "$secret_root"/*
 
 unset WORLDSTREAM_AUTHORITY_BOOTSTRAP_SECRET

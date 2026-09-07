@@ -135,12 +135,13 @@ may interrupt streams, but it must preserve recoverable Room data.
 ### Backup, rollback, and preview reset
 
 The MVP adds no backup-storage product. While platform mutations are closed,
-House calls are drained, and WorldStream is stopped at the reviewed offline
-boundary in [the storage runbook](../operator-storage.md), one operator command
-collects a complete WorldStream backup, its semantic companion, every
-referenced Pack Bundle, a Supabase logical dump and migration history,
-checksums, and the Hosted Deployment Revision. Together these form one Hosted
-Recovery Checkpoint. The command copies the paired set off Fly to a private
+House calls are drained, and WorldStream is stopped, the hosted operational
+recovery profile captures the complete Runtime directory (including any SQLite
+WAL sidecars and retained Pack inventory), Controller state, House allowance
+evidence, and maintenance fences. The same closed interval supplies a Supabase
+logical dump, exact migration head, checksums, and Hosted Deployment Revision.
+Together these form one Hosted Recovery Checkpoint. The command copies the
+paired set off Fly to a private
 operator-controlled directory outside the repository. A checkpoint is required
 before every deployment and within 24 hours on each day with public activity;
 seven verified sets are retained. Public launch stays closed until a complete
@@ -160,6 +161,73 @@ operator starts a fresh preview installation and discloses the preview-history
 reset. Every House Agent Assignment present in restored Fly state is disabled
 from further provider calls so an externally completed OpenRouter request is
 never repeated.
+
+#### Hosted operational recovery verification (2026-09-07 correction)
+
+The hosted checkpoint is an **offline volume clone**, not the native SQLite
+backup/envelope artifact defined in ADR 0011 and
+[the storage runbook](../operator-storage.md). Those portable artifact commands
+still require their sealed companion and remain unchanged. The earlier hosted
+implementation incorrectly called native-only `sqlite verify` on a WAL-mode
+Runtime file; that could neither admit the file nor establish restore readiness.
+
+For the hosted clone, retain the archive bytes unchanged and extract a private
+disposable copy. Require `worldstreamctl version` to identify the captured source
+revision. Run the existing `pack restart-readiness` command on that copy. This
+uses the production SQLite open path, verifies a source-bound standalone
+snapshot across all durable tables, re-verifies the retained Pack inventory,
+and executes Replay for every healthy Room against its retained Head and
+materializations. Faulted or quarantined Rooms remain isolated and are counted;
+they are never promoted to healthy. No daemon, Controller, Runner, or provider
+call is started by this command. Any migration or readiness seal affects only
+the disposable copy, not the captured archive.
+
+Record the actual restart-readiness receipt with the captured revision and
+archive digests. Explicitly record that the native envelope verifier was not
+invoked; do not translate this evidence into its `semantic_verifier: pass`
+claim. Production acceptance additionally exercises the exact Linux image on
+Linux-local isolated storage with network access denied, checks the restored
+platform/Controller correspondence, and tests ordinary same-volume Room
+restart/re-entry. Desktop shared filesystem mounts are not a substitute when
+they fail the native identity/durability checks. This corrects the hosted drill
+method without creating a new kernel storage profile or release certification.
+
+The first executable correspondence gate is deliberately narrower than the
+full recovery goal: `worldstream/hosted-prelaunch-zero-history/v1`. It requires
+zero healthy **and** isolated Runtime Rooms, zero retained Runtime activity
+tables, empty Controller launch/setup/assignment/runner ledgers, and zero
+platform launch, Run, seat, assignment, reconciliation, result, and relay rows.
+It requires initialized, protected Controller metadata and proves that its
+retained Host secret resolves to an enabled Host capability in the restored
+Runtime. Both retained Controller and platform admission must be closed. The
+offline verifier starts no Controller, Runner, or provider call; ordinary
+maintenance is not described as restored-assignment recovery fencing.
+
+This gate writes `verification-prelaunch-v1.json`, using receipt schema
+`worldstream/hosted-recovery-verification/v3` and binding all three archive/dump
+digests plus the deployment digest. The old v2 receipt proved extraction and
+Runtime readiness but did **not** prove cross-store correspondence. Retain it
+unchanged as historical evidence; neither it nor its existing idempotent
+`isolated_restore_verified` event qualifies a checkpoint without the new,
+digest-bound prelaunch receipt. Re-running the stronger drill appends that
+separate receipt and never overwrites or silently upgrades the old proof.
+
+This permits the initial empty-installation rehearsal only. After the first
+real Run or retained activity, this command fails closed with
+`populated_checkpoint_correspondence_required`. A complete populated
+Controller–Runtime–platform correspondence verifier, including restored House
+Assignment provider fencing, is still required to qualify populated recovery.
+Until that verifier exists, captured populated archives remain unqualified
+recovery evidence: do not claim the full recovery target or cut over to them.
+Use the disclosed fresh-preview reset path if recovery is needed. The original
+coherent recovery goal above is not waived by this bounded first profile.
+
+The source and disposable platform databases must have the same ordered
+migration version set, ending at the Hosted Deployment Revision's schema head.
+Check that correspondence before the destructive disposable restore and again
+after it; a matching final version alone is insufficient when an earlier
+migration is absent. The cloud schema and migration files remain independently
+reviewed deployment inputs; the data-only dump does not recreate them.
 
 The operating targets, not provider promises, are a recovery point within 24
 hours of active preview use and either verified recovery or a disclosed reset

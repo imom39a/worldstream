@@ -351,7 +351,7 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
         ),
         (
             "heist.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web.json")
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v2.json")
                 .as_slice(),
         ),
         (

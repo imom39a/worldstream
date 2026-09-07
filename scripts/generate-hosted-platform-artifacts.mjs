@@ -8,7 +8,9 @@ const outputPath = join(
   "web/platform/src/hosted-artifacts.generated.ts",
 );
 const sources = {
-  agentHeistListing: "config/hosted/listings/agent-heist-0.3.0.json",
+  agentHeistListing: "config/hosted/listings/agent-heist-0.4.0.json",
+  retainedAgentHeistListing02: "config/hosted/listings/agent-heist-0.2.0.json",
+  retainedAgentHeistListing03: "config/hosted/listings/agent-heist-0.3.0.json",
   cooperativePlanner: "config/hosted/house-agents/cooperative-planner-1.json",
   skepticalAuditor: "config/hosted/house-agents/skeptical-auditor-1.json",
   agentHeistResultProjector:

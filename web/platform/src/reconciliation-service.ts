@@ -3,6 +3,8 @@ import { timingSafeEqual } from "node:crypto";
 
 import {
   agentHeistListingBase64,
+  retainedAgentHeistListing02Base64,
+  retainedAgentHeistListing03Base64,
   agentHeistPublicProjectionSchemaBase64,
   agentHeistResultProjectorBase64,
   declarativeResultProjectorRuntimeBase64,
@@ -38,14 +40,14 @@ export function createHostedResultReconciler(input: {
       serviceAuthority: input.serviceAuthority,
     }),
     projectors: new PinnedResultProjectorRegistry([
-      {
-        listingBytes: decode(agentHeistListingBase64),
+      agentHeistListingBase64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
+    ].map((listingBytes) => ({
+        listingBytes: decode(listingBytes),
         projectorBytes: decode(agentHeistResultProjectorBase64),
         runtimeBytes: decode(declarativeResultProjectorRuntimeBase64),
         projectionSchemaBytes: decode(agentHeistPublicProjectionSchemaBase64),
         outputSchemaBytes: decode(resultSummarySchemaBase64),
-      },
-    ]),
+      }))),
   };
 }
 

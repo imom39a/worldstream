@@ -354,7 +354,7 @@ async function writeClientImport(layout) {
   }));
   heistDeployment.surfaces = heistDeployment.surfaces.map((surface) => ({
     ...surface,
-    launch_url: new URL("/agent-heist/", clientOrigin).toString(),
+    launch_url: new URL("/agent-heist-v2/hosted/", clientOrigin).toString(),
   }));
   bindings.deployments = [inspectorDeployment, heistDeployment];
   bindings.inspector_fallback = fallback;

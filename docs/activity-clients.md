@@ -17,7 +17,7 @@ The repository contains three first-party browser clients:
 
 | Client | Local surface | Purpose |
 | --- | --- | --- |
-| Agent Heist | `http://127.0.0.1:5173/agent-heist/` | Participant and spectator experience for exact Agent Heist revisions |
+| Agent Heist | `http://127.0.0.1:5173/agent-heist-v2/` | Participant and spectator experience for exact Agent Heist revisions |
 | Negotiate 0.1 | `http://127.0.0.1:5173/negotiate/` | Retained immutable participant and spectator client for the exact 0.1 revision |
 | Negotiate 0.2 | `http://127.0.0.1:5173/negotiate-v2/` | Current participant and spectator client for the exact 0.2 revision |
 | WorldStream Inspector | `http://127.0.0.1:5173/inspector/` | Pack-neutral protocol workbench and configured fallback |
@@ -172,6 +172,14 @@ different Controller changes the built client bytes. It therefore requires a
 new exact local Release and Binding; changing only the Host Content Security
 Policy does not redirect a client.
 
+Agent Heist v2 has two explicit entrypoints in the same immutable artifact.
+`/agent-heist-v2/` is the local kernel client used by `worldstreamctl client open`.
+`/agent-heist-v2/hosted/` requires the authenticated hosted Platform and direct
+Gateway stream. It does not fall back to local authority when sign-in fails.
+The earlier `/agent-heist/` path returns 404 unless an operator separately
+retains and serves the exact original artifact. Existing records are not
+silently rebound to the new client.
+
 For example, prepare a fresh-installation Agent Heist client for Controller
 `19420` and Client Host `15173` as follows. Build only the selected client and
 its Inspector fallback so unrelated checked-in client artifacts stay exact:
@@ -182,15 +190,15 @@ VITE_WORLDSTREAM_SUPERVISOR_URL=http://127.0.0.1:19420 pnpm ui:build
 
 node scripts/prepare-local-activity-client.mjs \
   --dist clients/agent-heist-web/dist \
-  --source-release config/activity-clients/releases/agent-heist-web.json \
+  --source-release config/activity-clients/releases/agent-heist-web-v2.json \
   --pack-id worldstream.agent-heist \
   --pack-version 0.2.0 \
   --pack-digest blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820 \
   --access-mode participant \
   --roles navigator,insider,broker \
   --surface heist-web \
-  --entrypoint /agent-heist/ \
-  --launch-url http://127.0.0.1:15173/agent-heist/ \
+  --entrypoint /agent-heist-v2/ \
+  --launch-url http://127.0.0.1:15173/agent-heist-v2/ \
   --fallback-dist web/console/dist \
   --fallback-source-release config/activity-clients/releases/inspector-web.json \
   --fallback-surface inspector-web \

@@ -6,7 +6,7 @@ import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const workspace = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const activityClientMounts = Object.freeze([
-  Object.freeze({ prefix: "/agent-heist/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
+  Object.freeze({ prefix: "/agent-heist-v2/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
   Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "clients/negotiate-web/dist") }),
   Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v1") }),
   Object.freeze({ prefix: "/", root: resolve(workspace, "web/console/dist") }),
@@ -67,7 +67,12 @@ async function serve(request, response, controllerOrigin) {
     return;
   }
   const url = new URL(request.url ?? "/", "http://activity-client-host.invalid");
-  if (["/agent-heist", "/negotiate", "/negotiate-v2"].includes(url.pathname)) {
+  if (url.pathname === "/agent-heist" || url.pathname.startsWith("/agent-heist/")) {
+    response.writeHead(404, commonHeaders("text/plain; charset=utf-8", controllerOrigin));
+    response.end("This retained Activity Client artifact is not available on this Client Host.\n");
+    return;
+  }
+  if (["/agent-heist-v2", "/negotiate", "/negotiate-v2"].includes(url.pathname)) {
     response.writeHead(308, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Location: `${url.pathname}/${url.search}` });
     response.end();
     return;
@@ -91,7 +96,7 @@ async function serve(request, response, controllerOrigin) {
     response.end("Invalid path.\n");
     return;
   }
-  const candidate = resolve(mount.root, requested || "index.html");
+  const candidate = resolve(mount.root, requested === "" || requested.endsWith("/") ? `${requested}index.html` : requested);
   const candidateRelative = relative(mount.root, candidate);
   if (candidateRelative.startsWith("..") || candidateRelative === "") {
     response.writeHead(400, commonHeaders("text/plain; charset=utf-8", controllerOrigin));

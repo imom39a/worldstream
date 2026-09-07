@@ -56,7 +56,7 @@ The ready output shows these default endpoints:
 | Service | Address | Exposure |
 | --- | --- | --- |
 | Product | `http://127.0.0.1:5180/` | Local browser |
-| Agent Heist | `http://127.0.0.1:5173/agent-heist/` | Local browser |
+| Agent Heist asset server | `http://127.0.0.1:5173/agent-heist-v2/hosted/` | Product proxy only |
 | Hosted Gateway | `http://127.0.0.1:8080/` | Local client |
 | Platform BFF | `http://127.0.0.1:3000/` | Product proxy only |
 | Fake OpenRouter | `http://127.0.0.1:8787/` | Local process only |
@@ -66,6 +66,10 @@ The ready output shows these default endpoints:
 
 The product proxies `/api/*` to the Platform BFF. Browser cookies and request
 origins therefore use the product origin, as they do in the hosted design.
+Start at the product catalog, not at the asset server. The catalog opens
+`/agent-heist-v2/hosted/` on the product origin after it authorizes your entry.
+The separate `/agent-heist-v2/` surface is for the standalone local-kernel
+flow in [Getting started](getting-started.md); it does not use platform sign-in.
 
 If an approved Activity Client Host is already on port `5173`, the command
 checks its Agent Heist page and Controller policy. It reuses a compatible host.
@@ -94,6 +98,25 @@ pnpm hosted:dev:test
 pnpm hosted-platform:check
 cargo test -p worldstream-hosted-gateway
 ```
+
+## Build the hosted product
+
+From the repository root, run:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm demos:build
+```
+
+The build prepares the Pack SDK and hosted contracts before it compiles the
+Platform BFF. It then builds the Agent Heist Activity Client, builds the product,
+and verifies the copied client against its reviewed release digest. It does not
+need build artifacts from a previous development run.
+
+Local builds read the source revision from Git. Vercel source builds use the
+provider-supplied `VERCEL_GIT_COMMIT_SHA`, so they do not need a `.git` directory.
+Enable Vercel system environment variables. Do not replace the provider's
+revision with a hand-written production value.
 
 ## Development sign-in
 

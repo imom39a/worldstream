@@ -7,12 +7,14 @@ import {
 
 import {
   agentHeistListingBase64,
+  retainedAgentHeistListing02Base64,
+  retainedAgentHeistListing03Base64,
   cooperativePlannerBase64,
   skepticalAuditorBase64,
 } from "./hosted-artifacts.generated.js";
 
 export const AGENT_HEIST_LISTING_DIGEST =
-  "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956";
+  "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80";
 
 export interface PublicHostedActivity {
   readonly slug: "agent-heist" | "negotiate";
@@ -71,7 +73,7 @@ const agentHeistPublic = Object.freeze({
   publicViewingAvailable: true,
   resultPublication: "Replay-verified summaries can appear in Recent Results.",
   attribution: "Results use reviewed seat names unless a participant opts in to a public profile.",
-  clientPath: "/agent-heist/",
+  clientPath: "/agent-heist-v2/hosted/",
   houseTerms: {
     exhibition: true,
     maximumAgents: 2,
@@ -88,6 +90,31 @@ const reviewedAgentHeist = Object.freeze({
   houseAgents: new Map(houseAgents.map((revision) => [revision.digest, revision])),
   public: agentHeistPublic,
 } satisfies ReviewedHostedActivity);
+
+// Discovery selects only the current revision. Retained formation and results
+// must continue resolving the exact revision accepted before this deployment.
+const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64]
+  .map((bytes): ReviewedHostedActivity => {
+    const retainedListing = readListingRevision(decode(bytes));
+    const houseFillAvailable = retainedListing.value.seats.some(
+      (seat) => seat.allowed_house_agent_revisions.length > 0,
+    );
+    return Object.freeze({
+      ...reviewedAgentHeist,
+      listing: retainedListing,
+      public: Object.freeze({
+        ...agentHeistPublic,
+        availability: "dependency_unavailable",
+        availabilityMessage: "This retained revision requires its original client artifact, which is not hosted here.",
+        clientPath: null,
+        houseFillAvailable,
+        houseTerms: houseFillAvailable ? agentHeistPublic.houseTerms : null,
+      }),
+    });
+  });
+const reviewedByDigest = new Map(
+  [reviewedAgentHeist, ...retainedAgentHeist].map((activity) => [activity.listing.digest, activity]),
+);
 
 const negotiatePublic = Object.freeze({
   slug: "negotiate",
@@ -126,7 +153,7 @@ export function reviewedActivityBySlug(slug: string): ReviewedHostedActivity | n
 }
 
 export function reviewedActivityByDigest(digest: string): ReviewedHostedActivity | null {
-  return digest === reviewedAgentHeist.listing.digest ? reviewedAgentHeist : null;
+  return reviewedByDigest.get(digest) ?? null;
 }
 
 export function reviewedSeatId(activity: ReviewedHostedActivity, publicKey: string): string | null {

@@ -155,7 +155,7 @@ export interface BffDependencies {
   readonly dataClient: PlatformDataClient;
   /** Server-secret reads that emit only the reviewed public Run DTO. */
   readonly publicRunData?: PublicRunData;
-  /** Direct Fly origin used only to decorate an already-public live Run. */
+  /** Exact deployment-owned gateway origin for participant and public streams. */
   readonly hostedPublicStreamBaseUrl?: string;
   /** Fixed service-only client for the Fly hosted browser-session boundary. */
   readonly hostedBrowserSessions?: HostedBrowserSessionClient;
@@ -247,6 +247,9 @@ export function createPlatformBff(
   const hostedPublicStreamBaseUrl = dependencies.hostedPublicStreamBaseUrl === undefined
     ? null
     : publicProjectionStreamBaseUrl(dependencies.hostedPublicStreamBaseUrl);
+  const browserStreamUrl = hostedPublicStreamBaseUrl === null
+    ? null
+    : `${hostedPublicStreamBaseUrl.replace(/^http/u, "ws")}/v1/hosted/browser-stream`;
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
@@ -290,7 +293,7 @@ export function createPlatformBff(
         );
       }
       if (request.method === "GET" && url.pathname === "/api/auth/session") {
-        return readSession(request, origin, sessionKey, dependencies);
+        return readSession(request, origin, sessionKey, dependencies, browserStreamUrl);
       }
       if (request.method === "POST" && url.pathname === "/api/auth/session/refresh") {
         return refreshSession(request, origin, sessionKey, dependencies);
@@ -602,6 +605,10 @@ async function mutateHostedLaunch(
   if (!isExactObject(admitted.body, [])) return privateError(400, "invalid_request");
   try {
     if (route.action === "start") {
+      const launch = await data.readLaunchRequest(admitted.account.accountId, route.launchId);
+      if (launch !== null && reviewedActivityByDigest(launch.listingRevisionDigest)?.public.clientPath === null) {
+        return privateError(409, "launch_client_unavailable");
+      }
       const advanced = await formation.advance(admitted.account.accountId, route.launchId);
       const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId, formation);
       if (snapshot === null) return temporarilyUnavailable();
@@ -1150,6 +1157,7 @@ async function readSession(
   origin: string,
   sessionKey: Buffer,
   dependencies: BffDependencies,
+  browserStreamUrl: string | null,
 ): Promise<Response> {
   if (!readRequestIsSafe(request, origin)) return safeJson(403, "request_rejected");
   const payload = readSessionCookie(request, sessionKey);
@@ -1168,6 +1176,7 @@ async function readSession(
       authenticated: true,
       csrf: payload.csrf,
       public_profile_enabled: account.publicProfileEnabled,
+      ...(browserStreamUrl === null ? {} : { browser_stream_url: browserStreamUrl }),
     });
   } catch (error) {
     return credentialWasRejected(error) ? refreshRequired(payload) : temporarilyUnavailable();
@@ -1322,6 +1331,9 @@ async function enterRun(
       entrySelector: admitted.body.entry_selector,
     });
     if (binding === null) return privateError(404, "run_entry_unavailable");
+    if (reviewedActivityByDigest(binding.listingRevisionDigest)?.public.clientPath === null) {
+      return privateError(409, "run_client_unavailable");
+    }
     const handoff = await hosted.issueHandoff(admitted.account.accountId, binding);
     const client = new URL(handoff.clientUrl);
     if (client.origin !== origin) return temporarilyUnavailable();

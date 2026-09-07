@@ -14,6 +14,10 @@
       "source": "/(.*)",
       "headers": [
         {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self' wss://worldstream-preview.fly.dev; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+        },
+        {
           "key": "X-Content-Type-Options",
           "value": "nosniff"
         },
@@ -30,8 +34,20 @@
   ],
   "rewrites": [
     {
+      "source": "/agent-heist/:path*",
+      "destination": "/api/platform"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/platform"
+    },
+    {
+      "source": "/join",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/launches/:launch_id",
+      "destination": "/index.html"
     },
     {
       "source": "/runs/:public_id",

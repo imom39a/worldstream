@@ -17,14 +17,14 @@
     },
     {
       "schema": "worldstream/client-deployment/v1",
-      "deployment_id": "hosted-agent-heist-web-88f76571",
+      "deployment_id": "hosted-agent-heist-web-493260d1",
       "client_id": "worldstream.agent-heist.web",
-      "release_digest": "sha256:88f76571d3d5736f0ca52740d619761f9ad6dcb9112792e806d8072c2a983148",
+      "release_digest": "sha256:493260d162be2bdfda28e71b6e4f94d5ef5c11e7f03adfbee3ab9295bdf4594b",
       "trust_level": "externally_trusted",
       "surfaces": [
         {
-          "surface_id": "heist-web",
-          "launch_url": "http://127.0.0.1:5180/agent-heist/"
+          "surface_id": "heist-hosted-web",
+          "launch_url": "http://127.0.0.1:5180/agent-heist-v2/hosted/"
         }
       ]
     }
@@ -32,7 +32,7 @@
   "bindings": [
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-2-88f76571-participant",
+      "binding_id": "hosted-agent-heist-0-2-493260d1-participant",
       "pack": {
         "id": "worldstream.agent-heist",
         "version": "0.2.0",
@@ -40,14 +40,18 @@
       },
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "participant",
-      "roles": ["navigator", "insider", "broker"],
-      "deployment_id": "hosted-agent-heist-web-88f76571",
-      "surface_id": "heist-web",
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ],
+      "deployment_id": "hosted-agent-heist-web-493260d1",
+      "surface_id": "heist-hosted-web",
       "preference": "default"
     },
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-2-88f76571-spectator",
+      "binding_id": "hosted-agent-heist-0-2-493260d1-spectator",
       "pack": {
         "id": "worldstream.agent-heist",
         "version": "0.2.0",
@@ -56,8 +60,8 @@
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "spectator",
       "roles": [],
-      "deployment_id": "hosted-agent-heist-web-88f76571",
-      "surface_id": "heist-web",
+      "deployment_id": "hosted-agent-heist-web-493260d1",
+      "surface_id": "heist-hosted-web",
       "preference": "default"
     }
   ],

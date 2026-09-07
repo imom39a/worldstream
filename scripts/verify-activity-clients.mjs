@@ -15,12 +15,12 @@ const buildRoots = new Map([
   ["worldstream.inspector.web", "web/console/dist"],
 ]);
 const currentReleaseFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v2.json"],
   ["worldstream.negotiate.web", "negotiate-web-v2.json"],
   ["worldstream.inspector.web", "inspector-web.json"],
 ]);
 const currentEvidenceFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v1.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v2.json"],
   ["worldstream.negotiate.web", "negotiate-web-v2.json"],
   ["worldstream.inspector.web", "inspector-web-v1.json"],
 ]);
@@ -81,7 +81,13 @@ for (const { name, value: evidence } of evidenceDocuments) {
   checkDigest(evidence.subject.release_claims_digest, `${evidence.subject.client_id} conformance Release claims`);
   check(evidence.subject.client_contract === contract, `${evidence.subject.client_id} conformance contract is invalid`);
   check(
-    JSON.stringify(evidence.checks) === JSON.stringify(expectedChecks.get(evidence.subject.client_id)),
+    JSON.stringify(evidence.checks) === JSON.stringify([
+      ...expectedChecks.get(evidence.subject.client_id),
+      ...(name === "agent-heist-web-v2.json" ? [
+        "deployment-owned-stream-bootstrap-and-recovery",
+        "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
+      ] : []),
+    ]),
     `${evidence.subject.client_id} conformance checks do not match the exercised canonical lane`,
   );
   check(evidence.reproduce === "pnpm activity-clients:verify", `${evidence.subject.client_id} conformance is not reproducible through the canonical lane`);
@@ -282,7 +288,7 @@ async function verifySourceBoundaries() {
     "Agent Heist WebMCP surface is missing its bounded reviewed tools",
   );
   for (const [prefix, root] of [
-    ["/agent-heist/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v2/", "clients/agent-heist-web/dist"],
     ["/negotiate-v2/", "clients/negotiate-web/dist"],
     ["/negotiate/", "config/activity-clients/artifacts/negotiate-web-v1"],
     ["/", "web/console/dist"],

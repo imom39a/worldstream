@@ -1,5 +1,20 @@
 # Getting started
 
+## Choose your path
+
+| What you want to do | Start here |
+| --- | --- |
+| Try the hosted activity site | [Hosted preview support and limits](hosted-preview-support.md) |
+| Develop the full activity site locally, with test sign-in and a fake model | [Hosted local development](hosted-local-development.md) |
+| Run the WorldStream kernel and independent Activity Clients locally | Continue with this guide |
+
+The hosted activity site and the kernel are different entry points. A person
+who joins a hosted match does not run the commands below or configure an LLM
+key. The platform operator supplies its House Agents. These commands are for
+a developer who wants to operate a local kernel installation.
+
+## Local kernel and Activity Clients
+
 This guide starts one local WorldStream installation from the command line.
 It is for a person who has not used WorldStream before.
 
@@ -446,7 +461,7 @@ authorized participant view, and leaves the Room in the Lobby. It does not
 complete the Heist. Do not reuse this Room for the full SDK run in Section 7.
 
 Before you continue, confirm that Terminal 2 still shows the Activity Client
-Host from Section 4. Do not open `/agent-heist/` directly. The CLI gives the
+Host from Section 4. Do not open `/agent-heist-v2/` directly. The CLI gives the
 browser a one-use authorized handoff later in this section.
 
 ### Create the browser Room

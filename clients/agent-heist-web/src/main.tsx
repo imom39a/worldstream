@@ -8,6 +8,7 @@ import {
 } from "@worldstream/client";
 
 import { AgentHeistClient } from "./AgentHeistClient";
+import { readPlatformSession, type PlatformSessionConfiguration } from "./platformSession";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -15,7 +16,7 @@ if (root === null) throw new Error("missing #root mount point");
 
 const startup = selectActivityClientStartup(window);
 
-void platformCsrf().then((csrf) => {
+void platformSession().then(({ csrf, browserStreamUrl }) => {
   const origin = window.location.origin;
   const client = new ActivityClientHandoffClient(origin, undefined, {
     browserOrigin: origin,
@@ -23,9 +24,7 @@ void platformCsrf().then((csrf) => {
   });
   const controller = new HostedLiveSessionController({
     authority: client,
-    streamUrl:
-      import.meta.env.VITE_WORLDSTREAM_STREAM_URL ??
-      `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/v1/hosted/browser-stream`,
+    streamUrl: browserStreamUrl,
   });
   createRoot(root).render(
     <StrictMode>
@@ -36,32 +35,18 @@ void platformCsrf().then((csrf) => {
   createRoot(root).render(
     <main className="heist-boundary-shell">
       <span className="eyebrow">Agent Heist Activity Client</span>
-      <h1>Sign-in required</h1>
-      <p>Return to the activity catalog, sign in, and enter your Run again.</p>
+      <h1>Unable to enter this Run</h1>
+      <p>Return to the activity catalog, sign in if needed, and enter your Run again.</p>
     </main>,
   );
 });
 
-async function platformCsrf(): Promise<string> {
+async function platformSession(): Promise<PlatformSessionConfiguration> {
   const response = await fetch("/api/auth/session", {
     credentials: "include",
     cache: "no-store",
     headers: { Accept: "application/json" },
   });
-  const value: unknown = await response.json();
-  if (
-    !response.ok ||
-    typeof value !== "object" ||
-    value === null ||
-    !("authenticated" in value) ||
-    value.authenticated !== true ||
-    !("csrf" in value) ||
-    typeof value.csrf !== "string" ||
-    value.csrf.length < 43 ||
-    value.csrf.length > 128 ||
-    !/^[A-Za-z0-9_-]+$/u.test(value.csrf)
-  ) {
-    throw new Error("platform_session_required");
-  }
-  return value.csrf;
+  if (!response.ok) throw new Error("platform_session_configuration_unavailable");
+  return readPlatformSession(await response.json());
 }

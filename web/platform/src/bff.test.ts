@@ -420,6 +420,41 @@ test("OAuth start retains protected PKCE state and emits the frozen cookie", asy
   assert.match(authorize.searchParams.get("redirect_to") ?? "", /[?&]state=/u);
 });
 
+test("authenticated session supplies only the configured fixed direct browser stream", async () => {
+  for (const [gateway, expected] of [
+    ["https://worldstream-preview.fly.dev", "wss://worldstream-preview.fly.dev/v1/hosted/browser-stream"],
+    ["http://127.0.0.1:8080", "ws://127.0.0.1:8080/v1/hosted/browser-stream"],
+  ]) {
+    const { bff } = harness(undefined, undefined, gateway);
+    const { sessionCookie } = await signIn(bff);
+    const response = await bff.fetch(new Request(`${ORIGIN}/api/auth/session?browser_stream_url=wss://attacker.example/`, {
+      headers: { cookie: `__Host-worldstream-session=${sessionCookie}` },
+    }));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.browser_stream_url, expected);
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/u);
+    const spoofed = await bff.fetch(new Request(`${ORIGIN}/api/auth/session`, {
+      headers: { cookie: `__Host-worldstream-session=${sessionCookie}`, "x-forwarded-host": "attacker.example" },
+    }));
+    assert.equal(spoofed.status, 403);
+    const anonymous = await bff.fetch(new Request(`${ORIGIN}/api/auth/session`));
+    assert.equal(anonymous.status, 401);
+    assert.equal((await anonymous.json()).browser_stream_url, undefined);
+  }
+});
+
+test("session does not invent a same-origin stream when deployment routing is absent", async () => {
+  const { bff } = harness();
+  const { sessionCookie } = await signIn(bff);
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/auth/session`, {
+    headers: { cookie: `__Host-worldstream-session=${sessionCookie}` },
+  }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).browser_stream_url, undefined);
+  assert.throws(() => harness(undefined, undefined, "https://attacker.example/path"));
+});
+
 test("anonymous public Run and Recent Results routes expose only no-store DTOs", async () => {
   const calls: string[] = [];
   const publicRuns: PublicRunData = {
@@ -1072,6 +1107,28 @@ test("OAuth starts and mutations share durable limits across BFF instances", asy
   assert.equal(accepted.status, 200);
   assert.equal(limited.status, 429);
   assert.equal(auth.userCalls, 3);
+});
+
+test("retained Runs without their original client cannot silently enter a newer release", async () => {
+  const hosted = new FakeHostedBrowserSessions();
+  const { bff, data } = harness(hosted);
+  data.membership = {
+    ...membership(),
+    listingRevisionDigest: "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956",
+  };
+  const signedIn = await signIn(bff);
+  const csrfValue = await csrf(bff, signedIn.sessionCookie);
+  const response = await bff.fetch(mutation(
+    "/api/runs/enter", signedIn.sessionCookie, csrfValue,
+    JSON.stringify({ run_id: data.membership.runId, entry_selector: "e".repeat(32) }),
+  ));
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: { code: "run_client_unavailable" } });
+  assert.equal(hosted.issued.length, 0);
+  for (const path of ["/agent-heist", "/agent-heist/", "/agent-heist/assets/old.js"]) {
+    const retired = await bff.fetch(new Request(`${ORIGIN}${path}`));
+    assert.equal(retired.status, 404);
+  }
 });
 
 test("hosted Run entry resolves only the signed-in account and returns one client URL", async () => {

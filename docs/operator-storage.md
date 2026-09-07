@@ -6,13 +6,25 @@ SQLite-to-PostgreSQL transfer. Stop `worldstreamd` before using these commands.
 All artifact directories and input files must be owner-only; existing output
 paths are refused.
 
-For the Hosted Activity Platform preview, the complete WorldStream backup
-described here is only one component of a Hosted Recovery Checkpoint. The
-Platform Operator must close platform mutations, drain House calls, stop the
-Runtime at this offline boundary, and pair the verified WorldStream artifacts
-with the same checkpoint's platform-store export under
-[ADR 0024](adr/0024-operate-a-single-authority-hobby-preview.md). An independent
+The Hosted Activity Platform preview uses a separate, installation-local
+offline volume-clone drill under
+[ADR 0024](adr/0024-operate-a-single-authority-hobby-preview.md). It preserves
+the full stopped Runtime and Controller directories and verifies an isolated
+copy with the production `pack restart-readiness` command, then pairs it with
+the same closed interval's platform-store export. It does not claim to produce
+the portable backup/envelope artifacts documented below. An independent
 provider snapshot or platform-store dump cannot claim hosted continuity.
+
+The hosted command currently qualifies **only zero-history prelaunch** state.
+It verifies the Controller's Host authority against the Runtime, checks empty
+activity history in all three stores, and requires closed admission. The
+append-only `verification-prelaunch-v1.json` receipt is required; the earlier
+v2 `verification.json` and its verified event alone are insufficient. After
+the first retained Room, launch, assignment, or Run, the command refuses to
+qualify recovery until populated cross-store correspondence and restored
+Assignment provider fencing are implemented. Preserve such archives, but do
+not present them as tested populated recovery. This limitation does not alter
+the portable backup/envelope contract below.
 
 Native SQLite evidence is admitted only as one standalone DELETE-journal main
 database (`read_version=1`, `write_version=1`) with no `-journal`, `-wal`, or
