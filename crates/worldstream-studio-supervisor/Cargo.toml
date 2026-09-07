@@ -14,7 +14,7 @@ blake3.workspace = true
 clap.workspace = true
 getrandom.workspace = true
 ring.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

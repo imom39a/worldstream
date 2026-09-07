@@ -19,15 +19,17 @@ label describes a reviewed activity, not current authority availability.
 
 | Item | Observed value |
 | --- | --- |
-| Activity source | `18bc58e8a8008fc3f2b20a86250468785cb99c05` |
-| Vercel deployment | `dpl_2ovkDn3ftW1E2mvv3hVgEQ3nvXC6` — production, Ready |
-| Applied Supabase migration head | `20260907164956` — 13 migrations |
+| Activity source | `c4333c4d7c3c5b477dc7deffb6331af47d52feab` |
+| Vercel deployment | `dpl_FJoMVLP7c684MA6bFzVj1UKTYHgR` — production, Ready |
+| Manual deployment | `dpl_64GkL4EGaS54N3hn9eqqVyx8MGS6` — same source, Ready |
+| Applied Supabase migration head | `20260907203907` — 14 migrations |
 | Configured realtime authority | `https://worldstream-preview.fly.dev` |
-| Listing | `blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80` |
-| Activity Client Release | `sha256:493260d162be2bdfda28e71b6e4f94d5ef5c11e7f03adfbee3ab9295bdf4594b` |
+| Listing | `blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1` |
+| Activity Client Release | `sha256:8075408d0420d3eec514d01c428a2b8b17559c388e57a7067c05cc9f95a3b5d9` |
 
-The source is committed and pushed to `main`. Concurrent, uncommitted UI
-work is not part of this verified deployment.
+The source is committed and pushed to `main`. It includes the latest
+game-design release, `69b01c6`. The stopped Fly Machine still has source
+`2b1d604`; the web deployment is not a matching backend release yet.
 
 Public checks against the production domain passed:
 
@@ -35,14 +37,21 @@ Public checks against the production domain passed:
 - `/api/catalog` and `/api/results/agent-heist/recent` return `200`.
 - Anonymous `/api/auth/session` returns the expected `401 session_required`.
 - `/api/deployment` returns the exact source, schema, and release identities.
-- `/agent-heist-v2/hosted/` returns `200`.
+- The new `/agent-heist-v3/hosted/` and retained `/agent-heist-v2/hosted/`
+  paths return `200`; every file matches its reviewed artifact.
 - The retired `/agent-heist/` path and `/api/ws` return `404`.
 - The Content Security Policy permits the configured direct Fly WebSocket.
 
-Chrome displays the catalog and its room-setup form. The GitHub sign-in
-flow reaches the first-time `WorldStream Preview` consent page. Successful
-OAuth callback, account creation, and authenticated session use are not yet
-verified; the account owner must complete consent.
+Chrome displays the latest catalog and its room-setup form. The account
+owner approved GitHub access. Successful sign-in, account creation, and the
+authenticated browser session are verified. No Launch Request or Run has
+been created.
+
+The owner also tried to create a people-only waiting room. The live operating
+state still has `launches_open=false` and `maintenance_mode=true`. The database
+therefore rejects the request before insertion. The current UI incorrectly
+describes `formation_unavailable` as a problem with the participant choices.
+This is a misleading error message, not a reason to bypass the launch gate.
 
 ## Changes made for deployment
 
@@ -77,10 +86,12 @@ installation. It does not certify recovery of populated Room history.
 - Fly still bills storage while stopped. It has no hard spending cap. Do
   not describe this setup as zero-cost or as protected by a total bill cap.
 - OpenRouter Auto Top-Up is off. No credits were purchased by the agent.
-- The earlier acceptance key was exposed and must be revoked. Do not use
-  that key or an unrelated unlimited key for testing.
-- The replacement acceptance key must have a USD 2 lifetime limit, no limit
-  reset, and a short expiry. Keep it out of chat, Git, screenshots, and logs.
+- The owner reports replacing the exposed acceptance key. Read-only provider
+  metadata confirms the replacement is different, with a USD 2 lifetime limit,
+  no limit reset, USD 0 usage, and a December 6 expiry. Revocation of the old key
+  is owner-reported, not independently verified. Do not use the old key or an
+  unrelated unlimited key. Keep the replacement out of chat, Git, screenshots,
+  browser bundles, and logs; the local file is ignored and owner-only.
 - Retained House limits also apply: USD 2/day, USD 10/month, and at most ten
   model calls per Assignment. These do not cap Fly, Vercel, or Supabase costs.
 - The source repository is private. GitHub Actions allowance and overage
@@ -91,7 +102,7 @@ installation. It does not certify recovery of populated Room history.
   `Stop usage` enabled. Fly's billing page still uses automatic invoicing;
   its displayed USD 0 upcoming invoice is not a future cost guarantee.
 
-## Test evidence and limits
+## Historical test evidence and subsequent checks
 
 The focused Vercel regression checks passed: 82 Platform tests, one existing
 live-test skip, and 19 hosted development tests. The deployed identity verifier
@@ -204,15 +215,64 @@ retained. Its rollout requires the matching additive catalog migration and
 new Fly image. Earlier image, schema, and UI checks above do not certify
 this later release. Gameplay remains closed pending deployed acceptance.
 
+The diagnostic successor `c4333c4` includes that UX release. The activity
+site and developer manual are deployed from this successor. Published
+manual HTML, JavaScript, and CSS match the tested build. All eight deployed
+Heist v3 files match their reviewed artifact; all six retained v2 files
+still match the older artifact. This verifies the published UI bytes, not
+native gameplay.
+
+CI run `34161999538` tested this exact successor. Both foundation jobs
+passed. The canonical protocol story failed after the managed restart:
+both participants' database identity and membership requests returned `200`,
+then both original Gateway handoff requests returned `503`. This excludes
+the Gateway's own `429` response, but not a native Controller `429` mapped
+to `503`. Transport failure, another native rejection, or an invalid native
+response still need to be distinguished. No acceptance artifact was produced.
+
+A smaller native control on the exact `c4333c4` image passed: both original
+participant bindings received valid `201` handoffs before and after the
+managed restart. Its first fixture attempt used an unsupported overlay
+filesystem; the corrected fixture uses an owned Linux volume without
+relaxing filesystem checks. This control has no Gateway, active House
+participants, or Platform launch ledger. It is not a reproduction or a
+resolution of the full-stack failure.
+
+The next temporary probe covers the original Gateway-to-Controller handoff and
+Controller-to-Runtime Membership read. Active native diagnostics are absent
+when debug assertions are disabled. Explicit CI gates enable only bounded,
+closed status categories. A private CI file bridges the Controller's discarded
+stdio; prerequisite fixtures cannot consume the story's trace budget. The
+focused Gateway tests (25), Controller integration tests (19), and Node controls
+(12) pass. Library lint, formatting, debug-disabled builds, and independent
+review pass. This instrumentation does not fix the failure or add retries.
+
+The additive catalog migration `20260907203907` was applied to the intended
+WorldStream Supabase project. The three earlier Listing document hashes
+remain unchanged. There are 14 applied migrations. Launches and House fill
+remain closed, and maintenance mode remains enabled.
+
+The account owner subsequently approved GitHub access. The browser now
+shows `Signed In`, the latest room setup form renders, and both Auth and
+Platform contain one account. There are still no Launch Requests or Runs.
+The earlier consent URL expired; it is not evidence of a failed fresh
+sign-in. The exposed OpenRouter acceptance key still showed zero usage
+when inspected. The owner subsequently supplied the limited replacement
+described above. No inference request was made while checking its metadata.
+
 ## Remaining work, in order
 
-1. Complete the GitHub consent screen and verify the real authenticated
-   browser session.
-2. Supply the replacement limited OpenRouter key through an owner-only
-   local file. Verify its limits and required provider privacy settings.
+1. GitHub consent and the real authenticated browser session are verified.
+   Keep the account and its identity records; do not reset the database.
+2. Finish the provider privacy and eligibility checks for the supplied limited
+   key. The authenticated ZDR endpoint preview lists the configured Granite
+   endpoint, but not the configured Qwen/Alibaba endpoint. Do not weaken ZDR
+   to make a model available; resolve this before approving House fill.
 3. Finish exact-source CI and local verification. A fake-provider result is
    useful integration evidence, not a real-provider pass.
-4. Build and deploy the matching Fly image with `--ha=false`. Keep launches
+4. Deploy a verified matching Fly image with `--ha=false`. A local `c4333c4`
+   image passes startup under 512 MB; it does not pass full acceptance yet.
+   Any further source correction needs its own exact-source image. Keep launches
    closed during setup. The stopped Machine still has the older `2b1d604`
    image; the public site passing does not establish source correspondence.
 5. Preserve the existing paired initial-installation backup before any

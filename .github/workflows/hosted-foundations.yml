@@ -142,11 +142,19 @@ jobs:
       - name: Prove the local browser-to-result story without paid provider calls
         env:
           WORLDSTREAM_REENTRY_DIAGNOSTICS: visible-local-only
+          WORLDSTREAM_REENTRY_NATIVE_TRACE_FILE: ${{ runner.temp }}/worldstream-reentry-native.jsonl
         run: |
           # Temporary original-request status evidence; no retries or body logging.
           export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=file://$GITHUB_WORKSPACE/scripts/hosted-reentry-diagnostics.mjs"
-          node --test scripts/hosted-reentry-diagnostics.test.mjs
+          node --test scripts/hosted-reentry-diagnostics.test.mjs scripts/collect-native-reentry-diagnostics.test.mjs
+          node scripts/collect-native-reentry-diagnostics.mjs prepare
           pnpm hosted:acceptance:local
+      - name: Collect only closed-shape Controller re-entry status evidence
+        if: always()
+        env:
+          WORLDSTREAM_REENTRY_DIAGNOSTICS: visible-local-only
+          WORLDSTREAM_REENTRY_NATIVE_TRACE_FILE: ${{ runner.temp }}/worldstream-reentry-native.jsonl
+        run: node scripts/collect-native-reentry-diagnostics.mjs collect
       - name: Retain only redacted acceptance evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

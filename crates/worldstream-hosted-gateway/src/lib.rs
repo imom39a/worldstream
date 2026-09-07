@@ -536,14 +536,30 @@ impl HostedGatewayBackend for FixedHostAdapterBackend {
         &self,
         request: &HostedBrowserHandoffRequestV1,
     ) -> Result<HostedBrowserHandoffResponseV1, HostedGatewayError> {
-        let (status, body) = self.call("/api/v1/hosted-browser-handoffs:issue", request)?;
+        let upstream = self.call("/api/v1/hosted-browser-handoffs:issue", request);
+        #[cfg(debug_assertions)]
+        if upstream.is_err() {
+            trace_native_handoff(NativeHandoffStage::NoUsableHttpResponse, None, &[]);
+        }
+        let (status, body) = upstream?;
         if status != 201 {
+            #[cfg(debug_assertions)]
+            trace_native_handoff(NativeHandoffStage::Non201, Some(status), &body);
             return Err(classify_upstream_status(status));
         }
-        let response = serde_json::from_slice::<HostedBrowserHandoffResponseV1>(&body)
-            .map_err(|_| HostedGatewayError::Unavailable)?;
-        validate_hosted_browser_handoff_response(&response)
-            .map_err(|_| HostedGatewayError::Unavailable)?;
+        let response =
+            serde_json::from_slice::<HostedBrowserHandoffResponseV1>(&body).map_err(|_| {
+                #[cfg(debug_assertions)]
+                trace_native_handoff(NativeHandoffStage::Malformed201, Some(201), &[]);
+                HostedGatewayError::Unavailable
+            })?;
+        validate_hosted_browser_handoff_response(&response).map_err(|_| {
+            #[cfg(debug_assertions)]
+            trace_native_handoff(NativeHandoffStage::Malformed201, Some(201), &[]);
+            HostedGatewayError::Unavailable
+        })?;
+        #[cfg(debug_assertions)]
+        trace_native_handoff(NativeHandoffStage::Success201, Some(201), &[]);
         Ok(response)
     }
 
@@ -1569,6 +1585,60 @@ fn read_upstream_line(
         return Err(HostedGatewayError::Unavailable);
     }
     Ok(line)
+}
+
+// Temporary original-request evidence. This entire probe and all its callers
+// are absent from release builds; no native API or retry behavior is added.
+#[cfg(debug_assertions)]
+enum NativeHandoffStage {
+    NoUsableHttpResponse,
+    Non201,
+    Malformed201,
+    Success201,
+}
+
+#[cfg(debug_assertions)]
+fn trace_native_handoff(stage: NativeHandoffStage, status: Option<u16>, body: &[u8]) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    if std::env::var("CI").as_deref() != Ok("true")
+        || std::env::var("WORLDSTREAM_REENTRY_DIAGNOSTICS").as_deref() != Ok("visible-local-only")
+    {
+        return;
+    }
+    static EVENTS: AtomicUsize = AtomicUsize::new(0);
+    if EVENTS.fetch_add(1, Ordering::Relaxed) >= 64 {
+        return;
+    }
+    let stage = match stage {
+        NativeHandoffStage::NoUsableHttpResponse => "no_usable_http_response",
+        NativeHandoffStage::Non201 => "non_201",
+        NativeHandoffStage::Malformed201 => "malformed_201",
+        NativeHandoffStage::Success201 => "success_201",
+    };
+    // Only exact known native codes are retained. Never reflect an upstream
+    // body, message, unknown code, URL, identity, credential, or raw error.
+    let parsed = serde_json::from_slice::<serde_json::Value>(body).ok();
+    let code = if body.is_empty() {
+        "none"
+    } else {
+        match parsed
+            .as_ref()
+            .and_then(|value| value.get("error")?.get("code")?.as_str())
+        {
+            Some("hosted_browser_invalid") => "hosted_browser_invalid",
+            Some("hosted_browser_rejected") => "hosted_browser_rejected",
+            Some("hosted_browser_missing") => "hosted_browser_missing",
+            Some("hosted_browser_capacity") => "hosted_browser_capacity",
+            Some("hosted_browser_unavailable") => "hosted_browser_unavailable",
+            Some("hosted_authority_required") => "hosted_authority_required",
+            _ => "unclassified",
+        }
+    };
+    let diagnostic = json!({"stage":stage,"status":status,"code":code});
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "[DEBUG-reentry-native] {diagnostic}"
+    );
 }
 
 fn classify_upstream_status(status: u16) -> HostedGatewayError {

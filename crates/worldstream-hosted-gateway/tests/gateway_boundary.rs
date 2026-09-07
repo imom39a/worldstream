@@ -47,6 +47,103 @@ use worldstream_hosted_gateway::{
 const LISTING: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TOKEN: &str = "service-authority-that-never-leaves-fly";
 
+#[test]
+#[cfg(debug_assertions)]
+fn native_handoff_trace_preserves_outcomes_and_never_echoes_payloads() {
+    for (case, status, stage, code) in [
+        ("no_response", None, "no_usable_http_response", "none"),
+        ("429", Some(429), "non_201", "unclassified"),
+        ("capacity", Some(503), "non_201", "hosted_browser_capacity"),
+        ("unknown", Some(503), "non_201", "unclassified"),
+        ("malformed", Some(201), "malformed_201", "none"),
+        ("success", Some(201), "success_201", "none"),
+    ] {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "native_handoff_trace_probe", "--nocapture"])
+            .env("WORLDSTREAM_NATIVE_TRACE_CASE", case)
+            .env("WORLDSTREAM_REENTRY_DIAGNOSTICS", "visible-local-only")
+            .env("CI", "true")
+            .output()
+            .expect("bounded native probe");
+        assert!(output.status.success(), "probe outcome changed for {case}");
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 diagnostics");
+        let lines = stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix("[DEBUG-reentry-native] "))
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "one observation per original request");
+        let diagnostic: Value = serde_json::from_str(lines[0]).expect("diagnostic JSON");
+        assert_eq!(
+            diagnostic,
+            json!({"stage":stage,"status":status,"code":code})
+        );
+        assert!(!stderr.contains(TOKEN));
+        assert!(!stderr.contains("private-sentinel"));
+        assert!(!stderr.contains("wsh1:"));
+    }
+    for (ci, diagnostic) in [
+        (None, Some("visible-local-only")),
+        (Some("true"), None),
+        (Some("true"), Some("wrong")),
+    ] {
+        let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .args(["--exact", "native_handoff_trace_probe", "--nocapture"])
+            .env("WORLDSTREAM_NATIVE_TRACE_CASE", "capacity")
+            .env_remove("CI")
+            .env_remove("WORLDSTREAM_REENTRY_DIAGNOSTICS");
+        if let Some(ci) = ci {
+            command.env("CI", ci);
+        }
+        if let Some(diagnostic) = diagnostic {
+            command.env("WORLDSTREAM_REENTRY_DIAGNOSTICS", diagnostic);
+        }
+        let output = command.output().expect("disabled probe");
+        assert!(output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("[DEBUG-reentry-native]"));
+    }
+}
+
+#[test]
+fn native_handoff_trace_probe() {
+    let Ok(case) = std::env::var("WORLDSTREAM_NATIVE_TRACE_CASE") else {
+        return;
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").expect("owned loopback fixture");
+    let address = listener.local_addr().expect("fixture address");
+    let expected_success = case == "success";
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("one upstream request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded fixture read");
+        let (path, authorization, _, mut stream) = read_request(stream);
+        assert!(path.starts_with("POST /api/v1/hosted-browser-handoffs:issue "));
+        assert_eq!(authorization, format!("Bearer {TOKEN}"));
+        if case == "no_response" {
+            return;
+        }
+        let (status, body) = match case.as_str() {
+            "429" => (429, json!({"error":{"code":"private-sentinel"}}).to_string()),
+            "capacity" => (503, json!({"error":{"code":"hosted_browser_capacity","message":"private-sentinel"}}).to_string()),
+            "unknown" => (503, json!({"error":{"code":"private-sentinel"}}).to_string()),
+            "malformed" => (201, "private-sentinel".to_owned()),
+            "success" => (201, json!({"schema":"worldstream/hosted-browser-handoff-response/v1","client_url":format!("https://arena.example/client/#handoff=wsh1:{}", "a".repeat(64))}).to_string()),
+            _ => unreachable!("closed fixture case"),
+        };
+        write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).expect("fixture response");
+    });
+    let backend = FixedHostAdapterBackend::new(address, TOKEN.to_owned(), Duration::from_secs(2))
+        .expect("literal adapter");
+    let result = backend.issue_browser_handoff(&browser_handoff_request(LISTING));
+    server.join().expect("one original request");
+    if expected_success {
+        assert!(result.is_ok());
+    } else {
+        assert_eq!(result, Err(HostedGatewayError::Unavailable));
+    }
+}
+
 #[derive(Clone, Default)]
 struct Backend {
     launches: Arc<Mutex<Vec<HostedLaunchRequestV1>>>,

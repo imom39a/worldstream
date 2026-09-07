@@ -73,7 +73,7 @@ target/debug/worldstream-managed-agent-host --help
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm ui:dev` | First-party Client Host (`/agent-heist-v3/`, `/negotiate/`, `/negotiate-v3/`, and `/inspector/`) |
+| `pnpm ui:dev` | First-party Client Host (`/agent-heist-v3/`, `/negotiate/`, `/negotiate-v3/`, and `/inspector-v2/`; retained clients keep their original paths) |
 | `pnpm docs:dev` | this developer manual locally |
 | `pnpm docs:build` | deterministic static manual build |
 | `scripts/gates.sh fast` | bounded fast developer gate |

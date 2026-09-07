@@ -434,27 +434,56 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             authority.bearer().as_str(),
         ));
         let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+            .inspect_err(|error| {
+                #[cfg(debug_assertions)]
+                reentry_diagnostic::io(reentry_diagnostic::Stage::Connect, error.kind());
+                #[cfg(not(debug_assertions))]
+                let _ = error;
+            })
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         stream
             .set_read_timeout(Some(self.timeout))
             .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
             .and_then(|()| stream.write_all(request.as_bytes()))
+            .inspect_err(|error| {
+                #[cfg(debug_assertions)]
+                reentry_diagnostic::io(reentry_diagnostic::Stage::Write, error.kind());
+                #[cfg(not(debug_assertions))]
+                let _ = error;
+            })
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         let mut response = Vec::new();
         stream
             .take(MAX_TICKET_RESPONSE_BYTES + 1)
             .read_to_end(&mut response)
+            .inspect_err(|error| {
+                #[cfg(debug_assertions)]
+                reentry_diagnostic::io(reentry_diagnostic::Stage::Read, error.kind());
+                #[cfg(not(debug_assertions))]
+                let _ = error;
+            })
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
         if u64::try_from(response.len()).unwrap_or(u64::MAX) > MAX_TICKET_RESPONSE_BYTES {
+            #[cfg(debug_assertions)]
+            reentry_diagnostic::invalid(reentry_diagnostic::Stage::Body);
             return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
         }
-        let (status, body) = parse_http_response(&response)?;
+        let (status, body) = parse_http_response(&response).inspect_err(|_| {
+            #[cfg(debug_assertions)]
+            reentry_diagnostic::invalid(reentry_diagnostic::Stage::Parse);
+        })?;
+        #[cfg(debug_assertions)]
+        reentry_diagnostic::http(status);
         match status {
             200 => {}
             400 | 401 | 403 | 404 | 422 => return Err(ParticipantConsoleGatewayErrorV1::Rejected),
             _ => return Err(ParticipantConsoleGatewayErrorV1::Unavailable),
         }
         let current: worldstream_protocol::MembershipStatusResponse = serde_json::from_slice(body)
+            .inspect_err(|_| {
+                #[cfg(debug_assertions)]
+                reentry_diagnostic::invalid(reentry_diagnostic::Stage::Body);
+            })
             .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
         if current.version != "membership_status.v1"
             || current.room_id != authority.room_id()
@@ -467,6 +496,8 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
             )
             || (current.access_mode == AccessMode::Participant) != current.role.is_some()
         {
+            #[cfg(debug_assertions)]
+            reentry_diagnostic::invalid(reentry_diagnostic::Stage::Validation);
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
         }
         Ok(CurrentMembershipSnapshotV1 {
@@ -2580,6 +2611,137 @@ fn target_fingerprint(key: &[u8; 32], room_id: &str, member_id: &str) -> [u8; 32
     input.push(0);
     input.extend_from_slice(member_id.as_bytes());
     *blake3::keyed_hash(key, &input).as_bytes()
+}
+
+// Temporary, opt-in CI evidence for the original Membership read. This module is
+// absent from release builds and cannot inspect requests, response bodies or errors.
+#[cfg(debug_assertions)]
+mod reentry_diagnostic {
+    use std::{io::ErrorKind, sync::Mutex};
+
+    #[derive(Clone, Copy)]
+    pub(super) enum Stage {
+        Connect,
+        Write,
+        Read,
+        Parse,
+        Http,
+        Body,
+        Validation,
+    }
+
+    impl Stage {
+        const fn name(self) -> &'static str {
+            match self {
+                Self::Connect => "membership_status_connect",
+                Self::Write => "membership_status_write",
+                Self::Read => "membership_status_read",
+                Self::Parse => "membership_status_parse",
+                Self::Http => "membership_status_http",
+                Self::Body => "membership_status_body",
+                Self::Validation => "membership_status_validation",
+            }
+        }
+    }
+
+    pub(super) fn io(stage: Stage, kind: ErrorKind) {
+        record(
+            stage,
+            None,
+            if matches!(kind, ErrorKind::TimedOut | ErrorKind::WouldBlock) {
+                "timeout"
+            } else {
+                "io_failure"
+            },
+        );
+    }
+
+    pub(super) fn invalid(stage: Stage) {
+        record(stage, None, "invalid_response");
+    }
+
+    pub(super) fn http(status: u16) {
+        let category = match status {
+            200 => "http_success",
+            429 => "rate_limited",
+            503 => "service_unavailable",
+            400..=499 => "request_rejected",
+            100..=599 => "unexpected_status",
+            _ => return invalid(Stage::Parse),
+        };
+        record(Stage::Http, Some(status), category);
+    }
+
+    // Separate budgets ensure successful polling cannot consume failure evidence.
+    // The mutex also prevents concurrent appends from interleaving JSONL records.
+    static COUNTS: Mutex<[u8; 2]> = Mutex::new([0, 0]);
+
+    fn record(stage: Stage, status: Option<u16>, category: &'static str) {
+        if std::env::var("CI").as_deref() != Ok("true")
+            || std::env::var("WORLDSTREAM_REENTRY_DIAGNOSTICS").as_deref()
+                != Ok("visible-local-only")
+        {
+            return;
+        }
+        let Ok(mut counts) = COUNTS.lock() else {
+            return;
+        };
+        let count = &mut counts[usize::from(category != "http_success")];
+        if *count >= 64 {
+            return;
+        }
+        *count += 1;
+        let Ok(path) = std::env::var("WORLDSTREAM_REENTRY_NATIVE_TRACE_FILE") else {
+            return;
+        };
+        let record = serde_json::json!({"stage":stage.name(),"status":status,"category":category});
+        append_existing(&std::path::PathBuf::from(path), &format!("{record}\n"));
+    }
+
+    #[cfg(unix)]
+    fn append_existing(path: &std::path::Path, record: &str) {
+        use rustix::fs::{Mode, OFlags};
+        use std::{fs, io::Write as _, os::unix::fs::MetadataExt as _};
+
+        if worldstream_runtime::validate_owner_only_file(path).is_err() {
+            return;
+        }
+        let Ok(before) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if !before.is_file() || before.mode() & 0o777 != 0o600 || before.nlink() != 1 {
+            return;
+        }
+        // No create or truncate: CI must prepare the owner-only regular file.
+        let Ok(descriptor) = rustix::fs::open(
+            path,
+            OFlags::WRONLY | OFlags::APPEND | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            return;
+        };
+        let mut file = fs::File::from(descriptor);
+        let Ok(opened) = file.metadata() else {
+            return;
+        };
+        if !opened.is_file()
+            || opened.dev() != before.dev()
+            || opened.ino() != before.ino()
+            || opened.uid() != before.uid()
+            || opened.uid() != rustix::process::geteuid().as_raw()
+            || opened.mode() & 0o777 != 0o600
+            || opened.nlink() != 1
+            || opened.len() + record.len() as u64 > 16 * 1024
+        {
+            return;
+        }
+        let _ = file.write_all(record.as_bytes());
+    }
+
+    // The diagnostic CI runs on Linux. Other hosts stay inert instead of using a
+    // weaker file-permission policy.
+    #[cfg(not(unix))]
+    fn append_existing(_path: &std::path::Path, _record: &str) {}
 }
 
 fn parse_http_response(bytes: &[u8]) -> Result<(u16, &[u8]), ParticipantConsoleGatewayErrorV1> {

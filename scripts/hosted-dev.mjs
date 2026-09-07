@@ -219,7 +219,11 @@ async function main() {
       process.stdout.write("[Acceptance] Running negative/security prerequisites before pinning the Runner.\n");
       await runHostedAcceptancePrerequisites((command, args) => run(command, args, {
         // The production-appliance gate must not inherit local substitute flags.
-        environment: supabaseEnvironment(process.env),
+        environment: {
+          ...supabaseEnvironment(process.env),
+          // Fixture traffic must not consume the actual story's trace budget.
+          WORLDSTREAM_REENTRY_NATIVE_TRACE_FILE: "",
+        },
       }));
       const paths = [];
       for (const [kind, key] of [["anonymous", requiredSupabase(supabase, "ANON_KEY")],

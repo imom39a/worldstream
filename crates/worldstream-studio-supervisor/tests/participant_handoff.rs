@@ -1570,3 +1570,135 @@ fn send_fixture_message(
         ))
         .unwrap_or_else(|error| panic!("send fixture {kind}: {error}"));
 }
+
+#[cfg(all(unix, debug_assertions))]
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "Isolated fixture setup failures must fail the child test"
+)]
+fn native_membership_diagnostic_child() {
+    let Ok(address) = std::env::var("WORLDSTREAM_TEST_MEMBERSHIP_PEER") else {
+        return;
+    };
+    let authority = FakeAuthoritySource::usable()
+        .resolve_provisioned_human_seat(DRAFT_ID, "navigator")
+        .expect("synthetic authority");
+    let gateway = FixedDaemonParticipantConsoleGatewayV1::new(
+        address.parse().expect("owned loopback peer"),
+        Duration::from_millis(75),
+    );
+    let result = gateway.membership_status(&authority);
+    let expected = if std::env::var("WORLDSTREAM_TEST_MEMBERSHIP_CASE").as_deref() == Ok("timeout")
+    {
+        ParticipantConsoleGatewayErrorV1::Disconnected
+    } else {
+        ParticipantConsoleGatewayErrorV1::Unavailable
+    };
+    assert_eq!(result.err(), Some(expected));
+}
+
+#[cfg(all(unix, debug_assertions))]
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "Isolated fixture setup failures must fail the regression"
+)]
+fn native_membership_diagnostic_preserves_rate_limit_and_timeout_results() {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::Instant;
+
+    for (case, expected) in [
+        (
+            "rate_limit",
+            json!({"stage":"membership_status_http","status":429,"category":"rate_limited"}),
+        ),
+        (
+            "timeout",
+            json!({"stage":"membership_status_read","status":null,"category":"timeout"}),
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("private diagnostic directory");
+        let trace = std::fs::canonicalize(directory.path())
+            .expect("real private directory")
+            .join("native.jsonl");
+        std::fs::write(&trace, []).expect("create diagnostic file");
+        std::fs::set_permissions(&trace, std::fs::Permissions::from_mode(0o600))
+            .expect("owner-only diagnostic file");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("owned HTTP peer");
+        let address = listener.local_addr().expect("peer address");
+        listener.set_nonblocking(true).expect("bounded accept");
+        let peer = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut connection = loop {
+                match listener.accept() {
+                    Ok((connection, _)) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "diagnostic child did not connect"
+                        );
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(_) => panic!("fixture accept failed"),
+                }
+            };
+            connection
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bounded read");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(request.len() < 4096);
+                let mut byte = [0_u8];
+                connection
+                    .read_exact(&mut byte)
+                    .expect("complete fixture request");
+                request.push(byte[0]);
+            }
+            assert!(
+                request.starts_with(
+                    format!("GET /v1/rooms/{ROOM_ID}/members/{MEMBER_ID}/status HTTP/1.1\r\n")
+                        .as_bytes()
+                )
+            );
+            assert!(
+                request
+                    .windows(BEARER.len())
+                    .any(|bytes| bytes == BEARER.as_bytes())
+            );
+            if case == "timeout" {
+                thread::sleep(Duration::from_millis(200));
+            } else {
+                let body = b"private-upstream-body-sentinel";
+                write!(connection, "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).expect("HTTP response");
+                connection.write_all(body).expect("response body");
+            }
+            listener.set_nonblocking(true).expect("final accept check");
+            assert!(listener.accept().is_err(), "diagnostics must not retry");
+        });
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "native_membership_diagnostic_child",
+                "--nocapture",
+            ])
+            .env("CI", "true")
+            .env("WORLDSTREAM_REENTRY_DIAGNOSTICS", "visible-local-only")
+            .env("WORLDSTREAM_REENTRY_NATIVE_TRACE_FILE", &trace)
+            .env("WORLDSTREAM_TEST_MEMBERSHIP_PEER", address.to_string())
+            .env("WORLDSTREAM_TEST_MEMBERSHIP_CASE", case)
+            .output()
+            .expect("bounded diagnostic child");
+        peer.join().expect("fixture peer completed");
+        assert!(output.status.success(), "public adapter result changed");
+        let stored = std::fs::read_to_string(&trace).expect("read diagnostic receipt");
+        let records = stored
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("closed JSON record"))
+            .collect::<Vec<_>>();
+        assert_eq!(records, vec![expected]);
+        assert!(!stored.contains(BEARER));
+        assert!(!stored.contains("private-upstream-body-sentinel"));
+    }
+}
