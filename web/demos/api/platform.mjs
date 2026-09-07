@@ -6,7 +6,7 @@ const platform = createProductionPlatformBff();
 /** Vercel owns HTTPS control-plane requests. Fly remains the only WebSocket host. */
 export default {
   fetch(request) {
-    const diagnostic = describeDeploymentRequestBoundary(request);
+    const diagnostic = describeDeploymentRequestBoundary(request, process.env.CANONICAL_ORIGIN);
     if (diagnostic !== null) console.info(JSON.stringify(diagnostic));
     return platform.fetch(request);
   },

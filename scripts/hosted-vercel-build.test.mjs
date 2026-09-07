@@ -22,19 +22,28 @@ test("temporary deployment diagnostics expose only bounded URL components and he
         "x-vercel-id": "iad1::fixture",
         authorization: "Bearer private-auth-value",
         cookie: "private-cookie-value",
+        "x-original-host": "private-original-host-value",
       },
     },
-  ));
+  ), "https://arena.example/");
   assert.equal(diagnostic.url_scheme, "http:");
   assert.equal(diagnostic.url_hostname, "arena.example");
   assert.equal(diagnostic.url_path, "/api/deployment");
+  assert.equal(diagnostic.url_query_present, true);
+  assert.deepEqual(diagnostic.url_query_parameter_names, ["code"]);
   assert.equal(diagnostic.forwarded_proto_matches_url_scheme, false);
   assert.equal(diagnostic.real_ip_matches_forwarded_for, true);
-  for (const value of ["private-query-value", "private-auth-value", "private-cookie-value", "192.0.2.10"]) {
+  assert.deepEqual(diagnostic.unknown_forwarding_header_names, ["x-original-host"]);
+  assert.equal(diagnostic.canonical_origin_matches_request_origin, false);
+  assert.equal(diagnostic.normalized_canonical_origin_matches_request_origin, false);
+  const external = describeDeploymentRequestBoundary(new Request("https://arena.example/api/deployment"), "https://arena.example/");
+  assert.equal(external.canonical_origin_matches_request_origin, false);
+  assert.equal(external.normalized_canonical_origin_matches_request_origin, true);
+  for (const value of ["private-query-value", "private-auth-value", "private-cookie-value", "private-original-host-value", "192.0.2.10"]) {
     assert.ok(!JSON.stringify(diagnostic).includes(value));
   }
   for (const [key, value] of Object.entries(diagnostic)) {
-    if (!["version", "url_scheme", "url_hostname", "url_port", "url_path"].includes(key)) {
+    if (!["version", "url_scheme", "url_hostname", "url_port", "url_path", "url_query_parameter_names", "unknown_forwarding_header_names"].includes(key)) {
       assert.equal(typeof value, "boolean", key);
     }
   }
