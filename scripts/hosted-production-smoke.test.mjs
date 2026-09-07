@@ -67,6 +67,24 @@ test("malformed, mismatched, or sensitive response shapes cannot become diagnost
   assert.equal(await failCommand(JSON.stringify(setupFailure), "untrusted command"), "hosted_smoke_command_failed");
 });
 
+test("the real partial Room operation envelope retains its stage without nested details", async () => {
+  const report = {
+    ...setupFailure,
+    room_operation: {
+      version: "worldstream/room-setup-operation-status/v1",
+      operation: "private-operation-identifier",
+      room_id: "private-room-identifier",
+      complete: false,
+      stage: "member",
+      active_stage: "member_capability",
+      next_action: "private-operation-instructions",
+      assessment: null,
+    },
+  };
+  assert.equal(await failCommand(JSON.stringify(report)),
+    'hosted_smoke_command_failed:{"command":"room create","status":"partial","code":"setup_incomplete","stage":"member_capability"}');
+});
+
 test("known non-setup failure pairs stay bounded and a failed process cannot claim success", async () => {
   const { operation_id, room_id, stage, ...base } = setupFailure;
   const failure = { ...base, command: "room list", status: "unavailable", code: "controller_unavailable" };

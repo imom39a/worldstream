@@ -6,6 +6,62 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### 23:34 UTC recovery update
+
+The Fly Gateway and Runtime now return `200` from their readiness endpoints.
+The Runtime reports source `8705db79cd726504ec0bd4833fd6b949a8b2296b`.
+This is a backend startup result, **not successful live gameplay**. Supabase
+still has launches and House fill closed, maintenance enabled, and zero Launch
+Requests, Runs, and House Agent Assignments. No real provider call was made.
+
+The repeated starts reported by the owner were not normal idle suspension:
+
+- The 23:04 `/bin/sleep 900` boot and 23:05 termination were an intentional
+  backup maintenance session.
+- The first 23:15 start has no confirmed trigger. Subsequent exits were an
+  initialization crash loop under Fly's `on-failure` retry policy.
+- The replacement OpenRouter key reached the Machine environment, but startup
+  tried to import it under the old immutable credential identity. An offline,
+  network-disabled reproduction confirmed rejection of that replacement.
+- Automatic retries were disabled during investigation. The original empty
+  Runtime and Controller installation was archived, not deleted, on the same
+  volume. Its paired prelaunch checkpoint passed an isolated restore drill.
+  A second post-crash capture was retained separately; it is not described as
+  another verified paired checkpoint.
+- The tested image was installed on the same Machine and volume:
+  `sha256:cb190eff719756dc012e85a2910625ee278e848bc37ca8ff36675cf94f6670dd`.
+  Fresh initialization imported the replacement key. At 23:33:51 UTC both
+  readiness endpoints returned `200`. Public admission remained closed in
+  Supabase throughout. Restart policy remains temporarily `no`; automatic
+  start and stop remain disabled. No extra Machine was created.
+
+This fresh-initialization recovery was permitted only because all activity
+stores were verified empty and the original installation was preserved. It
+is not a credential-rotation procedure for a populated installation. Such an
+installation must retain its authority and history and use a reviewed,
+versioned credential/profile change instead of this empty-preview procedure.
+
+Supabase migration `20260907220000` is now applied: 15 migrations. The earlier
+14-migration checkpoint remains historical evidence, not a checkpoint for this
+new deployment. A new coherent prelaunch checkpoint is still required before
+public admission.
+
+CI run `34169332634` failed at the appliance smoke test. Its failure diagnostic
+discarded the actual CLI envelope's `room_operation` field. A regression test
+first reproduced that omission; all seven diagnostic tests now pass. Nested
+operation details remain excluded from logs. This diagnostic fix does not
+prove that Room creation succeeds. A separate network-disabled release-image
+smoke harness also failed during Runtime startup; that harness result must
+not be confused with the directly observed successful Fly startup.
+
+Remaining acceptance work includes the new paired checkpoint, successful
+Room creation and same-Room restart/re-entry, bounded real House Agent play,
+and final coordinated deployment evidence. The older observations below are
+retained with their original scope and are superseded by this update where
+they describe the Machine as stopped or the schema as version 14.
+
+### Earlier checkpoint
+
 The [activity site](https://worldstream-demos.vercel.app) is deployed. Its
 public catalog and platform HTTP endpoints pass the checks below. The live
 game is **not open for use**. The Fly Machine is stopped and new launches

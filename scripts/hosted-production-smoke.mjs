@@ -243,7 +243,7 @@ const FAILURE_STATUS = new Map([
 ]);
 const FAILURE_FIELDS = new Set([
   "schema", "command", "status", "code", "message", "next_action",
-  "operation_id", "room_id", "stage",
+  "operation_id", "room_id", "stage", "room_operation",
 ]);
 
 function safeOperatorFailure(stdout, expectedCommand) {
@@ -260,7 +260,11 @@ function safeOperatorFailure(stdout, expectedCommand) {
     if (value.command !== "room create" || !SETUP_STAGES.has(value.stage) ||
       typeof value.operation_id !== "string" ||
       (value.room_id !== undefined && value.room_id !== null && typeof value.room_id !== "string")) return null;
-  } else if (value.stage !== undefined || value.operation_id !== undefined || value.room_id !== undefined) {
+    // The real CLI attaches operational detail. Admit its object shape but never
+    // include any of it in diagnostics; the whole envelope remains size-bounded.
+    if (value.room_operation !== undefined && (value.room_operation === null ||
+      typeof value.room_operation !== "object" || Array.isArray(value.room_operation))) return null;
+  } else if (value.stage !== undefined || value.operation_id !== undefined || value.room_id !== undefined || value.room_operation !== undefined) {
     return null;
   }
   // Never propagate descriptive text, identifiers, next_action, or extra data.
