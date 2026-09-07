@@ -3,6 +3,9 @@
 This document defines what the first hosted WorldStream preview supports. It
 also defines the evidence required before the preview is called ready.
 
+For observed deployment results and outstanding checks, see the
+[2026-09-07 deployment record](hosted-preview-status-2026-09-07.md).
+
 ## Deployment addresses
 
 The operator has provisioned these MVP endpoints:
