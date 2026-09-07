@@ -6,10 +6,15 @@ import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const workspace = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const activityClientMounts = Object.freeze([
-  Object.freeze({ prefix: "/agent-heist-v2/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
-  Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "clients/negotiate-web/dist") }),
+  Object.freeze({ prefix: "/agent-heist-v3/", root: resolve(workspace, "clients/agent-heist-web/dist") }),
+  Object.freeze({ prefix: "/agent-heist-v2/", root: resolve(workspace, "config/activity-clients/artifacts/agent-heist-web-v2") }),
+  Object.freeze({ prefix: "/negotiate-v3/", root: resolve(workspace, "clients/negotiate-web/dist") }),
+  Object.freeze({ prefix: "/negotiate-v2/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v2") }),
   Object.freeze({ prefix: "/negotiate/", root: resolve(workspace, "config/activity-clients/artifacts/negotiate-web-v1") }),
-  Object.freeze({ prefix: "/", root: resolve(workspace, "web/console/dist") }),
+  Object.freeze({ prefix: "/inspector-v2/", root: resolve(workspace, "web/console/dist") }),
+  Object.freeze({ prefix: "/inspector/", root: resolve(workspace, "config/activity-clients/artifacts/inspector-web-v1") }),
+  // Inspector v1 used root-relative assets. Preserve those exact bytes too.
+  Object.freeze({ prefix: "/", root: resolve(workspace, "config/activity-clients/artifacts/inspector-web-v1") }),
 ]);
 
 const contentTypes = new Map([
@@ -21,6 +26,7 @@ const contentTypes = new Map([
   [".map", "application/json; charset=utf-8"],
   [".svg", "image/svg+xml"],
   [".webp", "image/webp"],
+  [".ttf", "font/ttf"],
 ]);
 
 /**
@@ -72,7 +78,12 @@ async function serve(request, response, controllerOrigin) {
     response.end("This retained Activity Client artifact is not available on this Client Host.\n");
     return;
   }
-  if (["/agent-heist-v2", "/negotiate", "/negotiate-v2"].includes(url.pathname)) {
+  if (url.pathname === "/") {
+    response.writeHead(308, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Location: `/inspector-v2/${url.search}` });
+    response.end();
+    return;
+  }
+  if (activityClientMounts.some(({ prefix }) => prefix !== "/" && prefix.slice(0, -1) === url.pathname)) {
     response.writeHead(308, { ...commonHeaders("text/plain; charset=utf-8", controllerOrigin), Location: `${url.pathname}/${url.search}` });
     response.end();
     return;

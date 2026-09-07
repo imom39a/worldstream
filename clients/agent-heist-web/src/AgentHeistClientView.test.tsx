@@ -71,14 +71,14 @@ describe("standalone Agent Heist live participant surface", () => {
       <AgentHeistClientView state={readyState()} connection="live" onAct={vi.fn()} />,
     );
 
-    expect(markup).toContain("Agent Heist");
+    expect(markup).toContain("Agent <em>Heist</em>");
     expect(markup).toContain("Navigator participant");
     expect(markup).toContain("navigator-only-value");
     expect(markup).toContain("propose_plan");
     expect(markup).toContain("plan endorsement: plan-a");
     expect(markup).toContain("based_on_room_seq");
     expect(markup).toContain("7");
-    expect(markup).not.toMatch(/Select Projection|Operator diagnostics|Public board|Recorded fixture|Fixture mode/);
+    expect(markup).not.toMatch(/Recorded viewpoint|Operator diagnostics|Public board|Recorded fixture|Fixture mode/);
     expect(markup).not.toMatch(/fixture/i);
     expect(markup).not.toContain("<pre");
     expect(markup).not.toMatch(/room_id|member_id|Bearer\s|wsh1:|wsb1:/);
@@ -105,7 +105,7 @@ describe("standalone Agent Heist live participant surface", () => {
     );
 
     expect(markup).toContain("Client incompatible");
-    expect(markup).not.toContain("Submit action");
+    expect(markup).not.toContain('class="live-action-form"');
     expect(markup).not.toContain("Authorized private clue");
   });
 
@@ -152,7 +152,8 @@ describe("standalone Agent Heist live participant surface", () => {
     expect(markup).toContain("Authorized spectator surface");
     expect(markup).toContain("Public spectator view");
     expect(markup).not.toContain("navigator-only-value");
-    expect(markup).not.toContain("Current Actions");
+    expect(markup).not.toContain("Your next move");
+    expect(markup).not.toContain("Your private intel");
   });
 
   it("renders the revision 0.2 Lobby without inventing a participant launch Action", () => {
@@ -172,7 +173,7 @@ describe("standalone Agent Heist live participant surface", () => {
 
     expect(markup).toContain("Lobby");
     expect(markup).toContain("No Action is offered at this synchronized Head.");
-    expect(markup).not.toContain("Submit action");
+    expect(markup).not.toContain('class="live-action-form"');
     expect(markup).not.toContain("Action payload (JSON)");
   });
 });

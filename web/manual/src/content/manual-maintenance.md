@@ -25,7 +25,8 @@ and CSS changes.
 | page title, route, group, or summary | `web/manual/src/pages.ts` |
 | capability catalog and status | `web/manual/src/capabilities.ts` |
 | navigation/search/application behavior | `web/manual/src/App.tsx` |
-| visual design | `web/manual/src/styles.css` |
+| shared visual foundation | `web/design/tokens.css`, `docs/demo-site-style.md` |
+| manual layout and reading surfaces | `web/manual/src/styles.css` |
 | social preview | `web/manual/public/og.png` |
 | Vercel deployment settings | `web/manual/vercel.json` |
 | GitHub Pages workflow | `.github/workflows/deploy-developer-manual.yml` |

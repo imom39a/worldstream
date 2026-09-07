@@ -78,6 +78,7 @@ export function RecordedAgentHeistWorkspace({
   footer,
   identity,
   identityNote,
+  phase,
 }: {
   readonly metrics: readonly AgentHeistWorkspaceMetric[];
   readonly lenses: readonly { id: string; label: string; description: string }[];
@@ -97,12 +98,13 @@ export function RecordedAgentHeistWorkspace({
   readonly footer: readonly string[];
   readonly identity: readonly { label: string; value: string }[];
   readonly identityNote: string;
+  readonly phase?: string;
 }) {
   return (
     <AgentHeistWorkspace
       metrics={metrics}
       left={<>
-        <PanelHeading number="01" title="Select Projection" />
+        <PanelHeading number="01" title="Recorded viewpoint" />
         <div className="lens-switch">
           {lenses.map((lens) => (
             <button
@@ -131,10 +133,11 @@ export function RecordedAgentHeistWorkspace({
         </div>
         <div className="control-note"><span>Current view</span><p>{boundary}</p></div>
       </>}
-      eyebrow="Selected retained-story data"
-      heading="Recorded parity inspector"
+      eyebrow="Recorded mission / playback"
+      heading="Inside the operation"
       status={<span className="play-state" aria-live="polite"><i className={playing ? "is-running" : ""} />{playing ? "Running" : "Paused"}</span>}
       center={<>
+        {phase === undefined ? null : <HeistMissionStage phase={phase} recorded />}
         <div className="record-columns" aria-hidden="true">
           <span>Room sequence</span><span>Semantic Time</span><span>Summary type and data</span><span>Open</span>
         </div>
@@ -142,16 +145,46 @@ export function RecordedAgentHeistWorkspace({
       </>}
       footer={footer.map((item) => <span key={item}>{item}</span>)}
       right={<>
-        <PanelHeading number="03" title="Record detail" />
+        <PanelHeading number="03" title="Selected moment" />
         {selectedRecord === undefined ? <p>No record is visible.</p> : <RecordDetail record={selectedRecord} />}
-        <PanelHeading number="04" title="Fixture identity" />
+        <details className="technical-details"><summary>Fixture identity &amp; evidence</summary>
         <dl className="identity-list">
           {identity.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
         </dl>
         <p className="identity-note">{identityNote}</p>
+        </details>
       </>}
     />
   );
+}
+
+const missionPhases = ["lobby", "briefing", "negotiation", "commitment", "resolution", "result", "complete"];
+const missionObjectives: Record<string, string> = {
+  lobby: "Gather your crew.",
+  briefing: "Get your bearings.",
+  negotiation: "Find a plan you can trust.",
+  commitment: "Make your choice. Seal your move.",
+  resolution: "The crew's choices are in.",
+  result: "Every decision led here.",
+  complete: "The operation has ended.",
+};
+
+export function HeistMissionStage({ phase, recorded = false }: { readonly phase: string; readonly recorded?: boolean }) {
+  const phases = recorded ? missionPhases.slice(1) : missionPhases;
+  const current = phases.indexOf(phase);
+  return <section className="mission-stage" aria-label={recorded ? "Recorded mission phase" : "Mission phase"}>
+    <div className="mission-scene">
+      <span className="mission-scene-label">{recorded ? "Recorded operation" : "Crew operation"} / Agent Heist</span>
+      <div><span className="live-panel-label">{recorded ? "Recorded phase" : "Current phase"} · {phase}</span>
+        <h3>{missionObjectives[phase] ?? phase}</h3>
+      </div>
+    </div>
+    <ol className={`mission-phases${recorded ? " recorded-phases" : ""}`} aria-label="Activity phases">
+      {phases.map((item, index) => <li key={item} className={index === current ? "phase-current" : index < current ? "phase-past" : ""} aria-current={index === current ? "step" : undefined}>
+        <span aria-hidden="true">{index < current ? "✓" : String(index + 1).padStart(2, "0")}</span><strong>{item}</strong>
+      </li>)}
+    </ol>
+  </section>;
 }
 
 export function PanelHeading({ number, title }: { readonly number: string; readonly title: string }) {

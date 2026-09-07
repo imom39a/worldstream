@@ -1,0 +1,28 @@
+/* Shared presentation only. Every application bundles its own independent assets. */
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/rajdhani-bold.ttf") format("truetype");
+}
+
+:root {
+  color-scheme: dark;
+  --ws-background: #0b1415;
+  --ws-surface: #111e20;
+  --ws-raised: #1a2b2c;
+  --ws-line: #334542;
+  --ws-text: #f5f0e3;
+  --ws-muted: #b3c2bc;
+  --ws-gold: #f3c777;
+  --ws-cyan: #79d9cc;
+  --ws-danger: #ffb3ab;
+  --ws-code: #081113;
+  --ws-body-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ws-title-font: Georgia, "Times New Roman", serif;
+  --ws-ui-font: "Rajdhani", "Avenir Next Condensed", sans-serif;
+  --ws-mono-font: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+::selection { color: var(--ws-background); background: var(--ws-gold); }

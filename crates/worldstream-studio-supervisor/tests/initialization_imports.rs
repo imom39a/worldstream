@@ -346,12 +346,12 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
     for (name, bytes) in [
         (
             "inspector.json",
-            include_bytes!("../../../config/activity-clients/releases/inspector-web.json")
+            include_bytes!("../../../config/activity-clients/releases/inspector-web-v2.json")
                 .as_slice(),
         ),
         (
             "heist.json",
-            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v2.json")
+            include_bytes!("../../../config/activity-clients/releases/agent-heist-web-v3.json")
                 .as_slice(),
         ),
         (
@@ -360,8 +360,8 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
                 .as_slice(),
         ),
         (
-            "negotiate-v2.json",
-            include_bytes!("../../../config/activity-clients/releases/negotiate-web-v2.json")
+            "negotiate-v3.json",
+            include_bytes!("../../../config/activity-clients/releases/negotiate-web-v3.json")
                 .as_slice(),
         ),
         (
@@ -372,7 +372,7 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
         fs::write(directory.path().join(name), bytes)?;
     }
     let declaration = directory.path().join("clients.json");
-    fs::write(&declaration, br#"{"schema":"worldstream/client-declaration-import/v1","release_files":["inspector.json","heist.json","negotiate.json","negotiate-v2.json"],"bindings_file":"bindings.json"}"#)?;
+    fs::write(&declaration, br#"{"schema":"worldstream/client-declaration-import/v1","release_files":["inspector.json","heist.json","negotiate.json","negotiate-v3.json"],"bindings_file":"bindings.json"}"#)?;
     let mut request = InitializationImportRequest {
         installation,
         runner_templates: Vec::new(),
@@ -393,11 +393,11 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
             .deployments
             .iter()
             .any(
-                |deployment| deployment.deployment_id == "first-party-negotiate-web-v2"
+                |deployment| deployment.deployment_id == "first-party-negotiate-web-v3"
                     && deployment
                         .surfaces
                         .iter()
-                        .any(|surface| surface.launch_url == "http://127.0.0.1:5173/negotiate-v2/")
+                        .any(|surface| surface.launch_url == "http://127.0.0.1:5173/negotiate-v3/")
             )
     );
     assert!(snapshot(directory.path())? == before);
@@ -422,8 +422,8 @@ fn reviewed_client_declarations_install_exact_targets_and_reuse_selection_policy
         (
             "0.2.0",
             "blake3:651a04711a61bbdb263da5869a48d9829bc37b3be315042404587b00d52c127c",
-            "negotiate-0-2-spectator-web",
-            "http://127.0.0.1:5173/negotiate-v2/",
+            "negotiate-0-2-spectator-web-v3",
+            "http://127.0.0.1:5173/negotiate-v3/",
         ),
     ] {
         let selected = store.select(

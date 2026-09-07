@@ -9,12 +9,12 @@ const browser = await chromium.launch({ headless: true, ...await localBrowserOpt
 
 try {
   if ((await fetch(`${host.origin}/agent-heist/`)).status !== 404) throw new Error("unavailable retained Heist path must not serve replacement bytes");
-  await verifySurface("Agent Heist local", "/agent-heist-v2/", "Agent Heist · WorldStream Activity Client", async (page) => {
+  await verifySurface("Agent Heist local", "/agent-heist-v3/", "Agent Heist · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /Canal Shift|route_service|Recorded fixture|Fixture mode/i, "Heist live client exposed recorded data");
   });
-  await verifySurface("Agent Heist hosted", "/agent-heist-v2/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
+  await verifySurface("Agent Heist hosted", "/agent-heist-v3/hosted/", "Agent Heist · Hosted Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Unable to enter this Run" }).waitFor();
   }, true);
   await verifySurface("Negotiate 0.1", "/negotiate/", "Negotiate · WorldStream Activity Client", async (page) => {
@@ -22,12 +22,12 @@ try {
     const body = await page.locator("body").innerText();
     reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate 0.1 live client exposed recorded data");
   });
-  await verifySurface("Negotiate 0.2", "/negotiate-v2/", "Negotiate · WorldStream Activity Client", async (page) => {
+  await verifySurface("Negotiate 0.2", "/negotiate-v3/", "Negotiate · WorldStream Activity Client", async (page) => {
     await page.getByRole("heading", { name: "Waiting for authorized Projection" }).waitFor();
     const body = await page.locator("body").innerText();
     reject(body, /fixture|sample offer|demo negotiation/i, "Negotiate 0.2 live client exposed recorded data");
   });
-  await verifySurface("Inspector", "/inspector/", "WorldStream Client Host", async (page) => {
+  await verifySurface("Inspector", "/inspector-v2/", "WorldStream Client Host", async (page) => {
     await page.getByText("This participant client session is missing or expired.", { exact: true }).waitFor();
     await page.getByText(
       "Ask the Host Operator to run worldstreamctl client open again for this Room setup operation.",

@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "@worldstream/agent-heist-client/styles.css";
 import "./styles.css";
+import "./gameTheme.css";
 
 const root = document.getElementById("root");
 

@@ -1271,7 +1271,7 @@ async fn operator_handoff_requires_control_not_studio_origin_and_keeps_one_use_r
     let launch = transfer["client_url"]
         .as_str()
         .ok_or("missing handoff transfer")?;
-    assert!(launch.starts_with("http://127.0.0.1:5173/agent-heist-v2/#handoff=wsh1:"));
+    assert!(launch.starts_with("http://127.0.0.1:5173/agent-heist-v3/#handoff=wsh1:"));
     assert!(!launch.contains("wsb1:"));
     let (_, token) = launch
         .split_once("#handoff=")

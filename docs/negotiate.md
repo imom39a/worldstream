@@ -279,7 +279,7 @@ algorithms, mandates, or resolver checks.
 ## Standalone Activity Client integration
 
 The retained `/negotiate/` client supports the exact 0.1.0 Pack Revision. The
-current `/negotiate-v2/` client supports the exact 0.2.0 Pack Revision. Each
+current `/negotiate-v3/` client supports the exact 0.2.0 Pack Revision. Each
 starts through the generic one-use Activity Client handoff and retained HttpOnly
 Supervisor session; there is no Negotiate-specific direct bootstrap or live
 renderer in the Controller or the recorded Console gallery. The page starts empty and
@@ -298,7 +298,7 @@ Projection updates are installed only from the Pack's authorized
 Core authority details and raw Activity State never enter the renderer.
 
 Prepared commercial payloads cross one narrow application-owned signer seam:
-the event contract below belongs to the current `/negotiate-v2/` Release. The
+the event contract below belongs to the current `/negotiate-v3/` Release. The
 retained single-revision `/negotiate/` Release predates the Pack field and
 admits only the exact 0.1.0 revision.
 

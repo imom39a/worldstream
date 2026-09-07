@@ -36,9 +36,9 @@ Revision digests. Existing Launch Requests remain pinned to the revision they
 selected.
 
 Listing `0.4.0` keeps the same Pack and House pool and pins Client Release v2.
-The hosted surface at `/agent-heist-v2/hosted/` reads the exact deployment-owned
+The hosted surface at `/agent-heist-v3/hosted/` reads the exact deployment-owned
 stream URL from the authenticated Platform session. The same artifact contains
-the distinct local kernel surface at `/agent-heist-v2/`; an authentication
+the distinct local kernel surface at `/agent-heist-v3/`; an authentication
 failure never switches between them. Neither the user nor the handoff URL
 chooses a Room, Membership, or upstream.
 

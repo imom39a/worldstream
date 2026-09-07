@@ -1,3 +1,4 @@
+@import "../../../web/design/tokens.css";
 :root {
   color: #edf4fa;
   background: #0c1219;
@@ -55,4 +56,35 @@ h2, h3 { margin: 0; }
   .app-shell { width: min(100% - 20px, 1180px); padding-top: 10px; }
   .negotiate-hero, .negotiate-persona-panel, .negotiate-shared-grid, .negotiate-proof-summary { grid-template-columns: 1fr; }
   .negotiate-recovery, .negotiate-proof-panel, .negotiate-action, .section-heading { align-items: stretch; flex-direction: column; }
+}
+
+/* Negotiate: walnut, copper, and the agreement at the center of the room. */
+:root { color-scheme: dark; color: #f2e6d1; background: #161313; font-family: var(--ws-body-font); }
+body { min-width: 0; background: radial-gradient(ellipse at 70% 0%, #573b263d, transparent 60%), #161313; }
+.panel, .negotiate-boundary { border-color: #514139; border-radius: 4px; background: #211b1bea; box-shadow: none; }
+.eyebrow { color: #e3ba7b; font-weight: 600; }
+h1 { font: 400 clamp(2.5rem, 5vw, 4rem)/1.1 var(--ws-title-font); letter-spacing: -.04em; }
+h2 { font: 400 1.75rem/1.25 var(--ws-title-font); }
+h3 { font: 400 1.25rem/1.3 var(--ws-title-font); }
+.hero-description, .status-message { color: #cbbfad; }
+.negotiate-hero { min-height: 320px; align-items: end; padding: 38px; background: linear-gradient(90deg, #211b1bec, #211b1bc4 55%, #211b1b55), url("./assets/negotiation-chamber.webp") center / cover; }
+.privacy-label { color: #e8d1a4; border-color: #746044; border-radius: 2px; background: #211b1bc9; font-size: .75rem; }
+.negotiate-status-grid div, .negotiate-shared-grid div, .negotiate-reference dl div, .negotiate-persona-panel > div, .negotiate-reference, .negotiate-proof-summary div { border-color: #55453a; border-radius: 3px; background: #2c2421e8; }
+.negotiate-status-grid dt, .negotiate-shared-grid dt, .negotiate-reference dt, .negotiate-proof-summary dt { color: #bfb49f; font-size: .75rem; }
+.negotiate-status-grid dd, .negotiate-shared-grid dd, .negotiate-reference dd, .negotiate-proof-summary dd { color: #f0dfbf; font-size: .875rem; line-height: 1.6; }
+.negotiate-recovery p:not(.eyebrow), .negotiate-proof-panel p:not(.eyebrow), .negotiate-outcome p, .negotiate-action span, .negotiate-boundary-note, .negotiate-reference > span, .negotiate-exact-bytes > span, .negotiate-boundary p:last-child { color: #cbbfad; font-size: .8125rem; line-height: 1.75; }
+.negotiate-action { border-color: #55453a; border-radius: 3px; background: #2c2421; }
+.negotiate-recovery button, .negotiate-proof-actions button, .negotiate-action button { min-height: 44px; padding: 11px 15px; border-color: #d6b277; border-radius: 2px; color: #251c14; background: #e6bf80; font-size: .8125rem; font-weight: 600; }
+.negotiate-action button:disabled, .negotiate-proof-actions button:disabled { color: #c0b5a2; border-color: #615546; background: #352e27; opacity: 1; }
+.negotiate-exact-bytes { border-color: #786044; border-radius: 3px; background: #332a20; }
+.negotiate-exact-bytes pre { padding: 20px; border: 1px solid #e5d8b9; border-radius: 2px; color: #302b23; background: #e9dec5; font-size: .8125rem; line-height: 1.75; }
+.negotiate-boundary-note { border-top-color: #55453a; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--ws-gold); outline-offset: 4px; }
+@media (max-width: 760px) {
+  .negotiate-hero { padding: 28px 22px; }
+  .panel { padding: 22px; }
+  .negotiate-status-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }

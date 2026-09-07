@@ -10,6 +10,7 @@ import type {
 } from "./liveAdapter";
 import {
   AgentHeistWorkspace,
+  HeistMissionStage,
   PanelHeading,
   type AgentHeistWorkspaceMetric,
 } from "./presentation";
@@ -69,16 +70,17 @@ function ReadyParticipant({
   readonly onReconnect?: () => Promise<void>;
 }) {
   const metrics: AgentHeistWorkspaceMetric[] = [
-    { label: "Participant session", value: connectionLabel(connection), tone: connection === "live" ? "green" : "amber" },
-    { label: "Activity Phase", value: capitalize(state.projection.phase), tone: "amber" },
-    { label: "Room sequence", value: String(state.roomSequence).padStart(4, "0"), tone: "blue" },
-    { label: "Pack revision", value: shortIdentity(state.pack.digest), tone: "violet" },
-    { label: "Current Action Offers", value: String(state.offers.length).padStart(2, "0"), tone: "green" },
+    { label: "Connection", value: connectionLabel(connection), tone: connection === "live" ? "green" : "amber" },
+    { label: "Mission phase", value: capitalize(state.projection.phase), tone: "amber" },
+    { label: "Shared clues", value: String(state.projection.publicClaims.length).padStart(2, "0"), tone: "blue" },
+    { label: "Crew present", value: `${state.projection.seats.filter((seat) => seat.present).length} / ${state.projection.seats.length}`, tone: "violet" },
+    { label: "Available moves", value: String(state.offers.length).padStart(2, "0"), tone: "green" },
   ];
   return (
     <main className="heist-live-shell">
+      <a className="heist-skip-link" href="#heist-inspector">Skip to mission controls</a>
       <header className="live-client-header">
-        <div><span className="eyebrow">WorldStream Activity Client</span><h1>Agent Heist</h1></div>
+        <div><span className="eyebrow">WorldStream / cooperative strategy</span><h1>Agent <em>Heist</em></h1></div>
         <div className="live-client-badges">
           <span className={`live-mode live-mode-${connection}`}><i /> Authorized {state.authorization.accessMode} surface</span>
           <span className={`agent-assist agent-assist-${agentAssist}`}>{agentAssistLabel(agentAssist)}</span>
@@ -86,13 +88,17 @@ function ReadyParticipant({
       </header>
       <div className="live-client-notice" role="status">
         <strong>{authorizationLabel(state)}</strong>
-        <span>{message ?? (connection === "live" ? "This surface contains only the Projection authorized for this Membership." : "Reconnect before acting; installed information is visibly stale.")}</span>
+        <span>{message ?? (connection === "live"
+          ? state.authorization.accessMode === "participant"
+            ? "Your intel is private until you choose to share it. Make your next move with the crew."
+            : "Follow the crew's public decisions. Private intel and participant actions stay hidden."
+          : "The connection is not live. The board may be out of date. Reconnect before acting.")}</span>
       </div>
       <AgentHeistWorkspace
         metrics={metrics}
         left={<MembershipPanel state={state} connection={connection} onReconnect={onReconnect} />}
-        eyebrow="Authorized shared reality"
-        heading="Crew operation board"
+        eyebrow="Mission control"
+        heading="The operation"
         status={<span className="play-state"><i className={connection === "live" ? "is-running" : ""} />{connectionLabel(connection)}</span>}
         center={<PublicBoard state={state} />}
         footer={<>
@@ -119,7 +125,12 @@ function MembershipPanel({
   readonly onReconnect?: () => Promise<void>;
 }) {
   return <>
-    <PanelHeading number="01" title="Your Membership" />
+    <PanelHeading number="01" title="Your role" />
+    <div className={`crew-role-card role-${state.authorization.role ?? "spectator"}`}>
+      <span className="role-emblem" aria-hidden="true">{state.authorization.role === "navigator" ? "⌖" : state.authorization.role === "insider" ? "◇" : state.authorization.role === "broker" ? "⇄" : "◎"}</span>
+      <strong>{state.authorization.role === null ? "Spectator" : capitalize(state.authorization.role)}</strong>
+      <span>{state.authorization.role === "navigator" ? "Find the way in. Know the way out." : state.authorization.role === "insider" ? "Good intel changes everything." : state.authorization.role === "broker" ? "Every piece of intel has a price." : "Follow the crew's shared story."}</span>
+    </div>
     <div className="authorized-membership">
       <span>Access Mode</span><strong>{capitalize(state.authorization.accessMode)}</strong>
       <span>Role</span><strong>{state.authorization.role === null ? "Not assigned" : capitalize(state.authorization.role)}</strong>
@@ -131,10 +142,11 @@ function MembershipPanel({
         <li key={seat.role}><i className={seat.present ? "is-present" : ""} /><span>{capitalize(seat.role)}</span><strong>{seat.present ? "Present" : "Awaiting"}</strong></li>
       ))}
     </ul>
-    <div className="control-note">
-      <span>Authority boundary</span>
+    <details className="technical-details">
+      <summary>Session details</summary>
       <p>This live client cannot switch to another participant, spectator, or operator view.</p>
-    </div>
+      <span>Activity Pack revision</span><code>{state.pack.digest}</code>
+    </details>
     {connection === "disconnected" && onReconnect !== undefined
       ? <button className="reconnect-button" type="button" onClick={() => void onReconnect()}>Reconnect</button>
       : null}
@@ -144,6 +156,7 @@ function MembershipPanel({
 function PublicBoard({ state }: { readonly state: AgentHeistReadyState }) {
   const result = state.projection.outcome;
   return <div className="live-board">
+    <HeistMissionStage phase={state.projection.phase} />
     <section className="phase-window">
       <div><span className="live-panel-label">Current phase</span><strong>{capitalize(state.projection.phase)}</strong></div>
       <div><span className="live-panel-label">Deadline</span><strong>{deadlineLabel(state.projection.phaseDeadline)}</strong></div>
@@ -183,7 +196,7 @@ function PrivateParticipantPanel({
   readonly onAct: (action: ActivityClientAction) => Promise<void>;
 }) {
   return <>
-    <PanelHeading number="03" title="Private knowledge" />
+    <PanelHeading number="03" title="Your private intel" />
     {state.projection.privateClues.length === 0 ? <p className="private-empty">No private clue has been inspected.</p> : (
       <div className="private-clue-list">{state.projection.privateClues.map((clue) => <article key={clue.clueId}>
         <span>Authorized private clue</span><strong>{humanize(clue.clueId)}</strong><code>{clue.claimCode}</code>
@@ -194,7 +207,7 @@ function PrivateParticipantPanel({
       <strong>{humanize(state.projection.ownCommitment.selectedPlanId)}</strong>
       <small>{state.projection.ownCommitment.contributeRequiredResource ? "Required resource committed" : "No resource committed"}</small>
     </div>}
-    <PanelHeading number="04" title="Incoming exchanges" />
+    <PanelHeading number="04" title="Incoming deals" />
     {state.projection.addressedOffers.length === 0 ? <p className="private-empty">No exchange is addressed to this role.</p> : (
       <div className="incoming-exchanges">{state.projection.addressedOffers.map((offer) => <article key={offer.offerId}>
         <span>{capitalize(offer.senderRole)} offers {humanize(offer.offeredClueId)}</span>
@@ -202,7 +215,7 @@ function PrivateParticipantPanel({
         <small>{humanize(offer.status)}</small>
       </article>)}</div>
     )}
-    <PanelHeading number="05" title="Current Actions" />
+    <PanelHeading number="05" title="Your next move" />
     {state.offers.length === 0 ? <p className="private-empty">No Action is offered at this synchronized Head.</p> : (
       <div className="live-offer-list">{state.offers.map((offer) => <ActionOfferForm
         key={offer.offerId}
@@ -299,13 +312,12 @@ function ActionOfferForm({
     );
   };
   return <form className="live-action-form" onSubmit={submit}>
-    <div><strong>{humanize(offer.actionType)}</strong><code>{offer.actionType}</code></div>
-    <small>{offer.eligibility}</small>
+    <div><strong>{humanize(offer.actionType)}</strong><span className="action-ready">Action</span></div>
     {actionFields[offer.actionType].map((field) => <label key={field.name}><span>{field.label}</span>{field.kind === "select" ? (
       <select name={field.name} defaultValue="" required><option disabled value="">Select…</option>{field.options?.map((option) => <option key={option} value={option}>{humanize(option)}</option>)}</select>
     ) : <input name={field.name} type={field.kind === "checkbox" ? "checkbox" : "text"} required={field.kind !== "checkbox"} />}</label>)}
-    <p>based_on_room_seq <code>{roomSequence}</code></p>
-    <button disabled={!enabled} type="submit">{enabled ? "Submit action" : "Reconnect before acting"}</button>
+    <details className="technical-details action-details"><summary>Action details</summary><code>{offer.actionType}</code><p>{offer.eligibility}</p><p>based_on_room_seq <code>{roomSequence}</code></p></details>
+    <button disabled={!enabled} type="submit">{enabled ? `${humanize(offer.actionType)} ↗` : "Reconnect before acting"}</button>
     {notice === null ? null : <output role="status">{notice}</output>}
   </form>;
 }

@@ -1,215 +1,155 @@
-# WorldStream public site style
+# WorldStream shared design guide
 
-Status: Maintained
+Status: Maintained · 2026-09-07
 
-This document defines the canonical visual system for the WorldStream demo site and developer manual. New public site artifacts must use these rules.
+This is the shared visual foundation for the activity platform, developer
+manual, fixture documentation, Inspector, and first-party Activity Clients.
+It supersedes the former purple/lavender technical-site palette. Follow
+[Activity Platform experience design](activity-platform-design.md) for the
+platform hierarchy and individual pack settings.
 
-An accepted ADR can define an exception. The exception must state its scope.
+## One family, distinct experiences
 
-## Purpose
+The platform is a collection of Activity Packs. Agent Heist is one pack;
+its story, terminology, imagery, and gameplay must not define the whole site.
 
-The demo site and developer manual are technical interfaces. They show observable behavior and implementation guidance. They are not marketing sites.
+Use the illustrated sense of place of [AI Dungeon](https://aidungeon.com/)
+and the strong game identity of [Shards](https://play-shards.com/) as references.
+Use original artwork and compositions.
 
-The visual reference is [Heroic Labs](https://heroiclabs.com/). Use its general layout discipline and visual proportions. Do not copy its assets, names, illustrations, page text, or page order.
+- Discovery: an illustrated crossroads, warm serif headings, distinct pack
+  covers, and direct activity entry.
+- Developer manual: the same identity, colors, and controls, with quiet reading
+  surfaces, persistent search, clear procedures, and readable code.
+- Fixture documentation: the same reading treatment as the manual, with explicit
+  recorded-data boundaries and complete evidence details.
+- Inspector: the shared technical palette and controls, with a neutral identity
+  and no pack-specific rules or imagery.
+- Agent Heist: rainy city artwork, condensed tactical titles, role panels,
+  amber decisions, and cyan intelligence accents.
+- Negotiate: walnut and burgundy surfaces, copper highlights, serif headings,
+  and a paper treatment for the exact agreement bytes.
 
-The catalog interaction is based on the [Lightstreamer demo gallery](https://demos.lightstreamer.com/). Keep search, filters, clear demo categories, and direct demo entry points.
+The design must not add gameplay, a universal score, fictional activities,
+unsupported availability, or hidden information.
 
-Use [ASD-STE100 Simplified Technical English, Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf) as the writing basis. The current text is an STE-based draft. Do not claim formal compliance without a controlled dictionary and qualified human review.
+## Canonical tokens
 
-## Layout system
-
-Use this catalog sequence:
-
-1. Compact primary header.
-2. Centered technical introduction.
-3. Full-width light catalog section.
-4. Search and typed facet filters above an equal-width card grid.
-5. Contrasting status band with factual system data.
-6. Centered capability reference.
-7. Small technical footer.
-
-Use this demo-page sequence:
-
-1. Compact primary header.
-2. Demo title and explicit data mode.
-3. Always-visible fixture, privacy, or connection notice.
-4. Short guided checklist.
-5. Factual status rail.
-6. Interactive technical stage.
-7. “What this demo shows” section and data-flow diagram.
-
-Use this developer-manual sequence:
-
-1. Compact purple header with search and related-site navigation.
-2. Persistent lavender navigation for manual sections.
-3. White content surface with one page title.
-4. Factual introduction or procedure.
-5. Bordered guides, capability cards, tables, and code blocks.
-6. Optional “On this page” navigation for long documents.
-
-The manual home can use a two-column guide grid. Reference inventories can use the same filter and card structure as the demo catalog.
-
-Do not add a sales action to the header. Do not show repository visibility or access status in the public interface.
-
-## Design tokens
-
-Use CSS custom properties. These base tokens are canonical for both public sites:
+Import [`web/design/tokens.css`](../web/design/tokens.css). Do not copy a
+second set of shared color constants into new applications. Activity Clients
+may define additional pack-specific colors and illustration treatments.
+Imports are build-time presentation only; each application bundles its own
+assets and executes independently.
 
 | Function | Token | Value |
 | --- | --- | --- |
-| Deep technical surface | `--purple-950` | `#292957` |
-| Status and header surface | `--purple-800` | `#3e3d7e` |
-| Primary control | `--purple-700` | `#504aa5` |
-| Active accent | `--purple-600` | `#675ce7` |
-| Light section | `--lavender-100` | `#f1f0fb` |
-| Light border | `--lavender-300` | `#d6d2f0` |
-| Status accent | `--turquoise-500` | `#00cfc5` |
-| Dark text | `--slate-950` | `#20273a` |
-| Body text | `--slate-600` | `#667085` |
+| Background | `--ws-background` | `#0b1415` |
+| Surface | `--ws-surface` | `#111e20` |
+| Raised surface | `--ws-raised` | `#1a2b2c` |
+| Border | `--ws-line` | `#334542` |
+| Primary text | `--ws-text` | `#f5f0e3` |
+| Secondary text | `--ws-muted` | `#b3c2bc` |
+| Primary action / focus | `--ws-gold` | `#f3c777` |
+| Informational accent | `--ws-cyan` | `#79d9cc` |
+| Error | `--ws-danger` | `#ffb3ab` |
+| Code background | `--ws-code` | `#081113` |
 
-Purple identifies WorldStream surfaces and controls. Turquoise identifies active or connected status. Amber identifies time or pending state. Do not use color as the only state indicator.
+Use gold controls with dark text. Use cyan sparingly for information or
+confirmed connection status. Pending and unavailable states need text labels;
+color never establishes availability or replaces a status label.
 
-## Typography
+## Typography and spacing
 
-- Use Inter or the system sans-serif fallback.
-- Use a monospace font only for identifiers, sequence values, Semantic Time, and typed record names.
-- Use normal interface sizes. Do not use very small decorative copy for required information.
-- Use tight display lettering only for the page title.
-- Use sentence case for headings and controls.
-- Use uppercase only for short status labels.
+- Use `--ws-title-font` for platform and documentation titles: Georgia with a
+  serif fallback. Reserve large titles for the page introduction.
+- Use self-hosted Rajdhani through `--ws-ui-font` for the brand and tactical
+  Heist headings. License and asset provenance live in `web/design/README.md`.
+- Use `--ws-body-font` for reading and controls. Keep ordinary text at least
+  14–16px where possible, with generous line height.
+- Use `--ws-mono-font` for code, exact identities, and times. Give these values
+  room to wrap or scroll without overlapping nearby controls.
+- Use restrained borders and small corner radii. Artwork belongs in discovery
+  and activity environments; code and long documents need quiet backgrounds.
 
-## Components
+## Manual and documentation
 
-### Header
+Keep search available on every manual page. Use a dark sidebar with a gold
+active rail, one page title, and a clear reading column. Keep related activity
+navigation available on phones. A closed mobile menu must not remain reachable
+by keyboard. Escape closes search results and the mobile menu.
 
-- Keep the header compact.
-- Include the WorldStream name and direct section links.
-- Do not include a featured-demo, pricing, sign-up, contact, or sales control.
-- Do not include repository visibility or access status.
+Guides, capability filters, search results, code blocks, tables, callouts,
+copy buttons, and empty states all use the shared tokens. Show factual status
+labels for implemented, reference, design-only, and deferred capabilities.
 
-### Developer manual
+Keep technical language precise and use `CONTEXT.md` vocabulary. Write direct
+procedures, one instruction per sentence. Playful discovery copy is appropriate
+for players; operational documentation must remain literal and accurate.
 
-- Keep search available on each manual page.
-- Use the turquoise rail to identify the active navigation item.
-- Use purple for primary controls, headings, and code surfaces.
-- Use lavender for navigation, filters, callouts, and grouped content.
-- Use white for primary reading surfaces.
-- Keep code, tables, callouts, and capability status labels visually distinct.
-- Keep the demo-site link in the primary header.
+## Activity entry and results
 
-### Demo cards
+Derive entry availability, seats, public viewing, and House Agents from the
+reviewed listing and service response. Do not add inactive search or fake
+activity cards to fill a catalog. Unknown packs receive a neutral treatment.
 
-Define each card in the typed demo manifest. Each entry must include a stable ID, title, summary, Activity Pack, capabilities, experience, perspectives, availability, thumbnail, route, documentation route, backend requirement, and optional build identity.
+Keep authentication, role selection, invitations, waiting-room feedback,
+connection recovery, result pages, and errors within the shared visual family.
+Technical identities may sit in disclosures when they do not help the next
+decision. Do not hide meaningful warnings or evidence.
 
-The catalog can filter these facets:
+Results remain activity-specific. Agent Heist results do not constitute a
+cross-activity leaderboard.
 
-- Activity Pack;
-- capability;
-- experience;
-- perspective;
-- availability; and
-- demo type.
+## Recorded data and authority
 
-Each card must state:
+- State whether a view is recorded, illustrative, disconnected, or live.
+- Read fixture identity and Replay status from checked-in evidence.
+- State when the browser does not execute the Activity Pack or Replay.
+- A Room sequence is not a Cursor. A mixed summary list is not an Observation
+  Stream. Use those terms accurately.
+- Never substitute recorded data for a failed live connection.
+- Public and Operator views must not expose participant-private values.
+- Keep credentials, live Room data, and private user data out of public assets.
+- Simple technical diagrams should use HTML/CSS or existing code assets and
+  label the source, authorization boundary, and visible output.
 
-- what the demo contains;
-- which capabilities it shows;
-- whether data is recorded or live;
-- whether the route is available; and
-- whether a backend is required.
+## Metadata and images
 
-Use `Open recorded demo` only for an available fixture. Use `Live demo planned` when the required backend does not exist.
-Provide a `How it works` link for each card. The link must resolve on the public demo site or in public technical documentation.
+Use the same shared palette for browser theme colors and existing social
+preview images. Titles and descriptions must describe the page actually served.
+A platform preview must represent the collection, not one Activity Pack.
+Do not reuse a platform image as if it showed an individual result.
 
-### Status surfaces
-
-- Use factual labels and values.
-- Derive live status from a bounded readiness check.
-- Do not show a hard-coded live or healthy state for a network service.
-- For recorded fixtures, label all health and lineage values as fixture data.
-- Show an exact browser build revision and exact protocol identity where the values are relevant.
-
-### Technical diagrams
-
-- Build simple diagrams from CSS layout and text where possible.
-- Use named stages and a clear direction when the diagram represents a process.
-- Do not use decorative crossing lines or unexplained abbreviations.
-- Label the source, authorization boundary, and visible output.
-- Do not copy a reference-site illustration.
-- Do not imply that illustrative hashes or lineage values are verified.
-- State when the browser represents an authorization boundary but does not enforce it.
-
-### Recorded evidence
-
-- Read exact identity and Replay status from a checked-in evidence artifact when one exists.
-- Name the evidence schema, Activity Pack version, and semantic revision digest.
-- State when the browser does not execute the Activity Pack Revision or Replay.
-- Do not call a Room sequence a Cursor.
-- A Cursor is a Membership's acknowledged Observation Stream position.
-- Do not call a mixed list of summaries an Observation Stream.
-- Do not bundle credentials, capabilities, private user data, or live Room data in a public fixture.
-
-## Language rules
-
-Use the canonical vocabulary in `CONTEXT.md`.
-
-- Use one term for one concept.
-- Treat canonical WorldStream terms as approved project technical nouns.
-- Use one subject per sentence.
-- Use no more than 25 words in descriptive sentences.
-- Use no more than 20 words in procedural sentences.
-- Put one instruction in each procedural sentence.
-- Use active voice when it is clear who performs the action.
-- Use direct controls such as `Open recorded demo`, `Run`, `Step`, `Reset`, and `Close`.
-- State whether data is recorded, simulated, illustrative, or live.
-- State when no backend or network is connected.
-
-Do not use slogans, metaphors, slang, superlatives, or unsupported claims. Avoid these patterns:
-
-- “revolutionary”;
-- “game-changing”;
-- “seamless”;
-- “best-in-class”;
-- “unlock”;
-- “powerful” without a measured definition;
-- “production-ready” without acceptance evidence;
-- “live” for recorded or simulated data; and
-- “proof” when the screen contains illustrative fixture values.
+Bundle artwork locally. Record generated-asset prompts and provenance. Preserve
+font licenses. Do not depend on a reference game's image server.
 
 ## Accessibility
 
-- Use landmarks and one level-one heading per document view.
-- Provide a skip link.
-- Give each control a visible label.
-- Use `aria-pressed` for persistent toggle state.
-- Put status updates in a polite live region when needed.
-- Keep keyboard focus visible.
-- Keep text contrast at WCAG AA or better.
-- Make all controls at least 38 CSS pixels high where layout permits.
-- Preserve usable content at 320 CSS pixels.
-- Respect `prefers-reduced-motion`.
-- Do not start fixture playback before the user selects `Run`.
+- Use landmarks, one level-one heading, visible labels, and skip navigation.
+- Keep a visible gold keyboard focus ring. Use semantic buttons and links.
+- Controls should be at least 44px high; dense documentation navigation can use
+  36–38px rows while retaining clear focus and spacing.
+- Meet WCAG AA contrast and keep tables, code, dialogs, and navigation usable
+  at a 320px viewport without page-level horizontal overflow.
+- Honor reduced motion. Start recorded playback only when the user selects Run.
+- Restore focus after dialogs close. Announce meaningful status updates politely.
 
-## Social previews
+## Artifact and release coverage
 
-- Use the site title and one factual sentence.
-- Use the same purple, lavender, and turquoise system.
-- Do not include customer marks, people, testimonials, or sales text.
-- A detail page can omit an image when it has no record-specific image.
-- Do not reuse the catalog image as if it were a detail-record image.
+Review the manual home, an article, capability search/filtering, mobile menu,
+platform discovery, entry states, fixture docs, recorded Heist, live-client
+boundaries, Inspector, and Negotiate. Include browser metadata, existing preview
+images, design documentation, generated builds, and deployment configuration.
 
-## Review checklist
+Immutable Activity Client Releases, old distributions, and their retained build
+artifacts preserve their original bytes and identities. Styling changes create
+new release and evidence files. Update current bindings and build/install
+references coherently; never disable a digest check to publish a new design.
 
-Before publication, confirm all applicable items:
+## Verification before source control
 
-- [ ] Layout follows the catalog, demo-page, or developer-manual sequence in this document.
-- [ ] Colors use the canonical purple, lavender, turquoise, white, and slate tokens.
-- [ ] Copy uses canonical WorldStream terms.
-- [ ] Copy is an STE-based draft with no marketing claims.
-- [ ] Data mode and backend state are explicit.
-- [ ] Public navigation does not mention repository visibility or access.
-- [ ] Recorded data does not contain credentials or private user data.
-- [ ] Public and Operator views do not receive participant-private values.
-- [ ] Keyboard focus, narrow-screen layout, and reduced motion are usable.
-- [ ] Root and representative detail metadata match their page content.
-- [ ] Tests, type checking, and the deployment build pass.
+Run the affected application tests and type checks, documentation verification,
+frontend builds, and exact client artifact/reference checks. Inspect desktop and
+320px layouts, search, navigation, copy controls, and entry states. Commit the
+complete source, original assets, licenses, updated guide, and versioned release
+artifacts together. Generated disposable `dist` trees stay untracked.

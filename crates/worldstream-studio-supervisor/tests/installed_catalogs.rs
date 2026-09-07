@@ -97,8 +97,8 @@ fn reopening_client_approvals_preserves_records_and_never_widens_selection_polic
     ));
     assert_eq!(snapshot(&root)?, before);
 
-    imported.revoke_deployment("first-party-inspector-web")?;
-    imported.disable_binding("agent-heist-0-1-participant-web-v2")?;
+    imported.revoke_deployment("first-party-inspector-web-v2")?;
+    imported.disable_binding("agent-heist-0-1-participant-web-v3")?;
     let revoked = snapshot(&root)?;
     assert_ne!(revoked, before);
     let restarted = ClientBindingStoreV1::open_installed(

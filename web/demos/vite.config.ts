@@ -36,6 +36,10 @@ export default defineConfig({
             ...(activityClientTarget === undefined
               ? {}
               : {
+                  "/agent-heist-v3": {
+                    target: activityClientTarget,
+                    changeOrigin: true,
+                  },
                   "/agent-heist-v2": {
                     target: activityClientTarget,
                     changeOrigin: true,

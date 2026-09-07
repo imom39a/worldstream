@@ -1,0 +1,19 @@
+{
+  "schema": "worldstream/client-conformance-evidence/v1",
+  "subject": {
+    "client_id": "worldstream.negotiate.web",
+    "artifact_digest": "sha256:4e87afe579bcb72cd13d53eaeee85c0583a7508b399bc60b11ca0949d5d4191d",
+    "release_claims_digest": "sha256:83015d98c9afdb5222d3de513be5d2dbd2518418680e8f0fe1620ba2818f58e9",
+    "client_contract": "worldstream/activity-client-protocol/v1"
+  },
+  "checks": [
+    "release-distribution-and-host-binding-exact-references",
+    "live-adapter-starts-empty",
+    "projection-reset-replaces-authorized-state",
+    "participant-and-spectator-access-mode-gating",
+    "prepared-action-queue-and-replay-validation-boundaries"
+  ],
+  "reproduce": "pnpm activity-clients:verify",
+  "authority": "informative_only",
+  "notice": "Passing this check for the client that supports exact Negotiate 0.1.0 and 0.2.0 revisions is not a security audit, deployment proof, Host approval, Pack qualification, or Client Binding."
+}

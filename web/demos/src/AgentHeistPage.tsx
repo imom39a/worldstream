@@ -60,25 +60,27 @@ export function AgentHeistPage({ onNavigate }: { onNavigate: Navigate }) {
       <SiteHeader onNavigate={onNavigate} />
       <main>
         <section className="heist-intro">
-          <button className="back-link" type="button" onClick={() => onNavigate("/")}>← Demo catalog</button>
+          <button className="back-link" type="button" onClick={() => onNavigate("/")}>← Mission select</button>
           <div className="heist-title-row">
             <div>
-              <span className="eyebrow">Recorded technical fixture</span>
-              <h1>Agent Heist</h1>
+              <span className="eyebrow">Inside the heist / recorded demo</span>
+              <h1>Agent <em>Heist</em></h1>
             </div>
             <span className="fixture-mode"><i /> Recorded fixture · no network</span>
           </div>
           <p>
-            Compare illustrative Projection views from one retained parity story. Inspect Semantic Time, Attention summaries, sealed commitments, and Replay evidence.
+            Follow the intel. Read the crew. Step through a recorded heist and see how private knowledge shapes a shared plan.
           </p>
         </section>
 
         <aside className="fixture-notice" aria-label="Demo boundary">
-          <strong>Browser fixture</strong>
-          <span>Controls filter local records. This browser is not an authorization control. It does not create a Room, submit an Action, or contact a Runner.</span>
+          <strong>Recorded demo · offline</strong>
+          <span>Explore local example records. No live Room is connected, and playback does not submit Actions or run Replay.</span>
         </aside>
 
-        <section className="guide" aria-labelledby="guide-title">
+        <details className="recorded-guide">
+          <summary>New to the crew? Open the 60-second guide</summary>
+          <section className="guide" aria-labelledby="guide-title">
           <div>
             <span className="section-label">60-second guide</span>
             <h2 id="guide-title">Inspect the fixture</h2>
@@ -89,19 +91,21 @@ export function AgentHeistPage({ onNavigate }: { onNavigate: Navigate }) {
             <GuideStep complete={lens === "public" || lens === "operator"} number="03" text="Select Public or Operator. Confirm that the clue is absent." />
             <GuideStep complete={revealedThroughStep === agentHeistRecords.length - 1} number="04" text="Run the fixture to the recorded Replay evidence." />
           </ol>
-        </section>
+          </section>
+        </details>
 
         <RecordedAgentHeistWorkspace
+          phase={phase}
           metrics={[
-            { label: "Fixture outcome", value: `recorded · ${agentHeistEvidence.finalOutcome}`, tone: "green" },
+            { label: "Data mode", value: "Recorded · offline", tone: "blue" },
             {
-              label: "Fixture Replay status",
+              label: "Replay evidence",
               value: agentHeistEvidence.replayVerified ? "recorded · verified" : "recorded · not verified",
               tone: agentHeistEvidence.replayVerified ? "green" : "amber",
             },
-            { label: "Fixture phase", value: `recorded · ${phase}`, tone: "amber" },
-            { label: "Fixture Pack version", value: `recorded · ${agentHeistEvidence.packVersion}`, tone: "blue" },
-            { label: "Visible fixture records", value: String(visibleRecords.length).padStart(2, "0"), tone: "violet" },
+            { label: "Recorded phase", value: capitalize(phase), tone: "amber" },
+            { label: "Viewpoint", value: capitalize(lens), tone: "blue" },
+            { label: "Visible moments", value: String(visibleRecords.length).padStart(2, "0"), tone: "violet" },
           ]}
           lenses={(["public", "navigator", "operator"] as const).map((item) => ({
             id: item,

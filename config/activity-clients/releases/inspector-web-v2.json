@@ -1,0 +1,32 @@
+{
+  "schema": "worldstream/activity-client-release/v1",
+  "client_id": "worldstream.inspector.web",
+  "release_digest": "sha256:9f7972efe162a3fa6bd85c7598358d9e961c9a28a662afa4859329f9ac07cf72",
+  "client_contract": "worldstream/activity-client-protocol/v1",
+  "artifacts": [
+    {
+      "artifact_id": "browser-dist",
+      "media_type": "application/vnd.worldstream.activity-client.web.v1+directory",
+      "digest": "sha256:0f0789862065e6cae54c00479cb798bd95fc498ceeb055511c3c255016ddf06f"
+    }
+  ],
+  "surfaces": [
+    {
+      "surface_id": "inspector-web",
+      "kind": "browser",
+      "artifact_digest": "sha256:0f0789862065e6cae54c00479cb798bd95fc498ceeb055511c3c255016ddf06f",
+      "entrypoint": "/inspector-v2/",
+      "capabilities": [
+        "observe",
+        "act",
+        "replay"
+      ]
+    }
+  ],
+  "conformance": [
+    {
+      "contract": "worldstream/activity-client-protocol/v1",
+      "evidence_digest": "sha256:7ff8e130528433c976e22d344ceb938d45b1944c57e4a102fc485072bdf21448"
+    }
+  ]
+}

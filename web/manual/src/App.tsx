@@ -15,6 +15,8 @@ export function App() {
   const [query, setQuery] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const search = useRef<HTMLInputElement>(null);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const navigation = useRef<HTMLElement>(null);
   const page = manualPages.find((item) => item.route === route);
 
   useEffect(() => {
@@ -29,7 +31,9 @@ export function App() {
         search.current?.focus();
       }
       if (event.key === "Escape") {
+        if (navigation.current?.contains(document.activeElement)) menuButton.current?.focus();
         setQuery("");
+        setMenuOpen(false);
         search.current?.blur();
       }
     };
@@ -60,18 +64,18 @@ export function App() {
           <input ref={search} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search concepts, commands, APIs…" aria-label="Search the manual" />
           <kbd>/</kbd>
           {query.trim() !== "" && (
-            <div className="search-results" role="listbox">
+            <div className="search-results" role="region" aria-label="Search results">
               {matches.map((item) => <a key={item.route} href={`#${item.route}`} onClick={() => setQuery("")}><strong>{item.title}</strong><small>{item.summary}</small></a>)}
               {matches.length === 0 && <p>No matching page. Try “CLI”, “backup”, or “MCP”.</p>}
             </div>
           )}
         </div>
         <nav className="topbar-links" aria-label="Related sites">
-          <a className="source-link" href={demosUrl}>Demos</a>
+          <a className="source-link" href={demosUrl}>Activities <span aria-hidden="true">↗</span></a>
         </nav>
-        <button className="menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen}>Menu</button>
+        <button ref={menuButton} className="menu-button" type="button" onClick={() => setMenuOpen((value) => !value)} aria-expanded={menuOpen} aria-controls="manual-navigation">Menu</button>
       </header>
-      <aside className={menuOpen ? "sidebar open" : "sidebar"}>
+      <aside ref={navigation} id="manual-navigation" className={menuOpen ? "sidebar open" : "sidebar"}>
         <nav aria-label="Home"><a className={route === "/" ? "active" : ""} href="#/">Manual home</a></nav>
         {navigationGroups.map((group) => <nav key={group.label} aria-label={group.label}><p>{group.label}</p>{group.items.map((item) => <a className={route === item.route ? "active" : ""} key={item.route} href={`#${item.route}`}>{item.title}</a>)}</nav>)}
       </aside>

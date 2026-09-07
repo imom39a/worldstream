@@ -9,12 +9,13 @@ import {
   agentHeistListingBase64,
   retainedAgentHeistListing02Base64,
   retainedAgentHeistListing03Base64,
+  retainedAgentHeistListing04Base64,
   cooperativePlannerBase64,
   skepticalAuditorBase64,
 } from "./hosted-artifacts.generated.js";
 
 export const AGENT_HEIST_LISTING_DIGEST =
-  "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80";
+  "blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1";
 
 export interface PublicHostedActivity {
   readonly slug: "agent-heist" | "negotiate";
@@ -73,7 +74,7 @@ const agentHeistPublic = Object.freeze({
   publicViewingAvailable: true,
   resultPublication: "Replay-verified summaries can appear in Recent Results.",
   attribution: "Results use reviewed seat names unless a participant opts in to a public profile.",
-  clientPath: "/agent-heist-v2/hosted/",
+  clientPath: "/agent-heist-v3/hosted/",
   houseTerms: {
     exhibition: true,
     maximumAgents: 2,
@@ -93,20 +94,23 @@ const reviewedAgentHeist = Object.freeze({
 
 // Discovery selects only the current revision. Retained formation and results
 // must continue resolving the exact revision accepted before this deployment.
-const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64]
+const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64]
   .map((bytes): ReviewedHostedActivity => {
     const retainedListing = readListingRevision(decode(bytes));
     const houseFillAvailable = retainedListing.value.seats.some(
       (seat) => seat.allowed_house_agent_revisions.length > 0,
     );
+    const originalClientHosted = bytes === retainedAgentHeistListing04Base64;
     return Object.freeze({
       ...reviewedAgentHeist,
       listing: retainedListing,
       public: Object.freeze({
         ...agentHeistPublic,
-        availability: "dependency_unavailable",
-        availabilityMessage: "This retained revision requires its original client artifact, which is not hosted here.",
-        clientPath: null,
+        availability: originalClientHosted ? "available" : "dependency_unavailable",
+        availabilityMessage: originalClientHosted
+          ? "Retained revision with its original client"
+          : "This retained revision requires its original client artifact, which is not hosted here.",
+        clientPath: originalClientHosted ? "/agent-heist-v2/hosted/" : null,
         houseFillAvailable,
         houseTerms: houseFillAvailable ? agentHeistPublic.houseTerms : null,
       }),

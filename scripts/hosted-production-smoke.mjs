@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostedDevelopmentListingAllowlist } from "./hosted-dev.mjs";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const LISTING_DIGEST = "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80";
+const LISTING_DIGEST = "blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1";
 const CONTROLLER_AUTHORITY = "hosted-smoke-controller-authority-000000000000";
 const SERVICE_AUTHORITY = "hosted-smoke-service-authority-000000000000000";
 
@@ -35,11 +35,11 @@ async function main() {
   ]);
   await Promise.all([
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v2.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v3.json"),
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "inspector-web.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "inspector-web-v2.json"),
       join(assetRoot, "inspector-web.json"),
     ),
     copyFile(

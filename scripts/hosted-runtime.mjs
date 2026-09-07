@@ -350,11 +350,14 @@ async function writeClientImport(layout) {
   }
   inspectorDeployment.surfaces = inspectorDeployment.surfaces.map((surface) => ({
     ...surface,
-    launch_url: new URL("/inspector/", clientOrigin).toString(),
+    launch_url: new URL(
+      inspectorRelease.surfaces.find((candidate) => candidate.surface_id === surface.surface_id).entrypoint,
+      clientOrigin,
+    ).toString(),
   }));
   heistDeployment.surfaces = heistDeployment.surfaces.map((surface) => ({
     ...surface,
-    launch_url: new URL("/agent-heist-v2/hosted/", clientOrigin).toString(),
+    launch_url: new URL("/agent-heist-v3/hosted/", clientOrigin).toString(),
   }));
   bindings.deployments = [inspectorDeployment, heistDeployment];
   bindings.inspector_fallback = fallback;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createLaunch,
@@ -27,38 +27,37 @@ export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
   }, []);
 
   return (
-    <div className="site-shell hosted-shell">
+    <div className="site-shell hosted-shell discovery-shell">
       <a className="skip-link" href="#main-content">Skip to content</a>
       <SiteHeader onNavigate={onNavigate} />
       <main id="main-content">
-        <section className="arena-hero">
-          <div>
-            <span className="eyebrow">Live activities for people and agents</span>
-            <h1>Enter a shared world. <em>Bring your own strategy.</em></h1>
-            <p>
-              Choose a reviewed activity, invite people or their agents, and watch one live outcome unfold. WorldStream keeps the room ordered; each activity brings its own experience.
-            </p>
+        <section className="platform-intro" aria-labelledby="platform-title">
+          <div className="platform-intro-copy">
+            <span className="eyebrow">A playground for people + agents</span>
+            <h1 id="platform-title">Different worlds.<br /><em>Your next move.</em></h1>
+            <p>Step into an activity. Take a role. See what happens when people and agents play together.</p>
+            <a className="explore-activities" href="#activities-title">Explore activities <span aria-hidden="true">↗</span></a>
           </div>
-          <div className="arena-pulse" aria-label="How a live activity starts">
-            <Step number="01" title="Choose" detail="Pick a reviewed activity" />
-            <Step number="02" title="Gather" detail="Invite people or fill with House Agents" />
-            <Step number="03" title="Play" detail="Enter the activity's own live client" />
-          </div>
+          <span className="platform-world-caption" aria-hidden="true"><i />Many worlds. One place to play.</span>
         </section>
 
         <section className="activity-catalog" aria-labelledby="activities-title">
           <div className="section-heading">
             <div>
-              <span className="section-label">Hosted preview</span>
-              <h2 id="activities-title">Choose an activity</h2>
+              <span className="section-label">The activity collection</span>
+              <h2 id="activities-title">Pick your world<span className="heading-dot">.</span></h2>
             </div>
             <SessionBadge state={session.state} />
           </div>
 
-          {catalogState === "loading" ? <CatalogNotice>Loading reviewed activities…</CatalogNotice> : null}
+          {catalogState === "loading" ? <CatalogNotice>Finding available activities…</CatalogNotice> : null}
           {catalogState === "unavailable" ? (
-            <CatalogNotice>The activity catalog is not available. No fallback client was selected.</CatalogNotice>
+            <div className="catalog-unavailable">
+              <CatalogNotice>Live activities are temporarily unavailable. Please check back shortly.</CatalogNotice>
+              <a href="/demos/agent-heist">Explore the offline Agent Heist demo ↗</a>
+            </div>
           ) : null}
+          {catalogState === "ready" && activities.length === 0 ? <CatalogNotice>No activities are available right now. Check back for the next activity.</CatalogNotice> : null}
           <div className="activity-grid">
             {activities.map((activity) => (
               <ActivityCard key={activity.slug} activity={activity} onChoose={() => setSelected(activity)} />
@@ -82,24 +81,20 @@ export function CatalogPage({ onNavigate }: { onNavigate: Navigate }) {
 
         <RecentResultsPanel onNavigate={onNavigate} />
 
-        <section className="boundary-note" aria-label="Platform boundary">
+        <section className="boundary-note" aria-label="About live activities">
           <div>
-            <span className="section-label">Thin by design</span>
-            <h2>The platform forms the room. The activity owns the experience.</h2>
+            <span className="section-label">One platform. Many ways to play.</span>
+            <h2>Play yourself. Or bring your agent.</h2>
           </div>
           <p>
-            This site handles sign-in, invitations, seats, and entry. It does not interpret game rules or copy the activity UI. After the live Run exists, you move into its reviewed Activity Client.
+            Invite people, join a room, and make decisions together. Each activity has its own roles, rules, and shared outcome.
           </p>
-          <a href="/demos/agent-heist">Open the recorded technical fixture</a>
+          <a href="https://worldstream-manual.vercel.app">Explore WorldStream <span aria-hidden="true">↗</span></a>
         </section>
       </main>
       <SiteFooter />
     </div>
   );
-}
-
-function Step({ number, title, detail }: { number: string; title: string; detail: string }) {
-  return <div><span>{number}</span><strong>{title}</strong><small>{detail}</small></div>;
 }
 
 function SessionBadge({ state }: { state: "loading" | "guest" | "authenticated" | "unavailable" }) {
@@ -121,30 +116,33 @@ function ActivityCard({ activity, onChoose }: { activity: HostedActivitySummary;
   const available = activity.availability === "available";
   return (
     <article className={`activity-card activity-${activity.slug}`}>
-      <div className="activity-card-art" aria-hidden="true">
-        <div className="activity-orbit"><i /><i /><i /></div>
-        <span>{activity.slug === "agent-heist" ? "COOPERATIVE STRATEGY" : "MULTI-PARTY AGREEMENT"}</span>
-      </div>
-      <div className="activity-card-body">
+      <div className="activity-card-art">
         <div className="card-status-row">
-          <span>Reviewed activity</span>
+          <span className="pack-label"><i aria-hidden="true" />Activity Pack</span>
           <strong className={`availability availability-${activity.availability}`}>
-            {available ? "Live" : activity.availability === "coming_soon" ? "Coming soon" : "Unavailable"}
+            {available ? "Available" : activity.availability === "coming_soon" ? "Coming soon" : "Unavailable"}
           </strong>
         </div>
-        <h3>{activity.title}</h3>
+        <div className="activity-cover-copy">
+          <h3>{activity.slug === "agent-heist" ? <>Agent<br />Heist</> : activity.title}</h3>
+          <span>{activity.seatSummary}</span>
+        </div>
+      </div>
+      <div className="activity-card-body">
         <p>{activity.description}</p>
         <div className="activity-facts">
-          <span>{activity.seatSummary}</span>
-          <span>{activity.publicViewingAvailable ? "Public spectators allowed" : "Private viewing"}</span>
+          <span>{activity.publicViewingAvailable ? "Spectators welcome" : "Private viewing"}</span>
           <span>{activity.houseFillAvailable ? "Optional House Agents" : "People and external agents"}</span>
         </div>
       </div>
       <div className="activity-card-footer">
-        <span>{activity.availabilityMessage}</span>
-        <button type="button" disabled={!available} onClick={onChoose}>
-          {available ? "Set up a room" : "Not available"}
-        </button>
+        <span className="activity-availability-note">{activity.availabilityMessage}</span>
+        <div className="activity-actions">
+          {activity.slug === "agent-heist" ? <a className={available ? "recorded-entry" : "recorded-entry recorded-entry-primary"} href="/demos/agent-heist"><span aria-hidden="true">▷</span> Watch recorded demo</a> : null}
+          <button type="button" disabled={!available} onClick={onChoose}>
+            {available ? "Enter activity ↗" : activity.availability === "coming_soon" ? "Coming soon" : "Live unavailable"}
+          </button>
+        </div>
       </div>
     </article>
   );
@@ -167,9 +165,22 @@ function LaunchPanel({
 }) {
   const firstSeat = activity.seats[0]?.key ?? "";
   const [seat, setSeat] = useState(firstSeat);
-  const [fillMode, setFillMode] = useState<"people_only" | "house_agents">("house_agents");
+  const [fillMode, setFillMode] = useState<"people_only" | "house_agents">(activity.houseFillAvailable ? "house_agents" : "people_only");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overflow = document.body.style.overflow;
+    element?.showModal();
+    document.body.style.overflow = "hidden";
+    return () => {
+      element?.close();
+      document.body.style.overflow = overflow;
+      opener?.focus();
+    };
+  }, []);
   const idempotencyKey = useMemo(
     () => retainedLaunchKey(activity.slug, seat, fillMode),
     [activity.slug, seat, fillMode],
@@ -196,17 +207,20 @@ function LaunchPanel({
   };
 
   return (
-    <div className="launch-overlay" role="presentation" onMouseDown={(event) => {
+    <dialog ref={dialog} className="launch-overlay" aria-labelledby="launch-title" onCancel={(event) => {
+      event.preventDefault();
+      onClose();
+    }} onClick={(event) => {
       if (event.currentTarget === event.target) onClose();
     }}>
-      <section className="launch-panel" role="dialog" aria-modal="true" aria-labelledby="launch-title">
+      <section className="launch-panel">
         <button className="dialog-close" type="button" aria-label="Close" onClick={onClose}>×</button>
-        <span className="eyebrow">Set up a live room</span>
+        <span className="eyebrow">Your next activity / live room</span>
         <h2 id="launch-title">{activity.title}</h2>
-        <p className="launch-summary">Choose your seat and how to fill seats that people do not claim.</p>
+        <p className="launch-summary">Choose your role and who you want to play with.</p>
 
         <fieldset>
-          <legend>Your seat</legend>
+          <legend>Choose your role</legend>
           <div className="choice-grid">
             {activity.seats.map((candidate) => (
               <label key={candidate.key} className={seat === candidate.key ? "choice-selected" : ""}>
@@ -219,12 +233,12 @@ function LaunchPanel({
         </fieldset>
 
         <fieldset>
-          <legend>Empty seats</legend>
+          <legend>Fill open seats</legend>
           <div className="choice-stack">
-            <label className={fillMode === "house_agents" ? "choice-selected" : ""}>
+            {activity.houseFillAvailable ? <label className={fillMode === "house_agents" ? "choice-selected" : ""}>
               <input type="radio" name="fill" checked={fillMode === "house_agents"} onChange={() => setFillMode("house_agents")} />
               <span><strong>Fill with House Agents</strong><small>Wait 30 seconds for people, then fill up to two open seats.</small></span>
-            </label>
+            </label> : null}
             <label className={fillMode === "people_only" ? "choice-selected" : ""}>
               <input type="radio" name="fill" checked={fillMode === "people_only"} onChange={() => setFillMode("people_only")} />
               <span><strong>People and their agents only</strong><small>You invite every required participant.</small></span>
@@ -233,7 +247,7 @@ function LaunchPanel({
         </fieldset>
 
         <div className="terms-card">
-          <strong>Before you start</strong>
+          <strong>Before you join</strong>
           <p>{activity.resultPublication} {activity.attribution}</p>
           {fillMode === "house_agents" && activity.houseTerms !== null ? (
             <p>
@@ -258,7 +272,7 @@ function LaunchPanel({
         )}
         {error !== null ? <p className="form-error" role="alert">{error}</p> : null}
       </section>
-    </div>
+    </dialog>
   );
 }
 

@@ -17,10 +17,10 @@ The repository contains three first-party browser clients:
 
 | Client | Local surface | Purpose |
 | --- | --- | --- |
-| Agent Heist | `http://127.0.0.1:5173/agent-heist-v2/` | Participant and spectator experience for exact Agent Heist revisions |
+| Agent Heist | `http://127.0.0.1:5173/agent-heist-v3/` | Participant and spectator experience for exact Agent Heist revisions |
 | Negotiate 0.1 | `http://127.0.0.1:5173/negotiate/` | Retained immutable participant and spectator client for the exact 0.1 revision |
-| Negotiate 0.2 | `http://127.0.0.1:5173/negotiate-v2/` | Current participant and spectator client for the exact 0.2 revision |
-| WorldStream Inspector | `http://127.0.0.1:5173/inspector/` | Pack-neutral protocol workbench and configured fallback |
+| Negotiate 0.2 | `http://127.0.0.1:5173/negotiate-v3/` | Current participant and spectator client for the exact 0.2 revision |
+| WorldStream Inspector | `http://127.0.0.1:5173/inspector-v2/` | Pack-neutral protocol workbench and configured fallback |
 
 The authenticated CLI is the Host Operator plane. The headless Controller
 manages Runtime lifecycle, Room formation, scoped connection preparation, and
@@ -173,8 +173,8 @@ new exact local Release and Binding; changing only the Host Content Security
 Policy does not redirect a client.
 
 Agent Heist v2 has two explicit entrypoints in the same immutable artifact.
-`/agent-heist-v2/` is the local kernel client used by `worldstreamctl client open`.
-`/agent-heist-v2/hosted/` requires the authenticated hosted Platform and direct
+`/agent-heist-v3/` is the local kernel client used by `worldstreamctl client open`.
+`/agent-heist-v3/hosted/` requires the authenticated hosted Platform and direct
 Gateway stream. It does not fall back to local authority when sign-in fails.
 The earlier `/agent-heist/` path returns 404 unless an operator separately
 retains and serves the exact original artifact. Existing records are not
@@ -190,20 +190,20 @@ VITE_WORLDSTREAM_SUPERVISOR_URL=http://127.0.0.1:19420 pnpm ui:build
 
 node scripts/prepare-local-activity-client.mjs \
   --dist clients/agent-heist-web/dist \
-  --source-release config/activity-clients/releases/agent-heist-web-v2.json \
+  --source-release config/activity-clients/releases/agent-heist-web-v3.json \
   --pack-id worldstream.agent-heist \
   --pack-version 0.2.0 \
   --pack-digest blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820 \
   --access-mode participant \
   --roles navigator,insider,broker \
   --surface heist-web \
-  --entrypoint /agent-heist-v2/ \
-  --launch-url http://127.0.0.1:15173/agent-heist-v2/ \
+  --entrypoint /agent-heist-v3/ \
+  --launch-url http://127.0.0.1:15173/agent-heist-v3/ \
   --fallback-dist web/console/dist \
   --fallback-source-release config/activity-clients/releases/inspector-web.json \
   --fallback-surface inspector-web \
-  --fallback-entrypoint /inspector/ \
-  --fallback-launch-url http://127.0.0.1:15173/inspector/ \
+  --fallback-entrypoint /inspector-v2/ \
+  --fallback-launch-url http://127.0.0.1:15173/inspector-v2/ \
   --output .worldstream/heist-client-19420
 ```
 
@@ -275,7 +275,7 @@ Distribution manifest yet.
 The Client Host retains the exact original Negotiate artifact
 `sha256:ba00f3e8f72a5012ce6e9018c457ec36d70a0809ceb5e421b946006f50855429`
 at its immutable `/negotiate/` entrypoint. It serves the newer Release at the
-separate `/negotiate-v2/` entrypoint. The conformance lane hashes each mounted
+separate `/negotiate-v3/` entrypoint. The conformance lane hashes each mounted
 directory and rejects a Deployment whose launch target does not serve the
 artifact declared by its exact Release.
 

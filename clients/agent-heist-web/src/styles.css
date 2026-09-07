@@ -1,14 +1,16 @@
+@import "../../../web/design/tokens.css";
 :root {
-  --purple-950: #292957;
-  --purple-800: #3e3d7e;
-  --purple-700: #504aa5;
-  --purple-600: #675ce7;
-  --turquoise-500: #00cfc5;
-  --slate-950: #20273a;
-  --slate-800: #334155;
-  --slate-600: #667085;
-  --white: #ffffff;
-  color: var(--slate-800);
+  --game-void: #080e13;
+  --game-panel: #101b23;
+  --game-raised: #16242e;
+  --game-line: #2a3b45;
+  --game-muted: #a0b1bb;
+  --game-text: #eef3ed;
+  --game-gold: var(--ws-gold);
+  --game-cyan: var(--ws-cyan);
+  --game-display: var(--ws-ui-font);
+  --heist-art: url("./assets/heist-rooftop.webp");
+  color: var(--ws-text);
   background: #10191e;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
@@ -16,10 +18,10 @@
 }
 
 * { box-sizing: border-box; }
-body { min-width: 320px; min-height: 100vh; margin: 0; }
+body { min-width: 0; min-height: 100vh; margin: 0; }
 button, input, select { color: inherit; font: inherit; }
 h1, h2, h3, h4, p { margin-top: 0; }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--turquoise-500); outline-offset: 3px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--ws-cyan); outline-offset: 3px; }
 .eyebrow { color: #b8b5ea; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 
 .heist-live-shell { min-height: 100vh; background: #10191e; }
@@ -30,21 +32,21 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   justify-content: space-between;
   gap: 30px;
   padding: 28px max(28px, calc((100vw - 1420px) / 2));
-  color: var(--white);
-  background: var(--purple-700);
+  color: var(--ws-text);
+  background: var(--ws-gold);
 }
 .live-client-header h1 { margin: 8px 0 0; font-size: clamp(40px, 6vw, 68px); line-height: 0.92; letter-spacing: -0.055em; }
 .live-client-badges { display: grid; justify-items: end; gap: 8px; }
 .live-mode { display: inline-flex; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.22); border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
 .live-mode i { width: 8px; height: 8px; border-radius: 50%; background: #ffc868; }
-.live-mode-live i { background: var(--turquoise-500); box-shadow: 0 0 0 4px rgba(0,207,197,0.16); }
+.live-mode-live i { background: var(--ws-cyan); box-shadow: 0 0 0 4px rgba(0,207,197,0.16); }
 .agent-assist { color: #deddf8; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
 .agent-assist-available { color: #7ef0ca; }
 .agent-assist-unavailable { color: #ffd08a; }
 .live-client-notice { display: grid; grid-template-columns: minmax(190px, 0.28fr) 1fr; gap: 22px; padding: 17px max(28px, calc((100vw - 1180px) / 2)); color: #d8fffc; background: #087d79; font-size: 12px; line-height: 1.5; }
-.live-client-notice strong { color: var(--white); }
+.live-client-notice strong { color: var(--ws-text); }
 
-.heist-status { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 0 max(24px, calc((100vw - 1420px) / 2)); color: var(--white); background: var(--purple-800); }
+.heist-status { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 0 max(24px, calc((100vw - 1420px) / 2)); color: var(--ws-text); background: var(--ws-raised); }
 .heist-status > div { display: grid; min-height: 88px; align-content: center; gap: 8px; padding: 18px 21px; border-left: 1px solid rgba(255,255,255,0.14); }
 .heist-status > div:last-child { border-right: 1px solid rgba(255,255,255,0.14); }
 .heist-status span { color: rgba(255,255,255,0.72); font-size: 11px; font-weight: 800; letter-spacing: 0.03em; }
@@ -71,7 +73,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .record-panel-heading h2 { margin: 8px 0 0; color: #f2f6f7; font-size: clamp(25px, 3.2vw, 40px); line-height: 1.02; }
 .play-state { display: inline-flex; min-height: 38px; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid #435861; border-radius: 5px; color: #b5c3c8; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
 .play-state i { width: 7px; height: 7px; border-radius: 50%; background: #6a7a80; }
-.play-state i.is-running { background: var(--turquoise-500); box-shadow: 0 0 0 4px rgba(0,207,197,0.12); }
+.play-state i.is-running { background: var(--ws-cyan); box-shadow: 0 0 0 4px rgba(0,207,197,0.12); }
 .record-footer { display: flex; min-height: 48px; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; padding-block: 8px; color: #a8b7bc; font-size: 11px; font-weight: 800; letter-spacing: 0.03em; }
 
 .authorized-membership { display: grid; grid-template-columns: 1fr auto; gap: 9px 12px; padding: 13px; border: 1px solid #2d4048; border-radius: 6px; background: #10191e; }
@@ -82,7 +84,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .crew-presence i { width: 7px; height: 7px; border-radius: 50%; background: #5f7179; }
 .crew-presence i.is-present { background: #4ee3b4; }
 .crew-presence strong { color: #9fb0b6; font-size: 10px; }
-.reconnect-button { width: 100%; min-height: 40px; margin-top: 12px; border: 1px solid #756cf0; border-radius: 5px; color: var(--white); background: #403d87; cursor: pointer; font-size: 11px; font-weight: 800; }
+.reconnect-button { width: 100%; min-height: 40px; margin-top: 12px; border: 1px solid #756cf0; border-radius: 5px; color: var(--ws-text); background: #403d87; cursor: pointer; font-size: 11px; font-weight: 800; }
 
 .live-board { display: grid; gap: 18px; padding-bottom: 18px; }
 .phase-window { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #2d4048; border-radius: 7px; background: #2d4048; }
@@ -130,12 +132,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .live-action-form label { display: grid; gap: 5px; color: #adbbc0; font-size: 10px; }
 .live-action-form input, .live-action-form select { min-width: 0; min-height: 34px; padding: 6px 8px; border: 1px solid #40545c; border-radius: 4px; color: #e7eef0; background: #142027; font-size: 11px; }
 .live-action-form input[type="checkbox"] { width: 18px; min-height: 18px; }
-.live-action-form button { min-height: 37px; border: 1px solid #756cf0; border-radius: 5px; color: var(--white); background: #403d87; cursor: pointer; font-size: 10px; font-weight: 800; }
+.live-action-form button { min-height: 37px; border: 1px solid #756cf0; border-radius: 5px; color: var(--ws-text); background: #403d87; cursor: pointer; font-size: 10px; font-weight: 800; }
 .live-action-form button:disabled { border-color: #405159; color: #84959c; background: #1b282e; cursor: not-allowed; }
 .live-action-form output { color: #79e9e1; font-size: 10px; line-height: 1.4; }
 
 .heist-boundary-shell { display: grid; min-height: 100vh; place-content: center; justify-items: start; padding: 32px; color: #dce6e9; background: #10191e; }
-.heist-boundary-shell h1 { max-width: 780px; margin: 12px 0 18px; color: var(--white); font-size: clamp(38px, 7vw, 72px); letter-spacing: -0.05em; }
+.heist-boundary-shell h1 { max-width: 780px; margin: 12px 0 18px; color: var(--ws-text); font-size: clamp(38px, 7vw, 72px); letter-spacing: -0.05em; }
 .heist-boundary-shell p { max-width: 620px; color: #aebdc2; font-size: 14px; line-height: 1.65; }
 
 @media (max-width: 1000px) {
@@ -164,4 +166,104 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+
+/* Game surfaces share a visual language; all live facts still come from the Projection. */
+.heist-live-shell { color: var(--game-text); background: var(--game-void); }
+.heist-live-shell h1, .heist-live-shell h2, .heist-live-shell h3, .mission-stage h3 { font-family: var(--game-display); font-weight: 700; }
+.live-client-header { min-height: 108px; align-items: center; padding-block: 22px; border-bottom: 1px solid var(--game-line); background: var(--game-void); }
+.live-client-header .eyebrow { color: var(--game-muted); font-size: .75rem; letter-spacing: .16em; }
+.live-client-header h1 { margin-top: 8px; font-size: 2.75rem; letter-spacing: .015em; text-transform: uppercase; }
+.live-client-header h1 em { color: var(--game-gold); font-style: normal; }
+.live-mode { border-color: var(--game-line); border-radius: 3px; font-size: .75rem; }
+.agent-assist { font-size: .75rem; color: var(--game-muted); }
+.agent-assist-available { color: var(--game-cyan); }
+.live-client-notice { padding: 13px max(24px, calc((100vw - 1420px) / 2)); border-bottom: 1px solid #28473f; color: #b4d4cb; background: #10251f; font-size: .875rem; }
+.heist-live-shell .heist-status { background: #0d161d; }
+.heist-live-shell .heist-status > div { border-color: var(--game-line); }
+.heist-live-shell .heist-status span { color: var(--game-muted); font-size: .75rem; font-weight: 500; }
+.heist-live-shell .heist-status strong { font-size: .875rem; }
+.heist-live-shell .inspector { grid-template-columns: 230px minmax(0, 1fr) 330px; max-width: 1600px; margin: 0 auto; min-height: 650px; background: var(--game-void); }
+.heist-live-shell .inspector-controls, .heist-live-shell .record-detail { background: #0d161d; border-color: var(--game-line); }
+.heist-live-shell .record-panel { padding: 26px 22px 0; background: var(--game-void); }
+.heist-live-shell .record-panel-heading h2 { font-size: 2.5rem; letter-spacing: 0; }
+.heist-live-shell .record-panel-heading > div > span { color: var(--game-muted); font-size: .75rem; letter-spacing: .15em; text-transform: uppercase; }
+.heist-live-shell .panel-heading { font-size: .875rem; }
+.heist-live-shell .panel-heading > span { color: var(--game-gold); border-color: #5b4b36; font-size: .75rem; }
+.crew-role-card { display: grid; justify-items: center; gap: 9px; padding: 24px 15px; margin-bottom: 16px; border: 1px solid #36534f; background: radial-gradient(ellipse at top, #173c37, transparent 80%), #101d23; text-align: center; }
+.role-emblem { display: grid; width: 76px; height: 76px; place-content: center; color: var(--game-cyan); font-size: 3.5rem; line-height: 1; }
+.crew-role-card > strong { color: var(--game-text); font: 700 1.65rem var(--game-display); text-transform: uppercase; letter-spacing: .06em; }
+.crew-role-card > span:last-child { color: var(--game-muted); font-size: .875rem; line-height: 1.5; }
+.role-insider { border-color: #4b4461; background: radial-gradient(ellipse at top, #302a43, transparent 80%), #101d23; }
+.role-insider .role-emblem { color: #c9b2ec; }
+.role-broker { border-color: #5d4a30; background: radial-gradient(ellipse at top, #403222, transparent 80%), #101d23; }
+.role-broker .role-emblem { color: var(--game-gold); }
+.heist-live-shell .authorized-membership { gap: 12px; background: transparent; border: 0; padding: 6px 0; }
+.heist-live-shell .authorized-membership :is(span, strong), .heist-live-shell .crew-presence li, .heist-live-shell .crew-presence strong { font-size: .8125rem; }
+.heist-live-shell .crew-presence li { padding: 13px 9px; border-radius: 3px; }
+.heist-live-shell .record-footer { color: var(--game-muted); font-size: .75rem; font-weight: 400; }
+.heist-live-shell .live-panel-label { color: var(--game-cyan); font-size: .75rem; letter-spacing: .1em; }
+.heist-live-shell .phase-window { border-radius: 3px; }
+.heist-live-shell .phase-window strong { font-size: .875rem; }
+.heist-live-shell .live-board h3 { font-size: 1.75rem; }
+.heist-live-shell .live-board-grid > section, .heist-live-shell .plan-board, .heist-live-shell .outcome-card { border-radius: 3px; background: var(--game-panel); }
+.heist-live-shell .live-data-list li { flex-wrap: wrap; font-size: .875rem; }
+.heist-live-shell .commitment-meter span, .heist-live-shell .live-board section > p, .heist-live-shell .empty-copy, .heist-live-shell .private-empty { font-size: .875rem; line-height: 1.6; }
+.heist-live-shell .plan-grid { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+.heist-live-shell .plan-grid :is(p, footer), .heist-live-shell .plan-grid article > div { font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.heist-live-shell .plan-grid h4 { font-size: 1rem; }
+.heist-live-shell .private-clue-list article { background: #1c2234; border-color: #4d4865; border-left: 3px solid #bba4dd; border-radius: 3px; }
+.heist-live-shell .private-clue-list :is(span, code), .heist-live-shell .own-commitment :is(span, small), .heist-live-shell .incoming-exchanges :is(strong, small) { font-size: .75rem; line-height: 1.5; }
+.heist-live-shell .private-clue-list strong, .heist-live-shell .own-commitment strong, .heist-live-shell .incoming-exchanges span { font-size: .875rem; }
+.heist-live-shell .live-action-form { padding: 16px; border-radius: 3px; border-color: #445045; background: #121e24; }
+.heist-live-shell .live-action-form > div strong { font: 700 1.25rem var(--game-display); }
+.action-ready { color: var(--game-cyan); font-size: .75rem; }
+.heist-live-shell .live-action-form label { font-size: .875rem; }
+.heist-live-shell .live-action-form :is(input, select) { min-height: 44px; font-size: 1rem; border-radius: 3px; }
+.heist-live-shell .live-action-form input[type="checkbox"] { min-height: 22px; width: 22px; accent-color: var(--game-gold); }
+.heist-live-shell .live-action-form button, .heist-live-shell .reconnect-button { min-height: 44px; border: 1px solid var(--game-gold); border-radius: 2px; color: #151710; background: var(--game-gold); font-size: .875rem; text-transform: capitalize; transition: background .18s ease; }
+.heist-live-shell .live-action-form button:enabled:hover, .heist-live-shell .reconnect-button:hover { background: #ffd89d; }
+.heist-live-shell .live-action-form button:disabled { color: #a0b1bb; border-color: #405159; background: #1b282e; }
+.heist-live-shell .live-action-form output { font-size: .875rem; }
+.heist-live-shell .control-note :is(span, p) { font-size: .875rem; }
+.technical-details { margin-top: 22px; border-top: 1px solid var(--game-line); padding-top: 12px; color: var(--game-muted); font-size: .75rem; line-height: 1.65; }
+.technical-details summary { min-height: 38px; padding-block: 8px; color: var(--game-muted); cursor: pointer; }
+.technical-details code { display: block; overflow-wrap: anywhere; }
+.technical-details p { font-size: .8125rem; }
+.action-details { margin-top: 0; }
+.mission-stage { min-width: 0; margin-bottom: 16px; border: 1px solid #34504e; background: var(--game-void); }
+.mission-scene { display: flex; min-height: 270px; flex-direction: column; justify-content: space-between; padding: 20px 24px 26px; background-image: linear-gradient(0deg, #081116 0%, #08111633 75%), var(--heist-art); background-size: cover; background-position: center 48%; }
+.mission-scene-label { align-self: flex-start; max-width: 100%; padding: 6px 9px; border: 1px solid #74908566; color: #c2d4cd; background: #081116bd; font-size: .6875rem; letter-spacing: .1em; text-transform: uppercase; }
+.mission-scene h3, .heist-live-shell .mission-scene h3 { max-width: 390px; margin: 10px 0 0; color: var(--game-text); font: 700 clamp(1.75rem, 2.8vw, 2.5rem)/1.05 var(--game-display); text-wrap: balance; }
+.mission-scene .live-panel-label { color: var(--game-gold); font-size: .75rem; text-transform: uppercase; }
+.mission-phases { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); list-style: none; gap: 0; margin: 0; padding: 0; }
+.mission-phases.recorded-phases { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.mission-phases li { display: grid; justify-items: center; gap: 8px; min-width: 0; padding: 13px 3px; border-top: 2px solid #2a3b45; color: #8b9da7; }
+.mission-phases li > span { font: 700 .875rem var(--game-display); }
+.mission-phases strong { max-width: 100%; font: 700 .75rem var(--game-display); text-transform: capitalize; overflow-wrap: anywhere; }
+.mission-phases .phase-current { color: var(--game-gold); border-color: var(--game-gold); background: #f4bc6610; }
+.mission-phases .phase-past { color: var(--game-cyan); border-color: #528e82; }
+.heist-boundary-shell { color: var(--game-text); background-image: linear-gradient(90deg, #080e13f5, #080e13b8), var(--heist-art); background-size: cover; background-position: center; }
+.heist-boundary-shell h1 { font-family: var(--game-display); letter-spacing: 0; }
+.heist-boundary-shell p { font-size: 1rem; }
+.heist-skip-link { position: fixed; z-index: 30; top: 8px; left: 8px; padding: 12px; color: #080e13; background: var(--game-gold); transform: translateY(-160%); }
+.heist-skip-link:focus { transform: translateY(0); }
+.heist-live-shell :is(button, input, select, a, summary):focus-visible { outline: 2px solid var(--game-gold); outline-offset: 4px; }
+@media (max-width: 1150px) {
+  .heist-live-shell .inspector { grid-template-columns: 210px minmax(0, 1fr); }
+  .heist-live-shell .record-detail { grid-column: 1 / -1; display: block; }
+  .heist-live-shell .live-offer-list { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); align-items: start; }
+}
+@media (max-width: 650px) {
+  .heist-live-shell .inspector { grid-template-columns: minmax(0, 1fr); }
+  .heist-live-shell .record-panel { padding: 24px 12px 0; }
+  .heist-live-shell .live-client-header { gap: 18px; }
+  .heist-live-shell .heist-status > div { min-height: 78px; padding: 12px; }
+  .heist-live-shell .inspector-controls { display: block; }
+  .crew-role-card { grid-template-columns: 65px 1fr; justify-items: start; text-align: left; padding: 16px; }
+  .crew-role-card .role-emblem { grid-row: span 2; width: 60px; height: 60px; }
+  .crew-role-card > span:last-child { grid-column: 2; }
+  .mission-scene { min-height: 260px; padding-inline: 16px; }
+  .mission-phases, .mission-phases.recorded-phases { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .live-board-grid, .phase-window { grid-template-columns: minmax(0, 1fr); }
 }

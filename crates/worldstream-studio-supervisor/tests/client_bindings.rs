@@ -343,7 +343,7 @@ fn loads_the_repository_client_host_configuration_without_pack_specific_code() {
     assert!(matches!(
         store.select(&heist_spectator, None),
         Ok(ClientSelectionV1::Selected { candidate })
-            if candidate.launch_url == "http://127.0.0.1:5173/agent-heist-v2/"
+            if candidate.launch_url == "http://127.0.0.1:5173/agent-heist-v3/"
     ));
 
     let negotiate_participant = ClientSelectionRequestV1 {
@@ -376,6 +376,6 @@ fn loads_the_repository_client_host_configuration_without_pack_specific_code() {
     assert!(matches!(
         store.select(&unknown_pack, None),
         Ok(ClientSelectionV1::InspectorFallback { candidate })
-            if candidate.launch_url == "http://127.0.0.1:5173/inspector/"
+            if candidate.launch_url == "http://127.0.0.1:5173/inspector-v2/"
     ));
 }

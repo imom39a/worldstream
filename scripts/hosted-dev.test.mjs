@@ -9,14 +9,15 @@ import {
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
 
-test("local and Fly gateways retain both historical Listings as well as current discovery", async () => {
+test("local and Fly gateways retain all retained Listings as well as current discovery", async () => {
   const fly = await readFile(new URL("../packaging/hosted/fly.toml", import.meta.url), "utf8");
   const value = fly.split("\n").find((line) => line.trim().startsWith("WORLDSTREAM_LISTING_ALLOWLIST = "));
   assert.ok(value);
   const deployed = JSON.parse(value.slice(value.indexOf("=") + 1).trim());
   assert.equal(deployed, hostedDevelopmentListingAllowlist());
   const admitted = new Set(deployed.split(","));
-  assert.equal(admitted.size, 3);
+  assert.equal(admitted.size, 4);
+  assert.ok(admitted.has("blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80"));
   assert.ok(admitted.has("blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1"));
   assert.ok(admitted.has("blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956"));
 });

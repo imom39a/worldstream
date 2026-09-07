@@ -11,6 +11,7 @@ on:
       - pnpm-workspace.yaml
       - scripts/verify-developer-manual.mjs
       - web/manual/**
+      - web/design/**
   workflow_dispatch:
 
 permissions:

@@ -15,14 +15,14 @@ const buildRoots = new Map([
   ["worldstream.inspector.web", "web/console/dist"],
 ]);
 const currentReleaseFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v2.json"],
-  ["worldstream.negotiate.web", "negotiate-web-v2.json"],
-  ["worldstream.inspector.web", "inspector-web.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v3.json"],
+  ["worldstream.negotiate.web", "negotiate-web-v3.json"],
+  ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const currentEvidenceFiles = new Map([
-  ["worldstream.agent-heist.web", "agent-heist-web-v2.json"],
-  ["worldstream.negotiate.web", "negotiate-web-v2.json"],
-  ["worldstream.inspector.web", "inspector-web-v1.json"],
+  ["worldstream.agent-heist.web", "agent-heist-web-v3.json"],
+  ["worldstream.negotiate.web", "negotiate-web-v3.json"],
+  ["worldstream.inspector.web", "inspector-web-v2.json"],
 ]);
 const expectedChecks = new Map([
   ["worldstream.agent-heist.web", [
@@ -83,7 +83,7 @@ for (const { name, value: evidence } of evidenceDocuments) {
   check(
     JSON.stringify(evidence.checks) === JSON.stringify([
       ...expectedChecks.get(evidence.subject.client_id),
-      ...(name === "agent-heist-web-v2.json" ? [
+      ...(["agent-heist-web-v2.json", "agent-heist-web-v3.json"].includes(name) ? [
         "deployment-owned-stream-bootstrap-and-recovery",
         "separate-local-kernel-and-hosted-entrypoints-without-auth-fallback",
       ] : []),
@@ -288,10 +288,14 @@ async function verifySourceBoundaries() {
     "Agent Heist WebMCP surface is missing its bounded reviewed tools",
   );
   for (const [prefix, root] of [
-    ["/agent-heist-v2/", "clients/agent-heist-web/dist"],
-    ["/negotiate-v2/", "clients/negotiate-web/dist"],
+    ["/agent-heist-v3/", "clients/agent-heist-web/dist"],
+    ["/agent-heist-v2/", "config/activity-clients/artifacts/agent-heist-web-v2"],
+    ["/negotiate-v3/", "clients/negotiate-web/dist"],
+    ["/negotiate-v2/", "config/activity-clients/artifacts/negotiate-web-v2"],
     ["/negotiate/", "config/activity-clients/artifacts/negotiate-web-v1"],
-    ["/", "web/console/dist"],
+    ["/inspector-v2/", "web/console/dist"],
+    ["/inspector/", "config/activity-clients/artifacts/inspector-web-v1"],
+    ["/", "config/activity-clients/artifacts/inspector-web-v1"],
   ]) {
     const mounted = hostMounts.get(prefix);
     check(mounted !== undefined && relative(workspace, mounted) === root, `exact Activity Client Host is missing ${prefix} -> ${root}`);

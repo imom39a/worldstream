@@ -36,7 +36,7 @@ test("each selected Negotiate deployment target serves its declared exact artifa
   const bootstrap = await readJson("config/activity-clients/local-bindings.json");
   const releases = await Promise.all([
     readJson("config/activity-clients/releases/negotiate-web.json"),
-    readJson("config/activity-clients/releases/negotiate-web-v2.json"),
+    readJson("config/activity-clients/releases/negotiate-web-v3.json"),
   ]);
   const releasesByDigest = new Map(releases.map((release) => [release.release_digest, release]));
   const mountsByEntrypoint = new Map(activityClientMounts.map((mount) => [mount.prefix, mount.root]));
@@ -54,7 +54,7 @@ test("each selected Negotiate deployment target serves its declared exact artifa
     deployments.flatMap((deployment) => deployment.surfaces.map(
       (surface) => new URL(surface.launch_url).pathname,
     )).sort(),
-    ["/negotiate-v2/", "/negotiate/"],
+    ["/negotiate-v3/", "/negotiate/"],
   );
   for (const deployment of deployments) {
     const release = releasesByDigest.get(deployment.release_digest);
@@ -74,10 +74,10 @@ test("the Activity Client Host keeps retained and current Negotiate artifacts di
   const host = await startActivityClientHost({ port: 0 });
   try {
     const retained = await (await fetch(`${host.origin}/negotiate/`)).text();
-    const current = await (await fetch(`${host.origin}/negotiate-v2/`)).text();
+    const current = await (await fetch(`${host.origin}/negotiate-v3/`)).text();
     assert.match(retained, /\/negotiate\/assets\//);
-    assert.doesNotMatch(retained, /\/negotiate-v2\/assets\//);
-    assert.match(current, /\/negotiate-v2\/assets\//);
+    assert.doesNotMatch(retained, /\/negotiate-v3\/assets\//);
+    assert.match(current, /\/negotiate-v3\/assets\//);
     assert.notEqual(retained, current);
   } finally {
     await host.close();
@@ -91,7 +91,7 @@ test("the Activity Client Host authorizes its exact configured Controller origin
     controllerOrigin: "http://127.0.0.1:19420",
   });
   try {
-    const response = await fetch(`${host.origin}/agent-heist-v2/`);
+    const response = await fetch(`${host.origin}/agent-heist-v3/`);
     assert.equal(response.status, 200);
     const policy = response.headers.get("content-security-policy");
     assert.match(policy, /connect-src 'self' http:\/\/127\.0\.0\.1:19420(?:;|$)/);
@@ -105,7 +105,7 @@ test("the Host does not serve the current Heist artifact at its unavailable reta
   const host = await startActivityClientHost({ port: 0 });
   try {
     assert.equal((await fetch(`${host.origin}/agent-heist/`)).status, 404);
-    assert.equal((await fetch(`${host.origin}/agent-heist-v2/`)).status, 200);
+    assert.equal((await fetch(`${host.origin}/agent-heist-v3/`)).status, 200);
   } finally {
     await host.close();
   }
@@ -127,7 +127,7 @@ test("the Activity Client Host rejects non-loopback or non-origin Controller val
 test("the Activity Client Host accepts the canonical IPv6 loopback Controller origin", async () => {
   const host = await startActivityClientHost({ port: 0, controllerOrigin: "http://[::1]:19420" });
   try {
-    const response = await fetch(`${host.origin}/agent-heist-v2/`);
+    const response = await fetch(`${host.origin}/agent-heist-v3/`);
     assert.equal(response.status, 200);
     assert.match(
       response.headers.get("content-security-policy") ?? "",
@@ -157,7 +157,7 @@ test("the Host command applies the declared Controller origin", async () => {
       });
       child.once("exit", (code) => rejectOrigin(new Error(`Host exited ${code}: ${stderr}`)));
     });
-    const response = await fetch(`${origin}/agent-heist-v2/`);
+    const response = await fetch(`${origin}/agent-heist-v3/`);
     assert.equal(response.status, 200);
     assert.match(
       response.headers.get("content-security-policy") ?? "",
@@ -166,5 +166,31 @@ test("the Host command applies the declared Controller origin", async () => {
   } finally {
     child.kill("SIGTERM");
     if (child.exitCode === null) await once(child, "exit");
+  }
+});
+
+test("retained clients still serve their original assets after the shared design release", async () => {
+  const host = await startActivityClientHost({ port: 0 });
+  try {
+    for (const [path, releaseFile] of [
+      ["/agent-heist-v2/", "agent-heist-web-v2.json"],
+      ["/negotiate-v2/", "negotiate-web-v2.json"],
+      ["/inspector/", "inspector-web.json"],
+    ]) {
+      const release = await readJson(`config/activity-clients/releases/${releaseFile}`);
+      const mount = activityClientMounts.find((candidate) => candidate.prefix === path);
+      assert.equal(await activityClientBuildDigest(mount.root), release.artifacts[0].digest);
+      const html = await (await fetch(`${host.origin}${path}`)).text();
+      const asset = html.match(/src="([^"]+\.js)"/)?.[1];
+      assert.ok(asset);
+      const response = await fetch(new URL(asset, host.origin));
+      assert.match(response.headers.get("content-type"), /javascript/);
+      assert.notEqual(await response.text(), html);
+    }
+    const root = await fetch(host.origin, { redirect: "manual" });
+    assert.equal(root.status, 308);
+    assert.equal(root.headers.get("location"), "/inspector-v2/");
+  } finally {
+    await host.close();
   }
 });

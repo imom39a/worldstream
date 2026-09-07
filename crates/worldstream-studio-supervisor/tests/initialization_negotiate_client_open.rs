@@ -141,9 +141,9 @@ async fn reviewed_import_selects_and_opens_negotiate_0_2_client()
         None,
     )?;
     assert!(matches!(selected, ClientSelectionV1::Selected { candidate }
-        if candidate.candidate_id == "negotiate-0-2-participant-web"
+        if candidate.candidate_id == "negotiate-0-2-participant-web-v3"
             && candidate.client_id == "worldstream.negotiate.web"
-            && candidate.launch_url == "http://127.0.0.1:5173/negotiate-v2/"));
+            && candidate.launch_url == "http://127.0.0.1:5173/negotiate-v3/"));
 
     let broker = ParticipantHandoffBrokerV1::new(
         "http://127.0.0.1:5174",
@@ -174,7 +174,7 @@ async fn reviewed_import_selects_and_opens_negotiate_0_2_client()
     assert!(
         body["client_url"]
             .as_str()
-            .is_some_and(|url| url.starts_with("http://127.0.0.1:5173/negotiate-v2/#handoff=wsh1:"))
+            .is_some_and(|url| url.starts_with("http://127.0.0.1:5173/negotiate-v3/#handoff=wsh1:"))
     );
     assert!(!body.to_string().contains(BEARER));
     Ok(())

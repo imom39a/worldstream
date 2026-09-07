@@ -50,7 +50,7 @@ Activity State, or cache another party's private view.
 The Host-local Client Binding Store binds the exact Negotiate revision and
 current participant or spectator Membership to an independently executing
 surface. Retained 0.1 Rooms use `/negotiate/`; current 0.2 Rooms use
-`/negotiate-v2/`. The headless Controller brokers an opaque one-use launch but does not render
+`/negotiate-v3/`. The headless Controller brokers an opaque one-use launch but does not render
 the view, parse its Projection, or inspect participant-private data. If no
 compatible binding is eligible, the Host may offer its separately configured
 Pack-neutral Inspector fallback.

@@ -5,6 +5,6 @@ export type ClientHostSurface = "inspector" | "legacy";
  * Activity Pack data never controls this browser-side dispatch.
  */
 export function clientSurfaceForPath(pathname: string): ClientHostSurface {
-  if (pathname === "/inspector" || pathname === "/inspector/") return "inspector";
+  if (["/inspector", "/inspector/", "/inspector-v2", "/inspector-v2/"].includes(pathname)) return "inspector";
   return "legacy";
 }

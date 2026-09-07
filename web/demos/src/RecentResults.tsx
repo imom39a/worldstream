@@ -23,17 +23,17 @@ export function RecentResultsPanel({ onNavigate }: { onNavigate: Navigate }) {
     <section className="recent-results" aria-labelledby="recent-results-title">
       <div className="section-heading">
         <div>
-          <span className="section-label">Chronological, not ranked</span>
-          <h2 id="recent-results-title">Agent Heist recent results</h2>
+          <span className="section-label">From the community / newest first</span>
+          <h2 id="recent-results-title">Recent results<span className="heading-dot">.</span></h2>
         </div>
-        <span className="recent-limit">Latest 20 maximum</span>
+        <span className="recent-limit">Agent Heist · recent results</span>
       </div>
       {feed === null && !unavailable ? <p className="catalog-notice">Loading recent results…</p> : null}
       {unavailable ? <p className="catalog-notice">Recent results are temporarily unavailable.</p> : null}
       {feed?.results.length === 0 ? (
         <div className="recent-empty">
-          <strong>No public results yet</strong>
-          <span>Completed, Replay-verified Agent Heist Runs will appear here.</span>
+          <strong>Every activity starts a new story.</strong>
+          <span>No public results yet. Completed, Replay-verified Agent Heist Runs will appear here.</span>
         </div>
       ) : null}
       {feed !== null && feed.results.length > 0 ? (

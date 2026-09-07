@@ -5,6 +5,9 @@ import { clientSurfaceForPath } from "./clientSurface";
 describe("Client Host path selection", () => {
   it("selects the generic Inspector only on its closed path", () => {
     expect(clientSurfaceForPath("/inspector/")).toBe("inspector");
+    expect(clientSurfaceForPath("/inspector-v2/")).toBe("inspector");
+    expect(clientSurfaceForPath("/inspector-v2")).toBe("inspector");
+    expect(clientSurfaceForPath("/inspector-v2/anything")).toBe("legacy");
     expect(clientSurfaceForPath("/inspector")).toBe("inspector");
     expect(clientSurfaceForPath("/inspector/anything")).toBe("legacy");
   });

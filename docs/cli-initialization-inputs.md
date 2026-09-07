@@ -175,7 +175,7 @@ Select an explicit bounded set of existing descriptors:
 ```json
 {
   "schema": "worldstream/client-declaration-import/v1",
-  "release_files": ["./releases/agent-heist-web.json", "./releases/agent-heist-web-v2.json", "./releases/negotiate-web.json", "./releases/negotiate-web-v2.json", "./releases/inspector-web.json"],
+  "release_files": ["./releases/agent-heist-web.json", "./releases/agent-heist-web-v2.json", "./releases/negotiate-web.json", "./releases/negotiate-web-v2.json", "./releases/inspector-web.json", "./releases/agent-heist-web-v3.json", "./releases/negotiate-web-v3.json", "./releases/inspector-web-v2.json"],
   "bindings_file": "./local-bindings.json"
 }
 ```
