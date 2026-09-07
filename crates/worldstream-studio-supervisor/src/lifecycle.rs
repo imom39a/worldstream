@@ -20,6 +20,9 @@ use crate::{DaemonConnectivityV1, DaemonStatusSource};
 const LIFECYCLE_SCHEMA_V1: &str = "worldstream/studio-daemon-lifecycle/v1";
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+#[cfg(test)]
+type StopCompletionGate = Arc<(Mutex<bool>, std::sync::Condvar)>;
+
 /// The complete closed lifecycle vocabulary exposed to Studio.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +130,8 @@ pub struct ConfiguredDaemonLifecycle {
     graceful_timeout: Duration,
     status_source: Arc<dyn DaemonStatusSource>,
     launcher: Arc<dyn ProcessLauncher>,
+    #[cfg(test)]
+    stop_completion_gate: Option<StopCompletionGate>,
 }
 
 struct LifecycleInner {
@@ -179,6 +184,8 @@ impl ConfiguredDaemonLifecycle {
             graceful_timeout,
             status_source: Arc::new(status_source),
             launcher: Arc::new(launcher),
+            #[cfg(test)]
+            stop_completion_gate: None,
         }
     }
 
@@ -201,15 +208,20 @@ impl ConfiguredDaemonLifecycle {
     fn reconcile(&self) {
         {
             let mut inner = self.lock();
+            // The accepted operation owns child completion while in flight.
+            // A status read must not reap an exit and discard a pending restart.
+            if matches!(
+                inner.state,
+                DaemonLifecycleStateV1::Starting | DaemonLifecycleStateV1::Stopping
+            ) {
+                return;
+            }
             if let Some(child) = inner.child.as_mut() {
                 match child.try_wait() {
-                    Ok(Some(exit)) => {
+                    Ok(Some(_)) => {
                         inner.child = None;
                         inner.managed = false;
-                        if inner.state == DaemonLifecycleStateV1::Stopping && exit.success {
-                            inner.state = DaemonLifecycleStateV1::Stopped;
-                            inner.failure = None;
-                        } else if inner.state != DaemonLifecycleStateV1::Stopped {
+                        if inner.state != DaemonLifecycleStateV1::Stopped {
                             inner.state = DaemonLifecycleStateV1::Failed;
                             inner.failure = Some(unexpected_exit());
                         }
@@ -221,12 +233,6 @@ impl ConfiguredDaemonLifecycle {
                         return;
                     }
                 }
-            }
-            if matches!(
-                inner.state,
-                DaemonLifecycleStateV1::Starting | DaemonLifecycleStateV1::Stopping
-            ) {
-                return;
             }
         }
 
@@ -407,6 +413,17 @@ impl ConfiguredDaemonLifecycle {
     }
 
     fn complete_stop(&self, operation_id: u64, restart: bool) {
+        #[cfg(test)]
+        if let Some(gate) = &self.stop_completion_gate {
+            let (lock, wake) = &**gate;
+            let released = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (released, _) = wake
+                .wait_timeout_while(released, Duration::from_secs(5), |released| !*released)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(*released, "test stop completion gate exceeded its deadline");
+        }
         let Some(mut child) = ({
             let mut inner = self.lock();
             if inner.operation_id != operation_id || inner.state != DaemonLifecycleStateV1::Stopping
@@ -495,9 +512,7 @@ trait ManagedDaemon: Send + 'static {
 }
 
 #[derive(Clone, Copy)]
-struct ProcessExit {
-    success: bool,
-}
+struct ProcessExit;
 
 struct OsProcessLauncher;
 
@@ -523,11 +538,7 @@ impl ManagedDaemon for OsManagedDaemon {
     fn try_wait(&mut self) -> Result<Option<ProcessExit>, ()> {
         self.child
             .try_wait()
-            .map(|status| {
-                status.map(|status| ProcessExit {
-                    success: status.success(),
-                })
-            })
+            .map(|status| status.map(|_| ProcessExit))
             .map_err(|_| ())
     }
 
@@ -656,7 +667,7 @@ mod tests {
 
     use super::{
         ConfiguredDaemonLifecycle, DaemonLifecycleStateV1, DaemonLifecycleV1, ManagedDaemon,
-        ProcessExit, ProcessLauncher, lifecycle_router,
+        ProcessExit, ProcessLauncher, StopCompletionGate, lifecycle_router,
     };
     use crate::{
         DaemonConnectivityV1, DaemonHealthV1, DaemonReadinessV1, DaemonStatusSource,
@@ -737,7 +748,7 @@ mod tests {
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Ok(exited.then_some(ProcessExit { success: true }))
+            Ok(exited.then_some(ProcessExit))
         }
 
         fn request_graceful_stop(&mut self) -> Result<(), ()> {
@@ -752,7 +763,7 @@ mod tests {
             let (exited, _) = wake
                 .wait_timeout_while(exited, timeout, |exited| !*exited)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Ok((*exited).then_some(ProcessExit { success: true }))
+            Ok((*exited).then_some(ProcessExit))
         }
     }
 
@@ -804,6 +815,73 @@ mod tests {
         fixture.launcher.allow_exit();
         fixture.wait_for(DaemonLifecycleStateV1::Running).await;
         assert_eq!(fixture.launcher.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_read_cannot_consume_an_exit_owned_by_restart() {
+        let pause = StopCompletionPause(Arc::new((Mutex::new(false), Condvar::new())));
+        let fixture = Fixture::with_stop_completion_gate(
+            DaemonStatusV1::unavailable(),
+            Duration::from_secs(1),
+            Some(Arc::clone(&pause.0)),
+        );
+        fixture.launcher.allow_launch();
+        fixture.post("/api/v1/daemon/start").await;
+        fixture.wait_for(DaemonLifecycleStateV1::Running).await;
+
+        let restarting = fixture.post("/api/v1/daemon/restart").await;
+        assert_eq!(restarting.state, DaemonLifecycleStateV1::Stopping);
+        fixture.launcher.allow_exit();
+        // Force a read after exit but before the restart worker can take the
+        // child. Polling must not consume the worker's accepted operation.
+        let observed = fixture.get().await;
+        assert_eq!(observed.state, DaemonLifecycleStateV1::Stopping);
+        assert_eq!(observed.operation_id, restarting.operation_id);
+        assert!(observed.managed_by_supervisor);
+        for route in ["/api/v1/daemon/stop", "/api/v1/daemon/restart"] {
+            assert_eq!(fixture.post(route).await, observed);
+        }
+        assert_eq!(fixture.launcher.launches.load(Ordering::SeqCst), 1);
+        pause.release();
+        let running = fixture.wait_for(DaemonLifecycleStateV1::Running).await;
+        assert_eq!(running.operation_id, restarting.operation_id);
+        assert_eq!(fixture.launcher.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn exit_without_a_stop_operation_is_still_unexpected() {
+        let fixture = Fixture::new(DaemonStatusV1::unavailable());
+        fixture.launcher.allow_launch();
+        fixture.post("/api/v1/daemon/start").await;
+        fixture.wait_for(DaemonLifecycleStateV1::Running).await;
+
+        fixture.launcher.allow_exit();
+        let failed = fixture.get().await;
+        assert_eq!(failed.state, DaemonLifecycleStateV1::Failed);
+        assert!(!failed.managed_by_supervisor);
+        assert_eq!(
+            failed.failure.as_ref().map(|failure| failure.code.as_str()),
+            Some("unexpected_exit")
+        );
+        assert_eq!(fixture.launcher.launches.load(Ordering::SeqCst), 1);
+    }
+
+    struct StopCompletionPause(StopCompletionGate);
+
+    impl StopCompletionPause {
+        fn release(&self) {
+            let (lock, wake) = &*self.0;
+            *lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            wake.notify_all();
+        }
+    }
+
+    impl Drop for StopCompletionPause {
+        fn drop(&mut self) {
+            self.release();
+        }
     }
 
     #[tokio::test]
@@ -923,6 +1001,14 @@ mod tests {
         }
 
         fn with_timeout(status: DaemonStatusV1, timeout: Duration) -> Self {
+            Self::with_stop_completion_gate(status, timeout, None)
+        }
+
+        fn with_stop_completion_gate(
+            status: DaemonStatusV1,
+            timeout: Duration,
+            stop_completion_gate: Option<StopCompletionGate>,
+        ) -> Self {
             let suffix = format!(
                 "{}-{}",
                 std::process::id(),
@@ -938,13 +1024,14 @@ mod tests {
             fs::write(&config, b"schema_version = 1")
                 .unwrap_or_else(|error| unreachable!("write config fixture: {error}"));
             let launcher = FakeLauncher::default();
-            let control = ConfiguredDaemonLifecycle::with_launcher(
+            let mut control = ConfiguredDaemonLifecycle::with_launcher(
                 executable,
                 config,
                 timeout,
                 FixedStatus(status),
                 launcher.clone(),
             );
+            control.stop_completion_gate = stop_completion_gate;
             Self {
                 router: lifecycle_router(control),
                 launcher,

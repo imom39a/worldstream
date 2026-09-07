@@ -100,8 +100,50 @@ this changes build storage use, not test coverage or production safety checks.
 The earlier full Mac workspace run was stopped after its completed suites
 passed. Newly launched binaries repeatedly spent a long time before program
 entry. That run was built before the final fixture changes and is incomplete;
-it is not exact-source release evidence. The stronger standalone browser
-proof and full final candidate verification must still complete.
+it is not exact-source release evidence.
+
+### Follow-up checks and restart correction
+
+The updated manual is deployed at
+<https://worldstream-manual.vercel.app>. Its lint, nine tests, 28-page link
+check, and production build passed. Published HTML and JavaScript match the
+isolated `18bc58e` build.
+
+The stronger standalone Heist browser proof also passed in that isolated
+source archive. It verified exact Client Release bytes, CLI Room setup,
+protected handoff, authorized Navigator state, live readiness, fragment
+removal, and cookie-based reload. It made no platform-auth or provider calls.
+The copied native binaries still report source `2b1d604`; this is a behavior
+check, not a final-source binary certificate.
+
+Source `342370e51081586c29294a9c8a9cb754a1ed78ab` produced a local Linux AMD64
+image with exact embedded source identity. All eight entrypoint regression
+tests passed. The full image became ready in about five seconds with network
+access disabled, synthetic credentials, a fresh Linux volume, and a 512 MB
+memory limit. Measured peak memory was about 170 MiB, with no OOM events.
+Room inventory was empty and graceful shutdown passed. This is startup
+readiness, not a load, gameplay, or recovery result. The image was not pushed
+to Fly.
+
+CI run `34152563941` passed both foundation jobs, including the appliance and
+same-volume restart check. Its canonical local candidate then failed in a
+Supervisor lifecycle test before it reached the browser story. A status
+read could reap the exiting child while an accepted restart was waiting for
+its worker, changing `Stopping` to a terminal state and losing the restart.
+
+The correction makes reconciliation leave `Starting` and `Stopping` to the
+accepted operation's worker. It does not change APIs or production timeouts.
+A test-only scheduling gate reproduces the exact ordering through HTTP
+routes: the regression failed 20 out of 20 times before the correction and
+passed 100 out of 100 after it. The corrected Supervisor library passed 104
+tests; the original test passed 1,600 concurrent stress runs. Production
+library lint and formatting passed. Broader test-target lint still reports
+unrelated existing findings in other Supervisor test files.
+
+Full hosted CI must run again with this correction. Build a new matching
+image after the corrected source is committed; the `342370e` image does not
+contain the restart fix. None of these checks is a real LLM or deployed
+end-user acceptance result.
 
 ## Remaining work, in order
 
