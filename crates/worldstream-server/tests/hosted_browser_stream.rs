@@ -26,15 +26,18 @@ use worldstream_sqlite::SqliteRoomStore;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 struct HostedFixture {
-    _file: tempfile::NamedTempFile,
     routes: Router,
     member_header: String,
     room: String,
     member: String,
+    // Keep the database's owned parent until the routes and file are dropped.
+    _file: tempfile::NamedTempFile,
+    _directory: tempfile::TempDir,
 }
 
 async fn fixture_for(principal_kind: &str) -> TestResult<HostedFixture> {
-    let file = tempfile::NamedTempFile::new()?;
+    let directory = tempfile::tempdir()?;
+    let file = tempfile::NamedTempFile::new_in(directory.path())?;
     let store = SqliteRoomStore::open(file.path())?;
     let host_bearer = CapabilityBearerV1::from_bytes([0xc1; 32]);
     let principal = "01ARZ3NDEKTSV4RRFFQ69G5FC2".parse()?;
@@ -96,11 +99,12 @@ async fn fixture_for(principal_kind: &str) -> TestResult<HostedFixture> {
         .await?,
     )?;
     Ok(HostedFixture {
-        _file: file,
         routes,
         member_header: format!("Bearer {}", issued.bearer),
         room: created.room_id,
         member: created.member_ids[0].clone(),
+        _file: file,
+        _directory: directory,
     })
 }
 

@@ -2,54 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { resolveBuildRevision } from "../web/demos/buildRevision.ts";
-import { describeDeploymentRequestBoundary } from "../web/demos/requestBoundaryDiagnostic.mjs";
 
 const repository = new URL("../", import.meta.url);
 
 async function manifest(path) {
   return JSON.parse(await readFile(new URL(path, repository), "utf8"));
 }
-
-test("temporary deployment diagnostics expose only bounded URL components and header checks", () => {
-  const diagnostic = describeDeploymentRequestBoundary(new Request(
-    "http://arena.example/api/deployment?code=private-query-value", {
-      headers: {
-        host: "arena.example",
-        "x-forwarded-host": "arena.example",
-        "x-forwarded-proto": "https",
-        "x-forwarded-for": "192.0.2.10",
-        "x-real-ip": "192.0.2.10",
-        "x-vercel-id": "iad1::fixture",
-        authorization: "Bearer private-auth-value",
-        cookie: "private-cookie-value",
-        "x-original-host": "private-original-host-value",
-      },
-    },
-  ), "https://arena.example/");
-  assert.equal(diagnostic.url_scheme, "http:");
-  assert.equal(diagnostic.url_hostname, "arena.example");
-  assert.equal(diagnostic.url_path, "/api/deployment");
-  assert.equal(diagnostic.url_query_present, true);
-  assert.deepEqual(diagnostic.url_query_parameter_names, ["code"]);
-  assert.equal(diagnostic.forwarded_proto_matches_url_scheme, false);
-  assert.equal(diagnostic.real_ip_matches_forwarded_for, true);
-  assert.deepEqual(diagnostic.unknown_forwarding_header_names, ["x-original-host"]);
-  assert.equal(diagnostic.canonical_origin_matches_request_origin, false);
-  assert.equal(diagnostic.normalized_canonical_origin_matches_request_origin, false);
-  const external = describeDeploymentRequestBoundary(new Request("https://arena.example/api/deployment"), "https://arena.example/");
-  assert.equal(external.canonical_origin_matches_request_origin, false);
-  assert.equal(external.normalized_canonical_origin_matches_request_origin, true);
-  for (const value of ["private-query-value", "private-auth-value", "private-cookie-value", "private-original-host-value", "192.0.2.10"]) {
-    assert.ok(!JSON.stringify(diagnostic).includes(value));
-  }
-  for (const [key, value] of Object.entries(diagnostic)) {
-    if (!["version", "url_scheme", "url_hostname", "url_port", "url_path", "url_query_parameter_names", "unknown_forwarding_header_names"].includes(key)) {
-      assert.equal(typeof value, "boolean", key);
-    }
-  }
-  assert.equal(describeDeploymentRequestBoundary(new Request("https://arena.example/api/catalog")), null);
-  assert.equal(describeDeploymentRequestBoundary(new Request("https://arena.example/api/deployment", { method: "POST" })), null);
-});
 
 test("the Vercel product build prepares dist-only workspace dependencies", async () => {
   const [product, platform, contract] = await Promise.all([
@@ -71,6 +29,14 @@ test("the retired client path reaches the BFF 404 instead of a new artifact or S
     source.startsWith("/agent-heist/") && destination.includes("agent-heist-v2")));
 });
 
+test("the API rewrite uses an unnamed capture so Vercel does not inject a path query", async () => {
+  // Vercel's real convertRewrites turns :path* into ?path=$1, but leaves an
+  // unnamed capture out of the query. Caller query parameters remain intact.
+  const configuration = await manifest("web/demos/vercel.json");
+  const api = configuration.rewrites.find(({ source }) => source.startsWith("/api/"));
+  assert.deepEqual(api, { source: "/api/(.*)", destination: "/api/platform" });
+});
+
 test("invitation links and GitHub return URLs load the join page", async () => {
   const configuration = await manifest("web/demos/vercel.json");
   const join = configuration.rewrites.find(({ source }) => source === "/join");
@@ -84,7 +50,7 @@ test("formation deep links load the launch page without a blanket SPA fallback",
   assert.deepEqual(configuration.rewrites
     .filter(({ destination }) => destination === "/index.html")
     .map(({ source }) => source).sort(), ["/join", "/launches/:launch_id", "/runs/:public_id"]);
-  assert.equal(configuration.rewrites.find(({ source }) => source === "/api/:path*")?.destination,
+  assert.equal(configuration.rewrites.find(({ source }) => source === "/api/(.*)")?.destination,
     "/api/platform");
 });
 

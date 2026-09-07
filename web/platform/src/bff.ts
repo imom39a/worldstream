@@ -1700,7 +1700,6 @@ function normalizeVercelRequest(request: Request, origin: string): Request | nul
   const realIp = request.headers.get("x-real-ip");
   const vercelId = request.headers.get("x-vercel-id");
   const hasUnrecognizedForwardingHeader = [...request.headers.keys()].some((name) =>
-    name === "forwarded" ||
     name.startsWith("x-original-") ||
     (name.startsWith("x-forwarded-") && !VERCEL_FORWARDING_HEADERS.has(name))
   );
@@ -1723,6 +1722,10 @@ function normalizeVercelRequest(request: Request, origin: string): Request | nul
     return null;
   }
   const headers = new Headers(request.headers);
+  // RFC 7239 Forwarded can be client-modified. It supplies no routing or
+  // authority here: discard it only after validating Vercel's fixed envelope.
+  // The deployment-neutral BFF still rejects all forwarding metadata.
+  headers.delete("forwarded");
   for (const name of VERCEL_FORWARDING_HEADERS) {
     headers.delete(name);
   }

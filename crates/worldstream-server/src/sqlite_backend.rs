@@ -4223,7 +4223,7 @@ fn map_replay_error(error: SqliteAuthorizedReplayErrorV1) -> BackendError {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tempfile::{NamedTempFile, tempdir};
+    use tempfile::{NamedTempFile, TempDir, tempdir};
     use worldstream_core::{
         AuthorityBootstrapV1, AuthorityChangeV1, AuthorityCheckedAt, AuthorityV1,
         CapabilityBearerV1, CapabilityId, CapabilityProfileV1, CapabilityScopeSetV1,
@@ -4237,6 +4237,14 @@ mod tests {
         RunnerCapabilityProvisionRequestV1, RunnerMembershipProvisionTargetV1,
         SealedCapabilityBearerV1, SealedCapabilityInputV1,
     };
+
+    fn database_fixture() -> (TempDir, NamedTempFile) {
+        // The database and its parent must share an owner. The system temp
+        // directory can be root-owned, so retain a private parent per test.
+        let directory = tempdir().unwrap_or_else(|_| panic!("temp db directory"));
+        let file = NamedTempFile::new_in(directory.path()).unwrap_or_else(|_| panic!("temp db"));
+        (directory, file)
+    }
 
     fn session(value: u8, id: &str) -> GatewaySession {
         let id = id.parse().unwrap_or_else(|_| panic!("test session id"));
@@ -4263,7 +4271,7 @@ mod tests {
     #[tokio::test]
     async fn scheduler_advances_due_room_once_without_operator_timer_request()
     -> Result<(), Box<dyn std::error::Error>> {
-        let file = NamedTempFile::new()?;
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path())?;
         let bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
         AuthorityV1::new(Arc::new(store.clone())).bootstrap(
@@ -4525,7 +4533,7 @@ mod tests {
 
     #[test]
     fn hosted_room_creation_is_atomic_restartable_and_non_playing() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let host_bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
         AuthorityV1::new(Arc::new(store.clone()))
@@ -4676,7 +4684,7 @@ mod tests {
 
     #[test]
     fn live_backup_destination_is_derived_only_beneath_the_configured_root() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let registry =
             Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
@@ -4704,7 +4712,7 @@ mod tests {
 
     #[test]
     fn sqlite_gateway_retains_the_injected_startup_registry() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let registry =
             Arc::new(builtin_counter_registry().unwrap_or_else(|_| panic!("counter registry")));
@@ -4723,7 +4731,7 @@ mod tests {
 
     #[test]
     fn sqlite_host_operator_reads_only_exact_activity_pack_catalog_revisions() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
         let bearer = CapabilityBearerV1::from_bytes([0xb7; 32]);
@@ -4802,7 +4810,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     #[test]
     fn sqlite_gateway_create_is_authorized_idempotent_and_conflict_safe() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
         let bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
@@ -4900,7 +4908,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     #[test]
     fn sqlite_sealed_provisioning_replays_exactly_across_partial_commit_and_restart() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
         let host_bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
@@ -5127,7 +5135,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     #[test]
     fn sqlite_lobby_launch_is_authorized_idempotent_phase_safe_and_recorded() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
         let bearer = CapabilityBearerV1::from_bytes([0xaa; 32]);
@@ -5314,7 +5322,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn sqlite_gateway_action_is_authorized_duplicate_conflict_and_stale_safe() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
         let host_bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
@@ -5507,7 +5515,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn sqlite_gateway_action_denies_capability_without_room_act_scope() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
         let bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
@@ -5657,7 +5665,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     #[test]
     fn supervisor_lifecycle_blocks_snapshot_work_until_current_generation_is_active() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let authority = AuthorityV1::new(Arc::new(store.clone()));
         let bearer = CapabilityBearerV1::from_bytes([0xa9; 32]);
@@ -5841,7 +5849,7 @@ mod tests {
 
     #[test]
     fn unknown_bearer_is_forbidden_without_secret_echo() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let registry = worldstream_core::builtin_counter_registry()
             .unwrap_or_else(|_| panic!("counter registry"));
@@ -5862,7 +5870,7 @@ mod tests {
 
     #[test]
     fn unauthenticated_session_operations_are_forbidden() {
-        let file = NamedTempFile::new().unwrap_or_else(|_| panic!("temp db"));
+        let (_database_directory, file) = database_fixture();
         let store = SqliteRoomStore::open(file.path()).unwrap_or_else(|_| panic!("open db"));
         let registry = worldstream_core::builtin_counter_registry()
             .unwrap_or_else(|_| panic!("counter registry"));

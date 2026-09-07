@@ -67,3 +67,38 @@ test("production construction rejects development substitutes and malformed keys
     VERCEL_ENV: "preview",
   }), /production_platform_configuration_required/u);
 });
+
+test("the production adapter discards unused Forwarded without changing route or origin authority", async () => {
+  const bff = createProductionPlatformBff(productionEnvironment());
+  const headers = {
+    host: "arena.example",
+    "x-forwarded-host": "arena.example",
+    "x-forwarded-port": "443",
+    "x-forwarded-proto": "https",
+    "x-forwarded-for": "192.0.2.10",
+    "x-vercel-id": "iad1::fixture",
+    // This field may come from an untrusted client and is never routing input.
+    forwarded: "for=unknown;host=attacker.example;proto=http",
+  };
+  for (const [path, status] of [["/api/catalog", 200], ["/api/auth/session", 401]] as const) {
+    const response = await bff.fetch(new Request(`https://arena.example${path}`, { headers }));
+    assert.equal(response.status, status, path);
+  }
+  for (const extra of [
+    { origin: "https://attacker.example" },
+    { "x-forwarded-host": "attacker.example" },
+    { "x-forwarded-uri": "/api/catalog" },
+    { "x-original-path": "/api/catalog" },
+  ]) {
+    const response = await bff.fetch(new Request("https://arena.example/api/auth/session", {
+      headers: { ...headers, ...extra },
+    }));
+    assert.equal(response.status, 403);
+  }
+  const mutation = await bff.fetch(new Request("https://arena.example/api/account/public-profile", {
+    method: "POST", headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ enabled: true }),
+  }));
+  assert.equal(mutation.status, 403); // Forwarded cannot replace the required Origin/CSRF.
+  assert.equal((await bff.fetch(new Request("https://arena.example/api/deployment?path=deployment", { headers }))).status, 404);
+});

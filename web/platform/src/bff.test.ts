@@ -659,6 +659,14 @@ test("the explicit Vercel adapter accepts only platform-consistent forwarding he
   assert.equal(data.attempts.size, 1);
 });
 
+test("the deployment-neutral BFF still rejects caller forwarding metadata", async () => {
+  const { bff } = harness();
+  const response = await bff.fetch(new Request(`${ORIGIN}/api/auth/session`, {
+    headers: { forwarded: "for=203.0.113.7;host=arena.example;proto=https" },
+  }));
+  assert.equal(response.status, 403);
+});
+
 test("OAuth callback rejects a cross-site subresource request", async () => {
   const { auth, bff } = harness();
   const started = await begin(bff);

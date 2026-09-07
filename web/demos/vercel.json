@@ -38,7 +38,7 @@
       "destination": "/api/platform"
     },
     {
-      "source": "/api/:path*",
+      "source": "/api/(.*)",
       "destination": "/api/platform"
     },
     {
