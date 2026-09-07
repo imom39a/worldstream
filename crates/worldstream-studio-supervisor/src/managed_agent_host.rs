@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex, PoisonError, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -45,7 +45,10 @@ use crate::{
     managed_activation_status::{ManagedActivationStatusErrorV1, ManagedActivationStatusStoreV1},
     runner_templates::RunnerSupervisorV1,
     secrets::{FileSecretVaultV1, SecretKindV1},
-    task_setup::{TaskSetupStateV1, TaskSetupSupervisorV1},
+    task_setup::{
+        ManagedReferenceHostReadinessSourceV1, TaskSeatReadinessReasonV1, TaskSetupStateV1,
+        TaskSetupSupervisorV1,
+    },
 };
 
 const PROFILE_SCHEMA: &str = "worldstream/managed-agent-host-profile/v1";
@@ -229,6 +232,7 @@ struct HouseAgentHostLaunchV1 {
     runner_unit_id: String,
     revision_digest: String,
     revision_bytes: Vec<u8>,
+    development_provider_address: Option<SocketAddr>,
 }
 
 impl ManagedAgentHostLaunchPlanV1 {
@@ -314,6 +318,57 @@ impl ManagedAgentHostLaunchPlanV1 {
         runner_unit_id: &str,
         revision: &HouseAgentRevision,
     ) -> Result<Self, ManagedAgentHostErrorV1> {
+        Self::new_house_with_provider(
+            helper_executable,
+            state_dir,
+            launch_reference,
+            host_executable,
+            working_directory,
+            runner_unit_id,
+            revision,
+            None,
+        )
+    }
+
+    /// Constructs a House host that can reach only one explicit loopback
+    /// development substitute. This path is never selected by production setup.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_house_development(
+        helper_executable: &Path,
+        state_dir: &Path,
+        launch_reference: &str,
+        host_executable: &Path,
+        working_directory: &Path,
+        runner_unit_id: &str,
+        revision: &HouseAgentRevision,
+        provider_address: SocketAddr,
+    ) -> Result<Self, ManagedAgentHostErrorV1> {
+        if !provider_address.ip().is_loopback() || provider_address.port() == 0 {
+            return Err(ManagedAgentHostErrorV1::InvalidInput);
+        }
+        Self::new_house_with_provider(
+            helper_executable,
+            state_dir,
+            launch_reference,
+            host_executable,
+            working_directory,
+            runner_unit_id,
+            revision,
+            Some(provider_address),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_house_with_provider(
+        helper_executable: &Path,
+        state_dir: &Path,
+        launch_reference: &str,
+        host_executable: &Path,
+        working_directory: &Path,
+        runner_unit_id: &str,
+        revision: &HouseAgentRevision,
+        development_provider_address: Option<SocketAddr>,
+    ) -> Result<Self, ManagedAgentHostErrorV1> {
         let helper_name = helper_executable
             .file_stem()
             .and_then(|value| value.to_str());
@@ -340,6 +395,7 @@ impl ManagedAgentHostLaunchPlanV1 {
                 runner_unit_id: runner_unit_id.to_owned(),
                 revision_digest: revision.digest().to_owned(),
                 revision_bytes: revision.canonical_bytes().to_vec(),
+                development_provider_address,
             }),
         })
     }
@@ -363,13 +419,18 @@ impl ManagedAgentHostLaunchPlanV1 {
     }
     #[must_use]
     pub fn host_arguments(&self) -> Vec<String> {
-        if self.house.is_some() {
-            return vec![
+        if let Some(house) = &self.house {
+            let mut arguments = vec![
                 "--transport".to_owned(),
                 "stdio".to_owned(),
                 "--provider".to_owned(),
                 "openrouter-house".to_owned(),
             ];
+            if let Some(address) = house.development_provider_address {
+                arguments.push("--provider-address".to_owned());
+                arguments.push(address.to_string());
+            }
+            return arguments;
         }
         vec![
             "--transport".to_owned(),
@@ -665,6 +726,7 @@ pub struct ManagedAgentHostOperationsV1 {
     root: Arc<PathBuf>,
     profiles: ManagedAgentHostStoreV1,
     source: Arc<dyn ManagedAgentHostStartSourceV1>,
+    house_source: Arc<Mutex<Option<Weak<dyn ManagedAgentHostStartSourceV1>>>>,
     launcher: Arc<dyn ManagedAgentHostProcessLauncherV1>,
     processes: Arc<Mutex<BTreeMap<String, Box<dyn ManagedAgentHostProcessV1>>>>,
     mutation: Arc<Mutex<()>>,
@@ -735,6 +797,7 @@ impl ManagedAgentHostOperationsV1 {
             root: Arc::new(operations),
             profiles,
             source: Arc::new(source),
+            house_source: Arc::new(Mutex::new(None)),
             launcher: Arc::new(launcher),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             mutation: Arc::new(Mutex::new(())),
@@ -785,8 +848,37 @@ impl ManagedAgentHostOperationsV1 {
         &self,
         assignment_id: &str,
     ) -> Result<ManagedAgentHostStatusV1, ManagedAgentHostErrorV1> {
-        let prepared = self.source.prepare(assignment_id)?;
+        let prepared = match self.source.prepare(assignment_id) {
+            Err(ManagedAgentHostErrorV1::InvalidInput) => {
+                let source = self
+                    .house_source
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .ok_or(ManagedAgentHostErrorV1::InvalidInput)?;
+                source.prepare(assignment_id)?
+            }
+            result => result?,
+        };
         self.start_prepared(assignment_id, &prepared)
+    }
+
+    // The hosted adapter owns the strong reference. A weak link avoids a cycle
+    // through its readiness dependencies and cannot keep a retired adapter alive.
+    pub(crate) fn register_house_start_source(
+        &self,
+        source: &Arc<dyn ManagedAgentHostStartSourceV1>,
+    ) -> Result<(), ManagedAgentHostErrorV1> {
+        let mut retained = self
+            .house_source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if retained.is_some() {
+            return Err(ManagedAgentHostErrorV1::ImmutableProfileConflict);
+        }
+        *retained = Some(Arc::downgrade(source));
+        Ok(())
     }
 
     fn start_prepared(
@@ -1243,6 +1335,38 @@ fn now_ms() -> Result<u64, ManagedAgentHostErrorV1> {
         .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?
         .as_millis();
     u64::try_from(value).map_err(|_| ManagedAgentHostErrorV1::Unavailable)
+}
+
+impl ManagedReferenceHostReadinessSourceV1 for ManagedAgentHostOperationsV1 {
+    fn readiness_reason(&self, assignment_id: &str) -> TaskSeatReadinessReasonV1 {
+        match self.status(assignment_id) {
+            Ok(status) if status.ready => TaskSeatReadinessReasonV1::Ready,
+            Ok(status)
+                if status.state == ManagedAgentHostStateV1::Running
+                    && status.freshness == ManagedAgentHostFreshnessV1::Stale =>
+            {
+                TaskSeatReadinessReasonV1::RunnerStale
+            }
+            Ok(status)
+                if status.state == ManagedAgentHostStateV1::Running
+                    && status.active_invocations > status.capacity =>
+            {
+                TaskSeatReadinessReasonV1::RunnerOverCapacity
+            }
+            Ok(_) => TaskSeatReadinessReasonV1::RunnerDisconnected,
+            Err(ManagedAgentHostErrorV1::InvalidInput) => TaskSeatReadinessReasonV1::RunnerMissing,
+            Err(
+                ManagedAgentHostErrorV1::ImmutableProfileConflict
+                | ManagedAgentHostErrorV1::Corrupt,
+            ) => TaskSeatReadinessReasonV1::RunnerIncompatible,
+            Err(ManagedAgentHostErrorV1::AtCapacity) => {
+                TaskSeatReadinessReasonV1::RunnerOverCapacity
+            }
+            Err(ManagedAgentHostErrorV1::Unavailable | ManagedAgentHostErrorV1::Ambiguous) => {
+                TaskSeatReadinessReasonV1::RunnerDisconnected
+            }
+        }
+    }
 }
 
 /// Adds bounded post-setup managed host lifecycle routes.
@@ -1738,7 +1862,7 @@ mod tests {
     use std::{
         path::Path,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicU64, AtomicUsize, Ordering},
         },
     };
@@ -1762,14 +1886,30 @@ mod tests {
         "abababababababababababababababababababababababababababababababab";
 
     #[derive(Clone, Copy)]
-    struct UnusedStartSource;
+    struct UnusedStartSource(ManagedAgentHostErrorV1);
 
     impl ManagedAgentHostStartSourceV1 for UnusedStartSource {
         fn prepare(
             &self,
             _assignment_id: &str,
         ) -> Result<ManagedAgentHostPreparedLaunchV1, ManagedAgentHostErrorV1> {
-            Err(ManagedAgentHostErrorV1::Unavailable)
+            Err(self.0)
+        }
+    }
+
+    struct PreparedStartSource(Mutex<Option<ManagedAgentHostPreparedLaunchV1>>);
+
+    impl ManagedAgentHostStartSourceV1 for PreparedStartSource {
+        fn prepare(
+            &self,
+            assignment_id: &str,
+        ) -> Result<ManagedAgentHostPreparedLaunchV1, ManagedAgentHostErrorV1> {
+            assert_eq!(assignment_id, ASSIGNMENT);
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or(ManagedAgentHostErrorV1::Unavailable)
         }
     }
 
@@ -1866,6 +2006,55 @@ mod tests {
     }
 
     #[test]
+    fn development_house_plan_passes_only_the_reviewed_loopback_address() {
+        let bytes = CanonicalJsonV1::parse(HOUSE_REVISION)
+            .and_then(|value| value.to_bytes())
+            .unwrap_or_else(|error| unreachable!("House revision fixture: {error}"));
+        let revision = HouseAgentRevision::from_canonical_bytes(&bytes)
+            .unwrap_or_else(|error| unreachable!("House revision fixture: {error}"));
+        let plan = ManagedAgentHostLaunchPlanV1::new_house_development(
+            Path::new("/approved/worldstream-assignment-mcp"),
+            Path::new("/owner/worldstream-state"),
+            SECRET_REFERENCE,
+            Path::new("/approved/worldstream-managed-agent-host"),
+            Path::new("/owner/house-unit"),
+            "house-unit-01",
+            &revision,
+            "127.0.0.1:8787"
+                .parse()
+                .unwrap_or_else(|error| unreachable!("provider address: {error}")),
+        )
+        .unwrap_or_else(|error| unreachable!("development House plan: {error:?}"));
+        assert_eq!(
+            plan.host_arguments(),
+            [
+                "--transport",
+                "stdio",
+                "--provider",
+                "openrouter-house",
+                "--provider-address",
+                "127.0.0.1:8787",
+            ]
+        );
+        assert_eq!(
+            ManagedAgentHostLaunchPlanV1::new_house_development(
+                Path::new("/approved/worldstream-assignment-mcp"),
+                Path::new("/owner/worldstream-state"),
+                SECRET_REFERENCE,
+                Path::new("/approved/worldstream-managed-agent-host"),
+                Path::new("/owner/house-unit"),
+                "house-unit-01",
+                &revision,
+                "192.0.2.1:8787"
+                    .parse()
+                    .unwrap_or_else(|error| unreachable!("provider address: {error}")),
+            )
+            .err(),
+            Some(ManagedAgentHostErrorV1::InvalidInput)
+        );
+    }
+
+    #[test]
     fn house_start_waits_for_handshake_and_retry_does_not_launch_again() {
         let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
         let root = directory
@@ -1899,7 +2088,7 @@ mod tests {
         let launches = Arc::new(AtomicUsize::new(0));
         let operations = ManagedAgentHostOperationsV1::open_with(
             &root.join("operations"),
-            UnusedStartSource,
+            UnusedStartSource(ManagedAgentHostErrorV1::InvalidInput),
             HandshakeProcessLauncher {
                 activity_at_ms: Arc::clone(&activity_at_ms),
                 launches: Arc::clone(&launches),
@@ -1922,5 +2111,64 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("observe House handshake: {error:?}"));
         assert!(handshaken.ready);
         assert_eq!(launches.load(Ordering::SeqCst), 1);
+        let source: Arc<dyn ManagedAgentHostStartSourceV1> =
+            Arc::new(PreparedStartSource(Mutex::new(Some(prepared))));
+        operations
+            .register_house_start_source(&source)
+            .unwrap_or_else(|error| unreachable!("register House source: {error:?}"));
+        assert_eq!(
+            operations.register_house_start_source(&source).err(),
+            Some(ManagedAgentHostErrorV1::ImmutableProfileConflict)
+        );
+        operations
+            .stop(ASSIGNMENT)
+            .unwrap_or_else(|error| unreachable!("stop House: {error:?}"));
+        assert!(
+            operations.start_permitted(ASSIGNMENT).is_ok(),
+            "the lifecycle must restore a retained House host"
+        );
+        assert_eq!(launches.load(Ordering::SeqCst), 2);
+        operations
+            .stop(ASSIGNMENT)
+            .unwrap_or_else(|error| unreachable!("stop restored House: {error:?}"));
+        drop(source);
+        assert_eq!(
+            operations.start_permitted(ASSIGNMENT).err(),
+            Some(ManagedAgentHostErrorV1::InvalidInput)
+        );
+        assert_eq!(launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn house_restore_does_not_bypass_primary_authority_or_availability_failures() {
+        for error in [
+            ManagedAgentHostErrorV1::Unavailable,
+            ManagedAgentHostErrorV1::Corrupt,
+            ManagedAgentHostErrorV1::ImmutableProfileConflict,
+        ] {
+            let directory =
+                tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+            let launches = Arc::new(AtomicUsize::new(0));
+            let root = directory
+                .path()
+                .canonicalize()
+                .unwrap_or_else(|error| unreachable!("canonical root: {error}"));
+            let operations = ManagedAgentHostOperationsV1::open_with(
+                &root.join("operations"),
+                UnusedStartSource(error),
+                HandshakeProcessLauncher {
+                    activity_at_ms: Arc::new(AtomicU64::new(0)),
+                    launches: Arc::clone(&launches),
+                },
+            )
+            .unwrap_or_else(|error| unreachable!("operations: {error:?}"));
+            let source: Arc<dyn ManagedAgentHostStartSourceV1> =
+                Arc::new(UnusedStartSource(ManagedAgentHostErrorV1::Ambiguous));
+            operations
+                .register_house_start_source(&source)
+                .unwrap_or_else(|error| unreachable!("register: {error:?}"));
+            assert_eq!(operations.start_permitted(ASSIGNMENT).err(), Some(error));
+            assert_eq!(launches.load(Ordering::SeqCst), 0);
+        }
     }
 }

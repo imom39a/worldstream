@@ -59,14 +59,14 @@ use worldstream_protocol::{
     HostedBrowserWebSocketSessionRevokeRequest, HostedBrowserWebSocketTicketIssueRequest,
     HostedRoomCreationRequestV2, HostedRoomCreationResponseV2, LobbyLaunchRequest,
     LobbyLaunchResponse, MemberCapabilityProvisionRequestV1, MemberCapabilityProvisionResponseV1,
-    ObservationAck, ObservationDeliver, OperatorActivationStatusV1, OperatorBackupProfileStatus,
-    OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus, OperatorRoomInventoryPage,
-    OperatorRoomInventoryRequest, OperatorRoomSummary, OperatorRunnerConnectionV1,
-    OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference, ProjectionReset,
-    ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach, RoomAttached, RoomSyncAck,
-    RunnerCapabilityProvisionRequestV1, RunnerCapabilityProvisionResponseV1, RunnerHello,
-    RunnerReady, ServerWelcome, TimerFireRequest, TimerFireResponse, UlidString, VersionedEnvelope,
-    WEBSOCKET_SUBPROTOCOL, decode_envelope,
+    MembershipStatusResponse, ObservationAck, ObservationDeliver, OperatorActivationStatusV1,
+    OperatorBackupProfileStatus, OperatorLiveBackupPrepareRequest, OperatorLiveBackupStatus,
+    OperatorRoomInventoryPage, OperatorRoomInventoryRequest, OperatorRoomSummary,
+    OperatorRunnerConnectionV1, OperatorRunnerFreshnessV1, OperatorRunnerPresenceV1, PackReference,
+    ProjectionReset, ProjectionResponse, ProtocolEnvelope, ReplayResponse, RoomAttach,
+    RoomAttached, RoomSyncAck, RunnerCapabilityProvisionRequestV1,
+    RunnerCapabilityProvisionResponseV1, RunnerHello, RunnerReady, ServerWelcome, TimerFireRequest,
+    TimerFireResponse, UlidString, VersionedEnvelope, WEBSOCKET_SUBPROTOCOL, decode_envelope,
 };
 use worldstream_runtime::{
     CompatibilitySummary, EffectiveConfig, ManifestError, StorageProfile, embedded_manifest,
@@ -1056,6 +1056,18 @@ pub trait GatewayBackend: Send + Sync + 'static {
     ) -> Result<ReplayResponse, BackendError> {
         Err(BackendError::StorageUnavailable)
     }
+    /// Reads exact Membership facts without attaching or modifying its Cursor.
+    ///
+    /// # Errors
+    /// Returns a closed error if current Membership authority cannot be proved.
+    fn membership_status(
+        &self,
+        _session: &GatewaySession,
+        _room_id: &str,
+        _member_id: &str,
+    ) -> Result<MembershipStatusResponse, BackendError> {
+        Err(BackendError::StorageUnavailable)
+    }
     /// Captures a complete attach barrier and retained/reset branch.
     ///
     /// # Errors
@@ -2013,6 +2025,10 @@ pub fn operator_router(state: OperatorState) -> Router {
             post(launch_lobby),
         )
         .route("/v1/rooms/{room_id}/projection", get(current_projection))
+        .route(
+            "/v1/rooms/{room_id}/members/{member_id}/status",
+            get(current_membership_status),
+        )
         .route("/v1/rooms/{room_id}/replay", get(historical_replay))
         .route(
             "/v1/stream/ticket",
@@ -3046,6 +3062,31 @@ async fn launch_lobby(
     }
 }
 
+async fn current_membership_status(
+    State(state): State<OperatorState>,
+    Path((room_id, member_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ResponseError> {
+    let session = Arc::new(authenticated_session(&headers)?);
+    admit_authenticated_http(
+        &state,
+        &session,
+        &[AdmissionTarget {
+            room_id: &room_id,
+            member_id: Some(&member_id),
+        }],
+        None,
+        traceparent_correlation(&headers),
+    )
+    .await?;
+    let result = backend_call(Arc::clone(&state.backend), move |backend| {
+        backend.membership_status(&session, &room_id, &member_id)
+    })
+    .await
+    .map_err(ResponseError::from)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(result)))
+}
+
 async fn current_projection(
     State(state): State<OperatorState>,
     Path(room_id): Path<String>,
@@ -3340,7 +3381,7 @@ fn validate_hosted_browser_ticket_request(
             ClientMode::Participant | ClientMode::Spectator
         )
         || !hosted_binding_digest(&request.browser_session_digest)
-        || !hosted_binding_digest(&request.client_release_digest)
+        || !hosted_content_digest(&request.client_release_digest)
         || !hosted_public_reference(&request.client_surface_id)
     {
         return Err(ResponseError::from(BackendError::Rejected));
@@ -3354,6 +3395,18 @@ fn hosted_binding_digest(value: &str) -> bool {
         && value[7..]
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn hosted_content_digest(value: &str) -> bool {
+    let payload = value
+        .strip_prefix("blake3:")
+        .or_else(|| value.strip_prefix("sha256:"));
+    payload.is_some_and(|payload| {
+        payload.len() == 64
+            && payload
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 fn hosted_public_reference(value: &str) -> bool {
@@ -3988,7 +4041,7 @@ async fn hosted_browser_stream_loop(
         );
         return;
     };
-    if !hosted_binding_digest(&target.client_release_digest)
+    if !hosted_content_digest(&target.client_release_digest)
         || !hosted_public_reference(&target.client_surface_id)
     {
         close_browser_admission(&mut socket).await;
@@ -9833,7 +9886,7 @@ mod tests {
             mode,
             after_frame_seq: Some(7),
             browser_session_digest: format!("blake3:{}", session_byte.to_string().repeat(64)),
-            client_release_digest: format!("blake3:{}", "d".repeat(64)),
+            client_release_digest: format!("sha256:{}", "d".repeat(64)),
             client_surface_id: "participant".to_owned(),
         }
     }
@@ -10268,7 +10321,7 @@ mod tests {
             mode: ClientMode::Participant,
             after_frame_seq: Some(11),
             browser_session_digest: format!("blake3:{}", "a".repeat(64)),
-            client_release_digest: format!("blake3:{}", "b".repeat(64)),
+            client_release_digest: format!("sha256:{}", "b".repeat(64)),
             client_surface_id: "participant".to_owned(),
         };
         let response = app

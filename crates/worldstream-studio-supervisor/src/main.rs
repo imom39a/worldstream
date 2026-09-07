@@ -48,7 +48,7 @@ use worldstream_studio_supervisor::{
     hosted_house_runners::HostedHouseRunnerOperationsV1,
     hosted_launch::{HostedLaunchAccessV1, HostedLaunchOperationsV1, hosted_launch_router},
     hosted_public_streams::{HostedPublicStreamBrokerV1, hosted_public_stream_router},
-    hosted_result_source::HttpHostedResultSourceV1,
+    hosted_result_source::{HOSTED_RESULT_SOURCE_TIMEOUT, HttpHostedResultSourceV1},
     local_initialization::validate_initialized,
     managed_controller::{
         ControllerLifecycle, managed_controller_router, managed_lifecycle_router,
@@ -404,14 +404,6 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         client_bindings.clone(),
     )
     .map_err(|error| anyhow::anyhow!("Participant Console handoff is unavailable: {error:?}"))?;
-    let task_setup = task_setup_base.with_launch_readiness(
-        ClientNeutralReadinessSourceV1::new(
-            task_runtime.clone(),
-            participant_handoff.browser_readiness(),
-        ),
-        LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone()),
-        task_runtime,
-    );
     let assignment_launch_source = FileAssignedMembershipSourceV1::open(
         &args.state_dir.join("task-setups"),
         agent_profiles.clone(),
@@ -427,6 +419,34 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
     )
     .context("assignment MCP launch registry is unavailable")?
     .with_activity_packs(activity_packs.clone());
+    let canonical_state_dir = args
+        .state_dir
+        .canonicalize()
+        .context("Controller state directory is unavailable")?;
+    let assignment_mcp_executable = args
+        .assignment_mcp_executable
+        .canonicalize()
+        .context("fixed assignment MCP helper is unavailable")?;
+    let managed_agent_hosts = ManagedAgentHostOperationsV1::open_production(
+        &args.state_dir.join("managed-agent-hosts"),
+        &canonical_state_dir,
+        &assignment_mcp_executable,
+        agent_profiles.clone(),
+        runners.clone(),
+        assignment_mcp_launches.clone(),
+        vault.clone(),
+        task_setup_base.clone(),
+    )
+    .map_err(|error| anyhow::anyhow!("managed Agent Host operations are unavailable: {error:?}"))?;
+    let task_setup = task_setup_base.with_launch_readiness(
+        ClientNeutralReadinessSourceV1::new(
+            task_runtime.clone(),
+            participant_handoff.browser_readiness(),
+        ),
+        LiveTaskRunnerReadinessSourceV1::new(task_runtime.clone(), runners.clone())
+            .with_managed_reference_hosts(managed_agent_hosts.clone()),
+        task_runtime,
+    );
     let runner_attention_assignments = PersistedAgentSeatAssignmentSourceV1::new(
         agent_profiles.clone(),
         assignment_mcp_launches.clone(),
@@ -460,25 +480,6 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         FileRunnerRestartStoreV1::open(&args.state_dir.join("runner-attention/restarts"))
             .map_err(|error| anyhow::anyhow!("Runner attention store is unavailable: {error:?}"))?,
     );
-    let canonical_state_dir = args
-        .state_dir
-        .canonicalize()
-        .context("Controller state directory is unavailable")?;
-    let assignment_mcp_executable = args
-        .assignment_mcp_executable
-        .canonicalize()
-        .context("fixed assignment MCP helper is unavailable")?;
-    let managed_agent_hosts = ManagedAgentHostOperationsV1::open_production(
-        &args.state_dir.join("managed-agent-hosts"),
-        &canonical_state_dir,
-        &assignment_mcp_executable,
-        agent_profiles.clone(),
-        runners.clone(),
-        assignment_mcp_launches.clone(),
-        vault.clone(),
-        task_setup.clone(),
-    )
-    .map_err(|error| anyhow::anyhow!("managed Agent Host operations are unavailable: {error:?}"))?;
     let runner_attention = runner_attention.with_managed_hosts(managed_agent_hosts.clone());
     let managed_lifecycle = if managed_lease.is_some() {
         Some(ManagedLifecycle::open(
@@ -528,32 +529,56 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
         (None, None) => None,
         (Some(installation_id), Some(authority)) => {
             let (listings, house_agents) = reviewed_hosted_artifacts()?;
+            let development_house_provider = development_house_provider_address()?;
             let result_source = if let Some(ownership) = &managed_transport_ownership {
                 HttpHostedResultSourceV1::new_managed(
                     args.daemon,
-                    daemon_timeout,
+                    HOSTED_RESULT_SOURCE_TIMEOUT,
                     vault.clone(),
                     ownership.clone(),
                 )
             } else {
-                HttpHostedResultSourceV1::new(args.daemon, daemon_timeout, vault.clone())
+                HttpHostedResultSourceV1::new(
+                    args.daemon,
+                    HOSTED_RESULT_SOURCE_TIMEOUT,
+                    vault.clone(),
+                )
             }
             .map_err(|_| anyhow::anyhow!("hosted result-source adapter is unavailable"))?;
-            let house_runners = HostedHouseRunnerOperationsV1::open_production(
-                &args.state_dir.join("hosted-house-runners"),
-                &canonical_state_dir,
-                &assignment_mcp_executable,
-                &installation_id,
-                listings.clone(),
-                house_agents.clone(),
-                agent_profiles.clone(),
-                runner_registry.clone(),
-                runners.clone(),
-                assignment_mcp_launches.clone(),
-                vault.clone(),
-                task_setup.clone(),
-                managed_agent_hosts.clone(),
-            )
+            let house_runners = if let Some(provider_address) = development_house_provider {
+                HostedHouseRunnerOperationsV1::open_development_loopback(
+                    &args.state_dir.join("hosted-house-runners"),
+                    &canonical_state_dir,
+                    &assignment_mcp_executable,
+                    &installation_id,
+                    listings.clone(),
+                    house_agents.clone(),
+                    agent_profiles.clone(),
+                    runner_registry.clone(),
+                    runners.clone(),
+                    assignment_mcp_launches.clone(),
+                    vault.clone(),
+                    task_setup.clone(),
+                    managed_agent_hosts.clone(),
+                    provider_address,
+                )
+            } else {
+                HostedHouseRunnerOperationsV1::open_production(
+                    &args.state_dir.join("hosted-house-runners"),
+                    &canonical_state_dir,
+                    &assignment_mcp_executable,
+                    &installation_id,
+                    listings.clone(),
+                    house_agents.clone(),
+                    agent_profiles.clone(),
+                    runner_registry.clone(),
+                    runners.clone(),
+                    assignment_mcp_launches.clone(),
+                    vault.clone(),
+                    task_setup.clone(),
+                    managed_agent_hosts.clone(),
+                )
+            }
             .map_err(|_| anyhow::anyhow!("hosted House Runner adapter is unavailable"))?;
             let operations = HostedLaunchOperationsV1::open(
                 &args.state_dir.join("hosted-launches"),
@@ -591,6 +616,42 @@ async fn run(args: Args, managed_lease: &mut Option<ProcessLease>) -> Result<()>
                 &client_origin,
             )
             .map_err(|_| anyhow::anyhow!("hosted Public Projection relay is unavailable"))?;
+            let lobby_reconciler = operations.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(500));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                let mut last_failure = None;
+                loop {
+                    interval.tick().await;
+                    let operations = lobby_reconciler.clone();
+                    match tokio::task::spawn_blocking(move || operations.reconcile_ready_lobbies())
+                        .await
+                    {
+                        Ok(Ok(())) => {
+                            if last_failure.take().is_some() {
+                                eprintln!("hosted Lobby readiness reconciliation recovered");
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            // Runtime startup and planned restarts can temporarily
+                            // make an exact readiness check unavailable. Keep each
+                            // launch closed, but do not abandon future checks.
+                            if last_failure != Some(error) {
+                                eprintln!(
+                                    "hosted Lobby readiness reconciliation unavailable: {error:?}"
+                                );
+                                last_failure = Some(error);
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "hosted Lobby readiness reconciliation task stopped: {error}"
+                            );
+                            break;
+                        }
+                    }
+                }
+            });
             drop(authority);
             Some(
                 hosted_launch_router(operations, access.clone())
@@ -704,6 +765,27 @@ fn parse_backup_profile(value: &str) -> Result<BackupStorageProfileV1, &'static 
         "ephemeral" => Ok(BackupStorageProfileV1::Ephemeral),
         _ => Err("profile must be sqlite-bundled, postgres-primary, or ephemeral"),
     }
+}
+
+fn development_house_provider_address() -> Result<Option<SocketAddr>> {
+    let Some(value) = env::var("WORLDSTREAM_DEVELOPMENT_HOUSE_OPENROUTER_ADDRESS").ok() else {
+        return Ok(None);
+    };
+    if env::var("WORLDSTREAM_DEPLOYMENT_ENVIRONMENT").as_deref() != Ok("development")
+        || env::var("WORLDSTREAM_DEVELOPMENT_FAKE_OPENROUTER").as_deref()
+            != Ok("visible-local-only")
+        || env::var("NODE_ENV").as_deref() == Ok("production")
+        || env::var("VERCEL_ENV").as_deref() == Ok("production")
+    {
+        anyhow::bail!("development House provider is forbidden outside explicit development");
+    }
+    let address = value
+        .parse::<SocketAddr>()
+        .map_err(|_| anyhow::anyhow!("development House provider address is invalid"))?;
+    if !address.ip().is_loopback() || address.port() == 0 {
+        anyhow::bail!("development House provider must be a nonzero loopback address");
+    }
+    Ok(Some(address))
 }
 
 fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAgentRevision>)> {

@@ -33,7 +33,7 @@ struct HostedFixture {
     member: String,
 }
 
-async fn fixture() -> TestResult<HostedFixture> {
+async fn fixture_for(principal_kind: &str) -> TestResult<HostedFixture> {
     let file = tempfile::NamedTempFile::new()?;
     let store = SqliteRoomStore::open(file.path())?;
     let host_bearer = CapabilityBearerV1::from_bytes([0xc1; 32]);
@@ -69,8 +69,8 @@ async fn fixture() -> TestResult<HostedFixture> {
                 },
                 "configuration": {"initial_value": 0, "maximum_value": 16},
                 "members": [{
-                    "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FC2",
-                    "principal_kind": "human",
+                    "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FC5",
+                    "principal_kind": principal_kind,
                     "role": "counter",
                     "access_mode": "participant"
                 }],
@@ -87,7 +87,7 @@ async fn fixture() -> TestResult<HostedFixture> {
             json!({
                 "room_id": created.room_id,
                 "member_id": created.member_ids[0],
-                "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                "principal_id": "01ARZ3NDEKTSV4RRFFQ69G5FC5",
                 "scopes": ["room:attach", "room:observe_member", "room:act"],
                 "idempotency_key": "01ARZ3NDEKTSV4RRFFQ69G5FD1",
                 "expires_at": null
@@ -102,6 +102,57 @@ async fn fixture() -> TestResult<HostedFixture> {
         room: created.room_id,
         member: created.member_ids[0].clone(),
     })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn membership_status_is_authorized_without_attaching_or_moving_an_agent_cursor() -> TestResult
+{
+    let fixture = fixture_for("agent").await?;
+    let path = format!(
+        "/v1/rooms/{}/members/{}/status",
+        fixture.room, fixture.member
+    );
+    let response = fixture
+        .routes
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header("authorization", &fixture.member_header)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(body["member_id"], fixture.member);
+    assert_eq!(body["principal_kind"], "agent");
+    assert_eq!(body["membership_status"], "enabled");
+    assert!(body.get("sync_token").is_none());
+    assert!(body.get("projection").is_none());
+    assert!(body.get("cursor").is_none());
+    let denied = fixture
+        .routes
+        .clone()
+        .oneshot(Request::builder().uri(&path).body(Body::empty())?)
+        .await?;
+    assert_eq!(denied.status(), 403);
+    let other = format!(
+        "/v1/rooms/{}/members/01ARZ3NDEKTSV4RRFFQ69G5FZZ/status",
+        fixture.room
+    );
+    let denied = fixture
+        .routes
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(other)
+                .header("authorization", &fixture.member_header)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert!(!denied.status().is_success());
+    Ok(())
 }
 
 async fn post(routes: &Router, authority: &str, path: &str, body: Value) -> TestResult<Value> {
@@ -149,9 +200,18 @@ fn receive(socket: &mut WebSocket<TcpStream>, kind: &str) -> TestResult<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
 async fn ticket_bootstraps_exact_live_stream_and_session_revocation_closes_it() -> TestResult {
-    let fixture = fixture().await?;
+    prove_hosted_stream("human").await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_authority_checks_survive_durable_acknowledgement() -> TestResult {
+    prove_hosted_stream("agent").await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn prove_hosted_stream(principal_kind: &str) -> TestResult {
+    let fixture = fixture_for(principal_kind).await?;
     let browser_session_digest = format!("blake3:{}", "a".repeat(64));
     let ticket_response = fixture
         .routes
@@ -171,7 +231,7 @@ async fn ticket_bootstraps_exact_live_stream_and_session_revocation_closes_it() 
                         "mode": "participant",
                         "after_frame_seq": null,
                         "browser_session_digest": browser_session_digest,
-                        "client_release_digest": format!("blake3:{}", "b".repeat(64)),
+                        "client_release_digest": format!("sha256:{}", "b".repeat(64)),
                         "client_surface_id": "participant"
                     })
                     .to_string(),
@@ -243,6 +303,65 @@ async fn ticket_bootstraps_exact_live_stream_and_session_revocation_closes_it() 
         )?;
         let synced = receive(&mut socket, "room.sync_acked")?;
         assert_eq!(synced["through_frame_head"], attached["frame_head"]);
+
+        {
+            use worldstream_studio_supervisor::participant_handoff::{
+                FixedDaemonParticipantConsoleGatewayV1, HumanSeatAuthorityV1,
+                ParticipantConsoleGatewayV1,
+            };
+            send(
+                &mut socket,
+                "action.submit",
+                &json!({
+                    "action_id": "01ARZ3NDEKTSV4RRFFQ69G5FD9",
+                    "based_on_room_seq": attached["room_head"]["room_seq"],
+                    "action_type": "increment", "payload": {},
+                }),
+            )?;
+            let _receipt = receive(&mut socket, "action.accepted")?;
+            let observation = receive(&mut socket, "observation.deliver")?;
+            let frame = observation["frame_seq"]
+                .as_u64()
+                .ok_or("missing observation frame")?;
+            assert!(frame > 0);
+            send(
+                &mut socket,
+                "observation.ack",
+                &json!({
+                    "through_frame_seq": frame,
+                }),
+            )?;
+            let acknowledged = receive(&mut socket, "observation.acked")?;
+            assert_eq!(acknowledged["cursor"], frame);
+            let bearer = BearerWireV1::parse(
+                fixture
+                    .member_header
+                    .strip_prefix("Bearer ")
+                    .ok_or("missing bearer")?,
+            )?;
+            let authority = HumanSeatAuthorityV1::new_for_principal(
+                &fixture.room,
+                &fixture.member,
+                serde_json::from_value(attached["pack"].clone())?,
+                worldstream_protocol::AccessMode::Participant,
+                Some("counter".to_owned()),
+                serde_json::from_value(attached["principal_kind"].clone())?,
+                worldstream_protocol::SealedCapabilityBearerV1::from_wire(&bearer),
+            )
+            .map_err(|_| "Membership authority construction failed")?;
+            let gateway =
+                FixedDaemonParticipantConsoleGatewayV1::new(address, Duration::from_secs(5));
+            // No cursor is supplied: this is a read-only authority check, not
+            // a new attach. Previously a null-Cursor attach failed after ack.
+            assert_eq!(
+                gateway
+                    .membership_status(&authority)
+                    .map_err(|_| "Membership read failed after ack")?
+                    .role
+                    .as_deref(),
+                Some("counter")
+            );
+        }
 
         let revoke = runtime.block_on(post(
             &fixture.routes,

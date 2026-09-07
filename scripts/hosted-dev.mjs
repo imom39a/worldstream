@@ -7,12 +7,23 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { renderHouseRunnerTemplate } from "./hosted-runtime.mjs";
+import { runHostedAcceptancePrerequisites } from "./hosted-acceptance-prerequisites.mjs";
+import {
+  HOSTED_ACCEPTANCE_SCHEMA,
+  LOCAL_ACCEPTANCE_CHECKS,
+  writeHostedAcceptanceEvidence,
+} from "./hosted-acceptance-evidence.mjs";
+
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
 const LISTING_DIGEST = "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956";
 const DEVELOPMENT_USER_ID = "00000000-0000-4000-8000-00000000d001";
 const DEVELOPMENT_PROVIDER_SUBJECT = "worldstream-development";
 const DEVELOPMENT_LOGIN = "worldstream-local-developer";
+const DEVELOPMENT_AGENT_USER_ID = "00000000-0000-4000-8000-00000000d002";
+const DEVELOPMENT_AGENT_PROVIDER_SUBJECT = "worldstream-development-agent";
+const DEVELOPMENT_AGENT_LOGIN = "worldstream-local-browser-agent";
 const SERVICE_AUTHORITY = "worldstream-local-service-authority-000000000000";
 const CONTROLLER_AUTHORITY = "worldstream-local-controller-authority-000000000";
 const HOST_INSTALLATION_ID = "hosted-dev";
@@ -71,24 +82,30 @@ secret_file = ${JSON.stringify(secretFile)}
 }
 
 async function main() {
-  const checkOnly = parseArguments(process.argv.slice(2));
+  const options = parseArguments(process.argv.slice(2));
   assertHostedDevelopmentAllowed();
   const ports = hostedDevelopmentPorts();
   const productOrigin = `http://127.0.0.1:${ports.product}`;
   const heistOrigin = `http://127.0.0.1:${ports.heist}`;
-  const stateRoot = join(REPOSITORY_ROOT, ".worldstream", "hosted-dev");
+  const stateRoot = join(
+    REPOSITORY_ROOT,
+    ".worldstream",
+    options.acceptance ? "hosted-acceptance" : "hosted-dev",
+  );
   // The retained kernel contract still names this sibling directory `studio`;
   // it contains Controller authority/state and does not start a Studio UI.
   const stateDirectory = join(stateRoot, "studio");
   const dataDirectory = join(stateRoot, "data");
   const secretFile = join(stateRoot, "authority.secret");
   const configFile = join(stateRoot, "worldstream.toml");
+  const providerSecretFile = join(stateRoot, "development-openrouter.secret");
   const worldstreamctl = join(REPOSITORY_ROOT, "target", "debug", "worldstreamctl");
   const children = [];
   let ownsSupabase = false;
   let managedStarted = false;
   let worldstreamctlBuilt = false;
   let shuttingDown = false;
+  let completed = false;
 
   const commonEnvironment = {
     ...process.env,
@@ -97,6 +114,9 @@ async function main() {
     WORLDSTREAM_HOSTED_INSTALLATION_ID: HOST_INSTALLATION_ID,
     WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: CONTROLLER_AUTHORITY,
     WORLDSTREAM_HOSTED_CLIENT_ORIGIN: productOrigin,
+    WORLDSTREAM_DEVELOPMENT_FAKE_OPENROUTER: DEVELOPMENT_MODE,
+    WORLDSTREAM_DEVELOPMENT_HOUSE_OPENROUTER_ADDRESS:
+      `127.0.0.1:${ports.fakeOpenRouter}`,
   };
   const ctl = (command, options = {}) =>
     run(
@@ -117,6 +137,9 @@ async function main() {
 
   try {
     preflight();
+    const candidateBefore = options.acceptance
+      ? await localCandidateIdentity(commonEnvironment)
+      : null;
     await Promise.all([
       run("pnpm", ["install", "--frozen-lockfile"], { environment: commonEnvironment }),
       run(
@@ -146,6 +169,7 @@ async function main() {
 
     await mkdir(stateRoot, { recursive: true, mode: 0o700 });
     await ensureSecret(secretFile);
+    await ensureDevelopmentProviderSecret(providerSecretFile);
     await writeFile(
       configFile,
       renderHostedDevelopmentConfig({ dataDirectory, secretFile, runtimePort: ports.runtime }),
@@ -182,7 +206,34 @@ async function main() {
       );
     }
     await assertPortsAvailable(ports, reuseHeist ? new Set(["heist"]) : new Set());
-    await importClientDeclarations(ctl, stateDirectory, stateRoot);
+    if (options.acceptance) {
+      process.stdout.write("[Acceptance] Running negative/security prerequisites before pinning the Runner.\n");
+      await runHostedAcceptancePrerequisites((command, args) => run(command, args, {
+        // The production-appliance gate must not inherit local substitute flags.
+        environment: supabaseEnvironment(process.env),
+      }));
+      const paths = [];
+      for (const [kind, key] of [["anonymous", requiredSupabase(supabase, "ANON_KEY")],
+        ["service", requiredSupabase(supabase, "SERVICE_ROLE_KEY")]]) {
+        const response = await fetch(`${requiredSupabase(supabase, "REST_URL")}/`, {
+          headers: { apikey: key, ...(kind === "service" ? { authorization: `Bearer ${key}` } : {}) },
+          redirect: "error", signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) throw new Error("Supabase exposure probe failed");
+        const path = join(stateRoot, `acceptance-${kind}-openapi.json`);
+        await writeFile(path, await response.text(), { mode: 0o600 });
+        paths.push(path);
+      }
+      await run("node", ["scripts/verify-supabase-schema-exposure.mjs", ...paths], {
+        environment: commonEnvironment,
+      });
+    }
+    await importHostedDeclarations(
+      ctl,
+      stateDirectory,
+      stateRoot,
+      providerSecretFile,
+    );
 
     await ctl(["server", "start", "--participant-console-origin", heistOrigin]);
     managedStarted = true;
@@ -286,9 +337,26 @@ async function main() {
 
     await readiness(ports, ctl, children);
     await verifyDevelopmentFlow(ports);
+    if (options.acceptance) {
+      const evidencePath = await verifyCanonicalLocalCandidate({
+        candidateBefore,
+        childEnvironment,
+        configFile,
+        ctl: worldstreamctl,
+        databaseUrl: requiredSupabase(supabase, "DB_URL"),
+        outputPath: options.outputPath,
+        ports,
+        stateDirectory,
+        stateRoot,
+      });
+      process.stdout.write(`Hosted local acceptance evidence: ${evidencePath}\n`);
+      completed = true;
+      return;
+    }
     printReady(ports, supabase);
-    if (checkOnly) {
+    if (options.checkOnly) {
       process.stdout.write("Hosted local-development acceptance check passed.\n");
+      completed = true;
       return;
     }
 
@@ -297,6 +365,9 @@ async function main() {
     });
   } finally {
     shuttingDown = true;
+    if (options.acceptance && !completed && managedStarted && worldstreamctlBuilt) {
+      await ctl(["server", "logs"], { allowFailure: true, quiet: false });
+    }
     if (managedStarted && worldstreamctlBuilt) {
       await ctl(["server", "stop"], { allowFailure: true, quiet: true });
     }
@@ -319,9 +390,18 @@ async function main() {
 }
 
 function parseArguments(args) {
-  if (args.length === 0) return false;
-  if (args.length === 1 && args[0] === "--check") return true;
-  throw new Error("usage: pnpm hosted:dev [--check]");
+  if (args.length === 0) return { acceptance: false, checkOnly: false, outputPath: null };
+  if (args.length === 1 && args[0] === "--check") {
+    return { acceptance: false, checkOnly: true, outputPath: null };
+  }
+  if (args[0] === "--acceptance" && args.length <= 2) {
+    return {
+      acceptance: true,
+      checkOnly: false,
+      outputPath: args[1] === undefined ? null : resolve(args[1]),
+    };
+  }
+  throw new Error("usage: pnpm hosted:dev [--check | --acceptance [EVIDENCE_PATH]]");
 }
 
 function preflight() {
@@ -344,6 +424,27 @@ async function ensureSecret(path) {
     const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     try {
       await handle.writeFile(randomBytes(32));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+}
+
+async function ensureDevelopmentProviderSecret(path) {
+  try {
+    const stats = await lstat(path);
+    if (!stats.isFile() || stats.isSymbolicLink() || (stats.mode & 0o077) !== 0) {
+      throw new Error("hosted development provider secret must be a mode-0600 regular file");
+    }
+    if ((await readFile(path, "utf8")) !== FAKE_OPENROUTER_KEY) {
+      throw new Error("retained hosted development provider secret has changed");
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    try {
+      await handle.writeFile(FAKE_OPENROUTER_KEY);
       await handle.sync();
     } finally {
       await handle.close();
@@ -378,18 +479,87 @@ async function seedSupabase(supabase, environment) {
       "-v",
       "ON_ERROR_STOP=1",
       "-c",
-      `select (select count(*) from platform_store.activity_listing_revisions where listing_revision_digest = '${LISTING_DIGEST}'), (select count(*) from platform_store.github_identities where auth_user_id = '${DEVELOPMENT_USER_ID}' and provider_subject = '${DEVELOPMENT_PROVIDER_SUBJECT}');`,
+      `select (select count(*) from platform_store.activity_listing_revisions where listing_revision_digest = '${LISTING_DIGEST}'), (select count(*) from platform_store.github_identities where (auth_user_id = '${DEVELOPMENT_USER_ID}' and provider_subject = '${DEVELOPMENT_PROVIDER_SUBJECT}') or (auth_user_id = '${DEVELOPMENT_AGENT_USER_ID}' and provider_subject = '${DEVELOPMENT_AGENT_PROVIDER_SUBJECT}'));`,
     ],
     { capture: true, sensitive: true, environment },
   );
-  if (verified.stdout.trim() !== "1|1") throw new Error("local Supabase seed verification failed");
+  if (verified.stdout.trim() !== "1|2") throw new Error("local Supabase seed verification failed");
 }
 
-async function importClientDeclarations(ctl, stateDirectory, stateRoot) {
+async function importHostedDeclarations(
+  ctl,
+  stateDirectory,
+  stateRoot,
+  providerSecretFile,
+) {
   const declaration = await hostedClientDeclaration(stateDirectory, stateRoot);
-  const preview = await ctl(["init", "--client-declaration", declaration, "--preview"], {
-    capture: true,
-  });
+  const managedHost = join(
+    REPOSITORY_ROOT,
+    "target",
+    "debug",
+    "worldstream-managed-agent-host",
+  );
+  const { taggedBlake3 } = await import(
+    pathToFileURL(
+      join(REPOSITORY_ROOT, "sdk", "typescript-pack", "packages", "pack-sdk", "dist", "index.js"),
+    ).href
+  );
+  const executableDigest = taggedBlake3(await readFile(managedHost)).slice("blake3:".length);
+  const generated = join(stateRoot, "generated-hosted-import");
+  await mkdir(generated, { recursive: true, mode: 0o700 });
+  const runner = join(generated, "openrouter-house-runner.json");
+  const provider = join(generated, "openrouter-provider.json");
+  const cooperative = join(generated, "cooperative-planner.json");
+  const skeptical = join(generated, "skeptical-auditor.json");
+  await Promise.all([
+    writeFile(
+      runner,
+      `${JSON.stringify(renderHouseRunnerTemplate(managedHost, executableDigest))}\n`,
+      { mode: 0o600 },
+    ),
+    writeFile(
+      provider,
+      `${JSON.stringify({
+        schema: "worldstream/model-provider-credential-import/v1",
+        credential_id: "hosted-openrouter",
+        display_name: "Hosted development OpenRouter substitute",
+        provider: "openrouter",
+        secret_file: providerSecretFile,
+      })}\n`,
+      { mode: 0o600 },
+    ),
+    ...[
+      ["house-cooperative-planner", "Cooperative Planner", cooperative],
+      ["house-skeptical-auditor", "Skeptical Auditor", skeptical],
+    ].map(([profileId, displayName, path]) =>
+      writeFile(
+        path,
+        `${JSON.stringify({
+          schema: "worldstream/studio-agent-profile-publish/v2",
+          profile_id: profileId,
+          revision: "1",
+          display_name: displayName,
+          non_secret_configuration: {},
+          host_contract: {
+            kind: "managed_house_openrouter",
+            host_contract_revision: "1",
+            runner_template: { template_id: "openrouter-house", revision: "1" },
+          },
+          managed_provider_credential_id: "hosted-openrouter",
+        })}\n`,
+        { mode: 0o600 },
+      )
+    ),
+  ]);
+  const selected = [
+    "init",
+    "--runner-template", runner,
+    "--provider-declaration", provider,
+    "--agent-profile", cooperative,
+    "--agent-profile", skeptical,
+    "--client-declaration", declaration,
+  ];
+  const preview = await ctl([...selected, "--preview"], { capture: true });
   let digest;
   try {
     digest = JSON.parse(preview.stdout).import_review.digest;
@@ -399,7 +569,7 @@ async function importClientDeclarations(ctl, stateDirectory, stateRoot) {
   if (typeof digest !== "string" || !/^blake3:[0-9a-f]{64}$/u.test(digest)) {
     throw new Error("worldstreamctl client import review omitted its exact digest");
   }
-  await ctl(["init", "--client-declaration", declaration, "--approve-imports", digest]);
+  await ctl([...selected, "--approve-imports", digest]);
 }
 
 async function hostedClientDeclaration(stateDirectory, stateRoot) {
@@ -814,6 +984,148 @@ async function verifyDevelopmentFlow(ports) {
 
 function taggedSha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function verifyCanonicalLocalCandidate({
+  candidateBefore,
+  childEnvironment,
+  configFile,
+  ctl,
+  databaseUrl,
+  outputPath,
+  ports,
+  stateDirectory,
+  stateRoot,
+}) {
+  if (candidateBefore === null) throw new Error("candidate source identity was not captured");
+  const nonce = randomBytes(8).toString("hex");
+  const resultPath = join(stateRoot, `local-acceptance-result-${nonce}.json`);
+  await run(
+    "psql",
+    [
+      databaseUrl,
+      "-q",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-c",
+      `delete from platform_store.account_mutation_rate_limits where auth_user_id in ('${DEVELOPMENT_USER_ID}', '${DEVELOPMENT_AGENT_USER_ID}');`,
+    ],
+    { capture: true, sensitive: true, environment: childEnvironment },
+  );
+  await run(
+    "pnpm",
+    [
+      "--filter",
+      "@worldstream/platform",
+      "exec",
+      "vitest",
+      "run",
+      "src/hosted-local-acceptance.live.test.ts",
+      "--environment",
+      "node",
+      "--testTimeout",
+      "360000",
+    ],
+    {
+      environment: {
+        ...childEnvironment,
+        WORLDSTREAM_LOCAL_ACCEPTANCE: DEVELOPMENT_MODE,
+        WORLDSTREAM_ACCEPTANCE_NONCE: nonce,
+        WORLDSTREAM_ACCEPTANCE_PRODUCT_ORIGIN: `http://127.0.0.1:${ports.product}`,
+        WORLDSTREAM_ACCEPTANCE_FAKE_PROVIDER_ORIGIN:
+          `http://127.0.0.1:${ports.fakeOpenRouter}`,
+        WORLDSTREAM_ACCEPTANCE_AGENT_USER_ID: DEVELOPMENT_AGENT_USER_ID,
+        WORLDSTREAM_ACCEPTANCE_AGENT_PROVIDER_SUBJECT:
+          DEVELOPMENT_AGENT_PROVIDER_SUBJECT,
+        WORLDSTREAM_ACCEPTANCE_AGENT_LOGIN: DEVELOPMENT_AGENT_LOGIN,
+        WORLDSTREAM_ACCEPTANCE_CTL: ctl,
+        WORLDSTREAM_ACCEPTANCE_CONFIG: configFile,
+        WORLDSTREAM_ACCEPTANCE_STATE_DIR: stateDirectory,
+        WORLDSTREAM_ACCEPTANCE_CONTROLLER: `127.0.0.1:${ports.controller}`,
+        WORLDSTREAM_ACCEPTANCE_REPOSITORY_ROOT: REPOSITORY_ROOT,
+        WORLDSTREAM_ACCEPTANCE_RESULT_PATH: resultPath,
+      },
+    },
+  );
+  const result = JSON.parse(await readFile(resultPath, "utf8"));
+  if (
+    result?.version !== "worldstream_hosted_local_acceptance_result.v1" ||
+    !Number.isSafeInteger(result.provider_calls) ||
+    result.provider_calls < 1 ||
+    result.provider_calls > 10 ||
+    !Number.isSafeInteger(result.maximum_direct_push_seconds) ||
+    result.maximum_direct_push_seconds < 1 ||
+    result.maximum_direct_push_seconds > 600
+  ) {
+    throw new Error("hosted local acceptance returned invalid evidence");
+  }
+  const candidateAfter = await localCandidateIdentity(childEnvironment);
+  const commit = candidateBefore.commit;
+  const cleanCandidate = candidateBefore.clean && candidateAfter.clean &&
+    candidateBefore.commit === candidateAfter.commit;
+  if (!/^[0-9a-f]{40}$/u.test(commit)) {
+    throw new Error("hosted local acceptance commit identity is invalid");
+  }
+  const migrations = (await readdir(join(REPOSITORY_ROOT, "supabase", "migrations")))
+    .map((name) => name.match(/^(\d{14})_/u)?.[1])
+    .filter((value) => value !== undefined)
+    .sort();
+  const schemaHead = migrations.at(-1);
+  if (schemaHead === undefined) throw new Error("Supabase schema head is unavailable");
+  const recordedAt = new Date().toISOString();
+  const selectedOutput = outputPath ?? join(
+    REPOSITORY_ROOT,
+    ".worldstream",
+    "evidence",
+    `hosted-local-${commit.slice(0, 12)}-${recordedAt.replaceAll(/[:.]/gu, "-")}.json`,
+  );
+  const evidencePath = await writeHostedAcceptanceEvidence(selectedOutput, {
+    schema: HOSTED_ACCEPTANCE_SCHEMA,
+    candidate_kind: "local",
+    outcome: cleanCandidate ? "passed" : "blocked",
+    commit,
+    recorded_at: recordedAt,
+    deployment: {
+      platform_revision: commit,
+      gateway_revision: commit,
+      schema_head: schemaHead,
+      listing_revision_digest: LISTING_DIGEST,
+      pack_digest: "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820",
+      client_release_digest:
+        "sha256:88f76571d3d5736f0ca52740d619761f9ad6dcb9112792e806d8072c2a983148",
+      projector_digest:
+        "blake3:421f83957b54e5a8b4be10084e6900cfd977b938c79f7edb6dacbefe8cff4ddf",
+    },
+    checks: Object.fromEntries(
+      LOCAL_ACCEPTANCE_CHECKS.map((name) => [name,
+        name === "clean_candidate_revision" && !cleanCandidate
+          ? { status: "blocked", note: "Working tree is dirty or the commit changed during verification. Repeat from a clean committed candidate." }
+          : { status: "passed" },
+      ]),
+    ),
+    metrics: {
+      provider_calls: result.provider_calls,
+      maximum_direct_push_seconds: result.maximum_direct_push_seconds,
+    },
+    redaction: {
+      private_projections_retained: false,
+      credentials_retained: false,
+    },
+  });
+  if (!cleanCandidate) {
+    throw new Error(`Gameplay checks passed, but release evidence is blocked by the candidate source state. Diagnostic evidence: ${evidencePath}`);
+  }
+  return evidencePath;
+}
+
+async function localCandidateIdentity(environment) {
+  const commit = (await run("git", ["rev-parse", "HEAD"], {
+    capture: true, environment,
+  })).stdout.trim();
+  const status = await run("git", ["status", "--porcelain", "--untracked-files=normal"], {
+    capture: true, environment,
+  });
+  return { commit, clean: status.stdout.trim() === "" };
 }
 
 function printReady(ports, supabase) {

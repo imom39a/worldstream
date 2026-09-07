@@ -280,7 +280,7 @@ describe("HostedLiveSessionController", () => {
     });
   });
 
-  it("reconnects from the acknowledged Cursor and completes ordered Catch-up", async () => {
+  it.each(["usable", "disconnected"] as const)("reconnects from the acknowledged Cursor when retained transport health is %s", async (state) => {
     const setup = fixture();
     const first = await openResetSession(setup);
     first.receive(observation(10, 8));
@@ -298,6 +298,9 @@ describe("HostedLiveSessionController", () => {
     expect(setup.controller.state.lastAcknowledgedFrameSeq).toBe(10);
     first.remoteClose();
     expect(setup.controller.state.canAct).toBe(false);
+    setup.authority.resume.mockResolvedValue({
+      ...USABLE, state, nextAction: state === "disconnected" ? "reconnect" : "continue",
+    });
 
     const reconnecting = setup.controller.reconnect();
     await vi.waitFor(() => expect(setup.sockets).toHaveLength(2));

@@ -32,7 +32,8 @@ use worldstream_hosted_contract::{
 };
 use worldstream_protocol::{
     AccessMode, BearerWireV1, ClientMode, HOSTED_BROWSER_WS_TICKET_VERSION,
-    HostedBrowserWebSocketTicketIssueRequest, PackReference, SealedCapabilityBearerV1,
+    HostedBrowserWebSocketTicketIssueRequest, PackReference, PrincipalKind,
+    SealedCapabilityBearerV1,
 };
 use worldstream_runtime::{
     create_owner_only_file, prepare_data_directory, validate_owner_only_file,
@@ -208,18 +209,19 @@ impl HostedPublicStreamBrokerV1 {
             .as_bytes()
             .try_into()
             .map_err(|_| HostedPublicStreamErrorV1::Unavailable)?;
-        let authority = HumanSeatAuthorityV1::new(
+        let authority = HumanSeatAuthorityV1::new_for_principal(
             &relay.room_id,
             &relay.member_id,
             relay.pack.clone(),
             AccessMode::Spectator,
             None,
+            PrincipalKind::Agent,
             SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bearer_bytes)),
         )
         .map_err(|_| HostedPublicStreamErrorV1::Unavailable)?;
         let current = self
             .gateway
-            .current_membership(&authority, None)
+            .membership_status(&authority)
             .map_err(map_gateway_error)?;
         require_public_relay_membership(&relay.pack, &current)?;
         let runtime_request = HostedBrowserWebSocketTicketIssueRequest {
@@ -574,11 +576,19 @@ mod tests {
     }
 
     impl ParticipantConsoleGatewayV1 for FakeGateway {
+        fn membership_status(
+            &self,
+            authority: &HumanSeatAuthorityV1,
+        ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+            self.current_membership(authority, None)
+        }
+
         fn current_membership(
             &self,
-            _authority: &HumanSeatAuthorityV1,
+            authority: &HumanSeatAuthorityV1,
             _durable_cursor: Option<u64>,
         ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+            assert_eq!(authority.principal_kind(), PrincipalKind::Agent);
             Ok(CurrentMembershipSnapshotV1 {
                 pack: self.pack.clone(),
                 access_mode: AccessMode::Spectator,
@@ -605,11 +615,12 @@ mod tests {
 
         fn issue_hosted_browser_stream_ticket(
             &self,
-            _authority: &HumanSeatAuthorityV1,
+            authority: &HumanSeatAuthorityV1,
             request: &HostedBrowserWebSocketTicketIssueRequest,
             origin: &str,
         ) -> Result<BrowserWebSocketTicketIssueResponse, ParticipantConsoleGatewayErrorV1> {
             assert_eq!(origin, "https://arena.example");
+            assert_eq!(authority.principal_kind(), PrincipalKind::Agent);
             self.requests
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)

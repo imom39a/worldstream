@@ -241,6 +241,9 @@ pub(crate) fn startup_pack_inventory_digest(
 /// The read-only CLI uses this value when both current metadata and the
 /// startup snapshot are empty; a nonempty inventory must instead carry its
 /// target-bound readiness seal before it can equal running facts.
+///
+/// # Errors
+/// Returns an error if the inventory identity cannot be serialized canonically.
 pub fn empty_startup_pack_inventory_digest() -> Result<String, CanonicalJsonError> {
     startup_pack_inventory_identity_digest(Vec::new())
 }

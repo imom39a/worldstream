@@ -845,6 +845,21 @@ pub struct ProjectionResponse {
     pub projection_hash: String,
 }
 
+/// Current, capability-authorized Membership facts. Reading this response does
+/// not attach a stream, create a sync barrier, or change its durable Cursor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MembershipStatusResponse {
+    pub version: String,
+    pub room_id: String,
+    pub member_id: String,
+    pub principal_kind: PrincipalKind,
+    pub access_mode: AccessMode,
+    pub role: Option<String>,
+    pub membership_status: String,
+    pub pack: PackReference,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplayResponse {

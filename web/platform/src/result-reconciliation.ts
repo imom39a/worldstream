@@ -117,6 +117,7 @@ export interface ReconciliationWriteReceipt {
 
 export interface ResultReconciliationData {
   listCandidates(limit: number): Promise<readonly ResultReconciliationCandidate[]>;
+  markAttempt(launchRequestId: string): Promise<void>;
   readTerminal(runId: string): Promise<TerminalReconciliationState | null>;
   readResult(runId: string): Promise<ResultReconciliationState | null>;
   recordTerminal(
@@ -502,6 +503,7 @@ export async function reconcileActivityResultCandidates(
   const reports: ResultReconciliationReport[] = [];
   for (const candidate of candidates) {
     if (candidate.candidateKind === "result_source") {
+      await dependencies.data.markAttempt(candidate.launchRequestId);
       reports.push(await reconcileActivityResult(candidate, dependencies));
     }
   }

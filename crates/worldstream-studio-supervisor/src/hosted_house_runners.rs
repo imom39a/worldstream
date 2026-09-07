@@ -8,6 +8,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::Write as _,
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
@@ -36,7 +37,7 @@ use crate::{
     house_model::HouseProviderCredentialV1,
     managed_agent_host::{
         ManagedAgentHostErrorV1, ManagedAgentHostLaunchPlanV1, ManagedAgentHostOperationsV1,
-        ManagedAgentHostPreparedLaunchV1, ManagedAgentHostStateV1,
+        ManagedAgentHostPreparedLaunchV1, ManagedAgentHostStartSourceV1, ManagedAgentHostStateV1,
     },
     runner_templates::{RunnerSupervisorV1, RunnerTemplateRegistryV1},
     secrets::{FileSecretVaultV1, SecretKindV1, SecretVaultErrorV1},
@@ -184,6 +185,7 @@ struct LiveHouseRunnerDependencySourceV1 {
     vault: FileSecretVaultV1,
     task_setup: TaskSetupSupervisorV1,
     managed_hosts: ManagedAgentHostOperationsV1,
+    development_provider_address: Option<SocketAddr>,
     mutation: Arc<Mutex<()>>,
 }
 
@@ -200,6 +202,7 @@ impl LiveHouseRunnerDependencySourceV1 {
         vault: FileSecretVaultV1,
         task_setup: TaskSetupSupervisorV1,
         managed_hosts: ManagedAgentHostOperationsV1,
+        development_provider_address: Option<SocketAddr>,
     ) -> Result<Self, HostedHouseRunnerErrorV1>
     where
         S: AssignedMembershipLaunchSourceV1,
@@ -225,6 +228,7 @@ impl LiveHouseRunnerDependencySourceV1 {
             vault,
             task_setup,
             managed_hosts,
+            development_provider_address,
             mutation: Arc::new(Mutex::new(())),
         };
         source.validate_runtime_bindings()?;
@@ -440,19 +444,11 @@ impl HouseRunnerDependencySourceV1 for LiveHouseRunnerDependencySourceV1 {
                 DependencyCheckErrorV1::Unavailable => StartErrorV1::Unavailable,
             })?;
         let AgentHostContractV1::ManagedHouseOpenrouter {
-            host_contract_revision,
-            runner_template,
+            runner_template, ..
         } = &profile.host_contract
         else {
             return Err(StartErrorV1::Terminal);
         };
-        let secret = profile
-            .secret_settings
-            .iter()
-            .find(|setting| {
-                setting.kind == SecretKindV1::ModelProvider && setting.key == "MODEL_PROVIDER_TOKEN"
-            })
-            .ok_or(StartErrorV1::Terminal)?;
         let binding = RetainedRuntimeBindingV1 {
             schema: RUNTIME_BINDING_SCHEMA_V1.to_owned(),
             reservation_operation_id: receipt.reservation_operation_id.clone(),
@@ -473,6 +469,80 @@ impl HouseRunnerDependencySourceV1 for LiveHouseRunnerDependencySourceV1 {
             runner_template_revision: runner_template.revision.clone(),
         };
         self.runtime_binding(&binding)?;
+        let prepared = self.prepare_retained(&binding, revision)?;
+        let status = self
+            .managed_hosts
+            .start_house(&local.assignment_id, &prepared)
+            .map_err(map_managed_start_error)?;
+        if status.state != ManagedAgentHostStateV1::Running || !status.ready {
+            return Err(StartErrorV1::Unavailable);
+        }
+        Ok(())
+    }
+}
+
+impl LiveHouseRunnerDependencySourceV1 {
+    // Used for both initial startup and lifecycle restoration. No reservation,
+    // Assignment, or allowance is minted here; every identity is revalidated.
+    #[allow(clippy::too_many_lines)]
+    fn prepare_retained(
+        &self,
+        binding: &RetainedRuntimeBindingV1,
+        revision: &HouseAgentRevision,
+    ) -> Result<ManagedAgentHostPreparedLaunchV1, StartErrorV1> {
+        let local = self
+            .profiles
+            .assignment(&binding.local_assignment_id)
+            .map_err(|_| StartErrorV1::Unavailable)?;
+        let metadata = self
+            .task_setup
+            .managed_reference_metadata(&local)
+            .map_err(map_setup_start_error)?;
+        if !valid_runtime_binding(binding)
+            || binding.house_agent_revision_digest != revision.digest()
+            || (
+                binding.profile_id.as_str(),
+                binding.profile_revision.as_str(),
+            ) != revision.agent_profile()
+            || (
+                binding.runner_template_id.as_str(),
+                binding.runner_template_revision.as_str(),
+            ) != revision.runner_template()
+            || local.draft_id != binding.room_setup_operation_id
+            || local.membership.room_id != binding.room_id
+            || local.membership.member_id != binding.member_id
+            || local.membership.principal_id != binding.principal_id
+            || local.membership.role != binding.role
+            || local.profile.profile_id != binding.profile_id
+            || local.profile.revision != binding.profile_revision
+            || metadata.runner_id != binding.runner_id
+            || metadata.instance_id != binding.instance_id
+            || metadata.template_id != binding.runner_template_id
+            || metadata.template_revision != binding.runner_template_revision
+        {
+            return Err(StartErrorV1::Terminal);
+        }
+        let profile = self
+            .exact_profile_and_secret(revision)
+            .map_err(|error| match error {
+                DependencyCheckErrorV1::Terminal(_) => StartErrorV1::Terminal,
+                DependencyCheckErrorV1::Unavailable => StartErrorV1::Unavailable,
+            })?;
+        let AgentHostContractV1::ManagedHouseOpenrouter {
+            host_contract_revision,
+            ..
+        } = &profile.host_contract
+        else {
+            return Err(StartErrorV1::Terminal);
+        };
+        let secret = profile
+            .secret_settings
+            .iter()
+            .find(|setting| {
+                setting.kind == SecretKindV1::ModelProvider && setting.key == "MODEL_PROVIDER_TOKEN"
+            })
+            .ok_or(StartErrorV1::Terminal)?;
+        let runner_unit_id = &binding.runner_unit_id;
         let executable = self
             .runners
             .managed_reference_executable(
@@ -491,32 +561,83 @@ impl HouseRunnerDependencySourceV1 for LiveHouseRunnerDependencySourceV1 {
             .map_err(|_| StartErrorV1::Unavailable)?;
         let working_directory = prepare_data_directory(&self.unit_root.join(runner_unit_id))
             .map_err(|_| StartErrorV1::Unavailable)?;
-        let plan = ManagedAgentHostLaunchPlanV1::new_house(
-            &self.helper_executable,
-            &self.state_dir,
-            &launch_reference,
-            &executable,
-            &working_directory,
-            runner_unit_id,
-            revision,
-        )
+        let plan = if let Some(provider_address) = self.development_provider_address {
+            ManagedAgentHostLaunchPlanV1::new_house_development(
+                &self.helper_executable,
+                &self.state_dir,
+                &launch_reference,
+                &executable,
+                &working_directory,
+                runner_unit_id,
+                revision,
+                provider_address,
+            )
+        } else {
+            ManagedAgentHostLaunchPlanV1::new_house(
+                &self.helper_executable,
+                &self.state_dir,
+                &launch_reference,
+                &executable,
+                &working_directory,
+                runner_unit_id,
+                revision,
+            )
+        }
         .map_err(map_managed_start_error)?;
-        let prepared = ManagedAgentHostPreparedLaunchV1::new_house(
+        ManagedAgentHostPreparedLaunchV1::new_house(
             &local.assignment_id,
             host_contract_revision,
             secret.reference.as_str(),
             plan,
             Zeroizing::new(credential.as_bytes().to_vec()),
         )
-        .map_err(map_managed_start_error)?;
-        let status = self
-            .managed_hosts
-            .start_house(&local.assignment_id, &prepared)
-            .map_err(map_managed_start_error)?;
-        if status.state != ManagedAgentHostStateV1::Running || !status.ready {
-            return Err(StartErrorV1::Unavailable);
+        .map_err(map_managed_start_error)
+    }
+}
+
+struct RetainedHouseStartSourceV1 {
+    source: LiveHouseRunnerDependencySourceV1,
+    revisions: Arc<BTreeMap<String, HouseAgentRevision>>,
+}
+
+impl ManagedAgentHostStartSourceV1 for RetainedHouseStartSourceV1 {
+    fn prepare(
+        &self,
+        assignment_id: &str,
+    ) -> Result<ManagedAgentHostPreparedLaunchV1, ManagedAgentHostErrorV1> {
+        self.source
+            .validate_runtime_bindings()
+            .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
+        let mut selected = None;
+        for entry in fs::read_dir(self.source.runtime_bindings.as_ref())
+            .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?
+        {
+            let path = entry
+                .map_err(|_| ManagedAgentHostErrorV1::Unavailable)?
+                .path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let binding: RetainedRuntimeBindingV1 =
+                read_record(&path).map_err(|_| ManagedAgentHostErrorV1::Unavailable)?;
+            if binding.local_assignment_id == assignment_id {
+                if selected.is_some() {
+                    return Err(ManagedAgentHostErrorV1::Corrupt);
+                }
+                selected = Some(binding);
+            }
         }
-        Ok(())
+        let binding = selected.ok_or(ManagedAgentHostErrorV1::InvalidInput)?;
+        let revision = self
+            .revisions
+            .get(&binding.house_agent_revision_digest)
+            .ok_or(ManagedAgentHostErrorV1::Unavailable)?;
+        self.source
+            .prepare_retained(&binding, revision)
+            .map_err(|error| match error {
+                StartErrorV1::Terminal => ManagedAgentHostErrorV1::Corrupt,
+                StartErrorV1::Unavailable => ManagedAgentHostErrorV1::Unavailable,
+            })
     }
 }
 
@@ -548,6 +669,8 @@ pub struct HostedHouseRunnerOperationsV1 {
     revisions: Arc<BTreeMap<String, HouseAgentRevision>>,
     authenticator: Arc<hmac::Key>,
     source: Arc<dyn HouseRunnerDependencySourceV1>,
+    // Keeps the registered weak restoration adapter alive for this coordinator.
+    house_start_source: Option<Arc<dyn ManagedAgentHostStartSourceV1>>,
     mutation: Arc<Mutex<()>>,
 }
 
@@ -588,8 +711,83 @@ impl HostedHouseRunnerOperationsV1 {
             vault,
             task_setup,
             managed_hosts,
+            None,
         )?;
-        Self::open_with(&root, host_installation_id, listings, revisions, source)
+        Self::open_live(&root, host_installation_id, listings, revisions, source)
+    }
+
+    /// Opens the same retained House boundary with one explicit loopback-only
+    /// provider substitute for local acceptance testing.
+    ///
+    /// # Errors
+    /// Rejects non-loopback provider addresses and the same invalid or
+    /// unavailable dependencies as [`Self::open_production`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_development_loopback<S>(
+        root: &Path,
+        state_dir: &Path,
+        helper_executable: &Path,
+        host_installation_id: &str,
+        listings: Vec<ListingRevision>,
+        revisions: Vec<HouseAgentRevision>,
+        profiles: AgentProfileStoreV1,
+        templates: RunnerTemplateRegistryV1,
+        runners: RunnerSupervisorV1,
+        launches: AssignmentMcpLaunchRegistryV1<S>,
+        vault: FileSecretVaultV1,
+        task_setup: TaskSetupSupervisorV1,
+        managed_hosts: ManagedAgentHostOperationsV1,
+        provider_address: SocketAddr,
+    ) -> Result<Self, HostedHouseRunnerErrorV1>
+    where
+        S: AssignedMembershipLaunchSourceV1,
+    {
+        if !provider_address.ip().is_loopback() || provider_address.port() == 0 {
+            return Err(HostedHouseRunnerErrorV1::Invalid);
+        }
+        let root =
+            prepare_data_directory(root).map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?;
+        let source = LiveHouseRunnerDependencySourceV1::open(
+            &root,
+            state_dir,
+            helper_executable,
+            profiles,
+            templates,
+            runners,
+            launches,
+            vault,
+            task_setup,
+            managed_hosts,
+            Some(provider_address),
+        )?;
+        Self::open_live(&root, host_installation_id, listings, revisions, source)
+    }
+
+    fn open_live(
+        root: &Path,
+        host_installation_id: &str,
+        listings: Vec<ListingRevision>,
+        revisions: Vec<HouseAgentRevision>,
+        source: LiveHouseRunnerDependencySourceV1,
+    ) -> Result<Self, HostedHouseRunnerErrorV1> {
+        let mut operations = Self::open_with(
+            root,
+            host_installation_id,
+            listings,
+            revisions,
+            source.clone(),
+        )?;
+        let managed_hosts = source.managed_hosts.clone();
+        let restore: Arc<dyn ManagedAgentHostStartSourceV1> =
+            Arc::new(RetainedHouseStartSourceV1 {
+                source,
+                revisions: Arc::clone(&operations.revisions),
+            });
+        managed_hosts
+            .register_house_start_source(&restore)
+            .map_err(|_| HostedHouseRunnerErrorV1::Unavailable)?;
+        operations.house_start_source = Some(restore);
+        Ok(operations)
     }
 
     fn open_with(
@@ -627,6 +825,7 @@ impl HostedHouseRunnerOperationsV1 {
             revisions: Arc::new(revisions),
             authenticator: Arc::new(hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref())),
             source: Arc::new(source),
+            house_start_source: None,
             mutation: Arc::new(Mutex::new(())),
         };
         operations.validate_retained()?;

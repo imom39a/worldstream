@@ -4159,7 +4159,7 @@ impl SqliteRoomStore {
     /// Creates a standalone online snapshot for the offline Pack
     /// restart-readiness preflight. Unlike a transfer/export backup, this
     /// narrow path permits canonical deployment metadata to be absent because
-    /// that metadata is optional for an ordinary local SQLite deployment. All
+    /// that metadata is optional for an ordinary local `SQLite` deployment. All
     /// durable tables are still bound by the semantic digest, and the
     /// transfer/export APIs remain strict.
     ///

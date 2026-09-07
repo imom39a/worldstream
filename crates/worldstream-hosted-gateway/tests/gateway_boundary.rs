@@ -631,6 +631,17 @@ fn public_relay_bind_request() -> HostedPublicRelayBindRequestV1 {
     }
 }
 
+#[test]
+fn public_relay_adapter_request_is_canonicalizable() {
+    let request = public_relay_bind_request();
+    let encoded = serde_json::to_vec(&request).expect("public relay request JSON");
+    let canonical = CanonicalJsonV1::parse(&encoded).and_then(|value| value.to_bytes());
+    assert!(
+        canonical.is_ok(),
+        "public relay request must cross the fixed adapter: {canonical:?}"
+    );
+}
+
 fn service_request(path: &str, token: &str, body: &impl Serialize) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -1140,18 +1151,17 @@ async fn serve_public_projection_fixture(stream: tokio::net::TcpStream) {
         ))
         .await
         .expect("observation");
-    let observation_ack: Value = serde_json::from_str(
-        socket
-            .next()
-            .await
-            .expect("observation ack")
-            .expect("valid observation ack")
-            .into_text()
-            .expect("text ack")
-            .as_str(),
-    )
-    .expect("observation ack json");
-    assert_eq!(observation_ack["type"], "observation.ack");
+    // Anonymous browsers share one relay Membership, not a consumption cursor.
+    // A per-browser acknowledgement would make a later viewer's reset fail.
+    if let Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) =
+        tokio::time::timeout(Duration::from_secs(2), socket.next()).await
+    {
+        let request: Value = serde_json::from_str(text.as_str()).expect("runtime request");
+        assert_ne!(
+            request["type"], "observation.ack",
+            "public viewers must not consume the shared relay Cursor"
+        );
+    }
 }
 
 fn read_public_projection_fixture(gateway_address: SocketAddr) {
@@ -1733,7 +1743,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     let address = listener.local_addr().expect("fixture address");
     let (sender, receiver) = mpsc::channel();
     let server = thread::spawn(move || {
-        for index in 0..12 {
+        for index in 0..14 {
             let (stream, _) = listener.accept().expect("fixture connection");
             let (request_line, authorization, body, mut stream) = read_request(stream);
             sender
@@ -1780,6 +1790,23 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
                     expires_in_ms: 15_000,
                 })
                 .expect("browser stream ticket response"),
+                12 => {
+                    let request = public_relay_bind_request();
+                    serde_json::to_vec(&HostedPublicRelayBindReceiptV1 {
+                        schema: "worldstream/hosted-public-relay-bind-receipt/v1".to_owned(),
+                        public_run_id: request.public_run_id,
+                        activity_run_id: request.activity_run_id,
+                        binding_request_digest: format!("sha256:{}", "d".repeat(64)),
+                        bound: true,
+                    })
+                    .expect("public relay receipt")
+                }
+                13 => serde_json::to_vec(&HostedBrowserStreamTicketResponseV1 {
+                    schema: "worldstream/hosted-browser-stream-ticket-response/v1".to_owned(),
+                    ticket: format!("wst1:{}", "c".repeat(64)),
+                    expires_in_ms: 15_000,
+                })
+                .expect("public stream ticket response"),
                 _ => serde_json::to_vec(&status(
                     LISTING,
                     "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -1789,7 +1816,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
             };
             let status_code = if index == 1 {
                 202
-            } else if matches!(index, 7 | 8 | 11) {
+            } else if matches!(index, 7 | 8 | 11 | 12 | 13) {
                 201
             } else {
                 200
@@ -1854,6 +1881,13 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
     );
     let stream_ticket = backend.issue_browser_stream_ticket(&stream_ticket_request);
     assert!(stream_ticket.is_ok(), "{stream_ticket:?}");
+    let public_relay = backend.bind_public_relay(&public_relay_bind_request());
+    assert!(public_relay.is_ok(), "{public_relay:?}");
+    let public_stream = backend.issue_public_stream_ticket(&HostedPublicStreamTicketRequestV1 {
+        schema: "worldstream/hosted-public-stream-ticket-request/v1".to_owned(),
+        public_run_id: "0123456789abcdef0123456789abcdef".to_owned(),
+    });
+    assert!(public_stream.is_ok(), "{public_stream:?}");
     server.join().expect("fixture server");
 
     let observations = receiver.try_iter().collect::<Vec<_>>();
@@ -1861,7 +1895,7 @@ fn fixed_adapter_uses_only_reviewed_routes_and_its_separate_authority() {
 }
 
 fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)]) {
-    assert_eq!(observations.len(), 12);
+    assert_eq!(observations.len(), 14);
     assert_eq!(
         observations[0].0,
         "GET /api/v1/hosted-launches/ready HTTP/1.1"
@@ -1910,6 +1944,14 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
         observations[11].0,
         "POST /api/v1/hosted-browser-sessions:stream-ticket HTTP/1.1"
     );
+    assert_eq!(
+        observations[12].0,
+        "POST /api/v1/hosted-public-relays:bind HTTP/1.1"
+    );
+    assert_eq!(
+        observations[13].0,
+        "POST /api/v1/hosted-public-streams:ticket HTTP/1.1"
+    );
     assert!(
         observations
             .iter()
@@ -1927,6 +1969,8 @@ fn assert_fixed_adapter_observations(observations: &[(String, String, Vec<u8>)])
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[9].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[10].2).is_ok());
     assert!(CanonicalJsonV1::from_canonical_bytes(&observations[11].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[12].2).is_ok());
+    assert!(CanonicalJsonV1::from_canonical_bytes(&observations[13].2).is_ok());
 }
 
 fn read_request(stream: TcpStream) -> (String, String, Vec<u8>, TcpStream) {

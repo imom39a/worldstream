@@ -569,6 +569,11 @@ select throws_ok(
   'the table trigger also rejects post-freeze claim mutation'
 );
 
+select is(
+  platform_api.read_hosted_recovery_material_v1((select launch_request_id from first_launch)),
+  null::jsonb,
+  'a frozen roster without Host authorization cannot be recovered'
+);
 select ok(
   platform_api.authorize_host_mutation_v1(
     '10000000-0000-4000-8000-000000000001',
@@ -577,6 +582,24 @@ select ok(
     'hosted-launch-01'
   ),
   'Host mutation authorization atomically acquires active-Run capacity'
+);
+select is(
+  platform_api.read_hosted_recovery_material_v1((select launch_request_id from first_launch)),
+  platform_api.read_hosted_launch_material_v1(
+    '10000000-0000-4000-8000-000000000001', (select launch_request_id from first_launch)
+  ),
+  'recovery reads the original authorized material without new capacity or a new draw'
+);
+select is(
+  platform_api.read_hosted_schema_head_v1(),
+  (select max(version) from supabase_migrations.schema_migrations),
+  'deployment identity reports the actual applied migration head'
+);
+select ok(
+  not has_function_privilege('anon', 'platform_api.read_hosted_recovery_material_v1(uuid)', 'execute')
+  and not has_function_privilege('authenticated', 'platform_api.read_hosted_recovery_material_v1(uuid)', 'execute')
+  and has_function_privilege('service_role', 'platform_api.read_hosted_recovery_material_v1(uuid)', 'execute'),
+  'only the server may obtain frozen recovery material'
 );
 select ok(
   platform_api.authorize_host_mutation_v1(

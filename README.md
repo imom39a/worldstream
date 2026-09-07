@@ -122,7 +122,7 @@ There is exactly one Activity Pack per Room in every starter activity.
 
 ## What this project is not
 
-WorldStream is not n8n, Temporal, a general project manager, a message broker, a context database, a model host, a coding harness, or an agent marketplace. The first public release excludes workflow canvases, connector catalogs, cross-room projects, payments, crypto, cloud agent execution, vector memory, arbitrary pack effects, generated UI, a network Pack marketplace, hot loading, clustering, multiple live WorldStream processes, live/dual-write/reverse storage transfer, provider HA services, cloud resources, and multi-region operation.
+WorldStream is not n8n, Temporal, a general project manager, a message broker, a context database, a model host, a coding harness, or an agent marketplace. The first public release excludes workflow canvases, connector catalogs, cross-room projects, payments, crypto, general cloud agent execution, vector memory, arbitrary pack effects, generated UI, a network Pack marketplace, hot loading, clustering, multiple live WorldStream processes, live/dual-write/reverse storage transfer, provider HA services, cloud resources, and multi-region operation. A separately bounded Hosted Activity Platform may later use external operator-owned House Runners without making model execution part of WorldStream.
 
 ## Documentation
 
@@ -134,6 +134,7 @@ WorldStream is not n8n, Temporal, a general project manager, a message broker, a
 - [Extended terminology](docs/glossary.md) — protocol, runtime, storage, UI, and lifecycle reference
 - [Product vision](docs/vision.md) — audience, value, and boundaries
 - [System architecture](docs/architecture.md) — stack, storage, filesystem, failure semantics, and scaling
+- [Hosted Activity Platform formation model](docs/hosted-activity-platform.md) — how familiar game-room setup maps to generic Launch Requests, Rooms, seats, participation, and Replay
 - [Operator storage and transfer](docs/operator-storage.md) — packaged SQLite backup/restore and resumable SQLite-to-PostgreSQL transfer
 - [Wire protocol](docs/protocol.md) — sessions, actions, observations, cursors, and activations
 - [Observation and Activation](docs/observation-and-activation.md) — frozen attach/reset, delivery, intent, lease, and Invocation Context contracts

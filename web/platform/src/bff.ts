@@ -54,6 +54,7 @@ const ENTRY_SELECTOR_PATTERN = /^[0-9a-f]{32}$/u;
 export const DEVELOPMENT_IDENTITY_MODE = "visible-local-only" as const;
 const VERCEL_FORWARDING_HEADERS = new Set([
   "x-forwarded-host",
+  "x-forwarded-port",
   "x-forwarded-proto",
   "x-forwarded-for",
   "x-vercel-forwarded-for",
@@ -531,10 +532,14 @@ async function readHostedLaunch(
   const admitted = await verifiedRead(request, origin, sessionKey, dependencies);
   if (admitted instanceof Response) return admitted;
   try {
+    const launch = await dependencies.hostedFormationData.readLaunchRequest(admitted.account.accountId, launchId);
+    if (launch === null) return privateError(404, "launch_unavailable");
+    if (launch.canManage) await formation.recover(launchId);
     const snapshot = await launchSnapshot(
       dependencies.hostedFormationData,
       admitted.account.accountId,
       launchId,
+      formation,
     );
     return snapshot === null
       ? privateError(404, "launch_unavailable")
@@ -598,7 +603,7 @@ async function mutateHostedLaunch(
   try {
     if (route.action === "start") {
       const advanced = await formation.advance(admitted.account.accountId, route.launchId);
-      const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId);
+      const snapshot = await launchSnapshot(data, admitted.account.accountId, route.launchId, formation);
       if (snapshot === null) return temporarilyUnavailable();
       return privateJson(advanced.state === "run_created" ? 200 : 202, {
         ...snapshot,
@@ -648,6 +653,7 @@ async function launchSnapshot(
   data: HostedFormationData,
   accountId: string,
   launchId: string,
+  formation?: HostedFormationCoordinator,
 ): Promise<Record<string, unknown> | null> {
   const [launch, house] = await Promise.all([
     data.readLaunchRequest(accountId, launchId),
@@ -657,9 +663,13 @@ async function launchSnapshot(
   const reconciliation = launch.state === "collecting_roster"
     ? null
     : await data.readGenesisReconciliation(launchId);
-  const run = reconciliation?.runId === null || reconciliation?.runId === undefined
+  let run = reconciliation?.runId === null || reconciliation?.runId === undefined
     ? null
     : await data.readOwnedRun(accountId, reconciliation.runId);
+  const entryReady = run !== null && formation !== undefined && await formation.entryReady(launchId);
+  if (run !== null && !entryReady) {
+    run = { ...run, canEnter: false, memberships: [] };
+  }
   return safeLaunchProjection(launch, house, reconciliation?.needsGenesisPull === true, run);
 }
 
@@ -673,7 +683,7 @@ function safeLaunchProjection(
   const state = launch.state === "collecting_roster"
     ? "collecting"
     : launch.state === "run_created"
-      ? "run_created"
+      ? run?.canEnter ? "run_created" : "reconciling"
       : ["cancelled", "expired", "failed_pre_genesis"].includes(launch.state)
         ? launch.state
         : reconciling
@@ -1671,6 +1681,7 @@ function normalizeVercelRequest(request: Request, origin: string): Request | nul
   const expected = new URL(origin);
   const host = request.headers.get("host");
   const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedPort = request.headers.get("x-forwarded-port");
   const forwardedProto = request.headers.get("x-forwarded-proto");
   const forwardedFor = request.headers.get("x-forwarded-for");
   const vercelForwardedFor = request.headers.get("x-vercel-forwarded-for");
@@ -1685,6 +1696,7 @@ function normalizeVercelRequest(request: Request, origin: string): Request | nul
     url.origin !== origin ||
     host !== expected.host ||
     forwardedHost !== host ||
+    (forwardedPort !== null && forwardedPort !== (expected.port || "443")) ||
     forwardedProto !== expected.protocol.slice(0, -1) ||
     forwardedFor === null ||
     isIP(forwardedFor) === 0 ||

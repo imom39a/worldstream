@@ -7,10 +7,20 @@ At the end of the guide, you will have done these tasks:
 
 1. Initialize a protected local installation.
 2. Approve and install the Negotiate Activity Pack.
-3. Start the WorldStream Runtime.
-4. Submit a proposal to a live Negotiate Room.
-5. Open the Agent Heist browser client with authorized Room access.
-6. Complete a different Agent Heist Room with the Python SDK.
+3. Start the WorldStream Controller and Runtime.
+4. Start the independent browser Activity Client Host.
+5. Submit a proposal to a live Negotiate Room.
+6. Open the Agent Heist browser client with authorized Room access.
+7. Complete a different Agent Heist Room with the Python SDK.
+
+Sections 5, 6, and 7 are three separate demonstrations:
+
+- Section 5 submits one Negotiate proposal with Python.
+- Section 6 opens an Agent Heist browser client. That Room stays in the Lobby.
+- Section 7 creates a different Agent Heist Room and completes it with Python.
+
+The demonstrations do not share a Room. You can stop after the demonstration
+that you need.
 
 You do not need the Studio web application. The operator CLI starts a small
 local Controller as an implementation service. The Controller manages the
@@ -21,6 +31,22 @@ This is an MVP development flow. It is not a production deployment or a
 release-qualification result. You do not need Docker, PostgreSQL, or an LLM
 API key.
 
+## Know which commands start processes
+
+WorldStream uses separate core services and Activity Clients. One command does
+not start all local processes.
+
+| Terminal | Command | What it starts | How it runs |
+| --- | --- | --- | --- |
+| Terminal 1 | `worldstreamctl ... server start` | Controller on port `9420` and Runtime on port `9410` | In the background |
+| Terminal 2 | `pnpm activity-clients:serve` | Browser Activity Client Host on port `5173` | In the foreground; keep the terminal open |
+| Terminal 3 | Python command in Section 7 | Agent Heist SDK example | In the foreground; keep the terminal open |
+
+The `init` command only prepares local files and authority. It starts no
+process. Therefore, `http://127.0.0.1:5173/` will not open after `init` or
+`server start` alone. Section 4 starts both the core services and the separate
+browser Client Host.
+
 ## Know the main parts
 
 | Part | Meaning |
@@ -28,6 +54,7 @@ API key.
 | **Runtime** | The `worldstreamd` process. It stores Room state and applies Activity Pack rules. |
 | **Operator CLI** | The `worldstreamctl` command. It manages one local installation. |
 | **Controller** | A local headless service that starts the Runtime and prepares scoped connections. |
+| **Activity Client Host** | A separate local web server that serves browser Activity Clients. It does not manage WorldStream. |
 | **Activity Pack** | The rules for one type of Room. Negotiate and Agent Heist are Activity Packs. |
 | **Room** | One durable instance of an Activity Pack. Humans and agents can participate in it. |
 | **Activity Client** | A browser, terminal program, SDK program, or agent integration that connects to a Room. |
@@ -87,8 +114,10 @@ cargo build --locked -p worldstream-server --bins
 cargo build --locked -p worldstream-studio-supervisor --bins
 uv sync --project sdk/python --locked --python 3.14.7
 pnpm install --frozen-lockfile
-pnpm activity-clients:build
 ```
+
+Do not build the browser clients separately here. The Client Host command in
+Section 4 builds them before it starts.
 
 The build creates these local programs:
 
@@ -127,10 +156,17 @@ The development configuration uses these local values:
 - Controller address: `127.0.0.1:9420`
 - Runtime data: `.worldstream/data`
 - Controller data: `.worldstream/studio`
-- Browser Client Host: `http://127.0.0.1:5173`
+- Configured browser Client Host origin: `http://127.0.0.1:5173` (not started
+  by `init`)
 
 The `.worldstream/studio` path is a retained compatibility name. It contains
 Controller state, not the Studio web application.
+
+You will run `init` three times. These calls are not retries:
+
+1. The first call prepares the local installation.
+2. The second call previews the client declarations without applying them.
+3. The third call approves and applies the exact previewed declarations.
 
 Initialize the protected state:
 
@@ -139,7 +175,9 @@ Initialize the protected state:
 ```
 
 This command creates the installation authority when it is absent. It reuses
-valid existing authority. It does not start a process.
+valid existing authority. It does not start a process. A successful response
+contains `"services_started":false`. This value is expected and is not an
+error.
 
 Now preview the checked-in Activity Client declarations:
 
@@ -202,7 +240,7 @@ Inspect the untrusted Bundle bytes:
 "$CTL" --config "$CONFIG" pack inspect --bundle "$BUNDLE"
 ```
 
-Run the production Pack verifier, Component Host, and Core admission path:
+Verify that the Runtime can load this Pack safely:
 
 ```sh
 "$CTL" --config "$CONFIG" pack prove "$BUNDLE" --json
@@ -249,7 +287,12 @@ readiness seal for this exact inventory and local data target.
 
 Do not change Pack inventory while the Runtime is running.
 
-## 4. Start and inspect the local installation
+## 4. Start the core services and browser clients
+
+This section uses two terminals. Terminal 1 starts and checks the WorldStream
+core services. Terminal 2 serves the independent browser Activity Clients.
+
+### Terminal 1: start the Controller and Runtime
 
 Start the Controller and Runtime:
 
@@ -260,7 +303,11 @@ Start the Controller and Runtime:
 ```
 
 The command starts managed background processes. You do not have to keep this
-terminal open for the processes.
+terminal open for the processes. It does not start the browser Client Host.
+
+The `--participant-console-origin` option allows authorized client handoffs to
+use `http://127.0.0.1:5173`. The option does not start a process on port
+`5173`.
 
 Check the installation:
 
@@ -279,7 +326,29 @@ both of these exact selectors:
 
 Read-only commands do not start a stopped Controller or Runtime.
 
-## Understand the identifiers and credential files
+### Terminal 2: start the Activity Client Host
+
+Open a second terminal at the repository root. Run:
+
+```sh
+pnpm activity-clients:serve
+```
+
+The command first builds the browser clients. Wait until it prints this line:
+
+```text
+WorldStream Activity Client Host listening on http://127.0.0.1:5173
+```
+
+Keep Terminal 2 open. You can now open the generic Inspector at
+`http://127.0.0.1:5173/`.
+
+Do not open a Room-specific client path directly. A direct URL has no
+Membership authority. After you create a Room, use `client open` as shown in
+Section 6. The CLI selects the approved Activity Client and gives it a one-use
+authorized handoff.
+
+## Before you create a Room
 
 The next sections use four values. Learn them once here:
 
@@ -305,7 +374,10 @@ Each credential export needs a new filename in the owner-only `RUN_DIR`.
 WorldStream never prints the credential and never overwrites an existing file.
 Do not commit a credential file or paste its contents into logs or chat.
 
-## 5. Submit a proposal to a Negotiate Room
+## 5. Submit a proposal to a Negotiate Room with Python
+
+This demonstration does not use the browser Client Host. It connects directly
+to the WorldStream HTTP and WebSocket interfaces through the Python SDK.
 
 Generate a setup file from the exact installed Pack revision:
 
@@ -367,25 +439,15 @@ proposal:
 Do not run `room launch` for Negotiate. Its Activity already started at Room
 creation.
 
-## 6. Open an authorized Agent Heist browser client
+## 6. Verify an authorized Agent Heist browser client
 
-This section creates a new Heist Room for the browser. Do not reuse it for the
-direct SDK run in Section 7.
+This is a browser connection test. It creates a new Heist Room, opens an
+authorized participant view, and leaves the Room in the Lobby. It does not
+complete the Heist. Do not reuse this Room for the full SDK run in Section 7.
 
-### Start the independent Client Host
-
-Open Terminal 2 at the repository root. Run:
-
-```sh
-pnpm ui:dev
-```
-
-Keep Terminal 2 open. This command serves the Activity Clients at
-`http://127.0.0.1:5173`. It does not start or administer WorldStream.
-
-Do not open `/agent-heist/` directly. A direct URL has no participant
-authority. The CLI gives the browser a one-use authorized handoff later in
-this section.
+Before you continue, confirm that Terminal 2 still shows the Activity Client
+Host from Section 4. Do not open `/agent-heist/` directly. The CLI gives the
+browser a one-use authorized handoff later in this section.
 
 ### Create the browser Room
 
@@ -436,6 +498,9 @@ readiness. The live evidence in `room inspect` can confirm the Navigator
 connection. Section 7 uses a separate Room and connects both required seats.
 
 ## 7. Complete a separate Agent Heist Room with the Python SDK
+
+This is a separate end-to-end demonstration. It does not use the browser
+Client Host. You can run it after Section 6 or run it instead of Section 6.
 
 Generate, validate, and create another Heist Room in Terminal 1:
 
@@ -576,6 +641,22 @@ Run:
 If you have not started the installation, run Section 4. If a managed process
 failed, use `server logs` before you retry. Do not delete `.worldstream/`.
 
+### A client declaration import is rejected on an old local installation
+
+An Activity Client Deployment ID is immutable. A retained `.worldstream/`
+directory can contain the same Deployment ID for an older client Release.
+WorldStream rejects an attempt to change that identity.
+
+Do not repeatedly approve new digests. First decide whether the retained Rooms
+and state are valuable:
+
+- For disposable MVP state, stop the Runtime and Controller. Rename
+  `.worldstream/` to a backup name. Then repeat Section 2 with a new local
+  installation.
+- For valuable state, keep `.worldstream/`. Do not delete it. Use a migration
+  or a new Deployment ID as described in
+  [Activity Clients](activity-clients.md).
+
 ### A Pack command says that the Runtime is active
 
 Pack approval, installation, selection, and restart-readiness are offline
@@ -597,12 +678,25 @@ or create a new `RUN_DIR`. Do not modify an exported credential file.
 
 Confirm these conditions:
 
-- Terminal 2 still runs `pnpm ui:dev`.
+- Terminal 2 still runs `pnpm activity-clients:serve`.
 - You used `client open` for this exact operation and seat.
 - You did not open the client URL directly.
 - `server status` reports a ready Runtime.
 
 Close a stale tab and run `client open` again to get a new one-use handoff.
+
+### `http://127.0.0.1:5173/` does not open
+
+The Controller and Runtime do not serve browser files. Start the independent
+Activity Client Host in Terminal 2:
+
+```sh
+pnpm activity-clients:serve
+```
+
+Keep the command running. Wait for the `Activity Client Host listening`
+message before you open the URL. If the command exits, read its terminal
+output; the Client Host is no longer running.
 
 ### Agent Heist is not ready to launch
 

@@ -58,7 +58,9 @@ end;
 $$;
 
 insert into auth.users(id)
-values ('00000000-0000-4000-8000-00000000d001')
+values
+  ('00000000-0000-4000-8000-00000000d001'),
+  ('00000000-0000-4000-8000-00000000d002')
 on conflict (id) do nothing;
 
 do $$
@@ -81,6 +83,30 @@ begin
     or existing.erasure_requested_at is not null
   then
     raise exception using errcode = '23505', message = 'development_identity_conflict';
+  end if;
+end;
+$$;
+
+do $$
+declare
+  existing platform_store.github_identities%rowtype;
+begin
+  select * into existing
+  from platform_store.github_identities identities
+  where identities.auth_user_id = '00000000-0000-4000-8000-00000000d002';
+
+  if not found then
+    perform * from platform_api.sync_github_identity_v1(
+      '00000000-0000-4000-8000-00000000d002',
+      'worldstream-development-agent',
+      'worldstream-local-browser-agent',
+      null
+    );
+  elsif existing.provider_subject <> 'worldstream-development-agent'
+    or existing.github_login <> 'worldstream-local-browser-agent'
+    or existing.erasure_requested_at is not null
+  then
+    raise exception using errcode = '23505', message = 'development_agent_identity_conflict';
   end if;
 end;
 $$;

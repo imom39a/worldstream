@@ -1467,8 +1467,8 @@ pub struct HostedResultSourceEvidenceV1 {
 /// hosted browser handoff.
 ///
 /// # Errors
-/// Returns a closed error for malformed identities, an unsupported account
-/// participant kind, widened spectator purpose, or incoherent seat and Role.
+/// Returns a closed error for malformed identities, a widened spectator
+/// purpose, or incoherent Principal, seat, and Role facts.
 pub fn validate_hosted_browser_handoff_request(
     request: &HostedBrowserHandoffRequestV1,
 ) -> Result<(), ContractError> {
@@ -1489,9 +1489,6 @@ pub fn validate_hosted_browser_handoff_request(
     validate_public_reference(&request.client_surface_id, 128)?;
     validate_ulid_reference(&request.principal_id)?;
     validate_ulid_reference(&request.membership_id)?;
-    if request.principal_kind != HostedGenesisPrincipalKindV1::Human {
-        return Err(ContractError::InvalidShape);
-    }
     match request.purpose {
         HostedGenesisMembershipPurposeV1::Participant => {
             let seat = request
@@ -1506,7 +1503,8 @@ pub fn validate_hosted_browser_handoff_request(
             }
         }
         HostedGenesisMembershipPurposeV1::CreatorSpectator => {
-            if request.access_mode != HostedGenesisAccessModeV1::Spectator
+            if request.principal_kind != HostedGenesisPrincipalKindV1::Human
+                || request.access_mode != HostedGenesisAccessModeV1::Spectator
                 || request.seat_id.is_some()
                 || request.role.is_some()
             {

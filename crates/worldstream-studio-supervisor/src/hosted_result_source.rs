@@ -19,7 +19,8 @@ use worldstream_hosted_contract::{
     HostedResultReplayEvidenceV1, HostedResultSourceHeadV1,
 };
 use worldstream_protocol::{
-    BearerWireV1, MAX_MESSAGE_BYTES, PackReference, ProjectionResponse, ReplayResponse, RoomHead,
+    BearerWireV1, MAX_MESSAGE_BYTES, PackReference, Projection, ProjectionResponse, ReplayResponse,
+    RoomHead,
 };
 use zeroize::Zeroizing;
 
@@ -32,6 +33,9 @@ use crate::{
 
 const MAX_RESULT_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_RESULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bounded hosted evidence-read budget, separate from lightweight health probes.
+pub const HOSTED_RESULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Closed Host-side result-source failures.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -110,12 +114,15 @@ impl HttpHostedResultSourceV1 {
         let projection =
             self.required_json::<ProjectionResponse>(&projection_path, &binding.secret_reference)?;
         validate_projection_response(binding, &projection)?;
-        let public_projection = authorized_projection(&projection)?;
-        let projection_bytes = canonical_bytes(&public_projection)?;
-        let projection_hash = projection_hash_for_canonical_bytes(&projection_bytes)
+        let current_public_projection = authorized_projection(&projection)?;
+        // The Runtime freezes the hash over the complete authorized Pack view.
+        // The hosted wrapper reconstructs that exact shape from the protocol
+        // Projection by restoring its projection schema and wire field names.
+        let projection_bytes = canonical_bytes(&current_public_projection)?;
+        let current_projection_hash = projection_hash_for_canonical_bytes(&projection_bytes)
             .map_err(|_| HostedResultSourceErrorV1::Invalid)?
             .to_string();
-        if projection_hash != projection.projection_hash {
+        if current_projection_hash != projection.projection_hash {
             return Err(HostedResultSourceErrorV1::Invalid);
         }
         let integrity_status = integrity_status(&projection.room_health)?;
@@ -124,19 +131,34 @@ impl HttpHostedResultSourceV1 {
             "/v1/rooms/{}/replay?at_room_seq={}",
             binding.room_id, projection.room_head.room_seq
         );
-        let replay = self
-            .optional_replay(&replay_path, &binding.secret_reference)?
-            .map(|replay| {
-                validate_replay_response(binding, &projection, &replay, &projection_hash)?;
-                let receipt = tagged_sha256(&canonical_bytes(&replay)?);
-                Ok(HostedResultReplayEvidenceV1 {
-                    verifier_revision: "worldstream.authorized-replay/v1".to_owned(),
-                    verified_head: hosted_head(&replay.room_head),
-                    projection_hash: replay.projection_hash,
-                    verification_receipt_digest: receipt,
-                })
-            })
-            .transpose()?;
+        let replay = self.optional_replay(&replay_path, &binding.secret_reference)?;
+        let (public_projection, projection_hash, replay) = if let Some(replay) = replay {
+            validate_replay_response(binding, &projection, &replay)?;
+            let replay_public_projection =
+                authorized_projection_parts(&projection.projection_schema, &replay.projection)?;
+            let replay_projection_bytes = canonical_bytes(&replay_public_projection)?;
+            let replay_projection_hash =
+                projection_hash_for_canonical_bytes(&replay_projection_bytes)
+                    .map_err(|_| HostedResultSourceErrorV1::Invalid)?
+                    .to_string();
+            if replay_projection_hash != replay.projection_hash {
+                return Err(HostedResultSourceErrorV1::Invalid);
+            }
+            let receipt = tagged_sha256(&canonical_bytes(&replay)?);
+            let replay_evidence = HostedResultReplayEvidenceV1 {
+                verifier_revision: "worldstream.authorized-replay/v1".to_owned(),
+                verified_head: hosted_head(&replay.room_head),
+                projection_hash: replay.projection_hash,
+                verification_receipt_digest: receipt,
+            };
+            (
+                replay_public_projection,
+                replay_projection_hash,
+                Some(replay_evidence),
+            )
+        } else {
+            (current_public_projection, current_projection_hash, None)
+        };
         Ok(HostedResultObservationV1 {
             room_id: binding.room_id.clone(),
             member_id: binding.member_id.clone(),
@@ -283,14 +305,14 @@ fn validate_replay_response(
     binding: &RoomSetupResultIndexerBindingV1,
     projection: &ProjectionResponse,
     replay: &ReplayResponse,
-    projection_hash: &str,
 ) -> Result<(), HostedResultSourceErrorV1> {
     if replay.room_id != binding.room_id
         || replay.pack != binding.pack
         || replay.requested_room_seq != projection.room_head.room_seq
         || replay.room_head != projection.room_head
-        || replay.projection != projection.projection
-        || replay.projection_hash != projection_hash
+        || !replay_core_corresponds(&projection.projection.core, &replay.projection.core)
+        || replay.projection.activity != projection.projection.activity
+        || replay.projection.action_offers != projection.projection.action_offers
         || replay.verification != "verified"
         || replay.room_health != projection.room_health
         || replay.integrity_generation != projection.integrity_generation
@@ -300,20 +322,46 @@ fn validate_replay_response(
     Ok(())
 }
 
+fn replay_core_corresponds(current: &serde_json::Value, replay: &serde_json::Value) -> bool {
+    const SHARED_FIELDS: [&str; 4] = ["access_mode", "role", "room_status", "standing"];
+    let (Some(current), Some(replay)) = (current.as_object(), replay.as_object()) else {
+        return false;
+    };
+    current.len() == 5
+        && replay.len() == 5
+        && current
+            .get("viewer_class")
+            .and_then(serde_json::Value::as_str)
+            == Some("public")
+        && replay
+            .get("viewer_class")
+            .and_then(serde_json::Value::as_str)
+            == Some("historical")
+        && SHARED_FIELDS
+            .iter()
+            .all(|field| current.contains_key(*field) && current.get(*field) == replay.get(*field))
+}
+
 fn authorized_projection(
     response: &ProjectionResponse,
 ) -> Result<HostedAuthorizedPublicProjectionV1, HostedResultSourceErrorV1> {
-    let action_offers = response
-        .projection
+    authorized_projection_parts(&response.projection_schema, &response.projection)
+}
+
+fn authorized_projection_parts(
+    projection_schema: &str,
+    projection: &Projection,
+) -> Result<HostedAuthorizedPublicProjectionV1, HostedResultSourceErrorV1> {
+    let action_offers = projection
         .action_offers
         .iter()
         .map(serde_json::to_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| HostedResultSourceErrorV1::Invalid)?;
     Ok(HostedAuthorizedPublicProjectionV1 {
-        projection_schema: response.projection_schema.clone(),
-        authorized_core: response.projection.core.clone(),
-        projection: response.projection.activity.clone(),
+        projection_schema: projection_schema.to_owned(),
+        authorized_core: projection.core.clone(),
+        projection: projection.activity.clone(),
         action_offers,
     })
 }
@@ -389,4 +437,107 @@ fn parse_http_response(response: &[u8]) -> Result<BoundedResponse, HostedResultS
         return Err(HostedResultSourceErrorV1::Invalid);
     }
     Ok(BoundedResponse { status, body })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    use super::{HOSTED_RESULT_SOURCE_TIMEOUT, HttpHostedResultSourceV1, replay_core_corresponds};
+    use crate::secrets::{FileSecretVaultV1, SecretKindV1};
+
+    #[test]
+    fn hosted_replay_can_finish_after_the_health_probe_deadline() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("fixture: {error}"));
+        let vault = FileSecretVaultV1::open(&directory.path().join("vault"))
+            .unwrap_or_else(|error| panic!("vault: {error}"));
+        let reference = vault
+            .store(SecretKindV1::MembershipAuthority, &[0xab; 32])
+            .unwrap_or_else(|error| panic!("fixture authority: {error}"));
+        let listener =
+            TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("listener: {error}"));
+        let address = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("address: {error}"));
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = listener
+                .accept()
+                .unwrap_or_else(|error| panic!("accept: {error}"));
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap_or_else(|error| panic!("timeout: {error}"));
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket
+                    .read_exact(&mut byte)
+                    .unwrap_or_else(|error| panic!("request: {error}"));
+                request.push(byte[0]);
+                assert!(request.len() < 4096);
+            }
+            thread::sleep(Duration::from_secs(1));
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        });
+        let source = HttpHostedResultSourceV1::new(address, HOSTED_RESULT_SOURCE_TIMEOUT, vault)
+            .unwrap_or_else(|error| panic!("source: {error}"));
+        let result = source.request("/v1/rooms/fixture/replay?at_room_seq=14", &reference);
+        worker
+            .join()
+            .unwrap_or_else(|_| panic!("fixture server panicked"));
+        assert_eq!(
+            result
+                .unwrap_or_else(|error| panic!("Replay exceeded only the health deadline: {error}"))
+                .status,
+            200
+        );
+    }
+
+    #[test]
+    fn replay_core_requires_exact_public_to_historical_correspondence() {
+        let current = json!({
+            "access_mode": "spectator",
+            "role": null,
+            "room_status": "active",
+            "standing": "enabled",
+            "viewer_class": "public",
+        });
+        let replay = json!({
+            "access_mode": "spectator",
+            "role": null,
+            "room_status": "active",
+            "standing": "enabled",
+            "viewer_class": "historical",
+        });
+        assert!(replay_core_corresponds(&current, &replay));
+
+        let mut changed_standing = replay.clone();
+        changed_standing["standing"] = json!("disabled");
+        assert!(!replay_core_corresponds(&current, &changed_standing));
+
+        let mut widened = replay.clone();
+        widened["private"] = json!(true);
+        assert!(!replay_core_corresponds(&current, &widened));
+
+        let mut missing_current = current.clone();
+        let mut missing_replay = replay.clone();
+        for value in [&mut missing_current, &mut missing_replay] {
+            value
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("object fixture"))
+                .remove("role");
+            value["unexpected"] = json!(true);
+        }
+        assert!(!replay_core_corresponds(&missing_current, &missing_replay));
+
+        let mut wrong_viewer = replay;
+        wrong_viewer["viewer_class"] = json!("public");
+        assert!(!replay_core_corresponds(&current, &wrong_viewer));
+    }
 }

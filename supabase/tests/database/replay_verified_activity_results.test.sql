@@ -666,5 +666,92 @@ select is(
   'a nonterminal reversion does not erase terminal truth'
 );
 
+-- Selection-only fixtures, not evidence submitted to the verifier.
+reset role;
+create temporary table fairness_runs (position integer, run_id uuid, launch_id uuid);
+set local session_replication_role = replica;
+do $$
+declare
+  base_run platform_store.activity_runs%rowtype;
+  base_launch platform_store.launch_requests%rowtype;
+  launch_id uuid;
+  run_id uuid;
+begin
+  select * into strict base_run from platform_store.activity_runs
+  where activity_run_id = '72000000-0000-4000-8000-000000000001';
+  select * into strict base_launch from platform_store.launch_requests
+  where launch_request_id = base_run.launch_request_id;
+  for i in 1..13 loop
+    launch_id := gen_random_uuid(); run_id := gen_random_uuid();
+    insert into fairness_runs values (i, run_id, launch_id);
+    insert into platform_store.launch_requests
+    select (jsonb_populate_record(null::platform_store.launch_requests,
+      to_jsonb(base_launch) || jsonb_build_object(
+        'launch_request_id', launch_id, 'room_setup_operation_id', 'fairness-' || i,
+        'idempotency_key_digest', extensions.digest('fairness-' || i, 'sha256')
+      ))).*;
+    insert into platform_store.activity_runs
+    select (jsonb_populate_record(null::platform_store.activity_runs,
+      to_jsonb(base_run) || jsonb_build_object(
+        'activity_run_id', run_id, 'launch_request_id', launch_id,
+        'room_id', repeat('0', 24) || lpad(i::text, 2, '0'),
+        'room_setup_operation_id', 'fairness-' || i, 'public_id', null,
+        'genesis_observed_at', case when i = 13 then clock_timestamp() else clock_timestamp() - interval '1 day' end,
+        'inserted_at', clock_timestamp()
+      ))).*;
+    if i < 13 then
+      insert into platform_store.activity_run_terminal_evidence
+      select (jsonb_populate_record(null::platform_store.activity_run_terminal_evidence,
+        to_jsonb(terminals) || jsonb_build_object('activity_run_id', run_id))).*
+      from platform_store.activity_run_terminal_evidence terminals
+      where terminals.activity_run_id = base_run.activity_run_id;
+      insert into platform_store.indexed_activity_results
+      select (jsonb_populate_record(null::platform_store.indexed_activity_results,
+        to_jsonb(results) || jsonb_build_object('activity_run_id', run_id, 'activity_result_id', gen_random_uuid()))).*
+      from platform_store.indexed_activity_results results
+      where results.activity_run_id = base_run.activity_run_id;
+    else
+      insert into platform_store.capacity_reservations
+        (launch_request_id, kind, controlling_account_id, activity_run_id)
+      values (launch_id, 'active_run', base_run.creator_account_id, run_id);
+    end if;
+  end loop;
+end;
+$$;
+set local session_replication_role = origin;
+select is(
+  (select activity_run_id from platform_api.list_reconciliation_candidates_v1(1)),
+  (select run_id from fairness_runs where position = 13),
+  'new active capacity is selected before twelve old published rechecks'
+);
+create temporary table first_fair_batch as
+select * from platform_api.list_reconciliation_candidates_v1(10);
+select is((select count(*)::integer from first_fair_batch), 10, 'the recovery batch remains bounded');
+select platform_api.mark_reconciliation_attempt_v1(launch_request_id) from first_fair_batch;
+select ok(
+  exists (
+    select 1 from platform_api.list_reconciliation_candidates_v1(10) candidates
+    where candidates.activity_run_id not in (select activity_run_id from first_fair_batch)
+  ),
+  'unsuccessful or unchanged historical attempts rotate instead of starving the next page'
+);
+set local session_replication_role = replica;
+delete from platform_store.indexed_activity_results
+where activity_run_id in (select run_id from fairness_runs where position <= 10);
+update platform_store.activity_run_terminal_evidence set projector_status = 'terminal_without_outcome'
+where activity_run_id in (select run_id from fairness_runs where position <= 10);
+set local session_replication_role = origin;
+delete from platform_store.reconciliation_attempts
+where launch_request_id in (select launch_id from fairness_runs);
+select platform_api.mark_reconciliation_attempt_v1(launch_request_id)
+from platform_api.list_reconciliation_candidates_v1(10);
+select ok(
+  exists (
+    select 1 from platform_api.list_reconciliation_candidates_v1(10) candidates
+    join fairness_runs on candidates.activity_run_id = fairness_runs.run_id
+    where fairness_runs.position in (11, 12)
+  ),
+  'ten terminal-without-outcome Runs cannot starve published integrity rechecks'
+);
 select finish();
 rollback;

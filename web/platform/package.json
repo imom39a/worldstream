@@ -3,13 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "engines": {
     "node": "24.18.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "node dist/dev-server.js",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && tsc -p tsconfig.acceptance.json",
     "test": "vitest run --environment node"
   },
   "dependencies": {
@@ -18,6 +24,8 @@
     "@supabase/supabase-js": "2.115.0"
   },
   "devDependencies": {
+    "@worldstream/agent-heist-client": "workspace:*",
+    "@worldstream/client": "workspace:*",
     "@types/node": "24.13.3",
     "typescript": "7.0.2",
     "vitest": "4.1.10"

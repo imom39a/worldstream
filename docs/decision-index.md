@@ -7,8 +7,10 @@ retained Counter/Agent Heist revisions, storage adapters, application SDK, and
 UI foundations exist. The portable Pack platform and Negotiate proof are now
 the implementation frontier. [`compatibility.toml`](../compatibility.toml) is a
 fail-closed specification with `release_ready = false` until its named
-Negotiate identities are independently resolved. When wording conflicts, use
-this authority order:
+Negotiate identities are independently resolved. ADRs 0019 through 0024 also
+freeze a separate Hosted Activity Platform direction; they do not add that
+application to the core release claim, and its implementation evidence remains
+pending. When wording conflicts, use this authority order:
 
 1. [`CONTEXT.md`](../CONTEXT.md) for whole-product domain language;
 2. [Frozen Requirements](requirements.md) for normative behavior and scope;
@@ -39,6 +41,13 @@ this authority order:
 | [0016](adr/0016-expanded-runtime-pack-release-and-qualification.md) | 33-subject Runtime-plus-Packs release graph and separately signed post-release qualification |
 | [0017](adr/0017-separate-activity-clients-from-packs-and-studio.md) | Headless Activity Packs, independent Activity Clients, Studio launcher, and Pack-neutral Inspector |
 | [0018](adr/0018-cli-first-operator-surface.md) | CLI-first Host Operator direction; retire Studio web only after a complete replacement flow; retain headless capabilities and independent clients |
+| [0019](adr/0019-separate-hosted-activity-platform-from-worldstream.md) | Separate public Hosted Activity Platform, immutable listing and Run correspondence, and non-authoritative result index |
+| [0020](adr/0020-use-vercel-for-control-and-fly-for-direct-browser-streams.md) | Vercel HTTPS control plane and direct Fly browser WebSocket data plane with one-use stream admission |
+| [0021](adr/0021-use-reviewed-pre-genesis-formation-for-hosted-activity-runs.md) | Reviewed immutable catalog, fixed pre-Genesis roster formation, idempotent one-Room launch, and bounded public entry |
+| [0022](adr/0022-use-bounded-openrouter-house-runners-for-exhibition-fill.md) | Two-revision exhibition House Agent pool with strict OpenRouter routing, per-assignment allowance, and external Runner failure boundaries |
+| [0023](adr/0023-use-supabase-for-platform-coordination-and-replay-verified-results.md) | Supabase platform-only coordination authority, server-only grants, digest-pinned projectors, and Replay-verified immutable public-result reconciliation |
+| [0024](adr/0024-operate-a-single-authority-hobby-preview.md) | One coordinated hobby-preview deployment across Vercel, a continuously running single-authority Fly host, and Supabase, with bounded secrets, recovery, rollback, and cost |
+| [0025](adr/0025-verify-current-and-replay-public-view-correspondence.md) | Independently verified current and Replay hashes with exact same-Head public content correspondence and only the prescribed viewer-class difference |
 
 ## Frozen invariants, evidence, and implementation ownership
 

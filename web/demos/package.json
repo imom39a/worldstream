@@ -8,13 +8,14 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5180",
-    "build": "pnpm --dir ../../clients/agent-heist-web build && tsc --noEmit && vite build && node ../../scripts/install-hosted-client-artifacts.mjs",
+    "build": "pnpm --dir ../platform build && pnpm --dir ../../clients/agent-heist-web build && tsc --noEmit && vite build && node ../../scripts/install-hosted-client-artifacts.mjs",
     "lint": "tsc --noEmit",
     "test": "vitest run --environment node"
   },
   "dependencies": {
     "@worldstream/agent-heist-client": "workspace:*",
     "@worldstream/client": "workspace:*",
+    "@worldstream/platform": "workspace:*",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

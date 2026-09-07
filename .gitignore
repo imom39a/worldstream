@@ -2,6 +2,7 @@
 /tmp/
 /research/
 /.worldstream/
+/.worldstream.backup-*/
 /node_modules/
 /clients/*/node_modules/
 /clients/*/dist/

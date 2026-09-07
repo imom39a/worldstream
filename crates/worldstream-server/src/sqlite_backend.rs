@@ -2621,6 +2621,64 @@ impl GatewayBackend for SqliteGatewayBackend {
         self.replay_response(session, room_id, at_room_seq)
     }
 
+    fn membership_status(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        member_id: &str,
+    ) -> Result<worldstream_protocol::MembershipStatusResponse, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let room_id: RoomId = room_id.parse().map_err(|_| BackendError::Rejected)?;
+        let member_id = member_id.parse().map_err(|_| BackendError::Rejected)?;
+        let snapshot = self
+            .readable_room_snapshot(&room_id)?
+            .ok_or(BackendError::NotFound)?;
+        let membership = snapshot
+            .trace()
+            .core_state()
+            .membership(&member_id)
+            .filter(|member| {
+                member.principal_id() == authenticated.principal_id()
+                    && member.standing() == MembershipStandingV1::Enabled
+            })
+            .ok_or(BackendError::Forbidden)?;
+        self.authority()
+            .authorize_member_read(
+                &authenticated.into_presented(),
+                room_id.clone(),
+                member_id.clone(),
+                MemberReadOperationV1::Attach,
+                Self::checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        let pack = self
+            .registry
+            .load_retained(snapshot.trace().head().pack_digest())
+            .map_err(|_| BackendError::InvalidResult)?;
+        let current = self
+            .readable_room_snapshot(&room_id)?
+            .ok_or(BackendError::NotFound)?;
+        if current.trace().head() != snapshot.trace().head()
+            || current.integrity() != snapshot.integrity()
+        {
+            return Err(BackendError::Busy);
+        }
+        Ok(worldstream_protocol::MembershipStatusResponse {
+            version: "membership_status.v1".to_owned(),
+            room_id: room_id.to_string(),
+            member_id: member_id.to_string(),
+            principal_kind: protocol_principal_kind(membership.principal_kind()),
+            access_mode: protocol_access_mode(membership.access_mode()),
+            role: membership.role().map(str::to_owned),
+            membership_status: membership_status(membership.standing()),
+            pack: PackReference {
+                id: pack.descriptor().pack_id.clone(),
+                version: pack.descriptor().explanatory_version.clone(),
+                digest: snapshot.trace().head().pack_digest().to_string(),
+            },
+        })
+    }
+
     fn attach(
         &self,
         session: &GatewaySession,

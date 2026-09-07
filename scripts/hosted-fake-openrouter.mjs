@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export const DEVELOPMENT_FAKE_OPENROUTER_MODE = "visible-local-only";
@@ -10,11 +11,12 @@ export function createDevelopmentFakeOpenRouter(environment = process.env) {
   const port = portValue(required(environment, "WORLDSTREAM_FAKE_OPENROUTER_PORT"));
   const apiKey = required(environment, "WORLDSTREAM_DEVELOPMENT_OPENROUTER_KEY");
   assertDevelopmentFakeOpenRouterAllowed(environment, bind, apiKey);
+  const state = { completionCount: 0, houseCompletionCount: 0 };
   return {
     bind,
     port,
     server: createServer((request, response) => {
-      void dispatch(request, response, apiKey);
+      void dispatch(request, response, apiKey, state);
     }),
   };
 }
@@ -34,7 +36,7 @@ export function assertDevelopmentFakeOpenRouterAllowed(environment, bind, apiKey
   }
 }
 
-async function dispatch(request, response, apiKey) {
+async function dispatch(request, response, apiKey, state) {
   response.setHeader("x-worldstream-development-substitute", "fake-openrouter");
   response.setHeader("cache-control", "no-store");
   if (request.method === "GET" && request.url === "/healthz") {
@@ -50,6 +52,14 @@ async function dispatch(request, response, apiKey) {
       data: [{ id: "worldstream/development-deterministic", object: "model" }],
     });
   }
+  if (request.method === "GET" && request.url === "/development/metrics") {
+    if (!authorized(request, apiKey)) return json(response, 401, error("unauthorized"));
+    return json(response, 200, {
+      version: "worldstream_development_fake_openrouter_metrics.v1",
+      completion_count: state.completionCount,
+      house_completion_count: state.houseCompletionCount,
+    });
+  }
   if (request.method !== "POST" || request.url !== "/api/v1/chat/completions") {
     return json(response, 404, error("route_not_found"));
   }
@@ -62,8 +72,12 @@ async function dispatch(request, response, apiKey) {
     return json(response, 400, error("invalid_request"));
   }
   if (!validCompletion(input)) return json(response, 400, error("invalid_request"));
+  const house = deterministicHouseCompletion(input);
+  state.completionCount += 1;
+  if (house !== null) state.houseCompletionCount += 1;
+  const content = house?.content ?? RESPONSE_TEXT;
   const completion = {
-    id: "worldstream-development-completion",
+    id: `gen-worldstream-development-${createHash("sha256").update(JSON.stringify(input)).digest("hex").slice(0, 16)}`,
     object: "chat.completion",
     created: 0,
     model: input.model,
@@ -71,10 +85,25 @@ async function dispatch(request, response, apiKey) {
       {
         index: 0,
         finish_reason: "stop",
-        message: { role: "assistant", content: RESPONSE_TEXT },
+        message: { role: "assistant", content },
       },
     ],
-    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, cost: 0 },
+    ...(house === null
+      ? {}
+      : {
+          openrouter_metadata: {
+            requested: input.model,
+            strategy: "direct",
+            attempt: 1,
+            endpoints: {
+              total: 1,
+              available: [{ provider: house.provider, model: input.model, selected: true }],
+            },
+            attempts: [{ provider: house.provider, model: input.model, status: 200 }],
+            pipeline: [],
+          },
+        }),
   };
   if (input.stream !== true) return json(response, 200, completion);
 
@@ -84,12 +113,75 @@ async function dispatch(request, response, apiKey) {
       ...completion,
       object: "chat.completion.chunk",
       choices: [
-        { index: 0, finish_reason: "stop", delta: { role: "assistant", content: RESPONSE_TEXT } },
+        { index: 0, finish_reason: "stop", delta: { role: "assistant", content } },
       ],
       usage: undefined,
     })}\n\n`,
   );
   response.end("data: [DONE]\n\n");
+}
+
+function deterministicHouseCompletion(input) {
+  const provider = input.provider?.only?.[0];
+  const message = input.messages.at(-1)?.content;
+  if (typeof provider !== "string" || typeof message !== "string") return null;
+  let invocation;
+  try {
+    invocation = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  if (
+    invocation?.schema !== "worldstream/house-model-invocation/v1" ||
+    invocation.action_offers?.schema !== "worldstream/assignment-action-offer-list/v1" ||
+    !Array.isArray(invocation.action_offers.offers)
+  ) {
+    return null;
+  }
+  // Heist frames replace the whole authorized activity view. A later turn may
+  // contain retained frames without a Reset; never prefer an older Reset.
+  const observation = invocation.projection;
+  const latestFrame = Array.isArray(observation?.observations)
+    ? observation.observations.at(-1) : undefined;
+  const activity = latestFrame?.observation ??
+    observation?.projection_reset?.projection?.activity ?? {};
+  const offers = invocation.action_offers.offers;
+  const findOffer = (type) => offers.find((offer) => offer?.action_type === type);
+  const privateEntry = clueClaim(activity.private_clues, "entry_window");
+  const publicEntry = clueClaim(activity.public_claims, "entry_window");
+  const firstPlanId = Array.isArray(activity.plans)
+    ? activity.plans.find((plan) => typeof plan?.plan_id === "string")?.plan_id
+    : undefined;
+  const choices = [
+    // A proposal is the Pack's explicit request for this reactive House turn.
+    ...(firstPlanId === undefined ? [] : [["endorse_plan", { plan_id: firstPlanId }]]),
+    ["inspect_clue", { clue_id: "entry_window" }],
+    ...(privateEntry !== null && publicEntry === null
+      ? [["publish_clue", { clue_id: "entry_window", claim_code: privateEntry }]]
+      : []),
+    ...(firstPlanId === undefined ? [] : [
+      ["commit_move", {
+        selected_plan_id: firstPlanId,
+        contribute_required_resource: true,
+      }],
+    ]),
+    ["acknowledge_result", {}],
+  ];
+  for (const [actionType, payload] of choices) {
+    const offer = findOffer(actionType);
+    if (typeof offer?.offer_id === "string") {
+      return { provider, content: JSON.stringify({ offer_id: offer.offer_id, payload }) };
+    }
+  }
+  return null;
+}
+
+function clueClaim(clues, clueId) {
+  if (!Array.isArray(clues)) return null;
+  const clue = clues.find((candidate) => candidate?.clue_id === clueId);
+  return typeof clue?.claim_code === "string" && clue.claim_code.length > 0
+    ? clue.claim_code
+    : null;
 }
 
 function validCompletion(input) {
@@ -102,7 +194,15 @@ function validCompletion(input) {
   }
   if (
     input.max_tokens !== undefined &&
-    (!Number.isSafeInteger(input.max_tokens) || input.max_tokens < 1 || input.max_tokens > 512)
+    (!Number.isSafeInteger(input.max_tokens) || input.max_tokens < 1 || input.max_tokens > 4096)
+  ) {
+    return false;
+  }
+  if (
+    input.max_completion_tokens !== undefined &&
+    (!Number.isSafeInteger(input.max_completion_tokens) ||
+      input.max_completion_tokens < 1 ||
+      input.max_completion_tokens > 4096)
   ) {
     return false;
   }

@@ -60,6 +60,17 @@ export interface SupabasePlatformConfig {
   readonly dataSecretKey: string;
 }
 
+export function createSupabaseSchemaHeadReader(url: string, dataSecretKey: string) {
+  validateSupabaseUrl(url);
+  validateSupabaseKey(dataSecretKey, "secret");
+  const client = createClient(url, dataSecretKey, { ...serverClientOptions(), db: { schema: "platform_api" } });
+  return async (): Promise<string> => {
+    const head = await requiredRpc({ rpc: async (name, args) => client.rpc(name, args) }, "read_hosted_schema_head_v1", {});
+    if (typeof head !== "string" || !/^\d{14}$/u.test(head)) throw new PlatformDependencyUnavailableError();
+    return head;
+  };
+}
+
 export interface PlatformAuthAdminClient {
   deleteAuthUser(authUserId: string): Promise<void>;
 }
@@ -395,8 +406,9 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
     const value = requiredRecord(data);
     if (
       value.version !== "platform_owned_run_membership.v1" ||
-      value.principal_kind !== "human" ||
-      (value.purpose !== "participant" && value.purpose !== "creator_spectator")
+      (value.principal_kind !== "human" && value.principal_kind !== "agent") ||
+      (value.purpose !== "participant" && value.purpose !== "creator_spectator") ||
+      (value.principal_kind === "agent" && value.purpose !== "participant")
     ) {
       return null;
     }
@@ -418,7 +430,7 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
       purpose: value.purpose,
       seatId: nullableString(value.seat_id),
       role: nullableString(value.role),
-      principalKind: "human",
+      principalKind: value.principal_kind,
       principalId: requiredString(value.principal_id),
       membershipId: requiredString(value.membership_id),
     };
@@ -608,6 +620,16 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
       p_creator_account_id: accountId,
       p_launch_request_id: launchRequestId,
     });
+    return this.parseLaunchMaterial(data);
+  }
+
+  async readHostedRecoveryMaterial(launchRequestId: string): Promise<HostedLaunchMaterial | null> {
+    return this.parseLaunchMaterial(await requiredRpc(this.#rpc, "read_hosted_recovery_material_v1", {
+      p_launch_request_id: launchRequestId,
+    }));
+  }
+
+  private parseLaunchMaterial(data: unknown): HostedLaunchMaterial | null {
     if (data === null) return null;
     const value = requiredRecord(data);
     if (value.version !== "platform_hosted_launch_material.v1") {
@@ -792,6 +814,10 @@ class SupabasePlatformDataClient implements PlatformDataClient, HostedFormationD
 
 class SupabaseResultReconciliationDataClient implements ResultReconciliationData {
   constructor(private readonly rpc: RpcClient) {}
+
+  async markAttempt(launchRequestId: string): Promise<void> {
+    await requiredRpc(this.rpc, "mark_reconciliation_attempt_v1", { p_launch_request_id: launchRequestId });
+  }
 
   async listCandidates(limit: number): Promise<readonly ResultReconciliationCandidate[]> {
     const data = await requiredRpc(this.rpc, "list_reconciliation_candidates_v1", {

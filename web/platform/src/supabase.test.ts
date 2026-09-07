@@ -313,6 +313,51 @@ test("owned Run entry resolves through the service-only immutable membership RPC
   }
 });
 
+test("owned Run entry retains an account-controlled agent participant but rejects an agent spectator", async () => {
+  const originalFetch = globalThis.fetch;
+  let purpose: "participant" | "creator_spectator" = "participant";
+  try {
+    globalThis.fetch = async () =>
+      Response.json({
+        version: "platform_owned_run_membership.v1",
+        run_id: "20000000-0000-4000-8000-000000000001",
+        listing_revision_digest: `blake3:${"1".repeat(64)}`,
+        host_installation_id: "hosted-preview-1",
+        room_setup_operation_id: "hosted-launch-01",
+        room_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        pack: {
+          id: "worldstream.agent-heist",
+          version: "0.2.0",
+          digest: `blake3:${"2".repeat(64)}`,
+        },
+        client_release_digest: `sha256:${"3".repeat(64)}`,
+        client_surface_id: "participant",
+        access_mode: purpose === "participant" ? "participant" : "spectator",
+        purpose,
+        seat_id: purpose === "participant" ? "navigator" : null,
+        role: purpose === "participant" ? "navigator" : null,
+        principal_kind: "agent",
+        principal_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        membership_id: "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+      });
+    const data = createSupabaseBffDependencies({
+      url: URL,
+      publishableKey: PUBLISHABLE,
+      dataSecretKey: SECRET,
+    }).dataClient;
+    const input = {
+      accountId: "10000000-0000-4000-8000-000000000001",
+      runId: "20000000-0000-4000-8000-000000000001",
+      entrySelector: "e".repeat(32),
+    };
+    assert.equal((await data.resolveOwnedRunMembership(input))?.principalKind, "agent");
+    purpose = "creator_spectator";
+    assert.equal(await data.resolveOwnedRunMembership(input), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Supabase user verification classifies an HTTP credential rejection", async () => {
   const originalFetch = globalThis.fetch;
   try {

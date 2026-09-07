@@ -1473,6 +1473,53 @@ impl GatewayBackend for PostgresGatewayBackend {
         self.replay_response(session, room_id, at_room_seq)
     }
 
+    fn membership_status(
+        &self,
+        session: &GatewaySession,
+        room_id: &str,
+        member_id: &str,
+    ) -> Result<worldstream_protocol::MembershipStatusResponse, BackendError> {
+        let authenticated = self.authenticate(session)?;
+        let room_id: RoomId = room_id.parse().map_err(|_| BackendError::Rejected)?;
+        let member_id = member_id.parse().map_err(|_| BackendError::Rejected)?;
+        let (trace, verification) = self.verified_trace(&room_id)?;
+        let membership = trace
+            .core_state()
+            .membership(&member_id)
+            .filter(|member| {
+                member.principal_id() == authenticated.principal_id()
+                    && member.standing() == MembershipStandingV1::Enabled
+            })
+            .ok_or(BackendError::Forbidden)?;
+        self.authority()
+            .authorize_member_read(
+                &authenticated.into_presented(),
+                room_id.clone(),
+                member_id.clone(),
+                MemberReadOperationV1::Attach,
+                self.checked_at()?,
+            )
+            .map_err(map_authority_error)?;
+        let pack = self.pack_reference(trace.head().pack_digest())?;
+        let (current, current_verification) = self.verified_trace(&room_id)?;
+        if current.head() != trace.head()
+            || current_verification.integrity_generation != verification.integrity_generation
+            || current_verification.integrity_status != verification.integrity_status
+        {
+            return Err(BackendError::Busy);
+        }
+        Ok(worldstream_protocol::MembershipStatusResponse {
+            version: "membership_status.v1".to_owned(),
+            room_id: room_id.to_string(),
+            member_id: member_id.to_string(),
+            principal_kind: protocol_principal_kind(membership.principal_kind()),
+            access_mode: protocol_access_mode(membership.access_mode()),
+            role: membership.role().map(str::to_owned),
+            membership_status: membership_status(membership.standing()),
+            pack,
+        })
+    }
+
     fn attach(
         &self,
         session: &GatewaySession,

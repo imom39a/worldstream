@@ -546,10 +546,9 @@ where
         .canonical_metadata_status()
         .map_err(|_| PackOperatorErrorV1::Readiness)?;
     let snapshot = ReadinessSnapshotV1::create(data_directory)?;
-    let receipt = match source.create_restart_readiness_snapshot(snapshot.path()) {
-        Ok(receipt) => receipt,
-        Err(_) => return Err(PackOperatorErrorV1::Readiness),
-    };
+    let receipt = source
+        .create_restart_readiness_snapshot(snapshot.path())
+        .map_err(|_| PackOperatorErrorV1::Readiness)?;
     let replay = verifier(snapshot.path(), registry);
     if source
         .scrub_restart_readiness_snapshot(snapshot.path(), &receipt)

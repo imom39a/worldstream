@@ -104,10 +104,13 @@ select is(
     'freeze_launch_request_v1(uuid, uuid, bytea, bytea, bytea, text, text, text)',
     'list_recent_results_v1(integer)',
     'list_reconciliation_candidates_v1(integer)',
+    'mark_reconciliation_attempt_v1(uuid)',
     'purge_expired_oauth_attempts_v1(integer)',
     'read_genesis_reconciliation_v1(uuid)',
     'read_hosted_launch_material_v1(uuid, uuid)',
     'read_hosted_operating_state_v1(text)',
+    'read_hosted_recovery_material_v1(uuid)',
+    'read_hosted_schema_head_v1()',
     'read_house_fill_v1(uuid, uuid)',
     'read_integrity_reconciliation_v1(uuid)',
     'read_launch_request_v1(uuid, uuid)',
@@ -314,6 +317,9 @@ select throws_ok(
 );
 
 insert into auth.users(id) values ('00000000-0000-4000-8000-000000000010');
+create temporary table identity_account_count_before_sync as
+select count(*)::integer as account_count from platform_store.platform_accounts;
+
 create temporary table first_identity_sync as
 select * from platform_api.sync_github_identity_v1(
   '00000000-0000-4000-8000-000000000010',
@@ -341,7 +347,11 @@ select is(
   'account mutation is rejected at the shared limit'
 );
 select is((select count(*)::integer from first_identity_sync), 1, 'verified GitHub identity creates one account');
-select is((select count(*)::integer from platform_store.platform_accounts), 2, 'identity sync adds exactly one account');
+select is(
+  (select count(*)::integer from platform_store.platform_accounts),
+  (select account_count + 1 from identity_account_count_before_sync),
+  'identity sync adds exactly one account'
+);
 select is(
   (select provider_subject from platform_store.github_identities where auth_user_id = '00000000-0000-4000-8000-000000000010'),
   'github-subject-10',
@@ -360,7 +370,11 @@ select is(
   (select account_id from first_identity_sync),
   'identity refresh preserves the Platform Account'
 );
-select is((select count(*)::integer from platform_store.platform_accounts), 2, 'identity refresh does not duplicate accounts');
+select is(
+  (select count(*)::integer from platform_store.platform_accounts),
+  (select account_count + 1 from identity_account_count_before_sync),
+  'identity refresh does not duplicate accounts'
+);
 create temporary table identity_before_resolve as
 select github_login, avatar_url, refreshed_at
 from platform_store.github_identities

@@ -9,8 +9,9 @@ use clap::Parser;
 use serde_json::{Value, json};
 use worldstream_hosted_contract::HouseAgentRevision;
 use worldstream_studio_supervisor::house_model::{
-    FileHouseAllowanceLedgerV1, HouseAllowancePeriodV1, HouseInvocationIdentityV1,
-    HouseModelExecutorV1, HouseProviderCredentialV1, HouseSpendLimitsV1, OpenRouterProviderPortV1,
+    DevelopmentLoopbackOpenRouterProviderPortV1, FileHouseAllowanceLedgerV1,
+    HouseAllowancePeriodV1, HouseInvocationIdentityV1, HouseModelExecutorV1,
+    HouseProviderCredentialV1, HouseProviderPortV1, HouseSpendLimitsV1, OpenRouterProviderPortV1,
 };
 use zeroize::Zeroizing;
 
@@ -68,33 +69,22 @@ fn main() -> Result<()> {
             }
         }
         "openrouter-house" => {
-            if args.provider_address.is_some() || args.model.is_some() {
+            if args.model.is_some() {
                 bail!("managed Agent Host configuration is invalid");
             }
             let startup =
                 read_house_startup(&mut input).context("House configuration delivery failed")?;
-            let ledger = FileHouseAllowanceLedgerV1::open_for_assignment(
-                HOUSE_ALLOWANCE_LEDGER_DIRECTORY,
-                HouseSpendLimitsV1::hobby_preview(),
-                &startup.runner_unit_id,
-            )
-            .context("House allowance ledger is unavailable")?;
-            let executor = HouseModelExecutorV1::new(OpenRouterProviderPortV1::new(), ledger);
-            let mut client = McpClient::initialize(&mut input, &mut output)
-                .context("assignment MCP initialization failed")?;
-            loop {
-                match run_one_house_turn(
-                    &mut client,
-                    &startup.runner_unit_id,
-                    &startup.revision,
-                    &startup.credential,
-                    &executor,
+            if let Some(address) = args.provider_address {
+                let provider = DevelopmentLoopbackOpenRouterProviderPortV1::new(address)
+                    .context("managed Agent Host configuration is invalid")?;
+                run_house_host(&mut input, &mut output, &startup, provider)
+            } else {
+                run_house_host(
+                    &mut input,
+                    &mut output,
+                    &startup,
+                    OpenRouterProviderPortV1::new(),
                 )
-                .context("managed House turn failed")?
-                {
-                    TurnOutcomeV1::Completed => {}
-                    TurnOutcomeV1::NoWork => std::thread::sleep(NO_WORK_BACKOFF),
-                }
             }
         }
         _ => bail!("managed Agent Host configuration is invalid"),
@@ -147,6 +137,37 @@ struct HouseStartupV1 {
     runner_unit_id: String,
     revision: HouseAgentRevision,
     credential: HouseProviderCredentialV1,
+}
+
+fn run_house_host<P: HouseProviderPortV1>(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    startup: &HouseStartupV1,
+    provider: P,
+) -> Result<()> {
+    let ledger = FileHouseAllowanceLedgerV1::open_for_assignment(
+        HOUSE_ALLOWANCE_LEDGER_DIRECTORY,
+        HouseSpendLimitsV1::hobby_preview(),
+        &startup.runner_unit_id,
+    )
+    .context("House allowance ledger is unavailable")?;
+    let executor = HouseModelExecutorV1::new(provider, ledger);
+    let mut client =
+        McpClient::initialize(input, output).context("assignment MCP initialization failed")?;
+    loop {
+        match run_one_house_turn(
+            &mut client,
+            &startup.runner_unit_id,
+            &startup.revision,
+            &startup.credential,
+            &executor,
+        )
+        .context("managed House turn failed")?
+        {
+            TurnOutcomeV1::Completed => {}
+            TurnOutcomeV1::NoWork => std::thread::sleep(NO_WORK_BACKOFF),
+        }
+    }
 }
 
 fn read_house_startup(input: &mut impl BufRead) -> Result<HouseStartupV1> {

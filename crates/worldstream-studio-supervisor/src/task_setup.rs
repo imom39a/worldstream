@@ -555,6 +555,12 @@ pub enum TaskRunnerObservationV1 {
     Unavailable,
 }
 
+/// Live readiness source for an Agent that executes through the retained
+/// managed-reference host rather than through the Runtime Runner protocol.
+pub trait ManagedReferenceHostReadinessSourceV1: Send + Sync + 'static {
+    fn readiness_reason(&self, assignment_id: &str) -> TaskSeatReadinessReasonV1;
+}
+
 /// Live Runner presence source for one exact provisioned Runner identity.
 pub trait TaskRunnerReadinessSourceV1: Send + Sync + 'static {
     fn presence(&self, runner_id: &str) -> TaskRunnerObservationV1;
@@ -581,6 +587,10 @@ pub trait TaskRunnerReadinessSourceV1: Send + Sync + 'static {
         _pack: &PackReference,
     ) -> TaskSeatReadinessReasonV1 {
         TaskSeatReadinessReasonV1::RunnerAssignmentMissing
+    }
+
+    fn managed_reference_reason(&self, _assignment_id: &str) -> TaskSeatReadinessReasonV1 {
+        TaskSeatReadinessReasonV1::RunnerMissing
     }
 
     /// Binds an exact provisioned Runner identity and retained authority to
@@ -904,12 +914,27 @@ impl DaemonTaskLaunchSourceV1 for HttpDaemonTaskRuntimeV1 {
 pub struct LiveTaskRunnerReadinessSourceV1 {
     daemon: HttpDaemonTaskRuntimeV1,
     managed: RunnerSupervisorV1,
+    managed_reference_hosts: Option<Arc<dyn ManagedReferenceHostReadinessSourceV1>>,
 }
 
 impl LiveTaskRunnerReadinessSourceV1 {
     #[must_use]
     pub const fn new(daemon: HttpDaemonTaskRuntimeV1, managed: RunnerSupervisorV1) -> Self {
-        Self { daemon, managed }
+        Self {
+            daemon,
+            managed,
+            managed_reference_hosts: None,
+        }
+    }
+
+    /// Adds the lifecycle source used only by managed-reference Agent Hosts.
+    #[must_use]
+    pub fn with_managed_reference_hosts(
+        mut self,
+        source: impl ManagedReferenceHostReadinessSourceV1,
+    ) -> Self {
+        self.managed_reference_hosts = Some(Arc::new(source));
+        self
     }
 }
 
@@ -993,6 +1018,14 @@ impl TaskRunnerReadinessSourceV1 for LiveTaskRunnerReadinessSourceV1 {
             return TaskSeatReadinessReasonV1::RunnerOverCapacity;
         }
         TaskSeatReadinessReasonV1::Ready
+    }
+
+    fn managed_reference_reason(&self, assignment_id: &str) -> TaskSeatReadinessReasonV1 {
+        self.managed_reference_hosts
+            .as_ref()
+            .map_or(TaskSeatReadinessReasonV1::RunnerMissing, |source| {
+                source.readiness_reason(assignment_id)
+            })
     }
 
     fn bind_managed(
@@ -1619,6 +1652,18 @@ impl TaskSetupSupervisorV1 {
         operation: &TaskSetupOperationV1,
         seat: &SetupSeatIntentV1,
     ) -> TaskSeatReadinessReasonV1 {
+        // Agent Principals can participate through either a fresh direct
+        // Activity Client (including a browser/WebMCP client) or an external
+        // Runner. A synchronized direct stream is sufficient; an unopened
+        // browser session or retained credential is not.
+        if self.console.as_ref().is_some_and(|source| {
+            seat.member_id.as_deref().is_some_and(|member_id| {
+                source.session_health(&operation.room_id, member_id)
+                    == ParticipantConsoleSessionHealthV1::Usable
+            })
+        }) {
+            return TaskSeatReadinessReasonV1::Ready;
+        }
         let Some(runners) = &self.runners else {
             return TaskSeatReadinessReasonV1::RunnerMissing;
         };
@@ -1634,6 +1679,30 @@ impl TaskSetupSupervisorV1 {
             let Some(assignment) = &runner.managed_assignment else {
                 return TaskSeatReadinessReasonV1::RunnerAssignmentMissing;
             };
+            let managed_reference = match (&self.profiles, &seat.agent_profile) {
+                (Some(profiles), Some(profile)) => {
+                    let revision = match profiles.revision(&profile.profile_id, &profile.revision) {
+                        Ok(revision) => revision,
+                        Err(AgentProfileErrorV1::Unavailable) => {
+                            return TaskSeatReadinessReasonV1::RunnerDisconnected;
+                        }
+                        Err(_) => return TaskSeatReadinessReasonV1::RunnerIncompatible,
+                    };
+                    matches!(
+                        revision.host_contract,
+                        AgentHostContractV1::ManagedReference { .. }
+                            | AgentHostContractV1::ManagedHouseOpenrouter { .. }
+                    )
+                }
+                (None, Some(_)) => return TaskSeatReadinessReasonV1::RunnerIncompatible,
+                (_, None) => false,
+            };
+            if managed_reference {
+                return seat.member_id.as_deref().map_or(
+                    TaskSeatReadinessReasonV1::SetupIncomplete,
+                    |assignment_id| runners.managed_reference_reason(assignment_id),
+                );
+            }
             let reason = runners.managed_reason(assignment, &operation.pack);
             if reason != TaskSeatReadinessReasonV1::Ready {
                 return reason;
@@ -2434,11 +2503,14 @@ impl HostedBrowserMembershipAuthoritySourceV1 for TaskSetupSupervisorV1 {
             || operation.pack.id != binding.pack.id
             || operation.pack.version != binding.pack.version
             || operation.pack.digest != binding.pack.digest
-            || binding.principal_kind != HostedGenesisPrincipalKindV1::Human
         {
             return Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid);
         }
 
+        let principal_kind = match binding.principal_kind {
+            HostedGenesisPrincipalKindV1::Human => PrincipalKind::Human,
+            HostedGenesisPrincipalKindV1::Agent => PrincipalKind::Agent,
+        };
         let (secret_reference, access_mode, role) = match binding.purpose {
             HostedGenesisMembershipPurposeV1::Participant => {
                 if binding.access_mode != HostedGenesisAccessModeV1::Participant {
@@ -2453,7 +2525,7 @@ impl HostedBrowserMembershipAuthoritySourceV1 for TaskSetupSupervisorV1 {
                     .iter()
                     .find(|seat| seat.seat_id == seat_id)
                     .ok_or(ParticipantHandoffAuthorityErrorV1::SeatNotFound)?;
-                if seat.principal_kind != Some(PrincipalKind::Human)
+                if seat.principal_kind != Some(principal_kind)
                     || seat.principal_id.as_deref() != Some(&binding.principal_id)
                     || seat.member_id.as_deref() != Some(&binding.membership_id)
                     || binding.role.as_deref() != Some(seat.role.as_str())
@@ -2472,7 +2544,8 @@ impl HostedBrowserMembershipAuthoritySourceV1 for TaskSetupSupervisorV1 {
                 )
             }
             HostedGenesisMembershipPurposeV1::CreatorSpectator => {
-                if binding.access_mode != HostedGenesisAccessModeV1::Spectator
+                if binding.principal_kind != HostedGenesisPrincipalKindV1::Human
+                    || binding.access_mode != HostedGenesisAccessModeV1::Spectator
                     || binding.seat_id.is_some()
                     || binding.role.is_some()
                 {
@@ -2504,12 +2577,13 @@ impl HostedBrowserMembershipAuthoritySourceV1 for TaskSetupSupervisorV1 {
             .as_bytes()
             .try_into()
             .map_err(|_| ParticipantHandoffAuthorityErrorV1::AuthorityInvalid)?;
-        HumanSeatAuthorityV1::new(
+        HumanSeatAuthorityV1::new_for_principal(
             &operation.room_id,
             &binding.membership_id,
             operation.pack,
             access_mode,
             role,
+            principal_kind,
             SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes(bytes)),
         )
     }

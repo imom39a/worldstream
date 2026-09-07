@@ -11,6 +11,13 @@ const sources = {
   agentHeistListing: "config/hosted/listings/agent-heist-0.3.0.json",
   cooperativePlanner: "config/hosted/house-agents/cooperative-planner-1.json",
   skepticalAuditor: "config/hosted/house-agents/skeptical-auditor-1.json",
+  agentHeistResultProjector:
+    "config/hosted/result-projectors/agent-heist-0.2.0.json",
+  declarativeResultProjectorRuntime:
+    "config/hosted/result-projector-runtimes/declarative-runtime-1.0.0.json",
+  agentHeistPublicProjectionSchema:
+    "config/hosted/schemas/agent-heist-public-projection-v1.schema.json",
+  resultSummarySchema: "config/hosted/schemas/result-summary-v1.schema.json",
 };
 
 const entries = await Promise.all(

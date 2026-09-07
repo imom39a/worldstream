@@ -10,7 +10,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Read as _, Write as _},
-    net::{Shutdown, TcpStream, ToSocketAddrs as _},
+    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs as _},
     path::{Path, PathBuf},
     str::FromStr as _,
     sync::{Arc, Mutex, PoisonError},
@@ -1202,6 +1202,69 @@ impl HouseProviderPortV1 for OpenRouterProviderPortV1 {
     }
 }
 
+/// Development-only plain-HTTP adapter for the loopback fake `OpenRouter`.
+///
+/// Construction rejects every non-loopback or zero-port address. Production
+/// code must continue to use [`OpenRouterProviderPortV1`], whose origin and TLS
+/// policy are compiled into the binary.
+#[derive(Clone, Copy, Debug)]
+pub struct DevelopmentLoopbackOpenRouterProviderPortV1 {
+    address: SocketAddr,
+}
+
+impl DevelopmentLoopbackOpenRouterProviderPortV1 {
+    /// Selects one exact loopback endpoint for a visible local substitute.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-loopback address or port zero.
+    pub fn new(address: SocketAddr) -> Result<Self, HouseProviderPortErrorV1> {
+        if !address.ip().is_loopback() || address.port() == 0 {
+            return Err(HouseProviderPortErrorV1::Rejected);
+        }
+        Ok(Self { address })
+    }
+}
+
+impl HouseProviderPortV1 for DevelopmentLoopbackOpenRouterProviderPortV1 {
+    fn dispatch(
+        &self,
+        request: &HouseProviderRequestV1,
+        credential: &HouseProviderCredentialV1,
+    ) -> Result<HouseProviderReplyV1, HouseProviderPortErrorV1> {
+        let mut stream = TcpStream::connect_timeout(&self.address, request.timeout)
+            .map_err(|_| HouseProviderPortErrorV1::Unavailable)?;
+        stream
+            .set_read_timeout(Some(request.timeout))
+            .and_then(|()| stream.set_write_timeout(Some(request.timeout)))
+            .map_err(|_| HouseProviderPortErrorV1::Unavailable)?;
+        write!(
+            stream,
+            "POST {OPENROUTER_PATH} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer ",
+            self.address
+        )
+        .map_err(map_write_error)?;
+        stream
+            .write_all(credential.expose())
+            .map_err(map_write_error)?;
+        write!(
+            stream,
+            "\r\nContent-Type: application/json\r\nAccept: application/json\r\nX-OpenRouter-Metadata: enabled\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            request.body().len()
+        )
+        .map_err(map_write_error)?;
+        stream.write_all(request.body()).map_err(map_write_error)?;
+        stream.flush().map_err(map_write_error)?;
+        stream.shutdown(Shutdown::Write).map_err(map_write_error)?;
+        let mut response = Vec::new();
+        stream
+            .take(u64::try_from(MAX_PROVIDER_RESPONSE_BYTES + 8_192).unwrap_or(u64::MAX))
+            .read_to_end(&mut response)
+            .map_err(map_read_error)?;
+        parse_openrouter_http_response(&response)
+    }
+}
+
 fn connect_openrouter(timeout: Duration) -> Result<TcpStream, HouseProviderPortErrorV1> {
     let addresses = (OPENROUTER_AUTHORITY, OPENROUTER_PORT)
         .to_socket_addrs()
@@ -2030,11 +2093,11 @@ mod tests {
 
     use super::{
         AttemptStateV1, DeterministicHouseProviderFaultV1, DeterministicHouseProviderPortV1,
-        FileHouseAllowanceLedgerV1, HouseAllowanceErrorV1, HouseAllowancePeriodV1,
-        HouseInvocationIdentityV1, HouseModelErrorV1, HouseModelExecutorV1, HouseProposedActionV1,
-        HouseProviderCredentialV1, HouseProviderPortErrorV1, HouseSpendLimitsV1,
-        build_provider_request, number_to_nano_usd, parse_openrouter_http_response,
-        provider_max_price,
+        DevelopmentLoopbackOpenRouterProviderPortV1, FileHouseAllowanceLedgerV1,
+        HouseAllowanceErrorV1, HouseAllowancePeriodV1, HouseInvocationIdentityV1,
+        HouseModelErrorV1, HouseModelExecutorV1, HouseProposedActionV1, HouseProviderCredentialV1,
+        HouseProviderPortErrorV1, HouseSpendLimitsV1, build_provider_request, number_to_nano_usd,
+        parse_openrouter_http_response, provider_max_price,
     };
 
     const REVISION: &[u8] =
@@ -2576,6 +2639,33 @@ mod tests {
             Some(HouseProviderPortErrorV1::RateLimited)
         );
         Ok(())
+    }
+
+    #[test]
+    fn development_provider_accepts_only_a_nonzero_loopback_address() {
+        assert!(
+            DevelopmentLoopbackOpenRouterProviderPortV1::new(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                8787
+            )))
+            .is_ok()
+        );
+        assert_eq!(
+            DevelopmentLoopbackOpenRouterProviderPortV1::new(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                0,
+            )))
+            .err(),
+            Some(HouseProviderPortErrorV1::Rejected)
+        );
+        assert_eq!(
+            DevelopmentLoopbackOpenRouterProviderPortV1::new(std::net::SocketAddr::from((
+                [192, 0, 2, 1],
+                8787
+            )))
+            .err(),
+            Some(HouseProviderPortErrorV1::Rejected)
+        );
     }
 
     #[test]

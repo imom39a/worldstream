@@ -383,11 +383,14 @@ export class HostedLiveSessionController {
   private applySessionStatus(
     status: ActivityClientSessionStatus,
   ): Promise<HostedLiveSessionSnapshot> | HostedLiveSessionSnapshot {
-    if (status.state === "disconnected") {
-      this.failConnection("Activity Client session is disconnected.");
-      return this.current;
+    // A revalidated session can have a disconnected transport. Recovery still
+    // needs a fresh, server-authorized ticket and a complete synchronization;
+    // transport health alone must not prevent that recovery attempt.
+    switch (status.state) {
+      case "usable":
+      case "disconnected":
+        return this.connectStream();
     }
-    return this.connectStream();
   }
 
   private async connectStream(): Promise<HostedLiveSessionSnapshot> {

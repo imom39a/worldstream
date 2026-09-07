@@ -8,6 +8,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./live-adapter": "./src/liveAdapter.ts",
     "./presentation": "./src/presentation.tsx",
     "./styles.css": "./src/styles.css",
     "./webmcp": "./src/webmcp.ts"

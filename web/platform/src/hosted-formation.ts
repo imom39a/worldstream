@@ -162,6 +162,8 @@ export interface HostedFormationData {
   }): Promise<HouseFillRecord | null>;
   completeHouseFill(launchRequestId: string): Promise<HouseFillRecord | null>;
   readHostedLaunchMaterial(accountId: string, launchRequestId: string): Promise<HostedLaunchMaterial | null>;
+  /** Service-only lookup; returns only an already authorized, frozen operation. */
+  readHostedRecoveryMaterial(launchRequestId: string): Promise<HostedLaunchMaterial | null>;
   freezeLaunch(input: {
     accountId: string;
     launchRequestId: string;
@@ -191,11 +193,13 @@ export interface HostedFormationData {
 
 export interface HostedLaunchStatus {
   readonly state: string;
+  readonly roomSetupComplete: boolean;
 }
 
 export interface HostedFormationGateway {
   reserveHouseRunner(request: CanonicalObject): Promise<CanonicalObject>;
   launch(request: CanonicalObject): Promise<HostedLaunchStatus>;
+  readStatus(request: CanonicalObject): Promise<HostedLaunchStatus>;
   readGenesisEvidence(request: CanonicalObject): Promise<CanonicalObject>;
   bindPublicRelay(request: CanonicalObject): Promise<CanonicalObject>;
 }
@@ -213,6 +217,8 @@ export class HostedFormationPendingError extends Error {
     this.name = "HostedFormationPendingError";
   }
 }
+
+class HostedFormationNotFoundError extends HostedFormationRejectedError {}
 
 export class HostedFormationUnavailableError extends Error {
   constructor(message = "hosted_formation_unavailable", options?: ErrorOptions) {
@@ -245,7 +251,7 @@ export class HostedFormationCoordinator {
     if (["cancelled", "expired", "failed_pre_genesis"].includes(material.state)) {
       return { state: "failed_pre_genesis", retryAfterSeconds: null, runId: null };
     }
-    if (material.state === "run_created") return this.runCreated(launchRequestId);
+    if (material.hostMutationStarted) return this.resume(material);
 
     if (!material.rosterFrozen && material.houseFillChoice === "fill_unclaimed") {
       const house = await this.advanceHouseFill(accountId, material);
@@ -278,16 +284,86 @@ export class HostedFormationCoordinator {
       throw new HostedFormationRejectedError();
     }
 
-    await this.gateway.launch(documents.gatewayLaunchRequest);
+    const status = await this.gateway.launch(documents.gatewayLaunchRequest);
+    return this.recordObservedGenesis(launchRequestId, documents, status);
+  }
+
+  /** Repairs prior consent only. It cannot freeze a roster or authorize a launch. */
+  async recover(launchRequestId: string): Promise<FormationAdvanceResult | null> {
+    const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
+    return material === null ? null : this.resume(material);
+  }
+
+  async entryReady(launchRequestId: string): Promise<boolean> {
+    const material = await this.data.readHostedRecoveryMaterial(launchRequestId);
+    if (material === null) return false;
+    const documents = this.recoveryDocuments(material);
+    const reconciliation = await this.data.readGenesisReconciliation(launchRequestId);
+    if (reconciliation?.reconciliationState !== "ready" || reconciliation.runId === null) return false;
+    return (await this.gateway.readStatus(documents.evidenceRequest)).roomSetupComplete;
+  }
+
+  private recoveryDocuments(material: HostedLaunchMaterial) {
+    if (!material.hostMutationStarted || !material.rosterFrozen ||
+        !["provisioning", "reconciling", "run_created"].includes(material.state)) {
+      throw new HostedFormationRejectedError("launch_recovery_not_authorized");
+    }
+    const documents = deriveFrozenDocuments(
+      requiredReviewedActivity(material.listingRevisionDigest), material, this.hostInstallationId,
+    );
+    requireFrozenIdentity(material, this.hostInstallationId, documents.roomSetupOperationId);
+    return documents;
+  }
+
+  private async resume(material: HostedLaunchMaterial): Promise<FormationAdvanceResult> {
+    const documents = this.recoveryDocuments(material);
+    const reconciliation = await this.data.readGenesisReconciliation(material.launchRequestId);
+    if (reconciliation?.reconciliationState === "quarantined") {
+      throw new HostedFormationRejectedError("launch_quarantined");
+    }
+    // Observe Genesis before any repair. A lost capability reply must not hide
+    // an existing Room from platform correspondence.
+    const observed = await this.recordObservedGenesis(material.launchRequestId, documents, {
+      state: "reconciling", roomSetupComplete: false,
+    });
+    let status: HostedLaunchStatus;
     try {
-      const evidence = await this.gateway.readGenesisEvidence(documents.evidenceRequest);
+      status = await this.gateway.readStatus(documents.evidenceRequest);
+    } catch (error) {
+      if (!(error instanceof HostedFormationNotFoundError)) throw error;
+      status = { state: "provisioning", roomSetupComplete: false };
+    }
+    if (!status.roomSetupComplete) status = await this.gateway.launch(documents.gatewayLaunchRequest);
+    if (!status.roomSetupComplete) return observed;
+    return this.recordObservedGenesis(material.launchRequestId, documents, status);
+  }
+
+  private async recordObservedGenesis(
+    launchRequestId: string,
+    documents: ReturnType<typeof deriveFrozenDocuments>,
+    status: HostedLaunchStatus,
+  ): Promise<FormationAdvanceResult> {
+    try {
+      let evidence: CanonicalObject;
+      try {
+        evidence = await this.gateway.readGenesisEvidence(documents.evidenceRequest);
+      } catch (error) {
+        if (!status.roomSetupComplete && (error instanceof HostedFormationNotFoundError ||
+            error instanceof HostedFormationUnavailableError)) {
+          return { state: "reconciling", retryAfterSeconds: 2, runId: null };
+        }
+        throw error;
+      }
       const evidenceBytes = encodeCanonical(evidence);
       const recorded = await this.data.recordGenesis(
         launchRequestId,
         evidenceBytes,
         sha256(evidenceBytes),
       );
-      if (recorded === null) throw new HostedFormationRejectedError();
+      if (recorded === null || recorded.reconciliationState !== "ready") throw new HostedFormationRejectedError();
+      if (!status.roomSetupComplete) {
+        return { state: "reconciling", retryAfterSeconds: 2, runId: recorded.runId };
+      }
       await this.ensurePublicRelayBinding(recorded.runId);
       return {
         state: "run_created",
@@ -362,19 +438,6 @@ export class HostedFormationCoordinator {
     return null;
   }
 
-  private async runCreated(launchRequestId: string): Promise<FormationAdvanceResult> {
-    const reconciliation = await this.data.readGenesisReconciliation(launchRequestId);
-    if (reconciliation?.runId === null || reconciliation?.runId === undefined) {
-      throw new HostedFormationRejectedError();
-    }
-    await this.ensurePublicRelayBinding(reconciliation.runId);
-    return {
-      state: "run_created",
-      retryAfterSeconds: null,
-      runId: reconciliation.runId,
-    };
-  }
-
   private async ensurePublicRelayBinding(runId: string): Promise<void> {
     const request = await this.data.readPublicRelayBindingCandidate(runId);
     if (request === null) return;
@@ -435,15 +498,27 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
   }
 
   async launch(request: CanonicalObject): Promise<HostedLaunchStatus> {
-    const response = await this.call("/v1/hosted/launch", request, false);
+    return this.statusCall("/v1/hosted/launch", request);
+  }
+
+  async readStatus(request: CanonicalObject): Promise<HostedLaunchStatus> {
+    return this.statusCall("/v1/hosted/evidence", request);
+  }
+
+  private async statusCall(path: string, request: CanonicalObject): Promise<HostedLaunchStatus> {
+    const response = await this.call(path, request, false);
     if (
       response.schema !== "worldstream/hosted-launch-status/v1" ||
       response.launch_request_digest !== request.launch_request_digest ||
-      response.room_setup_operation_id !== request.room_setup_operation_id
+      response.room_setup_operation_id !== request.room_setup_operation_id ||
+      typeof response.room_setup_complete !== "boolean"
     ) {
       throw new HostedFormationUnavailableError("invalid_gateway_response");
     }
-    return { state: requiredString(response.stage) };
+    return {
+      state: requiredString(response.stage),
+      roomSetupComplete: response.room_setup_complete,
+    };
   }
 
   async readGenesisEvidence(request: CanonicalObject): Promise<CanonicalObject> {
@@ -474,6 +549,7 @@ export class HttpHostedFormationGateway implements HostedFormationGateway {
     }
     if (!response.ok) {
       if (pendingOnConflict && response.status === 409) throw new HostedFormationPendingError();
+      if (response.status === 404) throw new HostedFormationNotFoundError();
       if ([400, 401, 403, 404, 409, 422].includes(response.status)) {
         throw new HostedFormationRejectedError();
       }

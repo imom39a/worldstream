@@ -1475,6 +1475,8 @@ fn fixed_http_request(
                         | "/api/v1/hosted-browser-sessions:status"
                         | "/api/v1/hosted-browser-sessions:logout"
                         | "/api/v1/hosted-browser-sessions:stream-ticket"
+                        | "/api/v1/hosted-public-relays:bind"
+                        | "/api/v1/hosted-public-streams:ticket"
                 )
         )
         || body.len() > MAX_SERVICE_BODY_BYTES
@@ -1863,12 +1865,9 @@ async fn relay_public_projection_stream_inner(
                         public_head.room_seq = observation.cause_room_seq;
                         let frame = observation_frame(&attached.pack, &public_head, &observation)?;
                         send_public_frame(browser, &frame).await?;
-                        send_runtime_request(
-                            &mut runtime,
-                            "observation.ack",
-                            json!({"through_frame_seq": observation.frame_seq}),
-                        )
-                        .await?;
+                        // Viewers share the relay Membership, not a consumer
+                        // checkpoint. Keep progress local to this connection;
+                        // each new viewer starts from a fresh public Reset.
                     }
                     "server.ping" => {
                         send_runtime_request(&mut runtime, "client.pong", json!({})).await?;

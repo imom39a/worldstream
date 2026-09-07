@@ -43,8 +43,7 @@ use crate::{
     hosted_launch::HostedLaunchAccessV1,
     participant_handoff::{
         CurrentMembershipSnapshotV1, HumanSeatAuthorityV1, ParticipantConsoleGatewayErrorV1,
-        ParticipantConsoleGatewayV1, ParticipantConsoleSessionHealthV1,
-        ParticipantHandoffAuthorityErrorV1,
+        ParticipantConsoleGatewayV1, ParticipantHandoffAuthorityErrorV1,
     },
 };
 
@@ -56,7 +55,8 @@ const TOKEN_BYTES: usize = 32;
 /// Resolves only the exact immutable hosted Run Membership correspondence.
 /// Implementations must keep the Membership bearer inside the Host boundary.
 pub trait HostedBrowserMembershipAuthoritySourceV1: Send + Sync + 'static {
-    /// Resolves and verifies one account-controlled human Membership.
+    /// Resolves an account-controlled human or external-agent participant
+    /// Membership, or one human creator-spectator Membership.
     ///
     /// # Errors
     /// Returns a closed authority failure without exposing retained identity or
@@ -286,39 +286,17 @@ impl HostedBrowserSessionBrokerV1 {
                 .cloned()
                 .ok_or(HostedBrowserSessionErrorV1::Missing)?
         };
-        let authority = match self.revalidate_target(&record.target) {
-            Ok(authority) => authority,
-            Err(error) => {
-                if error.invalidates_session() {
-                    let _ = self.retire_session(&request.session, false);
-                }
-                return Err(error);
-            }
-        };
-        let state = match self.inner.gateway.health(&authority, None) {
-            Ok(ParticipantConsoleSessionHealthV1::Usable) => HostedBrowserSessionStateV1::Usable,
-            Ok(
-                ParticipantConsoleSessionHealthV1::Disconnected
-                | ParticipantConsoleSessionHealthV1::Stale,
-            )
-            | Err(ParticipantConsoleGatewayErrorV1::Disconnected) => {
-                HostedBrowserSessionStateV1::Disconnected
-            }
-            Ok(
-                ParticipantConsoleSessionHealthV1::Missing
-                | ParticipantConsoleSessionHealthV1::Invalid,
-            )
-            | Err(ParticipantConsoleGatewayErrorV1::Rejected) => {
+        if let Err(error) = self.revalidate_target(&record.target) {
+            if error.invalidates_session() {
                 let _ = self.retire_session(&request.session, false);
-                return Err(HostedBrowserSessionErrorV1::Rejected);
             }
-            Err(ParticipantConsoleGatewayErrorV1::Unavailable) => {
-                return Err(HostedBrowserSessionErrorV1::Unavailable);
-            }
-        };
+            return Err(error);
+        }
+        // Authority validity is not stream synchronization. The client must
+        // still obtain a fresh ticket and acknowledge its own attach barrier.
         Ok(HostedBrowserSessionStatusV1 {
             schema: "worldstream/hosted-browser-session-status/v1".to_owned(),
-            state,
+            state: HostedBrowserSessionStateV1::Usable,
         })
     }
 
@@ -448,7 +426,7 @@ impl HostedBrowserSessionBrokerV1 {
     ) -> Result<CurrentMembershipSnapshotV1, HostedBrowserSessionErrorV1> {
         self.inner
             .gateway
-            .current_membership(authority, None)
+            .membership_status(authority)
             .map_err(map_gateway_error)
     }
 
@@ -898,7 +876,15 @@ mod tests {
             {
                 return Err(ParticipantHandoffAuthorityErrorV1::AuthorityInvalid);
             }
-            HumanSeatAuthorityV1::new(
+            let principal_kind = match binding.principal_kind {
+                worldstream_hosted_contract::HostedGenesisPrincipalKindV1::Human => {
+                    worldstream_protocol::PrincipalKind::Human
+                }
+                worldstream_hosted_contract::HostedGenesisPrincipalKindV1::Agent => {
+                    worldstream_protocol::PrincipalKind::Agent
+                }
+            };
+            HumanSeatAuthorityV1::new_for_principal(
                 &binding.room_id,
                 &binding.membership_id,
                 PackReference {
@@ -915,6 +901,7 @@ mod tests {
                     }
                 },
                 binding.role.clone(),
+                principal_kind,
                 SealedCapabilityBearerV1::from_wire(&BearerWireV1::from_bytes([7; 32])),
             )
         }
@@ -923,12 +910,18 @@ mod tests {
     #[derive(Clone)]
     struct FakeGateway {
         current: Arc<Mutex<Option<CurrentMembershipSnapshotV1>>>,
-        health: Arc<Mutex<ParticipantConsoleSessionHealthV1>>,
         stream_requests: Arc<Mutex<Vec<HostedBrowserWebSocketTicketIssueRequest>>>,
         revoked_sessions: Arc<Mutex<Vec<String>>>,
     }
 
     impl ParticipantConsoleGatewayV1 for FakeGateway {
+        fn membership_status(
+            &self,
+            authority: &HumanSeatAuthorityV1,
+        ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+            self.current_membership(authority, None)
+        }
+
         fn current_membership(
             &self,
             _authority: &HumanSeatAuthorityV1,
@@ -956,14 +949,6 @@ mod tests {
             _request: &ParticipantActionRequestV1,
         ) -> Result<Value, ParticipantConsoleGatewayErrorV1> {
             Err(ParticipantConsoleGatewayErrorV1::Unavailable)
-        }
-
-        fn health(
-            &self,
-            _authority: &HumanSeatAuthorityV1,
-            _durable_cursor: Option<u64>,
-        ) -> Result<ParticipantConsoleSessionHealthV1, ParticipantConsoleGatewayErrorV1> {
-            Ok(*self.health.lock().unwrap_or_else(PoisonError::into_inner))
         }
 
         fn issue_hosted_browser_stream_ticket(
@@ -1062,7 +1047,7 @@ mod tests {
                 version: "0.2.0".to_owned(),
                 digest: format!("blake3:{}", "2".repeat(64)),
             },
-            client_release_digest: format!("blake3:{}", "3".repeat(64)),
+            client_release_digest: format!("sha256:{}", "3".repeat(64)),
             client_surface_id: "participant".to_owned(),
             access_mode: worldstream_hosted_contract::HostedGenesisAccessModeV1::Participant,
             purpose: worldstream_hosted_contract::HostedGenesisMembershipPurposeV1::Participant,
@@ -1089,7 +1074,6 @@ mod tests {
                 access_mode: AccessMode::Participant,
                 role: binding.role.clone(),
             }))),
-            health: Arc::new(Mutex::new(ParticipantConsoleSessionHealthV1::Usable)),
             stream_requests: Arc::new(Mutex::new(Vec::new())),
             revoked_sessions: Arc::new(Mutex::new(Vec::new())),
         };
@@ -1182,6 +1166,21 @@ mod tests {
                 state: HostedBrowserSessionStateV1::Usable,
             })
         );
+    }
+
+    #[test]
+    fn account_controlled_agent_participant_can_receive_a_browser_handoff() {
+        let fixture = fixture(Duration::from_mins(1), Duration::from_mins(1));
+        let mut agent = request();
+        agent.principal_kind = worldstream_hosted_contract::HostedGenesisPrincipalKindV1::Agent;
+        *fixture
+            .authority
+            .expected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(agent.clone());
+        let issued = fixture.broker.issue(agent).expect("agent browser handoff");
+        assert!(issued.client_url.starts_with(CLIENT_ORIGIN));
+        assert!(issued.client_url.contains("#handoff=wsh1:"));
     }
 
     #[test]

@@ -3,6 +3,12 @@
   "framework": "vite",
   "buildCommand": "pnpm build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/**/*.mjs": {
+      "maxDuration": 300
+    }
+  },
+  "crons": [{ "path": "/api/internal/reconcile", "schedule": "0 8 * * *" }],
   "headers": [
     {
       "source": "/(.*)",
@@ -23,6 +29,10 @@
     }
   ],
   "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/platform"
+    },
     {
       "source": "/runs/:public_id",
       "destination": "/index.html"

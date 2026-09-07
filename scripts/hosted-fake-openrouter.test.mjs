@@ -67,6 +67,89 @@ test("fake provider exposes an authenticated deterministic OpenRouter-shaped res
       (await completion.json()).choices[0].message.content,
       "DEVELOPMENT_FAKE_RESPONSE",
     );
+
+    const house = await fetch(`${origin}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "worldstream/development-house",
+        messages: [{
+          role: "user",
+          content: JSON.stringify({
+            schema: "worldstream/house-model-invocation/v1",
+            instruction: "fixture",
+            projection: {
+              schema: "worldstream/assignment-observation/v1",
+              projection_reset: { projection: { activity: { private_clues: [] } } },
+              observations: [],
+            },
+            action_offers: {
+              schema: "worldstream/assignment-action-offer-list/v1",
+              offers: [{
+                offer_id: "4:0:fixture",
+                action_type: "inspect_clue",
+                payload_schema: { schema: { type: "object" } },
+              }],
+            },
+          }),
+        }],
+        provider: { only: ["fixture-provider"] },
+        max_tokens: 1_000,
+      }),
+    });
+    assert.equal(house.status, 200);
+    const houseBody = await house.json();
+    assert.match(houseBody.id, /^gen-/u);
+    assert.equal(houseBody.openrouter_metadata.strategy, "direct");
+    assert.equal(houseBody.openrouter_metadata.attempts[0].provider, "fixture-provider");
+    assert.deepEqual(JSON.parse(houseBody.choices[0].message.content), {
+      offer_id: "4:0:fixture",
+      payload: { clue_id: "entry_window" },
+    });
+    for (const observation of [
+      { projection_reset: { projection: { activity: { plans: [{ plan_id: "reviewed-plan" }] } } }, observations: [] },
+      { projection_reset: null, observations: [{ observation: { plans: [{ plan_id: "reviewed-plan" }] } }] },
+      { projection_reset: { projection: { activity: { plans: [{ plan_id: "old-plan" }] } } }, observations: [{ observation: { plans: [{ plan_id: "reviewed-plan" }] } }] },
+    ]) {
+      const endorsement = await fetch(`${origin}/api/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "worldstream/development-house",
+          messages: [{ role: "user", content: JSON.stringify({
+            schema: "worldstream/house-model-invocation/v1",
+            projection: {
+              schema: "worldstream/assignment-observation/v1",
+              ...observation,
+            },
+            action_offers: {
+              schema: "worldstream/assignment-action-offer-list/v1",
+              offers: [
+                { offer_id: "inspect", action_type: "inspect_clue" },
+                { offer_id: "endorse", action_type: "endorse_plan" },
+              ],
+            },
+          }) }],
+          provider: { only: ["fixture-provider"] },
+        }),
+      });
+      assert.equal(endorsement.status, 200);
+      assert.deepEqual(JSON.parse((await endorsement.json()).choices[0].message.content), {
+        offer_id: "endorse", payload: { plan_id: "reviewed-plan" },
+      });
+    }
+    const metrics = await fetch(`${origin}/development/metrics`, {
+      headers: { authorization: `Bearer ${KEY}` },
+    });
+    assert.equal(metrics.status, 200);
+    assert.deepEqual(await metrics.json(), {
+      version: "worldstream_development_fake_openrouter_metrics.v1",
+      completion_count: 5,
+      house_completion_count: 4,
+    });
   } finally {
     await new Promise((resolvePromise) => server.close(resolvePromise));
   }

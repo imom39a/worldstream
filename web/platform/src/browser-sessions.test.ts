@@ -49,6 +49,33 @@ function client(fetchImplementation: typeof fetch): HttpHostedBrowserSessionClie
 }
 
 describe("hosted Browser Activity Session service client", () => {
+  it("admits only an exact account-controlled external-agent participant", async () => {
+    const observed: Record<string, unknown>[] = [];
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      observed.push(JSON.parse(await request.text()) as Record<string, unknown>);
+      return Response.json({
+        schema: "worldstream/hosted-browser-handoff-response/v1",
+        client_url: `https://arena.example/clients/heist/#handoff=${HANDOFF}`,
+      });
+    });
+    const binding = { ...correspondence(), principalKind: "agent" as const };
+    await assert.doesNotReject(client(fetchImplementation).issueHandoff(ACCOUNT, binding));
+    assert.equal(observed[0]?.principal_kind, "agent");
+
+    await assert.rejects(
+      client(fetchImplementation).issueHandoff(ACCOUNT, {
+        ...binding,
+        accessMode: "spectator",
+        purpose: "creator_spectator",
+        seatId: null,
+        role: null,
+      }),
+      HostedBrowserSessionRejectedError,
+    );
+    assert.equal(fetchImplementation.mock.calls.length, 1);
+  });
+
   it("uses only fixed authenticated routes and exact canonical contracts", async () => {
     const observations: Array<{ path: string; body: Record<string, unknown> }> = [];
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

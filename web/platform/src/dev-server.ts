@@ -10,6 +10,10 @@ import {
 } from "./bff.js";
 import { HttpHostedBrowserSessionClient } from "./browser-sessions.js";
 import { HttpHostedFormationGateway } from "./hosted-formation.js";
+import {
+  createHostedResultReconciler,
+  withHostedResultReconciliation,
+} from "./reconciliation-service.js";
 import { createSupabaseBffDependencies } from "./supabase.js";
 
 const MAX_HTTP_BODY_BYTES = 32 * 1024;
@@ -26,7 +30,7 @@ export function createDevelopmentPlatformServer(environment = process.env) {
   });
   const hostedBrowserSessions = hostedBrowserSessionClient(environment, canonicalOrigin);
   const hostedFormation = hostedFormationDependencies(environment, dependencies);
-  const bff = createDevelopmentPlatformBff(
+  const platform = createDevelopmentPlatformBff(
     {
       canonicalOrigin,
       allowedReturnTargets: ["/", "/join"],
@@ -46,6 +50,19 @@ export function createDevelopmentPlatformServer(environment = process.env) {
     hostedFormation,
     environment.WORLDSTREAM_HOSTED_GATEWAY_URL,
   );
+  const serviceAuthority = environment.WORLDSTREAM_VERCEL_SERVICE_AUTHORITY;
+  const hostedGatewayUrl = environment.WORLDSTREAM_HOSTED_GATEWAY_URL;
+  const bff = serviceAuthority === undefined || hostedGatewayUrl === undefined
+    ? platform
+    : withHostedResultReconciliation(
+        platform,
+        createHostedResultReconciler({
+          supabaseUrl: required(environment, "SUPABASE_URL"),
+          dataSecretKey: required(environment, "SUPABASE_DATA_SECRET_KEY"),
+          hostedGatewayUrl,
+          serviceAuthority,
+        }),
+      );
   const server = createServer((request, response) => {
     void dispatch(bff, canonicalOrigin, request, response);
   });

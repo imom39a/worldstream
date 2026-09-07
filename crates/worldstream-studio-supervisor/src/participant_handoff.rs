@@ -57,13 +57,14 @@ const MAX_ACTION_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_REPLAY_RESPONSE_BYTES: u64 = 256 * 1024;
 const MAX_TICKET_RESPONSE_BYTES: u64 = 16 * 1024;
 
-/// Exact, non-serializable authority for one provisioned human participant seat.
+/// Exact, non-serializable authority retained by one participant console.
 pub struct HumanSeatAuthorityV1 {
     room_id: String,
     member_id: String,
     pack: PackReference,
     access_mode: AccessMode,
     role: Option<String>,
+    principal_kind: worldstream_protocol::PrincipalKind,
     bearer: SealedCapabilityBearerV1,
 }
 
@@ -99,8 +100,29 @@ impl HumanSeatAuthorityV1 {
             pack,
             access_mode,
             role,
+            principal_kind: worldstream_protocol::PrincipalKind::Human,
             bearer,
         })
+    }
+
+    /// Constructs browser authority for an account-controlled human or agent
+    /// Membership. Ordinary Participant Console callers remain human-only by
+    /// using [`Self::new`].
+    ///
+    /// # Errors
+    /// Rejects malformed Room and Membership identities.
+    pub fn new_for_principal(
+        room_id: &str,
+        member_id: &str,
+        pack: PackReference,
+        access_mode: AccessMode,
+        role: Option<String>,
+        principal_kind: worldstream_protocol::PrincipalKind,
+        bearer: SealedCapabilityBearerV1,
+    ) -> Result<Self, ParticipantHandoffAuthorityErrorV1> {
+        let mut authority = Self::new(room_id, member_id, pack, access_mode, role, bearer)?;
+        authority.principal_kind = principal_kind;
+        Ok(authority)
     }
 
     /// Returns the exact Room binding for the internal daemon adapter.
@@ -131,6 +153,12 @@ impl HumanSeatAuthorityV1 {
     #[must_use]
     pub fn role(&self) -> Option<&str> {
         self.role.as_deref()
+    }
+
+    /// Returns the exact Principal kind expected from Room attachment.
+    #[must_use]
+    pub const fn principal_kind(&self) -> worldstream_protocol::PrincipalKind {
+        self.principal_kind
     }
 
     /// Returns the sealed participant bearer only at the internal daemon adapter.
@@ -222,6 +250,18 @@ pub struct CurrentMembershipSnapshotV1 {
 
 /// Membership-bound observe/act adapter used after the local session is admitted.
 pub trait ParticipantConsoleGatewayV1: Send + Sync + 'static {
+    /// Reads current Membership authority without attaching a stream or
+    /// requiring its Cursor. Hosted sessions use this independent read.
+    ///
+    /// # Errors
+    /// Fails closed unless the adapter implements a cursor-independent read.
+    fn membership_status(
+        &self,
+        _authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        Err(ParticipantConsoleGatewayErrorV1::Unavailable)
+    }
+
     /// Resolves current enabled Membership facts from the Room service.
     ///
     /// # Errors
@@ -380,6 +420,62 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         Ok(socket)
     }
 
+    // Observation acknowledgements persist a Membership Cursor. An authority check
+    // must not attempt a new attach with an invented (or absent) Cursor.
+    fn read_membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        let request = Zeroizing::new(format!(
+            "GET /v1/rooms/{}/members/{}/status HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            authority.room_id(),
+            authority.member_id(),
+            self.address,
+            authority.bearer().as_str(),
+        ));
+        let mut stream = TcpStream::connect_timeout(&self.address, self.timeout)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .and_then(|()| stream.set_write_timeout(Some(self.timeout)))
+            .and_then(|()| stream.write_all(request.as_bytes()))
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        let mut response = Vec::new();
+        stream
+            .take(MAX_TICKET_RESPONSE_BYTES + 1)
+            .read_to_end(&mut response)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Disconnected)?;
+        if u64::try_from(response.len()).unwrap_or(u64::MAX) > MAX_TICKET_RESPONSE_BYTES {
+            return Err(ParticipantConsoleGatewayErrorV1::Unavailable);
+        }
+        let (status, body) = parse_http_response(&response)?;
+        match status {
+            200 => {}
+            400 | 401 | 403 | 404 | 422 => return Err(ParticipantConsoleGatewayErrorV1::Rejected),
+            _ => return Err(ParticipantConsoleGatewayErrorV1::Unavailable),
+        }
+        let current: worldstream_protocol::MembershipStatusResponse = serde_json::from_slice(body)
+            .map_err(|_| ParticipantConsoleGatewayErrorV1::Unavailable)?;
+        if current.version != "membership_status.v1"
+            || current.room_id != authority.room_id()
+            || current.member_id != authority.member_id()
+            || current.principal_kind != authority.principal_kind()
+            || current.membership_status != "enabled"
+            || !matches!(
+                current.access_mode,
+                AccessMode::Participant | AccessMode::Spectator
+            )
+            || (current.access_mode == AccessMode::Participant) != current.role.is_some()
+        {
+            return Err(ParticipantConsoleGatewayErrorV1::Rejected);
+        }
+        Ok(CurrentMembershipSnapshotV1 {
+            pack: current.pack,
+            access_mode: current.access_mode,
+            role: current.role,
+        })
+    }
+
     fn authenticated_json_call<T: Serialize>(
         &self,
         authority: &HumanSeatAuthorityV1,
@@ -442,7 +538,7 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
         if attached.room_id != authority.room_id()
             || attached.member_id != authority.member_id()
             || attached.room_head.room_id != authority.room_id()
-            || attached.principal_kind != worldstream_protocol::PrincipalKind::Human
+            || attached.principal_kind != authority.principal_kind()
             || (attached.access_mode == AccessMode::Participant) != attached.role.is_some()
         {
             return Err(ParticipantConsoleGatewayErrorV1::Rejected);
@@ -587,6 +683,13 @@ impl FixedDaemonParticipantConsoleGatewayV1 {
 }
 
 impl ParticipantConsoleGatewayV1 for FixedDaemonParticipantConsoleGatewayV1 {
+    fn membership_status(
+        &self,
+        authority: &HumanSeatAuthorityV1,
+    ) -> Result<CurrentMembershipSnapshotV1, ParticipantConsoleGatewayErrorV1> {
+        self.read_membership_status(authority)
+    }
+
     fn current_membership(
         &self,
         authority: &HumanSeatAuthorityV1,

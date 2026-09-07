@@ -857,6 +857,10 @@ fn managed_reference_profile_is_rejected_for_an_external_agent_seat() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps setup, readiness, Room launch, and assignment discovery in one ordered scenario"
+)]
 fn ready_managed_reference_assignment_is_visible_before_its_first_mcp_launch() {
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
     let vault = FileSecretVaultV1::open(&directory.path().join("secrets"))
@@ -920,13 +924,23 @@ fn ready_managed_reference_assignment_is_visible_before_its_first_mcp_launch() {
         ManagedReferenceRunner,
         Launcher(Arc::new(Mutex::new(LaunchLedger::default()))),
     )
-    .with_launch_applicability(LaunchApplicability(
-        TaskLaunchApplicabilityV1::ActiveAtGenesis,
-    ));
+    .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch));
     let ready = setup
         .start("setup-alpha")
         .unwrap_or_else(|error| unreachable!("ready setup: {error:?}"));
     assert_eq!(ready.state, TaskSetupStateV1::Ready);
+    assert!(ready.readiness.ready_to_launch);
+    assert_eq!(
+        ready.readiness.seats[1].reason,
+        TaskSeatReadinessReasonV1::Ready
+    );
+    let room_started = setup
+        .launch("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("launch managed-reference Room: {error:?}"));
+    assert_eq!(
+        room_started.launch.as_ref().map(|launch| launch.state),
+        Some(TaskLaunchStateV1::Launched)
+    );
 
     let launch_source = FileAssignedMembershipSourceV1::open(
         &directory.path().join("setups"),
@@ -1111,12 +1125,68 @@ fn hosted_browser_authority_requires_the_exact_ready_human_membership() {
 struct ConsoleHealth(Arc<Mutex<ParticipantConsoleSessionHealthV1>>);
 
 impl ParticipantConsoleReadinessSourceV1 for ConsoleHealth {
-    fn session_health(
-        &self,
-        _room_id: &str,
-        _member_id: &str,
-    ) -> ParticipantConsoleSessionHealthV1 {
+    fn session_health(&self, _room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
+        // This fixture models only the human Navigator's browser. The Agent
+        // seat uses its separate Runner unless a test explicitly connects it.
+        if member_id != "01ARZ3NDEKTSV4RRFFQ69G5FAY" {
+            return ParticipantConsoleSessionHealthV1::Missing;
+        }
         *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[derive(Clone)]
+struct AgentBrowserHealth(Arc<Mutex<ParticipantConsoleSessionHealthV1>>);
+
+impl ParticipantConsoleReadinessSourceV1 for AgentBrowserHealth {
+    fn session_health(&self, _room_id: &str, member_id: &str) -> ParticipantConsoleSessionHealthV1 {
+        match member_id {
+            "01ARZ3NDEKTSV4RRFFQ69G5FAY" => ParticipantConsoleSessionHealthV1::Usable,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAZ" => *self.0.lock().unwrap_or_else(PoisonError::into_inner),
+            _ => ParticipantConsoleSessionHealthV1::Missing,
+        }
+    }
+}
+
+#[test]
+fn direct_agent_client_requires_a_synchronized_session_without_a_runner() {
+    let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
+    let agent = Arc::new(Mutex::new(ParticipantConsoleSessionHealthV1::Missing));
+    let setup = open_setup(
+        directory.path(),
+        DurableProvisioner(Arc::new(Mutex::new(ProvisionLedger::default()))),
+    )
+    .with_launch_applicability(LaunchApplicability(TaskLaunchApplicabilityV1::LobbyLaunch))
+    .with_launch_readiness(
+        AgentBrowserHealth(Arc::clone(&agent)),
+        RunnerHealth(Arc::new(Mutex::new(RunnerMode::Missing))),
+        Launcher(Arc::new(Mutex::new(LaunchLedger::default()))),
+    );
+    setup
+        .start("setup-alpha")
+        .unwrap_or_else(|error| unreachable!("setup: {error:?}"));
+    for health in [
+        ParticipantConsoleSessionHealthV1::Missing,
+        ParticipantConsoleSessionHealthV1::Stale,
+        ParticipantConsoleSessionHealthV1::Disconnected,
+        ParticipantConsoleSessionHealthV1::Usable,
+    ] {
+        *agent.lock().unwrap_or_else(PoisonError::into_inner) = health;
+        let status = setup
+            .status("setup-alpha")
+            .unwrap_or_else(|error| unreachable!("status: {error:?}"));
+        assert_eq!(
+            status.readiness.ready_to_launch,
+            health == ParticipantConsoleSessionHealthV1::Usable
+        );
+        assert_eq!(
+            status.readiness.seats[1].reason,
+            if health == ParticipantConsoleSessionHealthV1::Usable {
+                TaskSeatReadinessReasonV1::Ready
+            } else {
+                TaskSeatReadinessReasonV1::RunnerMissing
+            }
+        );
     }
 }
 
@@ -1246,6 +1316,17 @@ struct ManagedReferenceRunner;
 impl TaskRunnerReadinessSourceV1 for ManagedReferenceRunner {
     fn presence(&self, _runner_id: &str) -> TaskRunnerObservationV1 {
         TaskRunnerObservationV1::Missing
+    }
+
+    fn managed_reference_reason(&self, assignment_id: &str) -> TaskSeatReadinessReasonV1 {
+        if assignment_id
+            .parse::<worldstream_protocol::UlidString>()
+            .is_ok()
+        {
+            TaskSeatReadinessReasonV1::Ready
+        } else {
+            TaskSeatReadinessReasonV1::RunnerMissing
+        }
     }
 
     fn select_managed_reference(

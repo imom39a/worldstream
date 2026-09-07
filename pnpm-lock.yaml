@@ -176,6 +176,9 @@ importers:
       '@worldstream/client':
         specifier: workspace:*
         version: link:../../sdk/typescript-client
+      '@worldstream/platform':
+        specifier: workspace:*
+        version: link:../platform
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -254,6 +257,12 @@ importers:
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
+      '@worldstream/agent-heist-client':
+        specifier: workspace:*
+        version: link:../../clients/agent-heist-web
+      '@worldstream/client':
+        specifier: workspace:*
+        version: link:../../sdk/typescript-client
       typescript:
         specifier: 7.0.2
         version: 7.0.2

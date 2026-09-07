@@ -141,7 +141,7 @@ fn hosted_public_relay_request() -> HostedPublicRelayBindRequestV1 {
 }
 
 #[test]
-fn hosted_browser_contract_accepts_only_account_controlled_human_memberships() {
+fn hosted_browser_contract_accepts_account_controlled_human_and_agent_participants() {
     let participant = hosted_browser_handoff_request();
     assert_eq!(
         validate_hosted_browser_handoff_request(&participant),
@@ -157,8 +157,12 @@ fn hosted_browser_contract_accepts_only_account_controlled_human_memberships() {
 
     let mut agent = participant.clone();
     agent.principal_kind = HostedGenesisPrincipalKindV1::Agent;
+    assert_eq!(validate_hosted_browser_handoff_request(&agent), Ok(()));
+
+    let mut agent_spectator = spectator.clone();
+    agent_spectator.principal_kind = HostedGenesisPrincipalKindV1::Agent;
     assert_eq!(
-        validate_hosted_browser_handoff_request(&agent),
+        validate_hosted_browser_handoff_request(&agent_spectator),
         Err(ContractError::InvalidShape)
     );
 

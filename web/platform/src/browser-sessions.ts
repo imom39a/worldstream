@@ -29,7 +29,7 @@ export interface OwnedRunMembershipCorrespondence {
   readonly purpose: "participant" | "creator_spectator";
   readonly seatId: string | null;
   readonly role: string | null;
-  readonly principalKind: "human";
+  readonly principalKind: "human" | "agent";
   readonly principalId: string;
   readonly membershipId: string;
 }
@@ -320,7 +320,7 @@ function validateCorrespondence(value: OwnedRunMembershipCorrespondence): void {
     !BLAKE3_PATTERN.test(value.pack.digest) ||
     !SHA256_PATTERN.test(value.clientReleaseDigest) ||
     !SAFE_REFERENCE_PATTERN.test(value.clientSurfaceId) ||
-    value.principalKind !== "human" ||
+    (value.principalKind !== "human" && value.principalKind !== "agent") ||
     !ULID_PATTERN.test(value.principalId) ||
     !ULID_PATTERN.test(value.membershipId)
   ) {
@@ -335,6 +335,7 @@ function validateCorrespondence(value: OwnedRunMembershipCorrespondence): void {
     SAFE_REFERENCE_PATTERN.test(value.role);
   const spectator =
     value.purpose === "creator_spectator" &&
+    value.principalKind === "human" &&
     value.accessMode === "spectator" &&
     value.seatId === null &&
     value.role === null;

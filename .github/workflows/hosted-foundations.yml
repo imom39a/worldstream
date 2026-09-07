@@ -35,13 +35,22 @@ jobs:
           cargo test --locked -p worldstream-hosted-contract
           pnpm --filter @worldstream/hosted-contract lint
           pnpm --filter @worldstream/hosted-contract test
-          cargo test --locked -p worldstream-studio-supervisor --lib hosted_launch
+          cargo test --locked -p worldstream-studio-supervisor --lib hosted_
+          cargo test --locked -p worldstream-studio-supervisor --lib managed_agent_host
+          cargo test --locked -p worldstream-studio-supervisor --lib house_model
+          cargo test --locked -p worldstream-studio-supervisor --test task_setup
           cargo test --locked -p worldstream-studio-supervisor --test room_setup_spec
           cargo test --locked -p worldstream-studio-supervisor --test room_setup_operations
           cargo test --locked -p worldstream-studio-supervisor --test room_creation production_http_creator_reuses_one_sealed_spectator_bearer_on_retry
           cargo test --locked -p worldstream-server hosted_room_creation_is_atomic_restartable_and_non_playing --lib
+          cargo test --locked -p worldstream-server --test hosted_browser_stream
       - name: Test the platform BFF
         run: pnpm hosted-platform:check
+      - name: Test the independently hosted clients and product shell
+        run: |
+          pnpm activity-clients:check
+          pnpm demos:lint
+          pnpm demos:test
       - name: Test local-development fail-closed controls
         run: pnpm hosted:dev:test
       - name: Test the single-authority Fly appliance and same-volume restart
@@ -58,6 +67,14 @@ jobs:
       SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET: local-ci-secret
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
       - uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.116.0
@@ -90,3 +107,39 @@ jobs:
           supabase db lint --local --schema platform_store,platform_api --level warning --fail-on error
           supabase db advisors --local --type security --level warn --fail-on error
           supabase db advisors --local --type performance --level warn --fail-on error
+
+  local-candidate:
+    name: Canonical hosted local candidate
+    needs: [application-boundaries, database-boundary]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SUPABASE_AUTH_EXTERNAL_GITHUB_CLIENT_ID: local-ci-client
+      SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET: local-ci-secret
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup override set 1.97.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack install
+      - uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
+        with:
+          version: 2.116.0
+      - name: Prove the local browser-to-result story without paid provider calls
+        run: pnpm hosted:acceptance:local
+      - name: Retain only redacted acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hosted-local-${{ github.sha }}
+          path: .worldstream/evidence/hosted-local-*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

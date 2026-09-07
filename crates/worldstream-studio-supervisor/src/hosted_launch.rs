@@ -677,6 +677,36 @@ impl HostedLaunchOperationsV1 {
             .map_err(map_house_error)
     }
 
+    /// Rechecks only retained hosted Rooms whose Lobby launch has not reached
+    /// a terminal state. This is the bounded bridge from asynchronous client
+    /// and Runner presence to the existing idempotent Task launch intent.
+    ///
+    /// # Errors
+    /// Fails closed if the retained binding inventory or Room operation cannot
+    /// be read safely. A Room that is not ready remains unchanged.
+    pub fn reconcile_ready_lobbies(&self) -> Result<(), HostedLaunchErrorV1> {
+        let _guard = self.lock();
+        for binding in self.bindings_unlocked()? {
+            let status = self.backend.inspect(&binding.room_setup_operation_id)?;
+            if !status.complete
+                || status.assessment.as_ref().is_some_and(|assessment| {
+                    assessment.launch.as_ref().is_some_and(|launch| {
+                        launch.state == TaskLaunchStateV1::Launched
+                            || (launch.state == TaskLaunchStateV1::NeedsAttention
+                                && !launch
+                                    .attention
+                                    .as_ref()
+                                    .is_some_and(|attention| attention.retryable))
+                    })
+                })
+            {
+                continue;
+            }
+            self.backend.launch(&binding.room_setup_operation_id)?;
+        }
+        Ok(())
+    }
+
     fn bind(&self, requested: &RetainedHostedLaunchBindingV1) -> Result<(), HostedLaunchErrorV1> {
         let _guard = self.lock();
         match self.load_unlocked(&requested.room_setup_operation_id) {
@@ -1028,6 +1058,7 @@ pub fn is_hosted_launch_route(method: &Method, path: &str) -> bool {
                     | "/api/v1/hosted-browser-handoffs:redeem"
                     | "/api/v1/hosted-browser-sessions:status"
                     | "/api/v1/hosted-browser-sessions:logout"
+                    | "/api/v1/hosted-browser-sessions:stream-ticket"
                     | "/api/v1/hosted-public-relays:bind"
                     | "/api/v1/hosted-public-streams:ticket"
             )
@@ -1648,6 +1679,168 @@ mod tests {
                 .unwrap_or_else(|error| unreachable!("retained read: {error:?}")),
             first
         );
+    }
+
+    #[test]
+    fn hosted_service_route_allowlist_includes_realtime_admission_only_at_exact_paths() {
+        for path in [
+            "/api/v1/hosted-browser-handoffs:issue",
+            "/api/v1/hosted-browser-handoffs:redeem",
+            "/api/v1/hosted-browser-sessions:status",
+            "/api/v1/hosted-browser-sessions:logout",
+            "/api/v1/hosted-browser-sessions:stream-ticket",
+            "/api/v1/hosted-public-relays:bind",
+            "/api/v1/hosted-public-streams:ticket",
+        ] {
+            assert!(is_hosted_launch_route(&Method::POST, path), "{path}");
+            assert!(!is_hosted_launch_route(&Method::GET, path), "{path}");
+        }
+        assert!(!is_hosted_launch_route(
+            &Method::POST,
+            "/api/v1/hosted-browser-sessions:stream-ticket/"
+        ));
+        assert!(!is_hosted_launch_route(
+            &Method::POST,
+            "/api/v1/hosted-browser-sessions:stream-ticket?room=chosen"
+        ));
+    }
+
+    #[test]
+    fn retained_hosted_binding_retries_the_idempotent_lobby_launch_gate() {
+        let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+        let backend = FakeBackend::default();
+        backend.complete_on_advance();
+        let operations = HostedLaunchOperationsV1::open_with_backend(
+            &directory.path().join("hosted"),
+            "hosted-test",
+            vec![listing()],
+            Vec::new(),
+            backend.clone(),
+        )
+        .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+        operations
+            .submit(&request("hosted-launch-ready"))
+            .unwrap_or_else(|error| unreachable!("initial submit: {error:?}"));
+        backend
+            .launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+
+        // A temporarily unreadable Room must not launch, and the retained
+        // binding must still be eligible for the next readiness check.
+        let retained_statuses = std::mem::take(
+            &mut *backend
+                .statuses
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        assert_eq!(
+            operations.reconcile_ready_lobbies(),
+            Err(HostedLaunchErrorV1::NotFound)
+        );
+        assert!(
+            backend
+                .launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        );
+        *backend
+            .statuses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = retained_statuses;
+
+        operations
+            .reconcile_ready_lobbies()
+            .unwrap_or_else(|error| unreachable!("readiness reconciliation: {error:?}"));
+
+        assert_eq!(
+            backend
+                .launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_slice(),
+            ["hosted-launch-ready"]
+        );
+    }
+
+    #[test]
+    fn lobby_reconciliation_retries_only_explicitly_retryable_attention() {
+        use crate::{
+            room_launch::RoomLaunchAssessmentV1,
+            task_setup::{
+                TaskLaunchApplicabilityV1, TaskLaunchStatusV1, TaskReadinessV1,
+                TaskSetupAttentionV1,
+            },
+        };
+        for (state, retryable, expected) in [
+            (TaskLaunchStateV1::NeedsAttention, Some(true), 1),
+            (TaskLaunchStateV1::NeedsAttention, Some(false), 0),
+            (TaskLaunchStateV1::NeedsAttention, None, 0),
+            (TaskLaunchStateV1::Launched, Some(true), 0),
+        ] {
+            let directory =
+                tempdir().unwrap_or_else(|error| unreachable!("temporary store: {error}"));
+            let backend = FakeBackend::default();
+            backend.complete_on_advance();
+            let operations = HostedLaunchOperationsV1::open_with_backend(
+                &directory.path().join("hosted"),
+                "hosted-test",
+                vec![listing()],
+                Vec::new(),
+                backend.clone(),
+            )
+            .unwrap_or_else(|error| unreachable!("valid operations: {error:?}"));
+            operations
+                .submit(&request("hosted-launch-retry"))
+                .unwrap_or_else(|error| unreachable!("initial submit: {error:?}"));
+            backend
+                .launches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+            let mut status = backend
+                .inspect("hosted-launch-retry")
+                .unwrap_or_else(|error| unreachable!("retained status: {error:?}"));
+            status.assessment = Some(RoomLaunchAssessmentV1 {
+                version: "room_launch_assessment.v1".to_owned(),
+                operation: "hosted-launch-retry".to_owned(),
+                room_id: status.room_id.clone().unwrap_or_default(),
+                provisioning_complete: true,
+                applicability: TaskLaunchApplicabilityV1::LobbyLaunch,
+                readiness: TaskReadinessV1 {
+                    ready_to_launch: true,
+                    seats: Vec::new(),
+                },
+                launch: Some(TaskLaunchStatusV1 {
+                    state,
+                    attempts: 1,
+                    transition_id: None,
+                    attention: retryable.map(|retryable| TaskSetupAttentionV1 {
+                        code: "launch_rejected".to_owned(),
+                        message: "Retry the original launch.".to_owned(),
+                        retryable,
+                    }),
+                }),
+            });
+            backend
+                .statuses
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert("hosted-launch-retry".to_owned(), status);
+            operations
+                .reconcile_ready_lobbies()
+                .unwrap_or_else(|error| unreachable!("reconcile: {error:?}"));
+            assert_eq!(
+                backend
+                    .launches
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .len(),
+                expected
+            );
+        }
     }
 
     #[test]

@@ -937,6 +937,28 @@ creates no Transition, Domain Event, Observation Frame, Attention Signal, or
 Activation. Recovery remains possible after every paired snapshot and current
 materialization is deleted.
 
+### Current Membership status
+
+    GET /v1/rooms/{room_id}/members/{member_id}/status
+
+The caller must hold current attach authority for the exact Membership. The
+server checks its immutable Principal binding, enabled Standing, current Room
+integrity, and Capability scope. Missing credentials, a different Membership,
+and revoked authority do not return Membership facts.
+
+The `membership_status.v1` response contains the exact Room and Membership IDs,
+Principal kind, Access Mode, Role, Standing (`membership_status`), and retained
+Pack reference. It uses `Cache-Control: no-store`. It contains no Projection,
+Action offers, Cursor, or synchronization token.
+
+This is an authority read, not stream readiness evidence. It creates no attach
+barrier and changes no durable Cursor. Hosted browser session validation uses
+this read because a fresh attach with a null Cursor cannot validate an Agent
+that has already acknowledged Observations. The same rule applies to human
+Memberships. Actual connection recovery still
+requires the normal exact-Cursor attach and synchronization acknowledgement.
+The Hosted Gateway does not expose this Runtime route to browsers.
+
 ### Current projection
 
     GET /v1/rooms/{room_id}/projection

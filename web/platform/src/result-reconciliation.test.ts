@@ -135,6 +135,7 @@ class MutableSource implements HostedResultSourceClient {
 }
 
 class MemoryData implements ResultReconciliationData {
+  async markAttempt(_launchRequestId: string): Promise<void> {}
   terminal: TerminalReconciliationState = {
     terminalRecorded: false,
     projectorStatus: null,
