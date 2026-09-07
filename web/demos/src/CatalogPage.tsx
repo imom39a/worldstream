@@ -300,7 +300,7 @@ function clearRetainedLaunchKey(
 export function friendlyError(cause: unknown): string {
   const code = cause instanceof Error ? cause.message : "request_unavailable";
   if (code === "activity_unavailable") return "This activity is not available on the live host.";
-  if (code === "formation_unavailable") return "The room cannot be formed with these choices.";
+  if (code === "formation_unavailable") return "The room could not be created.";
   if (code === "temporarily_unavailable") return "The live room service is temporarily unavailable.";
   return "The request did not complete. Your retained setup key makes retry safe.";
 }

@@ -25,6 +25,8 @@ import {
   type OwnedRunMembershipCorrespondence,
 } from "./browser-sessions.js";
 import type { PublicRunData } from "./public-runs.js";
+import { createSupabaseBffDependencies } from "./supabase.js";
+import { HttpHostedFormationGateway } from "./hosted-formation.js";
 
 const ORIGIN = "https://arena.example";
 
@@ -944,6 +946,57 @@ test("dependency outages return one temporary state without discarding a valid s
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { error: { code: "temporarily_unavailable" } });
     assert.doesNotMatch(response.headers.getSetCookie().join("\n"), /worldstream-session/);
+  }
+});
+
+test("closed people-only launch admission returns temporary unavailability without contacting Fly", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  try {
+    globalThis.fetch = async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      requests.push(request.url);
+      assert.equal(request.url, "https://project.supabase.co/rest/v1/rpc/create_launch_request_v1");
+      assert.equal((await request.json()).p_house_fill_choice, "disabled");
+      return Response.json({ code: "55000", message: "hosted_launches_closed" }, { status: 400 });
+    };
+    const formationData = createSupabaseBffDependencies({
+      url: "https://project.supabase.co",
+      publishableKey: `sb_publishable_${"p".repeat(32)}`,
+      dataSecretKey: `sb_secret_${"s".repeat(32)}`,
+    }).hostedFormationData;
+    assert.ok(formationData);
+    const auth = new FakeAuth();
+    const bff = createPlatformBff({
+      canonicalOrigin: ORIGIN,
+      allowedReturnTargets: ["/", "/activities/heist"],
+      sessionKey: Buffer.alloc(32, 7),
+      oauthKey: Buffer.alloc(32, 9),
+    }, {
+      authClient: () => auth,
+      dataClient: new FakeData(),
+      hostedFormationData: formationData,
+      hostedFormationGateway: new HttpHostedFormationGateway({
+        baseUrl: "https://gateway.example",
+        serviceAuthority: "synthetic-gateway-authority-at-least-32-characters",
+      }),
+      hostedFormationHostInstallationId: "fly-primary",
+    });
+    const { sessionCookie } = await signIn(bff);
+    const response = await bff.fetch(mutation("/api/launches", sessionCookie, await csrf(bff, sessionCookie), JSON.stringify({
+      listing_slug: "agent-heist",
+      creator_access: "seat",
+      creator_seat: "seat-1",
+      fill_mode: "people_only",
+      idempotency_key: "a".repeat(32),
+    })));
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: { code: "temporarily_unavailable" } });
+    assert.match(response.headers.get("cache-control") ?? "", /no-store/u);
+    assert.deepEqual(response.headers.getSetCookie(), []);
+    assert.deepEqual(requests, ["https://project.supabase.co/rest/v1/rpc/create_launch_request_v1"]);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

@@ -965,6 +965,13 @@ async function requiredRpc(
   }
   const { data, error } = result;
   if (error !== null) {
+    if (
+      name === "create_launch_request_v1" &&
+      error.code === "55000" &&
+      error.message === "hosted_launches_closed"
+    ) {
+      throw new PlatformDependencyUnavailableError();
+    }
     if (error.code !== undefined && ["22023", "23505", "55000"].includes(error.code)) {
       throw new PlatformCredentialRejectedError();
     }

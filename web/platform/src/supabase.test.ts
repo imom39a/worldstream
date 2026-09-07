@@ -65,6 +65,48 @@ test("legacy Supabase role keys retain the same separation", () => {
   );
 });
 
+test("closed launch admission is temporary only for the exact launch RPC error", async () => {
+  const originalFetch = globalThis.fetch;
+  let failure = { code: "55000", message: "hosted_launches_closed" };
+  try {
+    globalThis.fetch = async () => Response.json(failure, { status: 400 });
+    const data = createSupabaseBffDependencies({
+      url: URL,
+      publishableKey: PUBLISHABLE,
+      dataSecretKey: SECRET,
+    }).hostedFormationData;
+    assert.ok(data);
+    const create = () => data.createLaunchRequest({
+      accountId: "10000000-0000-4000-8000-000000000001",
+      listingRevisionDigest: `blake3:${"1".repeat(64)}`,
+      idempotencyNamespace: "maintenance-test",
+      idempotencyKeyDigest: new Uint8Array(32),
+      canonicalLaunchInput: new TextEncoder().encode("{}"),
+      launchInputDigest: new Uint8Array(32),
+      houseFillChoice: "disabled",
+      creatorAccessChoice: "seat",
+      creatorSeatId: "navigator",
+    });
+    await assert.rejects(create(), PlatformDependencyUnavailableError);
+    // An identically named error from another RPC must not gain a new meaning.
+    await assert.rejects(
+      data.readLaunchRequest("10000000-0000-4000-8000-000000000001", "20000000-0000-4000-8000-000000000001"),
+      PlatformCredentialRejectedError,
+    );
+    for (const other of [
+      { code: "55000", message: "hosted_house_fill_closed" },
+      { code: "55000", message: "private-unrecognized-error" },
+      { code: "23505", message: "hosted_launches_closed" },
+      { code: "22023", message: "hosted_launches_closed" },
+    ]) {
+      failure = other;
+      await assert.rejects(create(), PlatformCredentialRejectedError);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("public Run reads use only the server-secret DTO RPCs", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ readonly url: string; readonly body: unknown }> = [];

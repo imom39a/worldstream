@@ -2,9 +2,16 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { CatalogPage } from "./CatalogPage";
+import { CatalogPage, friendlyError } from "./CatalogPage";
 
 describe("hosted activity catalog shell", () => {
+  it("describes temporary service failure without blaming the participant choices", () => {
+    expect(friendlyError(new Error("temporarily_unavailable")))
+      .toBe("The live room service is temporarily unavailable.");
+    expect(friendlyError(new Error("formation_unavailable")))
+      .toBe("The room could not be created.");
+  });
+
   it("keeps discovery independent of any one Activity Pack before catalog data arrives", () => {
     const markup = renderToStaticMarkup(createElement(CatalogPage, { onNavigate: () => undefined }));
 
