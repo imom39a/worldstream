@@ -16,6 +16,7 @@ import {
   HostedLiveSessionController,
   PublicProjectionSessionController,
   type HostedLiveSessionControllerOptions,
+  type HostedLiveSessionSnapshot,
   type HostedLiveActionInput,
   type HostedLiveActionReceipt,
   type JsonObject,
@@ -41,8 +42,8 @@ const executeFile = promisify(execFile);
 type JsonRecord = Record<string, unknown>;
 
 test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
-  "the hosted local candidate passes the canonical browser-to-result story",
-  async () => {
+  "the hosted local candidate passes the canonical headless HTTP/WebSocket-to-result story",
+  () => withSessionCleanup(async (register) => {
     const productOrigin = required("WORLDSTREAM_ACCEPTANCE_PRODUCT_ORIGIN");
     const gatewayOrigin = required("WORLDSTREAM_HOSTED_GATEWAY_URL");
     const fakeProviderOrigin = required("WORLDSTREAM_ACCEPTANCE_FAKE_PROVIDER_ORIGIN");
@@ -157,20 +158,20 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     const creatorSockets: WebSocket[] = [];
     const agentSockets: WebSocket[] = [];
     const directPush = new DirectPushMeasurement();
-    const creatorController = controller(
+    const creatorController = register(controller(
       gatewayOrigin,
       productOrigin,
       creatorAuthority,
       creatorSockets,
       directPush,
-    );
-    const agentController = controller(
+    ));
+    const agentController = register(controller(
       gatewayOrigin,
       productOrigin,
       agentAuthority,
       agentSockets,
       directPush,
-    );
+    ));
     const creatorLive = trackHeist(creatorController);
     const agentLive = trackHeist(agentController);
     const [creatorSession, agentSession] = await Promise.all([
@@ -206,10 +207,10 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
 
     const publicRun = await readPublicRun(productOrigin, publicId, "live");
     const live = recordField(publicRun, "live");
-    const publicController = new PublicProjectionSessionController({
+    const publicController = register(new PublicProjectionSessionController({
       streamUrl: stringField(live, "stream_url"),
       webSocketFactory: trackingWebSocketFactory([], productOrigin, directPush),
-    });
+    }));
     const publicLive = trackHeist(publicController);
     await publicController.start({ kind: "direct" });
     await waitForHeist(
@@ -291,12 +292,22 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     const frameBeforeRestart = creatorController.state.lastAcknowledgedFrameSeq ?? 0;
     console.info("Hosted acceptance: restarting the retained Runtime after an acknowledged plan.");
     await restartRetainedRuntime();
-    const reentry = await enter(creator, runId, creatorEntry.entrySelector);
-    await creatorAuthority.redeem(reentry);
+    // Each authenticated participant explicitly rejoins the same retained seat.
+    // A cached Browser Activity Session is not post-restart admission evidence.
+    const [creatorReentry, agentReentry] = await Promise.all([
+      enter(creator, runId, creatorEntry.entrySelector),
+      enter(browserAgent, runId, agentEntry.entrySelector),
+    ]);
+    const [creatorReadmitted, agentReadmitted] = await Promise.all([
+      creatorAuthority.redeem(creatorReentry),
+      agentAuthority.redeem(agentReentry),
+    ]);
+    assert.equal(creatorReadmitted.state, "usable");
+    assert.equal(agentReadmitted.state, "usable");
     await Promise.all([
-      creatorController.reconnect(),
-      agentController.reconnect(),
-      publicController.reconnect(),
+      reconnectForAcceptance(creatorController, "creator", () => creatorHttpFailures.at(-1)),
+      reconnectForAcceptance(agentController, "external_agent", () => agentHttpFailures.at(-1)),
+      reconnectForAcceptance(publicController, "public_spectator"),
     ]);
     await Promise.all([
       waitForHeist(creatorController, creatorLive, () => true),
@@ -382,10 +393,7 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
       maximum_direct_push_seconds: directPush.seconds,
     })}\n`, { flag: "wx", mode: 0o600 });
 
-    creatorController.close();
-    agentController.close();
-    publicController.close();
-  },
+  }),
   360_000,
 );
 
@@ -593,20 +601,206 @@ function trackHeist(
   return () => state;
 }
 
+type ReentryController = Pick<HostedLiveSessionController, "state" | "subscribe" | "reconnect">;
+
+async function reconnectForAcceptance(
+  controller: ReentryController,
+  label: "creator" | "external_agent" | "public_spectator",
+  lastHttpFailure: () => string | undefined = () => undefined,
+): Promise<void> {
+  let connectingObserved = false;
+  let freshSynchronization = false;
+  const unsubscribe = controller.subscribe((snapshot) => {
+    if (snapshot.status === "connecting" || snapshot.status === "synchronizing") {
+      connectingObserved = true;
+    }
+    if (connectingObserved && snapshot.status === "live" && snapshot.synchronized) {
+      freshSynchronization = true;
+    }
+  });
+  const failure = (returned: string) => {
+    const state = controller.state;
+    const http = lastHttpFailure();
+    const safeHttp = typeof http === "string" &&
+      /^\/api\/v1\/participant-console\/(?:session(?::[a-z-]+)?|handoffs:redeem) returned [1-5][0-9]{2}: [a-z][a-z0-9_]{0,63}$/u.test(http)
+      ? http : "none_or_unclassified";
+    return new Error(
+      `${label} re-entry failed (returned=${returned},current=${state.status},` +
+      `synchronized=${state.synchronized},fresh_sync=${freshSynchronization},` +
+      `message_type=${safeSessionMessageType(state.message)},http=${safeHttp})`,
+    );
+  };
+  try {
+    let result: HostedLiveSessionSnapshot;
+    try {
+      result = await controller.reconnect();
+    } catch {
+      throw failure("rejected");
+    }
+    if (result.status !== "live" || !result.synchronized ||
+      controller.state.status !== "live" || !controller.state.synchronized ||
+      !freshSynchronization) {
+      throw failure(result.status);
+    }
+  } finally {
+    unsubscribe();
+  }
+}
+
+function safeSessionMessageType(message: string | null): string {
+  const known: Readonly<Record<string, string>> = {
+    "Realtime admission failed.": "admission_failed",
+    "Realtime connection failed.": "transport_failed",
+    "Realtime connection closed. Reconnect to continue.": "transport_closed",
+    "Realtime connection could not be established.": "transport_unavailable",
+    "Realtime protocol validation failed.": "protocol_validation_failed",
+    "WorldStream rejected the realtime operation.": "operation_rejected",
+    "Realtime heartbeat timed out. Reconnect to continue.": "heartbeat_timeout",
+    "Activity Client session is unavailable.": "authority_unavailable",
+    "The public Projection is unavailable. Reconnect to try again.": "public_stream_unavailable",
+  };
+  if (message === null) return "none";
+  return Object.hasOwn(known, message) ? (known[message] ?? "unclassified") : "unclassified";
+}
+
+async function withSessionCleanup(
+  operation: (register: <T extends { close(): void }>(controller: T) => T) => Promise<void>,
+): Promise<void> {
+  const controllers: Array<{ close(): void }> = [];
+  let failure: { error: unknown } | undefined;
+  try {
+    await operation((controller) => {
+      controllers.push(controller);
+      return controller;
+    });
+  } catch (error) {
+    failure = { error };
+  } finally {
+    for (const controller of controllers) {
+      try {
+        controller.close();
+      } catch {
+        failure ??= { error: new Error("Acceptance session cleanup failed.") };
+      }
+    }
+  }
+  if (failure !== undefined) throw failure.error;
+}
+
+function reentrySnapshot(
+  status: HostedLiveSessionSnapshot["status"],
+  message: string | null = null,
+): HostedLiveSessionSnapshot {
+  return {
+    status,
+    synchronized: status === "live",
+    canAct: status === "live",
+    deliveryBatch: null,
+    lastAcknowledgedFrameSeq: 9,
+    actionReceipt: null,
+    message,
+  };
+}
+
+function reentryFixture(
+  emissions: readonly HostedLiveSessionSnapshot[],
+  result: HostedLiveSessionSnapshot,
+) {
+  let state = reentrySnapshot("live");
+  const listeners = new Set<(snapshot: HostedLiveSessionSnapshot) => void>();
+  const controller: ReentryController = {
+    get state() { return state; },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async reconnect() {
+      for (const snapshot of emissions) {
+        state = snapshot;
+        for (const listener of listeners) listener(snapshot);
+      }
+      return result;
+    },
+  };
+  return { controller, listenerCount: () => listeners.size };
+}
+
+test("re-entry evidence rejects a disconnected reconnect result", async () => {
+  const disconnected = reentrySnapshot("disconnected");
+  const fixture = reentryFixture([disconnected], disconnected);
+  await assert.rejects(() => reconnectForAcceptance(fixture.controller, "external_agent"));
+  assert.equal(fixture.listenerCount(), 0);
+});
+
+test("re-entry evidence rejects cached live state without a new synchronization", async () => {
+  const fixture = reentryFixture([], reentrySnapshot("live"));
+  await assert.rejects(() => reconnectForAcceptance(fixture.controller, "creator"));
+  assert.equal(fixture.listenerCount(), 0);
+});
+
+test("re-entry evidence accepts a fresh synchronization at the unchanged Frame Head", async () => {
+  const live = reentrySnapshot("live");
+  const fixture = reentryFixture([reentrySnapshot("connecting"), live], live);
+  await reconnectForAcceptance(fixture.controller, "creator");
+  assert.equal(fixture.controller.state.lastAcknowledgedFrameSeq, 9);
+  assert.equal(fixture.listenerCount(), 0);
+});
+
+test("re-entry evidence rejects a stream that closes after fresh synchronization", async () => {
+  const live = reentrySnapshot("live");
+  const fixture = reentryFixture([
+    reentrySnapshot("connecting"), live, reentrySnapshot("disconnected"),
+  ], live);
+  await assert.rejects(
+    () => reconnectForAcceptance(fixture.controller, "public_spectator"),
+    /current=disconnected/u,
+  );
+  assert.equal(fixture.listenerCount(), 0);
+});
+
+test("re-entry evidence sanitizes failures and releases its listener on rejection", async () => {
+  const unknown = "opaque-untrusted-value-must-not-appear";
+  const disconnected = reentrySnapshot("disconnected", unknown);
+  const fixture = reentryFixture([disconnected], disconnected);
+  await assert.rejects(
+    () => reconnectForAcceptance(fixture.controller, "external_agent", () => unknown),
+    (error: Error) => error.message.includes("message_type=unclassified") &&
+      error.message.includes("http=none_or_unclassified") && !error.message.includes(unknown),
+  );
+  fixture.controller.reconnect = async () => { throw new Error(unknown); };
+  await assert.rejects(
+    () => reconnectForAcceptance(fixture.controller, "external_agent"),
+    (error: Error) => error.message.includes("returned=rejected") && !error.message.includes(unknown),
+  );
+  assert.equal(fixture.listenerCount(), 0);
+});
+
+test("acceptance cleanup closes every session even after operation and cleanup failures", async () => {
+  const expected = new Error("scenario failed");
+  const closed: number[] = [];
+  await assert.rejects(withSessionCleanup(async (register) => {
+    register({ close() { closed.push(1); throw new Error("close failed"); } });
+    register({ close() { closed.push(2); } });
+    throw expected;
+  }), (error) => error === expected);
+  assert.deepEqual(closed, [1, 2]);
+});
+
 async function waitForHeist(
-  controller: Pick<HostedLiveSessionController, "waitFor">,
+  controller: Pick<HostedLiveSessionController, "state" | "waitFor">,
   read: () => AgentHeistLiveState,
   predicate: (state: AgentHeistReadyState) => boolean,
   timeoutMs = 30_000,
 ): Promise<AgentHeistReadyState> {
+  const isLive = () => controller.state.status === "live" && controller.state.synchronized;
   const current = read();
-  if (current.kind === "ready" && predicate(current)) return current;
+  if (isLive() && current.kind === "ready" && predicate(current)) return current;
   await controller.waitFor(() => {
     const state = read();
-    return state.kind === "ready" && predicate(state);
+    return isLive() && state.kind === "ready" && predicate(state);
   }, { timeoutMs: Math.min(timeoutMs, 60_000) });
   const result = ready(read());
-  if (!predicate(result)) throw new Error("Agent Heist state predicate did not hold");
+  if (!isLive() || !predicate(result)) throw new Error("Live Agent Heist state predicate did not hold");
   return result;
 }
 

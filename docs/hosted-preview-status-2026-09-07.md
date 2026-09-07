@@ -83,6 +83,10 @@ installation. It does not certify recovery of populated Room history.
   reset, and a short expiry. Keep it out of chat, Git, screenshots, and logs.
 - Retained House limits also apply: USD 2/day, USD 10/month, and at most ten
   model calls per Assignment. These do not cap Fly, Vercel, or Supabase costs.
+- The source repository is private. GitHub Actions allowance and overage
+  controls are separate from hosting costs. The current CLI credential cannot
+  read the account billing summary; a run's zero-valued timing response is not
+  proof of a zero bill. No extra billing permission or paid runner was enabled.
 
 ## Test evidence and limits
 
@@ -140,10 +144,37 @@ tests; the original test passed 1,600 concurrent stress runs. Production
 library lint and formatting passed. Broader test-target lint still reports
 unrelated existing findings in other Supervisor test files.
 
-Full hosted CI must run again with this correction. Build a new matching
-image after the corrected source is committed; the `342370e` image does not
-contain the restart fix. None of these checks is a real LLM or deployed
-end-user acceptance result.
+The correction was pushed as
+`1beae87b97b2b98716a00e6bc17a8f9ae271a735`. Its Vercel production deployment,
+`dpl_5beuQHU49NojJzoLEFfyFnMYqhsg`, is Ready and passed the same public
+endpoint and exact-source checks. A matching local Linux image passed all
+eight entrypoint tests and isolated full-process readiness in about five
+seconds. Peak memory was about 176 MiB under the 512 MB limit, with no OOM
+events, no Rooms, and no network or provider calls. This image was not pushed
+or deployed to Fly.
+
+CI run `34154853834` passed both foundation jobs and the 104 Supervisor tests.
+It reached the actual local protocol story: participant and spectator streams,
+an external-agent disconnect and Catch-up, and a fake House endorsement passed.
+After the managed Runtime restart, the external-agent stream stayed
+disconnected and the test timed out waiting for `commit_move`. No acceptance
+artifact was produced. The test had ignored reconnect results and accepted
+cached Projections as proof of re-entry; its earlier success log was therefore
+not valid evidence of post-restart synchronization.
+
+The follow-up test correction explicitly re-enters both participants into
+their original seats. It requires each reconnect to return live and emit fresh
+synchronization, rejects cached-state success, and closes every session on
+failure. Safe error categories identify the failed reconnect without logging
+private frames or credentials. Production transport and timeouts are unchanged.
+
+The two false-positive regressions failed with the old helper. The corrected
+focused file passed nine tests in a clean source archive; its full-stack story
+was skipped because the local stack was not started. Both Platform TypeScript
+checks passed. The actual post-restart story still needs a new full candidate
+run; focused helper tests do not establish that its disconnect is resolved.
+A matching image must follow the committed correction. None of these checks
+is a real LLM, rendered-browser, or deployed gameplay acceptance result.
 
 ## Remaining work, in order
 

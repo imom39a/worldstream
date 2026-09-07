@@ -77,6 +77,15 @@ platform. Runs that include a House Agent are exhibitions and are not ranked.
 - A normal process restart must preserve acknowledged Room history. An
   acknowledged-history loss blocks release.
 
+An ordinary network disconnect and a Runtime restart use different recovery
+paths. After a network disconnect, the client can request a new stream ticket
+with its current browser session. After a Runtime or Controller restart, each
+signed-in participant must re-enter the same Run and redeem a new handoff for
+the same seat. Re-entering does not create another Room or change its history.
+Anonymous spectators reconnect to their public viewing address. In each case,
+the client must receive fresh authorized synchronization before it allows
+Actions. A previously displayed Projection is not proof of a live connection.
+
 A retained House Agent restarts with the same Assignment, reviewed revision,
 working directory, and allowance ledger. Restart does not reserve a new House
 Agent or refill its budget. If its retained binding, executable, or credential
@@ -123,6 +132,13 @@ changing the deployment:
 - [Fly cost management](https://fly.io/docs/about/cost-management/)
 - [Fly storage and usage billing](https://fly.io/docs/about/billing/)
 
+CI is a separate cost surface. A private GitHub repository uses the account's
+included Actions allowance and can incur overage. Check its
+[Actions budget and stop-usage setting](https://docs.github.com/en/billing/how-tos/set-up-budgets)
+before repeated full builds. Do not enable larger paid runners or raise the
+budget automatically. A test-run timing response is not an account billing
+report.
+
 ## Not supported
 
 - Generic operator or Studio access over the public internet.
@@ -152,9 +168,13 @@ pnpm hosted:acceptance:local
 The command starts one local Supabase stack, the Runtime and Controller, the
 Platform BFF, the direct Hosted Gateway, the Agent Heist client, and a visible
 fake OpenRouter. It then executes the frozen person, external-agent, House
-Agent, and spectator story. It injects a browser disconnect and Runtime restart,
+Agent, and spectator story through a Node-based cookie, HTTP, and WebSocket
+harness. It injects a participant-stream disconnect and Runtime restart,
 uses WebMCP read/wait/commit, reconciles the terminal Replay, and writes a
 mode-0600 redacted evidence file under `.worldstream/evidence/`.
+This is protocol integration evidence. It does not render browser pages or
+prove GitHub consent, mobile behavior, or real-provider access. Those checks
+remain part of deployed acceptance.
 The scripted human proposes a reviewed plan to trigger the Pack's endorsement
 Activation. The fake House Agent responds to that proposal and later commitment
 events. The test does not assume an unsolicited House turn during briefing.
