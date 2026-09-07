@@ -91,11 +91,21 @@ test("the Activity Client Host authorizes its exact configured Controller origin
     controllerOrigin: "http://127.0.0.1:19420",
   });
   try {
-    const response = await fetch(`${host.origin}/agent-heist/`);
+    const response = await fetch(`${host.origin}/agent-heist-v2/`);
     assert.equal(response.status, 200);
     const policy = response.headers.get("content-security-policy");
     assert.match(policy, /connect-src 'self' http:\/\/127\.0\.0\.1:19420(?:;|$)/);
     assert.doesNotMatch(policy, /127\.0\.0\.1:9420/);
+  } finally {
+    await host.close();
+  }
+});
+
+test("the Host does not serve the current Heist artifact at its unavailable retained path", async () => {
+  const host = await startActivityClientHost({ port: 0 });
+  try {
+    assert.equal((await fetch(`${host.origin}/agent-heist/`)).status, 404);
+    assert.equal((await fetch(`${host.origin}/agent-heist-v2/`)).status, 200);
   } finally {
     await host.close();
   }
@@ -117,7 +127,7 @@ test("the Activity Client Host rejects non-loopback or non-origin Controller val
 test("the Activity Client Host accepts the canonical IPv6 loopback Controller origin", async () => {
   const host = await startActivityClientHost({ port: 0, controllerOrigin: "http://[::1]:19420" });
   try {
-    const response = await fetch(`${host.origin}/agent-heist/`);
+    const response = await fetch(`${host.origin}/agent-heist-v2/`);
     assert.equal(response.status, 200);
     assert.match(
       response.headers.get("content-security-policy") ?? "",
@@ -147,7 +157,7 @@ test("the Host command applies the declared Controller origin", async () => {
       });
       child.once("exit", (code) => rejectOrigin(new Error(`Host exited ${code}: ${stderr}`)));
     });
-    const response = await fetch(`${origin}/agent-heist/`);
+    const response = await fetch(`${origin}/agent-heist-v2/`);
     assert.equal(response.status, 200);
     assert.match(
       response.headers.get("content-security-policy") ?? "",

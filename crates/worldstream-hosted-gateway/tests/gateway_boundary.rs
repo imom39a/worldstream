@@ -692,21 +692,76 @@ async fn browser_stream_handshake(
             "GET {path} HTTP/1.1\r\nHost: arena.example\r\nOrigin: {origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {nonce}\r\n{protocol_header}{extra_header}\r\n"
         );
         stream.write_all(request.as_bytes()).expect("gateway request");
-        let mut response = Vec::with_capacity(2048);
-        let mut chunk = [0_u8; 1024];
-        while !response.windows(4).any(|value| value == b"\r\n\r\n") {
-            assert!(response.len() <= 16 * 1024, "bounded gateway response");
-            let count = stream.read(&mut chunk).expect("gateway response");
-            assert!(count > 0, "gateway response ended before headers");
-            response.extend_from_slice(&chunk[..count]);
-        }
-        String::from_utf8(response).expect("gateway response encoding")
+        read_handshake_response(&mut stream)
     })
     .await
     .expect("gateway handshake task");
     server.abort();
     let _ = server.await;
     response
+}
+
+fn read_handshake_response(reader: &mut impl std::io::Read) -> String {
+    let mut response = Vec::with_capacity(2048);
+    let mut chunk = [0_u8; 1024];
+    loop {
+        if let Some(end) = response.windows(4).position(|value| value == b"\r\n\r\n") {
+            // A TCP read can also contain binary WebSocket frames after 101.
+            // This helper tests HTTP admission, not the upgraded frame stream.
+            if response.starts_with(b"HTTP/1.1 101 ") {
+                response.truncate(end + 4);
+            }
+            return String::from_utf8(response).expect("gateway HTTP response encoding");
+        }
+        assert!(
+            response.len() < 16 * 1024,
+            "bounded gateway response headers"
+        );
+        let remaining = chunk.len().min(16 * 1024 - response.len());
+        let count = reader
+            .read(&mut chunk[..remaining])
+            .expect("gateway response");
+        assert!(count > 0, "gateway response ended before headers");
+        response.extend_from_slice(&chunk[..count]);
+    }
+}
+
+#[test]
+fn handshake_headers_exclude_coalesced_binary_websocket_frames() {
+    let headers = b"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\n\r\n";
+    let response = [headers.as_slice(), &[0x88, 0x02, 0x03, 0xf0]].concat();
+    assert_eq!(
+        read_handshake_response(&mut response.as_slice()),
+        std::str::from_utf8(headers).expect("fixture headers")
+    );
+}
+
+#[test]
+fn handshake_headers_allow_a_fragmented_terminator() {
+    struct Fragments<'a>(&'a [u8]);
+    impl std::io::Read for Fragments<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let count = output.len().min(self.0.len()).min(3);
+            output[..count].copy_from_slice(&self.0[..count]);
+            self.0 = &self.0[count..];
+            Ok(count)
+        }
+    }
+    let headers = b"HTTP/1.1 101 Switching Protocols\r\n\r\n";
+    let response = [headers.as_slice(), &[0x88, 0x02, 0x03, 0xf0]].concat();
+    assert_eq!(
+        read_handshake_response(&mut Fragments(&response)),
+        std::str::from_utf8(headers).expect("fixture headers")
+    );
+}
+
+#[test]
+fn handshake_response_keeps_a_coalesced_rejection_body() {
+    let response = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\n\r\ndenied";
+    assert_eq!(
+        read_handshake_response(&mut response.as_slice()),
+        std::str::from_utf8(response).expect("fixture response")
+    );
 }
 
 #[tokio::test]

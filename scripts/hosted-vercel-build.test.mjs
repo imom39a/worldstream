@@ -2,12 +2,45 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { resolveBuildRevision } from "../web/demos/buildRevision.ts";
+import { describeDeploymentRequestBoundary } from "../web/demos/requestBoundaryDiagnostic.mjs";
 
 const repository = new URL("../", import.meta.url);
 
 async function manifest(path) {
   return JSON.parse(await readFile(new URL(path, repository), "utf8"));
 }
+
+test("temporary deployment diagnostics expose only bounded URL components and header checks", () => {
+  const diagnostic = describeDeploymentRequestBoundary(new Request(
+    "http://arena.example/api/deployment?code=private-query-value", {
+      headers: {
+        host: "arena.example",
+        "x-forwarded-host": "arena.example",
+        "x-forwarded-proto": "https",
+        "x-forwarded-for": "192.0.2.10",
+        "x-real-ip": "192.0.2.10",
+        "x-vercel-id": "iad1::fixture",
+        authorization: "Bearer private-auth-value",
+        cookie: "private-cookie-value",
+      },
+    },
+  ));
+  assert.equal(diagnostic.url_scheme, "http:");
+  assert.equal(diagnostic.url_hostname, "arena.example");
+  assert.equal(diagnostic.url_path, "/api/deployment");
+  assert.equal(diagnostic.forwarded_proto_matches_url_scheme, false);
+  assert.equal(diagnostic.real_ip_matches_forwarded_for, true);
+  for (const value of ["private-query-value", "private-auth-value", "private-cookie-value", "192.0.2.10"]) {
+    assert.ok(!JSON.stringify(diagnostic).includes(value));
+  }
+  for (const [key, value] of Object.entries(diagnostic)) {
+    if (!["version", "url_scheme", "url_hostname", "url_port", "url_path"].includes(key)) {
+      assert.equal(typeof value, "boolean", key);
+    }
+  }
+  assert.equal(describeDeploymentRequestBoundary(new Request("https://arena.example/api/catalog")), null);
+  assert.equal(describeDeploymentRequestBoundary(new Request("https://arena.example/api/deployment", { method: "POST" })), null);
+});
 
 test("the Vercel product build prepares dist-only workspace dependencies", async () => {
   const [product, platform, contract] = await Promise.all([

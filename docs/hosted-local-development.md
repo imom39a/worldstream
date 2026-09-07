@@ -193,3 +193,19 @@ target/debug/worldstreamctl \
 Do not delete `.worldstream/hosted-dev` as a general repair step. It contains
 the retained local authority and Runtime data. Read the reported error and
 repair the specific prerequisite.
+
+### Local Heist browser verification on macOS
+
+`node scripts/verify-standalone-heist.mjs` checks the separate local-kernel
+Heist client against a real Controller and Runtime. Run it after Rust builds
+finish, with ports `9410` and `9420` free. It uses an isolated browser and
+temporary installation. It does not call a model provider.
+
+New executable files can wait before they reach application code on macOS.
+The check first runs `--help` on each exact copied executable, in sequence.
+Each call has a 180-second limit; the whole preflight has a 480-second limit.
+Its receipt records durations and exit results. This is help-only evidence,
+not service-readiness evidence or a change to OS security policy. The normal
+managed startup deadlines and ownership checks remain in force. A failed
+preflight stops the check before Controller or Runtime startup. Do not disable
+OS security controls to make it pass.

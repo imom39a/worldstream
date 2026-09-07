@@ -65,11 +65,16 @@ production build. This keeps asset paths and social metadata correct.
 
 ## GitHub Pages workflow
 
-The checked-in GitHub Actions workflow verifies and builds the manual after a
-relevant change lands on `main`, then deploys the resulting static artifact to
-the `github-pages` environment. `actions/configure-pages` supplies the actual
-site base URL and project subpath, so the Vite asset paths and social metadata
-stay correct if the repository or Pages configuration changes.
+The checked-in GitHub Actions workflow always verifies and builds the manual
+after a relevant change lands on `main`. GitHub Pages publication is optional;
+the default build does not need an enabled Pages site.
+
+To publish on Pages, first configure GitHub Pages to use GitHub Actions. Then
+set the repository variable `WORLDSTREAM_DEPLOY_MANUAL_PAGES` to `true`.
+This enables the Pages configuration, artifact upload, and deployment steps.
+`actions/configure-pages` supplies the actual site base URL and project subpath.
+Without that opt-in, the manual uses its root-path build defaults and is not
+published by this workflow. The existing Vercel manual remains independent.
 
 The workflow can also be run manually from **Actions → Deploy developer manual
 → Run workflow**. Treat a successful build job as artifact evidence only; the

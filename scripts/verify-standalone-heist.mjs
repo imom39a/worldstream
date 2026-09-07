@@ -14,6 +14,15 @@ import { startActivityClientHost } from "./serve-activity-clients.mjs";
 import { activityClientBuildDigest } from "./activity-client-identities.mjs";
 
 const execute = promisify(execFile);
+const executableNames = ["worldstreamctl", "worldstreamd", "worldstream-studio-supervisor", "worldstream-assignment-mcp"];
+const executablePreflight = {
+  schema: "worldstream/local-executable-preflight/v1",
+  purpose: "help_only_not_service_readiness",
+  per_binary_timeout_ms: 180_000,
+  aggregate_timeout_ms: 480_000,
+  elapsed_ms: 0,
+  executions: [],
+};
 const workspace = resolve(import.meta.dirname, "..");
 const root = await realpath(await mkdtemp(join(tmpdir(), "worldstream-local-heist-proof-")));
 const state = join(root, "studio");
@@ -22,14 +31,17 @@ const host = await startActivityClientHost({ port: 0 });
 const browser = await chromium.launch({ headless: true, ...(process.env.WORLDSTREAM_BROWSER_BINARY
   ? { executablePath: process.env.WORLDSTREAM_BROWSER_BINARY }
   : process.platform === "darwin" ? { executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" } : {}) });
-let started = false;
+let startAttempted = false;
 let proofFailure;
 let receipt;
 try {
   await mkdir(join(root, "bin"), { mode: 0o700 });
-  for (const binary of ["worldstreamctl", "worldstreamd", "worldstream-studio-supervisor", "worldstream-assignment-mcp"]) {
+  for (const binary of executableNames) {
     await copyFile(join(workspace, "target/debug", binary), join(root, "bin", binary));
   }
+  // Run the exact retained copies once before the managed startup deadline.
+  // Normal OS execution policy still applies; never recopy after this check.
+  await preflightExecutables();
   const release = JSON.parse(await readFile(join(workspace, "config/activity-clients/releases/agent-heist-web-v2.json"), "utf8"));
   assert.equal(await activityClientBuildDigest(join(workspace, "clients/agent-heist-web/dist")), release.artifacts[0].digest);
   await writeFile(config, `config_version = 1\n[server]\nbind = "127.0.0.1:9410"\n[storage]\nprofile = "sqlite-bundled"\ndata_dir = "${join(root, "runtime")}"\ndeployment_lineage = "development/local-heist-proof"\nstorage_epoch = 1\n[authority.bootstrap]\nsecret_file = "${join(root, "authority.secret")}"\n`, { mode: 0o600 });
@@ -47,8 +59,8 @@ try {
   await cli("init");
   const preview = await cli("init", "--client-declaration", declaration, "--preview");
   await cli("init", "--client-declaration", declaration, "--approve-imports", preview.import_review.digest);
+  startAttempted = true;
   await cli("server", "start", "--participant-console-origin", host.origin);
-  started = true;
   const setup = join(root, "heist.json");
   await cli("room", "example", "--pack", "worldstream.agent-heist@0.2.0", "--output", setup);
   await cli("room", "validate", "--file", setup);
@@ -89,15 +101,15 @@ try {
   assert.equal(platformRequests, 0);
   receipt = { status: "passed", surface: "heist-web", release_digest: release.release_digest,
     checks: ["exact_release_bytes", "cli_init_import_start_example_validate_create", "protected_controller_handoff", "authorized_navigator_lobby", "live_navigator_readiness", "fragment_removed", "cookie_reload", "no_platform_auth"],
-    os_browser_opener: "not_exercised", provider_calls: 0 };
+    os_browser_opener: "not_exercised", provider_calls: 0, executable_preflight: executablePreflight };
 } catch (error) {
   proofFailure = error;
 } finally {
   const cleanupFailures = [];
   for (const cleanup of [
     () => browser.close(),
-    async () => { if (started) await cli("server", "stop"); },
-    () => cli("server", "controller-stop"),
+    async () => { if (startAttempted) await cli("server", "stop"); },
+    async () => { if (startAttempted) await cli("server", "controller-stop"); },
     () => host.close(),
   ]) {
     try { await cleanup(); } catch (error) { cleanupFailures.push(error); }
@@ -108,6 +120,32 @@ try {
 }
 if (proofFailure) throw proofFailure;
 console.log(JSON.stringify(receipt));
+
+async function preflightExecutables() {
+  const startedAt = performance.now();
+  for (const binary of executableNames) {
+    const remaining = executablePreflight.aggregate_timeout_ms - (performance.now() - startedAt);
+    if (remaining <= 0) throw new Error(`Executable help preflight aggregate deadline exceeded: ${JSON.stringify(executablePreflight)}`);
+    const started = performance.now();
+    let result;
+    try {
+      await execute(join(root, "bin", binary), ["--help"], {
+        cwd: root,
+        timeout: Math.max(1, Math.floor(Math.min(executablePreflight.per_binary_timeout_ms, remaining))),
+        maxBuffer: 64 * 1024,
+        // Only this owned, help-only subprocess is killed on its bounded timeout.
+        killSignal: "SIGKILL",
+      });
+      result = { binary, elapsed_ms: Math.round(performance.now() - started), exit_code: 0, signal: null, timed_out: false };
+    } catch (error) {
+      result = { binary, elapsed_ms: Math.round(performance.now() - started), exit_code: Number.isInteger(error.code) ? error.code : null,
+        signal: ["SIGKILL", "SIGTERM"].includes(error.signal) ? error.signal : null, timed_out: error.killed === true };
+    }
+    executablePreflight.executions.push(result);
+    executablePreflight.elapsed_ms = Math.round(performance.now() - startedAt);
+    if (result.exit_code !== 0) throw new Error(`Executable help preflight failed (subprocess output suppressed): ${JSON.stringify(executablePreflight)}`);
+  }
+}
 
 async function cli(...args) {
   let output;
