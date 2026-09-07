@@ -163,6 +163,7 @@ async fn post(routes: &Router, authority: &str, path: &str, body: Value) -> Test
                 .method("POST")
                 .uri(path)
                 .header("authorization", authority)
+                .header("origin", "https://arena.example")
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&body)?))?,
         )
@@ -318,7 +319,7 @@ async fn prove_hosted_stream(principal_kind: &str) -> TestResult {
                     "action_type": "increment", "payload": {},
                 }),
             )?;
-            let _receipt = receive(&mut socket, "action.accepted")?;
+            let receipt = receive(&mut socket, "action.accepted")?;
             let observation = receive(&mut socket, "observation.deliver")?;
             let frame = observation["frame_seq"]
                 .as_u64()
@@ -333,6 +334,99 @@ async fn prove_hosted_stream(principal_kind: &str) -> TestResult {
             )?;
             let acknowledged = receive(&mut socket, "observation.acked")?;
             assert_eq!(acknowledged["cursor"], frame);
+            send(
+                &mut socket,
+                "action.submit",
+                &json!({
+                    "action_id": "01ARZ3NDEKTSV4RRFFQ69G5FE9",
+                    "based_on_room_seq": receipt["room_head"]["room_seq"],
+                    "action_type": "increment", "payload": {},
+                }),
+            )?;
+            receive(&mut socket, "action.accepted")?;
+            let advanced = receive(&mut socket, "observation.deliver")?;
+            let frame_head = advanced["frame_seq"]
+                .as_u64()
+                .ok_or("missing advanced frame")?;
+            assert!(frame_head > frame);
+            // The server committed this acknowledgement, but a connection can
+            // close before its receipt reaches the client. Re-entry must not
+            // reject the client's older confirmed Cursor as invalid_payload.
+            for confirmed_cursor in [Some(frame), None, Some(0), Some(frame_head)] {
+                let admission = runtime.block_on(post(
+                    &fixture.routes,
+                    &fixture.member_header,
+                    "/v1/hosted/browser-stream-ticket",
+                    json!({
+                        "version": "hosted_browser_ws_ticket.v1",
+                        "room_id": fixture.room, "member_id": fixture.member,
+                        "mode": "participant", "after_frame_seq": confirmed_cursor,
+                        "browser_session_digest": browser_session_digest,
+                        "client_release_digest": format!("sha256:{}", "b".repeat(64)),
+                        "client_surface_id": "participant"
+                    }),
+                ))?;
+                let stream = TcpStream::connect(address)?;
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let mut request =
+                    format!("ws://{address}/v1/hosted/browser-stream").into_client_request()?;
+                request
+                    .headers_mut()
+                    .insert("origin", "https://arena.example".parse()?);
+                request.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    worldstream_protocol::WEBSOCKET_SUBPROTOCOL.parse()?,
+                );
+                let (mut reconnect, _) = tungstenite::client(request, stream)?;
+                reconnect.send(Message::Text(
+                    admission["ticket"]
+                        .as_str()
+                        .ok_or("missing ticket")?
+                        .to_owned()
+                        .into(),
+                ))?;
+                receive(&mut reconnect, "server.welcome")?;
+                let Message::Text(next) = reconnect.read()? else {
+                    return Err("attach response missing".into());
+                };
+                let next: Value = serde_json::from_str(&next)?;
+                if confirmed_cursor > Some(frame) {
+                    assert_eq!(next["type"], "error");
+                    assert_eq!(next["body"]["code"], "invalid_payload");
+                    continue;
+                }
+                assert_eq!(
+                    next["type"], "room.attached",
+                    "lost acknowledgement receipt must allow synchronization; error code: {}",
+                    next["body"]["code"]
+                );
+                assert_eq!(
+                    next["body"]["cursor"], frame,
+                    "recovery must not advance the durable Cursor"
+                );
+                assert_eq!(next["body"]["frame_head"], frame_head);
+                if confirmed_cursor == Some(frame) {
+                    assert_eq!(next["body"]["sync"]["kind"], "retained_frames");
+                    receive(&mut reconnect, "observation.deliver")?;
+                } else {
+                    assert_eq!(next["body"]["sync"]["kind"], "projection_reset");
+                    let reset = receive(&mut reconnect, "projection.reset")?;
+                    assert_eq!(reset["reset_reason"], "client_cursor_behind");
+                    assert_eq!(reset["baseline_frame_head"], frame_head);
+                    assert_eq!(reset["room_head"], next["body"]["room_head"]);
+                    assert_eq!(reset["member_id"], fixture.member);
+                }
+                send(
+                    &mut reconnect,
+                    "room.sync_ack",
+                    &json!({
+                        "through_frame_head": frame_head,
+                        "sync_token": next["body"]["sync_token"],
+                    }),
+                )?;
+                let synced = receive(&mut reconnect, "room.sync_acked")?;
+                assert_eq!(synced["through_frame_head"], frame_head);
+            }
             let bearer = BearerWireV1::parse(
                 fixture
                     .member_header

@@ -221,6 +221,18 @@ A Room Member attaches a session to an existing Membership:
 
 after_frame_seq is the last fully processed observation frame for this membership. It is not the room sequence and does not describe model execution.
 
+A lost `observation.acked` receipt can leave the client's confirmed Cursor behind
+the stored Cursor. In the SQLite Runtime, including the hosted preview, a lower
+value (including `null`) selects a full authorized
+Projection Reset with reason `client_cursor_behind`. The reset uses the captured
+Room Head and frame barrier; it does not rewind or advance the durable Cursor.
+An equal value uses ordinary Catch-up or the required reset branch. A value ahead
+of the stored Cursor is rejected, even if it is not ahead of the frame head.
+Clients must install the recovery Reset before adopting its reported stored
+Cursor, and must complete `room.sync_ack` before submitting Actions.
+The PostgreSQL adapter still requires an equal Cursor; this lost-receipt recovery
+case is not yet supported there.
+
 The capability must authorize the principal, room, and membership. A session cannot attach as another membership merely by knowing its ID.
 
 ### room.attached

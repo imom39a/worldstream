@@ -13,4 +13,5 @@ test("acceptance runs the complete prerequisite list and stops on a failed gate"
   assert.equal(calls, 2);
   assert.ok(seen.some(([command, args]) => command === "supabase" && args[0] === "test"));
   assert.ok(seen.some(([, args]) => args.includes("hosted_browser_stream")));
+  assert.ok(seen.some(([, args]) => args.includes("@worldstream/client") && args.includes("test")));
 });

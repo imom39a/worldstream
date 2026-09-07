@@ -354,6 +354,65 @@ describe("HostedLiveSessionController", () => {
     expect(setup.controller.state.canAct).toBe(false);
   });
 
+  it.each([false, true])("adopts a recovery Cursor only after Reset installation (interrupted: %s)", async (interrupted) => {
+    const setup = fixture();
+    const first = await openResetSession(setup);
+    first.receive(observation(10, 8));
+    // The ACK reached the Runtime, but its receipt did not reach this client.
+    first.remoteClose();
+    let reconnecting = setup.controller.reconnect();
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(2));
+    let second = setup.sockets[1] as FakeSocket;
+    second.open();
+    second.receive(welcome());
+    second.receive(attached({
+      kind: "projection_reset", baseline_frame_head: 10, reason: "client_cursor_behind",
+    }, 10));
+    expect(setup.ticketCursors).toEqual([null, null]);
+    expect(setup.controller.state.canAct).toBe(false);
+    expect(setup.controller.state.lastAcknowledgedFrameSeq).toBeNull();
+    if (interrupted) {
+      second.remoteClose();
+      await reconnecting;
+      reconnecting = setup.controller.reconnect();
+      await vi.waitFor(() => expect(setup.sockets).toHaveLength(3));
+      second = setup.sockets[2] as FakeSocket;
+      second.open();
+      second.receive(welcome());
+      second.receive(attached({
+        kind: "projection_reset", baseline_frame_head: 10, reason: "client_cursor_behind",
+      }, 10));
+      expect(setup.ticketCursors).toEqual([null, null, null]);
+      expect(setup.controller.state.lastAcknowledgedFrameSeq).toBeNull();
+    }
+    second.receive(reset(10));
+    expect(setup.controller.state.lastAcknowledgedFrameSeq).toBe(10);
+    const sync = sentMessages(second).find((message) => message.type === "room.sync_ack");
+    second.receive(envelope("room.sync_acked", { through_frame_head: 10 }, String(sync?.message_id)));
+    await reconnecting;
+    expect(setup.controller.state.canAct).toBe(true);
+    setup.controller.close();
+  });
+
+  it("rejects Catch-up that would skip its confirmed Cursor without a Reset", async () => {
+    const setup = fixture();
+    const first = await openResetSession(setup);
+    first.remoteClose();
+    const reconnecting = setup.controller.reconnect();
+    await vi.waitFor(() => expect(setup.sockets).toHaveLength(2));
+    const second = setup.sockets[1] as FakeSocket;
+    second.open();
+    second.receive(welcome());
+    second.receive(attached({
+      kind: "retained_frames", cursor_exclusive: 10, through_frame_head: 10,
+    }, 10));
+    await reconnecting;
+    expect(setup.controller.state.status).toBe("disconnected");
+    expect(setup.controller.state.lastAcknowledgedFrameSeq).toBeNull();
+    expect(setup.controller.state.canAct).toBe(false);
+    setup.controller.close();
+  });
+
   it("returns matched Action receipts and never sends a routing selector", async () => {
     const setup = fixture();
     const socket = await openResetSession(setup);

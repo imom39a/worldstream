@@ -11,6 +11,8 @@ export const HOSTED_ACCEPTANCE_PREREQUISITES = Object.freeze([
   ["cargo", ["test", "--locked", "-p", "worldstream-server", "--test", "hosted_browser_stream"]],
   ["pnpm", ["--filter", "@worldstream/hosted-contract", "lint"]],
   ["pnpm", ["--filter", "@worldstream/hosted-contract", "test"]],
+  ["pnpm", ["--filter", "@worldstream/client", "lint"]],
+  ["pnpm", ["--filter", "@worldstream/client", "test"]],
   ...["hosted-platform:check", "activity-clients:check", "demos:lint", "demos:test",
     "hosted:dev:test", "hosted:package:test", "hosted:package:smoke"].map((suite) => ["pnpm", [suite]]),
   ["supabase", ["test", "db"]],

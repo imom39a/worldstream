@@ -2719,7 +2719,9 @@ impl GatewayBackend for SqliteGatewayBackend {
         if captured.room_head() != context.snapshot.trace().head() {
             return Err(BackendError::Busy);
         }
-        if request.after_frame_seq != captured.cursor() {
+        // An ACK may commit while its receipt is lost. A conservative client
+        // Cursor is recoverable, but a client cannot assert an uncommitted one.
+        if request.after_frame_seq > captured.cursor() {
             return Err(BackendError::Rejected);
         }
         let sync_token = self.issue_sync_token(
@@ -2737,13 +2739,17 @@ impl GatewayBackend for SqliteGatewayBackend {
         {
             return Err(BackendError::Busy);
         }
-        let (sync, reset, frames) = protocol_delivery(
-            &captured,
-            &room_id,
-            &member_id,
-            current.integrity_generation().get(),
-            integrity_status(current.integrity().status()),
-        )?;
+        let (sync, reset, frames) = if request.after_frame_seq < captured.cursor() {
+            protocol_cursor_recovery(&captured, &context)?
+        } else {
+            protocol_delivery(
+                &captured,
+                &room_id,
+                &member_id,
+                current.integrity_generation().get(),
+                integrity_status(current.integrity().status()),
+            )?
+        };
         let trace = current.trace();
         let retained_pack = self
             .registry
@@ -3725,6 +3731,40 @@ fn integrity_status(status: worldstream_core::RoomIntegrityStatusV1) -> String {
         worldstream_core::RoomIntegrityStatusV1::Quarantined => "quarantined",
     }
     .to_owned()
+}
+
+// The same validated view was checked against the captured Head inside the
+// authorized storage attach. Only this Session's delivery branch changes:
+// Canonical History, the durable Cursor, and the captured barrier do not.
+fn protocol_cursor_recovery(
+    captured: &worldstream_sqlite::SqliteObservationAttachV1,
+    context: &AttachContext,
+) -> Result<(SyncBranch, Option<ProjectionReset>, Vec<ObservationDeliver>), BackendError> {
+    let reason = "client_cursor_behind";
+    let reset = ProjectionReset {
+        room_id: captured.room_head().room_id().to_string(),
+        member_id: context.membership.member_id().to_string(),
+        room_head: room_head(captured.room_head()),
+        room_health: integrity_status(context.snapshot.integrity().status()),
+        integrity_generation: context.snapshot.integrity_generation().get(),
+        baseline_frame_head: captured.frame_head(),
+        reset_reason: reason.to_owned(),
+        projection_schema: context.view.projection_schema().to_owned(),
+        projection: projection_from_canonical_bytes(context.view.canonical_bytes())?,
+        projection_hash: context
+            .view
+            .projection_hash()
+            .map_err(|_| BackendError::InvalidResult)?
+            .to_string(),
+    };
+    Ok((
+        SyncBranch::ProjectionReset {
+            baseline_frame_head: captured.frame_head(),
+            reason: reason.to_owned(),
+        },
+        Some(reset),
+        Vec::new(),
+    ))
 }
 
 fn protocol_delivery(

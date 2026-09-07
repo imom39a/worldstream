@@ -101,6 +101,7 @@ interface BoundTarget {
   readonly memberId: string;
   readonly accessMode: "participant" | "spectator";
   readonly pack: AuthorizedRoomDeliveryBatch["pack"];
+  readonly cursor: number | null;
   roomHead: ActivityClientRoomHead;
   roomHealth: string;
 }
@@ -576,6 +577,7 @@ export class HostedLiveSessionController {
       roomHead === null ||
       frameHead === null ||
       cursor === undefined ||
+      (cursor ?? -1) < (this.current.lastAcknowledgedFrameSeq ?? -1) ||
       sync === null ||
       body.membership_status !== "enabled" ||
       typeof body.room_health !== "string" ||
@@ -584,6 +586,7 @@ export class HostedLiveSessionController {
         : role !== null) ||
       frameHead !== sync.through ||
       (sync.kind === "retained_frames" && cursor !== sync.cursorExclusive) ||
+      (sync.kind === "retained_frames" && cursor !== this.current.lastAcknowledgedFrameSeq) ||
       (this.retainedPackDigest !== null &&
         this.retainedPackDigest !== pack.digest)
     ) {
@@ -595,18 +598,11 @@ export class HostedLiveSessionController {
       memberId,
       accessMode,
       pack,
+      cursor,
       roomHead,
       roomHealth: body.room_health,
     };
     this.sync = sync;
-    if (cursor !== null) {
-      const current = this.current.lastAcknowledgedFrameSeq;
-      this.current = {
-        ...this.current,
-        lastAcknowledgedFrameSeq:
-          current === null ? cursor : Math.max(current, cursor),
-      };
-    }
     this.lastReceivedFrameSeq = sync.cursorExclusive ?? sync.through;
     this.update({
       status: "synchronizing",
@@ -656,6 +652,9 @@ export class HostedLiveSessionController {
         delivery: [{ kind: "projection_reset", body: safeBody }],
       },
       message: "Authorized Projection Reset installed; completing synchronization…",
+      // A newer stored Cursor is safe to adopt only with the replacement
+      // baseline installed. An interrupted Reset must request it again.
+      lastAcknowledgedFrameSeq: target.cursor,
     });
     this.maybeSendSyncAcknowledgement();
   }
