@@ -36,14 +36,17 @@ Revision digests. Existing Launch Requests remain pinned to the revision they
 selected.
 
 Listing `0.4.0` keeps the same Pack and House pool and pins Client Release v2.
-The hosted surface at `/agent-heist-v3/hosted/` reads the exact deployment-owned
+Its original verified bytes remain at `/agent-heist-v2/` and
+`/agent-heist-v2/hosted/` for retained Runs. Listing `0.5.0` pins the new
+game-themed Client Release v3 without changing the Pack or House pool.
+Its hosted surface at `/agent-heist-v3/hosted/` reads the exact deployment-owned
 stream URL from the authenticated Platform session. The same artifact contains
 the distinct local kernel surface at `/agent-heist-v3/`; an authentication
 failure never switches between them. Neither the user nor the handoff URL
 chooses a Room, Membership, or upstream.
 
-The prior Listing and Client Release documents remain immutable for retained
-Runs. Their original `/agent-heist/` artifact is not shipped by this build:
+Listing `0.2.0` and `0.3.0` and their Client Release documents remain immutable
+for retained Runs. Their original `/agent-heist/` artifact is not shipped by this build:
 that path returns 404, and the Platform rejects their live start/re-entry.
 Public history and reconciliation still resolve the old exact Listing and
 projector. Supporting old live entry again requires the original verified

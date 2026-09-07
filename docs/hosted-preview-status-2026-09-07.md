@@ -87,6 +87,9 @@ installation. It does not certify recovery of populated Room history.
   controls are separate from hosting costs. The current CLI credential cannot
   read the account billing summary; a run's zero-valued timing response is not
   proof of a zero bill. No extra billing permission or paid runner was enabled.
+  A later browser check verified an Actions account budget of USD 0 with
+  `Stop usage` enabled. Fly's billing page still uses automatic invoicing;
+  its displayed USD 0 upcoming invoice is not a future cost guarantee.
 
 ## Test evidence and limits
 
@@ -175,6 +178,31 @@ checks passed. The actual post-restart story still needs a new full candidate
 run; focused helper tests do not establish that its disconnect is resolved.
 A matching image must follow the committed correction. None of these checks
 is a real LLM, rendered-browser, or deployed gameplay acceptance result.
+
+### Latest restart diagnostic and UI release
+
+CI run `34158069116` tested `ad71a1c`. Both foundation jobs passed. The
+protocol story again passed initial streams, external-agent Catch-up, and
+the fake House endorsement. After the managed restart, `/api/runs/enter`
+returned `503 temporarily_unavailable` before the fresh-sync checks. No
+acceptance artifact was produced. The failing participant and upstream
+service were not identified by that error.
+
+Focused BFF and Gateway controls passed, but did not reproduce this failure.
+A separate native probe failed during managed startup, before handoff
+issuance. That setup failure is not evidence of the CI failure's cause.
+The temporary, CI-only `[DEBUG-reentry-ad71]` probe records fixed stage,
+participant role, and HTTP status categories from the original requests.
+It adds no retries, reads no response bodies, and does not change production
+limits. Four probe tests and the nine focused acceptance controls passed.
+Remove the probe once the failing hop is diagnosed. A Gateway `503` alone
+still does not identify its discarded native upstream cause.
+
+The separate game-design release was pushed as `69b01c6`. It adds Heist v3,
+Negotiate v3, Inspector v2, and Listing `0.5.0`; the old Heist v2 bytes remain
+retained. Its rollout requires the matching additive catalog migration and
+new Fly image. Earlier image, schema, and UI checks above do not certify
+this later release. Gameplay remains closed pending deployed acceptance.
 
 ## Remaining work, in order
 

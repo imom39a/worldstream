@@ -294,10 +294,17 @@ test.skipIf(process.env.WORLDSTREAM_LOCAL_ACCEPTANCE !== ACCEPTANCE_MODE)(
     await restartRetainedRuntime();
     // Each authenticated participant explicitly rejoins the same retained seat.
     // A cached Browser Activity Session is not post-restart admission evidence.
-    const [creatorReentry, agentReentry] = await Promise.all([
-      enter(creator, runId, creatorEntry.entrySelector),
-      enter(browserAgent, runId, agentEntry.entrySelector),
+    const reentries = await Promise.allSettled([
+      enter(creator, runId, creatorEntry.entrySelector, "creator"),
+      enter(browserAgent, runId, agentEntry.entrySelector, "external_agent"),
     ]);
+    const failedRoles = reentries.flatMap((entry, index) => entry.status === "rejected"
+      ? [index === 0 ? "creator" : "external_agent"] : []);
+    if (failedRoles.length > 0) {
+      throw new Error(`Post-restart Run entry failed for ${failedRoles.join(",")}; see [DEBUG-reentry-ad71] status-only evidence.`);
+    }
+    const creatorReentry = (reentries[0] as PromiseFulfilledResult<string>).value;
+    const agentReentry = (reentries[1] as PromiseFulfilledResult<string>).value;
     const [creatorReadmitted, agentReadmitted] = await Promise.all([
       creatorAuthority.redeem(creatorReentry),
       agentAuthority.redeem(agentReentry),
@@ -500,15 +507,39 @@ async function enter(
   browser: CookieBrowser,
   runId: string,
   entrySelector: string,
+  diagnosticRole?: "creator" | "external_agent",
 ): Promise<string> {
-  const response = await browser.mutate("/api/runs/enter", {
-    run_id: runId,
-    entry_selector: entrySelector,
-  }, [201]);
-  const clientUrl = new URL(stringField(response, "client_url"));
-  const handoff = clientUrl.hash.match(/^#handoff=(wsh1:[0-9a-f]{64})$/u)?.[1];
-  assert.ok(handoff);
-  return handoff;
+  const diagnostic = (status: number | null, category: string) => {
+    if (diagnosticRole !== undefined) console.info(`[DEBUG-reentry-ad71] ${JSON.stringify({
+      actor: diagnosticRole, stage: "run_enter", status, category,
+    })}`);
+  };
+  let response: Response;
+  try {
+    response = await browser.mutateResponse("/api/runs/enter", {
+      run_id: runId,
+      entry_selector: entrySelector,
+    });
+  } catch (error) {
+    diagnostic(null, "fetch_rejected");
+    throw error;
+  }
+  diagnostic(response.status, response.status === 201 ? "http_success" : "http_failure");
+  if (diagnosticRole !== undefined && response.status !== 201) {
+    // Do not reflect an error body that could contain arbitrary upstream data.
+    await response.body?.cancel();
+    throw new Error("post_restart_run_entry_http_failure");
+  }
+  try {
+    const value = await readJsonResponse(response, [201]);
+    const clientUrl = new URL(stringField(value, "client_url"));
+    const handoff = clientUrl.hash.match(/^#handoff=(wsh1:[0-9a-f]{64})$/u)?.[1];
+    assert.ok(handoff);
+    return handoff;
+  } catch (error) {
+    diagnostic(response.status, "invalid_entry_response");
+    throw error;
+  }
 }
 
 function controller(
