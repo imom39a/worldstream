@@ -223,7 +223,7 @@ function validateMetrics(value, kind, outcome) {
   }
   if (
     kind === "deployed" && outcome === "passed" &&
-    (value.provider_calls !== 1 || value.maximum_direct_push_seconds < 300)
+    (value.provider_calls !== 1 || value.maximum_direct_push_seconds <= 300)
   ) {
     invalid("deployed_metrics_invalid");
   }

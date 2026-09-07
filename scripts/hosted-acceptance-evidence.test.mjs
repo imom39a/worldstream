@@ -55,6 +55,9 @@ test("passed evidence rejects template identity even when every check is green",
   evidence.deployment.platform_revision = "dpl_fixture123";
   evidence.deployment.gateway_revision = evidence.commit;
   assert.doesNotThrow(() => validateHostedAcceptanceEvidence(evidence));
+  const exactlyFiveMinutes = structuredClone(evidence);
+  exactlyFiveMinutes.metrics.maximum_direct_push_seconds = 300;
+  assert.throws(() => validateHostedAcceptanceEvidence(exactlyFiveMinutes), /deployed_metrics_invalid/u);
   for (const field of Object.keys(evidence.deployment)) {
     const invalid = structuredClone(evidence);
     invalid.deployment[field] = field.endsWith("digest") ? `sha256:${"0".repeat(64)}` : "replace-with-value";
