@@ -24,20 +24,27 @@ label describes a reviewed activity, not current authority availability.
 
 | Item | Observed value |
 | --- | --- |
-| Activity source | `15704429aeba28fb4ffc7bc1abaef8456a8421e1` |
-| Vercel deployment | `dpl_9M618CbVQ6WcF9brBmsdHZ9shoML` — production, Ready |
+| Activity source | `8705db79cd726504ec0bd4833fd6b949a8b2296b` |
+| Vercel deployment | `dpl_CqTMDxWtFeCdG4eqff9Lujax9BCe` — serving the production domain |
 | Manual deployment | `dpl_64GkL4EGaS54N3hn9eqqVyx8MGS6` — source `c4333c4`, Ready |
 | Applied Supabase migration head | `20260907203907` — 14 migrations |
 | Configured realtime authority | `https://worldstream-preview.fly.dev` |
-| Listing | `blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1` |
+| Web-selected Listing | `blake3:48f76e8c1336e8f50fb6952cd0f2ff4c47cc8c372594db01422a67bca9363782` — successor migration not yet applied |
 | Activity Client Release | `sha256:8075408d0420d3eec514d01c428a2b8b17559c388e57a7067c05cc9f95a3b5d9` |
 
-At the 22:26 UTC checkpoint, the activity source is committed locally;
-its predecessor `5b068f3` is pushed
+At the earlier 22:26 UTC checkpoint, activity source `1570442` was committed locally;
+its predecessor `5b068f3` was pushed
 to `main`. The maintenance fix was published from a clean Git archive without
 waiting for a new backend release. It includes the latest game-design release,
 `69b01c6`. The stopped Fly Machine still has source
 `2b1d604`; the web deployment is not a matching backend release yet.
+
+At the 23:07 UTC follow-up, `8705db7` is pushed to `main`, and the production
+identity endpoint reports the source and deployment in the table above. The
+web selects Listing `0.6.0`, but Supabase still has migration head
+`20260907203907`. Migration `20260907220000` has not been applied. Launch and
+House-fill gates remain closed. This is a mixed-version maintenance state,
+not a completed coordinated release.
 
 Public checks against the production domain passed:
 
@@ -114,8 +121,10 @@ installation. It does not certify recovery of populated Room history.
   variant constraints remain in each Runner request; display names in the
   guardrail UI do not prove those exact pins. Account-wide defaults were not
   changed. The key-scoped policy correction is recorded in ADR 0022.
-- Prompt storage and trace broadcasting are off. The replacement key is not
-  installed on Fly, and no live inference has been attempted. Metadata and
+- Prompt storage and trace broadcasting are off. The replacement key is staged
+  as a Fly secret but is not imported into the Controller credential vault.
+  Fly still reports it as `Staged` after the backup below. No live inference has
+  been attempted. Metadata and
   settings checks are not proof that a provider response will be accepted.
 - Retained House limits also apply: USD 2/day, USD 10/month, and at most ten
   model calls per Assignment. These do not cap Fly, Vercel, or Supabase costs.
@@ -128,6 +137,58 @@ installation. It does not certify recovery of populated Room history.
   its displayed USD 0 upcoming invoice is not a future cost guarantee.
 
 ## Historical test evidence and subsequent checks
+
+### 23:07 UTC: Fly backup and latest release gate
+
+The Fly Machine was briefly started with only `/bin/sleep 900`, automatic
+start disabled, and restart policy `no`. Read-only checks confirmed that
+ports `8080`, `9410`, and `9420` were closed and no WorldStream service was
+running. No bot or provider call was started.
+
+The existing volume was captured as checkpoint
+`207418e7-46c9-41ea-8610-2c6cd046adc8` at `23:04:44 UTC`. Runtime and
+Controller archives were downloaded into owner-only local storage. Their
+SHA-256 values match the capture receipt. The captured SQLite database passes
+`integrity_check`; Rooms, transitions, members, timers, observations, Runner
+records, and activation records are empty. The checked Controller activity
+directories are also empty. Bootstrap authority and installation records
+are present and preserved. This is a volume backup, not yet a paired Supabase
+checkpoint or a verified restore.
+
+The same Machine was then stopped. Its full original configuration was
+restored and read back: image, volume, size, services, and disabled automatic
+start are unchanged. No data was deleted or moved out of the installation.
+Two earlier Fly CLI configuration requests failed because the CLI duplicated
+the image digest. The successful configuration-only update used the Machines
+API with `skip_launch=true`; it did not bypass any WorldStream checks.
+
+[CI run 34168136170](https://github.com/imom39a/worldstream/actions/runs/34168136170)
+tested exact source `8705db7`. The Supabase foundation passed. The application
+foundation failed when the appliance smoke test initially created a Room,
+with `setup_incomplete`; it did not reach its same-volume restart. The
+dependent canonical release-profile story was skipped. The smoke wrapper
+discarded the JSON output that identifies the incomplete setup stage, so
+the underlying cause is not yet established. Do not classify this as the
+earlier Membership timeout without new evidence.
+
+The follow-up smoke diagnostic accepts only a bounded operator response from
+the original failed command. It reports the command, status, error code, and
+one of the three known setup stages. It excludes raw stderr, descriptions,
+identifiers, credentials, and unknown response fields. It waits for the child
+streams to close before examining the result. Six subprocess regression tests
+pass; the combined packaging checks pass 31 tests with three explicit opt-in
+skips. No retry, timeout, build profile, or gameplay assertion was changed.
+This diagnostic is not itself a fix for the incomplete Room setup.
+
+The local Linux AMD64 image for exact source `8705db7` completed its build.
+Its embedded source and reviewed Heist v3 assets match that source. All nine
+image-enabled entrypoint tests pass. A separate full-process startup check
+passed in about 5.6 seconds with one CPU, 512 MB memory, no network or published
+ports, synthetic credentials, and a fresh test volume. Peak memory was about
+180 MiB; there were no OOM events, no Rooms, and graceful shutdown passed.
+Only the owned test container and its fresh volume were removed afterwards.
+The image has not been pushed or deployed. These checks establish startup,
+not Room creation, restart recovery, or real-provider gameplay.
 
 The focused Vercel regression checks passed: 82 Platform tests, one existing
 live-test skip, and 19 hosted development tests. The deployed identity verifier

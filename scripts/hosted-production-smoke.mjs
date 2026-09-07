@@ -47,7 +47,7 @@ async function main() {
       join(assetRoot, "activity-client-bindings.json"),
     ),
   ]);
-  const digest = (await run(
+  const digest = (await runHostedSmokeCommand(
     join(binaryRoot, "worldstream-hosted-artifact-digest"),
     [join(binaryRoot, "worldstream-managed-agent-host")],
     process.env,
@@ -93,7 +93,7 @@ async function main() {
     const config = join(ephemeralRoot, "worldstream.toml");
     const controllerState = join(volumeRoot, "studio");
     const setup = join(temporary, "retained-room.json");
-    const ctl = (args, capture = true) => run(
+    const ctl = (args, capture = true) => runHostedSmokeCommand(
       join(binaryRoot, "worldstreamctl"),
       [
         "--config", config,
@@ -104,6 +104,7 @@ async function main() {
       ],
       { ...environment, WORLDSTREAM_HOSTED_CONTROLLER_AUTHORITY: CONTROLLER_AUTHORITY },
       capture,
+      `${args[0]} ${args[1]}`,
     );
     await ctl([
       "room", "example",
@@ -227,7 +228,49 @@ async function writeProtected(path, value) {
   await chmod(path, 0o600);
 }
 
-function run(command, args, environment, capture) {
+const OPERATOR_COMMANDS = new Set([
+  "room example", "room create", "room list", "client export-credentials",
+]);
+const SETUP_STAGES = new Set(["room_creation", "member_capability", "runner_capability"]);
+const FAILURE_STATUS = new Map([
+  ["setup_incomplete", "partial"],
+  ["operation_failed", "failed"],
+  ["operation_rejected", "rejected"],
+  ["invalid_arguments", "invalid_arguments"],
+  ["controller_unavailable", "unavailable"],
+  ["stale_evidence", "unavailable"],
+  ["not_implemented", "unavailable"],
+]);
+const FAILURE_FIELDS = new Set([
+  "schema", "command", "status", "code", "message", "next_action",
+  "operation_id", "room_id", "stage",
+]);
+
+function safeOperatorFailure(stdout, expectedCommand) {
+  if (!OPERATOR_COMMANDS.has(expectedCommand) || Buffer.byteLength(stdout) > 16_384) return null;
+  let value;
+  try { value = JSON.parse(stdout); } catch { return null; }
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).some((key) => !FAILURE_FIELDS.has(key)) ||
+    value.schema !== "worldstream/operator-command/v1" ||
+    value.command !== expectedCommand || !FAILURE_STATUS.has(value.code) ||
+    FAILURE_STATUS.get(value.code) !== value.status ||
+    typeof value.message !== "string" || typeof value.next_action !== "string") return null;
+  if (value.code === "setup_incomplete") {
+    if (value.command !== "room create" || !SETUP_STAGES.has(value.stage) ||
+      typeof value.operation_id !== "string" ||
+      (value.room_id !== undefined && value.room_id !== null && typeof value.room_id !== "string")) return null;
+  } else if (value.stage !== undefined || value.operation_id !== undefined || value.room_id !== undefined) {
+    return null;
+  }
+  // Never propagate descriptive text, identifiers, next_action, or extra data.
+  return {
+    command: value.command, status: value.status, code: value.code,
+    ...(value.stage === undefined ? {} : { stage: value.stage }),
+  };
+}
+
+export function runHostedSmokeCommand(command, args, environment, capture, expectedCommand = null) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, {
       cwd: REPOSITORY_ROOT,
@@ -235,15 +278,22 @@ function run(command, args, environment, capture) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
-    let stderr = "";
+    let stdoutTruncated = false;
     child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (value) => { stdout = (stdout + value).slice(-1_048_576); });
-    child.stderr.on("data", (value) => { stderr = (stderr + value).slice(-65_536); });
+    child.stdout.on("data", (value) => {
+      const combined = stdout + value;
+      stdoutTruncated ||= combined.length > 1_048_576;
+      stdout = combined.slice(-1_048_576);
+    });
+    child.stderr.resume();
     child.once("error", () => rejectPromise(new Error("hosted_smoke_command_unavailable")));
-    child.once("exit", (code) => {
+    // Wait until the captured streams close, not just until the process exits.
+    child.once("close", (code) => {
       if (code === 0) resolvePromise({ stdout: capture ? stdout : "", stderr: "" });
-      else rejectPromise(new Error(`hosted_smoke_command_failed:${stderr.slice(-512)}`));
+      else {
+        const diagnostic = stdoutTruncated ? null : safeOperatorFailure(stdout, expectedCommand);
+        rejectPromise(new Error(`hosted_smoke_command_failed${diagnostic === null ? "" : `:${JSON.stringify(diagnostic)}`}`));
+      }
     });
   });
 }
