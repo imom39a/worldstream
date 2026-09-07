@@ -170,7 +170,12 @@ on conflict (listing_revision_digest) do nothing;
 
 do $$
 begin
-  if (select count(*) from platform_store.house_agent_revisions) <> 2
+  -- Validate this retained seed's exact pool, not the size of the growing catalog.
+  if (select count(*) from platform_store.house_agent_revisions
+      where house_agent_revision_digest in (
+        'blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81',
+        'blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a'
+      )) <> 2
     or not exists (
       select 1 from platform_store.activity_listing_revisions listings
       where listings.listing_revision_digest =

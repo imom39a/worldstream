@@ -276,21 +276,31 @@ async function writeInitializationImports(layout) {
     provider: "openrouter",
     secret_file: layout.openRouterSecret,
   });
+  const profiles = renderHouseAgentProfiles();
+  const cooperative = await writeJson(join(layout.generatedRoot, "cooperative-planner.json"), profiles.cooperative);
+  const skeptical = await writeJson(join(layout.generatedRoot, "skeptical-auditor.json"), profiles.skeptical);
+  const client = await writeClientImport(layout);
+  return { runner, provider, cooperative, skeptical, client };
+}
+
+// Shared by the local and Fly entrypoints so current House revisions cannot
+// silently select different Host profile identities.
+export function renderHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
     runner_template: { template_id: "openrouter-house", revision: "1" },
   };
-  const cooperative = await writeJson(join(layout.generatedRoot, "cooperative-planner.json"), {
+  const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-cooperative-planner",
-    revision: "1",
+    revision: "2",
     display_name: "Cooperative Planner",
     non_secret_configuration: {},
     host_contract: hostContract,
     managed_provider_credential_id: "hosted-openrouter",
-  });
-  const skeptical = await writeJson(join(layout.generatedRoot, "skeptical-auditor.json"), {
+  };
+  const skeptical = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-skeptical-auditor",
     revision: "1",
@@ -298,9 +308,8 @@ async function writeInitializationImports(layout) {
     non_secret_configuration: {},
     host_contract: hostContract,
     managed_provider_credential_id: "hosted-openrouter",
-  });
-  const client = await writeClientImport(layout);
-  return { runner, provider, cooperative, skeptical, client };
+  };
+  return { cooperative, skeptical };
 }
 
 async function writeClientImport(layout) {

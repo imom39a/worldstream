@@ -10,6 +10,7 @@ import {
   hostedStatusReady,
   renderHostedRuntimeConfig,
   renderHouseRunnerTemplate,
+  renderHouseAgentProfiles,
   validateHostedRuntimeEnvironment,
 } from "./hosted-runtime.mjs";
 
@@ -84,6 +85,23 @@ test("House Runner import is exact and has no secret environment", () => {
   }]);
   assert.deepEqual(manifest.secret_environment, []);
   assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
+});
+
+test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
+  const profiles = renderHouseAgentProfiles();
+  assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
+    { profile_id: "house-cooperative-planner", revision: "2" },
+    { profile_id: "house-skeptical-auditor", revision: "1" },
+  ]);
+  for (const profile of Object.values(profiles)) {
+    assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
+    assert.equal(profile.managed_provider_credential_id, "hosted-openrouter");
+    assert.deepEqual(profile.non_secret_configuration, {});
+    assert.deepEqual(profile.host_contract, {
+      kind: "managed_house_openrouter", host_contract_revision: "1",
+      runner_template: { template_id: "openrouter-house", revision: "1" },
+    });
+  }
 });
 
 test("managed status requires the complete ready contract", () => {

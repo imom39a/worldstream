@@ -10,12 +10,14 @@ import {
   retainedAgentHeistListing02Base64,
   retainedAgentHeistListing03Base64,
   retainedAgentHeistListing04Base64,
+  retainedAgentHeistListing05Base64,
   cooperativePlannerBase64,
+  retainedCooperativePlanner1Base64,
   skepticalAuditorBase64,
 } from "./hosted-artifacts.generated.js";
 
 export const AGENT_HEIST_LISTING_DIGEST =
-  "blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1";
+  "blake3:48f76e8c1336e8f50fb6952cd0f2ff4c47cc8c372594db01422a67bca9363782";
 
 export interface PublicHostedActivity {
   readonly slug: "agent-heist" | "negotiate";
@@ -56,6 +58,10 @@ const houseAgents = [
   readHouseAgentRevision(decode(cooperativePlannerBase64)),
   readHouseAgentRevision(decode(skepticalAuditorBase64)),
 ];
+const retainedHouseAgents = new Map([
+  readHouseAgentRevision(decode(retainedCooperativePlanner1Base64)),
+  readHouseAgentRevision(decode(skepticalAuditorBase64)),
+].map((revision) => [revision.digest, revision]));
 
 const agentHeistPublic = Object.freeze({
   slug: "agent-heist",
@@ -94,23 +100,26 @@ const reviewedAgentHeist = Object.freeze({
 
 // Discovery selects only the current revision. Retained formation and results
 // must continue resolving the exact revision accepted before this deployment.
-const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64]
+const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64]
   .map((bytes): ReviewedHostedActivity => {
     const retainedListing = readListingRevision(decode(bytes));
     const houseFillAvailable = retainedListing.value.seats.some(
       (seat) => seat.allowed_house_agent_revisions.length > 0,
     );
-    const originalClientHosted = bytes === retainedAgentHeistListing04Base64;
+    const retainedClientPath = bytes === retainedAgentHeistListing05Base64
+      ? "/agent-heist-v3/hosted/"
+      : bytes === retainedAgentHeistListing04Base64 ? "/agent-heist-v2/hosted/" : null;
     return Object.freeze({
       ...reviewedAgentHeist,
       listing: retainedListing,
+      houseAgents: retainedHouseAgents,
       public: Object.freeze({
         ...agentHeistPublic,
-        availability: originalClientHosted ? "available" : "dependency_unavailable",
-        availabilityMessage: originalClientHosted
+        availability: retainedClientPath !== null ? "available" : "dependency_unavailable",
+        availabilityMessage: retainedClientPath !== null
           ? "Retained revision with its original client"
           : "This retained revision requires its original client artifact, which is not hosted here.",
-        clientPath: originalClientHosted ? "/agent-heist-v2/hosted/" : null,
+        clientPath: retainedClientPath,
         houseFillAvailable,
         houseTerms: houseFillAvailable ? agentHeistPublic.houseTerms : null,
       }),

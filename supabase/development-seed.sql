@@ -30,6 +30,16 @@ insert into platform_store.house_agent_host_approvals (
   'blake3:3333333333333333333333333333333333333333333333333333333333333333',
   'openrouter-house',
   extensions.digest(convert_to('hosted-dev:cooperative-planner:1', 'utf8'), 'sha256'),
+  false
+),
+(
+  'hosted-dev',
+  'blake3:134c19dbbd0b80bf2af98d095c8feca5026a00137c1077c16ccea5de95100ce4',
+  'blake3:5555555555555555555555555555555555555555555555555555555555555555',
+  'blake3:2222222222222222222222222222222222222222222222222222222222222222',
+  'blake3:3333333333333333333333333333333333333333333333333333333333333333',
+  'openrouter-house',
+  extensions.digest(convert_to('hosted-dev:cooperative-planner:2', 'utf8'), 'sha256'),
   true
 ),
 (
@@ -43,6 +53,14 @@ insert into platform_store.house_agent_host_approvals (
   true
 )
 on conflict (host_installation_id, house_agent_revision_digest) do nothing;
+
+-- The acknowledged fake-provider installation retains its old revision but
+-- never selects the obsolete Qwen route for a new development assignment.
+update platform_store.house_agent_host_approvals
+set available_for_new_assignments = false, availability_checked_at = clock_timestamp()
+where host_installation_id = 'hosted-dev'
+  and house_agent_revision_digest = 'blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81'
+  and available_for_new_assignments;
 
 do $$
 begin

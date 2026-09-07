@@ -256,13 +256,25 @@ metadata fields and never treats metadata as Activity truth. Tools, plugins,
 presets, routing variants, prompt transforms, response caches, and provider
 sessions are absent.
 
-The dedicated key is attached to an OpenRouter guardrail that allowlists only
-the two exact model and provider routes. Account-level zero-data-retention is
-enabled, provider data collection is denied, and request/response logging,
-response caching, and data-use opt-ins remain disabled. If the exact route no
+The dedicated key is attached to an OpenRouter guardrail that restricts model
+and provider access to the reviewed House pool and enforces zero-data-retention
+for every allowed model group. Each request additionally pins the exact model
+and full provider variant above. Provider data collection is denied, and
+request/response logging, response caching, and data-use opt-ins remain disabled
+for WorldStream traffic. If the exact route no
 longer satisfies its provider, privacy, parameter, or price policy, the House
 Agent Revision becomes unavailable; the model host does not substitute another
 route.
+
+Deployment scoping correction (2026-09-07): provider-side enforcement must be
+assigned to the dedicated WorldStream key; per-request flags alone are not
+sufficient. The earlier account-wide ZDR requirement unnecessarily affected
+unrelated keys in a shared account. Keep those account defaults unchanged and
+verify the assigned key's effective guardrail and eligibility instead. This
+changes the configuration scope, not the ZDR requirement for any WorldStream
+request. A provider-wide allowlist does not replace the request's full-variant
+pin. Two distinct House strategies may use the same eligible model route; that
+remains an exhibition, not a cross-model benchmark.
 
 Before accepting a model response, the model host requires and checks the
 reported model, router metadata identifying exactly one eligible and selected
@@ -349,6 +361,6 @@ and fail closed rather than assume these mutable service capabilities:
 - [Provider routing and exact endpoint selection](https://openrouter.ai/docs/guides/routing/provider-selection)
 - [Router metadata](https://openrouter.ai/docs/guides/features/router-metadata)
 - [Model identities and canonical slugs](https://openrouter.ai/docs/guides/overview/models)
-- [Guardrails](https://openrouter.ai/docs/guides/features/guardrails/overview)
+- [Guardrails and key-scoped enforcement](https://openrouter.ai/docs/guides/features/guardrails)
 - [Zero Data Retention](https://openrouter.ai/docs/guides/features/zdr)
 - [API key limits](https://openrouter.ai/docs/api/api-reference/api-keys/create-a-new-api-key)

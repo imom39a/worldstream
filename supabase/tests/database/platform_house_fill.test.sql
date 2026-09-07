@@ -12,9 +12,13 @@ select has_table('platform_store', 'house_runner_reservations', 'House reservati
 select has_table('platform_store', 'house_agent_assignments', 'House assignments exist');
 
 select is(
-  (select count(*)::integer from platform_store.house_agent_revisions),
+  (select count(*)::integer from platform_store.house_agent_revisions
+   where house_agent_revision_digest in (
+     'blake3:a664f616c754f03b484f40b930822411aba8579325731c48ee0cd72302805e81',
+     'blake3:05639c75dcf556f45429bc5e0fcca8a7b7bcb002ced56c3a28af9a211930bb0a'
+   )),
   2,
-  'the reviewed MVP House pool has exactly two immutable revisions'
+  'the retained Listing pool keeps its two original immutable revisions'
 );
 select is(
   (select hard_limit from platform_store.house_runner_capacity_gates

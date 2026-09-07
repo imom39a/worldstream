@@ -13,10 +13,10 @@ const require = createRequire(new URL("../sdk/typescript-pack/packages/pack-sdk/
 const { blake3 } = await import(pathToFileURL(require.resolve("@noble/hashes/blake3.js")));
 const hash = (bytes) => Buffer.from(blake3(bytes)).toString("hex");
 
-async function fixture(t) {
+async function fixture(t, revision = "1") {
   const root = await realpath(await mkdtemp(join(tmpdir(), "worldstream-house-approval-test-")));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const house = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-1.json", import.meta.url), "utf8"));
+  const house = JSON.parse(await readFile(new URL(`../config/hosted/house-agents/cooperative-planner-${revision}.json`, import.meta.url), "utf8"));
   const binary = Buffer.from("test-only approved executable bytes");
   const reference = "a".repeat(64);
   const profile = {
@@ -44,7 +44,7 @@ async function fixture(t) {
     },
   };
   const state = join(root, "studio");
-  const profilePath = join(state, "agent-profiles/revisions", Buffer.from(profile.profile_id).toString("hex"), "31.json");
+  const profilePath = join(state, "agent-profiles/revisions", Buffer.from(profile.profile_id).toString("hex"), `${Buffer.from(profile.revision).toString("hex")}.json`);
   const runnerPath = join(state, "runner-templates/installed/openrouter-house--1.json");
   const providerPath = join(state, "model-provider-credentials/installed/hosted-openrouter.json");
   const write = async (path, value) => {
@@ -90,6 +90,29 @@ test("approval recipe pins canonical installed metadata and actual binary withou
   assert.match(prepared.activationSql, /revoked_at is null/u);
   await f.write(f.profilePath, Object.fromEntries(Object.entries(f.profile).reverse()));
   assert.deepEqual((await prepareHouseApprovals(f.options)).evidence, prepared.evidence);
+});
+
+test("the Granite successor approval binds profile revision 2 without reusing the retained Qwen identity", async (t) => {
+  const f = await fixture(t, "2");
+  const prepared = await prepareHouseApprovals(f.options);
+  const receipt = prepared.evidence[0].receipt;
+  assert.deepEqual(receipt.agent_profile, { profile_id: "house-cooperative-planner", revision: "2" });
+  assert.equal(receipt.house_agent_revision_digest, "blake3:134c19dbbd0b80bf2af98d095c8feca5026a00137c1077c16ccea5de95100ce4");
+  assert.equal(receipt.agent_profile_revision_digest, `blake3:${hash(canonicalBytes(f.profile))}`);
+  assert.match(prepared.approvalSql, /false\)\n  on conflict/u);
+});
+
+test("successor migration publishes the exact reviewed canonical documents without granting execution", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260907220000_hosted_granite_house_successor.sql", import.meta.url), "utf8");
+  const planner = JSON.parse(await readFile(new URL("../config/hosted/house-agents/cooperative-planner-2.json", import.meta.url), "utf8"));
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.6.0.json", import.meta.url), "utf8"));
+  const houseBytes = Buffer.from(migration.match(/\$house\$([\s\S]*?)\$house\$/u)?.[1] ?? "");
+  const listingBytes = Buffer.from(migration.match(/\$listing\$([\s\S]*?)\$listing\$/u)?.[1] ?? "");
+  assert.deepEqual(houseBytes, canonicalBytes(planner));
+  assert.deepEqual(listingBytes, canonicalBytes(listing));
+  assert.equal(`blake3:${hash(houseBytes)}`, "blake3:134c19dbbd0b80bf2af98d095c8feca5026a00137c1077c16ccea5de95100ce4");
+  assert.equal(`blake3:${hash(listingBytes)}`, "blake3:48f76e8c1336e8f50fb6952cd0f2ff4c47cc8c372594db01422a67bca9363782");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
 test("approval preparation rejects changed executable bytes and cross-credential bindings", async (t) => {

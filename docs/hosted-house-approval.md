@@ -5,6 +5,19 @@ a migration, or an automatic startup action. Use it after the approved
 spending-limited OpenRouter credential and the exact Fly image are installed.
 Keep launches and House calls closed until the final checks pass.
 
+The current Listing is Agent Heist `0.6.0`. Its two House strategies are
+Cooperative Planner `2` and Skeptical Auditor `1`. Both use the exact Granite
+model and DeepInfra provider route declared in their immutable files. Their
+instructions differ; this is a two-strategy exhibition, not a comparison of two
+models. The Pack, v3 Activity Client, result projector, and hard allowances are
+unchanged.
+
+Keep Cooperative Planner `1` (the Qwen route) and Listings `0.4.0` and
+`0.5.0` as retained records. Do not change their canonical bytes or transfer
+their assignments to the successor. Keep the old Qwen approval unavailable
+for new assignments while its exact route does not meet the privacy policy.
+Publishing the successor migration grants no approval and starts no provider call.
+
 ## What this evidence means
 
 The Controller retains Agent Profiles and Runner Templates by name and revision.
@@ -66,13 +79,15 @@ generated SDK build.
 3. Capture these records from that same installation into a private local
    directory. Preserve their relative layout beneath a `studio` directory:
 
+   - `agent-profiles/revisions/<hex profile ID>/32.json` for
+     `house-cooperative-planner` revision `2`;
    - `agent-profiles/revisions/<hex profile ID>/31.json` for
-     `house-cooperative-planner` and `house-skeptical-auditor`;
+     `house-skeptical-auditor` revision `1`;
    - `runner-templates/installed/openrouter-house--1.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `31` encodes revision `1`. Capture the actual
+   `31` encodes revision `1`; `32` encodes revision `2`. Capture the actual
    `/usr/local/bin/worldstream-managed-agent-host` binary separately.
    Do not capture or open vault secret files, the OpenRouter API key, controller
    credentials, or process environment. The named credential record contains
@@ -96,7 +111,7 @@ node scripts/hosted-house-approval.mjs \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-1.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-2.json \
   --house-revision config/hosted/house-agents/skeptical-auditor-1.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
@@ -131,6 +146,18 @@ Before applying `activate.sql`, confirm current Runner readiness, the protected
 named credential, the current spending-limited provider key, ledger limits,
 and the closed-launch deployment checks. SQL activation does not itself open
 the platform or make a model call. Then perform the bounded live end-user test.
+
+Verify that the actual key permits the exact model/provider route, required
+parameters, and price ceilings with ZDR and data collection denied. A successful
+key lookup or a started Runner is not proof of model-route eligibility. Never
+enable fallback, relax privacy, or substitute a model to make this check pass.
+If a route is unavailable, leave its approval unavailable.
+
+One creator leaves two eligible seats, including the optional Broker seat.
+Both distinct current House revisions must be approved and available to fill
+those seats. Activating only the Auditor supports one House seat when two real
+participants have already claimed the other seats; it cannot fill both seats
+with copies of the same revision.
 
 Keep these files private with the deployment evidence. Do not commit operator
 receipts, capture folders, SQL filled with installation evidence, or credentials.

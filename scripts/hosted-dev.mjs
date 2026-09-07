@@ -7,7 +7,7 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { renderHouseRunnerTemplate } from "./hosted-runtime.mjs";
+import { renderHouseAgentProfiles, renderHouseRunnerTemplate } from "./hosted-runtime.mjs";
 import { runHostedAcceptancePrerequisites } from "./hosted-acceptance-prerequisites.mjs";
 import {
   HOSTED_ACCEPTANCE_SCHEMA,
@@ -17,8 +17,9 @@ import {
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEVELOPMENT_MODE = "visible-local-only";
-const LISTING_DIGEST = "blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1";
+const LISTING_DIGEST = "blake3:48f76e8c1336e8f50fb6952cd0f2ff4c47cc8c372594db01422a67bca9363782";
 const RETAINED_LISTING_DIGESTS = [
+  "blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1",
   "blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80",
   "blake3:e3d401e783cec1ae4f911f682e8289054275dece60a0482b02f63e872f27dcc1",
   "blake3:d3f2c55783a791542945c8a8946a58184b35866f6548539e753edc7349881956",
@@ -524,6 +525,7 @@ async function importHostedDeclarations(
   const provider = join(generated, "openrouter-provider.json");
   const cooperative = join(generated, "cooperative-planner.json");
   const skeptical = join(generated, "skeptical-auditor.json");
+  const profiles = renderHouseAgentProfiles();
   await Promise.all([
     writeFile(
       runner,
@@ -542,24 +544,12 @@ async function importHostedDeclarations(
       { mode: 0o600 },
     ),
     ...[
-      ["house-cooperative-planner", "Cooperative Planner", cooperative],
-      ["house-skeptical-auditor", "Skeptical Auditor", skeptical],
-    ].map(([profileId, displayName, path]) =>
+      [profiles.cooperative, cooperative],
+      [profiles.skeptical, skeptical],
+    ].map(([profile, path]) =>
       writeFile(
         path,
-        `${JSON.stringify({
-          schema: "worldstream/studio-agent-profile-publish/v2",
-          profile_id: profileId,
-          revision: "1",
-          display_name: displayName,
-          non_secret_configuration: {},
-          host_contract: {
-            kind: "managed_house_openrouter",
-            host_contract_revision: "1",
-            runner_template: { template_id: "openrouter-house", revision: "1" },
-          },
-          managed_provider_credential_id: "hosted-openrouter",
-        })}\n`,
+        `${JSON.stringify(profile)}\n`,
         { mode: 0o600 },
       )
     ),
@@ -910,7 +900,7 @@ async function verifyDevelopmentFlow(ports) {
     [
       "fixtures/hosted-contract/valid/agent-heist-launch-request.json",
       "fixtures/hosted-contract/valid/agent-heist-frozen-roster.json",
-      "config/hosted/listings/agent-heist-0.5.0.json",
+      "config/hosted/listings/agent-heist-0.6.0.json",
     ].map(async (path) => JSON.parse(await readFile(join(REPOSITORY_ROOT, path), "utf8"))),
   );
   const frozenLaunchRequest = {
