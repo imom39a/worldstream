@@ -1728,8 +1728,19 @@ struct RouterMetadataWireV1 {
     strategy: String,
     attempt: u64,
     endpoints: RouterEndpointsWireV1,
+    #[serde(default, deserialize_with = "deserialize_present_attempt_history")]
     attempts: Option<Vec<RouterAttemptWireV1>>,
     pipeline: Option<Vec<Value>>,
+}
+
+fn deserialize_present_attempt_history<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<RouterAttemptWireV1>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // OpenRouter permits omission, but its schema does not permit explicit null.
+    Vec::<RouterAttemptWireV1>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -1871,10 +1882,11 @@ fn validate_route_metadata(
     {
         return Err(HouseModelErrorV1::RouteMismatch);
     }
-    let attempts = metadata
-        .attempts
-        .as_ref()
-        .ok_or(HouseModelErrorV1::RouteMismatch)?;
+    // The documented first-success counter and selected endpoint prove the
+    // single attempt above. OpenRouter may omit its optional attempt history.
+    let Some(attempts) = metadata.attempts.as_ref() else {
+        return Ok(());
+    };
     if attempts.len() != 1 {
         return Err(HouseModelErrorV1::FallbackDetected);
     }
@@ -2096,7 +2108,8 @@ mod tests {
         DevelopmentLoopbackOpenRouterProviderPortV1, FileHouseAllowanceLedgerV1,
         HouseAllowanceErrorV1, HouseAllowancePeriodV1, HouseInvocationIdentityV1,
         HouseModelErrorV1, HouseModelExecutorV1, HouseProposedActionV1, HouseProviderCredentialV1,
-        HouseProviderPortErrorV1, HouseSpendLimitsV1, build_provider_request, number_to_nano_usd,
+        HouseProviderPortErrorV1, HouseProviderPortV1, HouseProviderReplyV1,
+        HouseProviderRequestV1, HouseSpendLimitsV1, build_provider_request, number_to_nano_usd,
         parse_openrouter_http_response, provider_max_price,
     };
 
@@ -2158,6 +2171,243 @@ mod tests {
             offer_id: "4:0:blake3-offer".to_owned(),
             payload,
         }
+    }
+
+    struct MetadataReplyProvider(Option<Value>);
+
+    impl HouseProviderPortV1 for MetadataReplyProvider {
+        fn dispatch(
+            &self,
+            request: &HouseProviderRequestV1,
+            _credential: &HouseProviderCredentialV1,
+        ) -> Result<HouseProviderReplyV1, HouseProviderPortErrorV1> {
+            let mut response = json!({
+                "id": "gen-documented-metadata",
+                "object": "chat.completion",
+                "model": request.model_slug(),
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": "{\"offer_id\":\"4:0:blake3-offer\",\"payload\":{}}"
+                    }
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            });
+            if let Some(metadata) = &self.0 {
+                response["openrouter_metadata"] = metadata.clone();
+            }
+            let body =
+                serde_json::to_vec(&response).map_err(|_| HouseProviderPortErrorV1::Rejected)?;
+            HouseProviderReplyV1::new(body)
+        }
+    }
+
+    fn first_attempt_metadata() -> Value {
+        // OpenRouter's documented direct-success shape permits omitted `attempts`.
+        json!({
+            "requested": "qwen/qwen3.8-flash-20260826",
+            "strategy": "direct",
+            "region": "iad",
+            "summary": "available=1, selected=Alibaba",
+            "attempt": 1,
+            "is_byok": false,
+            "endpoints": {
+                "total": 1,
+                "available": [{
+                    "provider": "Alibaba",
+                    "model": "qwen/qwen3.8-flash-20260826",
+                    "selected": true
+                }]
+            }
+        })
+    }
+
+    #[test]
+    fn first_attempt_metadata_without_optional_attempts_returns_action()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
+        let ledger = FileHouseAllowanceLedgerV1::open_at(
+            directory.path().join("ledger"),
+            HouseSpendLimitsV1::hobby_preview(),
+            period()?,
+        )?;
+        let executor = HouseModelExecutorV1::new(
+            MetadataReplyProvider(Some(first_attempt_metadata())),
+            ledger.clone(),
+        );
+        let completion = executor.execute(
+            &credential()?,
+            &revision()?,
+            &identity("metadata-success", "metadata-success")?,
+            &json!({"phase": "planning"}),
+            &offers(),
+            period()?,
+        )?;
+        assert_eq!(completion.action.offer_id, "4:0:blake3-offer");
+        assert_eq!(completion.action.payload, json!({}));
+        assert_eq!(completion.evidence.generation_id, "gen-documented-metadata");
+        let usage = ledger.usage("metadata-success")?;
+        assert_eq!(usage.attempts, 1);
+        assert_eq!(usage.active_calls, 0);
+        assert!(usage.consumed_output_units < 1_000);
+        Ok(())
+    }
+
+    #[test]
+    fn null_attempt_history_is_invalid_and_consumes_the_paid_attempt() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempdir()?;
+        let ledger = FileHouseAllowanceLedgerV1::open_at(
+            directory.path().join("ledger"),
+            HouseSpendLimitsV1::hobby_preview(),
+            period()?,
+        )?;
+        let mut metadata = first_attempt_metadata();
+        metadata["attempts"] = Value::Null;
+        let executor =
+            HouseModelExecutorV1::new(MetadataReplyProvider(Some(metadata)), ledger.clone());
+        let result = executor.execute(
+            &credential()?,
+            &revision()?,
+            &identity("metadata-null", "metadata-null")?,
+            &json!({"phase": "planning"}),
+            &offers(),
+            period()?,
+        );
+        assert_eq!(result.err(), Some(HouseModelErrorV1::InvalidResponse));
+        let usage = ledger.usage("metadata-null")?;
+        assert_eq!(usage.attempts, 1);
+        assert_eq!(usage.active_calls, 0);
+        assert_eq!(usage.consumed_output_units, 1_000);
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded response matrix keeps each rejection beside its public execution checks"
+    )]
+    fn present_attempt_history_and_required_route_evidence_remain_strict()
+    -> Result<(), Box<dyn Error>> {
+        let success = json!({
+            "provider": "Alibaba", "model": "qwen/qwen3.8-flash-20260826", "status": 200
+        });
+        let cases = [
+            ("valid-history", "/attempts", json!([success]), None),
+            (
+                "empty-history",
+                "/attempts",
+                json!([]),
+                Some(HouseModelErrorV1::FallbackDetected),
+            ),
+            (
+                "retry-history",
+                "/attempts",
+                json!([success, success]),
+                Some(HouseModelErrorV1::FallbackDetected),
+            ),
+            (
+                "invalid-history",
+                "/attempts",
+                json!({}),
+                Some(HouseModelErrorV1::InvalidResponse),
+            ),
+            (
+                "missing-status",
+                "/attempts",
+                json!([{"provider": "Alibaba", "model": "qwen/qwen3.8-flash-20260826"}]),
+                Some(HouseModelErrorV1::InvalidResponse),
+            ),
+            (
+                "history-model",
+                "/attempts/0/model",
+                json!("another/model"),
+                Some(HouseModelErrorV1::RouteMismatch),
+            ),
+            (
+                "history-provider",
+                "/attempts/0/provider",
+                json!("AnotherProvider"),
+                Some(HouseModelErrorV1::RouteMismatch),
+            ),
+            (
+                "history-status",
+                "/attempts/0/status",
+                json!(503),
+                Some(HouseModelErrorV1::RouteMismatch),
+            ),
+            (
+                "retry-counter",
+                "/attempt",
+                json!(2),
+                Some(HouseModelErrorV1::FallbackDetected),
+            ),
+            (
+                "missing-metadata",
+                "",
+                Value::Null,
+                Some(HouseModelErrorV1::InvalidResponse),
+            ),
+            (
+                "null-metadata",
+                "",
+                Value::Null,
+                Some(HouseModelErrorV1::InvalidResponse),
+            ),
+            (
+                "unselected",
+                "/endpoints/available/0/selected",
+                json!(false),
+                Some(HouseModelErrorV1::RouteMismatch),
+            ),
+            (
+                "endpoint-model",
+                "/endpoints/available/0/model",
+                json!("another/model"),
+                Some(HouseModelErrorV1::RouteMismatch),
+            ),
+            (
+                "endpoint-provider",
+                "/endpoints/available/0/provider",
+                json!("AnotherProvider"),
+                Some(HouseModelErrorV1::RouteMismatch),
+            ),
+        ];
+        for (name, pointer, value, expected) in cases {
+            let directory = tempdir()?;
+            let ledger = FileHouseAllowanceLedgerV1::open_at(
+                directory.path().join("ledger"),
+                HouseSpendLimitsV1::hobby_preview(),
+                period()?,
+            )?;
+            let mut metadata = first_attempt_metadata();
+            metadata["attempts"] = json!([success]);
+            *metadata
+                .pointer_mut(pointer)
+                .ok_or("invalid fixture pointer")? = value;
+            let metadata = (name != "missing-metadata").then_some(metadata);
+            let executor =
+                HouseModelExecutorV1::new(MetadataReplyProvider(metadata), ledger.clone());
+            let result = executor.execute(
+                &credential()?,
+                &revision()?,
+                &identity(name, name)?,
+                &json!({"phase": "planning"}),
+                &offers(),
+                period()?,
+            );
+            if let Some(expected) = expected {
+                assert_eq!(result.err(), Some(expected), "{name}");
+                assert_eq!(ledger.usage(name)?.consumed_output_units, 1_000);
+            } else {
+                assert_eq!(result?.action.offer_id, "4:0:blake3-offer");
+            }
+            assert_eq!(ledger.usage(name)?.attempts, 1);
+            assert_eq!(ledger.usage(name)?.active_calls, 0);
+        }
+        Ok(())
     }
 
     #[test]
