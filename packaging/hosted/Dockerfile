@@ -5,9 +5,10 @@ ARG WORLDSTREAM_RUST_BUILDER_IMAGE
 ARG WORLDSTREAM_NODE_RUNTIME_IMAGE
 
 FROM ${WORLDSTREAM_RUST_BUILDER_IMAGE} AS builder
+ARG SOURCE_REVISION
 WORKDIR /src
 COPY . .
-RUN cargo build --locked --release \
+RUN WORLDSTREAM_BUILD_REVISION="${SOURCE_REVISION}" cargo build --locked --release \
       -p worldstream-server \
       -p worldstream-studio-supervisor \
       -p worldstream-hosted-gateway \

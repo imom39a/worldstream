@@ -115,3 +115,11 @@ test("Fly package exposes only the Gateway and forbids automatic stop", async ()
     /WORLDSTREAM_DEVELOPMENT_(IDENTITY_BYPASS|FAKE_OPENROUTER)|worldstream-development-key/u,
   );
 });
+
+test("Fly builder passes the declared source revision to the gitless Rust build", async () => {
+  const dockerfile = await readFile("packaging/hosted/Dockerfile", "utf8");
+  const builder = dockerfile.split("FROM ${WORLDSTREAM_NODE_RUNTIME_IMAGE}")[0];
+  assert.match(builder, /FROM \$\{WORLDSTREAM_RUST_BUILDER_IMAGE\} AS builder\s+ARG SOURCE_REVISION/u);
+  assert.match(builder, /RUN WORLDSTREAM_BUILD_REVISION="\$\{SOURCE_REVISION\}" cargo build --locked --release/u);
+  assert.match(dockerfile, /org\.opencontainers\.image\.revision="\$\{SOURCE_REVISION\}"/u);
+});
