@@ -6,8 +6,61 @@ import {
   assertHostedDevelopmentAllowed,
   hostedDevelopmentPorts,
   hostedDevelopmentListingAllowlist,
+  hostedDevelopmentArguments,
+  hostedNativeBuildPlan,
   renderHostedDevelopmentConfig,
 } from "./hosted-dev.mjs";
+
+test("canonical acceptance selects one release build while ordinary development stays debug", () => {
+  const development = hostedNativeBuildPlan(false);
+  const acceptance = hostedNativeBuildPlan(true);
+  assert.equal(development.profile, "debug");
+  assert.equal(acceptance.profile, "release");
+  assert.deepEqual(acceptance.cargoArgs, [
+    "build", "--locked", "--release",
+    "-p", "worldstream-server",
+    "-p", "worldstream-studio-supervisor",
+    "-p", "worldstream-hosted-gateway", "--bins",
+  ]);
+  assert.deepEqual(development.cargoArgs, [
+    "build", "--locked",
+    "-p", "worldstream-server",
+    "-p", "worldstream-studio-supervisor",
+    "-p", "worldstream-hosted-gateway", "--bins",
+  ]);
+  for (const plan of [development, acceptance]) {
+    for (const [field, binary] of [
+      ["ctl", "worldstreamctl"],
+      ["gateway", "worldstream-hosted-gateway"],
+      ["managedAgentHost", "worldstream-managed-agent-host"],
+    ]) {
+      assert.equal(plan[field], new URL(`../target/${plan.profile}/${binary}`, import.meta.url).pathname);
+    }
+  }
+});
+
+test("the native profile can be selected explicitly but never names arbitrary executables", () => {
+  assert.equal(hostedNativeBuildPlan(true, "debug").profile, "debug");
+  assert.equal(hostedNativeBuildPlan(false, "release").profile, "release");
+  for (const invalid of ["", "production", "../release", "/tmp/bin", null, 1]) {
+    assert.throws(() => hostedNativeBuildPlan(true, invalid), /native profile/u);
+  }
+});
+
+test("the command keeps the release default and accepts only one closed profile override", () => {
+  assert.equal(hostedDevelopmentArguments(["--acceptance"]).nativeProfile, "release");
+  assert.equal(hostedDevelopmentArguments([]).nativeProfile, "debug");
+  assert.deepEqual(hostedDevelopmentArguments(["--acceptance", "--native-profile=debug"]), {
+    acceptance: true, checkOnly: false, outputPath: null, nativeProfile: "debug",
+  });
+  assert.equal(hostedDevelopmentArguments(["--check", "--native-profile=release"]).nativeProfile, "release");
+  for (const args of [
+    ["--acceptance", "--native-profile=custom"],
+    ["--acceptance", "--native-profile=../release"],
+    ["--acceptance", "--native-profile=debug", "--native-profile=release"],
+    ["--acceptance", "--native-binary-root=/tmp/bin"],
+  ]) assert.throws(() => hostedDevelopmentArguments(args), /native profile|usage/u);
+});
 
 test("local and Fly gateways retain all retained Listings as well as current discovery", async () => {
   const fly = await readFile(new URL("../packaging/hosted/fly.toml", import.meta.url), "utf8");

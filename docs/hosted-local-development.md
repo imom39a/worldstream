@@ -91,6 +91,35 @@ pnpm hosted:dev:check
 It starts the same topology, runs the end-to-end checks, and then stops the
 processes that it owns. It does not delete retained data.
 
+For the full canonical acceptance story, use:
+
+```sh
+pnpm hosted:acceptance:local
+```
+
+This command builds the native programs with `cargo build --locked --release`.
+The CLI, Controller, Runtime, assignment MCP, Gateway, and approved House
+executable are selected from that build. The log records the source revision,
+checkout cleanliness, and selected native profile. It does not attest binary
+digests or the running process tree. Normal `hosted:dev` and `hosted:dev:check`
+commands still use debug builds.
+
+For an explicit debug comparison, use:
+
+```sh
+pnpm hosted:acceptance:local --native-profile=debug
+```
+
+Only `debug` and `release` are accepted. A profile change does not waive an
+existing executable approval; use a separate clean checkout for a comparison
+if the retained setup pins a different executable. Do not delete retained data
+to force a new approval.
+
+Both profiles run the same prerequisites and story assertions, with the same
+timeouts and local identity and provider substitutes. Debug-only diagnostic
+hooks remain absent from release binaries. This is a local source/profile
+check, not proof of the deployed Linux image or a real provider call.
+
 Use these fast tests when you change only the development controls:
 
 ```sh

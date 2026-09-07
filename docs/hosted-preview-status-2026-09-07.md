@@ -12,6 +12,11 @@ game is **not open for use**. The Fly Machine is stopped and new launches
 are closed. No real OpenRouter call has been made during this acceptance
 attempt.
 
+Current backend tests run locally and in GitHub Actions. They do not use the
+stopped Fly Machine. A successful Vercel or local check is not a live end-to-end
+gameplay result. Automatic Fly start is disabled; this is an intentional
+maintenance state, not an inactivity-driven stop.
+
 Do not infer that gameplay works from a catalog card marked `LIVE`. That
 label describes a reviewed activity, not current authority availability.
 
@@ -19,16 +24,19 @@ label describes a reviewed activity, not current authority availability.
 
 | Item | Observed value |
 | --- | --- |
-| Activity source | `c4333c4d7c3c5b477dc7deffb6331af47d52feab` |
-| Vercel deployment | `dpl_FJoMVLP7c684MA6bFzVj1UKTYHgR` — production, Ready |
-| Manual deployment | `dpl_64GkL4EGaS54N3hn9eqqVyx8MGS6` — same source, Ready |
+| Activity source | `15704429aeba28fb4ffc7bc1abaef8456a8421e1` |
+| Vercel deployment | `dpl_9M618CbVQ6WcF9brBmsdHZ9shoML` — production, Ready |
+| Manual deployment | `dpl_64GkL4EGaS54N3hn9eqqVyx8MGS6` — source `c4333c4`, Ready |
 | Applied Supabase migration head | `20260907203907` — 14 migrations |
 | Configured realtime authority | `https://worldstream-preview.fly.dev` |
 | Listing | `blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1` |
 | Activity Client Release | `sha256:8075408d0420d3eec514d01c428a2b8b17559c388e57a7067c05cc9f95a3b5d9` |
 
-The source is committed and pushed to `main`. It includes the latest
-game-design release, `69b01c6`. The stopped Fly Machine still has source
+At the 22:26 UTC checkpoint, the activity source is committed locally;
+its predecessor `5b068f3` is pushed
+to `main`. The maintenance fix was published from a clean Git archive without
+waiting for a new backend release. It includes the latest game-design release,
+`69b01c6`. The stopped Fly Machine still has source
 `2b1d604`; the web deployment is not a matching backend release yet.
 
 Public checks against the production domain passed:
@@ -49,9 +57,15 @@ been created.
 
 The owner also tried to create a people-only waiting room. The live operating
 state still has `launches_open=false` and `maintenance_mode=true`. The database
-therefore rejects the request before insertion. The current UI incorrectly
-describes `formation_unavailable` as a problem with the participant choices.
-This is a misleading error message, not a reason to bypass the launch gate.
+therefore rejects the request before insertion. The earlier UI incorrectly
+described `formation_unavailable` as a problem with the participant choices.
+Source `1570442` maps only the exact closed-launch database error to the
+existing `503 temporarily_unavailable` response. Other authorization and
+formation rejections keep their existing behavior. The live browser now shows
+“The live room service is temporarily unavailable.” The exact Navigator and
+people-only attempt was repeated after deployment; Supabase still has zero
+Launch Requests and zero Runs. This corrects the explanation; it does not
+reopen the game or bypass the launch gate.
 
 ## Changes made for deployment
 
@@ -88,10 +102,21 @@ installation. It does not certify recovery of populated Room history.
 - OpenRouter Auto Top-Up is off. No credits were purchased by the agent.
 - The owner reports replacing the exposed acceptance key. Read-only provider
   metadata confirms the replacement is different, with a USD 2 lifetime limit,
-  no limit reset, USD 0 usage, and a December 6 expiry. Revocation of the old key
-  is owner-reported, not independently verified. Do not use the old key or an
+  no limit reset, USD 0 usage, and a December 6 expiry. The exposed old key is
+  absent from the freshly inspected workspace key list. Do not use the old key or an
   unrelated unlimited key. Keep the replacement out of chat, Git, screenshots,
   browser bundles, and logs; the local file is ignored and owner-only.
+- The replacement key has an assigned WorldStream-only guardrail: USD 2/day
+  including BYOK spend, one Granite model, one DeepInfra provider, ZDR for all
+  model groups, and no paid/free training or free prompt publication. Its
+  separate USD 2 lifetime limit remains unchanged. The eligibility preview
+  showed one eligible model and provider. Exact canonical model and `bf16`
+  variant constraints remain in each Runner request; display names in the
+  guardrail UI do not prove those exact pins. Account-wide defaults were not
+  changed. The key-scoped policy correction is recorded in ADR 0022.
+- Prompt storage and trace broadcasting are off. The replacement key is not
+  installed on Fly, and no live inference has been attempted. Metadata and
+  settings checks are not proof that a provider response will be accepted.
 - Retained House limits also apply: USD 2/day, USD 10/month, and at most ten
   model calls per Assignment. These do not cap Fly, Vercel, or Supabase costs.
 - The source repository is private. GitHub Actions allowance and overage
@@ -260,14 +285,78 @@ sign-in. The exposed OpenRouter acceptance key still showed zero usage
 when inspected. The owner subsequently supplied the limited replacement
 described above. No inference request was made while checking its metadata.
 
+### Maintenance fix and remaining timeout
+
+CI run `34164903099` tested exact source `5b068f3`. Both foundation jobs
+passed. The canonical story failed again after Room activity and a managed
+restart. The original Controller trace records two Membership HTTP read
+timeouts; the Gateway reports `503 hosted_browser_unavailable`. No Runtime
+`429` was observed in this trace. This identifies the failed boundary, not
+the underlying cause. In particular, the successful entries happened before
+the Room's later history, so restart has not been isolated as the trigger.
+Do not fix this by adding an unproven retry or increasing a limit.
+
+The web-only maintenance correction was built from exact Git archive
+`1570442` and deployed separately. Its 91 Platform tests and 16 product tests
+pass; the build retains the exact v3 and v2 Client artifacts. The archive's
+first product-test invocation lacked its source-revision environment variable
+and stopped before assertions; repeating with the exact archived commit passed.
+Public endpoint checks identify the deployed commit and schema. The signed-in
+browser displays the corrected message after the original people-only action.
+This evidence does not establish working room creation.
+
+The next House catalog candidate adds Cooperative Planner `2` and Listing
+`0.6.0`, with two distinct strategies on the eligible Granite route. All old
+canonical documents remain unchanged. In an isolated PostgreSQL fixture,
+all 15 migrations, repeated seeds, exact stored catalog bytes, and all 383
+pgTAP assertions passed both before and after development seeding. Production
+seeding grants no House approval. The candidate is not applied to Supabase
+or deployed to Fly yet.
+
+A separate provider decoder correction accepts the documented omission of
+optional attempt history only when the existing first-success and exact
+route checks pass. Explicit null, malformed or conflicting history, retries,
+missing required metadata, and mismatched routes remain rejected. The public
+executor regression was red before the fix; all 16 House model tests and
+library lint pass afterward. This is fixture-backed compatibility evidence,
+not a successful paid model call.
+
+The successor catalog is committed locally as `587cd17`; the provider decoder
+correction is `152fbbf`. At the 22:45 UTC checkpoint neither is pushed or deployed.
+The combined local checks pass: 92 Platform tests, 16 product tests, 17 script
+tests, both Platform type checks, and generated-artifact correspondence. The
+three script skips require separate database or container fixtures; they are
+not counted as passes. The cloud still has 14 migrations, zero Launch Requests,
+zero Runs, and no House approval for `fly-primary`. The real Auth account remains.
+
+A smaller real-SQLite and HTTP control uses the exact Heist Pack, five Genesis
+Memberships, and six Transitions. Two concurrent Membership HTTP reads finish
+in about 470 ms locally, within the unchanged 750 ms deadline, including full
+response bodies and connection closure. Full-history recovery accounts for most
+of the measured backend time. This does not reproduce the CI timeout or prove
+its cause. The same control with the production release build profile passes:
+warm reads take 59–60 ms, the reopened read takes 82 ms, and concurrent HTTP
+reads take 197–198 ms. A repeat also passes. This is an optimized macOS test,
+not a deployed Linux game or proof that the full CI failure is resolved.
+
+The acceptance harness now selects a single release build for the CLI,
+Controller, Runtime, assignment helper, Gateway, and approved House executable.
+Normal development still uses debug builds; an explicit closed profile option
+allows a comparison in a separate clean checkout. It records source cleanliness
+and profile selection without claiming a deployed-image identity. The focused
+harness checks pass: 29 tests, with two explicit image-test skips. Every original
+story assertion and prerequisite remains. No second verification pass, authority
+fence, production implementation, or timeout has been changed by this correction.
+The full canonical story is the next required test.
+
 ## Remaining work, in order
 
 1. GitHub consent and the real authenticated browser session are verified.
    Keep the account and its identity records; do not reset the database.
-2. Finish the provider privacy and eligibility checks for the supplied limited
-   key. The authenticated ZDR endpoint preview lists the configured Granite
-   endpoint, but not the configured Qwen/Alibaba endpoint. Do not weaken ZDR
-   to make a model available; resolve this before approving House fill.
+2. Complete the current Room-read timeout diagnosis and exact-source tests.
+   Keep the already verified key/guardrail restrictions. The authenticated ZDR
+   endpoint preview admits Granite but not Qwen/Alibaba; the additive Granite
+   House successor must be included in the coordinated release.
 3. Finish exact-source CI and local verification. A fake-provider result is
    useful integration evidence, not a real-provider pass.
 4. Deploy a verified matching Fly image with `--ha=false`. A local `c4333c4`
