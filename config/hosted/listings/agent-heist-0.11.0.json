@@ -1,0 +1,103 @@
+{
+  "schema": "worldstream/activity-listing-revision/v1",
+  "listing_id": "worldstream.agent-heist.public-preview",
+  "version": "0.11.0",
+  "title": "Agent Heist",
+  "description": "A live social strategy game for people, external agents, and bounded platform-supplied House Agents.",
+  "catalog": {
+    "visibility": "public",
+    "review_status": "reviewed"
+  },
+  "pack": {
+    "id": "worldstream.agent-heist",
+    "version": "0.3.0",
+    "digest": "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d"
+  },
+  "client": {
+    "client_id": "worldstream.agent-heist.web",
+    "release_digest": "sha256:12714052c8e1cac59a95b0439e8e86bf17766c8f689f5782d1dd5d4c0efd4cd6",
+    "client_contract": "worldstream/activity-client-protocol/v1",
+    "surface_id": "heist-hosted-web"
+  },
+  "launch_input_schema": {
+    "schema": "worldstream/launch-input-schema/v1",
+    "accepts": "none",
+    "defaults": {}
+  },
+  "room_setup": {
+    "configuration": {
+      "roles": [
+        "navigator",
+        "insider",
+        "broker"
+      ]
+    }
+  },
+  "seats": [
+    {
+      "seat_id": "navigator",
+      "role": "navigator",
+      "display_name": "Navigator",
+      "required": true,
+      "allowed_participation": [
+        "account_human",
+        "account_external_agent",
+        "house_agent_fill"
+      ],
+      "allowed_house_agent_revisions": [
+        "blake3:620b487a5e8b1863b549d0869acc1ef61f799445e2d3c1987d594ae910ca6c30",
+        "blake3:204814436c55bf86ab9c1fa54dac5f64f83eb468f1ed01712ce52aa2c2c7c3d7"
+      ]
+    },
+    {
+      "seat_id": "insider",
+      "role": "insider",
+      "display_name": "Insider",
+      "required": true,
+      "allowed_participation": [
+        "account_human",
+        "account_external_agent",
+        "house_agent_fill"
+      ],
+      "allowed_house_agent_revisions": [
+        "blake3:620b487a5e8b1863b549d0869acc1ef61f799445e2d3c1987d594ae910ca6c30",
+        "blake3:204814436c55bf86ab9c1fa54dac5f64f83eb468f1ed01712ce52aa2c2c7c3d7"
+      ]
+    },
+    {
+      "seat_id": "broker",
+      "role": "broker",
+      "display_name": "Broker",
+      "required": false,
+      "allowed_participation": [
+        "account_human",
+        "account_external_agent",
+        "house_agent_fill"
+      ],
+      "allowed_house_agent_revisions": [
+        "blake3:620b487a5e8b1863b549d0869acc1ef61f799445e2d3c1987d594ae910ca6c30",
+        "blake3:204814436c55bf86ab9c1fa54dac5f64f83eb468f1ed01712ce52aa2c2c7c3d7"
+      ]
+    }
+  ],
+  "creator_access": "must_claim_seat",
+  "public_viewing_policy": "anonymous_by_link",
+  "pre_start_deadline_seconds": 1800,
+  "result": {
+    "projection": {
+      "schema": "agent-heist/projection/v1",
+      "digest": "blake3:a617f398abd1469d237ce4d832704459deddf44193267fab8bb0e1311e5faa8f"
+    },
+    "projector": {
+      "id": "worldstream.agent-heist.result",
+      "version": "0.3.0",
+      "digest": "blake3:f676cab8007a374db5510d66f534697472c53ea4b2719900bfecce53786f7563"
+    },
+    "publication": {
+      "policy": "public_recent_results",
+      "attribution": "reviewed_pseudonymous_seats",
+      "public_output": "projector_summary_only",
+      "suppression": "unhealthy_inconclusive_or_conflict"
+    }
+  }
+}

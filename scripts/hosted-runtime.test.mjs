@@ -117,8 +117,8 @@ test("successor House Runner instances coexist with both retained installations"
 test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
   const profiles = renderHouseAgentProfiles();
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
-    { profile_id: "house-cooperative-planner", revision: "6" },
-    { profile_id: "house-skeptical-auditor", revision: "5" },
+    { profile_id: "house-cooperative-planner", revision: "7" },
+    { profile_id: "house-skeptical-auditor", revision: "6" },
   ]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");

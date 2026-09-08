@@ -7,6 +7,9 @@ import {
 
 import {
   agentHeistListingBase64,
+  retainedAgentHeistListing010Base64,
+  retainedCooperativePlanner6Base64,
+  retainedSkepticalAuditor5Base64,
   retainedAgentHeistListing02Base64,
   retainedAgentHeistListing03Base64,
   retainedAgentHeistListing04Base64,
@@ -29,7 +32,7 @@ import {
 } from "./hosted-artifacts.generated.js";
 
 export const AGENT_HEIST_LISTING_DIGEST =
-  "blake3:8252e311f9ebbe20d1041877511932c9fac51155e0b26f6a247046fb383ddd99";
+  "blake3:4d6e5bddae0c8495b3ed433dd3d27cfd60de752325c40e775a91cd5dbf7103e7";
 
 export interface PublicHostedActivity {
   readonly slug: "agent-heist" | "negotiate";
@@ -71,6 +74,8 @@ const houseAgents = [
   readHouseAgentRevision(decode(skepticalAuditorBase64)),
 ];
 const retainedHouseAgents = new Map([
+  readHouseAgentRevision(decode(retainedCooperativePlanner6Base64)),
+  readHouseAgentRevision(decode(retainedSkepticalAuditor5Base64)),
   readHouseAgentRevision(decode(retainedCooperativePlanner1Base64)),
   readHouseAgentRevision(decode(retainedCooperativePlanner2Base64)),
   readHouseAgentRevision(decode(retainedCooperativePlanner3Base64)),
@@ -119,13 +124,13 @@ const reviewedAgentHeist = Object.freeze({
 
 // Discovery selects only the current revision. Retained formation and results
 // must continue resolving the exact revision accepted before this deployment.
-const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64]
+const retainedAgentHeist = [retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64, retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64, retainedAgentHeistListing010Base64]
   .map((bytes): ReviewedHostedActivity => {
     const retainedListing = readListingRevision(decode(bytes));
     const houseFillAvailable = retainedListing.value.seats.some(
       (seat) => seat.allowed_house_agent_revisions.length > 0,
     );
-    const retainedClientPath = (bytes === retainedAgentHeistListing07Base64 || bytes === retainedAgentHeistListing08Base64 || bytes === retainedAgentHeistListing09Base64) ? "/agent-heist-v4/hosted/" : bytes === retainedAgentHeistListing05Base64 || bytes === retainedAgentHeistListing06Base64
+    const retainedClientPath = (bytes === retainedAgentHeistListing07Base64 || bytes === retainedAgentHeistListing08Base64 || bytes === retainedAgentHeistListing09Base64 || bytes === retainedAgentHeistListing010Base64) ? "/agent-heist-v4/hosted/" : bytes === retainedAgentHeistListing05Base64 || bytes === retainedAgentHeistListing06Base64
       ? "/agent-heist-v3/hosted/"
       : bytes === retainedAgentHeistListing04Base64 ? "/agent-heist-v2/hosted/" : null;
     return Object.freeze({

@@ -2001,6 +2001,17 @@ fn read_message(
                 budget.messages += 1;
                 let envelope = decode_envelope::<Value>(text.as_bytes())
                     .map_err(|_| AssignedMembershipGatewayErrorV1::InvalidData)?;
+                if envelope.message_type == "server.ping" {
+                    if !matches!(&envelope.body, Value::Object(body) if body.is_empty()) {
+                        return Err(AssignedMembershipGatewayErrorV1::InvalidData);
+                    }
+                    FixedDaemonAssignedMembershipGatewayV1::send(
+                        socket,
+                        "client.pong",
+                        &serde_json::json!({}),
+                    )?;
+                    continue;
+                }
                 return Ok(IncomingEnvelopeV1 {
                     message_type: envelope.message_type,
                     body: envelope.body,
@@ -2405,7 +2416,7 @@ impl AssignmentMcpServerV1 {
             .iter()
             .map(|observation| observation.frame_seq)
             .max();
-        let result = safe_snapshot(&snapshot);
+        let result = safe_snapshot(&snapshot, &self.context.authority.role);
         self.current = Some(snapshot);
         Ok(result)
     }
@@ -3017,9 +3028,13 @@ fn contains_prohibited_material(value: &Value) -> bool {
     }
 }
 
-fn safe_snapshot(snapshot: &MembershipStreamSnapshotV1) -> Value {
+fn safe_snapshot(snapshot: &MembershipStreamSnapshotV1, role: &str) -> Value {
     serde_json::json!({
         "schema": "worldstream/assignment-observation/v1",
+        // A stateless model turn may receive retained observations without the
+        // initial Projection Reset. Its role still comes from sealed authority,
+        // never Activity text or a model-supplied routing argument.
+        "role": role,
         "head": {
             "room_seq": snapshot.room_head.room_seq,
             "genesis_or_transition_hash": snapshot.room_head.genesis_or_transition_hash,

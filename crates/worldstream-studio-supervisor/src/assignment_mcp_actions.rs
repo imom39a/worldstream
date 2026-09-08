@@ -492,8 +492,16 @@ fn read_envelope(
                     return Err(AssignmentMcpActionGatewayErrorV1::InvalidData);
                 }
                 budget.consume(text.len())?;
-                return decode_envelope(text.as_bytes())
-                    .map_err(|_| AssignmentMcpActionGatewayErrorV1::InvalidData);
+                let envelope = decode_envelope::<Value>(text.as_bytes())
+                    .map_err(|_| AssignmentMcpActionGatewayErrorV1::InvalidData)?;
+                if envelope.message_type == "server.ping" {
+                    if !matches!(&envelope.body, Value::Object(body) if body.is_empty()) {
+                        return Err(AssignmentMcpActionGatewayErrorV1::InvalidData);
+                    }
+                    send_protocol(socket, "client.pong", None, &serde_json::json!({}))?;
+                    continue;
+                }
+                return Ok(envelope);
             }
             Message::Ping(payload) => {
                 budget.consume(payload.len())?;

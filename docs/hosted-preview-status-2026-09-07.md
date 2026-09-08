@@ -6,6 +6,52 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 12:16 UTC — timeout repair deployed; House acceptance still failed
+
+Fly and Vercel run source `1527a1da40b3009c39b83e7fca4aca87d0e46ff6`.
+Fly image is `sha256:b972176639c731915a6d4d22537ca5a80dd3479a2f0deee580fe3bf0df06d435`.
+Vercel deployment is `dpl_H3T9puibngCQaoBtyWhst5iTYC4V`; Supabase migration
+head is `20260908113606`. Listing 0.10.0 and its exact Planner 6 / Auditor 5 /
+Template 5 records were installed and approved. The one original Fly Machine,
+512 MiB limit and volume remain unchanged. Operating generation 15 permits
+human launches but keeps House fill closed; maintenance and recovery fencing
+are off.
+
+One controlled paid test created Room `01M20DSVFMZWR5RX155V36Y0B7`, Run
+`2f74145f-65af-4659-9ac1-11dc7528b529`. Both assignment records use 30,000 ms.
+Navigator's inspect, publish and propose Actions were accepted. Insider's
+model Action reached Runtime but was rejected with `clue_ownership_or_knowledge`:
+it tried to inspect Navigator's `route` clue. Broker exited with a prepared
+operation and no Runtime receipt. After the Room completed, an exact retained
+operation reconciliation returned `stale_room_state`. It reused the original
+Action identity and payload, made no model call, and is not an accepted House
+gameplay Action. The match failed with `no_strict_majority`; **live House
+acceptance remains failed**.
+
+Two additional transport regressions now reproduce the problem locally:
+`server.ping` was rejected during both observation synchronization and Action
+submission. The candidate answers valid empty heartbeats with `client.pong`
+within the existing deadline/message/byte budget. Malformed bodies still fail
+closed. A separate regression shows a resumed observation without an initial
+Projection Reset has no explicit role. Each observation now includes the
+role from sealed assignment authority. No routing or credential input is added.
+The original Broker error was not recorded; the heartbeat defect is confirmed,
+but is not proof of that particular process exit's cause.
+
+The next candidate is Listing 0.11.0, Planner 7 / Auditor 6, behavior policy 2.
+It adds public Heist rules for clue ownership, exact identifiers, commitment
+priority and result acknowledgement. It includes no fixture solution or hidden
+clue value. Pack 0.3.0, v4 client, model route, privacy controls, per-agent
+allowances and deployment caps are unchanged. All earlier Listing and House
+bytes remain retained. Publishing metadata does not grant execution approval.
+The candidate is **not deployed or live-qualified** at this checkpoint.
+
+Before another paid Room: finish deterministic checks, verify the actual
+image and installed executable binding, capture retained state, install and
+approve the exact successor, then run one bounded end-to-end match. Require
+accepted House Actions and terminal result reconciliation, not merely provider
+responses or a healthy process. Keep the full IMO-184 acceptance matrix open.
+
 ### September 8 — House submission diagnosis and repair candidate
 
 The two latest House journals retain `inspect_clue` requests in `prepared`

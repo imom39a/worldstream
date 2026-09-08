@@ -195,6 +195,31 @@ test("operation-budget successor preserves exact metadata, limits and retained i
   assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
+test("Heist guidance successor is append-only and keeps all spending and privacy limits", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260908124000_house_heist_guidance_successor.sql", import.meta.url), "utf8");
+  const documents = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  assert.equal(documents.length, 2);
+  for (const [index, [name, prior, next]] of [["cooperative-planner", 6, 7], ["skeptical-auditor", 5, 6]].entries()) {
+    const load = async (revision) => JSON.parse(await readFile(new URL(`../config/hosted/house-agents/${name}-${revision}.json`, import.meta.url), "utf8"));
+    const previous = await load(prior), current = await load(next);
+    assert.deepEqual(documents[index], canonicalBytes(current));
+    assert.ok(migration.includes(`blake3:${hash(documents[index])}`));
+    assert.deepEqual(current.route, previous.route);
+    assert.deepEqual(current.allowance, previous.allowance);
+    assert.deepEqual(current.tools, previous.tools);
+    assert.equal(current.behavior_policy.revision, "2");
+    for (const rule of ["observation.role", "Insider owns entry_window", "Broker owns required_tool and extraction", "prioritize commit_move", "selected_plan_id", "acknowledge_result"]) {
+      assert.ok(current.behavior_policy.instructions.includes(rule), rule);
+    }
+    assert.doesNotMatch(current.behavior_policy.instructions, /route_roof|window_early|thermal_key/u,
+      "public rules must not bake in a fixture solution");
+  }
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.11.0.json", import.meta.url), "utf8"));
+  assert.deepEqual(Buffer.from(migration.match(/\$listing\$([\s\S]*?)\$listing\$/u)[1]), canonicalBytes(listing));
+  assert.ok(migration.includes(`blake3:${hash(canonicalBytes(listing))}`));
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("approval preparation rejects unreviewed templates, duplicate JSON, symlinks and SQL-shaped identifiers", async (t) => {
   const f = await fixture(t);
   await assert.rejects(prepareHouseApprovals({ ...f.options, installationId: "x';delete" }), /approval_options_invalid/u);

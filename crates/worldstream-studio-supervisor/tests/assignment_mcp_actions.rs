@@ -800,6 +800,62 @@ fn fixed_daemon_gateway_accepts_scoped_live_frames_during_sync_and_action_reply(
 }
 
 #[test]
+fn fixed_daemon_gateway_answers_protocol_heartbeats_before_action_receipt() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| unreachable!("heartbeat fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| unreachable!("heartbeat address: {error}"));
+    let fixture = thread::spawn(move || {
+        serve_action_fixture_with_heartbeats(
+            &listener,
+            Some(MEMBER),
+            Duration::ZERO,
+            Some(&json!({})),
+        );
+    });
+    let gateway = FixedDaemonAssignmentMcpActionGatewayV1::new(address, Duration::from_secs(2))
+        .unwrap_or_else(|error| unreachable!("heartbeat gateway: {error:?}"));
+    let result = gateway.submit_exact(&authority(ASSIGNMENT), &exact_gateway_request());
+    assert!(
+        matches!(
+            result,
+            Ok(AssignmentMcpActionDaemonResultV1::Accepted { .. })
+        ),
+        "heartbeat must not interrupt submission: {result:?}"
+    );
+    fixture
+        .join()
+        .unwrap_or_else(|error| unreachable!("heartbeat thread: {error:?}"));
+}
+
+#[test]
+fn fixed_daemon_gateway_rejects_malformed_protocol_heartbeat_before_action() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| unreachable!("heartbeat fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| unreachable!("heartbeat address: {error}"));
+    let fixture = thread::spawn(move || {
+        serve_action_fixture_with_heartbeats(
+            &listener,
+            Some(MEMBER),
+            Duration::ZERO,
+            Some(&json!({"unexpected": true})),
+        );
+    });
+    let gateway = FixedDaemonAssignmentMcpActionGatewayV1::new(address, Duration::from_secs(2))
+        .unwrap_or_else(|error| unreachable!("heartbeat gateway: {error:?}"));
+    assert_eq!(
+        gateway.submit_exact(&authority(ASSIGNMENT), &exact_gateway_request()),
+        Err(AssignmentMcpActionGatewayErrorV1::InvalidData)
+    );
+    fixture
+        .join()
+        .unwrap_or_else(|error| unreachable!("heartbeat thread: {error:?}"));
+}
+
+#[test]
 fn fixed_daemon_gateway_rejects_cross_member_live_frame_before_action() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .unwrap_or_else(|error| unreachable!("bind Action fixture: {error}"));
@@ -975,6 +1031,15 @@ fn serve_action_fixture_with_delay(
     frame_member: Option<&str>,
     delay: Duration,
 ) {
+    serve_action_fixture_with_heartbeats(listener, frame_member, delay, None);
+}
+
+fn serve_action_fixture_with_heartbeats(
+    listener: &TcpListener,
+    frame_member: Option<&str>,
+    delay: Duration,
+    heartbeat: Option<&Value>,
+) {
     let (stream, _) = listener
         .accept()
         .unwrap_or_else(|error| unreachable!("accept Action fixture: {error}"));
@@ -1013,6 +1078,15 @@ fn serve_action_fixture_with_delay(
     );
     let sync_ack = read_fixture(&mut socket);
     assert_eq!(sync_ack["type"], "room.sync_ack");
+    if let Some(body) = heartbeat {
+        send_fixture(&mut socket, "server.ping", body);
+        if body != &json!({}) {
+            return;
+        }
+        let pong = read_fixture(&mut socket);
+        assert_eq!(pong["type"], "client.pong");
+        assert_eq!(pong["body"], json!({}));
+    }
     if let Some(member) = frame_member {
         send_action_live_frame(&mut socket, 1, member);
         if member != MEMBER {
@@ -1037,6 +1111,12 @@ fn serve_action_fixture_with_delay(
     assert_eq!(action["body"]["based_on_room_seq"], 7);
     assert_eq!(action["body"]["action_type"], "increment");
     assert_eq!(action["body"]["payload"], json!({"amount":3}));
+    if heartbeat.is_some() {
+        send_fixture(&mut socket, "server.ping", &json!({}));
+        let pong = read_fixture(&mut socket);
+        assert_eq!(pong["type"], "client.pong");
+        assert_eq!(pong["body"], json!({}));
+    }
     if let Some(member) = frame_member {
         send_action_live_frame(&mut socket, 2, member);
     }

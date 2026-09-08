@@ -295,7 +295,7 @@ export function renderHouseAgentProfiles() {
   const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-cooperative-planner",
-    revision: "6",
+    revision: "7",
     display_name: "Cooperative Planner",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -304,7 +304,7 @@ export function renderHouseAgentProfiles() {
   const skeptical = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-skeptical-auditor",
-    revision: "5",
+    revision: "6",
     display_name: "Skeptical Auditor",
     non_secret_configuration: {},
     host_contract: hostContract,

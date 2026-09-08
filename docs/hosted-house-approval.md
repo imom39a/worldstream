@@ -5,12 +5,12 @@ a migration, or an automatic startup action. Use it after the approved
 spending-limited OpenRouter credential and the exact Fly image are installed.
 Keep launches and House calls closed until the final checks pass.
 
-The current candidate Listing is Agent Heist `0.8.0`. Its two House strategies are
-Cooperative Planner `4` and Skeptical Auditor `3`. Both use the exact Granite
+The current candidate Listing is Agent Heist `0.11.0`. Its two House strategies are
+Cooperative Planner `7` and Skeptical Auditor `6`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
 instructions differ; this is a two-strategy exhibition, not a comparison of two
 models. This candidate pins the clock-safe Pack `0.3.0`, v4 Activity Client,
-result projector `0.3.0`, and Runner Template `3`. The provider route and hard
+result projector `0.3.0`, and Runner Template `5`. The provider route and hard
 allowances are unchanged. Check the deployment record before treating the
 candidate as installed or approved.
 
@@ -27,6 +27,21 @@ Also retain Listing `0.7.0`, Planner `3`, Auditor `2`, and Template `2` for
 their historical assignments. Listing `0.8.0` uses the corrected TLS transport
 and exact canonical-model response mapping. Its executable needs its own
 approvals; do not reuse the previous executable's approval.
+
+Retain Listing `0.9.0`, Planner `5`, Auditor `4`, and Template `4` as well.
+The `0.10.0` successor separates the 30-second assignment operation budget
+from the 750 ms health probe and lets the model host close a stale Action turn
+without exiting or repeating its provider call. It needs fresh approvals for
+the actual installed binary. Old assignment launch records remain unchanged;
+only newly registered assignments receive the new operation budget.
+
+Retain Listing `0.10.0`, Planner `6` and Auditor `5` unchanged. The `0.11.0`
+candidate adds public Heist guidance in behavior policy revision `2`, including
+clue ownership and commitment priority. It does not embed fixture answers or
+increase allowances. The helper now responds to protocol heartbeats and includes
+the sealed role on each observation. Verify the actual executable still matches
+Template `5` before approving it; never overwrite an installed template to make
+an executable mismatch pass. Candidate metadata is not evidence of live gameplay.
 
 ## What this evidence means
 
@@ -89,15 +104,15 @@ generated SDK build.
 3. Capture these records from that same installation into a private local
    directory. Preserve their relative layout beneath a `studio` directory:
 
-   - `agent-profiles/revisions/<hex profile ID>/34.json` for
-     `house-cooperative-planner` revision `4`;
-   - `agent-profiles/revisions/<hex profile ID>/33.json` for
-     `house-skeptical-auditor` revision `3`;
-   - `runner-templates/installed/openrouter-house--3.json`;
+   - `agent-profiles/revisions/<hex profile ID>/37.json` for
+     `house-cooperative-planner` revision `7`;
+   - `agent-profiles/revisions/<hex profile ID>/36.json` for
+     `house-skeptical-auditor` revision `6`;
+   - `runner-templates/installed/openrouter-house--5.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `33` encodes revision `3`; `34` encodes revision `4`. Capture the actual
+   `35` encodes revision `5`; `36` encodes revision `6`. Capture the actual
    `/usr/local/bin/worldstream-managed-agent-host` binary separately.
    Do not capture or open vault secret files, the OpenRouter API key, controller
    credentials, or process environment. The named credential record contains
@@ -121,8 +136,8 @@ node scripts/hosted-house-approval.mjs \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-4.json \
-  --house-revision config/hosted/house-agents/skeptical-auditor-3.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-7.json \
+  --house-revision config/hosted/house-agents/skeptical-auditor-6.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
 

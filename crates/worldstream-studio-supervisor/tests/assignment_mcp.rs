@@ -223,6 +223,7 @@ fn context_lists_only_its_assignment_and_never_discloses_routing_or_authority() 
         .observe(json!({}))
         .unwrap_or_else(|error| panic!("observe: {error:?}"));
     assert_eq!(observation["stream"]["frame_head"], 8);
+    assert_eq!(observation["role"], "counter");
     assert_eq!(
         observation["projection_reset"]["projection"]["activity"]["value"],
         7
@@ -230,6 +231,22 @@ fn context_lists_only_its_assignment_and_never_discloses_routing_or_authority() 
     assert_safe(&observation);
     assert!(server.list_assigned_tasks(json!({"room_id":ROOM})).is_err());
     assert!(server.observe(json!({"member_id":MEMBER})).is_err());
+}
+
+#[test]
+fn resumed_observation_keeps_sealed_role_without_an_initial_projection() {
+    let gateway = FakeGateway::new(vec![Ok(snapshot(7, 8, false))]);
+    let supervisor = AssignmentMcpSupervisorV1::new(FakeSource, gateway);
+    let context = supervisor
+        .issue_context(ASSIGNMENT)
+        .unwrap_or_else(|error| panic!("context: {error:?}"));
+    let mut server = AssignmentMcpServerV1::open(context);
+    let observation = server
+        .observe(json!({}))
+        .unwrap_or_else(|error| panic!("observe: {error:?}"));
+    assert!(observation["projection_reset"].is_null());
+    assert_eq!(observation["role"], "counter");
+    assert_safe(&observation);
 }
 
 #[test]
@@ -702,6 +719,47 @@ fn fake_authority() -> AssignedMembershipAuthorityV1 {
 }
 
 fn serve_reset_fixture(listener: &TcpListener, wrong_role: bool) {
+    serve_reset_fixture_with_heartbeat(listener, wrong_role, None);
+}
+
+#[test]
+fn production_gateway_answers_protocol_heartbeat_during_sync() {
+    assert_membership_heartbeat(json!({}), true);
+}
+
+#[test]
+fn production_gateway_rejects_malformed_protocol_heartbeat() {
+    assert_membership_heartbeat(json!({"unexpected": true}), false);
+}
+
+fn assert_membership_heartbeat(body: Value, valid: bool) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("heartbeat fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("heartbeat address: {error}"));
+    let fixture =
+        thread::spawn(move || serve_reset_fixture_with_heartbeat(&listener, false, Some(body)));
+    let gateway = FixedDaemonAssignedMembershipGatewayV1::new(address, Duration::from_secs(2));
+    let result = gateway.synchronize(&fake_authority());
+    if valid {
+        assert!(
+            result.is_ok(),
+            "heartbeat must not interrupt synchronization: {result:?}"
+        );
+    } else {
+        assert_eq!(result, Err(AssignedMembershipGatewayErrorV1::InvalidData));
+    }
+    fixture
+        .join()
+        .unwrap_or_else(|error| panic!("heartbeat thread: {error:?}"));
+}
+
+fn serve_reset_fixture_with_heartbeat(
+    listener: &TcpListener,
+    wrong_role: bool,
+    heartbeat: Option<Value>,
+) {
     let (stream, _) = listener
         .accept()
         .unwrap_or_else(|error| panic!("accept fixture: {error}"));
@@ -785,11 +843,37 @@ fn serve_reset_fixture(listener: &TcpListener, wrong_role: bool) {
     let _sync_ack = socket
         .read()
         .unwrap_or_else(|error| panic!("read sync ACK: {error}"));
+    if let Some(body) = heartbeat
+        && !serve_membership_heartbeat(&mut socket, &body)
+    {
+        return;
+    }
     send_fixture(
         &mut socket,
         "room.sync_acked",
         &json!({"through_frame_head":0}),
     );
+}
+
+fn serve_membership_heartbeat(
+    socket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    body: &Value,
+) -> bool {
+    send_fixture(socket, "server.ping", body);
+    if body != &json!({}) {
+        return false;
+    }
+    let pong = socket
+        .read()
+        .unwrap_or_else(|error| panic!("read pong: {error}"));
+    let pong: Value = serde_json::from_str(
+        pong.to_text()
+            .unwrap_or_else(|error| panic!("pong text: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("pong JSON: {error}"));
+    assert_eq!(pong["type"], "client.pong");
+    assert_eq!(pong["body"], json!({}));
+    true
 }
 
 #[expect(
