@@ -2392,7 +2392,18 @@ fn browser_stream_headers_are_safe(
         && !headers.contains_key("proxy-authorization")
         && !headers.keys().any(|name| {
             let name = name.as_str();
-            name.starts_with("x-forwarded-") || name.starts_with("x-original-")
+            // Fly's HTTP ingress adds these transport metadata fields. Ignore
+            // their values: only the actual Host/Origin and socket peer above
+            // govern admission. The Runtime handshake is rebuilt without them.
+            (name.starts_with("x-forwarded-")
+                && !matches!(
+                    name,
+                    "x-forwarded-for"
+                        | "x-forwarded-proto"
+                        | "x-forwarded-port"
+                        | "x-forwarded-ssl"
+                ))
+                || name.starts_with("x-original-")
         })
 }
 

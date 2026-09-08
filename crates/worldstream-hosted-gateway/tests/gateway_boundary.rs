@@ -917,6 +917,35 @@ async fn generic_worldstream_and_arbitrary_proxy_routes_are_absent() {
 }
 
 #[tokio::test]
+async fn browser_upgrades_ignore_fly_transport_metadata_without_trusting_it() {
+    let proxy_headers = "X-Forwarded-For: 192.0.2.10, 198.51.100.20\r\nX-Forwarded-Proto: https\r\nX-Forwarded-Port: 443\r\nX-Forwarded-Ssl: on";
+    for (path, protocol) in [
+        ("/v1/hosted/browser-stream", "worldstream.json.v0.1"),
+        (
+            "/v1/hosted/public-runs/0123456789abcdef0123456789abcdef/stream",
+            "worldstream.public-projection.v1",
+        ),
+    ] {
+        let accepted = browser_stream_handshake(
+            path,
+            "https://arena.example",
+            Some(protocol),
+            Some(proxy_headers),
+        )
+        .await;
+        assert!(accepted.starts_with("HTTP/1.1 101 "), "{accepted}");
+        let rejected = browser_stream_handshake(
+            path,
+            "https://other.example",
+            Some(protocol),
+            Some(proxy_headers),
+        )
+        .await;
+        assert!(rejected.starts_with("HTTP/1.1 403 "), "{rejected}");
+    }
+}
+
+#[tokio::test]
 async fn public_browser_stream_requires_exact_origin_subprotocol_and_credential_free_upgrade() {
     let accepted = browser_stream_handshake(
         "/v1/hosted/browser-stream",
@@ -1053,6 +1082,14 @@ async fn public_browser_stream_proxies_first_frame_ticket_and_live_frames_only_t
                 );
                 assert!(request.headers().get("authorization").is_none());
                 assert!(request.headers().get("cookie").is_none());
+                for name in [
+                    "x-forwarded-for",
+                    "x-forwarded-proto",
+                    "x-forwarded-port",
+                    "x-forwarded-ssl",
+                ] {
+                    assert!(request.headers().get(name).is_none());
+                }
                 response.headers_mut().insert(
                     "sec-websocket-protocol",
                     "worldstream.json.v0.1".parse().expect("protocol header"),
@@ -1117,6 +1154,16 @@ async fn public_browser_stream_proxies_first_frame_ticket_and_live_frames_only_t
             "sec-websocket-protocol",
             "worldstream.json.v0.1".parse().expect("protocol"),
         );
+        for (name, value) in [
+            ("x-forwarded-for", "192.0.2.10"),
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-port", "443"),
+            ("x-forwarded-ssl", "on"),
+        ] {
+            request
+                .headers_mut()
+                .insert(name, value.parse().expect("transport metadata"));
+        }
         let (mut socket, response) =
             tokio_tungstenite::tungstenite::client(request, stream).expect("gateway handshake");
         assert_eq!(

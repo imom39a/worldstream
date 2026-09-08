@@ -214,6 +214,17 @@ Fly admits a participant browser WebSocket only when all of these checks pass:
 - atomic ticket consumption succeeds; and
 - global, peer, Principal, Membership, and connection limits admit the stream.
 
+The Fly HTTP ingress adds `X-Forwarded-For`, `X-Forwarded-Proto`,
+`X-Forwarded-Port`, and `X-Forwarded-SSL`. The public participant and spectator
+upgrade routes tolerate these four metadata fields but ignore their values.
+They never determine Host, Origin, peer identity, authorization, or routing,
+and are never copied into the reconstructed Runtime handshake. The real
+Host and Origin remain exact matches, peer limits use the connected socket,
+and cookies, authorization, `Forwarded`, `Proxy-Authorization`,
+`X-Forwarded-Host`, other `X-Forwarded-*`, and `X-Original-*` remain rejected.
+This ingress correction does not change the same-origin BFF HTTP contract.
+See [Fly's request-header contract](https://fly.io/docs/networking/request-headers/).
+
 Wrong Origin, preview Origin, missing or wrong subprotocol, binary first frame,
 expired ticket, replayed ticket, oversized frame, and capacity rejection close
 with generic safe reasons. The public ingress applies pre-upgrade rate limits,

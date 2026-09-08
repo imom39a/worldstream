@@ -6,6 +6,53 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — public formation works; Fly WebSocket headers block entry
+
+Source `1a911340b57f3fdcd7a886776a70f2e683c714d2` is deployed to Vercel as
+`dpl_BqZQRr2MvKiJDnEvWnsSWrn1Ld5v` and Fly as image manifest
+`sha256:5ff4b0498aaf0530e63ef4efe78894144f0a88bafb5270a79786fba3feece5a7`.
+The image passed the isolated two-participant WebSocket launch test under
+one CPU/512 MiB, with no OOM and no provider access. Both public deployment
+identity endpoints agree, and Fly `/readyz` returned HTTP 200.
+
+The retained Runtime could not start because its immutable base Distribution
+contained seven embedded revisions while the new build adds Heist 0.3. The
+daemon correctly rejected that identity mismatch. The captured SQLite
+database had zero Rooms, Supabase had zero launch requests, and the Host
+creation/assignment ledgers were empty. After checking the live database hash
+against the audited capture, the empty Runtime directory was preserved at
+`/var/lib/worldstream/archives/empty-runtime-before-heist-03-1a91134` and a
+fresh Runtime directory was initialized. Nothing was deleted. The Controller,
+credential vault, Supabase database, accounts, and approvals were preserved.
+This is a zero-history initialization recovery, **not** a supported upgrade
+for an installation with Room history. That upgrade path remains unresolved.
+
+The pre-initialization capture `5cae8f36-1a5f-49b0-a3ba-4fb51e4ae4b0` was
+downloaded and its archive hashes verified. It is not a paired restore proof
+for the new Runtime, and it predates the live Room described below.
+
+Exact House approvals were prepared from the actual installed profiles,
+Template 2 and executable, inserted unavailable, then activated separately.
+The provider key metadata still showed USD 2 remaining, no limit reset, and
+zero usage before the browser test. No credits or extra resources were bought.
+
+Real signed-in Chrome created launch
+`daca3af7-f135-4d95-9156-e413423190e9`. After the 30-second fill window,
+the platform created one Run with a human Navigator, Cooperative Planner
+Insider and Skeptical Auditor Broker. The standalone v4 client opened but
+reported `Realtime connection failed`. A public upgrade probe returned 403.
+The Gateway rejects all `X-Forwarded-*` fields, including the transport
+headers added by Fly Proxy. See
+[Fly request headers](https://fly.io/docs/networking/request-headers/).
+The correction must ignore only the four standard Fly transport metadata
+fields, keep actual Host/Origin and ticket checks, and never relay or trust
+those metadata values as identity.
+
+New launches and House fill were closed again while this fix is tested;
+maintenance is off, the Runtime is healthy, and the existing Room is retained.
+There is no successful live LLM/gameplay/terminal-result claim yet. In
+particular, **do not repeat the empty-Runtime recovery now that a Room exists**.
+
 ### September 8 — retained-volume import conflict identified and tested
 
 Runner Template 2 reused Template 1's `hosted-house-01` instance identity.
