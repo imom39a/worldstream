@@ -6,6 +6,52 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 08:18 UTC — Room creation restored; live gameplay still unverified
+
+Vercel and Fly are on `6960d4c1928f6d2d63ea6ab5938165b77f65ed91`.
+Vercel deployment is `dpl_9mJZKPnKRF41Wrxeb6mqkHhyvjQ9`. Supabase schema
+head is `20260908074827`, with Listing 0.9.0, Template 4, Planner 5 and
+Auditor 4. The polished Heist v4 client is unchanged.
+
+Fly is started, with its normal entrypoint, one shared CPU, 512 MiB, and the
+existing 1 GiB volume. Public `/readyz` returned 200. An eight-digest catalog
+allowlist exceeded the old generic 512-character environment guard and caused
+startup failures. A temporary three-digest allowlist permits the current
+Listing and both earlier live Room Listings. All installed artifacts remain.
+
+The permanent fix is committed as `2e4c51da6d58c0e56c72876a6536bf0343062596`
+but is **not deployed yet**. Its exact local image
+`sha256:365b5b48ed07f441f8539aa9fd286c02a682f415a866d507db8d35bfd3c1829f`
+passed a network-isolated launch with the full eight-digest deployment
+allowlist and two synchronized WebSocket participants. Startup was 4683 ms;
+peak memory was 215085056 bytes, with no OOM. No LLM call was made. The
+managed-agent executable digest still matches the approved Template 4 binary:
+`blake3:6c57b11a250c88daf547cd9c5b2d3abcc3ee36e469b2fd81ac7efc29801f41c7`.
+
+The four historical House reservations were released only after offline
+shutdown, a populated volume checkpoint, durable per-unit retirement fences,
+and exact terminal-evidence checks. No allowance was reset or history deleted.
+See [the retirement procedure](hosted-house-retirement.md). Retirement remains
+an operator procedure, not automatic capacity recycling.
+
+Operating generation 9 has launches and House fill open. The new browser test
+created launch `30992bd9-06f6-472e-b739-34b1887e2567`, Runtime Room
+`01M201ARVE75VQ6RP09Y4H2AAA`, Run `dde98b8b-3359-4229-b7ea-1195e91be6e1`,
+and public ID `d83f0382c3641af8a6ed26d0ea1d17cd`. This proves Room creation,
+not completed gameplay. Browser participation then became blocked by the
+locked Mac. Do not create another launch simply to resume this check.
+The latest allowance read contains no new provider attempts for this Room.
+
+An expired browser session also produced repeated waiting-room GET 401s.
+Reloading the same waiting room recovered access. The confusing fallback
+message needs follow-up; no auth fix has been validated for that behavior.
+
+Remaining release checks: finish the signed-in participant and House Action
+flow, verify its terminal result, then deploy the tested permanent allowlist
+fix with a safe drain/checkpoint. Provider completion alone is not acceptance.
+The USD 2 non-resetting provider-key cap is unchanged. No infrastructure was
+expanded. The earlier entries below are historical, not current operating state.
+
 ### September 8 — corrected transport deployed; bounded live test in progress
 
 Both live services now report source
