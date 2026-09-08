@@ -6,6 +6,76 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 12:53 UTC — accepted live House Actions; preview fill reopened
+
+The transport repair is live on the exact `c7cef6f` deployment recorded below.
+Operating generation 19 enables launches and bounded House fill, with maintenance
+and recovery fencing off. This is a hobby-preview checkpoint, **not full MVP
+acceptance or a guarantee of successful Heist gameplay**.
+
+One browser-created match used a human Navigator and two actual OpenRouter-backed
+House Agents: Launch `bc22650f-5668-48ff-91bd-5666781f810e`, Room
+`01M20GX83RMJVPHMW6R0093YVR`, Run `4bf93a50-714b-43c6-94b0-a28ea37d54b7`.
+The Runtime and exact helper journals confirm:
+
+- Broker `commit_move` Action `3ERX63T1SJ3Z4FW77WJJ2QVG9Y` accepted at sequence 7.
+- Insider `acknowledge_result` Action `1QF6N8HJPK1GJJM44G2HC4H3BA` accepted at sequence 11.
+- Insider commitment `4RK1J512V0609YYK8NA7DY5NA3` correctly rejected as
+  `stale_room_state`: both commitments used sequence 6 and Broker advanced it.
+  Neither agent process exited. Another Insider model attempt failed; its later
+  result acknowledgement succeeded. No old Action was silently rebased or replaced.
+
+The Room completed at sequence 12. Its
+[public exhibition result](https://worldstream-demos.vercel.app/runs/fc6bc73420b86074a6a8e49f355d76b7)
+returned HTTP 200 with Replay-verified `failure`, `no_strict_majority`, score 0.
+This proves accepted agent submission and terminal publication, not good strategy.
+The human inspected, published and proposed a tentative plan, but did not complete
+a commitment: the client shows a shortened plan ID while requiring the full ID
+in a text field. This test is not a fair model-performance benchmark.
+
+OpenRouter reported USD **0.00557689** lifetime usage and USD **1.99442311**
+remaining under the existing USD 2 lifetime key limit, with no reset. The latest
+match added USD 0.00218665. No purchase, cap increase or allowance reset occurred.
+Conservative completed-unit capacity retention remains; this does not prove
+unlimited successive matches or automatic capacity reclamation.
+
+Follow-ups are explicit:
+
+- [IMO-185](https://linear.app/imom39a/issue/IMO-185): select authorized plan IDs
+  in the standalone client instead of typing shortened identifiers.
+- [IMO-186](https://linear.app/imom39a/issue/IMO-186): classify closed provider/
+  output failures safely and qualify bounded phase attention and stale-decision
+  recovery. Current `provider_failed` evidence cannot distinguish all causes.
+  Any rule change needs a new Pack revision; retain 0.3.0 and strict kernel admission.
+- IMO-184 remains In Progress: its external browser-agent, spectator, reconnect,
+  restart, device and paired-recovery acceptance matrix is not established here.
+
+### September 8, 12:45 UTC — corrected candidate deployed; live test in progress
+
+Fly and Vercel now run `c7cef6f5ce7c043af6ff156b6ff783078ca6201b`.
+Fly image is `sha256:7302073613041a9b1d90122547020216586059a6686ad59615e4ea82f8c16f1e`;
+Vercel deployment is `dpl_EQ7WjzwYAEyNr2WbdQi9NmoVy1ja`. Supabase migration
+head is `20260908124000`. Listing 0.11.0 and Planner 7 / Auditor 6 use the
+separately approved Template 6 executable
+`blake3:f5085f11900d28c8b56b194e090cfd9430ee9cc932ed95ed644b5a31fd066e38`.
+The original one-CPU, 512 MiB Machine and encrypted 1 GiB volume are unchanged.
+
+The exact image passed full startup and two authorized participant WebSocket
+connections through Lobby launch, with zero OOM events. All 11 entrypoint
+tests passed. This isolated proof used no House Runner or paid model call.
+Before deployment, all retained Runs had terminal evidence. Offline checkpoint
+`842209a6-c6b4-4c6d-a57c-d10ef5b81870` was captured and both archives downloaded
+privately with matching SHA-256 hashes. The last two completed House units were
+fenced and their capacity released using exact retirement receipts; no allowance
+was reset. This volume capture is not a paired Supabase recovery certificate.
+
+The live Gateway is ready and `/api/deployment` reports the matching source,
+Listing, migration and v4 client. All four retained result-source requests now
+return HTTP 200. The latest public homepage displays their Recent Results.
+One controlled House match is in progress; **accepted LLM Actions and complete
+live House acceptance are not yet established**. The full IMO-184 matrix remains
+open. Earlier entries below describe historical checkpoints, not current state.
+
 ### September 8, 12:33 UTC — pre-deployment qualification corrections
 
 The isolated `2419456` image test failed before any hosted rollout: Gateway
