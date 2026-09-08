@@ -6,6 +6,154 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 05:17 UTC — corrected debug smoke repeats pass
+
+All five additional debug smoke runs passed Room creation, same-volume restart
+and credential export, following the first successful debug run and release-image
+run. The original intermittent CI setup failure was not captured. The three
+active diagnostic containers were stopped with their data preserved.
+
+The temporary smoke diagnostic also supports the explicit local option
+`WORLDSTREAM_SMOKE_RETAIN_FAILURE=1`, which preserves its owner-only fixture on
+failure for inspection. Default cleanup behavior is unchanged. Eight focused
+diagnostic tests still pass. No retries, timeouts, production code or release
+criteria changed; the next CI attempt must retain enough evidence to distinguish
+the original failure, not count these local repeats as full acceptance.
+
+### September 8, 05:14 UTC — local harness mismatch identified and corrected
+
+Direct startup against the preserved private fixture identified the harness
+error: SQLite rejected Docker's `overlay` filesystem and required ext4 or xfs.
+This was not a credential failure. The earlier debug-symbol and user changes
+did not establish a cause and must not be treated as fixes.
+
+The release-image smoke now places temporary fixture data on the image's
+mounted volume using `TMPDIR=/var/lib/worldstream`. The original smoke passes
+Room creation, same-volume restart, and explicit credential export. The separate
+debug build also passes when `/tmp` is an explicit Docker volume. No filesystem
+validation, protocol boundary, retry rule or timeout was relaxed. A five-run
+debug smoke repeat is active to try to capture the intermittent setup failure.
+CI's original failure remains unresolved; these local passes are not full
+gameplay or production acceptance. No cloud changes or provider calls occurred.
+
+### September 8, 05:08 UTC — bounded setup diagnostics prepared, cause unresolved
+
+The smoke script now has temporary `[DEBUG-member-setup]` instrumentation that
+extracts only a reviewed retained attention code and its expected retryability.
+It never emits the record's descriptive text, identifiers, seats or authority.
+Eight focused tests pass, including malformed/private-value rejection. This
+instrumentation changes neither setup retries nor deadlines and must be removed
+when the diagnosis is complete.
+
+A separate offline Linux build completed, but the local script-based smoke
+failed earlier at `hosted_ctl_server_start_failed`. Running unprivileged and
+using the already verified release executables did not reach the relevant
+setup stage. A leftover diagnostic Controller was cleared by stopping only the
+owned container. These are harness failures, not reproductions or explanations
+of CI's `member_capability` failure. Diagnostic containers and build caches are
+retained locally; none is a production image or new acceptance certificate.
+No new CI run, cloud deployment or paid call was started.
+
+### September 8, 04:53 UTC — full candidate CI fails at appliance setup
+
+CI run `34186167910` completed with failure at 04:50:50 UTC. Its two prerequisite
+jobs passed, but the canonical candidate's repeated appliance smoke stopped at
+`room create`, `setup_incomplete`, `member_capability`. The full gameplay story
+did not run and no local acceptance evidence artifact was produced. The job's
+live browser log exposed this failure before its downloadable log was available;
+earlier running-status observations must not be read as gameplay progress.
+
+This matches the initial partial setup from the local release-image smoke.
+Ten later setups on that running image passed; a separate fresh, network-disabled
+instance also passed its first setup. A bounded repeated local probe is now
+trying to capture the exact retained attention reason before any resume.
+All 100 subsequent attempts on that fresh local instance completed. Together
+with ten earlier warm attempts and its first successful setup, this does not
+reproduce the intermittent failure or prove it fixed. Both diagnostic containers
+were stopped with their volumes retained. The next diagnostic must distinguish
+transport ambiguity, unavailable credentials and explicit Runtime rejection
+without exposing authority values or replacing the retained failed operation.
+No cause, fix, full acceptance or deployment is claimed. Production remains
+closed and unchanged; no paid provider call was made.
+
+### September 8, 04:40 UTC — connected-Lobby reproduction passes on release image
+
+The earlier connected-Lobby diagnostic was updated only for the candidate's
+source, Listing and Client identities and run against its exact release image.
+Two synthetic participants used real Gateway handoffs, session redemption,
+one-use stream tickets and direct WebSockets in a network-disabled container.
+Both synchronized, each received one live Observation, and neither recorded a
+protocol error. The Controller reported `launched` after one launch attempt;
+the Gateway returned 200 with `lobby_launch_committed` true.
+
+The operation retained exactly one hosted-launch record, one Room creation and
+one task setup. Gateway and Runtime readiness remained 200 after a monitor
+interval. Peak cgroup memory was 220,921,856 bytes under a 512 MB hard memory
+and swap limit, with zero OOM events. The isolated container exited cleanly;
+only its newly owned synthetic test container and volume were removed. The
+protected diagnostic receipt was retained outside Git.
+
+This verifies the original connected-launch path on the new image. It is not a
+House Agent, full game, restart/re-entry, real Auth or production acceptance
+result. The separate full canonical CI job remains active. The earlier CLI
+partial setup was not reproduced by this Gateway path; its cause is still
+unestablished, and its successful same-operation resume remains the only claim.
+
+### September 8, 04:38 UTC — exact release image and bounded startup smoke
+
+The committed candidate's Linux amd64 release image built successfully in
+9 minutes 40 seconds. Its local image ID is
+`sha256:1ab0058e632623c6ffaa53a4426ec780a5c18dd98f13fc8cf8059c781f2b2248`.
+This is a local image identity, not a registry manifest or deployed Fly image.
+
+The unchanged image started with one CPU, 512 MB memory, networking disabled,
+an isolated local volume and synthetic unusable provider credentials. Health,
+readiness and version endpoints returned 200; version identified source
+`856a28dce72efb2159db8f033eb438e6b8dfc346`.
+
+The CLI example resolved Heist 0.3.0. Its first Room creation stopped at
+`member_capability`; an explicit resume of that same retained setup operation
+completed it. The reason for the initial partial setup is not established.
+After a container restart, readiness returned to 200 and inspection verified
+the same sequence-zero Genesis hash and authoritative state hash, with healthy
+integrity. No out-of-memory kill was reported.
+
+This smoke is basic startup and Genesis retention evidence, not active gameplay,
+participant re-entry, public formation or a real-provider result. The full
+canonical CI acceptance job remains active. Production has not been changed.
+
+### September 8, 04:28 UTC — live maintenance display and release preparation
+
+The public catalog still advertises Heist as `available` with “Ready for live
+formation.” A direct public Fly readiness request timed out after 15 seconds.
+Fly's Machine API shows the existing Machine **started**, with its readiness
+check reporting 503, consistent with the retained maintenance closure. This
+is not evidence of another Machine restart. The catalog route currently bases
+availability on configured dependencies, not their operational readiness;
+its message must not be used as proof that live formation is open.
+
+A local release image build is running from a Git archive of committed candidate
+`856a28dce72efb2159db8f033eb438e6b8dfc346`, using the same pinned Rust and Node
+base images as the prior deployment. The archive excludes untracked secrets and
+uncommitted status notes. CI's canonical acceptance job is also still running.
+Linear IMO-184 received the preceding verification update successfully.
+
+### September 8, 04:24 UTC — candidate CI prerequisites pass
+
+Candidate `856a28dce72efb2159db8f033eb438e6b8dfc346` is on draft
+[PR #2](https://github.com/imom39a/worldstream/pull/2), not production main.
+[CI run 34186167910](https://github.com/imom39a/worldstream/actions/runs/34186167910)
+has passed the Supabase private identity boundary and Hosted application
+boundaries jobs. The latter's logs explicitly confirm the Controller catalog,
+exact installed Pack rules, and clock-safe CLI Room example tests passed.
+
+The separate offline Linux server catalog test also finished successfully:
+one test passed, with 181 filtered out. This diagnostic container is not a
+release image. The canonical browser-to-result CI job is still running;
+Lobby launch, restart/re-entry and final result acceptance are not yet claimed.
+No production promotion, remote migration, House approval or paid model call
+was performed for this candidate.
+
 ### September 8, 04:11 UTC — local database and catalog verification
 
 The local `supabase_db_agent-streamer` database now has migrations through

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -86,6 +86,7 @@ async function main() {
     WORLDSTREAM_HOSTED_FATAL_READINESS_MS: "30000",
   };
   let appliance = null;
+  let failed = false;
   try {
     await assertPortsClosed([8080, 9410, 9420]);
     appliance = startAppliance(environment);
@@ -142,10 +143,45 @@ async function main() {
       same_volume_restart: "retained",
       explicit_reentry: "available",
     })}\n`);
+  } catch (error) {
+    failed = true;
+    // Temporary diagnosis: never print retained identifiers, messages or secrets.
+    try {
+      const directory = join(volumeRoot, "studio", "task-setups");
+      const names = await readdir(directory);
+      if (names.length === 1 && /^op-[a-f0-9]{1,64}\.json$/u.test(names[0])) {
+        const path = join(directory, names[0]);
+        const stat = await lstat(path);
+        if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= 1_048_576) {
+          const attention = safeSetupAttention(JSON.parse(await readFile(path, "utf8")));
+          if (attention !== null) process.stderr.write(`[DEBUG-member-setup] ${JSON.stringify(attention)}\n`);
+        }
+      }
+    } catch {
+      // Diagnostic failure must not replace the original smoke failure.
+    }
+    throw error;
   } finally {
     if (appliance !== null) await stopAppliance(appliance);
-    await rm(temporary, { recursive: true, force: true });
+    if (failed && process.env.WORLDSTREAM_SMOKE_RETAIN_FAILURE === "1") {
+      process.stderr.write(`[DEBUG-member-setup] retained private fixture: ${temporary}\n`);
+    } else {
+      await rm(temporary, { recursive: true, force: true });
+    }
   }
+}
+
+export function safeSetupAttention(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || value.state !== "needs_attention") return null;
+  const attention = value.attention;
+  if (attention === null || typeof attention !== "object" || Array.isArray(attention)) return null;
+  const retryability = new Map([
+    ["daemon_result_ambiguous", true],
+    ["setup_credential_unavailable", true],
+    ["setup_stage_rejected", false],
+  ]);
+  if (!retryability.has(attention.code) || attention.retryable !== retryability.get(attention.code)) return null;
+  return { code: attention.code, retryable: attention.retryable };
 }
 
 function startAppliance(environment) {

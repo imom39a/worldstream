@@ -5,18 +5,23 @@ a migration, or an automatic startup action. Use it after the approved
 spending-limited OpenRouter credential and the exact Fly image are installed.
 Keep launches and House calls closed until the final checks pass.
 
-The current Listing is Agent Heist `0.6.0`. Its two House strategies are
-Cooperative Planner `2` and Skeptical Auditor `1`. Both use the exact Granite
+The current candidate Listing is Agent Heist `0.7.0`. Its two House strategies are
+Cooperative Planner `3` and Skeptical Auditor `2`. Both use the exact Granite
 model and DeepInfra provider route declared in their immutable files. Their
 instructions differ; this is a two-strategy exhibition, not a comparison of two
-models. The Pack, v3 Activity Client, result projector, and hard allowances are
-unchanged.
+models. This candidate pins the clock-safe Pack `0.3.0`, v4 Activity Client,
+result projector `0.3.0`, and Runner Template `2`. The provider route and hard
+allowances are unchanged. Check the deployment record before treating the
+candidate as installed or approved.
 
 Keep Cooperative Planner `1` (the Qwen route) and Listings `0.4.0` and
 `0.5.0` as retained records. Do not change their canonical bytes or transfer
 their assignments to the successor. Keep the old Qwen approval unavailable
 for new assignments while its exact route does not meet the privacy policy.
-Publishing the successor migration grants no approval and starts no provider call.
+Also retain Listing `0.6.0`, Cooperative Planner `2`, Skeptical Auditor `1`,
+and Runner Template `1` unchanged. The clock-safe successor needs new approvals
+for its actual installed records and executable. Publishing the successor
+migration grants no approval and starts no provider call.
 
 ## What this evidence means
 
@@ -79,15 +84,15 @@ generated SDK build.
 3. Capture these records from that same installation into a private local
    directory. Preserve their relative layout beneath a `studio` directory:
 
+   - `agent-profiles/revisions/<hex profile ID>/33.json` for
+     `house-cooperative-planner` revision `3`;
    - `agent-profiles/revisions/<hex profile ID>/32.json` for
-     `house-cooperative-planner` revision `2`;
-   - `agent-profiles/revisions/<hex profile ID>/31.json` for
-     `house-skeptical-auditor` revision `1`;
-   - `runner-templates/installed/openrouter-house--1.json`;
+     `house-skeptical-auditor` revision `2`;
+   - `runner-templates/installed/openrouter-house--2.json`;
    - `model-provider-credentials/installed/hosted-openrouter.json`.
 
    Profile path components are the lowercase hexadecimal encoding of UTF-8;
-   `31` encodes revision `1`; `32` encodes revision `2`. Capture the actual
+   `32` encodes revision `2`; `33` encodes revision `3`. Capture the actual
    `/usr/local/bin/worldstream-managed-agent-host` binary separately.
    Do not capture or open vault secret files, the OpenRouter API key, controller
    credentials, or process environment. The named credential record contains
@@ -111,8 +116,8 @@ node scripts/hosted-house-approval.mjs \
   --credential-id hosted-openrouter \
   --source-revision '<actual deployed Git commit>' \
   --image-digest 'sha256:<actual deployed image digest>' \
-  --house-revision config/hosted/house-agents/cooperative-planner-2.json \
-  --house-revision config/hosted/house-agents/skeptical-auditor-1.json \
+  --house-revision config/hosted/house-agents/cooperative-planner-3.json \
+  --house-revision config/hosted/house-agents/skeptical-auditor-2.json \
   --output-dir /private/tmp/worldstream-approval-capture/approval
 ```
 
