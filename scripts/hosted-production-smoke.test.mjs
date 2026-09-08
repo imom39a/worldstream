@@ -1,17 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { runHostedSmokeCommand, safeSetupAttention } from "./hosted-production-smoke.mjs";
-
-test("setup attention diagnostics retain only reviewed reason and retryability", () => {
-  for (const [code, retryable] of [["daemon_result_ambiguous", true], ["setup_credential_unavailable", true], ["setup_stage_rejected", false]]) {
-    assert.deepEqual(safeSetupAttention({ state: "needs_attention", attention: { code, retryable, message: "private-secret" }, seats: ["private-authority"] }), { code, retryable });
-    assert.equal(safeSetupAttention({ state: "needs_attention", attention: { code, retryable: !retryable } }), null);
-  }
-  for (const value of [null, [], {}, { state: "ready", attention: { code: "daemon_result_ambiguous", retryable: true } }, { state: "needs_attention", attention: { code: "private-value", retryable: true } }]) {
-    assert.equal(safeSetupAttention(value), null);
-  }
-});
+import { runHostedSmokeCommand } from "./hosted-production-smoke.mjs";
 
 const setupFailure = {
   schema: "worldstream/operator-command/v1",

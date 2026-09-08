@@ -34,6 +34,12 @@ backup contract derives that exact path from the Runtime directory.
 
 ## First deployment
 
+For this hobby MVP, build, test, and publish from the local operator checkout.
+GitHub Actions is optional, not a deployment prerequisite. Use the tested clean
+Git revision for both the Fly image and Vercel deployment, then verify the real
+browser-to-Room flow on the live site. Local publication does not bypass the
+existing secret, spending, maintenance, or data-preservation checks below.
+
 1. Create the Supabase project and configure GitHub OAuth.
 2. Apply the committed Supabase migrations. Confirm the migration head.
 3. Create one Fly app and one volume in the same region. Keep the app name out

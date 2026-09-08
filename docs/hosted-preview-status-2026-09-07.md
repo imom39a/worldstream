@@ -6,6 +6,42 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8 — MVP deployment proceeds from local, not CI
+
+The user confirmed that the priority is a working live application and that
+CI/CD is not required for this MVP. Build, test, and publish from the local
+operator checkout. CI run `34190315614` was explicitly cancelled and is now
+terminal with conclusion `cancelled`; its earlier Supabase prerequisite passed.
+Do not treat cancellation as a passing acceptance result or start replacement
+CI work as a deployment gate.
+
+The local native probe reproduced member provisioning returning HTTP 429.
+The Runtime limiter samples time before locking its shared state, allowing
+concurrent admissions to apply samples out of order. A regression test fails
+on that ordering and passes after moving sampling inside the lock. All 16
+limiter tests pass, including real clock regression and quota enforcement.
+The causal check against the original appliance flow is still in progress.
+Production has not yet received this change. Cloud resources and spending
+limits are unchanged.
+
+### September 8, 05:26 UTC — intermittent member setup reproduced locally
+
+The next ten-run local debug smoke loop stopped on attempt four after three
+passes. The original Room creation failed at `member_capability`, with retained
+attention `daemon_result_ambiguous` and `retryable: true`. This reproduces the
+CI symptom on the corrected mounted-volume harness. It does not establish
+whether the original request committed, or justify retrying it as acceptance.
+
+An opt-in, debug-build-only native diagnostic is being prepared to distinguish
+transport failure, response status, and response decoding without recording
+request bodies, credentials, or identifiers. There is no behavior fix yet.
+
+Commit `77e216a862628659529cd31890fffa8d53352384` is pushed to draft PR #2.
+Diagnostic CI run `34190315614` is active; its Supabase identity prerequisite
+passed. GitHub's Actions budget was observed as $0 with Stop usage enabled;
+no spending controls were changed. Production remains closed and no provider
+calls, deployments, remote migrations, or resource expansion occurred.
+
 ### September 8, 05:17 UTC — corrected debug smoke repeats pass
 
 All five additional debug smoke runs passed Room creation, same-volume restart

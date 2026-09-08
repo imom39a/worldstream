@@ -444,11 +444,14 @@ impl GatewayRateLimiter {
                 .record(RateLimitRejection::InvalidIdentity);
             return Err(RateLimitRejection::InvalidIdentity);
         }
-        let now = self.inner.clock.now();
         let Ok(mut state) = self.inner.state.lock() else {
             self.inner.metrics.record(RateLimitRejection::Capacity);
             return Err(RateLimitRejection::Capacity);
         };
+        // Sample in the same critical section as last_now. Sampling before
+        // locking lets concurrent callers apply otherwise monotonic times in
+        // reverse order and incorrectly reject valid admission as a regression.
+        let now = self.inner.clock.now();
         let result = self.admit_prepared(&mut state, prepared, now);
         if let Err(rejection) = result {
             self.inner.metrics.record(rejection);
@@ -1095,6 +1098,43 @@ mod tests {
         );
         clock.set(Duration::from_millis(100));
         assert_eq!(limiter.admit(principal("principal-b")), Ok(()));
+    }
+
+    #[test]
+    fn admission_samples_time_while_holding_bucket_state() {
+        struct LockCheckingClock {
+            owner: std::sync::OnceLock<std::sync::Weak<LimiterInner>>,
+            unlocked_samples: AtomicU64,
+        }
+        impl Clock for LockCheckingClock {
+            fn now(&self) -> Duration {
+                let owner = self
+                    .owner
+                    .get()
+                    .and_then(std::sync::Weak::upgrade)
+                    .unwrap_or_else(|| unreachable!("clock owner installed"));
+                if owner.state.try_lock().is_ok() {
+                    self.unlocked_samples.fetch_add(1, Ordering::SeqCst);
+                }
+                Duration::ZERO
+            }
+        }
+        let clock = Arc::new(LockCheckingClock {
+            owner: std::sync::OnceLock::new(),
+            unlocked_samples: AtomicU64::new(0),
+        });
+        let limiter = GatewayRateLimiter::for_tests(
+            LimiterConfig::uniform(2, Duration::from_secs(1), 8),
+            clock.clone(),
+        );
+        assert!(clock.owner.set(Arc::downgrade(&limiter.inner)).is_ok());
+        assert_eq!(limiter.admit(principal("principal-a")), Ok(()));
+        assert_eq!(limiter.admit(principal("principal-a")), Ok(()));
+        assert_eq!(
+            clock.unlocked_samples.load(Ordering::SeqCst),
+            0,
+            "sampling before locking lets concurrent admissions apply times in reverse order"
+        );
     }
 
     #[test]
