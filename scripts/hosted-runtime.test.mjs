@@ -79,9 +79,10 @@ test("House Runner import is exact and has no secret environment", () => {
     "a".repeat(64),
   );
   assert.equal(manifest.template_id, "openrouter-house");
+  assert.equal(manifest.revision, "2");
   assert.deepEqual(manifest.compatibility, [{
     activity_pack_id: "worldstream.agent-heist",
-    exact_revisions: ["0.2.0"],
+    exact_revisions: ["0.3.0"],
   }]);
   assert.deepEqual(manifest.secret_environment, []);
   assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
@@ -90,8 +91,8 @@ test("House Runner import is exact and has no secret environment", () => {
 test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
   const profiles = renderHouseAgentProfiles();
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
-    { profile_id: "house-cooperative-planner", revision: "2" },
-    { profile_id: "house-skeptical-auditor", revision: "1" },
+    { profile_id: "house-cooperative-planner", revision: "3" },
+    { profile_id: "house-skeptical-auditor", revision: "2" },
   ]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
@@ -99,7 +100,7 @@ test("fresh local and Fly imports bind the two Granite strategies to distinct ex
     assert.deepEqual(profile.non_secret_configuration, {});
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter", host_contract_revision: "1",
-      runner_template: { template_id: "openrouter-house", revision: "1" },
+      runner_template: { template_id: "openrouter-house", revision: "2" },
     });
   }
 });

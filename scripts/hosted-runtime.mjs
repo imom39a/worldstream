@@ -114,12 +114,12 @@ export function renderHouseRunnerTemplate(executable, digest) {
   return {
     schema: "worldstream/runner-template/v1",
     template_id: "openrouter-house",
-    revision: "1",
+    revision: "2",
     display_name: "Hosted OpenRouter House Agent",
     executable: { path: executable, blake3: digest },
     compatibility: [{
       activity_pack_id: "worldstream.agent-heist",
-      exact_revisions: ["0.2.0"],
+      exact_revisions: ["0.3.0"],
     }],
     capacity: { maximum_concurrent_invocations: 4 },
     health: { path: "/healthz", timeout_ms: 1_000, stale_after_ms: 60_000 },
@@ -289,12 +289,12 @@ export function renderHouseAgentProfiles() {
   const hostContract = {
     kind: "managed_house_openrouter",
     host_contract_revision: "1",
-    runner_template: { template_id: "openrouter-house", revision: "1" },
+    runner_template: { template_id: "openrouter-house", revision: "2" },
   };
   const cooperative = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-cooperative-planner",
-    revision: "2",
+    revision: "3",
     display_name: "Cooperative Planner",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -303,7 +303,7 @@ export function renderHouseAgentProfiles() {
   const skeptical = {
     schema: "worldstream/studio-agent-profile-publish/v2",
     profile_id: "house-skeptical-auditor",
-    revision: "1",
+    revision: "2",
     display_name: "Skeptical Auditor",
     non_secret_configuration: {},
     host_contract: hostContract,
@@ -366,7 +366,7 @@ async function writeClientImport(layout) {
   }));
   heistDeployment.surfaces = heistDeployment.surfaces.map((surface) => ({
     ...surface,
-    launch_url: new URL("/agent-heist-v3/hosted/", clientOrigin).toString(),
+    launch_url: new URL("/agent-heist-v4/hosted/", clientOrigin).toString(),
   }));
   bindings.deployments = [inspectorDeployment, heistDeployment];
   bindings.inspector_fallback = fallback;

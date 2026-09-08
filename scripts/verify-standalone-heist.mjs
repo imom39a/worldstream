@@ -42,19 +42,19 @@ try {
   // Run the exact retained copies once before the managed startup deadline.
   // Normal OS execution policy still applies; never recopy after this check.
   await preflightExecutables();
-  const release = JSON.parse(await readFile(join(workspace, "config/activity-clients/releases/agent-heist-web-v3.json"), "utf8"));
+  const release = JSON.parse(await readFile(join(workspace, "config/activity-clients/releases/agent-heist-web-v4.json"), "utf8"));
   assert.equal(await activityClientBuildDigest(join(workspace, "clients/agent-heist-web/dist")), release.artifacts[0].digest);
   await writeFile(config, `config_version = 1\n[server]\nbind = "127.0.0.1:9410"\n[storage]\nprofile = "sqlite-bundled"\ndata_dir = "${join(root, "runtime")}"\ndeployment_lineage = "development/local-heist-proof"\nstorage_epoch = 1\n[authority.bootstrap]\nsecret_file = "${join(root, "authority.secret")}"\n`, { mode: 0o600 });
   const bindings = JSON.parse(await readFile(join(workspace, "config/activity-clients/local-bindings.json"), "utf8"));
-  bindings.deployments = bindings.deployments.filter((value) => value.client_id.includes("agent-heist") || value.client_id.includes("inspector"));
-  bindings.bindings = bindings.bindings.filter((value) => value.pack.id === "worldstream.agent-heist");
+  bindings.deployments = bindings.deployments.filter((value) => value.release_digest === release.release_digest || value.client_id.includes("inspector"));
+  bindings.bindings = bindings.bindings.filter((value) => value.pack.id === "worldstream.agent-heist" && value.pack.version === "0.3.0");
   for (const deployment of bindings.deployments) for (const surface of deployment.surfaces) {
     surface.launch_url = `${host.origin}${new URL(surface.launch_url).pathname}`;
   }
   await writeFile(join(root, "bindings.json"), JSON.stringify(bindings), { mode: 0o600 });
   const declaration = join(root, "clients.json");
   await writeFile(declaration, JSON.stringify({ schema: "worldstream/client-declaration-import/v1",
-    release_files: ["agent-heist-web-v3.json", "inspector-web.json"].map((name) => join(workspace, "config/activity-clients/releases", name)),
+    release_files: ["agent-heist-web-v4.json", "inspector-web-v2.json"].map((name) => join(workspace, "config/activity-clients/releases", name)),
     bindings_file: join(root, "bindings.json") }), { mode: 0o600 });
   await cli("init");
   const preview = await cli("init", "--client-declaration", declaration, "--preview");
@@ -62,7 +62,7 @@ try {
   startAttempted = true;
   await cli("server", "start", "--participant-console-origin", host.origin);
   const setup = join(root, "heist.json");
-  await cli("room", "example", "--pack", "worldstream.agent-heist@0.2.0", "--output", setup);
+  await cli("room", "example", "--pack", "worldstream.agent-heist@0.3.0", "--output", setup);
   await cli("room", "validate", "--file", setup);
   const created = await cli("room", "create", "--file", setup);
   const operation = created.room_operation.operation;
@@ -76,7 +76,7 @@ try {
   });
   assert.ok(handoffResponse.ok);
   const handoff = await handoffResponse.json();
-  assert.equal(new URL(handoff.client_url).pathname, "/agent-heist-v3/");
+  assert.equal(new URL(handoff.client_url).pathname, "/agent-heist-v4/");
   const page = await browser.newPage();
   let platformRequests = 0;
   page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/auth/session") platformRequests += 1; });

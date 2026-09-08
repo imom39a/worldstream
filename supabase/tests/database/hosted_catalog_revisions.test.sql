@@ -1,7 +1,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
-select plan(12);
+select plan(17);
 
 select is(
   (select count(*)::integer from platform_store.activity_listing_revisions
@@ -84,6 +84,41 @@ select ok(
      where listings.listing_revision_digest = 'blake3:48f76e8c1336e8f50fb6952cd0f2ff4c47cc8c372594db01422a67bca9363782'
    )),
   'the current Listing allows two distinct strategies on the exact Granite route'
+);
+
+select is(
+  (select pack_revision_digest from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630'),
+  'blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d',
+  'clock-safe Listing pins the new exact Pack'
+);
+select is(
+  (select client_release_digest from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630'),
+  'sha256:12714052c8e1cac59a95b0439e8e86bf17766c8f689f5782d1dd5d4c0efd4cd6',
+  'clock-safe Listing pins the separate v4 client'
+);
+select is(
+  (select result_projector_revision_digest from platform_store.activity_listing_revisions
+   where listing_revision_digest = 'blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630'),
+  'blake3:f676cab8007a374db5510d66f534697472c53ea4b2719900bfecce53786f7563',
+  'clock-safe results use their own exact projector'
+);
+select ok(
+  (select count(*) = 2 and bool_and(runner_template_revision = '2')
+      and bool_and((execution_allowance ->> 'model_call_attempts')::integer = 10)
+      and bool_and(model_slug = 'ibm-granite/granite-4.2-8b-20260831')
+   from platform_store.house_agent_revisions
+   where house_agent_revision_digest in (
+     'blake3:b6f273c3da48b9636bf0107e1768e46cc7ab3d52618e0100791c724baff774ef',
+     'blake3:0ecf354d30e0034ec8e43cd70f99484eca86403a5eef82079552a4e905ba89ca'
+   )), 'clock-safe House definitions change compatibility, not model or call budget'
+);
+select throws_ok(
+  $$update platform_store.activity_listing_revisions
+    set pack_revision_digest = 'blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820'
+    where listing_revision_digest = 'blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630'$$,
+  '23000', 'immutable_formation_row', 'clock-safe Listing cannot silently change Pack rules'
 );
 
 select * from finish();

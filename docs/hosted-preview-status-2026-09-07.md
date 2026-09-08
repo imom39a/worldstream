@@ -6,6 +6,70 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 04:11 UTC — local database and catalog verification
+
+The local `supabase_db_agent-streamer` database now has migrations through
+`20260908040223`. The normal migration command applied the earlier pending
+Granite metadata migration and the new clock-safe metadata migration. A query
+verified one new Listing, two Template-2 House definitions, and zero approvals
+for those new definitions. Remote Supabase and cloud services remain untouched.
+
+`supabase test db --local` passes all 388 tests across eight files, including five
+new assertions for the clock-safe Pack/client/projector, House budget and
+immutable Listing. The Controller catalog test also passed through its fully
+qualified compiled test name (one test, not the earlier empty exact filter).
+
+Additional source tests now check that every reviewed Listing resolves to exact
+installed Pack rules and that the new CLI Room example resolves through its
+actual revision catalog. These new tests still need a refreshed Linux test build;
+the current diagnostic container is compiling the server catalog test from its
+earlier input snapshot. Do not treat that snapshot as full candidate acceptance.
+
+### September 8, 04:06 UTC — successor release wiring and local checks
+
+The candidate now selects Listing `0.7.0`, Heist Pack `0.3.0`, browser Client
+Release v4, result projector `0.3.0`, Cooperative Planner revision 3 and Skeptical
+Auditor revision 2. Both House definitions refer to Runner Template revision 2;
+their provider route, privacy requirements and spending allowances are unchanged.
+
+Exact candidate identities:
+
+| Artifact | Digest |
+| --- | --- |
+| Pack 0.3.0 | `blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d` |
+| Listing 0.7.0 | `blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630` |
+| Client v4 | `sha256:12714052c8e1cac59a95b0439e8e86bf17766c8f689f5782d1dd5d4c0efd4cd6` |
+| Projector 0.3.0 | `blake3:f676cab8007a374db5510d66f534697472c53ea4b2719900bfecce53786f7563` |
+
+The original v3 browser build was verified against its existing artifact digest
+before retention. Product builds now install separately checked v4, v3 and v2
+artifacts at their own URLs. Retained Listings keep their original client and
+exact allowed House definitions. Result reconciliation now explicitly resolves
+all six reviewed Listings through the matching old or new projector.
+
+Completed local checks:
+
+- Heist client: 35 tests and production build passed.
+- Platform: 94 tests passed, one existing live test skipped; TypeScript passed.
+- Activity Client identity checks: nine Releases, five Deployments, nine Bindings.
+- Browser surface checks passed for new Heist, retained v3, Negotiate and Inspector.
+  These check unauthenticated/empty entry behavior, not a connected match.
+- Hosted-development script tests: 23 passed. Packaging tests: 32 passed and
+  three environment-dependent tests skipped before adding the migration assertion;
+  the House-approval suite then passed seven tests with one database test skipped.
+- Product build and developer-manual link checks passed.
+- Migration `20260908040223_hosted_clock_safe_heist_revision.sql` was executed
+  twice inside one rollback-only local database transaction. Exactly one Listing
+  and two new House records existed; operational state and approval rows were
+  unchanged. The transaction was rolled back; remote Supabase was not modified.
+
+Linux Host/Controller checks are compiling in an isolated diagnostic container.
+The Controller test must be rerun with its fully qualified name or without
+`--exact`; an unqualified exact filter is not test evidence. These checks and
+the original connected story, restart/re-entry, clean full acceptance, deployment,
+checkpoint and bounded real-provider test remain pending. No live admission,
+House approval, provider spending, cloud expansion or release readiness is claimed.
+
 ### September 8, 03:54 UTC — clock-safe Heist core revision passes locally
 
 The new `AgentHeistLobbyV3` implementation declares Pack version `0.3.0` and

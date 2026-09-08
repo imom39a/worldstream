@@ -1,0 +1,44 @@
+{
+  "schema": "worldstream/activity-client-release/v1",
+  "client_id": "worldstream.agent-heist.web",
+  "release_digest": "sha256:12714052c8e1cac59a95b0439e8e86bf17766c8f689f5782d1dd5d4c0efd4cd6",
+  "client_contract": "worldstream/activity-client-protocol/v1",
+  "artifacts": [
+    {
+      "artifact_id": "browser-dist",
+      "media_type": "application/vnd.worldstream.activity-client.web.v1+directory",
+      "digest": "sha256:fb34a5b879b888a37a925584e15a2d5eafef39aadb5ca85d888ff71d24e256ad"
+    }
+  ],
+  "surfaces": [
+    {
+      "surface_id": "heist-web",
+      "kind": "browser",
+      "artifact_digest": "sha256:fb34a5b879b888a37a925584e15a2d5eafef39aadb5ca85d888ff71d24e256ad",
+      "entrypoint": "/agent-heist-v4/",
+      "capabilities": [
+        "observe",
+        "act",
+        "replay"
+      ]
+    },
+    {
+      "surface_id": "heist-hosted-web",
+      "kind": "browser",
+      "artifact_digest": "sha256:fb34a5b879b888a37a925584e15a2d5eafef39aadb5ca85d888ff71d24e256ad",
+      "entrypoint": "/agent-heist-v4/hosted/",
+      "capabilities": [
+        "observe",
+        "act",
+        "replay",
+        "webmcp.tools.v1"
+      ]
+    }
+  ],
+  "conformance": [
+    {
+      "contract": "worldstream/activity-client-protocol/v1",
+      "evidence_digest": "sha256:921e623b6d8ee774252f692e1e7b48fd83def4393ba328c411a3939c0bfe057d"
+    }
+  ]
+}

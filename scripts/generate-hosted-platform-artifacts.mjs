@@ -8,15 +8,20 @@ const outputPath = join(
   "web/platform/src/hosted-artifacts.generated.ts",
 );
 const sources = {
-  agentHeistListing: "config/hosted/listings/agent-heist-0.6.0.json",
+  agentHeistListing: "config/hosted/listings/agent-heist-0.7.0.json",
+  retainedAgentHeistListing06: "config/hosted/listings/agent-heist-0.6.0.json",
   retainedAgentHeistListing02: "config/hosted/listings/agent-heist-0.2.0.json",
   retainedAgentHeistListing03: "config/hosted/listings/agent-heist-0.3.0.json",
   retainedAgentHeistListing04: "config/hosted/listings/agent-heist-0.4.0.json",
   retainedAgentHeistListing05: "config/hosted/listings/agent-heist-0.5.0.json",
-  cooperativePlanner: "config/hosted/house-agents/cooperative-planner-2.json",
+  cooperativePlanner: "config/hosted/house-agents/cooperative-planner-3.json",
+  retainedCooperativePlanner2: "config/hosted/house-agents/cooperative-planner-2.json",
   retainedCooperativePlanner1: "config/hosted/house-agents/cooperative-planner-1.json",
-  skepticalAuditor: "config/hosted/house-agents/skeptical-auditor-1.json",
+  skepticalAuditor: "config/hosted/house-agents/skeptical-auditor-2.json",
+  retainedSkepticalAuditor1: "config/hosted/house-agents/skeptical-auditor-1.json",
   agentHeistResultProjector:
+    "config/hosted/result-projectors/agent-heist-0.3.0.json",
+  retainedAgentHeistResultProjector02:
     "config/hosted/result-projectors/agent-heist-0.2.0.json",
   declarativeResultProjectorRuntime:
     "config/hosted/result-projector-runtimes/declarative-runtime-1.0.0.json",

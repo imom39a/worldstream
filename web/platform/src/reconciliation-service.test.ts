@@ -1,13 +1,33 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { encodeCanonical } from "@worldstream/pack-sdk";
+import { readListingRevision } from "@worldstream/hosted-contract";
 
 import type { PlatformBff } from "./bff.js";
-import { withHostedResultReconciliation } from "./reconciliation-service.js";
+import { createHostedResultReconciler, withHostedResultReconciliation } from "./reconciliation-service.js";
 import type { ResultReconcilerDependencies, ResultReconciliationCandidate } from "./result-reconciliation.js";
 
 function platform(): PlatformBff {
   return { fetch: async () => new Response("ok", { status: 200 }) };
 }
+
+test("current and retained Listings resolve their exact result projector without network calls", async () => {
+  const reconciler = createHostedResultReconciler({
+    supabaseUrl: "https://database.example.invalid",
+    dataSecretKey: "sb_secret_synthetic-test-secret-not-a-credential",
+    hostedGatewayUrl: "https://gateway.example.invalid",
+    serviceAuthority: "synthetic-test-authority-".repeat(3),
+  });
+  for (const version of ["0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0"]) {
+    const source = JSON.parse(await readFile(resolve("../..", `config/hosted/listings/agent-heist-${version}.json`), "utf8"));
+    const listing = readListingRevision(encodeCanonical(source));
+    const pinned = reconciler.projectors.resolve(listing.digest);
+    assert.equal(pinned.listing.digest, listing.digest);
+    assert.equal(pinned.listing.value.result.projector.version, version === "0.7.0" ? "0.3.0" : "0.2.0");
+  }
+});
 
 function dependencies(list: () => Promise<readonly ResultReconciliationCandidate[]>): ResultReconcilerDependencies {
   return {

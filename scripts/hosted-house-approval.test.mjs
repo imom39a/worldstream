@@ -115,6 +115,24 @@ test("successor migration publishes the exact reviewed canonical documents witho
   assert.doesNotMatch(migration, /house_agent_host_approvals|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
+test("clock-safe migration retains exact metadata and grants no operating authority", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260908040223_hosted_clock_safe_heist_revision.sql", import.meta.url), "utf8");
+  const houseDocuments = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  assert.equal(houseDocuments.length, 2);
+  for (const [index, file] of ["cooperative-planner-3", "skeptical-auditor-2"].entries()) {
+    const source = JSON.parse(await readFile(new URL(`../config/hosted/house-agents/${file}.json`, import.meta.url), "utf8"));
+    assert.deepEqual(houseDocuments[index], canonicalBytes(source));
+    assert.ok(migration.includes(`blake3:${hash(houseDocuments[index])}`));
+    assert.equal(source.runner_template.revision, "2");
+  }
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.7.0.json", import.meta.url), "utf8"));
+  const listingBytes = Buffer.from(migration.match(/\$listing\$([\s\S]*?)\$listing\$/u)?.[1] ?? "");
+  assert.deepEqual(listingBytes, canonicalBytes(listing));
+  assert.ok(migration.includes(`blake3:${hash(listingBytes)}`));
+  assert.equal(listing.pack.version, "0.3.0");
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("approval preparation rejects changed executable bytes and cross-credential bindings", async (t) => {
   const f = await fixture(t);
   await writeFile(f.options.runnerBinary, "different executable", { mode: 0o700 });

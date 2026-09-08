@@ -17,14 +17,14 @@
     },
     {
       "schema": "worldstream/client-deployment/v1",
-      "deployment_id": "hosted-agent-heist-web-8075408d",
+      "deployment_id": "hosted-agent-heist-web-12714052",
       "client_id": "worldstream.agent-heist.web",
-      "release_digest": "sha256:8075408d0420d3eec514d01c428a2b8b17559c388e57a7067c05cc9f95a3b5d9",
+      "release_digest": "sha256:12714052c8e1cac59a95b0439e8e86bf17766c8f689f5782d1dd5d4c0efd4cd6",
       "trust_level": "externally_trusted",
       "surfaces": [
         {
           "surface_id": "heist-hosted-web",
-          "launch_url": "http://127.0.0.1:5180/agent-heist-v3/hosted/"
+          "launch_url": "http://127.0.0.1:5180/agent-heist-v4/hosted/"
         }
       ]
     }
@@ -32,11 +32,11 @@
   "bindings": [
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-2-8075408d-participant",
+      "binding_id": "hosted-agent-heist-0-3-12714052-participant",
       "pack": {
         "id": "worldstream.agent-heist",
-        "version": "0.2.0",
-        "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+        "version": "0.3.0",
+        "digest": "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d"
       },
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "participant",
@@ -45,22 +45,22 @@
         "insider",
         "broker"
       ],
-      "deployment_id": "hosted-agent-heist-web-8075408d",
+      "deployment_id": "hosted-agent-heist-web-12714052",
       "surface_id": "heist-hosted-web",
       "preference": "default"
     },
     {
       "schema": "worldstream/client-binding/v1",
-      "binding_id": "hosted-agent-heist-0-2-8075408d-spectator",
+      "binding_id": "hosted-agent-heist-0-3-12714052-spectator",
       "pack": {
         "id": "worldstream.agent-heist",
-        "version": "0.2.0",
-        "digest": "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+        "version": "0.3.0",
+        "digest": "blake3:4e4c970403f29a8448a1a3bcf7a96c030df713499730288f324c7e200d160b2d"
       },
       "client_contract": "worldstream/activity-client-protocol/v1",
       "access_mode": "spectator",
       "roles": [],
-      "deployment_id": "hosted-agent-heist-web-8075408d",
+      "deployment_id": "hosted-agent-heist-web-12714052",
       "surface_id": "heist-hosted-web",
       "preference": "default"
     }

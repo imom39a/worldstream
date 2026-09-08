@@ -336,7 +336,7 @@ Check the installation:
 `server status` must report a live and ready Runtime. `pack list` must show
 both of these exact selectors:
 
-- `worldstream.agent-heist@0.2.0`
+- `worldstream.agent-heist@0.3.0`
 - `worldstream.negotiate@0.2.0`
 
 Read-only commands do not start a stopped Controller or Runtime.
@@ -461,7 +461,7 @@ authorized participant view, and leaves the Room in the Lobby. It does not
 complete the Heist. Do not reuse this Room for the full SDK run in Section 7.
 
 Before you continue, confirm that Terminal 2 still shows the Activity Client
-Host from Section 4. Do not open `/agent-heist-v3/` directly. The CLI gives the
+Host from Section 4. Do not open `/agent-heist-v4/` directly. The CLI gives the
 browser a one-use authorized handoff later in this section.
 
 ### Create the browser Room
@@ -470,7 +470,7 @@ Return to Terminal 1. Generate, validate, and create a Heist Room:
 
 ```sh
 "$CTL" --config "$CONFIG" room example \
-  --pack worldstream.agent-heist@0.2.0 \
+  --pack worldstream.agent-heist@0.3.0 \
   --output "$RUN_DIR/heist-browser-room.json"
 
 "$CTL" --config "$CONFIG" room validate \
@@ -521,7 +521,7 @@ Generate, validate, and create another Heist Room in Terminal 1:
 
 ```sh
 "$CTL" --config "$CONFIG" room example \
-  --pack worldstream.agent-heist@0.2.0 \
+  --pack worldstream.agent-heist@0.3.0 \
   --output "$RUN_DIR/heist-sdk-room.json"
 
 "$CTL" --config "$CONFIG" room validate \

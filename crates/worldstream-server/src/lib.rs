@@ -8050,7 +8050,12 @@ mod tests {
             list.version,
             worldstream_protocol::ACTIVITY_PACK_CATALOG_VERSION
         );
-        assert_eq!(list.revisions.len(), 7);
+        assert_eq!(list.revisions.len(), 8);
+        assert!(list.revisions.iter().any(|revision| {
+            revision.pack.digest == worldstream_core::agent_heist_clock_safe_digest().to_string()
+                && revision.selectable_for_new_rooms
+                && revision.runnable_for_retained_rooms
+        }));
         assert!(
             list.revisions
                 .windows(2)

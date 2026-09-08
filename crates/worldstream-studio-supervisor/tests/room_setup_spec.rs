@@ -6,15 +6,20 @@ use worldstream_studio_supervisor::room_setup_spec::{
 };
 
 fn heist_catalog() -> Result<ActivityPackCatalogRevisionResponse, Box<dyn std::error::Error>> {
+    heist_catalog_revision(agent_heist_lobby_digest())
+}
+
+fn heist_catalog_revision(
+    digest: worldstream_core::PackDigestV1,
+) -> Result<ActivityPackCatalogRevisionResponse, Box<dyn std::error::Error>> {
     let registry = builtin_agent_heist_registry()?;
-    let digest = agent_heist_lobby_digest();
     let revision = registry.catalog_revision(&digest)?;
     let reference = &revision.descriptor.configuration_schema;
     let schema: Value =
         serde_json::from_slice(&registry.resolve_schema(&digest, reference)?.to_bytes()?)?;
     Ok(serde_json::from_value(json!({
         "version": "activity_pack_catalog.v1", "revision": {
-            "summary": {"pack": {"id": "worldstream.agent-heist", "version": "0.2.0", "digest": digest.to_string()},
+            "summary": {"pack": {"id": "worldstream.agent-heist", "version": revision.descriptor.explanatory_version, "digest": digest.to_string()},
                 "name": "Agent Heist", "selectable_for_new_rooms": true, "runnable_for_retained_rooms": true},
             "roles": revision.descriptor.roles.iter().map(|role| json!({"role": role.role,
                 "minimum": role.minimum, "maximum": role.maximum})).collect::<Vec<_>>(),
@@ -23,6 +28,17 @@ fn heist_catalog() -> Result<ActivityPackCatalogRevisionResponse, Box<dyn std::e
             "actions": []
         }
     }))?)
+}
+
+#[test]
+fn clock_safe_example_resolves_through_its_exact_runtime_catalog()
+-> Result<(), Box<dyn std::error::Error>> {
+    let digest = worldstream_core::agent_heist_clock_safe_digest();
+    let catalog = heist_catalog_revision(digest.clone())?;
+    let setup = generate_setup_example(&catalog)?;
+    assert_eq!(setup.pack.version, "0.3.0");
+    assert_eq!(setup.pack.digest, digest.to_string());
+    Ok(())
 }
 
 fn negotiate_catalog() -> Result<ActivityPackCatalogRevisionResponse, Box<dyn std::error::Error>> {

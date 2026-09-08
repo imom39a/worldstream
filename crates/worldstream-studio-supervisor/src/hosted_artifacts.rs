@@ -15,11 +15,14 @@ pub fn reviewed_hosted_artifacts() -> Result<(Vec<ListingRevision>, Vec<HouseAge
         include_bytes!("../../../config/hosted/listings/agent-heist-0.4.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.5.0.json"),
         include_bytes!("../../../config/hosted/listings/agent-heist-0.6.0.json"),
+        include_bytes!("../../../config/hosted/listings/agent-heist-0.7.0.json"),
     ];
     const HOUSE_AGENTS: &[&[u8]] = &[
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-1.json"),
         include_bytes!("../../../config/hosted/house-agents/cooperative-planner-2.json"),
+        include_bytes!("../../../config/hosted/house-agents/cooperative-planner-3.json"),
         include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-1.json"),
+        include_bytes!("../../../config/hosted/house-agents/skeptical-auditor-2.json"),
     ];
     let listings = LISTINGS
         .iter()
@@ -45,6 +48,26 @@ mod tests {
     use super::reviewed_hosted_artifacts;
     use anyhow::Context as _;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn reviewed_listings_resolve_exact_installed_pack_rules() -> anyhow::Result<()> {
+        let registry = worldstream_core::builtin_worldstream_registry()?;
+        let (listings, _) = reviewed_hosted_artifacts()?;
+        for listing in listings {
+            let document: serde_json::Value = serde_json::from_slice(listing.canonical_bytes())?;
+            let digest = document["pack"]["digest"]
+                .as_str()
+                .context("Pack digest missing")?
+                .parse()?;
+            let pack = registry.load_retained(&digest)?;
+            assert_eq!(
+                document["pack"]["version"],
+                pack.descriptor().explanatory_version
+            );
+            assert_eq!(document["pack"]["id"], pack.descriptor().pack_id);
+        }
+        Ok(())
+    }
 
     #[test]
     fn controller_catalog_covers_every_gateway_listing_and_its_house_revisions()

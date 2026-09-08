@@ -172,6 +172,7 @@ pub fn generate_setup_example(
 ) -> Result<RoomSetupSpecificationV1, RoomSetupError> {
     const REVIEWED: &[&[u8]] = &[
         include_bytes!("../../../examples/room-setup/agent-heist-0.2.0.json"),
+        include_bytes!("../../../examples/room-setup/agent-heist-0.3.0.json"),
         include_bytes!("../../../examples/room-setup/negotiate-0.2.0.json"),
     ];
     for bytes in REVIEWED {

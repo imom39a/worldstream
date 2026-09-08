@@ -5,8 +5,12 @@ import {
   agentHeistListingBase64,
   retainedAgentHeistListing02Base64,
   retainedAgentHeistListing03Base64,
+  retainedAgentHeistListing04Base64,
+  retainedAgentHeistListing05Base64,
+  retainedAgentHeistListing06Base64,
   agentHeistPublicProjectionSchemaBase64,
   agentHeistResultProjectorBase64,
+  retainedAgentHeistResultProjector02Base64,
   declarativeResultProjectorRuntimeBase64,
   resultSummarySchemaBase64,
 } from "./hosted-artifacts.generated.js";
@@ -41,9 +45,11 @@ export function createHostedResultReconciler(input: {
     }),
     projectors: new PinnedResultProjectorRegistry([
       agentHeistListingBase64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
+      retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64,
     ].map((listingBytes) => ({
         listingBytes: decode(listingBytes),
-        projectorBytes: decode(agentHeistResultProjectorBase64),
+        projectorBytes: decode(listingBytes === agentHeistListingBase64
+          ? agentHeistResultProjectorBase64 : retainedAgentHeistResultProjector02Base64),
         runtimeBytes: decode(declarativeResultProjectorRuntimeBase64),
         projectionSchemaBytes: decode(agentHeistPublicProjectionSchemaBase64),
         outputSchemaBytes: decode(resultSummarySchemaBase64),

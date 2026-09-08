@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostedDevelopmentListingAllowlist } from "./hosted-dev.mjs";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const LISTING_DIGEST = "blake3:48f76e8c1336e8f50fb6952cd0f2ff4c47cc8c372594db01422a67bca9363782";
+const LISTING_DIGEST = "blake3:48c397a32632896d66beb9ae7f8a6d090338800187c56eb0593997b80bd2b630";
 const CONTROLLER_AUTHORITY = "hosted-smoke-controller-authority-000000000000";
 const SERVICE_AUTHORITY = "hosted-smoke-service-authority-000000000000000";
 
@@ -35,7 +35,7 @@ async function main() {
   ]);
   await Promise.all([
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v3.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v4.json"),
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(
@@ -108,7 +108,7 @@ async function main() {
     );
     await ctl([
       "room", "example",
-      "--pack", "worldstream.agent-heist@0.2.0",
+      "--pack", "worldstream.agent-heist@0.3.0",
       "--output", setup,
     ]);
     const created = JSON.parse((await ctl(["room", "create", "--file", setup])).stdout);
