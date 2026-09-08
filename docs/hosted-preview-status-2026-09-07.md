@@ -6,6 +6,59 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 10:54 UTC — live human flow and results work; House Actions fail
+
+Fly now runs `2e4c51da6d58c0e56c72876a6536bf0343062596`, image manifest
+`sha256:48fa7fb31d2f8677fc54a681aba942581ec1f509d7ace66968e37370fece7e6e`,
+with the complete eight-Listing allowlist. The normal entrypoint, original
+Machine, resource limits and volume are unchanged. The exact model-host binary
+still matches the Template 4 approval. Before deployment, offline populated
+checkpoint `8200268b-2a59-45dd-9bf8-49d83198def5` was captured and its archives
+downloaded into a private local directory with matching SHA-256 hashes. This
+is not a paired Supabase recovery qualification.
+
+The retained Room `01M201ARVE75VQ6RP09Y4H2AAA` survived the upgrade. In Chrome,
+Navigator re-entered the v4 client, inspected and published the authorized
+route clue, and proposed a plan. Runtime receipts verify those three Actions
+at sequences 2, 4 and 5. The Room reached Complete at sequence 10 with
+`failure / no_strict_majority / 0`. No accepted House Action is present.
+Both House processes later reported `host_exited` despite two validated
+provider completions. Their reported costs were USD 0.00041872 and
+USD 0.00032256; one additional attempt was provider-failed. These amounts are
+not a fresh read of cumulative provider billing. No allowance or key cap changed.
+
+Recent Results had a separate deterministic defect: the platform reconciler
+omitted retained Listing 0.8. The expanded exact-mapping regression failed with
+`projector_artifact_unavailable`; fix `b8c3f95476fb6e49a592e88ec28d3895cb34e81f`
+passes 96 platform tests (one explicit skip) and both TypeScript checks.
+The website-only local-prebuilt deployment is
+`dpl_FCMR3B9WtiJpqkRETUzLGHFJoLqc`; Fly remains on 2e4c51d. This is a documented
+split source checkpoint, not a single-revision acceptance certificate.
+Both `/api/results/agent-heist/recent` and the new public Run endpoint now
+return 200 with all three retained results. New result ID:
+`d83f0382c3641af8a6ed26d0ea1d17cd`.
+
+Operating generation 12 reopens human launches while keeping House fill
+closed; maintenance is off. Full live LLM acceptance remains failed.
+Do not create repeated paid test Rooms until the helper-to-Runtime Action
+failure is isolated. Existing House reservations remain conservatively held.
+
+Sustained performance is also unresolved. Before upgrade, Fly reported roughly
+93% CPU steal, with seconds-long loopback reads. Fly documents a shared CPU
+baseline of 6.25%, not a full dedicated core. A network-isolated copy of the
+three-Room Runtime used 1.332 CPU-seconds over 10.003 seconds on local emulated
+Linux. After warming the HTTP probe and applying a 0.0625-CPU Docker quota,
+three readiness reads took 2496, 1495 and 1898 ms. Those measurements are
+diagnostic, not a hardware-equivalent benchmark or proof of a particular
+scheduler defect. No timer semantics, scheduler timing or cloud size was
+changed. The owned diagnostic container is stopped and its private volume
+retained. See [Fly CPU performance](https://fly.io/docs/machines/cpu-performance/).
+
+Usability follow-up: plan IDs are shortened on the card, but the human commit
+form requires a full ID without a selection control. The form also requires
+unexplained free-text plan values. Successful transport does not establish
+that this is an easy-to-use client.
+
 ### September 8, 08:18 UTC — Room creation restored; live gameplay still unverified
 
 Vercel and Fly are on `6960d4c1928f6d2d63ea6ab5938165b77f65ed91`.
