@@ -70,7 +70,7 @@ export function validateHostedRuntimeEnvironment(environment = process.env) {
   if (forbidden.length > 0) throw new Error("development_substitute_forbidden");
   required(environment, "WORLDSTREAM_HOSTED_INSTALLATION_ID", /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u);
   required(environment, "WORLDSTREAM_DEPLOYMENT_VERSION", /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u);
-  required(environment, "WORLDSTREAM_LISTING_ALLOWLIST", /^blake3:[0-9a-f]{64}(,blake3:[0-9a-f]{64}){0,63}$/u);
+  required(environment, "WORLDSTREAM_LISTING_ALLOWLIST", /^blake3:[0-9a-f]{64}(,blake3:[0-9a-f]{64}){0,63}$/u, 64 * 72 - 1);
   const authority = required(environment, "WORLDSTREAM_PUBLIC_AUTHORITY", /^[a-z0-9][a-z0-9.:-]{0,254}$/u);
   if (authority.includes("/") || authority.includes("@")) {
     throw new Error("invalid_public_authority");
@@ -562,9 +562,9 @@ function requiredPath(environment, name) {
   return resolve(value);
 }
 
-function required(environment, name, pattern) {
+function required(environment, name, pattern, maximumLength = 512) {
   const value = environment[name];
-  if (typeof value !== "string" || value.length < 1 || value.length > 512) {
+  if (typeof value !== "string" || value.length < 1 || value.length > maximumLength) {
     throw new Error(`${name.toLowerCase()}_required`);
   }
   if (pattern !== undefined && !pattern.test(value)) throw new Error(`${name.toLowerCase()}_invalid`);

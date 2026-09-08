@@ -16,6 +16,17 @@ import {
 
 const digest = `blake3:${"1".repeat(64)}`;
 
+test("the deployed retained catalog fits the allowlist contract, including 64 revisions", async () => {
+  const fly = await readFile(new URL("../packaging/hosted/fly.toml", import.meta.url), "utf8");
+  const line = fly.split("\n").find((value) => value.trim().startsWith("WORLDSTREAM_LISTING_ALLOWLIST = "));
+  const allowlist = JSON.parse(line.slice(line.indexOf("=") + 1));
+  assert.ok(allowlist.length > 512, "exercise the former scalar-string limit");
+  assert.doesNotThrow(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_LISTING_ALLOWLIST: allowlist })));
+  assert.doesNotThrow(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_LISTING_ALLOWLIST: Array(64).fill(digest).join(",") })));
+  assert.throws(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_LISTING_ALLOWLIST: Array(65).fill(digest).join(",") })));
+  assert.throws(() => validateHostedRuntimeEnvironment(environment({ WORLDSTREAM_HOSTED_INSTALLATION_ID: "a".repeat(513) })));
+});
+
 function environment(overrides = {}) {
   return {
     NODE_ENV: "production",
