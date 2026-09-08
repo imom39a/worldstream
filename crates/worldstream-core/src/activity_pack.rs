@@ -2343,6 +2343,7 @@ enum ReviewedExecutorProvenanceV1 {
     CounterV4,
     AgentHeistLobbyV2,
     AgentHeistLobbyV3,
+    AgentHeistLobbyV4,
     AgentHeistV1,
     AgentHeistV0,
     #[cfg(test)]
@@ -2365,6 +2366,7 @@ impl ReviewedExecutorProvenanceV1 {
                 TypeId::of::<crate::agent_heist_lobby_v3::AgentHeistLobbyV3>()
             }
             Self::AgentHeistV1 => TypeId::of::<crate::agent_heist::AgentHeistV1>(),
+            Self::AgentHeistLobbyV4 => TypeId::of::<crate::AgentHeistLobbyV4>(),
             Self::AgentHeistV0 => TypeId::of::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
             Self::Test {
@@ -2386,6 +2388,7 @@ impl ReviewedExecutorProvenanceV1 {
                 std::any::type_name::<crate::agent_heist_lobby_v3::AgentHeistLobbyV3>()
             }
             Self::AgentHeistV1 => std::any::type_name::<crate::agent_heist::AgentHeistV1>(),
+            Self::AgentHeistLobbyV4 => std::any::type_name::<crate::AgentHeistLobbyV4>(),
             Self::AgentHeistV0 => std::any::type_name::<crate::agent_heist::AgentHeistV0>(),
             #[cfg(test)]
             Self::Test {
@@ -2408,6 +2411,7 @@ impl ReviewedExecutorProvenanceV1 {
                 crate::agent_heist_lobby_v3::agent_heist_lobby_artifact_digest()
             }
             Self::AgentHeistV1 => crate::agent_heist::agent_heist_artifact_digest(),
+            Self::AgentHeistLobbyV4 => crate::agent_heist_lobby_v4::artifact_digest(),
             Self::AgentHeistV0 => crate::agent_heist::agent_heist_legacy_artifact_digest(),
             #[cfg(test)]
             Self::Test {
@@ -2578,6 +2582,17 @@ impl PackRegistryEntryV1 {
             crate::agent_heist_lobby_v3::AgentHeistLobbyV3,
             status,
         )
+    }
+
+    pub(crate) fn agent_heist_lobby_v4(
+        revision_lock: PackRevisionLockV1,
+        descriptor: &'static PackRevisionDescriptorV1,
+        artifacts: PackRegistryArtifactsV1,
+        status: PackRegistryStatusV1,
+    ) -> Self {
+        Self::embedded(revision_lock, descriptor, artifacts,
+            ReviewedExecutorProvenanceV1::AgentHeistLobbyV4,
+            crate::AgentHeistLobbyV4, status)
     }
 
     #[must_use]
@@ -3220,7 +3235,8 @@ impl ActivityPackHostV1 {
         let lobby_retains_departed_role_minima =
             crate::agent_heist_lobby::LOBBY_RETAINS_DEPARTED_ROLE_MINIMA
                 && descriptor.pack_id == "worldstream.agent-heist"
-                && (descriptor.explanatory_version == crate::AGENT_HEIST_LOBBY_VERSION
+                && (descriptor.explanatory_version == crate::AGENT_HEIST_AGENT_READY_VERSION
+                    || descriptor.explanatory_version == crate::AGENT_HEIST_LOBBY_VERSION
                     || (crate::agent_heist_lobby_v3::LOBBY_RETAINS_DEPARTED_ROLE_MINIMA
                         && descriptor.explanatory_version
                             == crate::AGENT_HEIST_CLOCK_SAFE_VERSION))

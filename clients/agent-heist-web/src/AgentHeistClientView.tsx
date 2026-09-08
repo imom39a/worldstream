@@ -218,8 +218,9 @@ function PrivateParticipantPanel({
     <PanelHeading number="05" title="Your next move" />
     {state.offers.length === 0 ? <p className="private-empty">No Action is offered at this synchronized Head.</p> : (
       <div className="live-offer-list">{state.offers.map((offer) => <ActionOfferForm
-        key={offer.offerId}
+        key={JSON.stringify([offer.offerId, state.projection.plans.map((plan) => plan.planId)])}
         offer={offer}
+        plans={state.projection.plans}
         roomSequence={state.roomSequence}
         enabled={actionsEnabled}
         onAct={onAct}
@@ -272,20 +273,29 @@ const actionFields: Record<AgentHeistActionType, readonly ActionField[]> = {
 
 function ActionOfferForm({
   offer,
+  plans,
   roomSequence,
   enabled,
   onAct,
 }: {
   readonly offer: AgentHeistActionOffer;
+  readonly plans: AgentHeistReadyState["projection"]["plans"];
   readonly roomSequence: number;
   readonly enabled: boolean;
   readonly onAct: (action: ActivityClientAction) => Promise<void>;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
+  const planField = offer.actionType === "commit_move" ? "selected_plan_id"
+    : offer.actionType === "endorse_plan" || offer.actionType === "challenge_plan" ? "plan_id" : null;
+  const missingPlan = planField !== null && plans.length === 0;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!enabled) return;
+    if (!enabled || missingPlan) return;
     const values = new FormData(event.currentTarget);
+    if (planField !== null && !plans.some((plan) => plan.planId === values.get(planField))) {
+      setNotice("Choose a plan from the current board.");
+      return;
+    }
     const payload: Record<string, unknown> = {};
     for (const field of actionFields[offer.actionType]) {
       const value = values.get(field.name);
@@ -313,11 +323,18 @@ function ActionOfferForm({
   };
   return <form className="live-action-form" onSubmit={submit}>
     <div><strong>{humanize(offer.actionType)}</strong><span className="action-ready">Action</span></div>
-    {actionFields[offer.actionType].map((field) => <label key={field.name}><span>{field.label}</span>{field.kind === "select" ? (
+    {actionFields[offer.actionType].map((field) => <label key={field.name}><span>{field.name === planField ? "Choose a plan" : field.label}</span>{field.name === planField ? (
+      <select name={field.name} defaultValue="" required disabled={!enabled || missingPlan}>
+        <option disabled value="">{missingPlan ? "No plan available" : "Select a plan…"}</option>
+        {plans.map((plan, index) => <option key={plan.planId} value={plan.planId}>
+          {`${index + 1}. ${capitalize(humanize(plan.route))} · ${capitalize(humanize(plan.entryWindow))} · ${capitalize(humanize(plan.requiredTool))} → ${capitalize(humanize(plan.extraction))} (${capitalize(plan.proposerRole)})`}
+        </option>)}
+      </select>
+    ) : field.kind === "select" ? (
       <select name={field.name} defaultValue="" required><option disabled value="">Select…</option>{field.options?.map((option) => <option key={option} value={option}>{humanize(option)}</option>)}</select>
     ) : <input name={field.name} type={field.kind === "checkbox" ? "checkbox" : "text"} required={field.kind !== "checkbox"} />}</label>)}
     <details className="technical-details action-details"><summary>Action details</summary><code>{offer.actionType}</code><p>{offer.eligibility}</p><p>based_on_room_seq <code>{roomSequence}</code></p></details>
-    <button disabled={!enabled} type="submit">{enabled ? `${humanize(offer.actionType)} ↗` : "Reconnect before acting"}</button>
+    <button disabled={!enabled || missingPlan} type="submit">{!enabled ? "Reconnect before acting" : missingPlan ? "No plan available" : `${humanize(offer.actionType)} ↗`}</button>
     {notice === null ? null : <output role="status">{notice}</output>}
   </form>;
 }

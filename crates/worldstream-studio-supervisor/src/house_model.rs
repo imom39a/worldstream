@@ -242,10 +242,29 @@ enum AttemptStateV1 {
     ProviderFailed,
 }
 
+/// Closed diagnostics only: never provider text, prompts, or credentials.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AttemptFailureCodeV1 {
+    ProviderUnavailable,
+    ProviderTimeout,
+    ProviderLostReply,
+    ProviderRateLimited,
+    ProviderRejected,
+    InvalidResponse,
+    UnofferedAction,
+    OutputLimit,
+    RouteMismatch,
+    FallbackDetected,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AttemptRecordV1 {
     state: AttemptStateV1,
+    // Omission preserves the integrity witness of retained v1 records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_code: Option<AttemptFailureCodeV1>,
     input_units: u64,
     output_units: u64,
     maximum_output_units: u64,
@@ -524,6 +543,7 @@ impl FileHouseAllowanceLedgerV1 {
             attempt_digest.clone(),
             AttemptRecordV1 {
                 state: AttemptStateV1::Reserved,
+                failure_code: None,
                 input_units,
                 output_units: allowance.output_tokens_per_call,
                 maximum_output_units: allowance.output_tokens_per_call,
@@ -584,6 +604,7 @@ impl FileHouseAllowanceLedgerV1 {
         &self,
         reservation: &HouseAllowanceReservationV1,
         state: AttemptStateV1,
+        failure_code: Option<AttemptFailureCodeV1>,
     ) -> Result<(), HouseAllowanceErrorV1> {
         if !matches!(
             state,
@@ -603,6 +624,7 @@ impl FileHouseAllowanceLedgerV1 {
             return Err(HouseAllowanceErrorV1::AttemptConsumed);
         }
         attempt.state = state;
+        attempt.failure_code = failure_code;
         self.persist(&mut ledger)
     }
 
@@ -802,6 +824,10 @@ fn validate_ledger(
         let mut output = 0_u64;
         for (attempt_digest, attempt) in &assignment.attempts {
             if !valid_blake3_digest(attempt_digest)
+                || (matches!(
+                    attempt.state,
+                    AttemptStateV1::Reserved | AttemptStateV1::Completed
+                ) && attempt.failure_code.is_some())
                 || attempt.input_units == 0
                 || attempt.maximum_output_units == 0
                 || attempt.output_units > attempt.maximum_output_units
@@ -1554,7 +1580,19 @@ impl<P: HouseProviderPortV1> HouseModelExecutorV1<P> {
                     | HouseProviderPortErrorV1::Timeout
                     | HouseProviderPortErrorV1::LostReply => AttemptStateV1::Ambiguous,
                 };
-                self.ledger.consume_failed(&reservation, state)?;
+                let failure_code = match error {
+                    HouseProviderPortErrorV1::Unavailable => {
+                        AttemptFailureCodeV1::ProviderUnavailable
+                    }
+                    HouseProviderPortErrorV1::Timeout => AttemptFailureCodeV1::ProviderTimeout,
+                    HouseProviderPortErrorV1::LostReply => AttemptFailureCodeV1::ProviderLostReply,
+                    HouseProviderPortErrorV1::RateLimited => {
+                        AttemptFailureCodeV1::ProviderRateLimited
+                    }
+                    HouseProviderPortErrorV1::Rejected => AttemptFailureCodeV1::ProviderRejected,
+                };
+                self.ledger
+                    .consume_failed(&reservation, state, Some(failure_code))?;
                 return Err(HouseModelErrorV1::Provider(error));
             }
         };
@@ -1566,8 +1604,25 @@ impl<P: HouseProviderPortV1> HouseModelExecutorV1<P> {
         ) {
             Ok(decoded) => decoded,
             Err(error) => {
-                self.ledger
-                    .consume_failed(&reservation, AttemptStateV1::ProviderFailed)?;
+                let failure_code = match error {
+                    HouseModelErrorV1::InvalidResponse => {
+                        Some(AttemptFailureCodeV1::InvalidResponse)
+                    }
+                    HouseModelErrorV1::UnofferedAction => {
+                        Some(AttemptFailureCodeV1::UnofferedAction)
+                    }
+                    HouseModelErrorV1::OutputLimit => Some(AttemptFailureCodeV1::OutputLimit),
+                    HouseModelErrorV1::RouteMismatch => Some(AttemptFailureCodeV1::RouteMismatch),
+                    HouseModelErrorV1::FallbackDetected => {
+                        Some(AttemptFailureCodeV1::FallbackDetected)
+                    }
+                    _ => None,
+                };
+                self.ledger.consume_failed(
+                    &reservation,
+                    AttemptStateV1::ProviderFailed,
+                    failure_code,
+                )?;
                 return Err(error);
             }
         };
@@ -2597,6 +2652,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One table checks each failure's charge, code and retained serialization.
     fn conformance_faults_fail_closed_and_consume_one_attempt() -> Result<(), Box<dyn Error>> {
         let cases = [
             (
@@ -2659,6 +2715,70 @@ mod tests {
             assert_eq!(usage.attempts, 1);
             assert_eq!(usage.active_calls, 0);
             assert_eq!(usage.consumed_output_units, 1_000);
+            let retained = serde_json::to_value(ledger.load()?)?;
+            let attempt = retained["assignments"][&assignment_id]["attempts"]
+                .as_object()
+                .ok_or("missing attempts")?
+                .values()
+                .next()
+                .ok_or("missing attempt")?;
+            let code = match expected {
+                HouseModelErrorV1::InvalidResponse => "invalid_response",
+                HouseModelErrorV1::RouteMismatch => "route_mismatch",
+                HouseModelErrorV1::FallbackDetected => "fallback_detected",
+                HouseModelErrorV1::OutputLimit => "output_limit",
+                HouseModelErrorV1::Provider(HouseProviderPortErrorV1::Timeout) => {
+                    "provider_timeout"
+                }
+                HouseModelErrorV1::Provider(HouseProviderPortErrorV1::LostReply) => {
+                    "provider_lost_reply"
+                }
+                HouseModelErrorV1::Provider(HouseProviderPortErrorV1::RateLimited) => {
+                    "provider_rate_limited"
+                }
+                HouseModelErrorV1::Provider(HouseProviderPortErrorV1::Rejected) => {
+                    "provider_rejected"
+                }
+                _ => return Err("unexpected test failure".into()),
+            };
+            assert_eq!(attempt["failure_code"], code);
+            assert!(
+                executor
+                    .execute(
+                        &credential()?,
+                        &revision()?,
+                        &identity(&assignment_id, &format!("activation-fault-{index}"))?,
+                        &json!({"phase": "planning"}),
+                        &offers(),
+                        period()?,
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                provider.call_count(),
+                1,
+                "a classified failure must never redispatch the same paid attempt"
+            );
+
+            // Retained v1 attempts had no classification field. Reconstruct
+            // that exact serialization and verify it reloads without a new
+            // allowance period, lost charges, or a changed integrity witness.
+            let mut legacy = ledger.load()?;
+            for assignment in legacy.assignments.values_mut() {
+                for attempt in assignment.attempts.values_mut() {
+                    attempt.failure_code = None;
+                }
+            }
+            ledger.persist(&mut legacy)?;
+            let bytes = fs::read(ledger.state_path.as_ref())?;
+            assert!(!String::from_utf8_lossy(&bytes).contains("failure_code"));
+            let reopened = FileHouseAllowanceLedgerV1::open_at(
+                directory.path().join("ledger"),
+                HouseSpendLimitsV1::hobby_preview(),
+                period()?,
+            )?;
+            assert_eq!(reopened.load()?, legacy);
+            assert_eq!(reopened.usage(&assignment_id)?.consumed_output_units, 1_000);
         }
         Ok(())
     }
@@ -2873,7 +2993,7 @@ mod tests {
                 .err(),
             Some(HouseAllowanceErrorV1::ConcurrentCall)
         );
-        ledger.consume_failed(&first, AttemptStateV1::ProviderFailed)?;
+        ledger.consume_failed(&first, AttemptStateV1::ProviderFailed, None)?;
         for index in 1..10 {
             let reservation = ledger.reserve(
                 &identity("assignment-gates", &format!("activation-{index}"))?,
@@ -2881,7 +3001,7 @@ mod tests {
                 100,
                 period()?,
             )?;
-            ledger.consume_failed(&reservation, AttemptStateV1::ProviderFailed)?;
+            ledger.consume_failed(&reservation, AttemptStateV1::ProviderFailed, None)?;
         }
         assert_eq!(
             ledger

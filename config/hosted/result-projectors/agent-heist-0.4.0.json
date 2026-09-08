@@ -1,0 +1,72 @@
+{
+  "schema": "worldstream/result-projector-revision/v1",
+  "projector_id": "worldstream.agent-heist.result",
+  "version": "0.4.0",
+  "runtime": {
+    "id": "worldstream.result-projector.declarative",
+    "version": "1.0.0",
+    "digest": "blake3:7278757ac8f047330292e399ac3c8f4ed49225b05ecb6b997b75500784b0526e"
+  },
+  "input": {
+    "pack": {
+      "id": "worldstream.agent-heist",
+      "version": "0.4.0",
+      "digest": "blake3:4455e4302bda695a5fc4aca150b5a8dac944775474930dafaef1539acb86c96e"
+    },
+    "listing_schema": "worldstream/activity-listing-revision/v1",
+    "complete_head_schema": "worldstream/complete-head/v1",
+    "projection": {
+      "schema": "agent-heist/projection/v1",
+      "digest": "blake3:a617f398abd1469d237ce4d832704459deddf44193267fab8bb0e1311e5faa8f"
+    }
+  },
+  "program": {
+    "schema": "worldstream/result-projector-program/v1",
+    "terminal": {
+      "field": "phase",
+      "equals": "complete"
+    },
+    "outcome_field": "outcome",
+    "summary_fields": [
+      {
+        "output": "outcome",
+        "source": "outcome",
+        "kind": "enum",
+        "values": [
+          "success",
+          "partial_failure",
+          "failure"
+        ]
+      },
+      {
+        "output": "selected_plan_id",
+        "source": "selected_plan_id",
+        "kind": "nullable_identifier",
+        "maximum_bytes": 128
+      },
+      {
+        "output": "score",
+        "source": "score",
+        "kind": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
+      {
+        "output": "reason",
+        "source": "reason",
+        "kind": "enum",
+        "values": [
+          "no_strict_majority",
+          "scored_selected_plan"
+        ]
+      }
+    ]
+  },
+  "output": {
+    "schema": "worldstream/result-summary/v1",
+    "schema_digest": "blake3:816295fc5ac531886f090e59de24901633a60ed68af1510e133cead3d7eb35c6",
+    "canonicalizer": "worldstream/canonical-json/v1",
+    "maximum_bytes": 4096
+  },
+  "maximum_input_bytes": 262144
+}

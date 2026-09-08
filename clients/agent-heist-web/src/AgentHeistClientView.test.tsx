@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -66,6 +69,71 @@ function readyState(): AgentHeistReadyState {
 }
 
 describe("standalone Agent Heist live participant surface", () => {
+  it("submits the chosen full ID and discards selection when plans are replaced", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onAct = vi.fn().mockResolvedValue(undefined);
+    const state = readyState();
+    const fullId = "158CGNGHR8Q7YJ7HKKDH6M8CXZ";
+    const current = {
+      ...state,
+      projection: { ...state.projection, plans: [{ ...state.projection.plans[0]!, planId: fullId }] },
+      offers: [{ ...state.offers[0]!, actionType: "commit_move" as const }],
+    };
+    const render = (value: AgentHeistReadyState) => root.render(<AgentHeistClientView state={value} connection="live" onAct={onAct} />);
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      await act(async () => render(current));
+      const select = host.querySelector<HTMLSelectElement>('select[name="selected_plan_id"]')!;
+      expect(select.value).toBe("");
+      select.value = fullId;
+      host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked = true;
+      await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+      expect(onAct).toHaveBeenCalledWith(expect.objectContaining({
+        basedOnRoomSeq: 7,
+        actionType: "commit_move",
+        payload: { selected_plan_id: fullId, contribute_required_resource: true },
+      }));
+      await act(async () => render({ ...current, roomSequence: 8, projection: {
+        ...current.projection, plans: [{ ...current.projection.plans[0]!, planId: "different-plan" }],
+      } }));
+      expect(host.querySelector<HTMLSelectElement>("select")!.value).toBe("");
+      await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+      expect(onAct).toHaveBeenCalledTimes(1);
+      expect(host.textContent).toContain("Choose a plan from the current board.");
+      await act(async () => render({ ...current, projection: { ...current.projection, plans: [] } }));
+      expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    }
+  });
+
+  it.each(["commit_move", "endorse_plan", "challenge_plan"] as const)("selects exact authorized plan identifiers for %s", (actionType) => {
+    const state = readyState();
+    const planId = "158CGNGHR8Q7YJ7HKKDH6M8CXZ";
+    const markup = renderToStaticMarkup(<AgentHeistClientView state={{
+      ...state,
+      projection: { ...state.projection, plans: [{ ...state.projection.plans[0]!, planId }] },
+      offers: [{ ...state.offers[0]!, actionType }],
+    }} connection="live" onAct={vi.fn()} />);
+    expect(markup).toContain(`<option value="${planId}">`);
+    expect(markup).toContain("Service · Early · Thermal key → Boat");
+    expect(markup).not.toMatch(/<input[^>]*name="(?:selected_)?plan_id"/);
+  });
+
+  it("does not permit a plan action when the authorized Projection has no plans", () => {
+    const state = readyState();
+    const markup = renderToStaticMarkup(<AgentHeistClientView state={{
+      ...state, projection: { ...state.projection, plans: [] },
+      offers: [{ ...state.offers[0]!, actionType: "commit_move" }],
+    }} connection="live" onAct={vi.fn()} />);
+    expect(markup).toContain("No plan available");
+    expect(markup).toMatch(/<button disabled="" type="submit">/);
+  });
+
   it("renders the authorized participant workspace without demo lenses or raw protocol JSON", () => {
     const markup = renderToStaticMarkup(
       <AgentHeistClientView state={readyState()} connection="live" onAct={vi.fn()} />,

@@ -6,6 +6,45 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 13:35 UTC — agent-ready candidate; not deployed
+
+Local work for IMO-185 and IMO-186 now includes an authorized plan selector,
+closed House failure codes, and a distinct Heist 0.4.0 Pack. The Pack invites
+agents to inspect and share clues before commitment. It selects one useful
+agent invitation after an accepted move and adds one-shot reminders during
+Briefing, Negotiation and Result. Commitment retains its existing reminder.
+Phase deadlines, scoring and strict stale-Head admission do not change.
+
+A deterministic cooperative trace uses only participant projections and shared
+claims to build its plan. It completes with score 5 and replays to the same Head.
+Tests also cover a failed initial decision, one fresh reminder, no reminder
+loop, and rejection of a competing stale Action. These are local rule tests,
+not evidence of a deployed LLM match or full hosted acceptance.
+
+The candidate pins Listing 0.12.0, Client v5, Planner 8, Auditor 7 and Template 7.
+Client v4's verified build is retained at its original paths. Retained Listings,
+House definitions, projectors and Pack rules are not rewritten. The candidate
+still needs local hosted qualification, a protected deployment, exact executable
+approval, and one bounded live model test. Completed House capacity still uses
+the offline retirement procedure; automatic reclamation is not implemented.
+No paid call, deployment, purchase or budget change was made for these local tests.
+
+The local metadata migration is `20260908133527`; it appends immutable records
+and does not change operating gates, approvals or allowances. Local database
+tests pass (388 checks). The built product installs verified client v5 and the
+retained v4/v3/v2 builds separately. Production-code lint passes. The wider
+all-target lint command still reports existing warnings in supervisor test
+code; it is not recorded as passing.
+
+House ledger records can now include a closed `failure_code`. Missing fields
+remain valid and serialize as omitted, preserving retained v1 integrity and
+charges. A failed attempt remains consumed and cannot redispatch. Old binaries
+cannot read newly coded records: stop retained writers before deployment and
+do not roll back to a pre-classification reader against the updated ledger.
+Provider bodies, prompts, private projections and credentials are not recorded
+in the diagnostic field. Failures before dispatch are not classified in this
+per-attempt field because no paid attempt exists yet.
+
 ### September 8, 12:53 UTC — accepted live House Actions; preview fill reopened
 
 The transport repair is live on the exact `c7cef6f` deployment recorded below.

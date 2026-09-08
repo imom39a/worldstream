@@ -32,6 +32,27 @@ test("fake provider refuses production and non-loopback configuration", () => {
   );
 });
 
+test("fake House decisions respect the current role and its authorized clues", async () => {
+  const { server } = createDevelopmentFakeOpenRouter(environment());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    for (const [role, clue] of [["navigator", "route"], ["insider", "entry_window"], ["broker", "required_tool"]]) {
+      const response = await fetch(`${origin}/api/v1/chat/completions`, {
+        method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: "worldstream/development-house", provider: { only: ["fixture-provider"] },
+          messages: [{ role: "user", content: JSON.stringify({ schema: "worldstream/house-model-invocation/v1",
+            projection: { role, projection_reset: { projection: { activity: { private_clues: [] } } }, observations: [] },
+            action_offers: { schema: "worldstream/assignment-action-offer-list/v1", offers: [{ offer_id: "inspect", action_type: "inspect_clue" }] },
+          }) }] }),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(JSON.parse((await response.json()).choices[0].message.content), { offer_id: "inspect", payload: { clue_id: clue } });
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
 test("fake provider exposes an authenticated deterministic OpenRouter-shaped response", async () => {
   const { server } = createDevelopmentFakeOpenRouter(environment());
   server.listen(0, "127.0.0.1");
@@ -83,6 +104,7 @@ test("fake provider exposes an authenticated deterministic OpenRouter-shaped res
             instruction: "fixture",
             projection: {
               schema: "worldstream/assignment-observation/v1",
+              role: "insider",
               projection_reset: { projection: { activity: { private_clues: [] } } },
               observations: [],
             },
@@ -123,6 +145,7 @@ test("fake provider exposes an authenticated deterministic OpenRouter-shaped res
             schema: "worldstream/house-model-invocation/v1",
             projection: {
               schema: "worldstream/assignment-observation/v1",
+              role: "insider",
               ...observation,
             },
             action_offers: {
@@ -153,4 +176,31 @@ test("fake provider exposes an authenticated deterministic OpenRouter-shaped res
   } finally {
     await new Promise((resolvePromise) => server.close(resolvePromise));
   }
+});
+
+test("fake House proposes a plan only from a complete set of authorized claims", async () => {
+  const { server } = createDevelopmentFakeOpenRouter(environment());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const claims = [
+      { clue_id: "route", claim_code: "route_canal" },
+      { clue_id: "entry_window", claim_code: "entry_window_late" },
+      { clue_id: "required_tool", claim_code: "required_tool_disguise" },
+      { clue_id: "extraction", claim_code: "extraction_van" },
+    ];
+    for (const complete of [true, false]) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/chat/completions`, {
+        method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: "worldstream/development-house", provider: { only: ["fixture-provider"] },
+          messages: [{ role: "user", content: JSON.stringify({ schema: "worldstream/house-model-invocation/v1",
+            projection: { role: "navigator", projection_reset: { projection: { activity: { public_claims: complete ? claims : claims.slice(0, 3), plans: [] } } }, observations: [] },
+            action_offers: { schema: "worldstream/assignment-action-offer-list/v1", offers: [{ offer_id: "propose", action_type: "propose_plan" }] },
+          }) }] }),
+      });
+      const content = (await response.json()).choices[0].message.content;
+      if (complete) assert.deepEqual(JSON.parse(content), { offer_id: "propose", payload: { route: "canal", entry_window: "late", required_tool: "disguise", extraction: "van" } });
+      else assert.equal(content, "DEVELOPMENT_FAKE_RESPONSE", "must not invent a missing clue from fixtures");
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });

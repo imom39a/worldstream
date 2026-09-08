@@ -35,7 +35,7 @@ async function main() {
   ]);
   await Promise.all([
     copyFile(
-      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v4.json"),
+      join(REPOSITORY_ROOT, "config", "activity-clients", "releases", "agent-heist-web-v5.json"),
       join(assetRoot, "agent-heist-web.json"),
     ),
     copyFile(

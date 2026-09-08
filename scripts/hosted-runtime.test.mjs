@@ -90,10 +90,10 @@ test("House Runner import is exact and has no secret environment", () => {
     "a".repeat(64),
   );
   assert.equal(manifest.template_id, "openrouter-house");
-  assert.equal(manifest.revision, "6");
+  assert.equal(manifest.revision, "7");
   assert.deepEqual(manifest.compatibility, [{
     activity_pack_id: "worldstream.agent-heist",
-    exact_revisions: ["0.3.0"],
+    exact_revisions: ["0.4.0"],
   }]);
   assert.deepEqual(manifest.secret_environment, []);
   assert.equal(manifest.capacity.maximum_concurrent_invocations, 4);
@@ -103,6 +103,7 @@ test("successor House Runner instances coexist with both retained installations"
   for (const retained of [
     { instance_id: "hosted-house-01", health_address: "127.0.0.1:9591" },
     { instance_id: "hosted-house-r2-01", health_address: "127.0.0.1:9592" },
+    { instance_id: "hosted-house-r6-01", health_address: "127.0.0.1:9596" },
   ]) {
   const successor = renderHouseRunnerTemplate("/usr/local/bin/worldstream-managed-agent-host", "a".repeat(64));
   for (const instance of successor.instances) {
@@ -117,8 +118,8 @@ test("successor House Runner instances coexist with both retained installations"
 test("fresh local and Fly imports bind the two Granite strategies to distinct exact profile revisions", () => {
   const profiles = renderHouseAgentProfiles();
   assert.deepEqual(Object.values(profiles).map(({ profile_id, revision }) => ({ profile_id, revision })), [
-    { profile_id: "house-cooperative-planner", revision: "7" },
-    { profile_id: "house-skeptical-auditor", revision: "6" },
+    { profile_id: "house-cooperative-planner", revision: "8" },
+    { profile_id: "house-skeptical-auditor", revision: "7" },
   ]);
   for (const profile of Object.values(profiles)) {
     assert.equal(profile.schema, "worldstream/studio-agent-profile-publish/v2");
@@ -126,7 +127,7 @@ test("fresh local and Fly imports bind the two Granite strategies to distinct ex
     assert.deepEqual(profile.non_secret_configuration, {});
     assert.deepEqual(profile.host_contract, {
       kind: "managed_house_openrouter", host_contract_revision: "1",
-      runner_template: { template_id: "openrouter-house", revision: "6" },
+      runner_template: { template_id: "openrouter-house", revision: "7" },
     });
   }
 });

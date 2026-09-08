@@ -38,7 +38,12 @@ mod tests {
     fn daemon_registry_retains_counter_and_exact_heist_revisions() {
         let registry = builtin_worldstream_registry()
             .unwrap_or_else(|error| unreachable!("WorldStream registry: {error}"));
-        assert_eq!(registry.len(), 8);
+        assert_eq!(registry.len(), 9);
+        assert!(
+            registry
+                .select_for_new_room(&crate::agent_heist_agent_ready_digest())
+                .is_ok()
+        );
         let revision_locks = registry.retained_revision_locks().collect::<Vec<_>>();
         assert_eq!(revision_locks.len(), registry.len());
         assert!(

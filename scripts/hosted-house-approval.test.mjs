@@ -220,6 +220,32 @@ test("Heist guidance successor is append-only and keeps all spending and privacy
   assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
+test("agent-ready release metadata preserves allowances and exact canonical artifacts", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260908133527_agent_ready_heist_release.sql", import.meta.url), "utf8");
+  const documents = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map(match => Buffer.from(match[1]));
+  assert.equal(documents.length, 2);
+  for (const [index, [name, prior, next]] of [["cooperative-planner", 7, 8], ["skeptical-auditor", 6, 7]].entries()) {
+    const load = async revision => JSON.parse(await readFile(new URL(`../config/hosted/house-agents/${name}-${revision}.json`, import.meta.url), "utf8"));
+    const previous = await load(prior), current = await load(next);
+    assert.deepEqual(documents[index], canonicalBytes(current));
+    assert.ok(migration.includes(`blake3:${hash(documents[index])}`));
+    assert.deepEqual(current.route, previous.route);
+    assert.deepEqual(current.allowance, previous.allowance);
+    assert.deepEqual(current.tools, previous.tools);
+    assert.equal(current.runner_template.revision, "7");
+    assert.equal(current.behavior_policy.revision, "3");
+  }
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.12.0.json", import.meta.url), "utf8"));
+  const projector = JSON.parse(await readFile(new URL("../config/hosted/result-projectors/agent-heist-0.4.0.json", import.meta.url), "utf8"));
+  const priorProjector = JSON.parse(await readFile(new URL("../config/hosted/result-projectors/agent-heist-0.3.0.json", import.meta.url), "utf8"));
+  assert.deepEqual(Buffer.from(migration.match(/\$listing\$([\s\S]*?)\$listing\$/u)[1]), canonicalBytes(listing));
+  assert.ok(migration.includes(`blake3:${hash(canonicalBytes(listing))}`));
+  assert.equal(listing.result.projector.digest, `blake3:${hash(canonicalBytes(projector))}`);
+  assert.deepEqual(projector.input.pack, listing.pack);
+  assert.deepEqual(projector.program, priorProjector.program);
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("approval preparation rejects unreviewed templates, duplicate JSON, symlinks and SQL-shaped identifiers", async (t) => {
   const f = await fixture(t);
   await assert.rejects(prepareHouseApprovals({ ...f.options, installationId: "x';delete" }), /approval_options_invalid/u);

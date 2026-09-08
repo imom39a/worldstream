@@ -56,6 +56,14 @@ Catalog review and Host execution authority are separate controls. A checked-in
 listing is review evidence; it is not a Room Host allowlist. The Host must still
 allowlist the exact Listing Revision, Pack, client surface, and projector identities.
 
+The agent-ready candidate, Listing `0.12.0`, pins Heist `0.4.0`, Client v5,
+Planner 8, Auditor 7 and Template 7. It is not deployment approval. Client v5
+uses `/agent-heist-v5/` and `/agent-heist-v5/hosted/`; v4 remains a retained
+verified build at its original paths. The new Pack adds useful phase invitations
+and one-shot reminders without changing deadlines, scoring or stale-Head checks.
+The new Result Projector pins the new Pack while retaining the same public
+summary program. The old projector remains available for old Runs.
+
 The launch request is intentionally small:
 
 ```json

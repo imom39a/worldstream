@@ -13,6 +13,9 @@ mod agent_heist;
 mod agent_heist_clock_safe;
 mod agent_heist_lobby;
 mod agent_heist_lobby_v3;
+mod agent_heist_lobby_v4;
+#[cfg(test)]
+mod agent_heist_lobby_v4_tests;
 mod agent_heist_registry;
 mod authority;
 mod canonical;
@@ -77,6 +80,9 @@ pub use agent_heist_lobby::{
 };
 pub use agent_heist_lobby_v3::{
     AGENT_HEIST_LOBBY_VERSION as AGENT_HEIST_CLOCK_SAFE_VERSION, AgentHeistLobbyV3,
+};
+pub use agent_heist_lobby_v4::{
+    AGENT_HEIST_AGENT_READY_VERSION, AgentHeistLobbyV4, agent_heist_agent_ready_digest,
 };
 pub use agent_heist_registry::{
     agent_heist_clock_safe_digest, agent_heist_digest, agent_heist_lobby_contract_declared,

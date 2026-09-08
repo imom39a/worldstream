@@ -29,6 +29,8 @@ const LOBBY_TRANSCRIPT_DIGEST: &str =
     "blake3:7eba0832c3cecfe79daa34747159378ad25d2fa24c4e909e69bed93855d04ae2";
 const CLOCK_SAFE_TRANSCRIPT_DIGEST: &str =
     "blake3:97027caadb35cbd7379300600b812ab872c2bf8cefcd8348b1115267c59a6cfa";
+const AGENT_READY_TRANSCRIPT_DIGEST: &str =
+    "blake3:5ca5a3f6eca555019a7944a93961469766dd6a1e7b8a239033caebadba59be84";
 #[cfg(test)]
 const CORPUS_DIGEST: &str =
     "blake3:c79d1e0c37eb32e54924b4b42f9d3d2d790e456d7fc888698c4d0b2b467ad958";
@@ -42,7 +44,23 @@ const LEGACY_CORPUS_DIGEST: &str =
 ///
 /// Returns a registry error if the exact revision lock, codec bundle,
 /// executor provenance, or golden corpus does not verify.
+#[allow(clippy::too_many_lines)] // Keep each immutable revision's complete artifact row together.
 pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let (ready_descriptor, ready_lock, ready_schemas, ready_codecs, ready_artifact) =
+        crate::agent_heist_lobby_v4::agent_heist_agent_ready_revision();
+    let ready_corpus = lobby_golden_corpus(
+        ready_descriptor.revision_digest.clone(),
+        AGENT_READY_TRANSCRIPT_DIGEST,
+    );
+    let ready_artifacts = PackRegistryArtifactsV1 {
+        expected_revision_digest: ready_descriptor.revision_digest.clone(),
+        schemas: Some(ready_schemas.clone()),
+        codecs: Some(ready_codecs.clone()),
+        codec_implementation: Some(CanonicalPackCodecV1::canonical_v1()),
+        executor_artifact_digest: ready_artifact.clone(),
+        golden_corpus_digest: ready_corpus.digest()?,
+        golden_corpus: Some(ready_corpus),
+    };
     let (clock_descriptor, clock_lock, clock_schemas, clock_codecs, clock_artifact) =
         crate::agent_heist_lobby_v3::agent_heist_lobby_revision();
     let clock_corpus = lobby_golden_corpus(
@@ -112,6 +130,15 @@ pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErro
         runnable_for_retained_rooms: true,
     };
     PackRegistryV1::try_new([
+        PackRegistryEntryV1::agent_heist_lobby_v4(
+            ready_lock.clone(),
+            ready_descriptor,
+            ready_artifacts,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: true,
+                runnable_for_retained_rooms: true,
+            },
+        ),
         PackRegistryEntryV1::agent_heist_lobby_v3(
             clock_lock.clone(),
             clock_descriptor,
@@ -166,6 +193,12 @@ pub fn agent_heist_lobby_contract_declared(
 ) -> bool {
     crate::agent_heist_lobby::agent_heist_lobby_contract_declared(registry, digest)
         || crate::agent_heist_lobby_v3::agent_heist_lobby_contract_declared(registry, digest)
+        || (digest == &crate::agent_heist_agent_ready_digest()
+            && registry.load_retained(digest).is_ok_and(|r| {
+                r.descriptor()
+                    .stimulus_schemas
+                    .contains_key(crate::HOST_LAUNCH_INPUT_TYPE)
+            }))
 }
 
 /// Exact semantic digest of the retained-only Agent Heist revision.
@@ -631,6 +664,29 @@ mod tests {
             crate::agent_heist_lobby::AgentHeistLobbyV2,
         );
         assert_eq!(digest, Ok(parsed(LOBBY_TRANSCRIPT_DIGEST)));
+    }
+
+    #[test]
+    fn agent_ready_registry_golden_transcript_is_fixed() {
+        let (descriptor, lock, schemas, codecs, artifact) =
+            crate::agent_heist_lobby_v4::agent_heist_agent_ready_revision();
+        let corpus = lobby_golden_corpus(
+            descriptor.revision_digest.clone(),
+            AGENT_READY_TRANSCRIPT_DIGEST,
+        );
+        let digest = author_golden_transcript_digest_for_test(
+            lock.clone(),
+            descriptor,
+            schemas.clone(),
+            codecs.clone(),
+            artifact.clone(),
+            &corpus,
+            crate::AgentHeistLobbyV4,
+        );
+        assert_eq!(
+            digest.map(|value| value.to_string()),
+            Ok(AGENT_READY_TRANSCRIPT_DIGEST.to_owned())
+        );
     }
 
     #[test]

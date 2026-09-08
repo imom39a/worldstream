@@ -147,18 +147,24 @@ function deterministicHouseCompletion(input) {
     observation?.projection_reset?.projection?.activity ?? {};
   const offers = invocation.action_offers.offers;
   const findOffer = (type) => offers.find((offer) => offer?.action_type === type);
-  const privateEntry = clueClaim(activity.private_clues, "entry_window");
-  const publicEntry = clueClaim(activity.public_claims, "entry_window");
+  const role = observation?.role ?? observation?.projection_reset?.projection?.core?.role;
+  const owned = { navigator: ["route"], insider: ["entry_window"], broker: ["required_tool", "extraction"] }[role];
+  if (!owned) return null;
+  const unknown = owned.find(clue => clueClaim(activity.private_clues, clue) === null);
+  const unpublished = owned.find(clue => clueClaim(activity.private_clues, clue) !== null && clueClaim(activity.public_claims, clue) === null);
   const firstPlanId = Array.isArray(activity.plans)
     ? activity.plans.find((plan) => typeof plan?.plan_id === "string")?.plan_id
     : undefined;
+  const proposedPlan = planFromAuthorizedClaims(activity);
   const choices = [
     // A proposal is the Pack's explicit request for this reactive House turn.
     ...(firstPlanId === undefined ? [] : [["endorse_plan", { plan_id: firstPlanId }]]),
-    ["inspect_clue", { clue_id: "entry_window" }],
-    ...(privateEntry !== null && publicEntry === null
-      ? [["publish_clue", { clue_id: "entry_window", claim_code: privateEntry }]]
+    ...(unknown ? [["inspect_clue", { clue_id: unknown }]] : []),
+    ...(unpublished
+      ? [["publish_clue", { clue_id: unpublished, claim_code: clueClaim(activity.private_clues, unpublished) }]]
       : []),
+    ...(firstPlanId === undefined && proposedPlan !== null
+      ? [["propose_plan", proposedPlan]] : []),
     ...(firstPlanId === undefined ? [] : [
       ["commit_move", {
         selected_plan_id: firstPlanId,
@@ -174,6 +180,17 @@ function deterministicHouseCompletion(input) {
     }
   }
   return null;
+}
+
+function planFromAuthorizedClaims(activity) {
+  const plan = {};
+  for (const field of ["route", "entry_window", "required_tool", "extraction"]) {
+    const claim = clueClaim(activity.public_claims, field) ?? clueClaim(activity.private_clues, field);
+    const prefix = `${field}_`;
+    if (claim === null || !claim.startsWith(prefix) || claim.length === prefix.length) return null;
+    plan[field] = claim.slice(prefix.length);
+  }
+  return plan;
 }
 
 function clueClaim(clues, clueId) {

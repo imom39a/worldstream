@@ -199,6 +199,47 @@ fn new_exact_revision_waits_in_lobby_without_timer_or_gameplay_side_effects() {
 }
 
 #[test]
+fn agent_ready_launch_invites_the_first_agent_to_inspect_its_clue() -> anyhow::Result<()> {
+    let registry = builtin_agent_heist_registry()?;
+    let genesis = registry.prepare_genesis_for_new_room(&PackGenesisRequestV1 {
+        room_id: parsed(ROOM),
+        pack_digest: worldstream_core::agent_heist_agent_ready_digest(),
+        configuration: canonical(CONFIG),
+        room_seed: parsed(SEED),
+        created_at: parsed("2026-08-23T12:00:00Z"),
+        initial_core_state: core(),
+    })?;
+    let mut trace = CoreTraceV1::create_from_retained_for_conformance(genesis)?;
+    let prepared = trace.prepare(launch("01ARZ3NDEKTSV4RRFFQ69G5FC0", "2026-08-23T12:01:00Z"))?;
+    trace.install_prepared_for_conformance(prepared)?;
+    let signals = trace
+        .transitions()
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("missing launch"))?
+        .ordered_attention_signals();
+    assert_eq!(
+        signals.len(),
+        1,
+        "an agent must be invited to inspect before negotiation"
+    );
+    assert_eq!(
+        serde_json::to_value(&signals[0])?["action_types"],
+        serde_json::json!(["inspect_clue"])
+    );
+    assert_eq!(
+        trace
+            .transitions()
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("missing launch"))?
+            .ordered_timer_changes()
+            .len(),
+        2,
+        "briefing needs one bounded fresh-decision opportunity even if the first agent fails"
+    );
+    Ok(())
+}
+
+#[test]
 fn hosted_launch_accepts_a_clock_sample_with_zero_in_microsecond_position() -> anyhow::Result<()> {
     let registry = builtin_agent_heist_registry()?;
     // Captured from an isolated hosted-image failure. The UTC timestamp is

@@ -23,14 +23,14 @@ test("the hosted catalog resolves only the reviewed Agent Heist revision", async
   assert.equal(reviewedActivityByDigest(`blake3:${"0".repeat(64)}`), null);
 
   const source = JSON.parse(
-    await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.11.0.json"), "utf8"),
+    await readFile(resolve("../..", "config/hosted/listings/agent-heist-0.12.0.json"), "utf8"),
   );
   assert.deepEqual(
     [...activity.listing.canonicalBytes],
     [...encodeCanonical(source)],
   );
   const release = JSON.parse(await readFile(
-    resolve("../..", "config/activity-clients/releases/agent-heist-web-v4.json"), "utf8",
+    resolve("../..", "config/activity-clients/releases/agent-heist-web-v5.json"), "utf8",
   ));
   assert.equal(activity.listing.value.client.release_digest, release.release_digest);
   assert.equal(activity.listing.value.client.surface_id, "heist-hosted-web");
@@ -54,7 +54,7 @@ test("new discovery retains old exact Listing resolution without replacing its c
   assert.ok(old);
   assert.ok(current);
   assert.equal(old.listing.value.version, "0.3.0");
-  assert.equal(current.listing.value.version, "0.11.0");
+  assert.equal(current.listing.value.version, "0.12.0");
   assert.notEqual(old.listing.value.client.release_digest, current.listing.value.client.release_digest);
   assert.equal(old.public.clientPath, null);
   assert.equal(old.public.availability, "dependency_unavailable");
@@ -64,7 +64,7 @@ test("the public catalog contains only friendly bounded product choices", () => 
   const available = listPublicHostedActivities(true);
   assert.deepEqual(available.map(({ slug }) => slug), ["agent-heist", "negotiate"]);
   assert.equal(available[0]?.availability, "available");
-  assert.equal(available[0]?.clientPath, "/agent-heist-v4/hosted/");
+  assert.equal(available[0]?.clientPath, "/agent-heist-v5/hosted/");
   assert.equal(available[0]?.houseTerms?.maximumAgents, 2);
   assert.equal(available[1]?.availability, "coming_soon");
 
@@ -85,6 +85,17 @@ test("the first live Room retains its exact v4 client and pre-TLS House identiti
   assert.deepEqual([...retained.houseAgents.values()].map((r) => r.value.runner_template.revision), ["2", "2"]);
 });
 
+test("the prior live gameplay release retains its original Pack and client", () => {
+  const retained = reviewedActivityByDigest("blake3:e202f7b24dbd99caeef6d8a1c904ae8131143d38af17a9512e562fe523654ed0");
+  assert.ok(retained);
+  assert.equal(retained.listing.value.version, "0.11.0");
+  assert.equal(retained.listing.value.pack.version, "0.3.0");
+  assert.equal(retained.public.clientPath, "/agent-heist-v4/hosted/");
+  assert.equal(retained.listing.value.client.release_digest, "sha256:12714052c8e1cac59a95b0439e8e86bf17766c8f689f5782d1dd5d4c0efd4cd6");
+  assert.equal(retained.houseAgents.size, 2);
+  for (const house of retained.houseAgents.values()) assert.equal(house.value.runner_template.revision, "6");
+});
+
 test("retained Rooms keep the original v2 client after the design release", () => {
   const retained = reviewedActivityByDigest("blake3:04edc964d5cbc1bc5efa422ac856305d55cec609a6ae5c5c1814c8389b776f80");
   assert.ok(retained);
@@ -99,11 +110,11 @@ test("discovery uses two Granite strategies while retained Listings keep their o
   const retained = reviewedActivityByDigest("blake3:9553f4fa320aa6901d0a03870f5c19ce4342d271efd2ef90d4fd287395f6cef1");
   assert.ok(current);
   assert.ok(retained);
-  assert.equal(current.listing.value.version, "0.11.0");
+  assert.equal(current.listing.value.version, "0.12.0");
   assert.equal(retained.listing.value.version, "0.5.0");
   assert.equal(retained.public.clientPath, "/agent-heist-v3/hosted/");
   assert.notDeepEqual(current.listing.value.client, retained.listing.value.client);
-  assert.equal(current.listing.value.pack.version, "0.3.0");
+  assert.equal(current.listing.value.pack.version, "0.4.0");
   assert.equal(retained.listing.value.pack.version, "0.2.0");
   assert.deepEqual(current.listing.value.result.publication, retained.listing.value.result.publication);
   const strategies = [...current.houseAgents.values()];
@@ -118,13 +129,13 @@ test("discovery uses two Granite strategies while retained Listings keep their o
     assert.equal(strategy.value.allowance.model_call_attempts, 10);
   }
   const planner = strategies.find(({ value }) => value.house_agent_id === "worldstream.house.cooperative-planner");
-  assert.equal(planner?.value.agent_profile.revision, "7");
-  assert.equal(planner?.value.version, "7");
-  assert.equal(planner?.value.runner_template.revision, "6");
+  assert.equal(planner?.value.agent_profile.revision, "8");
+  assert.equal(planner?.value.version, "8");
+  assert.equal(planner?.value.runner_template.revision, "7");
   const oldPlanner = [...retained.houseAgents.values()].find(({ value }) => value.house_agent_id === "worldstream.house.cooperative-planner");
   assert.equal(oldPlanner?.value.route.model_slug, "qwen/qwen3.8-flash-20260826");
   assert.equal(oldPlanner?.value.agent_profile.revision, "1");
-  assert.equal(planner?.value.behavior_policy.revision, "2");
+  assert.equal(planner?.value.behavior_policy.revision, "3");
   assert.equal(oldPlanner?.value.behavior_policy.revision, "1");
   assert.equal(planner?.value.behavior_policy.policy_id, oldPlanner?.value.behavior_policy.policy_id);
   assert.deepEqual(planner?.value.allowance, oldPlanner?.value.allowance);
