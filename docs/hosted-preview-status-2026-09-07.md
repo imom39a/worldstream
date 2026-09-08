@@ -6,6 +6,39 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 15:05 UTC — accepted local House Action; restart acceptance fails
+
+The complete run on clean `1939fd8f74e051e9517509924a9864910b0969ae`
+passed its prerequisites, including the new local House-pool check, and formed
+Launch `93519352-9c16-4c25-a820-0789cee70375` (Run
+`46c35f9b-422d-4cdf-9840-15b85730043a`). Both participants and the public
+spectator connected. The external-agent disconnect/Catch-up check passed and
+the fake-provider House Agent submitted an accepted endorsement of the human
+proposal.
+
+Acceptance still **failed** after the managed Runtime restart: both explicit
+Run re-entry calls returned 201, but the external agent's subsequent
+stream-ticket request returned `503 participant_session_unavailable`. The
+complete gameplay/result story did not finish and no acceptance receipt exists.
+A private, reduced diagnostic reused that retained Room and successfully
+restarted/reconnected both participants. It omitted the active-match setup and
+spectator, so it does not disprove the full-story failure or qualify a release.
+The cause remains unresolved; no retry policy or timeout has been changed.
+
+Further diagnostic attempts encountered `409 formation_unavailable`. One
+earlier attempt remains provisioning at Launch
+`71923a05-7fcd-4bea-a53b-0c15676e484d`; its House reservation reports succeeded.
+Do not reroll it, erase it, free capacity from elapsed time, or infer a terminal
+Room result. The subsequent formation errors also need diagnosis; their cause
+has not been established. Private diagnostic harnesses omitted rebuild and
+prerequisite stages to shorten feedback and were explicitly prevented from
+writing a release-acceptance receipt. They are not production changes.
+
+No Fly/Vercel deployment, production migration, paid provider call or spending
+increase occurred. The a2f94df image/build described below is now behind the
+latest source and must not be published as the current candidate. IMO-185,
+IMO-186 and the full IMO-184 acceptance gate remain incomplete.
+
 ### September 8, 14:46 UTC — current local House pool corrected; match still unqualified
 
 The corrected `c74ed1d` source passed all prerequisites and started the local
