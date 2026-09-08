@@ -342,7 +342,12 @@ impl FixedDaemonAssignmentMcpActionGatewayV1 {
                 "sync_token": attached.sync_token,
             }),
         )?;
-        let synced: SyncAckedV1 = read_protocol(&mut socket, &mut budget, "room.sync_acked", None)?;
+        let reply = read_scoped_action_reply(&mut socket, &mut budget, authority)?;
+        if reply.message_type != "room.sync_acked" {
+            return Err(AssignmentMcpActionGatewayErrorV1::InvalidData);
+        }
+        let synced: SyncAckedV1 = serde_json::from_value(reply.body)
+            .map_err(|_| AssignmentMcpActionGatewayErrorV1::InvalidData)?;
         if synced.through_frame_head != attached.frame_head {
             return Err(AssignmentMcpActionGatewayErrorV1::InvalidData);
         }
@@ -511,7 +516,7 @@ fn read_action_result(
     authority: &AssignedMembershipAuthorityV1,
     request: &AssignmentMcpExactActionRequestV1,
 ) -> Result<AssignmentMcpActionDaemonResultV1, AssignmentMcpActionGatewayErrorV1> {
-    let envelope = read_envelope(socket, budget)?;
+    let envelope = read_scoped_action_reply(socket, budget, authority)?;
     if envelope.request_id.as_ref().map(UlidString::as_str) != Some(&request.request_id) {
         return Err(AssignmentMcpActionGatewayErrorV1::InvalidData);
     }
@@ -565,6 +570,30 @@ fn read_action_result(
             Err(map_protocol_error(&error))
         }
         _ => Err(AssignmentMcpActionGatewayErrorV1::InvalidData),
+    }
+}
+
+/// A synchronized participant socket also carries live deliveries. They can
+/// precede both the sync acknowledgement and the correlated Action receipt.
+/// This submission-only adapter does not install or acknowledge those frames:
+/// the observation adapter still owns its Cursor. Keep the original Action
+/// precondition, and let the Runtime accept or reject that exact Action.
+fn read_scoped_action_reply(
+    socket: &mut WebSocket<TcpStream>,
+    budget: &mut ActionReadBudgetV1,
+    authority: &AssignedMembershipAuthorityV1,
+) -> Result<VersionedEnvelope<Value>, AssignmentMcpActionGatewayErrorV1> {
+    loop {
+        // Every skipped frame consumes the existing byte/message/time budget.
+        let envelope = read_envelope(socket, budget)?;
+        if envelope.message_type != "observation.deliver" {
+            return Ok(envelope);
+        }
+        let delivery: ObservationDeliver = serde_json::from_value(envelope.body)
+            .map_err(|_| AssignmentMcpActionGatewayErrorV1::InvalidData)?;
+        if delivery.room_id != authority.room_id() || delivery.member_id != authority.member_id() {
+            return Err(AssignmentMcpActionGatewayErrorV1::InvalidData);
+        }
     }
 }
 

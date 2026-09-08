@@ -763,12 +763,42 @@ fn mismatched_room_and_incoherent_daemon_receipts_fail_closed() {
 
 #[test]
 fn fixed_daemon_gateway_authenticates_syncs_and_submits_exact_stable_action() {
+    assert_fixed_daemon_action_flow(false);
+}
+
+#[test]
+fn fixed_daemon_gateway_accepts_scoped_live_frames_during_sync_and_action_reply() {
+    assert_fixed_daemon_action_flow(true);
+}
+
+#[test]
+fn fixed_daemon_gateway_rejects_cross_member_live_frame_before_action() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .unwrap_or_else(|error| unreachable!("bind Action fixture: {error}"));
     let address = listener
         .local_addr()
         .unwrap_or_else(|error| unreachable!("Action fixture address: {error}"));
-    let fixture = thread::spawn(move || serve_action_fixture(&listener));
+    let fixture = thread::spawn(move || {
+        serve_action_fixture_with_member(&listener, Some("01ARZ3NDEKTSV4RRFFQ69G5FB9"));
+    });
+    let gateway = FixedDaemonAssignmentMcpActionGatewayV1::new(address, Duration::from_secs(2))
+        .unwrap_or_else(|error| unreachable!("fixed daemon gateway: {error:?}"));
+    assert_eq!(
+        gateway.submit_exact(&authority(ASSIGNMENT), &exact_gateway_request()),
+        Err(AssignmentMcpActionGatewayErrorV1::InvalidData),
+    );
+    fixture
+        .join()
+        .unwrap_or_else(|error| unreachable!("Action fixture thread: {error:?}"));
+}
+
+fn assert_fixed_daemon_action_flow(interleaved_frames: bool) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| unreachable!("bind Action fixture: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| unreachable!("Action fixture address: {error}"));
+    let fixture = thread::spawn(move || serve_action_fixture(&listener, interleaved_frames));
     let directory = tempdir().unwrap_or_else(|error| unreachable!("temporary root: {error}"));
     let ledger = FileAssignmentMcpOperationLedgerV1::open(directory.path().join("operations"))
         .unwrap_or_else(|error| unreachable!("operation ledger: {error:?}"));
@@ -904,7 +934,11 @@ fn handshake_failure_fixture(
     (address, fixture)
 }
 
-fn serve_action_fixture(listener: &TcpListener) {
+fn serve_action_fixture(listener: &TcpListener, interleaved_frames: bool) {
+    serve_action_fixture_with_member(listener, interleaved_frames.then_some(MEMBER));
+}
+
+fn serve_action_fixture_with_member(listener: &TcpListener, frame_member: Option<&str>) {
     let (stream, _) = listener
         .accept()
         .unwrap_or_else(|error| unreachable!("accept Action fixture: {error}"));
@@ -942,6 +976,16 @@ fn serve_action_fixture(listener: &TcpListener) {
     );
     let sync_ack = read_fixture(&mut socket);
     assert_eq!(sync_ack["type"], "room.sync_ack");
+    if let Some(member) = frame_member {
+        send_action_live_frame(&mut socket, 1, member);
+        if member != MEMBER {
+            assert!(matches!(
+                socket.read(),
+                Err(_) | Ok(tungstenite::Message::Close(_))
+            ));
+            return;
+        }
+    }
     send_fixture(
         &mut socket,
         "room.sync_acked",
@@ -956,6 +1000,9 @@ fn serve_action_fixture(listener: &TcpListener) {
     assert_eq!(action["body"]["based_on_room_seq"], 7);
     assert_eq!(action["body"]["action_type"], "increment");
     assert_eq!(action["body"]["payload"], json!({"amount":3}));
+    if let Some(member) = frame_member {
+        send_action_live_frame(&mut socket, 2, member);
+    }
     send_fixture(
         &mut socket,
         "action.accepted",
@@ -972,6 +1019,27 @@ fn serve_action_fixture(listener: &TcpListener) {
                 "authoritative_state_hash":"blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             },
             "duplicate":false
+        }),
+    );
+}
+
+fn send_action_live_frame(
+    socket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    frame_seq: u64,
+    member: &str,
+) {
+    send_fixture(
+        socket,
+        "observation.deliver",
+        &json!({
+            "room_id": ROOM,
+            "member_id": member,
+            "frame_seq": frame_seq,
+            "cause_room_seq": 7,
+            "frame_kind": "delta",
+            "observation_schema": "counter/projection/v1",
+            "observation": {"counter": 1},
+            "frame_payload_hash": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         }),
     );
 }

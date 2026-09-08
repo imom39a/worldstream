@@ -40,8 +40,9 @@ The real browser test is launch `d7e1d637-5e78-4985-b6a3-a3debbce2c54`,
 Room `01M1ZXRDH145SNF0M7FRCKP2FE`. Navigator entered, inspected `route`, and
 published `route_roof`. It completed with `failure / no_strict_majority / 0`
 and public result `33196167e981e4b99188854dd5ee7650`. Both new House processes
-exited with status 1 after initialization, before a new allowance/provider
-attempt was recorded. Thus **live LLM acceptance still fails**. At operating
+were later observed exited with status 1. The initial allowance reads had not
+yet shown their calls; those early reads did not prove they exited before
+dispatch. Thus **live LLM acceptance still fails**. At operating
 generation 5, human launches remain open but new House fill is disabled.
 
 The existing allowance ledger retains three ambiguous attempts for each old
@@ -67,6 +68,33 @@ turn. Its repeated `assignment_activation_none_available` responses must not
 be counted as successful agent participation. Owned diagnostic containers and
 their fresh volumes were removed; private diagnostic scripts remain outside
 the repository for continued investigation.
+
+At the final key-metadata check in this checkpoint, OpenRouter reported total
+usage USD **0.00091845**, remaining USD **1.99908155**, and no reset on the
+USD 2 key limit. This cumulative amount must not be attributed solely to the
+tiny diagnostic: ambiguous requests can still be billed. It is provider usage,
+not a measurement of total Fly/Vercel/Supabase charges.
+
+A later ledger read established two **validated provider completions** for the
+second Room: Planner used 1505 input / 789 output tokens, cost USD 0.000284670;
+Auditor used 1517 / 768, cost USD 0.000283020. Planner also has one
+`provider_failed` attempt. The ledger modification time was 07:14:55.804Z.
+Neither validated response became a recorded Runtime Action: the Room's only
+Action receipts are the human inspection and publication, while both House
+Action-operation ledgers remain `prepared` without remote acceptance.
+The immediate investigation is therefore the Action handoff after model
+completion, not an assertion that OpenRouter was never called. A local
+protocol regression is being built for live-frame interleaving during Action
+synchronization; this hypothesis is not yet a proven production root cause.
+
+That regression reproduced `InvalidDaemonData` before Action submission in
+0.08 seconds. The correction accepts only typed deliveries for the exact
+Room and Membership while awaiting synchronization or an Action receipt.
+It consumes the existing byte/message/time budgets, does not acknowledge
+frames or advance a Cursor, and does not change the Action's original Head
+precondition. A cross-Membership delivery remains rejected. All 13 Action
+gateway/orchestration tests pass. This correction is not yet deployed, and
+production LLM-to-Action acceptance remains unverified.
 
 ### September 8 — first live result; OpenRouter TLS half-close isolated
 
