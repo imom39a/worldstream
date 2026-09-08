@@ -10,6 +10,7 @@ import {
   retainedAgentHeistListing06Base64,
   retainedAgentHeistListing07Base64,
   retainedAgentHeistListing08Base64,
+  retainedAgentHeistListing09Base64,
   agentHeistPublicProjectionSchemaBase64,
   agentHeistResultProjectorBase64,
   retainedAgentHeistResultProjector02Base64,
@@ -47,10 +48,10 @@ export function createHostedResultReconciler(input: {
     }),
     projectors: new PinnedResultProjectorRegistry([
       agentHeistListingBase64, retainedAgentHeistListing02Base64, retainedAgentHeistListing03Base64,
-      retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64,
+      retainedAgentHeistListing04Base64, retainedAgentHeistListing05Base64, retainedAgentHeistListing06Base64, retainedAgentHeistListing07Base64, retainedAgentHeistListing08Base64, retainedAgentHeistListing09Base64,
     ].map((listingBytes) => ({
         listingBytes: decode(listingBytes),
-        projectorBytes: decode(listingBytes === agentHeistListingBase64 || listingBytes === retainedAgentHeistListing07Base64 || listingBytes === retainedAgentHeistListing08Base64
+        projectorBytes: decode(listingBytes === agentHeistListingBase64 || listingBytes === retainedAgentHeistListing07Base64 || listingBytes === retainedAgentHeistListing08Base64 || listingBytes === retainedAgentHeistListing09Base64
           ? agentHeistResultProjectorBase64 : retainedAgentHeistResultProjector02Base64),
         runtimeBytes: decode(declarativeResultProjectorRuntimeBase64),
         projectionSchemaBytes: decode(agentHeistPublicProjectionSchemaBase64),

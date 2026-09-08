@@ -175,6 +175,26 @@ test("Action stream successor preserves canonical metadata and requires separate
   assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
 });
 
+test("operation-budget successor preserves exact metadata, limits and retained identities", async () => {
+  const migration = await readFile(new URL("../supabase/migrations/20260908113606_house_operation_budget_successor.sql", import.meta.url), "utf8");
+  const houses = [...migration.matchAll(/\$house\$([\s\S]*?)\$house\$/gu)].map((match) => Buffer.from(match[1]));
+  assert.equal(houses.length, 2);
+  for (const [index, file] of ["cooperative-planner-6", "skeptical-auditor-5"].entries()) {
+    const value = JSON.parse(await readFile(new URL(`../config/hosted/house-agents/${file}.json`, import.meta.url), "utf8"));
+    const previous = JSON.parse(await readFile(new URL(`../config/hosted/house-agents/${index === 0 ? "cooperative-planner-5" : "skeptical-auditor-4"}.json`, import.meta.url), "utf8"));
+    assert.deepEqual(houses[index], canonicalBytes(value));
+    assert.ok(migration.includes(`blake3:${hash(houses[index])}`));
+    assert.equal(value.runner_template.revision, "5");
+    assert.deepEqual(value.allowance, previous.allowance);
+    assert.deepEqual(value.route, previous.route);
+    assert.deepEqual(value.behavior_policy, previous.behavior_policy);
+  }
+  const listing = JSON.parse(await readFile(new URL("../config/hosted/listings/agent-heist-0.10.0.json", import.meta.url), "utf8"));
+  assert.deepEqual(Buffer.from(migration.match(/\$listing\$([\s\S]*?)\$listing\$/u)[1]), canonicalBytes(listing));
+  assert.ok(migration.includes(`blake3:${hash(canonicalBytes(listing))}`));
+  assert.doesNotMatch(migration, /house_agent_host_approvals|hosted_operating_state|available_for_new_assignments|update\s+platform_store|delete\s+from/iu);
+});
+
 test("approval preparation rejects unreviewed templates, duplicate JSON, symlinks and SQL-shaped identifiers", async (t) => {
   const f = await fixture(t);
   await assert.rejects(prepareHouseApprovals({ ...f.options, installationId: "x';delete" }), /approval_options_invalid/u);
