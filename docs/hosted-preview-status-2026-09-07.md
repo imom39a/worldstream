@@ -53,8 +53,11 @@ the old catalog until a new image is built and verified.
 
 The offline Linux regression did fail against the previous catalog as expected:
 the actual loader returned four Listing digests while Fly allowlisted five,
-with only Listing `0.6.0` missing. The corrected-source run is pending. This
-establishes a regression reproducer, not yet a passing corrected-image result.
+with only Listing `0.6.0` missing. The corrected-source Linux run subsequently
+passed: one test passed, none failed, in 0.05 seconds after compilation. It
+exercised the shared Controller loader with corrected source overlaid on the
+cached Linux builder, with networking disabled. This establishes red/green
+regression evidence, not yet a passing full corrected-image launch or gameplay.
 The local acceptance probe also incorrectly required HTTP `202` even though
 the Gateway returns `200` when lobby launch has already committed. Its status
 check now accepts those two documented responses and retains the subsequent
@@ -66,6 +69,85 @@ Linear reauthentication subsequently succeeded. Update comment
 `9869027a-4436-444a-b58b-977a59b43491` was posted to `IMO-184`, which remains
 In Progress. Commit `484d636` is pushed and its Linux image is building from a
 clean Git archive with the same pinned Rust and Node base images.
+
+The public Vercel identity endpoint subsequently reported source `cd85da8`,
+deployment `dpl_GxbCtQAVX3WsoFq8fCGCycxWzJ6c`, schema head
+`20260907220000`, Listing `0.6.0`, and the expected Heist v3 client digest.
+Fly has not yet received the corrected image. CI `34177427443` passed its
+database-boundary and application-boundary jobs; the canonical local candidate
+job is running. Superseded CI
+`34177189544` was cancelled to avoid duplicate work.
+
+The corrected Linux image finished building with local image ID
+`sha256:7a224a56bdb4c28c641900fcdd423d38582e9bfd4c18afc812fafa45cc115fed`
+and source `484d636`. All nine hosted runtime/entrypoint tests passed, including
+the two image-enabled checks. Its full entrypoint reached Gateway and Runtime
+readiness under one CPU and 512 MB with synthetic credentials and no network.
+The same Listing `0.6.0` request that previously returned `409` now retained
+one launch binding, one Room creation, and one setup operation. Setup completed;
+the response remained `202 waiting_for_readiness`, with matching operation
+identities, during ten explicit retryable same-operation resumes.
+
+The diagnostic probe's immediate-lobby assertion failed and its receipts remain
+failed evidence. It never connected the fixture's human and external Agent.
+The actual readiness implementation requires synchronized participant sessions;
+repeated launch requests alone cannot satisfy that condition. This proves the
+catalog rejection is removed and Room setup proceeds, not completed gameplay.
+Use the full connected-client acceptance story for the latter. Disposable local
+probe containers and their fresh volumes were removed; no cloud data changed.
+
+Both old and new image assets report the same managed House executable BLAKE3
+digest, `afcc2bcd6199680559a366b729415c8323570a6d9e98dfdfe824692277925e36`.
+An executable-digest change therefore does not require a new Runner Template
+for this candidate.
+
+### September 8, 01:57 UTC — corrected image deployed behind closed admission
+
+Image `registry.fly.io/worldstream-preview@sha256:f52d73bd5799b07e45229fd06fe0668eceb77557e425c04cb64a48803863ffca`
+is now installed on the same Machine `8ed004f7033e18` and retained volume.
+No installation archive/reset, credential change, resource expansion, or
+Runner Template change was needed. At 01:56:26 UTC, Gateway and Runtime
+readiness returned `200`; Runtime and the public Gateway version endpoint
+reported source `484d636`. Fly's service health check passed.
+
+Runtime was then intentionally closed again for exact-image prelaunch capture.
+Checkpoint `1e2f5b11-9a96-4f9e-87e0-0b3c089ff199` was captured at 01:57 UTC,
+downloaded privately, and both archive hashes verified:
+
+- Runtime: `sha256:2df4773da8ad8eeb9a5efb87bda395285da9d0204691b501a449c5ab99e11ed9`.
+- Controller: `sha256:a3c939dd02125ed912cb653c7bc2f9319073497ad255171ab4c1ec84a1f67abd`.
+
+Pairing this new capture with Supabase and its isolated restore verification
+passed at 02:00:05 UTC. Manifest digest:
+`sha256:dc39fff342288cb6b482ec9c58ac52c7b926c53db224cd4327ed01d263157891`.
+Deployment document digest:
+`sha256:8878661d1b54bfbead68979c9af841edfb2a8dcfaccabb31e9bd023a17c9a12d`.
+The exact-image verifier confirmed matching 15-migration history, empty activity
+stores, retained Host authority correspondence and closed admission. The
+existing disposable local database was the only restore target; no Auth restore
+or populated-history recovery is claimed. The temporary loopback database
+forward was stopped after verification.
+
+The prior verified checkpoint is retained, not relabelled as evidence for this
+image. Public launch and House-fill gates remain closed; no paid provider call
+has occurred. The canonical CI story remains running.
+
+The exact deployed profiles, named credential metadata, Runner Template,
+executable, and successful idempotent import receipt were captured privately.
+`hosted-house-approval.mjs` prepared two receipts and separate approval/activation
+SQL files. The reviewed `approve.sql` was subsequently applied through the
+linked Supabase administrative query path. Readback confirmed two approvals,
+zero available for new assignments, and zero revoked. `activate.sql` remains
+unapplied; House Agents are not activated. The capture helper must use the appliance's explicit Controller
+address and protected authority, running the CLI as UID/GID 65532; an earlier
+incomplete helper invocation produced no passing capture evidence.
+
+A fresh read-only OpenRouter key check confirmed a $2 lifetime limit, no reset,
+$2 remaining, zero usage, and expiry `2026-12-06T22:29:33.475Z`. The public
+endpoint catalog still lists the exact DeepInfra BF16 route at the reviewed
+price ceilings. This is not a successful inference or key-specific routing
+proof. Chrome still shows the signed-in owner and the current room form with
+its House call/token bounds. The form was closed without creating a room.
 
 ### 23:34 UTC recovery update
 
