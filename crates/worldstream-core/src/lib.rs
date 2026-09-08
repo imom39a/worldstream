@@ -10,7 +10,9 @@
 mod activation;
 mod activity_pack;
 mod agent_heist;
+mod agent_heist_clock_safe;
 mod agent_heist_lobby;
+mod agent_heist_lobby_v3;
 mod agent_heist_registry;
 mod authority;
 mod canonical;
@@ -71,12 +73,14 @@ pub use agent_heist::{
 };
 pub use agent_heist_lobby::{
     AGENT_HEIST_LOBBY_CONTRACT, AGENT_HEIST_LOBBY_VERSION, AgentHeistLobbyV2,
-    HOST_LAUNCH_INPUT_TYPE, HOST_LOBBY_LAUNCH_SOURCE, agent_heist_lobby_contract_declared,
-    agent_heist_lobby_launch_applicable,
+    HOST_LAUNCH_INPUT_TYPE, HOST_LOBBY_LAUNCH_SOURCE, agent_heist_lobby_launch_applicable,
+};
+pub use agent_heist_lobby_v3::{
+    AGENT_HEIST_LOBBY_VERSION as AGENT_HEIST_CLOCK_SAFE_VERSION, AgentHeistLobbyV3,
 };
 pub use agent_heist_registry::{
-    agent_heist_digest, agent_heist_lobby_digest, agent_heist_retained_digest,
-    builtin_agent_heist_registry,
+    agent_heist_clock_safe_digest, agent_heist_digest, agent_heist_lobby_contract_declared,
+    agent_heist_lobby_digest, agent_heist_retained_digest, builtin_agent_heist_registry,
 };
 #[cfg(any(test, feature = "conformance-tracer"))]
 pub use authority::InMemoryAuthorityStoreV1;

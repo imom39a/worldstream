@@ -199,6 +199,61 @@ fn new_exact_revision_waits_in_lobby_without_timer_or_gameplay_side_effects() {
 }
 
 #[test]
+fn hosted_launch_accepts_a_clock_sample_with_zero_in_microsecond_position() -> anyhow::Result<()> {
+    let registry = builtin_agent_heist_registry()?;
+    // Captured from an isolated hosted-image failure. The UTC timestamp is
+    // canonical; truncating it to six places produces a trailing zero.
+    let recorded_at = "2026-09-08T03:37:27.914230084Z";
+    for initial_core_state in [core(), two_seat_core()] {
+        let request = PackGenesisRequestV1 {
+            room_id: parsed(ROOM),
+            pack_digest: worldstream_core::agent_heist_clock_safe_digest(),
+            configuration: canonical(CONFIG),
+            room_seed: parsed(SEED),
+            created_at: parsed("2026-08-23T12:00:00Z"),
+            initial_core_state,
+        };
+        let genesis = registry.prepare_genesis_for_new_room(&request)?;
+        let mut trace = CoreTraceV1::create_from_retained_for_conformance(genesis)?;
+        let prepared = trace.prepare(launch("01ARZ3NDEKTSV4RRFFQ69G5FC0", recorded_at))?;
+        trace.install_prepared_for_conformance(prepared)?;
+        assert_eq!(phase(&trace), "briefing");
+        assert_eq!(
+            serde_json::to_value(trace.activity_state())?["phase_deadline"],
+            "2026-09-08T03:37:57.91423Z"
+        );
+        let replay = CoreTraceV1::replay(
+            &registry,
+            &trace.genesis_bytes()?,
+            &trace.transition_bytes()?,
+        )
+        .map_err(|failure| anyhow::anyhow!("clock-safe launch replay: {}", failure.detail))?;
+        assert_eq!(phase(&replay.into_trace()), "briefing");
+    }
+    Ok(())
+}
+
+#[test]
+fn retained_lobby_revision_preserves_its_original_clock_behavior() {
+    let registry = builtin_agent_heist_registry()
+        .unwrap_or_else(|error| unreachable!("Agent Heist registry: {error}"));
+    assert_eq!(
+        agent_heist_lobby_digest().to_string(),
+        "blake3:b1fc05278808c854c3b97c03639196d6d223a66f283649fa4d349fa477e4b820"
+    );
+    for trace in [trace_for(&registry), two_seat_trace_for(&registry)] {
+        assert!(
+            trace
+                .prepare(launch(
+                    "01ARZ3NDEKTSV4RRFFQ69G5FC0",
+                    "2026-09-08T03:37:27.914230084Z"
+                ))
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn selectable_revision_requires_navigator_and_insider_but_allows_absent_broker() {
     let registry = builtin_agent_heist_registry()
         .unwrap_or_else(|error| unreachable!("Agent Heist registry: {error}"));

@@ -27,6 +27,8 @@ const LEGACY_TRANSCRIPT_DIGEST: &str =
     "blake3:77a13c04178c6a0110d4b30ae3e6683730f2f6a5991e2a8e71d6db2d361d0d63";
 const LOBBY_TRANSCRIPT_DIGEST: &str =
     "blake3:7eba0832c3cecfe79daa34747159378ad25d2fa24c4e909e69bed93855d04ae2";
+const CLOCK_SAFE_TRANSCRIPT_DIGEST: &str =
+    "blake3:97027caadb35cbd7379300600b812ab872c2bf8cefcd8348b1115267c59a6cfa";
 #[cfg(test)]
 const CORPUS_DIGEST: &str =
     "blake3:c79d1e0c37eb32e54924b4b42f9d3d2d790e456d7fc888698c4d0b2b467ad958";
@@ -41,6 +43,21 @@ const LEGACY_CORPUS_DIGEST: &str =
 /// Returns a registry error if the exact revision lock, codec bundle,
 /// executor provenance, or golden corpus does not verify.
 pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErrorV1> {
+    let (clock_descriptor, clock_lock, clock_schemas, clock_codecs, clock_artifact) =
+        crate::agent_heist_lobby_v3::agent_heist_lobby_revision();
+    let clock_corpus = lobby_golden_corpus(
+        clock_descriptor.revision_digest.clone(),
+        CLOCK_SAFE_TRANSCRIPT_DIGEST,
+    );
+    let clock_artifacts = PackRegistryArtifactsV1 {
+        expected_revision_digest: clock_descriptor.revision_digest.clone(),
+        schemas: Some(clock_schemas.clone()),
+        codecs: Some(clock_codecs.clone()),
+        codec_implementation: Some(CanonicalPackCodecV1::canonical_v1()),
+        executor_artifact_digest: clock_artifact.clone(),
+        golden_corpus_digest: clock_corpus.digest()?,
+        golden_corpus: Some(clock_corpus),
+    };
     let (lobby_descriptor, lobby_lock, lobby_schemas, lobby_codecs, lobby_artifact_digest) =
         agent_heist_lobby_revision();
     let lobby_corpus = lobby_golden_corpus(
@@ -95,6 +112,15 @@ pub fn builtin_agent_heist_registry() -> Result<PackRegistryV1, PackRegistryErro
         runnable_for_retained_rooms: true,
     };
     PackRegistryV1::try_new([
+        PackRegistryEntryV1::agent_heist_lobby_v3(
+            clock_lock.clone(),
+            clock_descriptor,
+            clock_artifacts,
+            PackRegistryStatusV1 {
+                selectable_for_new_rooms: true,
+                runnable_for_retained_rooms: true,
+            },
+        ),
         PackRegistryEntryV1::agent_heist_lobby_v2(
             lobby_lock.clone(),
             lobby_descriptor,
@@ -121,6 +147,25 @@ pub fn agent_heist_digest() -> PackDigestV1 {
 #[must_use]
 pub fn agent_heist_lobby_digest() -> PackDigestV1 {
     agent_heist_lobby_revision().0.revision_digest.clone()
+}
+
+/// Exact clock-safe Lobby revision. Earlier digests retain their original rules.
+#[must_use]
+pub fn agent_heist_clock_safe_digest() -> PackDigestV1 {
+    crate::agent_heist_lobby_v3::agent_heist_lobby_revision()
+        .0
+        .revision_digest
+        .clone()
+}
+
+/// Recognizes only the exact retained or clock-safe reviewed Lobby contracts.
+#[must_use]
+pub fn agent_heist_lobby_contract_declared(
+    registry: &PackRegistryV1,
+    digest: &PackDigestV1,
+) -> bool {
+    crate::agent_heist_lobby::agent_heist_lobby_contract_declared(registry, digest)
+        || crate::agent_heist_lobby_v3::agent_heist_lobby_contract_declared(registry, digest)
 }
 
 /// Exact semantic digest of the retained-only Agent Heist revision.
@@ -586,6 +631,29 @@ mod tests {
             crate::agent_heist_lobby::AgentHeistLobbyV2,
         );
         assert_eq!(digest, Ok(parsed(LOBBY_TRANSCRIPT_DIGEST)));
+    }
+
+    #[test]
+    fn clock_safe_registry_golden_transcript_is_fixed() {
+        let (descriptor, lock, schemas, codecs, artifact) =
+            crate::agent_heist_lobby_v3::agent_heist_lobby_revision();
+        let corpus = lobby_golden_corpus(
+            descriptor.revision_digest.clone(),
+            CLOCK_SAFE_TRANSCRIPT_DIGEST,
+        );
+        let digest = author_golden_transcript_digest_for_test(
+            lock.clone(),
+            descriptor,
+            schemas.clone(),
+            codecs.clone(),
+            artifact.clone(),
+            &corpus,
+            crate::agent_heist_lobby_v3::AgentHeistLobbyV3,
+        );
+        assert_eq!(
+            digest.map(|value| value.to_string()),
+            Ok(CLOCK_SAFE_TRANSCRIPT_DIGEST.to_owned())
+        );
     }
 
     #[test]

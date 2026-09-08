@@ -6,6 +6,128 @@ separately through `/api/deployment`; do not infer their identity from this file
 
 ## Current result
 
+### September 8, 03:54 UTC — clock-safe Heist core revision passes locally
+
+The new `AgentHeistLobbyV3` implementation declares Pack version `0.3.0` and
+uses a revision-local phase engine with minimal fractional timestamp formatting.
+The old `agent_heist.rs` and `agent_heist_lobby.rs` files remain byte-unchanged.
+The registry retains the old exact executors and adds the new exact executor;
+the new golden transcript is fixed, not generated during normal registry startup.
+
+Linux, offline verification completed successfully:
+
+```text
+cargo test --offline -p worldstream-core --features conformance-tracer
+188 unit tests passed
+6 Lobby integration tests passed
+3 public API tests passed
+4 registry-bound trace tests passed
+0 doc tests; command exit 0
+```
+
+The captured `.914230084Z` launch now enters Briefing for both two-seat and
+three-seat Rooms, schedules a canonical `.91423Z` deadline, and replays through
+the exact new revision. Additional tests cover fractional widths, reminders,
+successor timestamps, year rollover, and unchanged old-revision behavior.
+The new phase engine also runs the existing Heist privacy/phase tests.
+
+The final source-only test-module lint annotation required re-authoring the new
+revision's source-bound golden transcript. The full core command was rerun after
+that update and again exited zero with the same test counts. Old source files
+were not changed. Clippy's duplicate-module exception is local to the new test
+module: it intentionally executes the shared behavioral assertions against a
+second executor, rather than aliasing the old executor's tests.
+The final source also passes `cargo clippy --offline -p worldstream-core
+--all-targets --features conformance-tracer -- -D warnings`, targeted
+`rustfmt --check`, and `git diff --check`.
+
+This is **local core evidence only**, from an isolated test builder, not a clean
+release build or hosted acceptance. Client compatibility, immutable Listing and
+projector revisions, House compatibility/approval, coordinated deployment, the
+original connected reproduction, and the separate restart/session `503` remain
+to be verified. No production admission or House activation was opened, no paid
+provider call was made, and no cloud resources were expanded during this fix.
+
+### September 8, 03:41 UTC — deterministic Heist timestamp regression is red
+
+The captured failed launch retained canonical input time
+`2026-09-08T03:37:27.914230084Z`. Repeating its exact input against the isolated
+Runtime returned `400 internal`; read-only inspection found Room sequence zero,
+Lobby phase, and no committed external-input semantic receipt. Its stopped
+synthetic state is preserved privately at
+`/private/tmp/worldstream-connected-lobby-failure-LO0kvI`.
+
+The Lobby formatter truncates fractional seconds to microseconds and always
+prints six digits when nonzero. This input therefore produces a deadline ending
+in `.914230Z`. The Core timestamp contract correctly rejects that non-minimal
+fraction. The ordinary Heist phase formatter uses the same formatting pattern.
+Retry retains the original input time, so the failed launch cannot recover by
+waiting for a different wall-clock value.
+
+A new integration regression in `crates/worldstream-core/tests/agent_heist_lobby.rs`
+uses that fixed timestamp with the real registry-bound trace. It failed on Linux:
+
+```text
+cargo test --offline -p worldstream-core --features conformance-tracer \
+  --test agent_heist_lobby \
+  hosted_launch_accepts_a_clock_sample_with_zero_in_microsecond_position \
+  -- --exact --nocapture
+
+Activity Pack Reduce operation faulted: invalid Activity Pack output:
+timestamp must be a valid UTC RFC 3339 value with seconds and minimal
+0-9 digit fractional precision
+```
+
+The test itself completed in 0.25 seconds after compilation. This identifies a
+deterministic Pack defect behind the isolated launch failure; it does not by
+itself diagnose the separate post-restart session `503`. The regression is
+intentionally red while implementation is pending. ADR 0010 requires a new
+semantic Pack digest for the corrected timer behavior and exact old-executor
+retention. Do not weaken Core timestamp validation or silently alter the pinned
+Heist revisions. The corrected revision, hosted artifact identities, regression
+and full connected acceptance are still required before reopening admission.
+
+### September 8, 03:35 UTC — isolated connected launch failure reproduced
+
+A local, network-isolated probe now exercises the deployed Linux image
+(`484d636`, image ID `7a224a56bdb4c28c641900fcdd423d38582e9bfd4c18afc812fafa45cc115fed`)
+with a fresh owned volume, synthetic credentials, one CPU and 512 MB. It creates
+the reviewed two-seat Heist setup, issues and redeems exact hosted handoffs,
+connects the human Navigator and external-Agent Insider through the Gateway,
+and acknowledges their Projection Resets. No House Runner or provider is used.
+
+Two valid runs reproduced the Lobby symptom with both participants synchronized
+and every required seat ready. The second captured `launch_rejected` on each
+readiness sample while launch attempts advanced from 2 to 41. Other runs passed
+without a product-code change. This rules out absent direct participation or a
+stopped reconciliation loop in this reproduction; it does not establish the
+Runtime rejection's cause or prove equivalence to the three-seat CI failure.
+The earlier post-restart session `503` remains independently unresolved.
+
+The next bounded probe reads the Runtime response to the same retained launch
+input and, on failure, its read-only semantic receipt classification. It never
+substitutes a new input, broadens a credential, or changes a production gate.
+Private diagnostic scripts and per-run receipts are under
+`/private/tmp/worldstream-connected-lobby-*`; failed attempts are retained as
+failures. Each completed probe removed only its own disposable container and
+volume. These checks are diagnostic evidence, not full gameplay acceptance.
+
+### September 8, 03:18 UTC — connected acceptance stalls in the Lobby
+
+CI `34180489064` for source `194825a` finished unsuccessfully. Both prerequisite
+jobs passed. The connected story established all participant and spectator
+streams, but Heist remained in `lobby` and the Navigator received no
+`inspect_clue` offer within the test's 60-second bound. The new probes observed
+successful initial handoff issuance/redemption, session status (`200`), and
+Stream Admission Ticket issuance (`201`) for both authenticated participants.
+
+This run did not reach ordinary disconnect, House endorsement, or Runtime
+restart. It therefore neither reproduces nor clears the earlier post-restart
+`503`. No passing acceptance artifact or live-provider proof exists. The next
+diagnostic must inspect the retained lobby launch/readiness assessment with
+connected participants, rather than repeatedly rebuilding or extending the
+action-offer timeout. Production admission and House activation remain closed.
+
 ### September 8, 02:22 UTC — acceptance blocked on post-restart session health
 
 CI `34177427443` finished unsuccessfully. Its application and database boundary

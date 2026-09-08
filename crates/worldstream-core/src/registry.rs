@@ -29,15 +29,16 @@ pub fn builtin_worldstream_registry() -> Result<PackRegistryV1, PackRegistryErro
 mod tests {
     use super::builtin_worldstream_registry;
     use crate::{
-        agent_heist_digest, agent_heist_lobby_digest, agent_heist_retained_digest,
-        counter_v1_digest, counter_v2_digest, counter_v3_digest, counter_v4_digest,
+        agent_heist_clock_safe_digest, agent_heist_digest, agent_heist_lobby_digest,
+        agent_heist_retained_digest, counter_v1_digest, counter_v2_digest, counter_v3_digest,
+        counter_v4_digest,
     };
 
     #[test]
     fn daemon_registry_retains_counter_and_exact_heist_revisions() {
         let registry = builtin_worldstream_registry()
             .unwrap_or_else(|error| unreachable!("WorldStream registry: {error}"));
-        assert_eq!(registry.len(), 7);
+        assert_eq!(registry.len(), 8);
         let revision_locks = registry.retained_revision_locks().collect::<Vec<_>>();
         assert_eq!(revision_locks.len(), registry.len());
         assert!(
@@ -50,6 +51,11 @@ mod tests {
         assert!(registry.select_for_new_room(&counter_v3_digest()).is_err());
         assert!(registry.select_for_new_room(&counter_v4_digest()).is_ok());
         assert!(registry.select_for_new_room(&agent_heist_digest()).is_ok());
+        assert!(
+            registry
+                .select_for_new_room(&agent_heist_clock_safe_digest())
+                .is_ok()
+        );
         assert!(
             registry
                 .select_for_new_room(&agent_heist_lobby_digest())
